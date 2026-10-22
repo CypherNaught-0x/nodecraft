@@ -21,11 +21,11 @@
 //! - **Trust is checked when it matters.** A package's signature is checked against the trust
 //!   file at import and again at enable, so a key revoked since import stops it being enabled.
 use crate::archive::{self, ArchiveLimits, Package, wire};
-use crate::grants::{self, Grant, Grants};
+use crate::grants::{self, Grant, Grants, Rights};
 use nodecraft_plugin::id::{HostId, PackageId, RegisteredId};
 use nodecraft_plugin::json::{self, Json, Limits};
 use nodecraft_plugin::lock;
-use nodecraft_plugin::manifest::{Dependency, Runtime, Version};
+use nodecraft_plugin::manifest::{Capability, Dependency, Optional, Runtime, Version};
 use nodecraft_plugin::signature::{self, Provenance, TrustStore};
 use nodecraft_plugin::{PackageDigest, register};
 use nodecraft_types::{Error, ErrorKind};
@@ -237,6 +237,12 @@ impl<B: StoreBackend> Store<B> {
         Ok(())
     }
 
+    /// Verifies `bytes` against `trust` without installing anything: a package as it would be
+    /// imported, to show what it asks for first.
+    pub fn inspect(&self, bytes: &[u8], trust: &TrustStore) -> Result<Package, Error> {
+        self.verify(bytes, trust).map(|(package, _)| package)
+    }
+
     fn verify(&self, bytes: &[u8], trust: &TrustStore) -> Result<(Package, Provenance), Error> {
         let package = archive::open(bytes, self.limits)?;
         let provenance = provenance(&package, trust)?;
@@ -322,30 +328,41 @@ impl<B: StoreBackend> Store<B> {
     }
 
     /// Grants the active digest of `package` the right to run: the user's yes, after reading
-    /// what it is. Only text action packages run anything; a data package needs no grant.
+    /// what it is. Only executable packages run anything; a data package needs no grant.
     /// Granting a digest that already has a live grant returns that grant. Its signature must
     /// still verify against `trust`. Damaged grants are replaced, starting again from nothing
     /// granted; a host holding an old grant compares its package and digest too, so a number
     /// given again never stands for an old yes.
     pub fn grant(&mut self, package: &PackageId, trust: &TrustStore) -> Result<Grant, Error> {
+        self.grant_rights(package, None, trust, &Rights::default())
+    }
+
+    /// [`Store::grant`] with `rights`: exactly what the package requires, plus any of its
+    /// optional capabilities the user chose (#174). `digest`, when given, is the one the user
+    /// looked at: a package updated since is refused, so a yes never covers what they didn't see.
+    /// A live grant of other rights is replaced.
+    pub fn grant_rights(&mut self, package: &PackageId, digest: Option<&PackageDigest>, trust: &TrustStore, rights: &Rights) -> Result<Grant, Error> {
         let _transaction = self.backend.transaction()?;
         self.ensure_current()?;
-        let (digest, _) = self.index.active.get(package).copied().ok_or_else(not_installed)?;
-        let loaded = self.load_digest(&digest)?;
+        let (active, _) = self.index.active.get(package).copied().ok_or_else(not_installed)?;
+        if digest.is_some_and(|d| *d != active) {
+            return Err(conflict("the package changed since it was shown; look at it again before granting"));
+        }
+        let loaded = self.load_digest(&active)?;
         if !executable(&loaded.manifest.runtime) {
             return Err(Error::new(ErrorKind::InvalidInput, "a data package runs nothing, so it needs no grant"));
         }
-        ungrantable(&loaded.manifest)?;
+        admissible(&loaded.manifest, rights)?;
         provenance(&loaded, trust)?;
         let mut grants = match self.read_grants() {
             Ok(grants) => grants,
             Err(e) if e.kind == ErrorKind::InvalidInput => Grants::default(),
             Err(e) => return Err(e),
         };
-        if let Some(live) = grants.live(package, &digest) {
+        if let Some(live) = grants.live(package, &active).filter(|g| g.rights == *rights) {
             return Ok(live.clone());
         }
-        let grant = grants.grant(package, &digest)?;
+        let grant = grants.grant(package, &active, rights)?;
         self.write_grants(&grants)?;
         Ok(grant)
     }
@@ -545,10 +562,13 @@ impl<B: StoreBackend> Store<B> {
         let loaded = self.load_digest(&digest)?;
         provenance(&loaded, trust)?;
         let grant = if executable(&loaded.manifest.runtime) {
-            ungrantable(&loaded.manifest)?;
             let grants = self.read_grants()?;
             let live = grants.live(package, &digest).cloned();
-            Some(live.ok_or_else(|| Error::new(ErrorKind::Forbidden, "this package runs text actions; grant it first (plugins.grant)"))?)
+            let live = live.ok_or_else(|| Error::new(ErrorKind::Forbidden, "this package runs code; grant it first (plugins.grant)"))?;
+            // A grant written before the package's rights were scoped, or by a build that
+            // granted less, must not stand for what the package requires now.
+            admissible(&loaded.manifest, &live.rights)?;
+            Some(live)
         } else {
             None
         };
@@ -689,13 +709,29 @@ fn executable(runtime: &Runtime) -> bool {
     !matches!(runtime, Runtime::Data)
 }
 
-/// Grants hold no capabilities yet (#174 scopes them), so a package that requires one can be
-/// neither granted nor enabled: a grant of nothing must never stand for network or a secret.
-fn ungrantable(manifest: &nodecraft_plugin::Manifest) -> Result<(), Error> {
-    match manifest.capabilities.required.iter().next() {
-        Some(c) => Err(Error::new(ErrorKind::Unsupported, format!("this package requires the {} capability, which this build can't grant yet", c.as_str()))),
-        None => Ok(()),
+/// Capabilities this build can grant: a provider operations package's network and secret,
+/// used only through the host's broker. Files, processes and the GPU stay denied (#174).
+const GRANTABLE: [Capability; 2] = [Capability::Network, Capability::Secret];
+
+/// Whether `rights` are exactly what `manifest` may be granted: every required capability, only
+/// capabilities it asks for and this build grants, and origins exactly with network.
+fn admissible(manifest: &nodecraft_plugin::Manifest, rights: &Rights) -> Result<(), Error> {
+    let caps = &manifest.capabilities;
+    if let Some(c) = caps.required.iter().find(|c| !rights.capabilities.contains(c)) {
+        return Err(Error::new(ErrorKind::Forbidden, format!("this package requires the {} capability; grant it to run the package", c.as_str())));
     }
+    for c in &rights.capabilities {
+        if !caps.required.contains(c) && !caps.optional.contains(&Optional::Known(*c)) {
+            return Err(Error::new(ErrorKind::InvalidInput, format!("this package doesn't ask for the {} capability", c.as_str())));
+        }
+        if !GRANTABLE.contains(c) || !matches!(manifest.runtime, Runtime::ProviderOperations { .. }) {
+            return Err(Error::new(ErrorKind::Unsupported, format!("this build can't grant the {} capability to this package", c.as_str())));
+        }
+    }
+    if !rights.well_formed() {
+        return Err(Error::new(ErrorKind::InvalidInput, "a grant of network names the origins it covers (at most 8), and only then"));
+    }
+    Ok(())
 }
 
 /// A package's signature checked against `trust` now.

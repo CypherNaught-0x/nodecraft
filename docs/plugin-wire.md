@@ -126,8 +126,22 @@ origin or one of its output origins, with no user name. Nothing else in a reply 
 failure's message is cut to 300 bytes. The credential goes only to the API origin, never to an
 output origin.
 
-A package that requires a capability is neither granted nor enabled until grants record which
-capabilities they cover. Until then, a provider operations package installs, but nothing runs.
+## Grants (#174)
+
+A grant records the package digest it was given for and its rights: the capabilities granted and,
+with `network`, the origins they reach. `plugins.rights` shows what a grant of the active version
+would cover: the manifest's required and known optional capabilities and every API and output
+origin its provider templates name (at most 8). A package that asks for anything is granted only
+when the request names the digest it was shown, every required capability, any chosen optional
+ones and, with `network`, exactly the origins shown; a mismatch is refused, never narrowed or
+widened. This build grants only `network` and `secret`, and only to provider operations packages.
+A grant for other rights replaces the live one, revoking it and bumping the epoch, so a job
+started under the old rights can't commit. An update shows its `rights_delta` and, like a
+rollback or uninstall, drops the grant; a person grants the new version again.
+
+`grants.json` is version 1 while every grant covers nothing, so older builds keep reading it; a
+grant with rights writes version 2 with `capabilities` and `origins` on each grant. A build refuses
+a version it doesn't know, an unknown or repeated capability, and origins without `network`.
 
 ## Frames and messages
 

@@ -1,6 +1,8 @@
 //! Text action packages and their grants (#173).
 use super::*;
 use crate::grants;
+use nodecraft_plugin::PackageDigest;
+use nodecraft_plugin::manifest::Capability;
 
 const DEFINITION: &[u8] = br#"{"id":"user.shout","inputs":[{"kind":"text","name":"words"}],"label":"Shout","outputs":[{"expr":"upper(words)","kind":"text","name":"out"}],"schema":1,"version":1}"#;
 
@@ -140,7 +142,7 @@ fn grants_survive_reopening_and_damage_fails_closed() {
     }
     // Grants from a newer build may hold rights this one can't see: nothing runs, and nothing
     // that would have to revoke them changes.
-    let newer = text.replace(r#""grants_version":1"#, r#""grants_version":2"#);
+    let newer = text.replace(r#""grants_version":1"#, r#""grants_version":3"#);
     let mut st = Store::open(MemoryBackend { grants: Some(newer.into_bytes()), ..reopened_backend(&st) }).unwrap();
     assert_eq!(st.enable_with(&pkg, &none(), &BTreeSet::new()).unwrap_err().kind, ErrorKind::Unsupported);
     assert_eq!(st.grant(&pkg, &TrustStore::default()).unwrap_err().kind, ErrorKind::Unsupported);
@@ -186,7 +188,7 @@ fn tombstones_are_bounded() {
     let digest = digest_of(&spec("io.example.text"));
     let mut g = grants::Grants::default();
     for _ in 0..grants::MAX_GRANTS + 10 {
-        let grant = g.grant(&pkg, &digest).unwrap();
+        let grant = g.grant(&pkg, &digest, &grants::Rights::default()).unwrap();
         g.revoke_package(&pkg);
         assert!(grant.epoch >= 1);
     }
@@ -196,9 +198,9 @@ fn tombstones_are_bounded() {
     // Live grants are never dropped to make room.
     let mut full = grants::Grants::default();
     for i in 0..grants::MAX_GRANTS {
-        full.grant(&id(&format!("io.example.p{i}")), &digest).unwrap();
+        full.grant(&id(&format!("io.example.p{i}")), &digest, &grants::Rights::default()).unwrap();
     }
-    assert_eq!(full.grant(&pkg, &digest).unwrap_err().kind, ErrorKind::Budget);
+    assert_eq!(full.grant(&pkg, &digest, &grants::Rights::default()).unwrap_err().kind, ErrorKind::Budget);
 }
 
 #[test]
@@ -308,20 +310,100 @@ fn provider_package() -> Vec<u8> {
     archive::build(&files, None).unwrap()
 }
 
+fn provider_rights(origins: &[&str]) -> grants::Rights {
+    grants::Rights { capabilities: [Capability::Network, Capability::Secret].into(), origins: origins.iter().map(|o| (*o).to_owned()).collect() }
+}
+
 #[test]
 fn a_package_that_requires_a_capability_is_never_granted_nothing() {
     let mut st = store();
     st.import(&provider_package(), &TrustStore::default(), false).unwrap();
     let pkg = id("io.example.acme");
     let refused = st.grant(&pkg, &TrustStore::default()).unwrap_err();
-    assert_eq!(refused.kind, ErrorKind::Unsupported);
+    assert_eq!(refused.kind, ErrorKind::Forbidden);
     assert!(refused.message.contains("network"), "{}", refused.message);
     assert!(st.grants().unwrap().grants.is_empty());
     // A grant of nothing written by an older build doesn't enable it either.
     let digest = st.index().active[&pkg].0;
     let mut old = grants::Grants::default();
-    old.grant(&pkg, &digest).unwrap();
+    old.grant(&pkg, &digest, &grants::Rights::default()).unwrap();
     let mut st = Store::open(MemoryBackend { grants: Some(grants::encode(&old).unwrap().into_bytes()), ..reopened_backend(&st) }).unwrap();
-    assert_eq!(st.enable_with(&pkg, &none(), &BTreeSet::new()).unwrap_err().kind, ErrorKind::Unsupported);
+    assert_eq!(st.enable_with(&pkg, &none(), &BTreeSet::new()).unwrap_err().kind, ErrorKind::Forbidden);
     assert_eq!(st.index().active[&pkg].1, State::Disabled);
+}
+
+#[test]
+fn a_scoped_grant_covers_exactly_what_the_user_saw() {
+    let mut st = store();
+    st.import(&provider_package(), &TrustStore::default(), false).unwrap();
+    let pkg = id("io.example.acme");
+    let digest = st.index().active[&pkg].0;
+    let api = provider_rights(&["https://api.acme.example"]);
+    let grant = st.grant_rights(&pkg, Some(&digest), &TrustStore::default(), &api).unwrap();
+    assert_eq!(grant.rights, api);
+    // The same rights again are the same grant; other rights replace it.
+    assert_eq!(st.grant_rights(&pkg, None, &TrustStore::default(), &api).unwrap(), grant);
+    let wider = provider_rights(&["https://api.acme.example", "https://cdn.acme.example"]);
+    let replaced = st.grant_rights(&pkg, None, &TrustStore::default(), &wider).unwrap();
+    assert!(replaced.epoch > grant.epoch);
+    let now = st.grants().unwrap();
+    assert!(now.get(&grant.grant_id).unwrap().revoked);
+    assert!(!now.holds(&pkg, &digest, grant.epoch) && now.holds(&pkg, &digest, replaced.epoch));
+    let report = st.enable_with(&pkg, &none(), &BTreeSet::new()).unwrap();
+    assert_eq!(report.grant, Some(replaced.clone()));
+    // Rights survive a reopen, in a file a build without rights refuses rather than misreads.
+    let bytes = st.backend().grants.clone().unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains(r#""grants_version":2"#));
+    let reopened = Store::open(reopened_backend(&st)).unwrap();
+    assert_eq!(reopened.grants().unwrap().live(&pkg, &digest), Some(&replaced));
+}
+
+#[test]
+fn a_grant_takes_only_rights_the_package_asks_for_and_this_build_gives() {
+    let mut st = store();
+    st.import(&provider_package(), &TrustStore::default(), false).unwrap();
+    let pkg = id("io.example.acme");
+    let trust = TrustStore::default();
+    let mut process = provider_rights(&["https://api.acme.example"]);
+    process.capabilities.insert(Capability::Process);
+    assert_eq!(st.grant_rights(&pkg, None, &trust, &process).unwrap_err().kind, ErrorKind::InvalidInput);
+    let no_secret = grants::Rights { capabilities: [Capability::Network].into(), ..provider_rights(&["https://api.acme.example"]) };
+    assert_eq!(st.grant_rights(&pkg, None, &trust, &no_secret).unwrap_err().kind, ErrorKind::Forbidden);
+    for origins in [&[][..], &["http://api.acme.example"], &["https://API.acme.example"], &["https://api.acme.example/v1"], &["https://localhost:80"]] {
+        assert_eq!(st.grant_rights(&pkg, None, &trust, &provider_rights(origins)).unwrap_err().kind, ErrorKind::InvalidInput, "{origins:?}");
+    }
+    let nine: Vec<String> = (0..9).map(|i| format!("https://o{i}.acme.example")).collect();
+    let nine: Vec<&str> = nine.iter().map(String::as_str).collect();
+    assert_eq!(st.grant_rights(&pkg, None, &trust, &provider_rights(&nine)).unwrap_err().kind, ErrorKind::InvalidInput);
+    // A digest other than the active one is a package the user didn't look at.
+    let other = PackageDigest::parse(&format!("blake3:{}", "0".repeat(64))).unwrap();
+    assert_eq!(st.grant_rights(&pkg, Some(&other), &trust, &provider_rights(&["https://api.acme.example"])).unwrap_err().kind, ErrorKind::Conflict);
+    assert!(st.grants().unwrap().grants.is_empty());
+
+    // A text action package asks for nothing, so it is granted nothing.
+    let (mut text, tpkg) = installed();
+    assert_eq!(text.grant_rights(&tpkg, None, &trust, &provider_rights(&["https://api.acme.example"])).unwrap_err().kind, ErrorKind::InvalidInput);
+}
+
+#[test]
+fn plain_grants_stay_readable_by_older_builds_and_damaged_rights_are_refused() {
+    let (mut st, pkg) = installed();
+    st.grant(&pkg, &TrustStore::default()).unwrap();
+    assert!(String::from_utf8_lossy(st.backend().grants.as_ref().unwrap()).contains(r#""grants_version":1"#));
+    let digest = PackageDigest::parse(&format!("blake3:{}", "a".repeat(64))).unwrap();
+    let mut scoped = grants::Grants::default();
+    scoped.grant(&pkg, &digest, &provider_rights(&["https://api.acme.example"])).unwrap();
+    let good = grants::encode(&scoped).unwrap();
+    assert_eq!(grants::decode(good.as_bytes()).unwrap(), scoped);
+    for (from, to) in [
+        (r#""network","secret""#, r#""network","network""#),
+        (r#""network","secret""#, r#""network","telepathy""#),
+        (r#""network","secret""#, r#""secret""#),
+        ("https://api.acme.example", "http://api.acme.example"),
+        (r#""grants_version":2"#, r#""grants_version":1"#),
+    ] {
+        let bad = good.replace(from, to);
+        assert_ne!(bad, good, "{from}");
+        assert_eq!(grants::decode(bad.as_bytes()).unwrap_err().kind, ErrorKind::InvalidInput, "{to}");
+    }
 }

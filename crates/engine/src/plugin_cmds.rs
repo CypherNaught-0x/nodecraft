@@ -1,6 +1,7 @@
 //! `plugins.*` commands (#172): list, import, update, enable, disable, roll back, uninstall and
-//! prune packages in the local store, and grant or revoke a text action package's right to run
-//! (#173; people only, never agents). They change no document and add no undo step; the
+//! prune packages in the local store, and grant or revoke a package's right to run (#173), scoped
+//! to the capabilities and origins it asks for (#174; people only, never agents). `plugins.rights`
+//! shows what a grant would cover. They change no document and add no undo step; the
 //! host's `plugins` service ([`register_plugin_service`]) owns the store and the trust file.
 //! Native desktop admission returns `{pending: string}` immediately. Poll `plugins.result`, then
 //! explicitly acknowledge terminal results with `plugins.forget`. Synchronous hosts retain the
@@ -90,6 +91,21 @@ fn package_only_schema() -> Value {
     object(&["package_id"], json!({"package_id": package_schema()}))
 }
 
+/// Most capabilities or origins a grant request names.
+const MAX_GRANT_ITEMS: usize = 8;
+
+fn grant_schema() -> Value {
+    object(
+        &["package_id"],
+        json!({
+            "package_id": package_schema(),
+            "digest": {"type": "string", "pattern": "^blake3:[0-9a-f]{64}$", "description": "The digest plugins.rights showed; required when the package asks for capabilities"},
+            "capabilities": {"type": "array", "maxItems": MAX_GRANT_ITEMS, "uniqueItems": true, "items": {"type": "string", "maxLength": 32}, "description": "Every required capability, plus any optional ones granted"},
+            "origins": {"type": "array", "maxItems": MAX_GRANT_ITEMS, "uniqueItems": true, "items": {"type": "string", "maxLength": 260}, "description": "With network: exactly the origins plugins.rights showed"},
+        }),
+    )
+}
+
 fn grant_id_schema() -> Value {
     object(
         &["grant_id"],
@@ -119,6 +135,27 @@ struct PackageParams {
 #[serde(deny_unknown_fields)]
 struct GrantParams {
     grant_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrantRightsParams {
+    package_id: String,
+    #[serde(default)]
+    digest: Option<String>,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    origins: Option<Vec<String>>,
+}
+
+/// A bounded list of short strings, checked before it is copied.
+fn short_list(p: &Value, key: &str, item_bytes: usize) -> Result<(), Error> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::Array(items)) if items.len() <= MAX_GRANT_ITEMS && items.iter().all(|i| i.as_str().is_some_and(|s| s.len() <= item_bytes)) => Ok(()),
+        Some(_) => Err(Error::new(ErrorKind::InvalidInput, format!("invalid grant {key}"))),
+    }
 }
 
 /// `g` and an epoch: the shape the store gives grant IDs.
@@ -207,7 +244,33 @@ fn uninstall(c: &Context<'_>, p: &Value) -> Result<Effect, Error> {
 }
 
 fn grant(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
-    package_op("grant", p)
+    short_list(p, "capabilities", 32)?;
+    short_list(p, "origins", 260)?;
+    if p.get("digest").is_some_and(|d| !d.is_null() && d.as_str().is_none_or(|d| d.len() > 80)) {
+        return Err(Error::new(ErrorKind::InvalidInput, "invalid grant digest"));
+    }
+    let p: GrantRightsParams = params(p)?;
+    PackageId::parse(&p.package_id).map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))?;
+    if let Some(d) = &p.digest {
+        PackageDigest::parse(d).map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))?;
+    }
+    let mut request = json!({"op": "grant", "package_id": p.package_id});
+    if let Some(o) = request.as_object_mut() {
+        if let Some(d) = p.digest {
+            o.insert("digest".into(), json!(d));
+        }
+        if let Some(c) = p.capabilities {
+            o.insert("capabilities".into(), json!(c));
+        }
+        if let Some(origins) = p.origins {
+            o.insert("origins".into(), json!(origins));
+        }
+    }
+    Ok(service(request))
+}
+
+fn rights(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
+    package_op("rights", p)
 }
 
 fn revoke(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
@@ -241,14 +304,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.list",
             "List plugin packages",
             none_schema,
-            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch}|null}]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch, capabilities, origins}|null}]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             list,
         ),
         spec(
             "plugins.import",
             "Import plugin package",
             file_schema,
-            "{location: string, dry_run?: bool}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
+            "{location: string, dry_run?: bool}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run, rights: {required, optional, origins}|{error}, rights_delta (update): {added_capabilities, removed_capabilities, added_origins, removed_origins}}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
             import,
         ),
         spec(
@@ -289,9 +352,16 @@ pub fn specs() -> Vec<CommandSpec> {
         spec(
             "plugins.grant",
             "Allow plugin package to run",
-            package_only_schema,
-            "{package_id}; grants the active version of a text action package the right to run, after its definitions compile. People only: agents can't call it. Direct result: {grant_id, epoch, package_id, digest}; the same live grant if there is one. An update, rollback or uninstall revokes it. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            grant_schema,
+            "{package_id, digest?, capabilities?: [string], origins?: [string]}; grants the active version the right to run, after its definitions compile. A package that asks for capabilities (plugins.rights) needs digest, every required capability plus chosen optional ones, and with network exactly the origins shown; other rights replace the live grant. People only: agents can't call it. Direct result: {grant_id, epoch, capabilities, origins, package_id, digest}; the same live grant if it covers the same rights. An update, rollback or uninstall revokes it. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             grant,
+        ),
+        spec(
+            "plugins.rights",
+            "Show what a plugin package asks for",
+            package_only_schema,
+            "{package_id}; what a grant of the active version would cover. Direct result: {package_id, digest, required: [capability], optional: [capability], origins: [origin], grant: {grant_id, epoch, capabilities, origins}|null}, or {error} in place of the lists when a provider template can't be used. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            rights,
         ),
         spec(
             "plugins.revoke",
@@ -396,7 +466,38 @@ fn report_json(r: &ImportReport, dry_run: bool) -> Value {
 }
 
 fn grant_json(grant: &nodecraft_plugin_store::Grant) -> Value {
-    json!({"grant_id": grant.grant_id, "epoch": grant.epoch})
+    let capabilities: Vec<&str> = grant.rights.capabilities.iter().map(|c| c.as_str()).collect();
+    json!({"grant_id": grant.grant_id, "epoch": grant.epoch, "capabilities": capabilities, "origins": grant.rights.origins})
+}
+
+/// The rights a `grant` request asks for, checked against what `package` asks: a request for a
+/// package that asks for anything names the digest it was shown, its capabilities and, with
+/// network, exactly the origins it was shown. A package that asks for nothing is granted nothing.
+fn requested_rights(package: &nodecraft_plugin_store::Package, request: &Value) -> Result<(Option<PackageDigest>, nodecraft_plugin_store::Rights), Error> {
+    let invalid = |m: &str| Error::new(ErrorKind::InvalidInput, m.to_owned());
+    let digest = match request.get("digest").and_then(Value::as_str) {
+        Some(d) => Some(PackageDigest::parse(d).map_err(|e| invalid(&e.to_string()))?),
+        None => None,
+    };
+    let strings = |key: &str| -> Option<Vec<&str>> { request.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()) };
+    let asks = crate::plugin_rights::asks(package)?;
+    let chosen: BTreeSet<nodecraft_plugin::manifest::Capability> = strings("capabilities")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| nodecraft_plugin::manifest::Capability::parse(c).ok_or_else(|| invalid("a grant names a capability this build doesn't know")))
+        .collect::<Result<_, _>>()?;
+    if asks.required.is_empty() && chosen.is_empty() {
+        return Ok((digest, nodecraft_plugin_store::Rights::default()));
+    }
+    if digest.is_none() {
+        return Err(invalid("this package asks for capabilities: grant the digest plugins.rights showed"));
+    }
+    let rights = asks.rights(chosen)?;
+    let origins: BTreeSet<String> = strings("origins").unwrap_or_default().into_iter().map(str::to_owned).collect();
+    if origins != rights.origins {
+        return Err(invalid("the origins don't match what this package reaches now; read plugins.rights again"));
+    }
+    Ok((digest, rights))
 }
 
 /// A text action package's definitions must compile before it is granted or enabled; other
@@ -447,8 +548,18 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
             let limit = u64::try_from(nodecraft_plugin_store::ArchiveLimits::DEFAULT.archive_bytes).unwrap_or(u64::MAX);
             let bytes = read_capped(std::path::Path::new(location), limit, "package file")?;
             let trust = trust(host)?;
+            let incoming = store.inspect(&bytes, &trust)?;
+            let before = (op == "update").then(|| store.load(&incoming.manifest.package_id)).transpose()?;
             let report = if op == "import" { store.import(&bytes, &trust, dry_run)? } else { store.update(&bytes, &trust, dry_run)? };
-            Ok(report_json(&report, dry_run))
+            let mut out = report_json(&report, dry_run);
+            if let Some(o) = out.as_object_mut() {
+                o.insert("rights".into(), crate::plugin_rights::asks_json(&incoming));
+                if let Some(before) = &before {
+                    let (old, new) = (crate::plugin_rights::asks(before).unwrap_or_default(), crate::plugin_rights::asks(&incoming).unwrap_or_default());
+                    o.insert("rights_delta".into(), crate::plugin_rights::delta(&old, &new));
+                }
+            }
+            Ok(out)
         }
         Some("enable") => {
             let id = package_id(request)?;
@@ -460,10 +571,23 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
                 "grant": report.grant.as_ref().map(grant_json),
             }))
         }
+        Some("rights") => {
+            let id = package_id(request)?;
+            let package = store.load(&id)?;
+            let grants = store.grants().ok();
+            let mut out = crate::plugin_rights::asks_json(&package);
+            if let Some(o) = out.as_object_mut() {
+                o.insert("package_id".into(), json!(id.as_str()));
+                o.insert("digest".into(), json!(package.digest.to_string()));
+                o.insert("grant".into(), grants.as_ref().and_then(|g| g.live(&id, &package.digest)).map_or(Value::Null, grant_json));
+            }
+            Ok(out)
+        }
         Some("grant") => {
             let id = package_id(request)?;
             compiles(store, &id)?;
-            let grant = store.grant(&id, &trust(host)?)?;
+            let (digest, rights) = requested_rights(&store.load(&id)?, request)?;
+            let grant = store.grant_rights(&id, digest.as_ref(), &trust(host)?, &rights)?;
             let mut out = grant_json(&grant);
             if let Some(o) = out.as_object_mut() {
                 o.insert("package_id".into(), json!(grant.package_id.as_str()));

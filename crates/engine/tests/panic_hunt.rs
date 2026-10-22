@@ -544,7 +544,7 @@ fn template(id: &str) -> (Session, Value) {
         // Real memory store and private package files, never caller-selected filesystem paths.
         "plugins.list" | "plugins.prune" => json!({}),
         "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),
-        "plugins.enable" | "plugins.disable" | "plugins.uninstall" | "plugins.grant" => json!({"package_id":"io.example.palette"}),
+        "plugins.enable" | "plugins.disable" | "plugins.uninstall" | "plugins.grant" | "plugins.rights" => json!({"package_id":"io.example.palette"}),
         "plugins.revoke" => json!({"grant_id":"g1"}),
         "plugins.rollback" => json!({"package_id":"io.example.palette","digest":plugin_old.unwrap()}),
         "plugins.result" | "plugins.forget" => json!({"pending":pending.unwrap()}),
@@ -842,6 +842,7 @@ fn plugin_templates_reach_the_real_store_and_results_without_document_edits() {
         "plugins.disable",
         "plugins.rollback",
         "plugins.uninstall",
+        "plugins.rights",
         "plugins.prune",
         "plugins.result",
         "plugins.forget",

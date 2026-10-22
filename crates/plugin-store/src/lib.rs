@@ -17,7 +17,7 @@ pub use archive::{ArchiveLimits, Package};
 #[cfg(not(target_arch = "wasm32"))]
 pub use backend::FolderBackend;
 pub use backend::MemoryBackend;
-pub use grants::{Grant, Grants};
+pub use grants::{Grant, Grants, Rights};
 pub use store::{EnableReport, Entry, ImportReport, Index, RevokeReport, State, Store, StoreBackend, StoreLock};
 
 #[cfg(test)]
