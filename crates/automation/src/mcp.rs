@@ -247,6 +247,8 @@ pub const HUMAN_ONLY: &[&str] = &[
     // A share link lets someone into the project: whom is the person's call (#121).
     "share.link_create",
     "share.link_update",
+    // Sharing a private canvas gives it to everyone in the room, and no undo takes it back (#121).
+    "canvas.set_private",
     "canvas.auto_format",
     "comment.compose",
     "comment.open",

@@ -10,6 +10,11 @@
 //! gives the session ([`crate::access::Access`]): an editor writes the shared document as the
 //! owner does; a viewer writes nothing; a commenter sends each change to a discussion to the
 //! relay, which checks it is theirs to make and writes it for them.
+//!
+//! A canvas marked private stays out of the shared document: the room sees the project
+//! without it ([`shared`]), each settle keeps it as the session has it, and no asset is given
+//! out that only it uses.
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use nodecraft_graph::{CanvasKind, Change, Changeset, Node, Project, diff};
@@ -69,12 +74,17 @@ pub struct Collab {
     held: bool,
     /// Why the relay last dropped one of this commenter's changes, for the person to read.
     refusal: Option<String>,
+    /// The session revision at which what the room holds clashed with one of the session's
+    /// private canvases; nothing is taken in until the session or the room changes again.
+    clash: Option<u64>,
+    /// Why, for the person to read.
+    clash_said: Option<String>,
 }
 
 impl Collab {
     /// Shares `session`'s project in `room`. The relay asks for it when the connection opens.
     pub fn share(session: &Session, room: RoomId) -> Result<Self, Error> {
-        let (mirror, _) = Mirror::share(session.document())?;
+        let (mirror, _) = Mirror::share(&*shared(session.document())?)?;
         Ok(Self::with(mirror, Entry::Room(room), Some(session.revision())))
     }
 
@@ -109,6 +119,8 @@ impl Collab {
             seq: 0,
             held: false,
             refusal: None,
+            clash: None,
+            clash_said: None,
         }
     }
 
@@ -122,6 +134,13 @@ impl Collab {
     /// if it did: the change wasn't theirs to make. The session takes back the change.
     pub fn take_refusal(&mut self) -> Option<String> {
         self.refusal.take()
+    }
+
+    /// Why what the room holds can't be taken in beside one of this session's private canvases,
+    /// once each time it happens: someone else used one of its ids or technique versions. The
+    /// room's changes wait until the canvas is shared, changed or removed.
+    pub fn take_clash(&mut self) -> Option<String> {
+        self.clash_said.take()
     }
 
     /// The first frame on each new connection. Assets asked for on an earlier one are asked
@@ -158,8 +177,11 @@ impl Collab {
         if !role.edits() {
             self.wanted.clear();
         }
-        for hash in std::mem::take(&mut self.wanted) {
-            if let Some(bytes) = session.assets().get(&hash).filter(|b| b.len() <= MAX_ASSET_BYTES) {
+        let wanted = std::mem::take(&mut self.wanted);
+        // Only what the room's project uses goes out: not what only a private canvas does.
+        let used = if wanted.is_empty() { BTreeSet::new() } else { assets_in(&*shared(session.document())?)? };
+        for hash in wanted.intersection(&used) {
+            if let Some(bytes) = session.assets().get(hash).filter(|b| b.len() <= MAX_ASSET_BYTES) {
                 out.push(Frame::AssetPut { hash: *hash.as_bytes(), bytes: bytes.to_vec() });
             }
         }
@@ -173,7 +195,7 @@ impl Collab {
         }
         match role {
             Role::Edit | Role::Owner => {
-                if let Some(update) = self.mirror.publish(session.document())? {
+                if let Some(update) = self.mirror.publish(&*shared(session.document())?)? {
                     out.push(Frame::Update(update));
                 }
             }
@@ -183,7 +205,7 @@ impl Collab {
                 if self.held {
                     return Ok(out);
                 }
-                for change in self.mirror.comments_since(session.document())? {
+                for change in self.mirror.comments_since(&*shared(session.document())?)? {
                     self.seq = self.seq.saturating_add(1);
                     out.push(put(self.seq, &change));
                     self.pending.push((self.seq, change));
@@ -208,6 +230,7 @@ impl Collab {
             Frame::Step2(update) | Frame::Update(update) if self.role.is_some() => {
                 self.mirror.receive(&update)?;
                 self.unsettled = true;
+                self.clash = None;
                 Ok(Vec::new())
             }
             Frame::AssetPut { hash, bytes } => {
@@ -270,7 +293,7 @@ impl Collab {
             Role::Owner => Access::owner(),
             role => Access::new(role, self.name.clone())?,
         });
-        if !self.unsettled || self.held {
+        if !self.unsettled || self.held || self.clash == Some(session.revision()) {
             return Ok(out);
         }
         let Some(Materialized { mut project, repairs, .. }) = self.mirror.materialize()? else { return Ok(out) };
@@ -284,6 +307,28 @@ impl Collab {
         }
         for (_, change) in &self.pending {
             project = overlaid(project, change);
+        }
+        // The session's private canvases stay as it has them. One the shared document still
+        // holds (made private as someone changed it) is taken out of it again below.
+        let mut lingering = Vec::new();
+        for canvas in session.document().canvases().values().filter(|canvas| canvas.is_private()) {
+            let mut kept = vec![Change::AddCanvas { canvas: canvas.clone() }];
+            if let Some(there) = project.canvases().get(&canvas.id()) {
+                lingering.push(there.clone());
+                kept.insert(0, Change::RemoveCanvas { id: canvas.id() });
+            }
+            // Others can't see a private canvas, so they may reuse what it holds: a technique
+            // version, or an id they saw before it went private. Neither side's work is dropped;
+            // the room's changes wait, and the person is told why.
+            if let Err(error) = Changeset::new(kept).apply(&mut project) {
+                self.clash = Some(session.revision());
+                self.clash_said = Some(format!(
+                    "a change from the room clashes with your private canvas “{}” ({}); share, change or remove that canvas to take in the others' changes",
+                    canvas.title(),
+                    error.message
+                ));
+                return Ok(out);
+            }
         }
         let mut missing = BTreeSet::new();
         for (canvas_id, canvas) in project.canvases() {
@@ -311,7 +356,17 @@ impl Collab {
         let applied = take(session, sets);
         // What the session now holds is what later publishes compare with. A set that didn't
         // apply, or a card still waiting, is tried again when the next update or asset comes.
-        self.mirror.adopt(session.document());
+        let room = shared(session.document())?;
+        if lingering.is_empty() || !role.edits() {
+            self.mirror.adopt(&room);
+        } else {
+            let mut held = room.clone().into_owned();
+            Changeset::new(lingering.into_iter().map(|canvas| Change::AddCanvas { canvas }).collect()).apply(&mut held)?;
+            self.mirror.adopt(&held);
+            if let Some(update) = self.mirror.publish(&room)? {
+                out.push(Frame::Update(update));
+            }
+        }
         self.published = Some(session.revision());
         applied?;
         Ok(out)
@@ -347,6 +402,29 @@ fn shown(reason: &str) -> String {
         text.truncate(cut);
     }
     text
+}
+
+/// `project` as the room sees it: without the canvases kept private.
+fn shared(project: &Project) -> Result<Cow<'_, Project>, Error> {
+    let private: Vec<Change> =
+        project.canvases().values().filter(|canvas| canvas.is_private()).map(|canvas| Change::RemoveCanvas { id: canvas.id() }).collect();
+    if private.is_empty() {
+        return Ok(Cow::Borrowed(project));
+    }
+    let mut room = project.clone();
+    Changeset::new(private).apply(&mut room)?;
+    Ok(Cow::Owned(room))
+}
+
+/// The assets the cards of `project` name.
+fn assets_in(project: &Project) -> Result<BTreeSet<Blake3>, Error> {
+    let mut used = BTreeSet::new();
+    for canvas in project.canvases().values() {
+        for node in canvas.nodes().values() {
+            used.extend(assets_of(canvas.id(), node)?);
+        }
+    }
+    Ok(used)
 }
 
 /// The assets one card names.

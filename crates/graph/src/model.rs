@@ -400,6 +400,9 @@ pub struct Canvas {
     /// What a technique canvas publishes; present exactly when the kind is technique.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) technique: Option<crate::Technique>,
+    /// Kept by whoever marked it so: a project shared live leaves it out (#121).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) private: bool,
 }
 
 impl Canvas {
@@ -414,15 +417,16 @@ impl Canvas {
             comments: BTreeMap::new(),
             tags: BTreeMap::new(),
             technique: None,
+            private: false,
         }
     }
 
     /// Whether `self` and `other` differ at most in where things are and how they are grouped:
-    /// node positions and fields, and the canvas's fields and comments. Nothing a run plans or
+    /// node positions and fields, the canvas's fields and comments, and whether it is private. Nothing a run plans or
     /// reads differs, so work derived from one canvas holds for the other (#549). Every other
     /// field counts; a new one does too until it is listed here as layout.
     pub fn same_but_layout(&self, other: &Canvas) -> bool {
-        let Canvas { id, title, kind, nodes, edges, fields: _, comments: _, tags, technique } = self;
+        let Canvas { id, title, kind, nodes, edges, fields: _, comments: _, tags, technique, private: _ } = self;
         let same_node = |a: &Node, b: &Node| {
             let Node { id, kind, title, pos: _, params, config, inputs, outputs, history, active, tag, field: _ } = a;
             *id == b.id
@@ -459,6 +463,10 @@ impl Canvas {
     }
     pub fn kind(&self) -> CanvasKind {
         self.kind
+    }
+    /// Whether a project shared live keeps this canvas to whoever marked it (#121).
+    pub fn is_private(&self) -> bool {
+        self.private
     }
     pub fn nodes(&self) -> &BTreeMap<NodeId, Node> {
         &self.nodes

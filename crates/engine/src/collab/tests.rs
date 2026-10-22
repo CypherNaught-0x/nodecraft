@@ -415,3 +415,113 @@ fn a_commenter_cant_undo_back_other_peoples_replies_and_a_refused_change_only_dr
     assert!(net.collab(2).take_refusal().is_some());
     assert!(!net.session(1).document().canvases()[&canvas()].comments().contains_key(&cid(20)));
 }
+
+fn private_canvas() -> CanvasId {
+    CanvasId::from_bytes([3; 16])
+}
+
+/// `sharer`'s project with a second canvas, kept private, whose card shows a file of its own.
+fn sharer_with_a_private_canvas() -> (Session, Blake3) {
+    let (mut session, _) = sharer();
+    session.apply_remote(Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(private_canvas(), "Mine") }])).unwrap();
+    let hash = session.import_asset(b"my own notes").unwrap();
+    let mut card = Node::new(nid(7), "text");
+    card.params.insert("image".into(), Value::Media(AssetRef { hash, mime: "text/plain".parse().unwrap(), meta: MediaMeta::default() }));
+    session.apply_remote(Changeset::new(vec![Change::AddNode { canvas: private_canvas(), node: card }])).unwrap();
+    session.dispatch("canvas.set_private", &json!({"canvas": private_canvas(), "private": true})).unwrap();
+    (session, hash)
+}
+
+#[test]
+fn a_private_canvas_and_its_files_stay_with_who_keeps_it() {
+    let (session, secret) = sharer_with_a_private_canvas();
+    let mut net = Net::new();
+    let collab = Collab::share(&session, room_id()).unwrap();
+    net.enter(Person { id: 1, collab, session: Some(session) });
+    net.enter(Person { id: 2, collab: Collab::join(room_id()), session: None });
+    assert!(!net.session(2).document().canvases().contains_key(&private_canvas()));
+    assert!(net.session(1).document().canvases()[&private_canvas()].is_private());
+    assert!(!net.session(2).assets().contains(&secret));
+
+    // Asked for by hash, the file still doesn't go out.
+    net.collab(1).receive(Frame::AssetGet(vec![*secret.as_bytes()])).unwrap();
+    let person = net.people.iter_mut().find(|p| p.id == 1).unwrap();
+    let sent = person.collab.publish(person.session.as_ref().unwrap()).unwrap();
+    assert!(!sent.iter().any(|frame| matches!(frame, Frame::AssetPut { .. })), "{sent:?}");
+
+    // Shared again, it reaches everyone with its file; private again, it leaves them.
+    net.session(1).dispatch("canvas.set_private", &json!({"canvas": private_canvas(), "private": false})).unwrap();
+    net.settle();
+    assert_eq!(net.session(2).document().canvases()[&private_canvas()].nodes().len(), 1);
+    assert!(net.session(2).assets().contains(&secret));
+    net.session(1).dispatch("canvas.set_private", &json!({"canvas": private_canvas(), "private": true})).unwrap();
+    net.settle();
+    assert!(!net.session(2).document().canvases().contains_key(&private_canvas()));
+    assert!(net.session(1).document().canvases()[&private_canvas()].is_private());
+    // Edits on it stay home too.
+    net.session(1).dispatch("node.add", &json!({"canvas": private_canvas(), "node": Node::new(nid(8), "text")})).unwrap();
+    net.settle();
+    assert_eq!(net.session(1).document().canvases()[&private_canvas()].nodes().len(), 2);
+    assert!(!net.session(2).document().canvases().contains_key(&private_canvas()));
+}
+
+#[test]
+fn a_canvas_made_private_while_someone_changes_it_leaves_the_room_anyway() {
+    let (mut session, _) = sharer();
+    session.apply_remote(Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(private_canvas(), "Ours") }])).unwrap();
+    let mut net = Net::new();
+    let collab = Collab::share(&session, room_id()).unwrap();
+    net.enter(Person { id: 1, collab, session: Some(session) });
+    net.enter(Person { id: 2, collab: Collab::join(room_id()), session: None });
+    assert!(net.session(2).document().canvases().contains_key(&private_canvas()));
+
+    // Both act before either hears of the other.
+    net.session(2).apply_remote(Changeset::new(vec![Change::SetCanvasTitle { canvas: private_canvas(), title: "Renamed".into() }])).unwrap();
+    net.session(2).dispatch("node.add", &json!({"canvas": private_canvas(), "node": Node::new(nid(9), "text")})).unwrap();
+    net.session(1).dispatch("canvas.set_private", &json!({"canvas": private_canvas(), "private": true})).unwrap();
+    let mut sent = Vec::new();
+    for person in &mut net.people {
+        sent.extend(person.collab.publish(person.session.as_ref().unwrap()).unwrap().into_iter().map(|frame| (person.id, frame)));
+    }
+    for (from, frame) in sent {
+        net.queue.extend(net.room.handle(from, frame));
+    }
+    net.settle();
+    assert!(!net.session(2).document().canvases().contains_key(&private_canvas()));
+    let kept = &net.session(1).document().canvases()[&private_canvas()];
+    assert!(kept.is_private());
+    assert_eq!(kept.title(), "Ours");
+}
+
+#[test]
+fn only_a_role_that_edits_makes_a_canvas_private() {
+    let (mut net, _) = with_link("comment");
+    let error = net.session(2).dispatch("canvas.set_private", &json!({"canvas": canvas(), "private": true})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Forbidden);
+}
+
+#[test]
+fn a_room_change_that_clashes_with_a_private_canvas_waits_and_drops_nothing() {
+    let (session, _) = sharer_with_a_private_canvas();
+    let mut net = Net::new();
+    let collab = Collab::share(&session, room_id()).unwrap();
+    net.enter(Person { id: 1, collab, session: Some(session) });
+    net.enter(Person { id: 2, collab: Collab::join(room_id()), session: None });
+    // The editor can't see the private card, and reuses its id on the shared canvas.
+    net.session(2).dispatch("node.add", &json!({"canvas": canvas(), "node": Node::new(nid(7), "text")})).unwrap();
+    net.settle();
+    assert!(net.ended.is_empty(), "{:?}", net.ended);
+    assert!(net.collab(1).take_clash().is_some_and(|why| why.contains("Mine")));
+    net.settle();
+    assert_eq!(net.collab(1).take_clash(), None, "said once, until something changes");
+    assert!(net.session(1).document().canvases()[&private_canvas()].nodes().contains_key(&nid(7)), "the private card is kept");
+    assert!(!net.session(1).document().canvases()[&canvas()].nodes().contains_key(&nid(7)));
+    assert!(net.session(2).document().canvases()[&canvas()].nodes().contains_key(&nid(7)), "the editor's card is kept");
+
+    // Once the private canvas no longer holds that id, the room's change comes in.
+    net.session(1).dispatch("node.remove", &json!({"canvas": private_canvas(), "id": nid(7)})).unwrap();
+    net.settle();
+    assert!(net.session(1).document().canvases()[&canvas()].nodes().contains_key(&nid(7)));
+    assert!(net.session(1).document().canvases()[&private_canvas()].is_private());
+    assert!(!net.session(2).document().canvases().contains_key(&private_canvas()));
+}

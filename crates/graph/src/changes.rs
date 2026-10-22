@@ -34,6 +34,11 @@ pub enum Change {
         canvas: CanvasId,
         title: String,
     },
+    /// Keeps a canvas out of a project shared live, or shares it again (#121).
+    SetCanvasPrivate {
+        canvas: CanvasId,
+        private: bool,
+    },
     AddNode {
         canvas: CanvasId,
         node: Node,
@@ -581,6 +586,10 @@ impl Change {
             Self::SetCanvasTitle { canvas, title } => {
                 let target = canvas_mut(project, *canvas)?;
                 Self::SetCanvasTitle { canvas: *canvas, title: std::mem::replace(&mut target.title, title.clone()) }
+            }
+            Self::SetCanvasPrivate { canvas, private } => {
+                let target = canvas_mut(project, *canvas)?;
+                Self::SetCanvasPrivate { canvas: *canvas, private: std::mem::replace(&mut target.private, *private) }
             }
             Self::AddNode { canvas, node } => {
                 let target = canvas_mut(project, *canvas)?;

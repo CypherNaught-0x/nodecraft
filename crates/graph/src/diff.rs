@@ -119,6 +119,9 @@ fn canvas(phases: &mut Phases, old: &Canvas, new: &Canvas) {
     if old.title != new.title {
         phases.last.push(Change::SetCanvasTitle { canvas: id, title: new.title.clone() });
     }
+    if old.private != new.private {
+        phases.last.push(Change::SetCanvasPrivate { canvas: id, private: new.private });
+    }
     // A card whose ports change loses its wires until it has its new ports.
     let reshaped: BTreeSet<NodeId> =
         old.nodes.values().filter(|n| new.nodes.get(&n.id).is_some_and(|m| m.inputs != n.inputs || m.outputs != n.outputs)).map(|n| n.id).collect();

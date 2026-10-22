@@ -185,6 +185,7 @@ impl AssetStore {
                 Change::SetProjectTitle { .. }
                 | Change::RemoveCanvas { .. }
                 | Change::SetCanvasTitle { .. }
+                | Change::SetCanvasPrivate { .. }
                 | Change::RemoveNode { .. }
                 | Change::MoveNode { .. }
                 | Change::MoveNodes { .. }
