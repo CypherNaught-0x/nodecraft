@@ -135,7 +135,7 @@ fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(ImageMeta, Orientation,
         return Err(MediaError::Decode(format!("image has no pixels ({w}×{h})")));
     }
     // A damaged EXIF block is not worth refusing the image for; show it as stored.
-    let orientation = if format == ImageFormat::WebP && !color::webp_exif_fits(&mut Cursor::new(bytes)) {
+    let orientation = if format == ImageFormat::WebP && !color::webp_exif_fits(bytes) {
         Orientation::NoTransforms
     } else {
         decoder.orientation().unwrap_or(Orientation::NoTransforms)
@@ -335,14 +335,34 @@ pub(crate) mod tests {
         encoder.set_exif_metadata(b"MM\0*\0\0\0\x08\0\0\0\0".to_vec()).unwrap();
         encoder.write_image(&[7; 2 * 3 * 3], 2, 3, image::ExtendedColorType::Rgb8).unwrap();
         let exif = bytes.windows(4).position(|chunk| chunk == b"EXIF").unwrap();
-        bytes[exif + 4..exif + 8].copy_from_slice(&0xffff_fff0u32.to_le_bytes());
+        // 8 MiB is below the default decoder allocation limit but vastly exceeds this file.
+        bytes[exif + 4..exif + 8].copy_from_slice(&(8 * 1024 * 1024u32).to_le_bytes());
         assert!(bytes.len() < 1024);
-        assert!(!color::webp_exif_fits(&mut Cursor::new(&bytes)));
+        assert!(!color::webp_exif_fits(&bytes));
         let meta = probe_image(&bytes, &Limits::default()).unwrap();
         assert_eq!((meta.width, meta.height), (2, 3));
         let (decoded_meta, decoded) = decode_image(&bytes, &Limits::default()).unwrap();
         assert_eq!(decoded_meta, meta);
         assert_eq!((decoded.width(), decoded.height()), (2, 3));
+    }
+
+    #[test]
+    fn webp_late_exif_preserves_orientation_past_colour_walk_budget() {
+        use image::ImageEncoder;
+        let mut bytes = Vec::new();
+        let mut encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut bytes);
+        let mut exif = b"MM\0*\0\0\0\x08\0\x01".to_vec();
+        exif.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]);
+        encoder.set_exif_metadata(exif).unwrap();
+        encoder.write_image(&[7; 2 * 3 * 3], 2, 3, image::ExtendedColorType::Rgb8).unwrap();
+        let exif_at = bytes.windows(4).position(|part| part == b"EXIF").unwrap();
+        let junk = [b'J', b'U', b'N', b'K', 0, 0, 0, 0].repeat(4097);
+        bytes.splice(exif_at..exif_at, junk);
+        let riff_size = u32::try_from(bytes.len() - 8).unwrap();
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        assert!(color::webp_exif_fits(&bytes));
+        let meta = probe_image(&bytes, &Limits::default()).unwrap();
+        assert_eq!((meta.width, meta.height), (3, 2));
     }
 
     #[test]

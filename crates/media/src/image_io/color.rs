@@ -22,8 +22,6 @@ struct Signals {
     gamma_or_chromaticities: bool,
     /// EXIF can name a colour space too and isn't read, so it makes the tag unknown.
     exif: bool,
-    /// False when a WebP EXIF body is claimed beyond the actual input (or RIFF boundary).
-    webp_exif_fits: bool,
 }
 
 impl Signals {
@@ -160,12 +158,42 @@ fn jpeg(walk: &mut Walk<'_, impl Read + Seek>) -> Option<Signals> {
     None
 }
 
-/// Only a WebP EXIF body proven to fit the actual input may be handed to image-webp's
-/// `orientation()`: its chunk reader allocates the claimed length before attempting a read.
-/// Reuse the colour walk rather than imposing a smaller global decoder limit, which could
-/// also reject valid large decoded pixels or other metadata.
-pub(super) fn webp_exif_fits(input: &mut (impl Read + Seek)) -> bool {
-    webp(&mut Walk { input, read: 0 }).is_some_and(|signals| signals.webp_exif_fits)
+/// Validate chunk extents against the physical input, independently of colour-walk budgets.
+/// image-webp 0.2.4 registers top-level EXIF even when its RIFF size understates the body,
+/// and can register either of the first two subchunks of the first ANMF as EXIF. Its
+/// `read_chunk` allocates the claimed body before attempting to read it. Walk every ANMF
+/// conservatively (including later frames); never allocate or read a chunk body here.
+pub(super) fn webp_exif_fits(bytes: &[u8]) -> bool {
+    if bytes.get(..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WEBP") {
+        return false;
+    }
+    webp_chunk_extents_fit(bytes, 12, bytes.len(), false)
+}
+
+fn webp_chunk_extents_fit(bytes: &[u8], mut at: usize, end: usize, nested: bool) -> bool {
+    while at < end {
+        let Some(header_end) = at.checked_add(8) else { return false };
+        let Some(header) = bytes.get(at..header_end) else { return false };
+        if header_end > end {
+            return false;
+        }
+        let Some(size) = header.get(4..8).and_then(|size| <[u8; 4]>::try_from(size).ok()) else { return false };
+        let Some(len) = usize::try_from(u32::from_le_bytes(size)).ok() else { return false };
+        let Some(body_end) = header_end.checked_add(len) else { return false };
+        // Padding is not part of the EXIF allocation; a missing pad is malformed too.
+        let Some(next) = body_end.checked_add(len % 2) else { return false };
+        if body_end > bytes.len() || next > end {
+            return false;
+        }
+        if !nested && header.get(..4) == Some(b"ANMF") {
+            let Some(children) = header_end.checked_add(16) else { return false };
+            if children > body_end || !webp_chunk_extents_fit(bytes, children, body_end, true) {
+                return false;
+            }
+        }
+        at = next;
+    }
+    true
 }
 
 /// Walks the RIFF chunks. A `VP8X` header's flags announce a profile (0x20) or EXIF (0x08) as well
@@ -179,7 +207,7 @@ fn webp(walk: &mut Walk<'_, impl Read + Seek>) -> Option<Signals> {
     }
     let end = u64::from(u32::from_le_bytes([s0, s1, s2, s3])).checked_add(8)?.min(length);
     let mut at = 12u64;
-    let mut found = Signals { webp_exif_fits: true, ..Signals::default() };
+    let mut found = Signals::default();
     for _ in 0..MAX_WALK_STEPS {
         if at.checked_add(8)? > end {
             return Some(found);
@@ -205,7 +233,6 @@ fn webp(walk: &mut Walk<'_, impl Read + Seek>) -> Option<Signals> {
         let padded = len.checked_add(len % 2)?;
         at = at.checked_add(8)?.checked_add(padded)?;
         if at > end {
-            found.webp_exif_fits = false;
             return Some(found);
         }
         walk.skip(padded.checked_sub(seen)?)?;
@@ -235,6 +262,43 @@ mod tests {
 
     fn tag(bytes: &[u8]) -> Option<ColorTag> {
         color_tag(ImageFormat::WebP, &mut Cursor::new(bytes))
+    }
+
+    #[test]
+    fn webp_exif_physical_extent_decision_table() {
+        let base = riff(&[(b"VP8X", &[0; 10]), (b"EXIF", b"ok")]);
+        assert!(webp_exif_fits(&base));
+        let mut oversized = base.clone();
+        let exif = oversized.windows(4).position(|part| part == b"EXIF").unwrap();
+        oversized[exif + 4..exif + 8].copy_from_slice(&(8 * 1024 * 1024u32).to_le_bytes());
+        assert!(!webp_exif_fits(&oversized));
+
+        // The vendor reads beyond a shortened RIFF size; the physical input remains authoritative.
+        let mut short_riff = base.clone();
+        short_riff[4..8].copy_from_slice(&12u32.to_le_bytes());
+        assert!(webp_exif_fits(&short_riff));
+        short_riff[exif + 4..exif + 8].copy_from_slice(&(8 * 1024 * 1024u32).to_le_bytes());
+        assert!(!webp_exif_fits(&short_riff));
+
+        let mut frame = [0u8; 16].to_vec();
+        frame.extend_from_slice(b"EXIF");
+        frame.extend_from_slice(&2u32.to_le_bytes());
+        frame.extend_from_slice(b"ok");
+        let nested = riff(&[(b"ANMF", &frame)]);
+        assert!(webp_exif_fits(&nested));
+        let mut hostile_nested = nested.clone();
+        let at = hostile_nested.windows(4).position(|part| part == b"EXIF").unwrap();
+        hostile_nested[at + 4..at + 8].copy_from_slice(&(8 * 1024 * 1024u32).to_le_bytes());
+        assert!(!webp_exif_fits(&hostile_nested));
+
+        let odd = riff(&[(b"EXIF", b"odd"), (b"JUNK", b"")]);
+        assert!(webp_exif_fits(&odd));
+        let mut unpadded = odd.clone();
+        unpadded.remove(12 + 8 + 3);
+        assert!(!webp_exif_fits(&unpadded));
+        let mut truncated = base;
+        truncated.extend_from_slice(b"EXI");
+        assert!(!webp_exif_fits(&truncated));
     }
 
     #[test]
