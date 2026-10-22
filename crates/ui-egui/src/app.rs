@@ -336,6 +336,7 @@ mod deck_presenter;
 mod drop;
 mod elements;
 mod export;
+mod fields;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_dialogs;
 mod generate;
@@ -424,6 +425,8 @@ pub struct NodeCraftApp {
     bulk: crate::bulk::Panel,
     drag: Option<Drag>,
     marquee: Option<Marquee>,
+    /// Field zones' view state (#66).
+    fields: fields::Fields,
     /// World rectangles painted this frame: authoritative for selection, noodle anchors,
     /// port drop targets and scoped host geometry, independent of schema-cache eviction.
     painted: BTreeMap<NodeId, Rect>,
@@ -533,6 +536,9 @@ pub struct NodeCraftApp {
 impl NodeCraftApp {
     /// Cancel one owner at a time: noodle, input order, marquee, then selection.
     fn cancel_canvas_gesture(&mut self) {
+        if self.fields.drag.take().is_some() {
+            return;
+        }
         if self.wiring.take().is_some() {
             return;
         }
@@ -545,7 +551,10 @@ impl NodeCraftApp {
                 self.marquee_geometry.clear();
                 self.selection = marquee.base.clone();
             }
-            _ => self.selection.clear(),
+            _ => {
+                self.selection.clear();
+                self.fields.selected = None;
+            }
         }
     }
 
@@ -866,6 +875,7 @@ impl NodeCraftApp {
             bulk: Default::default(),
             drag: None,
             marquee: None,
+            fields: fields::Fields::default(),
             painted: BTreeMap::new(),
             wiring: None,
             reordering: None,
@@ -1019,6 +1029,7 @@ impl NodeCraftApp {
             self.marquee_geometry.clear();
         }
         self.schemas.refresh_generation(&self.session);
+        self.fields_sync();
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
         self.viewport = viewport;
@@ -1236,7 +1247,8 @@ impl NodeCraftApp {
                 None => {}
             }
             if select_all && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
-                self.selection.replace(canvas.nodes().keys().copied().collect());
+                let hidden = fields::hidden(canvas);
+                self.selection.replace(canvas.nodes().keys().filter(|id| !hidden.contains(id)).copied().collect());
             }
             // Quick-add moved to the end of the frame (`quick_add` below), after every floating
             // Window has laid out, so the canvas can tell whether it really owns the pointer.
@@ -1298,7 +1310,8 @@ impl NodeCraftApp {
         painter.rect_filled(viewport, 0.0, t.canvas_bg);
         canvas::paint_grid(&painter, viewport, &self.view, t);
         let mut intents = Vec::new();
-        let mut pan = Vec2::ZERO;
+        // Fields sit on the canvas layer, under the noodles and the card layers.
+        let mut pan = self.fields_show(ui, viewport, canvas_blocks);
         let mut query = None;
         let mut split_request = None;
         let mut mask_request = None;
@@ -1324,6 +1337,7 @@ impl NodeCraftApp {
         let mut technique_after = None;
         let mut style_after = None;
         let mut tag_action = None;
+        let mut field_action = None;
         let mut refresh = None;
         self.refresh_stale_badges();
         self.refresh_mask_badges();
@@ -1358,11 +1372,20 @@ impl NodeCraftApp {
             self.mention_cache.refresh(self.session.revision(), self.canvas, canvas, kinds);
             let mention_cards = &self.mention_cache.cards;
             let mention_blocked = &self.mention_cache.blocked;
+            let hidden = fields::hidden(canvas);
+            let field_shift = self.field_shift();
             for node in
                 canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
             {
+                if hidden.contains(&node.id) {
+                    if let Some(editor) = self.editors.get_mut(&node.id) {
+                        editor.mark_hidden();
+                    }
+                    continue;
+                }
+                let preview = self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos).or_else(|| Self::field_preview(field_shift, node));
                 // Cull conservatively before resolving potentially large instance schemas.
-                let position = self.drag.as_ref().filter(|drag| drag.id == node.id).map_or(node.pos, |drag| drag.pos);
+                let position = preview.unwrap_or(node.pos);
                 let bounds = Rect::from_min_size(Pos2::new(position.x, position.y), Vec2::new(t.card_width, t.card_max_height + t.card_preview_height));
                 if !self.view.rect_to_screen(viewport.min, bounds).expand(card::cull_margin(t, self.view.zoom)).intersects(viewport) {
                     if let Some(editor) = self.editors.get_mut(&node.id) {
@@ -1426,7 +1449,7 @@ impl NodeCraftApp {
                         descriptor,
                         visible: schema.map(|cached| &cached.visible),
                         enabled: schema.and_then(|cached| cached.enabled.as_ref()),
-                        preview_pos: self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos),
+                        preview_pos: preview,
                         images,
                         grid: self.split_shown.filter(|(id, ..)| *id == node.id).map(|(_, rows, columns)| {
                             let full = nodecraft_engine::split::image_of(node).and_then(|asset| Some([asset.meta.width?, asset.meta.height?]));
@@ -1549,6 +1572,9 @@ impl NodeCraftApp {
                             ui.add_enabled_ui(tag_menu_allowed, |ui| {
                                 if let Some(action) = tags::tag_menu(ui, canvas, &self.selection, t, &self.tag_filter.presentation) {
                                     tag_action = Some(action);
+                                }
+                                if let Some(action) = fields::card_menu(ui, canvas, &self.selection, t) {
+                                    field_action = Some(action);
                                 }
                             });
                             if ui.button("Select upstream").clicked() {
@@ -1697,7 +1723,13 @@ impl NodeCraftApp {
             }
             // Noodles follow this frame's painted cards (drag previews, resolved heights). They are
             // painted on the canvas layer, which stays under the card layers.
-            let curves = curves(canvas, &self.painted, kinds, t);
+            let curves = if hidden.is_empty() {
+                curves(canvas, &self.painted, kinds, t)
+            } else {
+                let mut geometry = self.painted.clone();
+                geometry.extend(fields::stand_ins(canvas, &hidden, t, self.view.zoom));
+                curves(canvas, &geometry, kinds, t)
+            };
             if !overlay_blocks && !file_owns_input && !file_menu_owns_input && background.clicked() {
                 let hit = ui.input(|i| i.pointer.interact_pos()).and_then(|p| {
                     let world = self.view.to_world(viewport.min, p);
@@ -1707,7 +1739,10 @@ impl NodeCraftApp {
                 match (hit, shift) {
                     (Some((id, _)), true) => self.selection.toggle_edge(id),
                     (Some((id, _)), false) => self.selection.only_edge(id),
-                    (None, false) => self.selection.clear(),
+                    (None, false) => {
+                        self.selection.clear();
+                        self.fields.selected = None;
+                    }
                     (None, true) => {}
                 }
             }
@@ -1823,6 +1858,7 @@ impl NodeCraftApp {
                     selection::in_box(canvas, world, |node| box_geometry(&self.painted, &self.session, &mut self.marquee_geometry, node, world, t)),
                     curves.iter().filter(|(_, curve, _)| noodle::touches(curve, world)).map(|(id, _, _)| *id),
                 );
+                self.selection.remove_nodes(&hidden);
                 // Above the card layers, which are drawn over the background painter.
                 ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("marquee"))).with_clip_rect(viewport).rect(
                     self.view.rect_to_screen(viewport.min, world),
@@ -1845,6 +1881,10 @@ impl NodeCraftApp {
             if let Err(error) = self.apply_tag_action(action) {
                 self.notice = Some(error.message);
             }
+            ui.ctx().request_repaint();
+        }
+        if let Some(action) = field_action {
+            self.field_card_action(action);
             ui.ctx().request_repaint();
         }
         // Cards were painted before this frame's selection changes; show them without waiting for input.
@@ -2139,7 +2179,18 @@ impl NodeCraftApp {
                 })
             })
         });
-        let Some((modifiers, key, kind)) = candidate else { return };
+        let Some((modifiers, key, kind)) = candidate else {
+            // `F` makes a field (#66), under the same gates as a kind's key.
+            let field = ui.input(|i| {
+                i.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::F, pressed: true, repeat: false, modifiers, .. } if modifiers.is_none()))
+            });
+            if field && self.fields.drag.is_none() && self.fields.rename.is_none() && self.canvas_owns_quick_add_pointer(ui) {
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F));
+                self.quick_field(ui.input(|i| i.pointer.hover_pos()));
+                ui.ctx().request_repaint();
+            }
+            return;
+        };
         if !self.canvas_owns_quick_add_pointer(ui) {
             return;
         }
@@ -2698,6 +2749,8 @@ mod deck_presenter_tests;
 mod elements_tests;
 #[cfg(test)]
 mod export_tests;
+#[cfg(test)]
+mod fields_tests;
 #[cfg(test)]
 mod gallery_tests;
 #[cfg(test)]

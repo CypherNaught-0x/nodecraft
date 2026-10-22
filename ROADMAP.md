@@ -15,7 +15,7 @@ an agent can actually do today.
 |---|---|---|---|
 | 0 | **Skeleton** — workspace, lints, xtask, CI, release pipeline, themed canvas | ✅ done | 10/10 |
 | 1 | **Canvas core** — graph + changesets + undo, commands, canvas widget, `.ncraft` | 🟡 nearly — see caveat | 20/32 |
-| 2 | **Organise** — fields, tags, comments, search, auto-format, router, input order | 🟡 partial | 6/9 |
+| 2 | **Organise** — fields, tags, comments, search, auto-format, router, input order | 🟡 partial | 7/9 |
 | 3 | **Generation** — exec, queue, cost, catalog, ComfyUI, LLMs, cloud providers | 🟡 engine done, app not wired | 17/30 |
 | 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 5/12 |
 | 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92), app mode (#95), installing updates (#540), result export (#557), CLI `run` (#97) | 2/16 |
@@ -116,8 +116,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 - **Live sharing has no UI yet.** Sessions can be shared through `nodecraft-cli relay` (#119),
   with every edit merged and images passed along. Only code calls it so far: the app has no
   Share or Join yet, the browser build has no transport, and there is no presence (#121).
-- **Not started**: fields UI (the data model and changes exist, but there is no fields editor),
-  batch, Techniques, app mode, library, Layer editor, Elements, PDF,
+- **Not started**: batch, Techniques, app mode, library, Layer editor, Elements, PDF,
   and 32 of the 41 tracked provider adapters (ComfyUI, fal.ai and
   Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
   and 24 of the 25 `future` names have no work started; Higgsfield's adapter is written, #177). 3D generation has a Generate 3D card
@@ -136,7 +135,7 @@ The open pull requests say what is in flight; the near-term order that makes the
    (#83, #84), then stale badges with one-click refresh (#211).
 4. **Action nodes** — expose the CPU/GPU operations as node kinds (#410) with live recompute
    (#88, #90).
-5. **Organise** — fields UI (#66). Tags (#67), comments/Notes (#68), selected-node auto-format
+5. **Organise** — fields (#66), tags (#67), comments/Notes (#68), selected-node auto-format
    (#70), the bulk parameter panel (#71), and the v3 tags/fields persistence bridge (#193) have shipped.
 6. **Then M5**: batch, Technique Builder, app mode, library, and the CLI `run`/`quote`/`inspect`
    that turn a canvas into a reusable command, and the first signed release (#100).
@@ -182,3 +181,8 @@ The open pull requests say what is in flight; the near-term order that makes the
   explicit Mixed values, conditional resets and one atomic undo step. Shared model changes reuse
   the migration preview (#157), including dropped settings and unavailable-model repair. File
   operations preserve pending bulk drafts and own input through their completion frame.
+
+- **2026-10-22** — fields shipped (#66): named, coloured zones under the cards. `F` makes one
+  around the selection (or an empty one at the pointer), a header drag moves it with every
+  member, the corner resizes it, and collapsing hides the members. Five commands: `field.create`,
+  `field.update`, `field.move`, `field.remove` and `node.field_set`; the registry has 180 entries.

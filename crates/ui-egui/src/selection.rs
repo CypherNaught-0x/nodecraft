@@ -71,6 +71,10 @@ impl Selection {
         self.nodes.extend(nodes);
         self.edges.extend(edges);
     }
+    /// Deselect these nodes (a collapsed field hides them).
+    pub fn remove_nodes(&mut self, ids: &BTreeSet<NodeId>) {
+        self.nodes.retain(|id| !ids.contains(id));
+    }
     /// Drop ids that no longer exist (after undo, a remove, or a canvas switch).
     pub fn retain_existing(&mut self, canvas: &Canvas) {
         self.nodes.retain(|id| canvas.nodes().contains_key(id));
