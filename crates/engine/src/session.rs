@@ -33,6 +33,7 @@ pub const MAX_EVENTS: usize = 256;
 
 mod imports;
 pub use imports::PreparedImports;
+mod remote;
 mod file_lifecycle;
 pub use file_lifecycle::DocumentLineage;
 
@@ -88,6 +89,8 @@ enum Direction {
     Redo,
     /// A derived result (#88): replaces the top undo entry with one that also undoes it.
     Amend,
+    /// Another peer's edit, taken in from a shared document (#119): nobody's undo step here.
+    Remote,
 }
 struct Prepared {
     document: Project,
@@ -912,7 +915,7 @@ impl Session {
         // Reserve bounded publication bookkeeping before the potentially durable append.
         self.reserve_event()?;
         let history = match prepared.direction {
-            Direction::Edit | Direction::Redo | Direction::Amend => &mut self.undo,
+            Direction::Edit | Direction::Redo | Direction::Amend | Direction::Remote => &mut self.undo,
             Direction::Undo => &mut self.redo,
         };
         history.entries.try_reserve(1).map_err(|_| Error::new(ErrorKind::Internal, "cannot reserve undo history publication"))?;
@@ -952,6 +955,8 @@ impl Session {
                 self.undo.pop();
                 self.undo.push(prepared.inverse);
             }
+            // Local history stays: an undo later puts back what this peer had, part by part.
+            Direction::Remote => {}
         }
         self.document = prepared.document;
         self.assets = prepared.assets;

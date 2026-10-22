@@ -21,6 +21,9 @@ nodecraft-nodes = { workspace = true }
 nodecraft-providers = { workspace = true }
 nodecraft-types = { workspace = true }
 serde_json = { workspace = true }
+# Relay (#119): rooms of shared projects, over WebSockets on std threads.
+nodecraft-sync = { workspace = true }
+tungstenite = { workspace = true }
 # Serve webhooks (#632): signed with HMAC-SHA256, sent with a pinned address and no redirects.
 hmac = { workspace = true }
 # TLS comes from nodecraft-providers, which turns on reqwest's native-tls (desktop) or rustls

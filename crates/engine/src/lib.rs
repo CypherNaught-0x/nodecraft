@@ -12,6 +12,7 @@ pub mod bulk_cmds;
 pub mod cache;
 pub mod cache_cmds;
 pub mod clipboard_cmds;
+pub mod collab;
 mod command_schemas;
 pub mod commands;
 pub mod comment_cmds;

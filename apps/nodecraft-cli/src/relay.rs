@@ -1,0 +1,220 @@
+//! `relay`: passes shared projects between the people working on them (#119). Each connection
+//! is a WebSocket of binary frames (`nodecraft_sync::Frame`); its first frame names a room, and
+//! the room merges and forwards what its peers send. The relay keeps nothing on disk and drops a
+//! room when its last peer leaves. Room ids are the keys to the rooms: they never reach a log.
+use std::collections::BTreeMap;
+use std::io::ErrorKind as IoKind;
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use nodecraft_sync::{Frame, MAX_FRAME_BYTES, Out, PROTOCOL, Peer, Room, RoomId};
+use nodecraft_types::{Error, ErrorKind};
+use tungstenite::protocol::WebSocketConfig;
+use tungstenite::{Message, WebSocket};
+
+/// The most connections at once.
+const MAX_CONNECTIONS: usize = 256;
+/// The most rooms at once.
+const MAX_ROOMS: usize = 64;
+/// How long a new connection has to say which room it wants.
+const HELLO_WITHIN: Duration = Duration::from_secs(10);
+/// How often a connection looks for frames to send while it waits for one to arrive.
+const POLL: Duration = Duration::from_millis(20);
+/// How long a peer may take to accept a frame before the relay gives up on it.
+const WRITE_WITHIN: Duration = Duration::from_secs(30);
+/// The most frames waiting for one peer; a peer that falls this far behind is dropped.
+const MAX_WAITING: usize = 32;
+
+enum Push {
+    Frame(Vec<u8>),
+    /// Send this, then hang up.
+    Close(Vec<u8>),
+}
+
+#[derive(Default)]
+struct Rooms {
+    rooms: BTreeMap<RoomId, Room>,
+    peers: BTreeMap<Peer, (RoomId, SyncSender<Push>)>,
+}
+
+impl Rooms {
+    /// Hands each frame to the connection it is for.
+    fn deliver(&mut self, outs: Vec<Out>) {
+        let mut behind = Vec::new();
+        for out in outs {
+            let (peer, frame, close) = match out {
+                Out::Send(peer, frame) => (peer, frame, false),
+                Out::Close(peer, frame) => (peer, frame, true),
+            };
+            let (Some((_, sender)), Ok(bytes)) = (self.peers.get(&peer), frame.encode()) else { continue };
+            match sender.try_send(if close { Push::Close(bytes) } else { Push::Frame(bytes) }) {
+                // Its connection hangs up when it sees its sender gone.
+                Err(TrySendError::Full(_)) => behind.push(peer),
+                // A connection that went away leaves on its own.
+                Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+            }
+        }
+        for peer in behind {
+            self.leave(peer);
+        }
+    }
+
+    fn leave(&mut self, peer: Peer) {
+        if let Some((room, _)) = self.peers.remove(&peer)
+            && let Some(state) = self.rooms.get_mut(&room)
+        {
+            state.leave(peer);
+            if state.is_empty() {
+                self.rooms.remove(&room);
+            }
+        }
+    }
+}
+
+pub struct Relay {
+    pub addr: SocketAddr,
+    accepting: thread::JoinHandle<()>,
+}
+
+impl Relay {
+    pub fn wait(self) {
+        let _ = self.accepting.join();
+    }
+}
+
+fn lock(rooms: &Mutex<Rooms>) -> MutexGuard<'_, Rooms> {
+    // A connection that failed mid-way leaves the rooms as consistent as any frame does.
+    rooms.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+pub fn start(listen: SocketAddr) -> Result<Relay, Error> {
+    let listener = TcpListener::bind(listen).map_err(|_| Error::new(ErrorKind::Network, "the relay can't listen on that address"))?;
+    let addr = listener.local_addr().map_err(|_| Error::new(ErrorKind::Network, "the relay's address isn't known"))?;
+    let rooms = Arc::new(Mutex::new(Rooms::default()));
+    let open = Arc::new(AtomicUsize::new(0));
+    let next = Arc::new(AtomicU64::new(1));
+    let accepting = thread::Builder::new()
+        .name("relay".into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    open.fetch_sub(1, Ordering::SeqCst);
+                    continue;
+                }
+                let (rooms, count, peer) = (Arc::clone(&rooms), Arc::clone(&open), next.fetch_add(1, Ordering::SeqCst));
+                let spawned = thread::Builder::new().name("relay peer".into()).spawn(move || {
+                    connection(stream, peer, &rooms);
+                    lock(&rooms).leave(peer);
+                    count.fetch_sub(1, Ordering::SeqCst);
+                });
+                if spawned.is_err() {
+                    // The closure (and its count) never ran.
+                    open.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+        })
+        .map_err(|_| Error::new(ErrorKind::Internal, "the relay can't start"))?;
+    Ok(Relay { addr, accepting })
+}
+
+fn config() -> WebSocketConfig {
+    WebSocketConfig::default().max_message_size(Some(MAX_FRAME_BYTES)).max_frame_size(Some(MAX_FRAME_BYTES))
+}
+
+/// Serves one peer until it leaves, is refused, or the connection fails.
+fn connection(stream: TcpStream, peer: Peer, rooms: &Mutex<Rooms>) {
+    if stream.set_read_timeout(Some(HELLO_WITHIN)).is_err() {
+        return;
+    }
+    let Ok(mut socket) = tungstenite::accept_with_config(stream, Some(config())) else { return };
+    let (sender, inbox) = sync_channel(MAX_WAITING);
+    if !enter(&mut socket, peer, sender, rooms) {
+        return;
+    }
+    if socket.get_ref().set_read_timeout(Some(POLL)).is_err() || socket.get_ref().set_write_timeout(Some(WRITE_WITHIN)).is_err() {
+        return;
+    }
+    serve(&mut socket, peer, &inbox, rooms);
+}
+
+/// Reads the hello and joins its room; `false` if the peer doesn't get in.
+fn enter(socket: &mut WebSocket<TcpStream>, peer: Peer, sender: SyncSender<Push>, rooms: &Mutex<Rooms>) -> bool {
+    let started = Instant::now();
+    let hello = loop {
+        match socket.read() {
+            Ok(Message::Binary(bytes)) => break Frame::decode(&bytes),
+            Ok(Message::Close(_)) | Err(_) => return false,
+            Ok(_) if started.elapsed() < HELLO_WITHIN => continue,
+            Ok(_) => return false,
+        }
+    };
+    let room = match hello {
+        Ok(Frame::Hello { protocol: PROTOCOL, room }) => room,
+        Ok(Frame::Hello { .. }) => return refuse(socket, "this relay speaks another version of the protocol"),
+        _ => return refuse(socket, "a connection starts with a hello"),
+    };
+    let mut rooms = lock(rooms);
+    if !rooms.rooms.contains_key(&room) && rooms.rooms.len() >= MAX_ROOMS {
+        drop(rooms);
+        return refuse(socket, "the relay has no room for another project");
+    }
+    rooms.peers.insert(peer, (room.clone(), sender));
+    let outs = rooms.rooms.entry(room).or_default().join(peer);
+    rooms.deliver(outs);
+    true
+}
+
+fn refuse(socket: &mut WebSocket<TcpStream>, message: &str) -> bool {
+    if let Ok(bytes) = Frame::Refused(message.into()).encode() {
+        let _ = socket.send(Message::binary(bytes));
+    }
+    let _ = socket.close(None);
+    let _ = socket.flush();
+    false
+}
+
+fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, rooms: &Mutex<Rooms>) {
+    loop {
+        loop {
+            let push = match inbox.try_recv() {
+                Ok(push) => push,
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return,
+            };
+            let (bytes, close) = match push {
+                Push::Frame(bytes) => (bytes, false),
+                Push::Close(bytes) => (bytes, true),
+            };
+            // A peer that takes longer than WRITE_WITHIN to accept a frame is dropped.
+            if socket.send(Message::binary(bytes)).is_err() {
+                return;
+            }
+            if close {
+                let _ = socket.close(None);
+                let _ = socket.flush();
+                return;
+            }
+        }
+        match socket.read() {
+            Ok(Message::Binary(bytes)) => {
+                let mut rooms = lock(rooms);
+                let Some((room, _)) = rooms.peers.get(&peer) else { return };
+                let room = room.clone();
+                let outs = match Frame::decode(&bytes) {
+                    Ok(frame) => rooms.rooms.get_mut(&room).map(|state| state.handle(peer, frame)).unwrap_or_default(),
+                    Err(_) => vec![Out::Close(peer, Frame::Refused("a frame the relay can't read".into()))],
+                };
+                rooms.deliver(outs);
+            }
+            Ok(Message::Close(_)) => return,
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(error)) if matches!(error.kind(), IoKind::WouldBlock | IoKind::TimedOut) => {}
+            Err(_) => return,
+        }
+    }
+}

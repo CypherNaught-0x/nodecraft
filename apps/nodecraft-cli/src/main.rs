@@ -4,7 +4,7 @@
 //! and `providers` read projects and the engine without changing them; `run` runs a project's
 //! nodes and exports their results, leaving the project file as it was. `serve` offers a
 //! project's techniques as a local HTTP API, and `webhook-secret` keeps the secret its webhooks are
-//! signed with. `batch` and `comfy` arrive with their milestones
+//! signed with. `relay` passes projects shared live between peers. `batch` and `comfy` arrive with their milestones
 //! (docs/plan.md §4.8).
 
 mod control;
@@ -12,6 +12,7 @@ mod inspect;
 mod project;
 mod providers;
 mod quote;
+mod relay;
 mod run;
 mod serve;
 
@@ -56,6 +57,11 @@ commands:
                   isn't fully known needs --allow-unpriced. A run may name a webhook under a
                   --webhook-allow URL, called when it ends and signed with the webhook secret;
                   private addresses need --webhook-allow-private. The project file is not changed
+  relay [--listen <addr>]
+                  pass projects shared live between the people working on them (default
+                  127.0.0.1:7342). Each project gets a room whose random id is its key; the
+                  relay keeps nothing on disk. It speaks plain ws://, so put it behind a TLS
+                  proxy before people reach it over the internet
   webhook-secret [--delete]
                   keep the secret `serve` signs webhooks with in the keychain, read from stdin
                   (at least 32 characters; `whsec_<base64>` is decoded); --delete removes it
@@ -335,6 +341,27 @@ fn serve_command(args: &[String]) -> ExitCode {
     }
 }
 
+/// `relay [--listen <addr>]`: passes shared projects between peers until the process is stopped.
+fn relay_command(args: &[String]) -> ExitCode {
+    let listen = match args {
+        [] => Ok(std::net::SocketAddr::from(([127, 0, 0, 1], 7342))),
+        [flag, addr] if flag == "--listen" => addr.parse().map_err(|_| format!("`--listen` takes an address like 127.0.0.1:7342, not `{addr}`")),
+        _ => Err("`relay` takes only `--listen <addr>`".into()),
+    };
+    let listen = match listen {
+        Ok(listen) => listen,
+        Err(message) => return fail(&format!("{message}\n\n{USAGE}")),
+    };
+    match relay::start(listen) {
+        Ok(relay) => {
+            let _ = writeln!(std::io::stderr(), "Relaying on ws://{}/. Stop with Ctrl-C.", relay.addr);
+            relay.wait();
+            ExitCode::SUCCESS
+        }
+        Err(error) => fail(&error.message),
+    }
+}
+
 /// `webhook-secret [--delete]`: keeps `serve`'s webhook signing secret, read from stdin, in the
 /// keychain, or removes it. The secret is never printed.
 fn webhook_secret(args: &[String]) -> ExitCode {
@@ -458,6 +485,7 @@ fn main() -> ExitCode {
             }
         },
         Some("serve") => serve_command(args.get(1..).unwrap_or_default()),
+        Some("relay") => relay_command(args.get(1..).unwrap_or_default()),
         Some("webhook-secret") => webhook_secret(args.get(1..).unwrap_or_default()),
         Some(command @ ("commands" | "inspect" | "quote" | "run" | "providers")) => read_only(command, args.get(1..).unwrap_or_default()),
         Some("--help" | "-h" | "help") | None => {
