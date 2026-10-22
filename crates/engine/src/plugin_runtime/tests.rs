@@ -212,6 +212,60 @@ fn a_card_records_its_package_and_keeps_it_when_the_plugin_goes() {
     assert_eq!(PluginLock::of(node), Some(lock));
     assert_eq!(reopened.canvases().get(&CANVAS).unwrap().edges().len(), 1);
     assert_eq!(referenced(&reopened), BTreeSet::from([digest]));
+
+    // Updating a card whose plugin is gone says so rather than guessing.
+    let params = json!({"canvas": CANVAS, "node": SHOUT_NODE});
+    assert_eq!(s.dispatch("node.migrate", &params).unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[test]
+fn a_lock_counts_only_on_a_card_of_its_own_package() {
+    let store = granted(SHOUT);
+    let s = session(PluginSnapshot::of(&store));
+    let card = card_node(&s);
+    let with = |key: &str, value: &str| {
+        let mut node = card.clone();
+        node.config.insert(key.into(), Value::Text(value.into()));
+        node
+    };
+    let mut elsewhere = card.clone();
+    elsewhere.kind = "source.text".into();
+    let mut foreign = card.clone();
+    foreign.kind = "plugin.io.example.other.shout".into();
+    let spoofed = [
+        elsewhere,
+        foreign,
+        with("plugin.package", "io.example.other"),
+        with("plugin.version", "1.0"),
+        with("plugin.version", "01.0.0"),
+        with("plugin.label", "Shout\u{7}"),
+        with("plugin.label", " "),
+        with("plugin.label", &"x".repeat(129)),
+        with("plugin.digest", "blake3:00"),
+    ];
+    for node in &spoofed {
+        assert_eq!(PluginLock::of(node), None, "{node:?}");
+    }
+    assert!(PluginLock::of(&card).is_some());
+}
+
+#[test]
+fn a_project_names_at_most_max_referenced_digests() {
+    let store = granted(SHOUT);
+    let s = session(PluginSnapshot::of(&store));
+    let card = card_node(&s);
+    let nodes: Vec<Node> = (0..=MAX_REFERENCED)
+        .map(|n| {
+            let mut node = card.clone();
+            node.config.insert("plugin.digest".into(), Value::Text(format!("blake3:{n:064x}")));
+            node
+        })
+        .collect();
+    let named = super::digests(&nodes);
+    assert_eq!(named.len(), MAX_REFERENCED);
+    // A digest already named still counts past the cap; the request stays valid.
+    let request = json!({"op": "prune", "referenced": named.iter().map(ToString::to_string).collect::<Vec<_>>()});
+    assert!(crate::plugin_cmds::referenced_of(&request).is_ok());
 }
 
 #[test]

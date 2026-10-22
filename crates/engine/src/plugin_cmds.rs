@@ -162,12 +162,10 @@ fn referenced_json(c: &Context<'_>) -> Vec<String> {
 }
 
 /// Most referenced digests a request may name.
-const MAX_REFERENCED: usize = 4096;
-
-fn referenced_of(request: &Value) -> Result<BTreeSet<PackageDigest>, Error> {
-    let bad = || Error::new(ErrorKind::InvalidInput, "invalid referenced package digests");
+pub(crate) fn referenced_of(request: &Value) -> Result<BTreeSet<PackageDigest>, Error> {
+    let bad = || Error::new(ErrorKind::InvalidInput, "the package digests the project uses are invalid or too many");
     let Some(list) = request.get("referenced") else { return Ok(BTreeSet::new()) };
-    let list = list.as_array().filter(|l| l.len() <= MAX_REFERENCED).ok_or_else(bad)?;
+    let list = list.as_array().filter(|l| l.len() <= crate::plugin_runtime::MAX_REFERENCED).ok_or_else(bad)?;
     list.iter().map(|d| d.as_str().and_then(|d| PackageDigest::parse(d).ok()).ok_or_else(bad)).collect()
 }
 

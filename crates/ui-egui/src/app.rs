@@ -1584,6 +1584,7 @@ impl NodeCraftApp {
                 let rejected = self.marquee.is_some() && self.marquee_geometry.placeholder(node.id);
                 let schema = if rejected { None } else { cached_schema(&mut self.schemas, &self.session, node, self.cache_clock) };
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
+                let outdated = plugin_cards::outdated(&self.session, node);
                 let editor = self.editors.entry(node.id).or_default();
                 // Cards use their parent's max_rect origin as the canvas origin. A layout
                 // scope would advance that origin between cards; an independent disabled
@@ -1619,6 +1620,7 @@ impl NodeCraftApp {
                         video,
                         audio,
                         mesh,
+                        outdated,
                     },
                     editor,
                     self.selection.contains(node.id),

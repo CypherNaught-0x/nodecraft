@@ -264,3 +264,25 @@ fn registration_conflicts_cannot_leave_an_admission_route_without_its_results() 
 }
 
 mod lifecycle;
+
+#[test]
+fn referenced_digests_are_bounded_checked_and_only_for_uninstall_and_prune() {
+    let digest = format!("blake3:{}", "0".repeat(64));
+    let ok = [
+        json!({"op": "prune", "referenced": [digest]}),
+        json!({"op": "uninstall", "package_id": "io.example.text", "referenced": [digest]}),
+        json!({"op": "prune", "referenced": vec![digest.clone(); crate::plugin_runtime::MAX_REFERENCED]}),
+    ];
+    for request in ok {
+        assert!(bounded_request(&request).is_ok(), "{request}");
+    }
+    let bad = [
+        json!({"op": "prune", "referenced": ["blake3:00"]}),
+        json!({"op": "prune", "referenced": digest}),
+        json!({"op": "prune", "referenced": vec![digest.clone(); crate::plugin_runtime::MAX_REFERENCED + 1]}),
+        json!({"op": "enable", "package_id": "io.example.text", "referenced": [digest]}),
+    ];
+    for request in bad {
+        assert_eq!(bounded_request(&request).unwrap_err().kind, ErrorKind::InvalidInput);
+    }
+}

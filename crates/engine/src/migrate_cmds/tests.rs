@@ -27,7 +27,7 @@ fn a_current_card_has_nothing_to_migrate_and_adds_no_undo_step() {
 }
 
 #[test]
-fn a_missing_card_or_kind_is_an_error() {
+fn a_missing_card_or_canvas_is_an_error() {
     let mut s = session();
     let missing = json!({"canvas": CANVAS, "node": NodeId::from_bytes([9; 16])});
     assert_eq!(s.dispatch("node.migrate", &missing).unwrap_err().kind, ErrorKind::NotFound);

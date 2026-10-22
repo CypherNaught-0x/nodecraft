@@ -170,6 +170,9 @@ pub struct CardView<'a> {
     pub audio: Option<crate::audio::AudioView>,
     /// The node's 3D model, when it has one (#111).
     pub mesh: Option<crate::mesh_view::CardMesh<'a>>,
+    /// A plugin card its plugin's current version would change (#173): another version's
+    /// ports, lock or settings.
+    pub outdated: bool,
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -212,6 +215,7 @@ pub fn show(
         video,
         audio,
         mesh,
+        outdated,
     } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
@@ -389,7 +393,15 @@ pub fn show(
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
         egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height()).auto_shrink([false, false]).show(&mut body, |ui| {
             ui.set_width(inner.width());
+            // Another version's ports or settings may not fit this one's schema at all.
+            if outdated {
+                ui.label(egui::RichText::new("This card was made with another version of its plugin.").color(t.text_muted));
+                if ui.button("Update card").clicked() {
+                    intents.push(Intent::Migrate);
+                }
+            }
             match descriptor {
+                None if outdated => {}
                 None if let Some(lock) = nodecraft_engine::plugin_runtime::PluginLock::of(node) => {
                     ui.label(missing_plugin(&lock));
                 }
@@ -402,12 +414,6 @@ pub fn show(
                     }
                 }
                 Some(d) => {
-                    if nodecraft_engine::plugin_runtime::is_plugin(&node.kind) && (node.inputs != d.inputs || node.outputs != d.outputs) {
-                        ui.label(egui::RichText::new("This card was made with another version of its plugin.").color(t.text_muted));
-                        if ui.button("Update card").clicked() {
-                            intents.push(Intent::Migrate);
-                        }
-                    }
                     for spec in &d.params.params {
                         if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
                             continue;

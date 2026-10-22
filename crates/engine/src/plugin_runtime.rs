@@ -14,7 +14,8 @@ use nodecraft_graph::{Node, Port};
 use nodecraft_nodes::action::ActionKind;
 use nodecraft_nodes::{JobSpec, ModeId, NodeContract, NodeDescriptor, NodeKind, NodeMigration, PlanCtx};
 use nodecraft_plugin::PackageDigest;
-use nodecraft_plugin::id::{PLUGIN_PREFIX, PackageId};
+use nodecraft_plugin::id::{PLUGIN_PREFIX, PackageId, RegisteredId};
+use nodecraft_plugin::manifest::Version;
 use nodecraft_plugin_store::{State, Store, StoreBackend};
 use nodecraft_types::{Error, ErrorKind, Integer, Modality, NodeId, ParamControl, ParamSpec, ParamValues, PortType, Unsigned, Value};
 use std::collections::BTreeMap;
@@ -96,8 +97,12 @@ const LOCK_PACKAGE: &str = "plugin.package";
 const LOCK_VERSION: &str = "plugin.version";
 const LOCK_DIGEST: &str = "plugin.digest";
 const LOCK_LABEL: &str = "plugin.label";
-/// Longest version or label a lock keeps.
+/// Longest text a lock keeps; a label follows the definition's own limit.
 const MAX_LOCK_TEXT: usize = 256;
+const MAX_LOCK_LABEL: usize = 128;
+/// Most package digests a project names to the store; past that, uninstall and prune keep
+/// only the first (a project rarely uses more than a few packages).
+pub const MAX_REFERENCED: usize = 4096;
 
 /// The package a plugin card was made with, kept in its node's config.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,18 +115,31 @@ pub struct PluginLock {
 }
 
 impl PluginLock {
-    /// The lock `node` records; none when it records none, or one this build can't read.
+    /// The lock `node` records; none when it records none, one this build can't read, or one
+    /// for another package than the plugin kind it is on.
     pub fn of(node: &Node) -> Option<Self> {
         let text = |key: &str| match node.config.get(key) {
             Some(Value::Text(t)) if t.len() <= MAX_LOCK_TEXT => Some(t.as_str()),
             _ => None,
         };
-        Some(Self {
+        let lock = Self {
             package: PackageId::parse(text(LOCK_PACKAGE)?).ok()?,
             version: text(LOCK_VERSION)?.to_owned(),
             digest: PackageDigest::parse(text(LOCK_DIGEST)?).ok()?,
             label: text(LOCK_LABEL)?.to_owned(),
-        })
+        };
+        lock.fits(&node.kind).then_some(lock)
+    }
+
+    /// Whether this lock may sit on a card of `kind`: a kind of its own package, a canonical
+    /// version, and a label as a definition has one.
+    fn fits(&self, kind: &str) -> bool {
+        let label = &self.label;
+        RegisteredId::parse(kind).is_ok_and(|kind| kind.is_in(&self.package))
+            && Version::parse(&self.version).is_ok()
+            && !label.trim().is_empty()
+            && label.len() <= MAX_LOCK_LABEL
+            && !label.chars().any(char::is_control)
     }
 
     fn write(&self, config: &mut BTreeMap<String, Value>) {
@@ -132,9 +150,21 @@ impl PluginLock {
     }
 }
 
-/// Every package digest the plugin cards of `document` were made with.
+/// Every package digest the plugin cards of `document` were made with, at most
+/// [`MAX_REFERENCED`] of them.
 pub fn referenced(document: &nodecraft_graph::Project) -> std::collections::BTreeSet<PackageDigest> {
-    document.canvases().values().flat_map(|c| c.nodes().values()).filter_map(|n| PluginLock::of(n).map(|l| l.digest)).collect()
+    digests(document.canvases().values().flat_map(|c| c.nodes().values()))
+}
+
+fn digests<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> std::collections::BTreeSet<PackageDigest> {
+    let mut digests = std::collections::BTreeSet::new();
+    for lock in nodes.into_iter().filter_map(PluginLock::of) {
+        if digests.len() >= MAX_REFERENCED && !digests.contains(&lock.digest) {
+            break;
+        }
+        digests.insert(lock.digest);
+    }
+    digests
 }
 
 /// A plugin action's card: the action kind, recording its package in every card it makes.
@@ -226,14 +256,11 @@ pub(crate) fn card(id: &str, action: &CompiledTextAction, lock: PluginLock) -> R
     let descriptor = kind.descriptor();
     descriptor.validate()?;
     kind.contract(descriptor).validate(descriptor)?;
-    let card = PluginCard { kind, lock };
-    // The lock must fit a node's config.
-    let mut config = BTreeMap::new();
-    card.lock.write(&mut config);
-    if config.values().any(|v| matches!(v, Value::Text(t) if t.len() > MAX_LOCK_TEXT)) {
-        return Err(Error::new(ErrorKind::InvalidInput, "a plugin action's label is too long"));
+    // The lock must read back from every card it is written on.
+    if !lock.fits(id) {
+        return Err(Error::new(ErrorKind::InvalidInput, "a plugin action's card can't record its package"));
     }
-    Ok(Box::new(card))
+    Ok(Box::new(PluginCard { kind, lock }))
 }
 
 fn revoked() -> String {
