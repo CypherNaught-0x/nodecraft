@@ -411,3 +411,17 @@ fn failed_open_and_recover_do_not_rotate_or_fabricate_a_save_witness() {
     assert!(!s.is_current_document(&token));
     assert!(!s.has_saved_document(&s.document_lineage()));
 }
+
+#[test]
+fn undo_after_another_peers_edit_leaves_the_file_unsaved() {
+    let (mut s, _storage) = setup();
+    s.dispatch("file.save_as", &json!({"location":"shared.ncraft"})).unwrap();
+    s.dispatch("node.move", &movement(5)).unwrap();
+    let card = nodecraft_graph::Node::new(nodecraft_types::NodeId::from_bytes([77; 16]), "text");
+    s.apply_remote(nodecraft_graph::Changeset::new(vec![nodecraft_graph::Change::AddNode { canvas: common::canvas(), node: card }])).unwrap();
+    // Undoing the move takes the file back to its saved positions, but the other card stays.
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert!(s.file_status().dirty);
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert!(s.file_status().dirty);
+}

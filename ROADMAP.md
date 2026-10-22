@@ -23,7 +23,7 @@ an agent can actually do today.
 | 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105), video generation (#559), Timeline (#109) | 4/15 |
 | 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22), PDF node (#113), Meshy 3D generation (#23) | 5/7 |
 | 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, agent sidebar (#114), HTTP serve (#117) with signed webhooks (#632) | 2/6 |
-| 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | 🟡 decks (#122) | 1/6 |
+| 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | 🟡 decks (#122), CRDT sync and the relay (#119) | 2/6 |
 | — | **Future providers** — the 25 further adapters tracked as `future` | 🟡 Higgsfield SOUL 2 and Kling image to video (#177) | 1/26 |
 
 ## What works today
@@ -113,9 +113,12 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   tracks over it and sound tracks mixed under it (#576), and captions over the picture (#574);
   each picture clip can be placed, sized, cropped, turned and faded in the frame, clips can play
   faster or slower, and the render has a quality (#577).
+- **Live sharing has no UI yet.** Sessions can be shared through `nodecraft-cli relay` (#119),
+  with every edit merged and images passed along. Only code calls it so far: the app has no
+  Share or Join yet, the browser build has no transport, and there is no presence (#121).
 - **Not started**: fields UI (the data model and changes exist, but there is no fields editor),
   batch, Techniques, app mode, library, Layer editor, Elements, PDF,
-  collaboration, and 32 of the 41 tracked provider adapters (ComfyUI, fal.ai and
+  and 32 of the 41 tracked provider adapters (ComfyUI, fal.ai and
   Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
   and 24 of the 25 `future` names have no work started; Higgsfield's adapter is written, #177). 3D generation has a Generate 3D card
   with Tripo text, image and multiview models and fal's Trellis (#22), and Meshy text, image,

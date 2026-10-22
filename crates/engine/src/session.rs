@@ -34,6 +34,7 @@ pub const MAX_EVENTS: usize = 256;
 mod imports;
 pub use imports::PreparedImports;
 mod file_lifecycle;
+mod remote;
 pub use file_lifecycle::DocumentLineage;
 
 /// Notification log entry. Each consumer keeps its own revision cursor and reads the current
@@ -50,6 +51,9 @@ struct MoveKey {
     node: NodeId,
     gesture: String,
 }
+
+/// The state of a document no save holds: an undo step's, after another peer's edit.
+const NEVER_SAVED: u64 = u64::MAX;
 
 struct Entry {
     inverse: Changeset,
@@ -88,6 +92,8 @@ enum Direction {
     Redo,
     /// A derived result (#88): replaces the top undo entry with one that also undoes it.
     Amend,
+    /// Another peer's edit, taken in from a shared document (#119): nobody's undo step here.
+    Remote,
 }
 struct Prepared {
     document: Project,
@@ -912,7 +918,7 @@ impl Session {
         // Reserve bounded publication bookkeeping before the potentially durable append.
         self.reserve_event()?;
         let history = match prepared.direction {
-            Direction::Edit | Direction::Redo | Direction::Amend => &mut self.undo,
+            Direction::Edit | Direction::Redo | Direction::Amend | Direction::Remote => &mut self.undo,
             Direction::Undo => &mut self.redo,
         };
         history.entries.try_reserve(1).map_err(|_| Error::new(ErrorKind::Internal, "cannot reserve undo history publication"))?;
@@ -951,6 +957,13 @@ impl Session {
             Direction::Amend => {
                 self.undo.pop();
                 self.undo.push(prepared.inverse);
+            }
+            // Local history stays: an undo later puts back what this peer had, part by part.
+            // No step leads back to a saved document any more, since this edit isn't undone.
+            Direction::Remote => {
+                for entry in self.undo.entries.iter_mut().chain(self.redo.entries.iter_mut()) {
+                    entry.state = NEVER_SAVED;
+                }
             }
         }
         self.document = prepared.document;

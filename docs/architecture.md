@@ -27,6 +27,7 @@ every CI run, and fails on an unregistered crate.
 | L2 | `nodes` | `NodeKind` trait, registry, built-in descriptors and parameter schemas | graph, comfy |
 | L2 | `catalog` | provider and model descriptors, capability matching, pricing, auto-select rules | graph, types |
 | L2 | `actions` | deterministic image/video/text actions (CPU reference, rayon) | graph, media |
+| L2 | `sync` | live sharing: the yrs mirror of a project, sync frames, relay rooms ([decision](decisions/2026-10-22-crdt-sync.md)) | graph, types |
 | L3 | `exec` | planner (routers, batches, techniques → job DAG), run executor, scheduler, queue, cancellation, staleness, quotes, budgets | nodes, catalog, actions |
 | L3 | `providers` | `Provider` trait and adapters, one Cargo feature each | catalog, comfy |
 | L3 | `gpu` | wgpu actions, custom WGSL actions, 3D preview renderer | actions |
@@ -44,17 +45,17 @@ flowchart BT
   types --> graph
   media --> graph
   types --> comfy
-  graph --> nodes & catalog & actions
+  graph --> nodes & catalog & actions & sync
   media --> actions
   comfy --> nodes & providers
   nodes --> exec
   catalog --> exec & providers
   actions --> exec & gpu
   graph --> format
-  exec & providers & gpu & format --> engine
+  exec & providers & gpu & format & sync --> engine
   engine --> agent & automation & ui[ui-egui]
   agent & automation & ui --> app[apps/nodecraft]
-  engine & automation --> cli[apps/nodecraft-cli]
+  engine & automation & sync --> cli[apps/nodecraft-cli]
 ```
 
 Further rules checked by `cargo xtask layers`:
@@ -692,3 +693,14 @@ commands refuse to run one, so a published version never changes. Engine `techni
   stub that keeps its version number taken.
 
 See [the decision](decisions/2026-10-20-techniques.md).
+
+## Live sharing (#119)
+
+`crates/sync` mirrors a project into a yrs document, one map entry per part, so concurrent edits
+to different parts all survive. `engine::collab::Collab` connects a `Session` to it: local edits
+are diffed into the mirror (`publish`), and what others did is materialised, repaired by
+`graph::assemble`, diffed into changesets by `graph::diff`, and applied with
+`Session::apply_remote` once the assets it names have arrived. Remote edits join no undo step.
+`nodecraft-cli relay [--listen <addr>]` hosts the rooms. Nothing in the library crates touches a
+socket; the host passes frames. See the [decision](decisions/2026-10-22-crdt-sync.md) for the
+entry schema, the protocol and the limits.

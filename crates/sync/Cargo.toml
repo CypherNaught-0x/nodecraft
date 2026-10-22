@@ -1,0 +1,22 @@
+[package]
+name = "nodecraft-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "NodeCraft: a project shared live through a CRDT document, and the relay's rooms"
+
+[lints]
+workspace = true
+
+[dependencies]
+nodecraft-types = { workspace = true }
+nodecraft-graph = { workspace = true }
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+yrs.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

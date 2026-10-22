@@ -23,6 +23,8 @@ nodecraft-gpu = { workspace = true }
 nodecraft-format = { workspace = true }
 craft-settings = { workspace = true }
 nodecraft-graph.workspace = true
+# Live sharing (#119): the shared document the collab glue mirrors a session into.
+nodecraft-sync.workspace = true
 nodecraft-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
