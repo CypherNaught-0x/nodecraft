@@ -6,7 +6,10 @@ use crate::{card, ids, theme::Tokens};
 use egui::{Color32, Pos2, Rect, Sense, Vec2};
 use nodecraft_actions::image::{ImageLimits, Raster};
 use nodecraft_actions::mask::{self, MaskOptions, Stroke, Strokes};
-use nodecraft_engine::mask_cmds;
+use nodecraft_engine::mask_cmds::{
+    self,
+    binding::{self, Binding},
+};
 use nodecraft_graph::{Canvas, Endpoint, Node};
 use nodecraft_types::{AssetRef, CanvasId, Modality, NodeId, Value};
 use serde_json::json;
@@ -73,16 +76,13 @@ struct Target {
     margins: [u32; 4],
     /// The image under the mask (before expansion), once it exists.
     image: Option<AssetRef>,
+    /// Whether the strokes were painted over that image (#546).
+    binding: Binding,
     pos: nodecraft_graph::Position,
 }
 
 fn flag(node: &Node, name: &str) -> bool {
     matches!(node.params.get(name), Some(Value::Bool(true)))
-}
-
-fn input<'a>(canvas: &'a Canvas, node: NodeId, port: &str) -> Option<&'a Node> {
-    let edge = canvas.edges().values().find(|e| e.to.node == node && e.to.port == port)?;
-    canvas.nodes().get(&edge.from.node)
 }
 
 fn target(canvas: &Canvas, id: NodeId) -> Option<Target> {
@@ -95,19 +95,15 @@ fn target(canvas: &Canvas, id: NodeId) -> Option<Target> {
         hasher.finish()
     };
     let options = MaskOptions { transparent: flag(node, "transparent"), invert: flag(node, "invert") };
-    let upstream = input(canvas, id, "image");
-    let (expand, margins, image) = match upstream {
-        Some(n) if n.kind == mask_cmds::EXPAND => {
-            let margins = SIDES.map(|side| match n.params.get(side) {
-                Some(Value::Unsigned(v)) => u32::try_from(v.0).unwrap_or(mask::MAX_MARGIN).min(mask::MAX_MARGIN),
-                _ => 0,
-            });
-            (Some(n.id), margins, input(canvas, n.id, "image").and_then(nodecraft_engine::split::image_of).cloned())
-        }
-        Some(n) => (None, [0; 4], nodecraft_engine::split::image_of(n).cloned()),
-        None => (None, [0; 4], None),
-    };
-    Some(Target { strokes, stamp, options, expand, margins, image, pos: node.pos })
+    let source = binding::source(canvas, id);
+    let margins = source.expand.map_or([0; 4], |n| {
+        SIDES.map(|side| match n.params.get(side) {
+            Some(Value::Unsigned(v)) => u32::try_from(v.0).unwrap_or(mask::MAX_MARGIN).min(mask::MAX_MARGIN),
+            _ => 0,
+        })
+    });
+    let binding = binding::binding(canvas, node);
+    Some(Target { strokes, stamp, options, expand: source.expand.map(|n| n.id), margins, image: source.image.cloned(), binding, pos: node.pos })
 }
 
 /// The first output of `node` that carries one image, to paint a mask over.
@@ -220,6 +216,7 @@ impl NodeCraftApp {
         let modal = egui::Modal::new(egui::Id::new("mask_editor")).show(&ctx, |ui| {
             ui.set_width(t.viewer_width);
             ui.heading("Mask");
+            drift_banner(ui, &target, canvas, id, &t, &mut commands);
             ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(&mut editor.erase, false, "Brush");
                 ui.selectable_value(&mut editor.erase, true, "Eraser");
@@ -327,6 +324,30 @@ impl NodeCraftApp {
         }
         created
     }
+}
+
+/// Says when the image under the mask changed since the strokes were painted, and offers to keep
+/// the strokes as they are or (when its shape changed) fit them onto the new image: one
+/// `mask.refit` either way.
+fn drift_banner(ui: &mut egui::Ui, target: &Target, canvas: CanvasId, id: NodeId, t: &Tokens, commands: &mut Vec<(&'static str, serde_json::Value)>) {
+    let (text, colour, fit) = match target.binding {
+        Binding::Unbound | Binding::Current => return,
+        Binding::Changed => ("The image changed since this mask was painted. Check the strokes still cover the right area.", t.stale, false),
+        Binding::Reshaped => (
+            "The image changed shape since this mask was painted, so the strokes would stretch. Runs that use this mask wait until you keep or fit them; choose before painting more, since fitting moves every stroke.",
+            t.danger,
+            true,
+        ),
+    };
+    ui.label(egui::RichText::new(text).color(colour));
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Keep strokes").on_hover_text("Use the strokes as they are on the new image").clicked() {
+            commands.push(("mask.refit", json!({"canvas": canvas, "id": id, "fit": false})));
+        }
+        if fit && ui.button("Fit to new image").on_hover_text("Scale the strokes so the old image fits inside the new one, centred").clicked() {
+            commands.push(("mask.refit", json!({"canvas": canvas, "id": id, "fit": true})));
+        }
+    });
 }
 
 /// The image in its expanded frame, the mask over it, and the brush. A finished stroke queues

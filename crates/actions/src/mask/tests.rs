@@ -16,7 +16,7 @@ fn stroke(size: f64, hardness: f64, erase: bool, points: &[[f64; 2]]) -> Stroke 
 
 #[test]
 fn a_stroke_marks_white_and_transparent_and_leaves_the_rest_black_and_opaque() {
-    let strokes = Strokes { strokes: vec![stroke(0.2, 1.0, false, &[[0.25, 0.5], [0.75, 0.5]])] };
+    let strokes = Strokes { strokes: vec![stroke(0.2, 1.0, false, &[[0.25, 0.5], [0.75, 0.5]])], over: None };
     let mask = render(&strokes, MaskOptions::default(), &image(100, 50, 255), ImageLimits::default()).unwrap();
     assert_eq!((mask.width(), mask.height()), (100, 50));
     // Along the stroke: edit. Far from it: keep.
@@ -31,7 +31,7 @@ fn a_stroke_marks_white_and_transparent_and_leaves_the_rest_black_and_opaque() {
 
 #[test]
 fn soft_brushes_fade_and_erasing_cuts_back() {
-    let soft = Strokes { strokes: vec![stroke(0.5, 0.0, false, &[[0.5, 0.5]])] };
+    let soft = Strokes { strokes: vec![stroke(0.5, 0.0, false, &[[0.5, 0.5]])], over: None };
     let mask = render(&soft, MaskOptions::default(), &image(100, 100, 255), ImageLimits::default()).unwrap();
     let centre = value(&mask, 50, 50)[0];
     let middle = value(&mask, 62, 50)[0];
@@ -39,7 +39,7 @@ fn soft_brushes_fade_and_erasing_cuts_back() {
     assert!(centre > middle && middle > edge && edge > 0, "{centre} {middle} {edge}");
     assert_eq!(value(&mask, 62, 50)[3], 255 - middle);
 
-    let erased = Strokes { strokes: vec![stroke(0.5, 1.0, false, &[[0.5, 0.5]]), stroke(0.1, 1.0, true, &[[0.5, 0.5]])] };
+    let erased = Strokes { strokes: vec![stroke(0.5, 1.0, false, &[[0.5, 0.5]]), stroke(0.1, 1.0, true, &[[0.5, 0.5]])], over: None };
     let mask = render(&erased, MaskOptions::default(), &image(100, 100, 255), ImageLimits::default()).unwrap();
     assert_eq!(value(&mask, 50, 50), [0, 0, 0, 255]);
     assert_eq!(value(&mask, 70, 50), [255, 255, 255, 0]);
@@ -64,7 +64,7 @@ fn transparent_areas_and_inversion() {
 
 #[test]
 fn strokes_round_trip_and_hostile_ones_are_refused() {
-    let strokes = Strokes { strokes: vec![stroke(0.1, 0.5, true, &[[0.0, 0.0], [1.0, 1.0]]), stroke(0.1, 0.5, false, &[[0.5, 0.5]])] };
+    let strokes = Strokes { strokes: vec![stroke(0.1, 0.5, true, &[[0.0, 0.0], [1.0, 1.0]]), stroke(0.1, 0.5, false, &[[0.5, 0.5]])], over: None };
     let json = strokes.encode().unwrap();
     assert!(!json.contains("\"erase\":false"), "{json}");
     assert_eq!(Strokes::parse(&json).unwrap(), strokes);
@@ -80,15 +80,15 @@ fn strokes_round_trip_and_hostile_ones_are_refused() {
         assert!(Strokes::parse(bad).is_err(), "{bad}");
     }
     assert_eq!(Strokes::parse(&" ".repeat(MAX_ENCODED_BYTES + 1)), Err(ImageError::RequestLimit));
-    let many = Strokes { strokes: vec![stroke(0.1, 0.5, false, &[[0.5, 0.5]]); MAX_STROKES + 1] };
+    let many = Strokes { strokes: vec![stroke(0.1, 0.5, false, &[[0.5, 0.5]]); MAX_STROKES + 1], over: None };
     assert!(many.check().is_err());
-    let long = Strokes { strokes: vec![stroke(0.1, 0.5, false, &vec![[0.5, 0.5]; MAX_POINTS + 1])] };
+    let long = Strokes { strokes: vec![stroke(0.1, 0.5, false, &vec![[0.5, 0.5]; MAX_POINTS + 1])], over: None };
     assert!(long.check().is_err());
 }
 
 #[test]
 fn work_and_size_are_bounded_before_anything_is_allocated() {
-    let big = Strokes { strokes: vec![stroke(1.0, 0.5, false, &vec![[0.5, 0.5]; 4000])] };
+    let big = Strokes { strokes: vec![stroke(1.0, 0.5, false, &vec![[0.5, 0.5]; 4000])], over: None };
     let limits = ImageLimits { work: 1_000_000, ..ImageLimits::default() };
     assert_eq!(render(&big, MaskOptions::default(), &image(200, 200, 255), limits).unwrap_err(), ImageError::WorkLimit);
     assert!(Margins { left: MAX_MARGIN + 1, ..Margins::default() }.size(10, 10, ImageLimits::default()).is_err());
@@ -98,8 +98,38 @@ fn work_and_size_are_bounded_before_anything_is_allocated() {
 
 #[test]
 fn strokes_off_the_image_and_one_pixel_images_are_fine() {
-    let strokes = Strokes { strokes: vec![stroke(MIN_SIZE, 0.0, false, &[[-1.0, -1.0], [2.0, 2.0]]), stroke(0.5, 1.0, false, &[[2.0, -1.0]])] };
+    let strokes = Strokes { strokes: vec![stroke(MIN_SIZE, 0.0, false, &[[-1.0, -1.0], [2.0, 2.0]]), stroke(0.5, 1.0, false, &[[2.0, -1.0]])], over: None };
     let mask = render(&strokes, MaskOptions::default(), &image(1, 1, 255), ImageLimits::default()).unwrap();
     assert_eq!(value(&mask, 0, 0), [255, 255, 255, 0]);
-    assert!(!Strokes { strokes: vec![stroke(0.1, 0.5, true, &[[0.5, 0.5]])] }.paints());
+    assert!(!Strokes { strokes: vec![stroke(0.1, 0.5, true, &[[0.5, 0.5]])], over: None }.paints());
+}
+
+#[test]
+fn the_painted_image_round_trips_and_older_masks_read_without_it() {
+    let over = Painted { hash: "ab".repeat(32), width: 1024, height: 768 };
+    let strokes = Strokes { strokes: vec![stroke(0.1, 0.5, false, &[[0.5, 0.5]])], over: Some(over.clone()) };
+    assert_eq!(Strokes::parse(&strokes.encode().unwrap()).unwrap(), strokes);
+    let older = Strokes::parse(r#"{"strokes":[{"size":0.1,"hardness":0.5,"points":[[0.5,0.5]]}]}"#).unwrap();
+    assert_eq!(older.over, None);
+    assert!(!older.encode().unwrap().contains("over"), "an unbound mask stores as before");
+    for bad in [
+        Painted { hash: "AB".repeat(32), ..over.clone() },
+        Painted { hash: "ab".repeat(31), ..over.clone() },
+        Painted { width: 0, ..over.clone() },
+        Painted { height: 0, ..over.clone() },
+    ] {
+        assert_eq!(Strokes { strokes: vec![], over: Some(bad) }.check(), Err(ImageError::Parameter("mask.over")));
+    }
+    assert!(Strokes::parse(r#"{"strokes":[],"over":{"hash":"x","width":1,"height":1,"extra":1}}"#).is_err());
+}
+
+#[test]
+fn only_a_different_aspect_ratio_is_a_reshape() {
+    let over = Painted { hash: "00".repeat(32), width: 1024, height: 1024 };
+    assert!(!over.reshaped(1024, 1024));
+    assert!(!over.reshaped(2048, 2048), "a larger copy keeps the shape");
+    assert!(!over.reshaped(1024, 1020), "rounding is not a reshape");
+    assert!(over.reshaped(1536, 1024));
+    assert!(over.reshaped(1024, 1536));
+    assert!(!Painted { width: u32::MAX, height: u32::MAX, ..over }.reshaped(1, 1));
 }

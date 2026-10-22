@@ -3,11 +3,13 @@
 //! strokes as one undo step, and `mask.edit` wires the image and its mask into a new generation
 //! card of a model that takes a mask. `mask.margins_set` changes the expanded canvas and moves the
 //! strokes of the masks painted over it, so they keep covering the same part of the image.
-//! Nothing here runs: the new card runs (and is costed) like any other.
+//! Nothing here runs: the new card runs (and is costed) like any other. A mask records the
+//! image it was painted over ([`binding`]), so a changed image shows and a reshaped one is caught
+//! before a run uses it.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use crate::generation_catalog::GenerationCatalog;
 use nodecraft_actions::image::{ImageLimits, Raster};
-use nodecraft_actions::mask::{self, MAX_MARGIN, MAX_STROKES, MIN_SIZE, Margins, MaskOptions, Stroke, Strokes};
+use nodecraft_actions::mask::{self, MAX_MARGIN, MAX_STROKES, MIN_SIZE, Margins, MaskOptions, Painted, Stroke, Strokes};
 use nodecraft_graph::{Change, Changeset, Edge, Endpoint, Node, Position};
 use nodecraft_nodes::generation::{KIND, MODEL, PROMPT};
 use nodecraft_nodes::mask::{CONFIG, ID};
@@ -73,7 +75,7 @@ pub fn remap(strokes: &Strokes, size: (u32, u32), from: Margins, to: Margins) ->
     let (old, new) = (frame(from), frame(to));
     let axis = |v: f64, old: f64, before: u32, after: u32, new: f64| ((v * old - f64::from(before) + f64::from(after)) / new).clamp(-1.0, 2.0);
     let scale = old.0.max(old.1) / new.0.max(new.1);
-    let strokes = strokes
+    let moved = strokes
         .strokes
         .iter()
         .map(|s| Stroke {
@@ -83,13 +85,14 @@ pub fn remap(strokes: &Strokes, size: (u32, u32), from: Margins, to: Margins) ->
             points: s.points.iter().map(|[x, y]| [axis(*x, old.0, from.left, to.left, new.0), axis(*y, old.1, from.top, to.top, new.1)]).collect(),
         })
         .collect();
-    Strokes { strokes }
+    Strokes { strokes: moved, over: strokes.over.clone() }
 }
 
-/// Whether `mask` marks anything for a model to change, given whether its image has margins.
-fn marks(mask: &Node, margins: bool) -> Result<bool, Error> {
+/// Whether `mask` marks anything for a model to change, given whether its image has margins and
+/// the image under it.
+fn marks(c: &Context<'_>, mask: &Node, margins: bool, image: Option<&nodecraft_types::AssetRef>) -> Result<bool, Error> {
     let flag = |name: &str| matches!(mask.params.get(name), Some(Value::Bool(true)));
-    if flag("invert") || (flag("transparent") && margins) {
+    if flag("invert") || (flag("transparent") && (margins || image.is_some_and(|image| binding::transparent(c, image)))) {
         return Ok(true);
     }
     let strokes = strokes(mask)?;
@@ -119,11 +122,16 @@ struct SetParams {
 
 fn set(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: SetParams = params(value)?;
-    let node = node(c, p.canvas, p.id)?;
+    let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| not_found("canvas"))?;
+    let node = canvas.nodes().get(&p.id).ok_or_else(|| not_found("document entity"))?;
     if node.kind != ID {
         return Err(invalid("only a mask node takes strokes"));
     }
-    let json = Strokes { strokes: p.strokes }.encode().map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the mask isn't valid: {e}")))?;
+    // The image the first strokes go over stays recorded until mask.refit moves it, so painting
+    // more over a changed image doesn't hide the change.
+    let kept = strokes(node).ok().filter(|s| !s.strokes.is_empty()).and_then(|s| s.over);
+    let over = if p.strokes.is_empty() { None } else { kept.or_else(|| binding::source(canvas, p.id).image.and_then(binding::painted)) };
+    let json = Strokes { strokes: p.strokes, over }.encode().map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the mask isn't valid: {e}")))?;
     let mut changed = node.clone();
     changed.config.insert(CONFIG.into(), Value::Text(json));
     if changed == *node {
@@ -209,7 +217,8 @@ fn edit(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     // Something must be marked: a painted stroke, the margins an expanded canvas adds, or
     // everything (inverted).
     let margins = canvas.nodes().get(&image.node).is_some_and(|n| n.kind == EXPAND && !margins(n).is_empty());
-    if !marks(mask, margins)? {
+    let under = binding::source(canvas, p.mask).image;
+    if !marks(c, mask, margins, under)? {
         return Err(invalid("paint the area to change first, or expand the canvas"));
     }
     let models = c.resources.get::<GenerationCatalog>().map(inpaint_models).unwrap_or_default();
@@ -349,7 +358,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: set_schema,
-            params_doc: "{canvas, id, strokes: [{size, hardness, erase?, points: [[x, y], …]}]} -> {changed}; a mask node's brush strokes, in order, normalized to its image (x and y from 0 to 1; size is the brush diameter as a fraction of the longer side). Painting marks what a model may change; erase strokes take it back. Replaces all strokes as one undo step.",
+            params_doc: "{canvas, id, strokes: [{size, hardness, erase?, points: [[x, y], …]}]} -> {changed}; a mask node's brush strokes, in order, normalized to its image (x and y from 0 to 1; size is the brush diameter as a fraction of the longer side). Painting marks what a model may change; erase strokes take it back. Replaces all strokes as one undo step. The first strokes record the image they are painted over (see mask.status, mask.refit); clearing them forgets it.",
             enabled: always,
             run: set,
         },
@@ -379,12 +388,17 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: edit_schema,
-            params_doc: "{canvas, mask: mask NodeId, id: new NodeId, edges: [new EdgeId, new EdgeId], pos: {x, y}, prompt, model?} -> {id}; adds a generation card wired to the mask's image and the mask, with the prompt, as one undo step. The model must take a mask (the first that does when omitted). It does not run: run the new card as usual, which shows its cost first.",
+            params_doc: "{canvas, mask: mask NodeId, id: new NodeId, edges: [new EdgeId, new EdgeId], pos: {x, y}, prompt, model?} -> {id}; adds a generation card wired to the mask's image and the mask, with the prompt, as one undo step. The model must take a mask (the first that does when omitted). Something must be marked: strokes, Expand margins, or transparent pixels in the image when the mask includes transparent areas. It does not run: run the new card as usual, which shows its cost first.",
             enabled: enabled_edit,
             run: edit,
         },
     ]
+    .into_iter()
+    .chain(binding::specs())
+    .collect()
 }
+
+pub mod binding;
 
 #[cfg(test)]
 mod tests;

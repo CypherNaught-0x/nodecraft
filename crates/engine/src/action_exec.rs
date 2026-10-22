@@ -278,7 +278,7 @@ impl LocalActions {
 
 /// Decoding and encoding limits matching what the actions accept: their edge, and their pixel
 /// count at four bytes each plus the decoder's working copy.
-fn decode_limits() -> nodecraft_media::Limits {
+pub(crate) fn decode_limits() -> nodecraft_media::Limits {
     let actions = ImageLimits::default();
     nodecraft_media::Limits {
         max_width: actions.edge,

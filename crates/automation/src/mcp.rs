@@ -137,6 +137,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "mask.create",
     "mask.margins_set",
     "mask.edit",
+    // Keeping or fitting strokes is one undoable edit; the status is read-only.
+    "mask.refit",
+    "mask.status",
     // A 3D capture only adds and wires a card; the card runs through run.start.
     "mesh.capture",
     // A page range is an ordinary, undoable parameter edit.
