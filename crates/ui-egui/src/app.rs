@@ -2872,6 +2872,8 @@ mod action_tests;
 #[cfg(test)]
 mod app_mode_tests;
 #[cfg(test)]
+mod audio672_tests;
+#[cfg(test)]
 mod audio_tests;
 #[cfg(test)]
 mod deck_editor_tests;
