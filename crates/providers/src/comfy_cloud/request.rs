@@ -59,17 +59,18 @@ pub(super) fn prepare(job: &ProviderJob, catalog: &NodeCatalog, limits: Limits) 
         let JobInput::Media { role, bytes, .. } = input else { continue };
         let (node, name) = split_target(role)?;
         let class = workflow.nodes.get(node).map(|n| n.class_type.clone()).ok_or_else(|| invalid(format!("no node {node} in the workflow")))?;
-        let is_upload = catalog.get(&class).and_then(|i| i.input(name)).is_some_and(|spec| matches!(spec.kind, InputKind::Combo { upload: Some(_), .. }));
-        if !is_upload {
+        let loader = catalog.get(&class).and_then(|i| i.input(name)).and_then(|spec| match spec.kind {
+            InputKind::Combo { upload, .. } => upload,
+            _ => None,
+        });
+        let Some(loader) = loader else {
             return Err(invalid(format!("{node}.{name} is not a file input")));
-        }
+        };
         if bytes.len() > limits.input_bytes {
             return Err(invalid(format!("{node}.{name} is larger than Comfy Cloud's {} MiB upload limit", limits.input_bytes / MIB)));
         }
         let checked = crate::check_media(bytes, None).map_err(|e| ProviderError::new(ErrorKind::UnsupportedInput, e.message))?;
-        if matches!(nodecraft_media::sniff(bytes).map(|s| s.kind), Some(nodecraft_media::MediaKind::Text | nodecraft_media::MediaKind::Document)) {
-            return Err(invalid(format!("{node}.{name} takes a media file, not {}", checked.mime)));
-        }
+        crate::comfyui::upload::check_kind(&format!("{node}.{name}"), loader, bytes, checked.mime).map_err(invalid)?;
         if nodecraft_media::is_undecoded_image(checked.mime) {
             return Err(invalid(format!("can't upload {node}.{name}: NodeCraft can't read {} files yet; convert the input to PNG or JPEG", checked.mime)));
         }
@@ -86,18 +87,7 @@ pub(super) fn prepare(job: &ProviderJob, catalog: &NodeCatalog, limits: Limits) 
     Ok(Prepared { workflow, uploads })
 }
 
-/// The usual extension for an upload of type `mime`; ComfyUI's loaders pick their decoder by it.
-pub(super) fn extension(mime: &str) -> &str {
-    match mime {
-        "image/jpeg" => "jpg",
-        "video/quicktime" => "mov",
-        "video/x-matroska" => "mkv",
-        "audio/mpeg" => "mp3",
-        "audio/x-wav" | "audio/wave" => "wav",
-        "model/gltf-binary" => "glb",
-        _ => mime.rsplit('/').next().unwrap_or("bin").split(['+', ';', '.']).next().filter(|e| !e.is_empty()).unwrap_or("bin"),
-    }
-}
+pub(super) use crate::comfyui::upload::extension;
 
 impl Prepared {
     /// Points the upload's input at the stored asset. Comfy Cloud reads `core/ASSET` references

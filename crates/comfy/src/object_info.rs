@@ -244,7 +244,10 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
         // the first occurrence before copying defaults/options, preserving tolerant parsing.
         let mut seen = HashSet::new();
         for name in names.iter().filter(|name| seen.insert(name.as_str())) {
-            if let Some(spec) = specs.get(name).and_then(|s| parse_input(name, s, required)) {
+            if let Some(mut spec) = specs.get(name).and_then(|s| parse_input(name, s, required)) {
+                if let InputKind::Combo { upload: upload @ None, .. } = &mut spec.kind {
+                    *upload = unflagged_upload(class, name);
+                }
                 inputs.push(spec);
             }
         }
@@ -310,6 +313,14 @@ fn parse_input(name: &str, spec: &Value, required: bool) -> Option<InputSpec> {
         tooltip: opts.get("tooltip").and_then(Value::as_str).map(str::to_owned),
         kind,
     })
+}
+
+/// File inputs of popular custom loaders whose upload button is added by the browser client, so
+/// `/object_info` doesn't flag them (#110). Known by observed class and input name only.
+const UNFLAGGED_UPLOADS: &[(&str, &str, Media)] = &[("VHS_LoadVideo", "video", Media::Video), ("VHS_LoadAudioUpload", "audio", Media::Audio)];
+
+fn unflagged_upload(class: &str, input: &str) -> Option<Media> {
+    UNFLAGGED_UPLOADS.iter().find(|(c, i, _)| *c == class && *i == input).map(|(_, _, media)| *media)
 }
 
 fn combo(options: Vec<String>, opts: &serde_json::Map<String, Value>) -> InputKind {
