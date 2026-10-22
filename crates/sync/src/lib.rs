@@ -9,10 +9,13 @@
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
+mod discussion;
 mod frame;
 mod mirror;
+mod role;
 mod room;
 
-pub use frame::{Frame, MAX_ASSET_BYTES, MAX_FRAME_BYTES, MAX_UPDATE_BYTES, PROTOCOL, RoomId};
-pub use mirror::{Materialized, Mirror};
-pub use room::{Out, Peer, Room};
+pub use frame::{Frame, LinkKey, MAX_ASSET_BYTES, MAX_FRAME_BYTES, MAX_UPDATE_BYTES, PROTOCOL, RoomId};
+pub use mirror::{CommentChange, Materialized, Mirror};
+pub use role::{Grant, Role};
+pub use room::{MAX_LINKS, Out, Peer, Room};

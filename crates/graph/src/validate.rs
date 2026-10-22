@@ -190,6 +190,7 @@ pub(crate) fn palette_color(value: &str) -> Result<(), Error> {
 
 pub(crate) fn comment(comment: &crate::Comment) -> Result<(), Error> {
     position(comment.pos)?;
+    author(comment.author.as_deref())?;
     if comment.replies.len() > MAX_COMMENT_REPLIES {
         return Err(invalid("thread exceeds reply limit"));
     }
@@ -197,6 +198,7 @@ pub(crate) fn comment(comment: &crate::Comment) -> Result<(), Error> {
     let mut ids = BTreeSet::from([comment.id]);
     for reply in &comment.replies {
         text(&reply.text, MAX_REPLY_BYTES)?;
+        author(reply.author.as_deref())?;
         bytes = bytes.saturating_add(reply.text.len());
         if !ids.insert(reply.id) {
             return Err(invalid("duplicate message id"));
@@ -206,6 +208,22 @@ pub(crate) fn comment(comment: &crate::Comment) -> Result<(), Error> {
         return Err(invalid("thread exceeds text limit"));
     }
     Ok(())
+}
+
+/// The longest author name a message keeps.
+pub const MAX_AUTHOR_BYTES: usize = 128;
+
+/// An author is a short, visible, single-line name.
+pub fn validate_author(name: &str) -> Result<(), Error> {
+    if name.trim().is_empty() || name.len() > MAX_AUTHOR_BYTES || name.chars().any(char::is_control) {
+        Err(invalid("an author is 1 to 128 bytes on one line"))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn author(name: Option<&str>) -> Result<(), Error> {
+    name.map_or(Ok(()), validate_author)
 }
 
 pub(crate) fn position(pos: Position) -> Result<(), Error> {

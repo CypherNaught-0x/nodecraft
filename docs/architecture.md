@@ -606,8 +606,9 @@ handling; the engine must neither discard its stamp nor silently widen v1 to sav
 [Comments](comments.md) adds bounded flat threads and canvas/node anchors through graph changes,
 engine document commands and a scoped UI view service. Node deletion detaches discussions; compact
 restore metadata plus certified exact F/I/R staging preserves undo/redo budgets. `structure.note`
-is a generated plain-text no-port node whose plan intentionally contains no jobs. No sharing,
-authenticated author, provider call or comment search is implied. Draft capacities/Session identity,
+is a generated plain-text no-port node whose plan intentionally contains no jobs. In a shared
+project, messages are signed with the share name and a link's role limits who may change them
+([share links](decisions/2026-10-22-share-links.md)); no provider call or comment search is implied. Draft capacities/Session identity,
 explicit Save/Cancel, versioned migration and current format ownership are specified in that contract.
 
 

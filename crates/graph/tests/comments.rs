@@ -58,7 +58,7 @@ fn deletion_detaches_thread_without_copying_its_body_into_pin_metadata() {
 fn replies_restore_order_and_duplicate_ids_or_aggregate_text_reject_atomically() {
     let mut p = project();
     let r = CommentId::from_bytes([4; 16]);
-    let insert = Change::InsertCommentReply { canvas: canvas(), id: root(), index: 0, reply: CommentReply { id: r, text: "Reply".into() } };
+    let insert = Change::InsertCommentReply { canvas: canvas(), id: root(), index: 0, reply: CommentReply::new(r, "Reply") };
     insert.apply(&mut p).unwrap();
     let before = p.clone();
     assert!(insert.apply(&mut p).is_err());
@@ -91,7 +91,7 @@ fn legacy_roots_and_reply_limits_are_explicit() {
     full.text.push('x');
     assert!(full.validate_payload().is_err());
     let mut reply = root;
-    reply.replies.push(CommentReply { id: CommentId::from_bytes([4; 16]), text: "x".repeat(64 * 1024 + 1) });
+    reply.replies.push(CommentReply::new(CommentId::from_bytes([4; 16]), "x".repeat(64 * 1024 + 1)));
     assert!(reply.validate_payload().is_err());
 }
 
@@ -99,10 +99,10 @@ fn legacy_roots_and_reply_limits_are_explicit() {
 fn transient_duplicate_reply_id_cannot_make_the_inverse_ambiguous() {
     let mut p = project();
     let id = CommentId::from_bytes([4; 16]);
-    Change::InsertCommentReply { canvas: canvas(), id: root(), index: 0, reply: CommentReply { id, text: "old".into() } }.apply(&mut p).unwrap();
+    Change::InsertCommentReply { canvas: canvas(), id: root(), index: 0, reply: CommentReply::new(id, "old") }.apply(&mut p).unwrap();
     let before = p.clone();
     let changes = Changeset::new(vec![
-        Change::InsertCommentReply { canvas: canvas(), id: root(), index: 1, reply: CommentReply { id, text: "new".into() } },
+        Change::InsertCommentReply { canvas: canvas(), id: root(), index: 1, reply: CommentReply::new(id, "new") },
         Change::RemoveCommentReply { canvas: canvas(), id: root(), reply: id },
     ]);
     assert!(changes.apply(&mut p).is_err());

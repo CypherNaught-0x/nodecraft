@@ -2,6 +2,8 @@
 //! is a WebSocket of binary frames (`nodecraft_sync::Frame`); its first frame names a room, and
 //! the room merges and forwards what its peers send. The relay keeps nothing on disk and drops a
 //! room when its last peer leaves. Room ids are the keys to the rooms: they never reach a log.
+//! A peer may come in through a share link instead (#121): the relay knows only the link's hash,
+//! finds the room that holds it, and lets the peer in with the link's role.
 use std::collections::BTreeMap;
 use std::io::ErrorKind as IoKind;
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -9,9 +11,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use nodecraft_sync::{Frame, MAX_FRAME_BYTES, Out, PROTOCOL, Peer, Room, RoomId};
+use nodecraft_sync::{Frame, MAX_FRAME_BYTES, Out, PROTOCOL, Peer, Role, Room, RoomId};
 use nodecraft_types::{Error, ErrorKind};
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket};
@@ -51,9 +53,32 @@ struct Inbox {
 struct Rooms {
     rooms: BTreeMap<RoomId, Room>,
     peers: BTreeMap<Peer, Inbox>,
+    /// When links were last checked for having run out.
+    expired: u64,
+}
+
+/// Seconds since 1970, by the relay's clock.
+fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs())
 }
 
 impl Rooms {
+    /// The room holding the link with this hash.
+    fn holding(&self, link: &[u8; 32]) -> Option<RoomId> {
+        self.rooms.iter().find(|(_, room)| room.grant(link).is_some()).map(|(id, _)| id.clone())
+    }
+
+    /// Puts out whoever's link ran out, at most once a second.
+    fn expire(&mut self) {
+        let now = now();
+        if now == self.expired {
+            return;
+        }
+        self.expired = now;
+        let outs: Vec<Out> = self.rooms.values_mut().flat_map(|room| room.expire(now)).collect();
+        self.deliver(outs);
+    }
+
     /// Hands each frame to the connection it is for.
     fn deliver(&mut self, outs: Vec<Out>) {
         let mut behind = Vec::new();
@@ -174,12 +199,29 @@ fn enter(socket: &mut WebSocket<TcpStream>, peer: Peer, sender: Sender<Push>, wa
             Ok(_) => return false,
         }
     };
-    let room = match hello {
-        Ok(Frame::Hello { protocol: PROTOCOL, room }) => room,
-        Ok(Frame::Hello { .. }) => return refuse(socket, "this relay speaks another version of the protocol"),
+    let (room, link) = match hello {
+        Ok(Frame::Hello { protocol: PROTOCOL, room }) => (Some(room), None),
+        Ok(Frame::HelloLink { protocol: PROTOCOL, link }) => (None, Some(link.hash())),
+        Ok(Frame::Hello { .. } | Frame::HelloLink { .. }) => return refuse(socket, "this relay speaks another version of the protocol"),
         _ => return refuse(socket, "a connection starts with a hello"),
     };
     let mut rooms = lock(rooms);
+    if let Some(link) = link {
+        let Some(room) = rooms.holding(&link) else {
+            drop(rooms);
+            return refuse(socket, "that share link doesn't open a project being shared now");
+        };
+        rooms.peers.insert(peer, Inbox { room: room.clone(), sender, waiting });
+        let outs = rooms.rooms.get_mut(&room).map(|state| state.join_link(peer, link, now())).unwrap_or_default();
+        let refused = outs.iter().any(|out| matches!(out, Out::Close(p, _) if *p == peer));
+        rooms.deliver(outs);
+        if refused {
+            // The refusal is on its way through the inbox; the peer is no longer anyone's.
+            rooms.leave(peer);
+        }
+        return true;
+    }
+    let Some(room) = room else { return false };
     if !rooms.rooms.contains_key(&room) && rooms.rooms.len() >= MAX_ROOMS {
         drop(rooms);
         return refuse(socket, "the relay has no room for another project");
@@ -229,8 +271,16 @@ fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, 
                 let Some(room) = rooms.peers.get(&peer).map(|inbox| inbox.room.clone()) else { return };
                 let outs = match Frame::decode(&bytes) {
                     // What would add to what the relay holds waits until there is room for it.
-                    Ok(Frame::Update(_) | Frame::Step2(_) | Frame::AssetPut { .. }) if rooms.held() > MAX_RELAY_BYTES => {
+                    Ok(Frame::Update(_) | Frame::Step2(_) | Frame::AssetPut { .. } | Frame::CommentPut { .. }) if rooms.held() > MAX_RELAY_BYTES => {
                         vec![Out::Close(peer, Frame::Refused("the relay is full".into()))]
+                    }
+                    // A link names one room: another room may not take it over. Only an owner
+                    // learns that a hash is taken; anyone else is refused by the room.
+                    Ok(Frame::LinkPut { hash, .. })
+                        if rooms.rooms.get(&room).and_then(|state| state.role_of(peer)) == Some(Role::Owner)
+                            && rooms.holding(&hash).is_some_and(|holder| holder != room) =>
+                    {
+                        vec![Out::Close(peer, Frame::Refused("that share link belongs to another project".into()))]
                     }
                     Ok(frame) => rooms.rooms.get_mut(&room).map(|state| state.handle(peer, frame)).unwrap_or_default(),
                     Err(_) => vec![Out::Close(peer, Frame::Refused("a frame the relay can't read".into()))],
@@ -239,7 +289,7 @@ fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, 
             }
             Ok(Message::Close(_)) => return,
             Ok(_) => {}
-            Err(tungstenite::Error::Io(error)) if matches!(error.kind(), IoKind::WouldBlock | IoKind::TimedOut) => {}
+            Err(tungstenite::Error::Io(error)) if matches!(error.kind(), IoKind::WouldBlock | IoKind::TimedOut) => lock(rooms).expire(),
             Err(_) => return,
         }
     }

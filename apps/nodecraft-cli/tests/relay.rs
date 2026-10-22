@@ -1,5 +1,5 @@
 //! `nodecraft-cli relay` (#119): sessions shared through a real relay process end with the same
-//! project, and a stranger's frame is turned away.
+//! project, a stranger's frame is turned away, and a share link lets in only what it says (#121).
 use std::io::{BufRead, BufReader, ErrorKind};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use nodecraft_engine::Session;
 use nodecraft_engine::collab::{Collab, joining};
 use nodecraft_graph::{Canvas, Change, Changeset, Node, Project};
-use nodecraft_sync::{Frame, RoomId};
-use nodecraft_types::{CanvasId, NodeId, ProjectId};
+use nodecraft_sync::{Frame, LinkKey, Role, RoomId};
+use nodecraft_types::{CanvasId, CommentId, NodeId, ProjectId};
 use serde_json::json;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
@@ -55,6 +55,8 @@ struct Person {
     socket: Socket,
     collab: Collab,
     session: Option<Session>,
+    /// Why the shared session ended for this person, once it has.
+    ended: Option<String>,
 }
 
 impl Person {
@@ -64,7 +66,7 @@ impl Person {
             stream.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
         }
         socket.send(Message::binary(collab.hello().encode().unwrap())).unwrap();
-        Self { socket, collab, session }
+        Self { socket, collab, session, ended: None }
     }
 
     fn send(&mut self, frames: Vec<Frame>) {
@@ -75,12 +77,18 @@ impl Person {
 
     /// One turn of a host's loop: read what came, take it in, send what that makes.
     fn turn(&mut self) {
+        if self.ended.is_some() {
+            return;
+        }
         loop {
             match self.socket.read() {
-                Ok(Message::Binary(bytes)) => {
-                    let replies = self.collab.receive(Frame::decode(&bytes).unwrap()).unwrap();
-                    self.send(replies);
-                }
+                Ok(Message::Binary(bytes)) => match self.collab.receive(Frame::decode(&bytes).unwrap()) {
+                    Ok(replies) => self.send(replies),
+                    Err(error) => {
+                        self.ended = Some(error.to_string());
+                        return;
+                    }
+                },
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(error)) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => break,
                 Err(error) => panic!("{error}"),
@@ -150,6 +158,51 @@ fn people_sharing_through_the_relay_end_with_one_project() {
     let mut rest = String::new();
     while relay.stderr.read_line(&mut rest).is_ok_and(|n| n > 0) {}
     assert!(!rest.contains(&room().to_string()), "{rest}");
+}
+
+#[test]
+fn a_share_link_lets_its_holder_comment_until_it_is_revoked() {
+    let mut relay = relay();
+    let mut project = Project::new(ProjectId::from_bytes([1; 16]), "Shared").unwrap();
+    Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(canvas(), "Main") }]).apply(&mut project).unwrap();
+    let session = Session::new(project).unwrap();
+    let mut owner = Person::connect(&relay, Collab::share(&session, room()).unwrap(), Some(session));
+    let made = owner.collab.links_request(&json!({"op": "create", "role": "comment", "name": "Ana"}), 0).unwrap();
+    let key: LinkKey = made["key"].as_str().unwrap().parse().unwrap();
+    let mut people = vec![owner];
+    until(&mut people, |p| same(p, 0));
+
+    // A key nobody made lets nobody in.
+    people.push(Person::connect(&relay, Collab::join_link(LinkKey::from_bytes([9; 32])), None));
+    until(&mut people, |p| p[1].ended.is_some());
+    people.pop();
+
+    people.push(Person::connect(&relay, Collab::join_link(key.clone()), None));
+    until(&mut people, |p| same(p, 0));
+    assert_eq!(people[1].collab.role(), Some(Role::Comment));
+    let ana = people[1].session.as_mut().unwrap();
+    let refused = ana.dispatch("node.add", &json!({"canvas": canvas(), "node": Node::new(NodeId::from_bytes([5; 16]), "text")})).unwrap_err();
+    assert_eq!(refused.kind, nodecraft_types::ErrorKind::Forbidden);
+    let thread = CommentId::from_bytes([10; 16]);
+    ana.dispatch("comment.create", &json!({"canvas": canvas(), "id": thread, "text": "Lovely", "pos": {"x": 0, "y": 0}})).unwrap();
+    let signed = |p: &[Person]| {
+        p[0].document().and_then(|d| d.canvases().get(&canvas())).and_then(|c| c.comments().get(&thread)).is_some_and(|c| c.author.as_deref() == Some("Ana"))
+    };
+    until(&mut people, signed);
+
+    // Taken back: Ana is put out at once, and her key no longer opens the room.
+    people[0].collab.links_request(&json!({"op": "revoke", "id": made["id"]}), 0).unwrap();
+    until(&mut people, |p| p[1].ended.is_some());
+    assert!(people[1].ended.as_deref().unwrap().contains("revoked"), "{:?}", people[1].ended);
+    people.pop();
+    people.push(Person::connect(&relay, Collab::join_link(key.clone()), None));
+    until(&mut people, |p| p[1].ended.is_some());
+
+    // The relay writes down neither the room nor a link.
+    relay.child.kill().unwrap();
+    let mut rest = String::new();
+    while relay.stderr.read_line(&mut rest).is_ok_and(|n| n > 0) {}
+    assert!(!rest.contains(&room().to_string()) && !rest.contains(key.as_str()) && !rest.contains(made["id"].as_str().unwrap()), "{rest}");
 }
 
 #[test]

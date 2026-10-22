@@ -508,7 +508,8 @@ impl Change {
                 if *index > validate::MAX_COMMENT_REPLIES {
                     return Err(validate::invalid("reply index exceeds limit"));
                 }
-                validate::text(&reply.text, validate::MAX_REPLY_BYTES)
+                validate::text(&reply.text, validate::MAX_REPLY_BYTES)?;
+                validate::author(reply.author.as_deref())
             }
             Self::SetCommentPin { pos, .. } => validate::position(*pos),
             _ => Ok(()),

@@ -1,5 +1,6 @@
 use super::*;
 use crate::Mirror;
+use crate::{Grant, Role};
 use nodecraft_graph::{Canvas, Change, Changeset, Project};
 use nodecraft_types::{CanvasId, ProjectId};
 
@@ -92,4 +93,112 @@ fn a_newcomer_is_asked_for_what_someone_still_waits_on() {
     let out = room.join(3);
     assert!(out.contains(&Out::Send(3, Frame::AssetGet(vec![hash]))), "{out:?}");
     assert_eq!(room.handle(3, Frame::AssetPut { hash, bytes: bytes.clone() }), vec![Out::Send(2, Frame::AssetPut { hash, bytes })]);
+}
+
+fn grant(role: Role, name: &str) -> Grant {
+    Grant { role, name: name.into(), expires: None }
+}
+
+/// A room the owner (peer 1) has shared the project in, with one link of each role.
+fn shared() -> (Room, Mirror) {
+    let mut room = Room::new();
+    let (owner, update) = Mirror::share(&project()).unwrap();
+    room.join(1);
+    room.handle(1, Frame::Step2(update));
+    for (n, role, name) in [(1, Role::View, "Vi"), (2, Role::Comment, "Cy"), (3, Role::Edit, "Ed")] {
+        assert!(room.handle(1, Frame::LinkPut { hash: [n; 32], grant: grant(role, name) }).is_empty());
+    }
+    (room, owner)
+}
+
+fn thread(author: &str) -> nodecraft_graph::Comment {
+    let mut comment = nodecraft_graph::Comment::new(nodecraft_types::CommentId::from_bytes([7; 16]), "Here", nodecraft_graph::Position { x: 1.0, y: 2.0 });
+    comment.author = Some(author.into());
+    comment
+}
+
+fn put(seq: u64, base: Option<nodecraft_graph::Comment>, comment: Option<nodecraft_graph::Comment>) -> Frame {
+    Frame::CommentPut {
+        seq,
+        canvas: CanvasId::from_bytes([2; 16]),
+        id: nodecraft_types::CommentId::from_bytes([7; 16]),
+        base: base.map(Box::new),
+        comment: comment.map(Box::new),
+    }
+}
+
+#[test]
+fn a_link_lets_its_holder_in_with_its_role_and_only_while_it_lasts() {
+    let (mut room, _) = shared();
+    // A viewer is told its role and isn't asked for a document.
+    assert_eq!(room.join_link(10, [1; 32], 0), vec![Out::Send(10, Frame::Welcome { role: Role::View, name: Some("Vi".into()) })]);
+    // An editor is asked, as the owner is.
+    let out = room.join_link(11, [3; 32], 0);
+    assert!(matches!(sent(&out, 11)[..], [Frame::Welcome { role: Role::Edit, .. }, Frame::Step1(_)]), "{out:?}");
+    // An unknown link, or one that has run out, gets nobody in.
+    assert!(matches!(room.join_link(12, [9; 32], 0)[..], [Out::Close(12, Frame::Refused(_))]));
+    room.handle(1, Frame::LinkPut { hash: [4; 32], grant: Grant { expires: Some(100), ..grant(Role::View, "Late") } });
+    assert!(matches!(room.join_link(13, [4; 32], 99)[..], [Out::Send(13, Frame::Welcome { .. })]));
+    assert!(matches!(room.join_link(14, [4; 32], 100)[..], [Out::Close(14, _)]));
+    // When it runs out, whoever is in through it is put out, and the link is gone.
+    assert_eq!(room.expire(100), vec![Out::Close(13, Frame::Refused("the share link has expired".into()))]);
+    assert!(room.grant(&[4; 32]).is_none());
+}
+
+#[test]
+fn a_viewer_or_commenter_cannot_write_the_document_or_manage_links() {
+    let (mut room, owner) = shared();
+    let update = owner.update_for(&[0]).unwrap();
+    for (peer, link) in [(10, [1; 32]), (11, [2; 32])] {
+        room.join_link(peer, link, 0);
+        assert!(matches!(room.handle(peer, Frame::Update(update.clone()))[..], [Out::Close(p, Frame::Refused(_))] if p == peer));
+        room.join_link(peer, link, 0);
+        assert!(matches!(room.handle(peer, Frame::LinkRevoke([3; 32]))[..], [Out::Close(..)]));
+        room.join_link(peer, link, 0);
+        // Its media is dropped, and nobody asks it for any.
+        assert!(room.handle(peer, Frame::AssetPut { hash: *blake3::hash(b"x").as_bytes(), bytes: b"x".to_vec() }).is_empty());
+    }
+    let out = room.handle(1, Frame::AssetGet(vec![[5; 32]]));
+    assert!(out.is_empty(), "{out:?}");
+    // An editor can't manage links either.
+    room.join_link(12, [3; 32], 0);
+    assert!(matches!(room.handle(12, Frame::LinkPut { hash: [6; 32], grant: grant(Role::Edit, "Me") })[..], [Out::Close(12, _)]));
+    // Nor can a link make anyone the owner.
+    assert!(matches!(room.handle(1, Frame::LinkPut { hash: [6; 32], grant: grant(Role::Owner, "Me") })[..], [Out::Close(1, _)]));
+}
+
+#[test]
+fn revoking_or_changing_a_link_puts_its_holders_out() {
+    let (mut room, _) = shared();
+    room.join_link(10, [1; 32], 0);
+    room.join_link(11, [1; 32], 0);
+    room.join_link(12, [2; 32], 0);
+    let out = room.handle(1, Frame::LinkRevoke([1; 32]));
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert!(out.iter().all(|o| matches!(o, Out::Close(10 | 11, Frame::Refused(_)))));
+    assert!(matches!(room.join_link(10, [1; 32], 0)[..], [Out::Close(10, _)]));
+    // The same terms again change nothing; new ones put the holder out to come back on them.
+    assert!(room.handle(1, Frame::LinkPut { hash: [2; 32], grant: grant(Role::Comment, "Cy") }).is_empty());
+    assert!(matches!(room.handle(1, Frame::LinkPut { hash: [2; 32], grant: grant(Role::View, "Cy") })[..], [Out::Close(12, _)]));
+}
+
+#[test]
+fn a_commenters_discussion_is_checked_written_and_sent_to_everyone() {
+    let (mut room, mut owner) = shared();
+    room.join_link(10, [2; 32], 0);
+    // Under another's name: refused, and nothing written, but the commenter stays.
+    assert!(matches!(&room.handle(10, put(1, None, Some(thread("Ed"))))[..], [Out::Send(10, Frame::CommentDone { seq: 1, refused: Some(_) })]));
+    let out = room.handle(10, put(2, None, Some(thread("Cy"))));
+    let [Out::Send(1, Frame::Update(update)), Out::Send(10, Frame::Update(_)), Out::Send(10, Frame::CommentDone { seq: 2, refused: None })] = &out[..] else {
+        panic!("{out:?}")
+    };
+    owner.receive(update).unwrap();
+    let project = owner.materialize().unwrap().unwrap().project;
+    let comment = project.canvases().values().next().unwrap().comments().values().next().unwrap();
+    assert_eq!(comment.author.as_deref(), Some("Cy"));
+    // Putting the same again changes nothing, and is still acknowledged.
+    assert_eq!(room.handle(10, put(3, None, Some(thread("Cy")))), vec![Out::Send(10, Frame::CommentDone { seq: 3, refused: None })]);
+    // An editor writes discussions in the document instead.
+    room.join_link(11, [3; 32], 0);
+    assert!(matches!(room.handle(11, put(4, None, Some(thread("Ed"))))[..], [Out::Close(11, _)]));
 }

@@ -109,6 +109,8 @@ pub struct Context<'a> {
     pub file: crate::file_cmds::FileStatus,
     /// The session's performance recorder, for `perf.report`.
     pub perf: &'a crate::perf::Recorder,
+    /// What the session may change (#121).
+    pub access: &'a crate::access::Access,
 }
 impl Context<'_> {
     /// Validates against the session's immutable destination bytes, never a project UUID.
@@ -118,6 +120,12 @@ impl Context<'_> {
     /// Session::enabled/dispatch graph-stage every returned document effect once,
     /// including custom handlers. Handler callbacks only check editability/parameters.
     pub fn editable(&self) -> Result<(), Error> {
+        self.access.changes()?;
+        self.writable()
+    }
+    /// Whether the document can take a change at all, whoever makes it: a change from the
+    /// shared document (#121) is checked here, not against this session's role.
+    pub(crate) fn writable(&self) -> Result<(), Error> {
         if self.file.recovery_required { Err(Error::new(ErrorKind::Conflict, "recovery journal needs a checkpoint; save before editing")) } else { Ok(()) }
     }
     pub fn preview_changes(&self, _changes: &Changeset) -> Result<(), Error> {
@@ -235,6 +243,7 @@ impl Registry {
             .chain(crate::ownership_cmds::specs())
             .chain(crate::resolve_cmds::specs())
             .chain(crate::held_cmds::specs())
+            .chain(crate::share_cmds::specs())
             .chain(crate::order_cmds::specs())
             .chain(crate::history_cmds::specs())
             .chain(crate::export_cmds::specs())

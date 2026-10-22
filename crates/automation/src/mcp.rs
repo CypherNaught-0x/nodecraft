@@ -127,6 +127,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "run.held",
     "run.held_retry",
     "run.held_place",
+    "share.links",
+    "share.link_revoke",
     "usage.export_csv",
     "perf.start",
     "perf.stop",
@@ -242,6 +244,9 @@ pub const HUMAN_ONLY: &[&str] = &[
     "usage.resolve_charge",
     // Letting a paid result go can't be undone (#369).
     "run.held_discard",
+    // A share link lets someone into the project: whom is the person's call (#121).
+    "share.link_create",
+    "share.link_update",
     "canvas.auto_format",
     "comment.compose",
     "comment.open",

@@ -132,6 +132,7 @@ fn replace_comment(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
                 node: None,
                 replies: vec![],
                 resolved: false,
+                author: None,
             },
         }]),
         result: Value::Null,
@@ -150,6 +151,7 @@ fn aggregate_history_byte_budget_evicts_oldest_complete_steps() {
             node: None,
             replies: vec![],
             resolved: false,
+            author: None,
         },
     }
     .apply(&mut original)

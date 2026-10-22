@@ -110,6 +110,9 @@ struct Prepared {
 }
 /// Borrowed authority for ordinary staging or Cut's private prospective document.
 struct PreparationSource<'a> {
+    /// A change from the shared document, which the relay checked: this session's role doesn't
+    /// apply to it.
+    remote: bool,
     document: &'a Project,
     revision: u64,
     state: u64,
@@ -187,6 +190,8 @@ pub struct Session {
     replay_limit: usize,
     execution: crate::execution_identity::ExecutionSource,
     perf: crate::perf::Recorder,
+    /// What this session may change: everything, unless it joined through a share link (#121).
+    access: crate::access::Access,
 }
 
 impl Session {
@@ -242,6 +247,7 @@ impl Session {
             replay_limit: MAX_HISTORY_BYTES,
             execution,
             perf: crate::perf::Recorder::default(),
+            access: crate::access::Access::owner(),
         }
     }
 
@@ -273,6 +279,18 @@ impl Session {
     }
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+    /// What this session may change (#121).
+    pub fn access(&self) -> &crate::access::Access {
+        &self.access
+    }
+    /// Sets what this session may change, as the share it joined through says. Edits already
+    /// made stay; undoing one is checked as any edit is.
+    pub fn set_access(&mut self, access: crate::access::Access) {
+        if self.access != access {
+            self.access = access;
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
     }
     pub fn can_undo(&self) -> bool {
         !self.undo.entries.is_empty()
@@ -665,6 +683,7 @@ impl Session {
             file: self.file_status(),
             execution: &self.execution,
             perf: &self.perf,
+            access: &self.access,
         }
     }
 
@@ -787,6 +806,7 @@ impl Session {
             self.prepare_source_observed(
                 effect,
                 PreparationSource {
+                    remote: false,
                     document: &prepared.document,
                     revision,
                     state: prepared.state,
@@ -829,6 +849,7 @@ impl Session {
                 return Ok(result);
             }
             Effect::PreparedRun { prepared } => {
+                self.access.runs()?;
                 return guard(|| {
                     let result = self.services.invoke_run_host(*prepared)?;
                     validate_json(&result)?;
@@ -1031,19 +1052,22 @@ impl Session {
         imported: bool,
         observation: Option<&mut Option<StageObservation>>,
     ) -> Result<Prepared, Error> {
-        self.prepare_source_observed(
-            effect,
-            PreparationSource {
-                document: &self.document,
-                revision: self.revision,
-                state: self.state,
-                execution: &self.execution,
-                assets,
-                identity: &self.admission_identity,
-            },
-            imported,
-            observation,
-        )
+        self.prepare_source_observed(effect, self.source(assets, false), imported, observation)
+    }
+    /// A change from the shared document (#121), prepared as an import is.
+    fn prepare_remote(&self, effect: Effect) -> Result<Prepared, Error> {
+        self.prepare_source_observed(effect, self.source(&self.assets, true), true, None)
+    }
+    fn source<'a>(&'a self, assets: &'a AssetStore, remote: bool) -> PreparationSource<'a> {
+        PreparationSource {
+            remote,
+            document: &self.document,
+            revision: self.revision,
+            state: self.state,
+            execution: &self.execution,
+            assets,
+            identity: &self.admission_identity,
+        }
     }
     fn prepare_source_observed(
         &self,
@@ -1052,9 +1076,14 @@ impl Session {
         imported: bool,
         mut observation: Option<&mut Option<StageObservation>>,
     ) -> Result<Prepared, Error> {
-        let PreparationSource { document: source, revision, state: source_state, execution, assets, identity } = source;
+        let PreparationSource { remote, document: source, revision, state: source_state, execution, assets, identity } = source;
         let next_execution_generation = execution.next()?;
-        self.context(Phase::Dispatch).editable()?;
+        let context = self.context(Phase::Dispatch);
+        if remote {
+            context.writable()?
+        } else {
+            context.editable()?
+        }
         let (document, inverse, forward, state, direction, gesture, result) = match effect {
             Effect::Edit { changes, result, gesture } => {
                 validate_json(&result)?;
@@ -1103,6 +1132,9 @@ impl Session {
                 return Err(invalid("non-document effects must bypass history staging"));
             }
         };
+        if !remote {
+            self.access.permits(&forward)?;
+        }
         let bytes = history_bytes(&inverse)?;
         if imported && self.persistence.is_none() {
             // Memory-only imports still authenticate their actual references, without
@@ -1530,6 +1562,7 @@ mod tests {
                         node: None,
                         replies: vec![],
                         resolved: false,
+                        author: None,
                     },
                 },
                 "node" => {
