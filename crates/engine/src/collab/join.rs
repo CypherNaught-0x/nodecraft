@@ -67,6 +67,14 @@ impl JoinLink {
         }
     }
 
+    /// Shares `project`, a session's document at `revision`, as [`Self::share`] does.
+    pub fn share_project(&self, project: &nodecraft_graph::Project, revision: u64) -> Result<Collab, Error> {
+        match &self.key {
+            Key::Room(room) => Collab::share_project(project, revision, room.clone()),
+            Key::Link(_) => Err(Error::new(ErrorKind::InvalidInput, "a share link joins a project; it can't share one")),
+        }
+    }
+
     /// Joins the room this link opens.
     pub fn join(&self) -> Collab {
         match &self.key {

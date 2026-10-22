@@ -543,8 +543,31 @@ impl Session {
         }
         self.replace_untouched(Snapshot { project, assets: AssetStore::default(), epoch: 0 }, None, "share.adopt")
     }
-    fn replace_untouched(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str) -> Result<(), Error> {
+    /// Host boundary for a joiner's first catch-up (#714): replaces the empty start
+    /// [`Self::adopt_joined`] opened with `project`, the shared project, in one step rather than
+    /// one changeset at a time. The assets already imported stay, and must include every one
+    /// `project` names. Published as `share.adopt`, with fresh history.
+    pub fn adopt_shared(&mut self, shared: crate::collab::SharedProject) -> Result<(), Error> {
+        let crate::collab::SharedProject { project, assets } = shared;
+        self.settle_for_edit()?;
+        let id = self.document.id();
+        if self.can_undo() || self.can_redo() || self.document != crate::collab::joining(id)? {
+            return Err(Error::new(ErrorKind::Conflict, "the shared project can only replace the empty project a joiner starts with"));
+        }
+        if project.id() != id {
+            return Err(Error::new(ErrorKind::Conflict, "this session holds a different project from the one shared"));
+        }
+        if assets.iter().any(|hash| !self.assets.contains(hash)) {
+            return Err(Error::new(ErrorKind::NotFound, "a shared card names an asset that hasn't arrived"));
+        }
+        // Checked when it was made, away from the window.
+        self.replace_valid(Snapshot { project, assets: self.assets.clone(), epoch: 0 }, None, "share.adopt")
+    }
+    fn replace_untouched(&mut self, snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str) -> Result<(), Error> {
         snapshot.project.validate()?;
+        self.replace_valid(snapshot, location, command)
+    }
+    fn replace_valid(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str) -> Result<(), Error> {
         snapshot.assets = snapshot.assets.in_context(
             self.assets.context().clone(),
             &nodecraft_format::asset_source::TransferCancel::default(),

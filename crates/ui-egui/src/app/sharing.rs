@@ -2,10 +2,12 @@
 //!
 //! `share.start` asks the `share.session` service, which only queues the request; each frame
 //! [`NodeCraftApp::tick_sharing`] takes it up: it names a new room, shares the session in it
-//! ([`Collab`]) and opens a [`Connection`] to the relay on its own thread. From then on each frame
-//! takes in what came, settles the session, and sends what that makes. A dropped connection
-//! leaves the project open and editable; the thread reconnects, and the next hello catches both
-//! sides up.
+//! ([`Collab`]) and hands both to a [`Worker`] thread, which opens a [`connection::Connection`] to the relay
+//! on a thread of its own. The worker takes in what came and works out what the session must
+//! take to match the room (#714); each frame hands it a copy of the document if that changed,
+//! and applies the changesets that come back if nothing was edited meanwhile. A dropped
+//! connection leaves the project open and editable; the thread reconnects, and the next hello
+//! catches both sides up.
 //!
 //! `share.join` opens a new window ([`OpenWindow`]) and hands it the join link on its standard
 //! input, never its command line, where other people on the machine could read it. That window
@@ -17,16 +19,18 @@
 //! result.
 use super::*;
 use nodecraft_engine::access::Access;
-use nodecraft_engine::collab::{Collab, JoinLink, Key, LINKS_SERVICE, joining, relay_address};
+use nodecraft_engine::collab::{Collab, JoinLink, Key, LINKS_SERVICE, Links, Out, Taken, joining, relay_address};
 use nodecraft_engine::live_cmds::LIVE_SERVICE;
 use nodecraft_engine::session::DocumentLineage;
-use nodecraft_sync::{Frame, Role};
+use nodecraft_sync::Role;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 mod connection;
+mod worker;
 
-use connection::{Connection, Event};
+use connection::Event;
+use worker::{Status, Turn, Worker};
 
 /// Opens a join link in a new window; the app's starts NodeCraft again, tests record it.
 pub(crate) type OpenWindow = Box<dyn FnMut(&str) -> Result<(), Error>>;
@@ -64,12 +68,29 @@ enum State {
 
 struct Live {
     link: JoinLink,
-    connection: Connection,
+    worker: Worker,
     state: State,
+    /// As of the worker's last report.
+    status: Status,
     /// A joiner whose session hasn't yet taken up the shared project.
     joining: bool,
     /// The document being shared; sharing ends if another takes its place in this window.
     lineage: Option<DocumentLineage>,
+    /// The session revision whose document the worker last had.
+    sent: Option<u64>,
+    /// A turn the worker hasn't answered yet.
+    in_flight: bool,
+    /// Something came in that the next turn settles.
+    dirty: bool,
+}
+
+/// The owner's share links, kept here so `share.links` is answered at once however busy the
+/// worker is.
+#[derive(Default)]
+struct Desk {
+    links: Links,
+    role: Option<Role>,
+    live: bool,
 }
 
 /// The share panel's view state.
@@ -83,7 +104,7 @@ pub(crate) struct Panel {
 
 pub(crate) struct Sharing {
     shared: Rc<RefCell<Shared>>,
-    collab: Rc<RefCell<Option<Collab>>>,
+    desk: Rc<RefCell<Desk>>,
     live: Option<Live>,
     open_window: OpenWindow,
     pub(crate) panel: Panel,
@@ -94,25 +115,38 @@ impl Sharing {
     /// through.
     pub(crate) fn new(open_window: OpenWindow) -> (Self, [(&'static str, Handler); 2]) {
         let shared = Rc::new(RefCell::new(Shared { status: json!({"state": "off"}), ..Shared::default() }));
-        let collab: Rc<RefCell<Option<Collab>>> = Rc::new(RefCell::new(None));
+        let desk: Rc<RefCell<Desk>> = Rc::default();
         let asks = Rc::clone(&shared);
         let session: Handler = Box::new(move |request| ask(&asks, request));
-        let links = Rc::clone(&collab);
+        let links = Rc::clone(&desk);
         let links: Handler = Box::new(move |request| {
-            let mut collab = links.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "live sharing is busy"))?;
-            let collab = collab.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "this project isn't shared live"))?;
-            collab.links_request(request, now())
+            let mut desk = links.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "live sharing is busy"))?;
+            if !desk.live {
+                return Err(Error::new(ErrorKind::Unsupported, "this project isn't shared live"));
+            }
+            let role = desk.role;
+            desk.links.request(role, request, now())
         });
-        let sharing = Self { shared, collab, live: None, open_window, panel: Panel::default() };
+        let sharing = Self { shared, desk, live: None, open_window, panel: Panel::default() };
         (sharing, [(LIVE_SERVICE, session), (LINKS_SERVICE, links)])
     }
 
-    /// Connects to `link`'s relay and takes part in its room through `collab`.
-    fn begin(&mut self, ctx: &egui::Context, link: JoinLink, collab: Collab, joining: bool) -> Result<(), Error> {
+    /// Connects to `link`'s relay and takes part in its room through the [`Collab`] `make` makes.
+    fn begin(
+        &mut self,
+        ctx: &egui::Context,
+        link: JoinLink,
+        make: impl FnOnce() -> Result<Collab, Error> + Send + 'static,
+        joining: bool,
+    ) -> Result<(), Error> {
         let wake = ctx.clone();
-        let connection = Connection::open(link.relay().to_owned(), move || wake.request_repaint())?;
-        *self.collab.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "live sharing is busy"))? = Some(collab);
-        self.live = Some(Live { link, connection, state: State::Connecting, joining, lineage: None });
+        let mut desk = self.desk.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "live sharing is busy"))?;
+        // Who comes in by the room id owns it; a link's role comes from the relay.
+        let status = Status { role: matches!(link.key(), Key::Room(_)).then_some(Role::Owner), ..Status::default() };
+        let worker = Worker::spawn(link.relay().to_owned(), make, move || wake.request_repaint())?;
+        *desk = Desk { links: Links::default(), role: status.role, live: true };
+        drop(desk);
+        self.live = Some(Live { link, worker, state: State::Connecting, status, joining, lineage: None, sent: None, in_flight: false, dirty: false });
         if let Ok(mut shared) = self.shared.try_borrow_mut() {
             shared.live = true;
         }
@@ -132,28 +166,25 @@ impl Sharing {
     /// The chip's words: "Share" while nothing is shared, else how sharing is going.
     pub(crate) fn chip(&self) -> String {
         let Some(live) = &self.live else { return "Share".into() };
-        let collab = self.collab.try_borrow().ok();
-        let collab = collab.as_ref().and_then(|collab| collab.as_ref());
-        match (&live.state, collab) {
-            (State::Connecting, _) => "Connecting…".into(),
-            (State::Reconnecting { .. }, _) => "Reconnecting…".into(),
-            (State::Connected(_), Some(collab)) if collab.waiting_for_assets() > 0 => format!("Live · {} files to come", collab.waiting_for_assets()),
-            (State::Connected(_), Some(collab)) if !collab.caught_up() => "Live · catching up".into(),
-            (State::Connected(_), _) => "Live".into(),
+        let status = &live.status;
+        match &live.state {
+            State::Connecting => "Connecting…".into(),
+            State::Reconnecting { .. } => "Reconnecting…".into(),
+            State::Connected(_) if status.waiting_for_assets > 0 => format!("Live · {} files to come", status.waiting_for_assets),
+            State::Connected(_) if !live.caught_up() => "Live · catching up".into(),
+            State::Connected(_) => "Live".into(),
         }
     }
 
     fn status(&self) -> serde_json::Value {
         let Some(live) = &self.live else { return json!({"state": "off"}) };
-        let collab = self.collab.try_borrow().ok();
-        let collab = collab.as_ref().and_then(|collab| collab.as_ref());
-        let role = collab.and_then(Collab::role);
-        let waiting = collab.map_or(0, Collab::waiting_for_assets);
+        let role = live.status.role;
+        let waiting = live.status.waiting_for_assets;
         let state = match &live.state {
             State::Connecting => "connecting",
             State::Reconnecting { .. } => "reconnecting",
             State::Connected(_) if waiting > 0 => "waiting",
-            State::Connected(_) if !collab.is_some_and(Collab::caught_up) => "catching_up",
+            State::Connected(_) if !live.caught_up() => "catching_up",
             State::Connected(_) => "live",
         };
         json!({"state": state, "role": role, "waiting_for_assets": waiting})
@@ -255,7 +286,7 @@ impl NodeCraftApp {
             return Err(Error::new(ErrorKind::Conflict, "this window is shared live already"));
         }
         let collab = link.join();
-        sharing.begin(ctx, link, collab, true)?;
+        sharing.begin(ctx, link, move || Ok(collab), true)?;
         // Nothing made here before the shared project comes would survive taking it in.
         self.session.set_access(Access::new(Role::View, None)?);
         Ok(())
@@ -263,12 +294,13 @@ impl NodeCraftApp {
 
     fn start_sharing(&mut self, ctx: &egui::Context, relay: &str) -> Result<(), Error> {
         let link = JoinLink::new_room(relay)?;
-        let collab = link.share(&self.session)?;
         let sharing = self.sharing.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "this window can't share live"))?;
         if sharing.live.is_some() {
             return Err(Error::new(ErrorKind::Conflict, "this project is shared live already"));
         }
-        sharing.begin(ctx, link, collab, false)?;
+        let (project, revision) = (self.session.document().clone(), self.session.revision());
+        let room = link.clone();
+        sharing.begin(ctx, link, move || room.share_project(&project, revision), false)?;
         sharing.panel.open = true;
         if let Some(live) = &mut sharing.live {
             live.lineage = Some(self.session.document_lineage());
@@ -287,8 +319,8 @@ impl NodeCraftApp {
             if sharing.live.take().is_some() {
                 self.session.set_access(Access::owner());
             }
-            if let Ok(mut collab) = sharing.collab.try_borrow_mut() {
-                *collab = None;
+            if let Ok(mut desk) = sharing.desk.try_borrow_mut() {
+                *desk = Desk::default();
             }
             sharing.panel.show_link = false;
             if let Ok(mut shared) = sharing.shared.try_borrow_mut() {
@@ -348,54 +380,93 @@ impl NodeCraftApp {
         }
     }
 
-    /// Takes in what the connection brought, settles the session and sends what that makes.
-    /// An error ends the sharing.
+    /// Takes in what the worker reported, applies what it planned, and hands it the session as
+    /// it now is. An error ends the sharing.
     fn drive_sharing(&mut self) -> Result<(), String> {
         let Some(sharing) = &mut self.sharing else { return Ok(()) };
         let Some(live) = &mut sharing.live else { return Ok(()) };
-        let mut slot = sharing.collab.try_borrow_mut().map_err(|_| "live sharing is busy".to_string())?;
-        let Some(collab) = slot.as_mut() else { return Ok(()) };
-        for event in live.connection.events() {
-            match event {
-                Event::Connected(n) => {
-                    live.state = State::Connected(n);
-                    live.send(n, vec![collab.hello()])?;
+        let mut desk = sharing.desk.try_borrow_mut().map_err(|_| "live sharing is busy".to_string())?;
+        let mut plans = Vec::new();
+        for report in live.worker.reports()? {
+            for event in report.events {
+                match event {
+                    // The relay forgets links while the room is empty; each connection tells it again.
+                    Event::Connected(n) => {
+                        live.state = State::Connected(n);
+                        live.worker.queue(desk.links.again())?;
+                    }
+                    Event::Dropped { why, retry } => live.state = State::Reconnecting { why, at: Instant::now() + retry },
+                    Event::Frame(_) => {}
                 }
-                Event::Frame(bytes) => {
-                    let State::Connected(n) = live.state else { continue };
-                    let replies = Frame::decode(&bytes).and_then(|frame| collab.receive(frame)).map_err(|e| e.message)?;
-                    live.send(n, replies)?;
-                }
-                Event::Dropped { why, retry } => live.state = State::Reconnecting { why, at: Instant::now() + retry },
             }
+            if let Some(why) = report.ended {
+                return Err(why);
+            }
+            live.status = report.status;
+            live.dirty |= report.dirty;
+            if let Some(notice) = report.notices.into_iter().last() {
+                self.notice = Some(notice);
+            }
+            if let Some((n, hashes)) = report.assets {
+                let frames = hashes.into_iter().filter_map(|hash| Out::Asset(hash).frame(&self.session)).collect();
+                live.worker.send(n, frames)?;
+            }
+            plans.extend(report.plan);
         }
-        let State::Connected(n) = live.state else { return Ok(()) };
+        desk.role = live.status.role;
+        live.worker.queue(desk.links.take())?;
+        drop(desk);
         // Opening another project here, or another copy of this one, must not send it into the
         // room.
         let replaced_here = live.lineage.as_ref().is_some_and(|lineage| !self.session.is_current_document(lineage));
-        if !live.joining && (replaced_here || collab.project_id().map_err(|e| e.message)?.is_some_and(|id| id != self.session.document().id())) {
+        if !live.joining && (replaced_here || live.status.project_id.is_some_and(|id| id != self.session.document().id())) {
             return Err("another project was opened in this window".into());
         }
         let mut replaced = false;
         if live.joining
-            && let Some(id) = collab.project_id().map_err(|e| e.message)?
+            && let Some(id) = live.status.project_id
         {
             self.session.adopt_joined(joining(id).map_err(|e| e.message)?).map_err(|e| e.message)?;
             live.joining = false;
             live.lineage = Some(self.session.document_lineage());
+            live.sent = None;
             replaced = true;
         }
-        if !live.joining {
-            let frames = collab.settle(&mut self.session).map_err(|e| e.message)?;
-            live.send(n, frames)?;
+        for plan in plans {
+            live.in_flight = false;
+            let replaces = plan.replaces();
+            match plan.take(&mut self.session).map_err(|e| e.message)? {
+                Taken::Nothing => {}
+                // Edited meanwhile: the next turn plans again from the newer document.
+                Taken::Stale => {
+                    live.worker.taken(self.session.revision(), None, false)?;
+                    live.dirty = true;
+                }
+                Taken::Applied(applied) => {
+                    applied.map_err(|e| e.message)?;
+                    // Said now, with the document as taken: an edit before the next turn is
+                    // the session's own, to publish.
+                    let revision = self.session.revision();
+                    live.worker.taken(revision, Some(self.session.document().clone()), true)?;
+                    live.sent = Some(revision);
+                    // A joiner took the shared project in whole: this window's document still.
+                    if replaces {
+                        live.lineage = Some(self.session.document_lineage());
+                        replaced = true;
+                    }
+                }
+            }
         }
-        if let Some(why) = collab.take_refusal() {
-            self.notice = Some(format!("The relay didn't take a change to a discussion: {why}"));
+        if matches!(live.state, State::Connected(_)) && !live.joining && !live.in_flight && (live.dirty || live.sent != Some(self.session.revision())) {
+            let revision = self.session.revision();
+            // The copy is the one cost left here; it is made only when the document changed.
+            let document = (live.sent != Some(revision)).then(|| self.session.document().clone());
+            let assets = self.session.assets().hashes().copied().collect();
+            live.worker.turn(Turn { revision, document, assets })?;
+            live.sent = Some(revision);
+            live.in_flight = true;
+            live.dirty = false;
         }
-        if let Some(why) = collab.take_clash() {
-            self.notice = Some(why);
-        }
-        drop(slot);
         // A joiner shows the shared project's first canvas once it has one.
         if replaced || !self.session.document().canvases().contains_key(&self.canvas) {
             if let Some(canvas) = sheet_view::home_canvas(self.session.document()) {
@@ -441,10 +512,7 @@ impl NodeCraftApp {
                 ui.set_max_width(t.minimap_height * 2.5);
                 match &sharing.live {
                     None => idle(ui, t, &mut sharing.panel, &mut command),
-                    Some(live) => {
-                        let role = sharing.collab.try_borrow().ok().and_then(|collab| collab.as_ref().and_then(Collab::role));
-                        shared(ui, t, live, role, &mut sharing.panel, &mut command);
-                    }
+                    Some(live) => shared(ui, t, live, live.status.role, &mut sharing.panel, &mut command),
                 }
             });
         sharing.panel.open &= open;
@@ -457,11 +525,9 @@ impl NodeCraftApp {
 }
 
 impl Live {
-    fn send(&self, n: u64, frames: Vec<Frame>) -> Result<(), String> {
-        for frame in frames {
-            self.connection.send(n, frame.encode().map_err(|e| e.message)?);
-        }
-        Ok(())
+    /// Whether this session holds what the room holds, as far as it has heard.
+    fn caught_up(&self) -> bool {
+        self.status.caught_up && !self.dirty
     }
 }
 
