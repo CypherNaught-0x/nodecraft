@@ -153,6 +153,11 @@ fn template(id: &str) -> (Session, Value) {
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"document.pages","pos":{"x":0,"y":0}})).unwrap();
         document = seed.document().clone();
     }
+    if matches!(id, "image.tools" | "image.tool") {
+        let mut seed = Session::new(document.clone()).unwrap();
+        seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"source.image","pos":{"x":0,"y":0}})).unwrap();
+        document = seed.document().clone();
+    }
     if id == "mesh.capture" {
         let mut seed = Session::new(document.clone()).unwrap();
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"source.mesh","pos":{"x":0,"y":0}})).unwrap();
@@ -550,6 +555,9 @@ fn template(id: &str) -> (Session, Value) {
         "mask.margins_set" => json!({"canvas":canvas(),"id":node_id(1),"margins":{"left":0,"top":0,"right":64,"bottom":0}}),
         "mask.edit" => json!({"canvas":canvas(),"mask":node_id(1),"id":node_id(7),
             "edges":[nodecraft_types::EdgeId::from_bytes([0x77; 16]),nodecraft_types::EdgeId::from_bytes([0x78; 16])],"pos":{"x":1,"y":2},"prompt":"a door"}),
+        "image.tools" => json!({"canvas":canvas(),"from":{"node":node_id(5),"port":"out"}}),
+        "image.tool" => json!({"canvas":canvas(),"tool":"grade","from":{"node":node_id(5),"port":"out"},"id":node_id(7),
+            "edges":[nodecraft_types::EdgeId::from_bytes([0x77; 16])],"pos":{"x":1,"y":2}}),
         "mask.refit" => json!({"canvas":canvas(),"id":node_id(1),"fit":true}),
         "mask.status" => json!({"canvas":canvas()}),
         "layers.list" => json!({"canvas":canvas(),"id":node_id(9)}),

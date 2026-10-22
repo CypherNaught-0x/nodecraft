@@ -341,6 +341,7 @@ mod fields;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_dialogs;
 mod generate;
+mod image_tools;
 mod layer_editor;
 mod layer_fonts;
 mod layout;
@@ -1461,6 +1462,7 @@ impl NodeCraftApp {
         let mut reader_request = None;
         let mut timeline_request = None;
         let mut element_request = false;
+        let mut image_tool_request = None;
         let mut technique_request = None;
         let mut style_request = None;
         let mut wire_command = None;
@@ -1475,6 +1477,7 @@ impl NodeCraftApp {
         let mut reader_after = None;
         let mut timeline_after = None;
         let mut element_after = false;
+        let mut image_tool_after = None;
         let mut technique_after = None;
         let mut style_after = None;
         let mut tag_action = None;
@@ -1662,7 +1665,7 @@ impl NodeCraftApp {
                     // old strokes onto the new image.
                     if let Some(drift) = self.mask_badges.as_ref().and_then(|badges| badges.masks.get(&node.id).copied()) {
                         if mask_badges::badge(ui, &tag_painter, &self.view, viewport, r.rect, node.id, drift, t) && !canvas_blocks {
-                            mask_request = Some((node.id, false));
+                            mask_request = Some(node.id);
                         }
                     } else if !running
                         && self.stale_badges.as_ref().is_some_and(|badges| badges.nodes.contains(&node.id))
@@ -1741,28 +1744,47 @@ impl NodeCraftApp {
                             if ui.button(format!("Select all {label} nodes")).clicked() {
                                 query = Some(SelectQuery::Kind(node.kind.clone()));
                             }
-                            if nodecraft_engine::split::image_of(node).is_some() {
-                                ui.menu_button("Split into grid", |ui| {
-                                    let (rows, columns) = &mut self.split_size;
-                                    let side = 1..=nodecraft_engine::split::MAX_SIDE;
-                                    ui.add(egui::DragValue::new(rows).range(side.clone()).prefix("Rows: "));
-                                    ui.add(egui::DragValue::new(columns).range(side).prefix("Columns: "));
-                                    // The card draws these lines over its image while the menu is open.
-                                    self.split_seen = Some((node.id, *rows, *columns));
-                                    if self.split_shown != self.split_seen {
-                                        ui.ctx().request_repaint();
-                                    }
-                                    let tiles = rows.saturating_mul(*columns);
-                                    let fits = tiles <= nodecraft_engine::split::MAX_TILES;
-                                    let button = ui.add_enabled(fits, egui::Button::new(format!("Split into {tiles} images")));
-                                    let button = if fits {
-                                        button
-                                    } else {
-                                        button.on_disabled_hover_text(format!("At most {} tiles", nodecraft_engine::split::MAX_TILES))
-                                    };
-                                    if button.clicked() {
-                                        split_request = Some((node.id, *rows, *columns));
-                                        ui.close();
+                            if node.kind != nodecraft_nodes::mask::ID
+                                && let Some(from) = image_tools::output(node)
+                                && let Ok(entries) = nodecraft_engine::image_tool_cmds::menu(canvas, self.session.generation_catalog().ok(), &from)
+                            {
+                                let has_image = nodecraft_engine::split::image_of(node).is_some();
+                                ui.menu_button("Image tools", |ui| {
+                                    for entry in &entries {
+                                        if entry.tool != nodecraft_engine::image_tool_cmds::Tool::SplitGrid {
+                                            if let Some(request) = image_tools::button(ui, entry, node, &from, has_image) {
+                                                image_tool_request = Some(request);
+                                            }
+                                            continue;
+                                        }
+                                        if !has_image || entry.reason.is_some() {
+                                            ui.add_enabled(false, egui::Button::new(entry.tool.label()))
+                                                .on_disabled_hover_text(entry.reason.as_deref().unwrap_or("Run or load the image first"));
+                                            continue;
+                                        }
+                                        ui.menu_button(entry.tool.label(), |ui| {
+                                            let (rows, columns) = &mut self.split_size;
+                                            let side = 1..=nodecraft_engine::split::MAX_SIDE;
+                                            ui.add(egui::DragValue::new(rows).range(side.clone()).prefix("Rows: "));
+                                            ui.add(egui::DragValue::new(columns).range(side).prefix("Columns: "));
+                                            // The card draws these lines over its image while the menu is open.
+                                            self.split_seen = Some((node.id, *rows, *columns));
+                                            if self.split_shown != self.split_seen {
+                                                ui.ctx().request_repaint();
+                                            }
+                                            let tiles = rows.saturating_mul(*columns);
+                                            let fits = tiles <= nodecraft_engine::split::MAX_TILES;
+                                            let button = ui.add_enabled(fits, egui::Button::new(format!("Split into {tiles} images")));
+                                            let button = if fits {
+                                                button
+                                            } else {
+                                                button.on_disabled_hover_text(format!("At most {} tiles", nodecraft_engine::split::MAX_TILES))
+                                            };
+                                            if button.clicked() {
+                                                split_request = Some((node.id, *rows, *columns));
+                                                ui.close();
+                                            }
+                                        });
                                     }
                                 });
                             }
@@ -1800,17 +1822,9 @@ impl NodeCraftApp {
                                 timeline_request = Some(node.id);
                                 ui.close();
                             }
-                            if node.kind == nodecraft_nodes::mask::ID {
-                                if ui.button("Paint mask…").clicked() {
-                                    mask_request = Some((node.id, false));
-                                    ui.close();
-                                }
-                            } else if nodecraft_engine::split::image_of(node).is_some() && mask_editor::image_output(node).is_some() {
-                                let r = ui.button("Inpaint or expand…").on_hover_text("Paint where the image should change, or widen its canvas");
-                                if r.clicked() {
-                                    mask_request = Some((node.id, true));
-                                    ui.close();
-                                }
+                            if node.kind == nodecraft_nodes::mask::ID && ui.button("Paint mask…").clicked() {
+                                mask_request = Some(node.id);
+                                ui.close();
                             }
                             if !elements::sources(canvas, self.selection.nodes()).is_empty() {
                                 let r = ui.button("Make Element from selection").on_hover_text("A reusable subject prompts can mention by #name");
@@ -2004,6 +2018,7 @@ impl NodeCraftApp {
             reader_after = reader_request;
             timeline_after = timeline_request;
             element_after = element_request;
+            image_tool_after = image_tool_request;
             technique_after = technique_request;
             style_after = style_request;
             if let Some(marquee) = &mut self.marquee
@@ -2073,13 +2088,14 @@ impl NodeCraftApp {
         if let Some(node) = timeline_after {
             self.open_timeline_editor(node);
         }
-        match mask_after {
-            Some((node, true)) => self.open_mask_editor_for(node),
-            Some((node, false)) => self.mask_editor = Some(mask_editor::MaskEditor::new(self.canvas, node)),
-            None => {}
+        if let Some(node) = mask_after {
+            self.mask_editor = Some(mask_editor::MaskEditor::new(self.canvas, node));
         }
         if element_after {
             self.make_element();
+        }
+        if let Some(request) = image_tool_after {
+            self.image_tool(request);
         }
         if let Some(action) = technique_after {
             self.technique_action(action);
@@ -2944,6 +2960,8 @@ mod generate_tests;
 mod generation_tests;
 #[cfg(test)]
 mod history_tests;
+#[cfg(test)]
+mod image_tools_tests;
 #[cfg(test)]
 mod layer_editor_tests;
 #[cfg(test)]

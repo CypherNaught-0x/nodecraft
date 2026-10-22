@@ -48,7 +48,9 @@ fn of_kind(h: &Harness<'static, NodeCraftApp>, kind: &str) -> Option<nodecraft_g
 fn opened() -> Harness<'static, NodeCraftApp> {
     let mut h = with_image();
     right_click(&mut h, IMAGE);
-    h.get_by_label("Inpaint or expand…").click();
+    h.get_by_label_contains("Image tools").hover();
+    h.run();
+    h.get_by_label("Inpaint…").click();
     h.run_steps(3);
     h.run_steps(3);
     assert!(h.state().mask_editor.is_some(), "{:?}", h.state().notice);
@@ -129,7 +131,7 @@ fn the_editor_reopens_from_the_mask_card_and_closes_when_the_mask_goes() {
     assert!(h.state().mask_editor.is_none());
     let mask = of_kind(&h, nodecraft_nodes::mask::ID).unwrap().id;
     right_click(&mut h, mask);
-    assert!(h.query_by_label("Inpaint or expand…").is_none(), "a mask isn't masked again");
+    assert!(h.query_by_label_contains("Image tools").is_none(), "a mask isn't masked again");
     h.get_by_label("Paint mask…").click();
     h.run();
     assert_eq!(h.state().mask_editor.as_ref().map(|e| e.mask), Some(mask));
@@ -176,7 +178,9 @@ fn mask102_visual() {
         import_files(&mut h.state_mut().session, canvas, at, 300.0, &[Incoming { name: "gradient.png", bytes: &png }], &[IMAGE]).unwrap();
         h.run_steps(4);
         right_click(&mut h, IMAGE);
-        h.get_by_label("Inpaint or expand…").click();
+        h.get_by_label_contains("Image tools").hover();
+        h.run();
+        h.get_by_label("Inpaint…").click();
         h.run_steps(4);
         let expand = of_kind(&h, "image.expand").unwrap().id;
         h.state_mut()

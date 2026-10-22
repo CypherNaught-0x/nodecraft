@@ -43,6 +43,8 @@ fn the_context_menu_splits_an_image_into_selected_nodes_in_one_undo_step() {
     let before = h.state().session.document().clone();
     let nodes = count(&h);
     right_click(&mut h, IMAGE);
+    h.get_by_label_contains("Image tools").hover();
+    h.run();
     h.get_by_label_contains("Split into grid").hover();
     h.run();
     h.run();
@@ -83,6 +85,8 @@ fn the_grid_shows_on_the_image_while_the_split_menu_is_open() {
     }
     assert!(h.query_by_label("Image 8×6").is_some(), "the preview is ready");
     right_click(&mut h, IMAGE);
+    h.get_by_label_contains("Image tools").hover();
+    h.run();
     h.get_by_label_contains("Split into grid").hover();
     h.run();
     h.run();
@@ -107,6 +111,8 @@ fn split_preview_owns_input_until_the_tag_filter_can_resume() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     right_click(&mut h, IMAGE);
+    h.get_by_label_contains("Image tools").hover();
+    h.run();
     h.get_by_label_contains("Split into grid").hover();
     h.run();
     h.run();

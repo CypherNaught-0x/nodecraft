@@ -147,6 +147,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "mask.create",
     "mask.margins_set",
     "mask.edit",
+    // The image tools list is read-only; a tool only adds and wires a card, which runs (and is
+    // quoted) through run.start.
+    "image.tools",
+    "image.tool",
     // Keeping or fitting strokes is one undoable edit; the status is read-only.
     "mask.refit",
     "mask.status",
