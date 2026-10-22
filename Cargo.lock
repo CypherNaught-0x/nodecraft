@@ -3334,6 +3334,7 @@ name = "nodecraft-ui-egui"
 version = "0.2.0-rc.1"
 dependencies = [
  "arboard",
+ "blake3",
  "craft-quit",
  "craft-ui",
  "ed25519-dalek",

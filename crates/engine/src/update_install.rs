@@ -64,6 +64,9 @@ pub struct Feed {
     pub format: u32,
     /// The release, as its tag names it without the `v`.
     pub version: String,
+    /// Whether the release is a prerelease, so a release list that offers it as a stable one
+    /// can't install it on the stable channel (#567).
+    pub prerelease: bool,
     /// Each platform's payload, by [`target`] name.
     pub targets: BTreeMap<String, Payload>,
 }
@@ -83,12 +86,19 @@ pub struct Payload {
 pub struct Downloaded {
     pub version: String,
     pub file: String,
+    /// The signed feed's BLAKE3 of `bytes`, lowercase hex, to check the staged copy against.
+    pub blake3: String,
     pub bytes: Vec<u8>,
 }
 
 impl std::fmt::Debug for Downloaded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Downloaded").field("version", &self.version).field("file", &self.file).field("len", &self.bytes.len()).finish()
+        f.debug_struct("Downloaded")
+            .field("version", &self.version)
+            .field("file", &self.file)
+            .field("blake3", &self.blake3)
+            .field("len", &self.bytes.len())
+            .finish()
     }
 }
 
@@ -211,11 +221,46 @@ pub async fn download(http: &dyn Http, base: &str, release: &Available, current:
     let feed_bytes = get(http, &at(FEED_FILE), MAX_FEED_BYTES, FEED_TIMEOUT_MS).await?;
     let signature = get(http, &at(SIGNATURE_FILE), MAX_SIGNATURE_BYTES, FEED_TIMEOUT_MS).await?;
     let feed = verify_feed(&feed_bytes, &signature, keys, &release.version)?;
+    // The release list isn't signed: a prerelease offered as a stable release is refused.
+    if feed.prerelease && !release.prerelease {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("the update for NodeCraft {} was refused: its signed feed says it is a prerelease, but it was offered as a stable release", feed.version),
+        ));
+    }
     let payload = payload(&feed, target)?;
     let limit = usize::try_from(payload.size).map_err(|_| Error::new(ErrorKind::InvalidInput, "the update is too large for this computer"))?;
     let bytes = get(http, &at(&payload.file), limit, PAYLOAD_TIMEOUT_MS).await?;
     verify_payload(payload, &bytes)?;
-    Ok(Downloaded { version: feed.version.clone(), file: payload.file.clone(), bytes })
+    Ok(Downloaded { version: feed.version.clone(), file: payload.file.clone(), blake3: payload.blake3.to_ascii_lowercase(), bytes })
+}
+
+/// Refuses a staged update that is no longer what was verified (`blake3`: [`Downloaded::blake3`]),
+/// read from `staged` just before it is swapped in or run: it may have waited days in a folder
+/// the person can write to (#567). Reads at most `size` bytes (the signed payload's size, or
+/// [`MAX_PAYLOAD_BYTES`] when it isn't known) and one more buffer.
+pub fn verify_staged(staged: &mut dyn std::io::Read, blake3: &str, size: u64) -> Result<(), Error> {
+    let changed = || Error::new(ErrorKind::InvalidInput, "the staged update changed after it was checked; nothing was installed, so install the update again");
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut read: u64 = 0;
+    loop {
+        let n = match staged.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(Error::new(ErrorKind::Internal, "the staged update couldn't be read; nothing was installed, so install the update again")),
+        };
+        read = read.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+        if read > size.min(MAX_PAYLOAD_BYTES) {
+            return Err(changed());
+        }
+        hasher.update(buffer.get(..n).ok_or_else(changed)?);
+    }
+    if hasher.finalize().to_hex().as_str() != blake3.to_ascii_lowercase() {
+        return Err(changed());
+    }
+    Ok(())
 }
 
 /// Refuses a payload whose size or hash isn't the signed feed's.

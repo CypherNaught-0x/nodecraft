@@ -93,7 +93,8 @@ fn build(dir: &Path, version: &str) -> Result<(Vec<u8>, Vec<String>), String> {
         return Err(format!("no update payloads for {version} in {}", dir.display()));
     }
     let found = targets.keys().cloned().collect();
-    let feed = serde_json::json!({"format": 1, "version": version, "targets": targets});
+    // A prerelease as the release workflow decides it: the version has a `-pre` tag.
+    let feed = serde_json::json!({"format": 1, "version": version, "prerelease": version.contains('-'), "targets": targets});
     let mut body = serde_json::to_vec_pretty(&feed).map_err(|e| e.to_string())?;
     body.push(b'\n');
     Ok((body, found))
@@ -148,9 +149,13 @@ mod tests {
         let feed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(feed["version"], "0.3.0");
         assert_eq!(feed["format"], 1);
+        assert_eq!(feed["prerelease"], false);
         assert_eq!(feed["targets"]["windows-x64"]["file"], "nodecraft-0.3.0-windows-x64.msi");
         assert_eq!(feed["targets"]["windows-x64"]["size"], 3);
         assert_eq!(feed["targets"]["windows-x64"]["blake3"], blake3::hash(b"msi").to_hex().as_str());
         assert!(build(dir.path(), "9.9.9").is_err());
+        std::fs::write(dir.path().join("nodecraft-0.4.0-rc.1-windows-x64.msi"), b"rc").unwrap();
+        let (body, _) = build(dir.path(), "0.4.0-rc.1").unwrap();
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["prerelease"], true);
     }
 }

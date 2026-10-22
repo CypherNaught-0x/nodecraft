@@ -15,7 +15,7 @@ mod shell;
 /// file name (packaging/linux) so the desktop finds the icon; also the macOS bundle id.
 const APP_ID: &str = "io.github.cyphernaught0x.nodecraft";
 
-/// The command line: `[--control] [--version] [--wait-for <pid>] [--finish-update <msi> <exe>] [--perf-run <out.json>] [project]`.
+/// The command line: `[--control] [--version] [--wait-for <pid>] [--finish-update <msi> <blake3> <exe>] [--perf-run <out.json>] [project]`.
 #[derive(Debug, Default, PartialEq)]
 struct Args {
     /// `--control`: accept local automation clients (see `control.rs`).
@@ -23,8 +23,9 @@ struct Args {
     version: bool,
     /// `--wait-for <pid>`: the copy that updated this one, which must exit first.
     wait_for: Option<String>,
-    /// `--finish-update <msi> <exe>`: install the update and start `exe` again (Windows).
-    finish_update: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    /// `--finish-update <msi> <blake3> <exe>`: check the MSI against the signed feed's BLAKE3,
+    /// install it and start `exe` again (Windows).
+    finish_update: Option<(std::path::PathBuf, String, std::path::PathBuf)>,
     /// `--perf-run <out.json>`: time presented frames over generated graphs, write the reports
     /// and quit (#526).
     perf_run: Option<std::path::PathBuf>,
@@ -44,7 +45,13 @@ impl Args {
                 Some("--version" | "-V") => parsed.version = true,
                 Some("--wait-for") => parsed.wait_for = args.next().map(|pid| pid.to_string_lossy().into_owned()),
                 Some("--perf-run") => parsed.perf_run = args.next().map(Into::into),
-                Some("--finish-update") => parsed.finish_update = args.next().zip(args.next()).map(|(msi, exe)| (msi.into(), exe.into())),
+                Some("--finish-update") => {
+                    parsed.finish_update = args
+                        .next()
+                        .zip(args.next())
+                        .zip(args.next())
+                        .map(|((msi, blake3), exe)| (msi.into(), blake3.to_string_lossy().into_owned(), exe.into()))
+                }
                 _ if arg.to_string_lossy().starts_with('-') => {}
                 _ if parsed.project.is_none() => {
                     let path = std::path::PathBuf::from(arg);
@@ -64,8 +71,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     // Restarting after an update (#540): the copy that updated waits for this one to exit.
-    if let Some((msi, exe)) = &args.finish_update {
-        nodecraft_ui_egui::finish_update(msi, exe, args.wait_for.as_deref().unwrap_or_default(), args.project.as_deref());
+    if let Some((msi, blake3, exe)) = &args.finish_update {
+        nodecraft_ui_egui::finish_update(msi, blake3, exe, args.wait_for.as_deref().unwrap_or_default(), args.project.as_deref(), args.control);
         return ExitCode::SUCCESS;
     }
     if let Some(pid) = &args.wait_for {
@@ -196,9 +203,11 @@ mod tests {
         assert_eq!(args.wait_for.as_deref(), Some("4242"));
         assert_eq!(args.project.as_deref(), Some(std::path::Path::new(project)));
         assert!(args.control);
-        let args = parse(&["--finish-update", "u.msi", "app.exe", "--wait-for", "7"]);
-        assert_eq!(args.finish_update, Some(("u.msi".into(), "app.exe".into())));
+        let args = parse(&["--finish-update", "u.msi", "ab12", "app.exe", "--wait-for", "7", "--control"]);
+        assert_eq!(args.finish_update, Some(("u.msi".into(), "ab12".into(), "app.exe".into())));
+        assert!(args.control, "kept across the helper");
         assert_eq!(args.project, None);
+        assert_eq!(parse(&["--finish-update", "u.msi", "ab12"]).finish_update, None, "all three values or none");
         // A flag missing its value is ignored, not taken from a missing argument.
         assert_eq!(parse(&["--wait-for"]), Args::default());
         assert_eq!(parse(&["--perf-run", "run.json"]).perf_run, Some("run.json".into()));

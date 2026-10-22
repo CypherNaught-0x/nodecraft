@@ -81,6 +81,8 @@ impl UpdateChecker {
     /// and the installer, registered as `updates.install` and `updates.apply`, when this copy can
     /// replace itself. `updates` is the updates folder in NodeCraft's settings folder.
     pub(super) fn new(services: &mut Services, updates: Option<PathBuf>) -> Result<Self, Error> {
+        // First, so this copy is counted as running even if the rest fails.
+        let alone = updates.as_deref().is_some_and(install::hold_instance);
         let runtime = runtime("update check")?;
         let http = nodecraft_providers::http::ReqwestHttp::new().map_err(|e| Error::new(ErrorKind::Unsupported, e.message))?;
         let releases = feed_base().map(|base| format!("{base}releases.json"));
@@ -92,7 +94,7 @@ impl UpdateChecker {
         checker.managed = managed();
         let kind = match installable(checker.managed, updates.as_deref()) {
             Ok((kind, updates, keys, target)) => {
-                checker.after_update = install::after_start(&updates, Some(&kind));
+                checker.after_update = install::after_start(&updates, Some(&kind), alone);
                 let job = download_job(kind, updates.clone(), keys, target)?;
                 let (installer, handlers) = installer::Installer::spawn(job, updates)?;
                 let (mut install, mut apply) = (handlers.install, handlers.apply);
@@ -104,7 +106,7 @@ impl UpdateChecker {
             Err(why) => why,
         };
         if let Some(updates) = &updates {
-            checker.after_update = install::after_start(updates, None);
+            checker.after_update = install::after_start(updates, None, alone);
         }
         checker.cannot_install = kind;
         Ok(checker)

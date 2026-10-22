@@ -204,7 +204,7 @@ impl Installer {
     /// From `on_exit`: starts the new copy, which waits for this process to end.
     pub(super) fn relaunch(&self, project: Option<&Path>) {
         if let Some(relaunch) = &self.relaunch
-            && let Err(error) = install::relaunch(relaunch, project)
+            && let Err(error) = install::relaunch(relaunch, project, install::started_with_control())
         {
             log::error!("{}", error.message);
         }
