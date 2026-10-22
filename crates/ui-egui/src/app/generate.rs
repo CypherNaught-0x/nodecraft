@@ -439,7 +439,8 @@ impl NodeCraftApp {
         let editable = |name: &str| cached.enabled.as_ref().is_none_or(|names| names.contains(name));
         let canvas = self.session.document().canvases().get(&self.canvas);
         let mode = canvas.and_then(|canvas| mode_of(&self.session, canvas, node));
-        let assist = canvas.map(|canvas| assistable(canvas, node));
+        // A Generate audio card says its prompt as written, so it has nothing to improve (#672).
+        let assist = canvas.filter(|_| node.kind != nodecraft_nodes::generation::AUDIO_KIND).map(|canvas| assistable(canvas, node));
         let mut expand = false;
         let mut improve = false;
         // The shown result's media, for Download (#581).
