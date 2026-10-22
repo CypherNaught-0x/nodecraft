@@ -135,7 +135,11 @@ fn open<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(ImageMeta, Orientation,
         return Err(MediaError::Decode(format!("image has no pixels ({w}×{h})")));
     }
     // A damaged EXIF block is not worth refusing the image for; show it as stored.
-    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let orientation = if format == ImageFormat::WebP && !color::webp_exif_fits(&mut Cursor::new(bytes)) {
+        Orientation::NoTransforms
+    } else {
+        decoder.orientation().unwrap_or(Orientation::NoTransforms)
+    };
     let mut budget = limits.for_decoder();
     budget.reserve(decoder.total_bytes())?;
     if orientation != Orientation::NoTransforms {
@@ -321,6 +325,24 @@ pub(crate) mod tests {
         bmp.extend_from_slice(&[0; 24]);
         let limits = Limits { max_alloc: 64 * 1024 * 1024, ..Limits::default() };
         assert!(matches!(decode_image(&bmp, &limits), Err(MediaError::LimitExceeded(_))));
+    }
+
+    #[test]
+    fn webp_exif_claim_beyond_input_is_not_read() {
+        use image::ImageEncoder;
+        let mut bytes = Vec::new();
+        let mut encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut bytes);
+        encoder.set_exif_metadata(b"MM\0*\0\0\0\x08\0\0\0\0".to_vec()).unwrap();
+        encoder.write_image(&[7; 2 * 3 * 3], 2, 3, image::ExtendedColorType::Rgb8).unwrap();
+        let exif = bytes.windows(4).position(|chunk| chunk == b"EXIF").unwrap();
+        bytes[exif + 4..exif + 8].copy_from_slice(&0xffff_fff0u32.to_le_bytes());
+        assert!(bytes.len() < 1024);
+        assert!(!color::webp_exif_fits(&mut Cursor::new(&bytes)));
+        let meta = probe_image(&bytes, &Limits::default()).unwrap();
+        assert_eq!((meta.width, meta.height), (2, 3));
+        let (decoded_meta, decoded) = decode_image(&bytes, &Limits::default()).unwrap();
+        assert_eq!(decoded_meta, meta);
+        assert_eq!((decoded.width(), decoded.height()), (2, 3));
     }
 
     #[test]

@@ -22,6 +22,8 @@ struct Signals {
     gamma_or_chromaticities: bool,
     /// EXIF can name a colour space too and isn't read, so it makes the tag unknown.
     exif: bool,
+    /// False when a WebP EXIF body is claimed beyond the actual input (or RIFF boundary).
+    webp_exif_fits: bool,
 }
 
 impl Signals {
@@ -158,6 +160,14 @@ fn jpeg(walk: &mut Walk<'_, impl Read + Seek>) -> Option<Signals> {
     None
 }
 
+/// Only a WebP EXIF body proven to fit the actual input may be handed to image-webp's
+/// `orientation()`: its chunk reader allocates the claimed length before attempting a read.
+/// Reuse the colour walk rather than imposing a smaller global decoder limit, which could
+/// also reject valid large decoded pixels or other metadata.
+pub(super) fn webp_exif_fits(input: &mut (impl Read + Seek)) -> bool {
+    webp(&mut Walk { input, read: 0 }).is_some_and(|signals| signals.webp_exif_fits)
+}
+
 /// Walks the RIFF chunks. A `VP8X` header's flags announce a profile (0x20) or EXIF (0x08) as well
 /// as the chunks themselves; either counts.
 fn webp(walk: &mut Walk<'_, impl Read + Seek>) -> Option<Signals> {
@@ -169,7 +179,7 @@ fn webp(walk: &mut Walk<'_, impl Read + Seek>) -> Option<Signals> {
     }
     let end = u64::from(u32::from_le_bytes([s0, s1, s2, s3])).checked_add(8)?.min(length);
     let mut at = 12u64;
-    let mut found = Signals::default();
+    let mut found = Signals { webp_exif_fits: true, ..Signals::default() };
     for _ in 0..MAX_WALK_STEPS {
         if at.checked_add(8)? > end {
             return Some(found);
@@ -195,6 +205,7 @@ fn webp(walk: &mut Walk<'_, impl Read + Seek>) -> Option<Signals> {
         let padded = len.checked_add(len % 2)?;
         at = at.checked_add(8)?.checked_add(padded)?;
         if at > end {
+            found.webp_exif_fits = false;
             return Some(found);
         }
         walk.skip(padded.checked_sub(seen)?)?;
