@@ -750,7 +750,7 @@ impl ProviderRunner {
         generation: u32,
         handle: JobHandle,
     ) -> Result<(), nodecraft_types::Error> {
-        if idempotency_key.is_empty() || idempotency_key.len() > 64 || !idempotency_key.is_ascii() {
+        if idempotency_key.is_empty() || idempotency_key.len() > crate::generate::MAX_IDEMPOTENCY_KEY_BYTES || !idempotency_key.is_ascii() {
             return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::InvalidInput, "invalid restored scheduler identity"));
         }
         self.restore_identity(binding.target().try_clone()?, idempotency_key, generation, handle);
@@ -765,7 +765,7 @@ impl ProviderRunner {
         generation: u32,
         staged: StagedSubmit,
     ) -> Result<(), nodecraft_types::Error> {
-        if idempotency_key.is_empty() || idempotency_key.len() > 64 || !idempotency_key.is_ascii() {
+        if idempotency_key.is_empty() || idempotency_key.len() > crate::generate::MAX_IDEMPOTENCY_KEY_BYTES || !idempotency_key.is_ascii() {
             return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::InvalidInput, "invalid restored scheduler identity"));
         }
         let provider = binding.target().try_clone()?;
@@ -873,7 +873,8 @@ impl JobRunner for ProviderRunner {
         let kept = Arc::clone(&self.kept);
         Box::pin(async move {
             let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
-            if start.idempotency_key.is_empty() || start.idempotency_key.len() > 64 || !start.idempotency_key.is_ascii() {
+            if start.idempotency_key.is_empty() || start.idempotency_key.len() > crate::generate::MAX_IDEMPOTENCY_KEY_BYTES || !start.idempotency_key.is_ascii()
+            {
                 return Outcome::Failed { error: format!("{REFUSAL_PREFIX}invalid scheduler idempotency identity"), transient: false };
             }
             let (mut queued, registration) = {

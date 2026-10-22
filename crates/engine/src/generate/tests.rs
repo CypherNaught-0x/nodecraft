@@ -634,3 +634,64 @@ fn the_style_type_and_family_rule_agree_across_crates() {
         assert_eq!(nodecraft_types::style_family(family), style.validate().is_ok(), "{family}");
     }
 }
+
+fn params(values: Vec<(&str, Value)>) -> JobSpec {
+    let mut job = bare(vec![]);
+    if let JobSpec::Generate { params, .. } = &mut job {
+        params.extend(values.into_iter().map(|(name, value)| (name.to_owned(), value)));
+    }
+    job
+}
+
+/// The advisory check (#307) and runtime admission agree for the same request and key.
+fn agrees(job: &JobSpec, key: &str) -> RequestCheck {
+    let check = check_request_with_key(job, key, None);
+    let admitted = provider_job(job, key);
+    assert_eq!(check.refusal.is_none(), admitted.is_ok(), "advisory {:?} vs runtime {:?}", check.refusal, admitted.err());
+    if let (Some(refusal), Err(error)) = (&check.refusal, provider_job(job, key)) {
+        assert_eq!(refusal, &error);
+    }
+    check
+}
+
+#[test]
+fn parameters_that_pass_alone_are_refused_together_by_both_checks() {
+    let half = || Value::List(vec![Value::Bool(true); MAX_VALUE_ITEMS / 2]);
+    let alone = agrees(&params(vec![("a", half())]), "k");
+    assert!(alone.refusal.is_none());
+    assert_eq!(alone.values, MAX_VALUE_ITEMS / 2 + 1);
+    let together = agrees(&params(vec![("a", half()), ("b", half())]), "k");
+    assert!(together.refusal.is_some(), "two half-limit lists exceed the aggregate");
+    assert!(together.values <= together.value_limit + 1);
+    assert_eq!(together.value_limit, MAX_VALUE_ITEMS);
+}
+
+#[test]
+fn nested_empty_lists_repeated_roles_and_metadata_count_alike() {
+    agrees(&params(vec![("a", Value::List(vec![Value::List(vec![]); MAX_VALUE_ITEMS - 1]))]), "k");
+    agrees(&params(vec![("a", Value::List(vec![Value::List(vec![]); MAX_VALUE_ITEMS]))]), "k");
+    let role = "r".repeat(1000);
+    let flattened = |n: usize| bare(vec![GenerateInput { role: role.clone(), value: Value::List(vec![Value::Text("x".into()); n]) }]);
+    let fits = agrees(&flattened(8), "k");
+    assert_eq!(fits.inputs, 8, "each list item is its own input");
+    assert!(fits.refusal.is_none());
+    assert!(agrees(&flattened(MAX_VALUE_ITEMS + 1), "k").refusal.is_some());
+    // A long role is repeated per flattened input: 4000 inputs at ~18 KiB each is ~70 MiB, over
+    // the representation budget while under the value and input limits.
+    let long = "r".repeat(3000);
+    let repeated = bare(vec![GenerateInput { role: long, value: Value::List(vec![Value::Text("x".into()); 4000]) }]);
+    let check = agrees(&repeated, "k");
+    assert!(check.refusal.is_some() && check.values <= check.value_limit, "{check:?}");
+    assert!(check.bytes > 0 && check.bytes <= check.byte_limit);
+}
+
+#[test]
+fn the_longest_key_is_conservative() {
+    let job = param(Value::Text("b".into()));
+    let short = agrees(&job, "k");
+    let longest = check_request(&job, None);
+    assert!(longest.bytes > short.bytes, "the longest key costs more: {} vs {}", longest.bytes, short.bytes);
+    assert_eq!(longest, agrees(&job, &"k".repeat(MAX_IDEMPOTENCY_KEY_BYTES)));
+    let action = JobSpec::Action { node: NodeId::from_bytes([1; 16]), action: "a".into(), params: Default::default(), inputs: vec![], output: "o".into() };
+    assert!(check_request(&action, None).refusal.is_some(), "only model calls are requests");
+}
