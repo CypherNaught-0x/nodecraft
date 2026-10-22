@@ -40,23 +40,21 @@ pub fn stored(node: &Node) -> Result<&str, Error> {
     }
 }
 
-/// The fonts `node` holds, as stored: each its name and file (none when it has none).
-pub fn fonts(node: &Node) -> Result<Vec<(&str, &AssetRef)>, Error> {
-    let unreadable = || invalid("the node's fonts can't be read");
-    match node.config.get(FONTS_CONFIG) {
-        None => Ok(Vec::new()),
-        Some(Value::List(pairs)) => pairs
-            .iter()
-            .map(|pair| match pair {
-                Value::List(pair) => match pair.as_slice() {
-                    [Value::Text(name), Value::Media(asset)] => Ok((name.as_str(), asset)),
-                    _ => Err(unreadable()),
-                },
-                _ => Err(unreadable()),
-            })
-            .collect(),
-        Some(_) => Err(unreadable()),
-    }
+/// The fonts `node` holds, as stored: each its name and file (none when it has none). An entry
+/// that can't be read is left out, so a damaged list never locks the card: the next font change
+/// stores only the readable ones.
+pub fn fonts(node: &Node) -> Vec<(&str, &AssetRef)> {
+    let Some(Value::List(pairs)) = node.config.get(FONTS_CONFIG) else { return Vec::new() };
+    pairs
+        .iter()
+        .filter_map(|pair| match pair {
+            Value::List(pair) => match pair.as_slice() {
+                [Value::Text(name), Value::Media(asset)] => Some((name.as_str(), asset)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 fn edge(name: &str, label: &str) -> ParamSpec {
@@ -122,10 +120,11 @@ impl NodeKind for LayersKind {
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
         let mut params = self.validate_instance(ctx.node, true)?.into_visible_values();
         params.insert(SPEC_PARAM.into(), Value::Text(stored(ctx.node)?.into()));
-        // Checked here so a run refuses fonts it can't read; carried as stored.
-        fonts(ctx.node)?;
-        if let Some(fonts) = ctx.node.config.get(FONTS_CONFIG) {
-            params.insert(FONTS_PARAM.into(), fonts.clone());
+        // The readable fonts only; a run draws text naming any other as Lato.
+        let held = fonts(ctx.node);
+        if !held.is_empty() {
+            let pairs = held.into_iter().map(|(name, font)| Value::List(vec![Value::Text(name.into()), Value::Media(font.clone())])).collect();
+            params.insert(FONTS_PARAM.into(), Value::List(pairs));
         }
         let mut inputs = Vec::new();
         let mut sources = Vec::new();

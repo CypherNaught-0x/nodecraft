@@ -12,40 +12,58 @@ use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
 /// The node's fonts, by name, in the order they were added.
-pub fn held(node: &Node) -> Result<Vec<(String, AssetRef)>, Error> {
-    Ok(nodecraft_nodes::layers::fonts(node)?.into_iter().map(|(name, asset)| (name.to_owned(), asset.clone())).collect())
+pub fn held(node: &Node) -> Vec<(String, AssetRef)> {
+    nodecraft_nodes::layers::fonts(node).into_iter().map(|(name, asset)| (name.to_owned(), asset.clone())).collect()
 }
 
 /// The fonts as `layers.list` shows them.
-pub fn listed(node: &Node) -> Result<Json, Error> {
-    Ok(Json::Array(held(node)?.into_iter().map(|(name, font)| json!({"name": name, "font": font})).collect()))
+pub fn listed(node: &Node) -> Json {
+    Json::Array(held(node).into_iter().map(|(name, font)| json!({"name": name, "font": font})).collect())
 }
 
-/// The bytes of a font asset in this project, at most [`MAX_FONT_BYTES`].
+/// The bytes of a font asset in this project, at most [`MAX_FONT_BYTES`]; a larger asset is
+/// refused before any of it is read.
 fn bytes(c: &Context<'_>, font: &AssetRef) -> Result<Vec<u8>, Error> {
+    let too_large = || invalid("the font is larger than 16 MiB");
     if let Some(resident) = c.assets.get(&font.hash) {
-        return Ok(resident.to_vec());
+        return if resident.len() > MAX_FONT_BYTES { Err(too_large()) } else { Ok(resident.to_vec()) };
     }
     let missing = || Error::new(ErrorKind::NotFound, "the font isn't in this project; import it first");
     let read = c.assets.preview_read(font).map_err(|error| match error {
-        nodecraft_format::PreviewReadError::TooLarge => invalid("the font is larger than 16 MiB"),
+        nodecraft_format::PreviewReadError::TooLarge => too_large(),
         nodecraft_format::PreviewReadError::Missing => missing(),
         _ => invalid("the font can't be read"),
     })?;
+    if read.byte_len() > u64::try_from(MAX_FONT_BYTES).unwrap_or(u64::MAX) {
+        return Err(too_large());
+    }
     let bytes = read.read_verified(&Default::default(), &Default::default()).map_err(|_| invalid("the font can't be read"))?;
     if bytes.len() > MAX_FONT_BYTES {
-        return Err(invalid("the font is larger than 16 MiB"));
+        return Err(too_large());
     }
     Ok(bytes)
 }
 
 /// Imports a font file and adds it to the Layer Editor node `id` (`layers.font_add`), returning
-/// the name layers use for it. A file that isn't a font is refused before anything is stored.
+/// the name layers use for it. A file that isn't a font, or is named Lato, is refused before
+/// anything is stored.
 pub fn import(session: &mut crate::Session, canvas: CanvasId, id: NodeId, bytes: &[u8]) -> Result<String, Error> {
-    let info = font_info(bytes).map_err(|e| Error::new(ErrorKind::InvalidInput, format!("that isn't a font NodeCraft can draw with: {e}")))?;
+    let info = font_info(bytes).map_err(not_a_font)?;
+    refuse_builtin(&info.name)?;
     let hash = session.import_asset(bytes)?;
     let added = session.dispatch("layers.font_add", &json!({"canvas": canvas, "id": id, "font": {"hash": hash, "mime": info.mime}}))?;
     Ok(added.get("name").and_then(Json::as_str).unwrap_or(&info.name).to_owned())
+}
+
+fn not_a_font(error: nodecraft_actions::image::ImageError) -> Error {
+    Error::new(ErrorKind::InvalidInput, format!("that isn't a font NodeCraft can draw with: {error}"))
+}
+
+fn refuse_builtin(name: &str) -> Result<(), Error> {
+    if same_name(name, layers::BUILTIN_FONT) {
+        return Err(invalid("Lato is built in; a font of that name can't be added"));
+    }
+    Ok(())
 }
 
 fn store(canvas: CanvasId, node: &Node, fonts: Vec<(String, AssetRef)>, result: Json) -> Effect {
@@ -77,13 +95,11 @@ struct AddParams {
 fn add(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: AddParams = params(value)?;
     let node = editor(c, p.canvas, p.id)?;
-    let info = font_info(&bytes(c, &p.font)?).map_err(|e| Error::new(ErrorKind::InvalidInput, format!("that isn't a font NodeCraft can draw with: {e}")))?;
-    if same_name(&info.name, layers::BUILTIN_FONT) {
-        return Err(invalid("Lato is built in; a font of that name can't be added"));
-    }
+    let info = font_info(&bytes(c, &p.font)?).map_err(not_a_font)?;
+    refuse_builtin(&info.name)?;
     let mime = info.mime.parse().map_err(|_| invalid("the font's type can't be recorded"))?;
     let font = AssetRef { hash: p.font.hash, mime, meta: Default::default() };
-    let mut fonts = held(node)?;
+    let mut fonts = held(node);
     fonts.retain(|(name, _)| !same_name(name, &info.name));
     if fonts.len() >= MAX_FONTS {
         return Err(invalid("a Layer Editor holds at most 16 fonts; remove one first"));
@@ -103,7 +119,7 @@ struct RemoveParams {
 fn remove(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: RemoveParams = params(value)?;
     let node = editor(c, p.canvas, p.id)?;
-    let mut fonts = held(node)?;
+    let mut fonts = held(node);
     let before = fonts.len();
     fonts.retain(|(name, _)| !same_name(name, &p.name));
     if fonts.len() == before {

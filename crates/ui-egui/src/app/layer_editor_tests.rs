@@ -280,13 +280,21 @@ fn a_text_layer_picks_a_project_font_and_a_missing_one_says_it_draws_as_lato() {
     let after = h.state().layer_editor.as_ref().unwrap().textures.get("text-1").map(|r| r.key);
     assert!(before.is_some() && after.is_some() && before != after, "rendered again");
     assert!(h.query_by_label_contains("draws as Lato").is_none());
+    // A font the node holds but whose file can't be read draws as Lato, and says so.
+    let files = &mut h.state_mut().layer_editor.as_mut().unwrap().font_files.bytes;
+    files.values_mut().for_each(|bytes| *bytes = None);
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Lito's file can't be read, so it draws as Lato").is_some());
+    h.state_mut().layer_editor.as_mut().unwrap().font_files.bytes.clear();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("draws as Lato").is_none(), "read again");
     // With nothing selected the node's fonts are listed, and removing one leaves the layer
     // naming a font that isn't here.
     h.key_press(egui::Key::Escape);
     h.run_steps(3);
     h.get_by_label("Remove Lito").click();
     h.run_steps(3);
-    assert!(nodecraft_nodes::layers::fonts(&editor_node(&h)).unwrap().is_empty(), "{:?}", h.state().notice);
+    assert!(nodecraft_nodes::layers::fonts(&editor_node(&h)).is_empty(), "{:?}", h.state().notice);
     h.state_mut().layer_editor.as_mut().unwrap().selected = vec!["text-1".into()];
     h.run_steps(3);
     assert!(h.query_by_label_contains("Lito isn't in this project, so it draws as Lato").is_some());

@@ -626,7 +626,10 @@ fn typed_template_panic_hunt() {
             let events = session.events_since(0).unwrap();
             let history = (session.can_undo(), session.can_redo());
             let result = session.dispatch(id, &params);
-            if (id.starts_with("layers.") || id == "node.layers_set") && params == valid {
+            // The font commands need a font file the template's project doesn't hold; their own
+            // tests cover a valid add and remove.
+            let needs_font = matches!(id, "layers.font_add" | "layers.font_remove");
+            if (id.starts_with("layers.") || id == "node.layers_set") && params == valid && !needs_font {
                 assert!(result.is_ok(), "the valid {id} template reaches the layer code: {result:?}");
             }
             // The interchange commands need media the template's Timeline doesn't have; their

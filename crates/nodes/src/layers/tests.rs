@@ -32,3 +32,22 @@ fn its_plan_carries_the_layers_and_where_each_image_came_from() {
     node.config.insert(CONFIG.into(), Value::Bool(true));
     assert!(kind.plan(&PlanCtx { node: &node, inputs: &[], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).is_err());
 }
+
+#[test]
+fn its_plan_carries_the_fonts_it_can_read_and_leaves_out_the_rest() {
+    let kinds = Registry::builtins().unwrap();
+    let kind = kinds.get(ID).unwrap();
+    let mut node = kind.instantiate_instance(NodeId::from_bytes([5; 16]), Default::default(), &ParamValues::default()).unwrap();
+    let plan = |node: &Node| kind.plan(&PlanCtx { node, inputs: &[], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).unwrap();
+    let jobs = plan(&node);
+    let [JobSpec::Action { params, .. }] = jobs.as_slice() else { panic!("one job") };
+    assert_eq!(params.get(FONTS_PARAM), None, "no fonts, none carried");
+    let asset = AssetRef { hash: nodecraft_types::Blake3::from_bytes([7; 32]), mime: "font/ttf".parse().unwrap(), meta: Default::default() };
+    let good = Value::List(vec![Value::Text("Lito".into()), Value::Media(asset.clone())]);
+    let bad = Value::List(vec![Value::Text("Bad".into())]);
+    node.config.insert(FONTS_CONFIG.into(), Value::List(vec![bad, good.clone(), Value::Bool(true)]));
+    assert_eq!(fonts(&node), vec![("Lito", &asset)]);
+    let jobs = plan(&node);
+    let [JobSpec::Action { params, .. }] = jobs.as_slice() else { panic!("one job") };
+    assert_eq!(params.get(FONTS_PARAM), Some(&Value::List(vec![good])));
+}

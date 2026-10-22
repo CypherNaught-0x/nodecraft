@@ -34,11 +34,23 @@ impl LocalActions {
             .take(layers::MAX_FONTS)
             .filter_map(|font| {
                 let Value::List(pair) = font else { return None };
-                let (Some(Value::Text(name)), Some(media)) = (pair.first(), pair.get(1)) else { return None };
+                let (Some(Value::Text(name)), Some(media @ Value::Media(asset))) = (pair.first(), pair.get(1)) else { return None };
+                // A font larger than any font may be is left out before any of it is read.
+                if self.stored_len(asset)? > layers::MAX_FONT_BYTES as u64 {
+                    return None;
+                }
                 let bytes = self.media_bytes(Some(media), "font").ok()?;
                 (bytes.len() <= layers::MAX_FONT_BYTES).then(|| (name.clone(), bytes))
             })
             .collect()
+    }
+
+    /// How large an asset is, without reading it; None when it isn't in this project.
+    fn stored_len(&self, asset: &nodecraft_types::AssetRef) -> Option<u64> {
+        if let Some(resident) = self.assets.get(&asset.hash) {
+            return u64::try_from(resident.len()).ok();
+        }
+        self.assets.preview_read(asset).ok().map(|read| read.byte_len())
     }
 
     pub(super) fn layers(&self, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {

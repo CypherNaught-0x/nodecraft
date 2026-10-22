@@ -127,7 +127,7 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let layers = listed(c, p.canvas, node)?;
     let layers = serde_json::to_value(&layers.layers).map_err(|_| invalid("the layers can't be listed"))?;
     let inputs: Vec<Json> = inputs(c, p.canvas, p.id)?.into_iter().map(|(origin, image)| json!({"origin": origin, "image": image})).collect();
-    let fonts = fonts::listed(node)?;
+    let fonts = fonts::listed(node);
     Ok(Effect::None { result: json!({"width": frame.width, "height": frame.height, "layers": layers, "inputs": inputs, "fonts": fonts}) })
 }
 

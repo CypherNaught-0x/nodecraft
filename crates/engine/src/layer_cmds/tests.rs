@@ -283,7 +283,7 @@ fn a_font_is_added_by_the_name_it_declares_and_removed_by_name() {
     // The same font again changes nothing; a font of the same name replaces it.
     assert_eq!(s.dispatch("layers.font_add", &params).unwrap()["changed"], json!(false));
     s.dispatch("edit.undo", &json!({})).unwrap();
-    assert!(nodecraft_nodes::layers::fonts(&node(&s)).unwrap().is_empty(), "one undo step");
+    assert!(nodecraft_nodes::layers::fonts(&node(&s)).is_empty(), "one undo step");
     s.dispatch("edit.redo", &json!({})).unwrap();
     assert_eq!(s.dispatch("layers.font_remove", &json!({"canvas": CANVAS, "id": EDITOR, "name": " lito "})).unwrap(), json!({"changed": true}));
     assert!(!node(&s).config.contains_key(nodecraft_nodes::layers::FONTS_CONFIG));
@@ -305,7 +305,7 @@ fn only_a_font_the_project_holds_can_be_added() {
     let mut on_source = font(&mut s, &lito());
     on_source["id"] = json!(A);
     assert!(s.dispatch("layers.font_add", &on_source).is_err());
-    assert!(node(&s).config.get(nodecraft_nodes::layers::FONTS_CONFIG).is_none());
+    assert!(!node(&s).config.contains_key(nodecraft_nodes::layers::FONTS_CONFIG));
 }
 
 #[test]
@@ -337,9 +337,43 @@ fn a_node_holds_at_most_sixteen_fonts() {
 fn importing_a_font_file_adds_it_and_a_file_that_isnt_one_stores_nothing() {
     let mut s = session();
     assert_eq!(fonts::import(&mut s, CANVAS, EDITOR, &lito()).unwrap(), "Lito");
-    assert_eq!(nodecraft_nodes::layers::fonts(&node(&s)).unwrap().len(), 1);
+    assert_eq!(nodecraft_nodes::layers::fonts(&node(&s)).len(), 1);
     let held = s.assets().len();
     let refused = fonts::import(&mut s, CANVAS, EDITOR, b"\x89PNG\r\n\x1a\n").unwrap_err();
     assert_eq!(refused.kind, ErrorKind::InvalidInput);
     assert_eq!(s.assets().len(), held, "refused before it was stored");
+}
+
+#[test]
+fn a_damaged_font_list_still_lists_and_the_next_font_change_repairs_it() {
+    let s = session();
+    let mut damaged = node(&s);
+    let bad = Value::List(vec![Value::Text("Bad".into()), Value::Text("not a file".into())]);
+    damaged.config.insert(nodecraft_nodes::layers::FONTS_CONFIG.into(), Value::List(vec![Value::Text("stray".into()), bad]));
+    let mut project = s.document().clone();
+    Change::SetNode { canvas: CANVAS, node: damaged }.apply(&mut project).unwrap();
+    let mut s = Session::new(project).unwrap();
+    let listed = s.dispatch("layers.list", &json!({"canvas": CANVAS, "id": EDITOR})).unwrap();
+    assert_eq!(listed["fonts"], json!([]));
+    let params = font(&mut s, &lito());
+    s.dispatch("layers.font_add", &params).unwrap();
+    let Some(Value::List(stored)) = node(&s).config.get(nodecraft_nodes::layers::FONTS_CONFIG).cloned() else { panic!("fonts stored") };
+    assert_eq!(stored.len(), 1, "only the readable font is kept");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_asset_larger_than_a_font_may_be_is_refused() {
+    use nodecraft_format::{AssetStore, NativeStorage, Snapshot};
+    use std::io::Read;
+    // Only stored assets can be larger than a font; resident imports stop at 16 MiB.
+    let dir = tempfile::tempdir().unwrap();
+    let storage = NativeStorage::new(dir.path().join("recovery")).unwrap();
+    let project = session().document().clone();
+    let mut s = Session::with_storage(Snapshot { project, assets: AssetStore::default(), epoch: 0 }, Box::new(storage)).unwrap();
+    let mut big = std::io::repeat(0).take(layers::MAX_FONT_BYTES as u64 + 1);
+    let hash = s.import_asset_reader(&mut big, &Default::default(), &Default::default()).unwrap();
+    let params = json!({"canvas": CANVAS, "id": EDITOR, "font": {"hash": hash, "mime": "font/ttf"}});
+    let refused = s.dispatch("layers.font_add", &params).unwrap_err();
+    assert!(refused.message.contains("larger than 16 MiB"), "{refused:?}");
 }

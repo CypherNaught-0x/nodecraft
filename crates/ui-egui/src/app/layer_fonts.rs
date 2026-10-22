@@ -17,7 +17,7 @@ pub(super) struct HeldFont {
 /// Each held font's bytes, by asset; None for one that can't be read, which draws as Lato.
 #[derive(Default)]
 pub(super) struct FontFiles {
-    bytes: HashMap<Blake3, Option<Arc<[u8]>>>,
+    pub(super) bytes: HashMap<Blake3, Option<Arc<[u8]>>>,
 }
 
 impl FontFiles {
@@ -27,6 +27,12 @@ impl FontFiles {
         for font in held {
             self.bytes.entry(font.font.hash).or_insert_with(|| read(assets, &font.font));
         }
+    }
+
+    /// Whether the held font `name` was read and draws with its own outlines; one that wasn't
+    /// draws as Lato, in a run too.
+    pub(super) fn readable(&self, held: &[HeldFont], name: &str) -> bool {
+        self.fonts(held).has(name)
     }
 
     /// The fonts a render draws with.
@@ -47,7 +53,8 @@ fn read(assets: &nodecraft_format::AssetStore, font: &AssetRef) -> Option<Arc<[u
         Some(resident) => resident.to_vec(),
         None => assets.preview_read(font).ok()?.read_verified(&Default::default(), &Default::default()).ok()?,
     };
-    (bytes.len() <= MAX_FONT_BYTES).then(|| Arc::from(bytes))
+    // Read as a run reads it: a file that isn't a font draws as Lato.
+    (bytes.len() <= MAX_FONT_BYTES && nodecraft_actions::layers::font_info(&bytes).is_ok()).then(|| Arc::from(bytes))
 }
 
 /// A hash of the held fonts, so a layer renders again when they change.

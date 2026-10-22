@@ -41,7 +41,7 @@ pub(super) struct LayerEditor {
     pub(super) scale: f64,
     pub(super) origin: Pos2,
     /// The bytes of each font the node holds.
-    font_files: FontFiles,
+    pub(super) font_files: FontFiles,
     /// "Add font file…" was pressed, for this text layer if one was shown.
     add_font: Option<Option<String>>,
     /// A font file being chosen or read.
@@ -654,9 +654,15 @@ impl NodeCraftApp {
 /// Whether the font picker is offered here.
 const PICKS_FONTS: bool = cfg!(not(target_arch = "wasm32"));
 
-/// Whether `font` draws with its own font: Lato, or one the node holds.
-fn font_held(listing: &Listing, font: &str) -> bool {
-    same_name(font, layers::BUILTIN_FONT) || listing.fonts.iter().any(|f| same_name(&f.name, font))
+/// Why `font` draws as Lato, when it does: the node doesn't hold it, or its file can't be read.
+fn font_fallback(files: &FontFiles, listing: &Listing, font: &str) -> Option<String> {
+    if files.readable(&listing.fonts, font) {
+        None
+    } else if listing.fonts.iter().any(|f| same_name(&f.name, font)) {
+        Some(format!("{font}'s file can't be read, so it draws as Lato. Add the font file again to use it."))
+    } else {
+        Some(format!("{font} isn't in this project, so it draws as Lato. Add the font file to use it."))
+    }
 }
 
 /// A choice of Lato and the node's fonts for a text layer; the name chosen, when it changed.
@@ -686,6 +692,9 @@ fn fonts_panel(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, t
     for font in &listing.fonts {
         ui.horizontal(|ui| {
             ui.label(&font.name);
+            if !editor.font_files.readable(&listing.fonts, &font.name) {
+                ui.label(egui::RichText::new("can't be read; draws as Lato").color(t.stale).small());
+            }
             let remove = ui.small_button("Remove").on_hover_text("Text in this font draws as Lato until it is added again");
             remove.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Remove {}", font.name)));
             if remove.clicked() {
@@ -693,10 +702,16 @@ fn fonts_panel(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, t
             }
         });
     }
-    if PICKS_FONTS && ui.add_enabled(listing.fonts.len() < layers::MAX_FONTS, egui::Button::new("Add font file…")).clicked() {
+    if PICKS_FONTS && ui.button("Add font file…").clicked() {
         editor.add_font = Some(None);
     }
-    ui.label(egui::RichText::new("A .ttf or .otf file, up to 16 MiB; at most 16 per card. It is saved with the project.").color(t.text_muted).small());
+    ui.label(
+        egui::RichText::new(
+            "A .ttf or .otf file, up to 16 MiB; at most 16 per card, and one of a name the card holds replaces it. It is saved with the project.",
+        )
+        .color(t.text_muted)
+        .small(),
+    );
 }
 
 struct FrameParams {
@@ -949,12 +964,10 @@ fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, fr
             if let Some(v) = font_choice(ui, &key("font"), font, listing) {
                 set.push(json!({"content": {"font": v}}));
             }
-            if !font_held(listing, font) {
-                ui.label(
-                    egui::RichText::new(format!("{font} isn't in this project, so it draws as Lato. Add the font file to use it.")).color(t.stale).small(),
-                );
+            if let Some(why) = font_fallback(&editor.font_files, listing, font) {
+                ui.label(egui::RichText::new(why).color(t.stale).small());
             }
-            if PICKS_FONTS && ui.add_enabled(listing.fonts.len() < layers::MAX_FONTS, egui::Button::new("Add font file…")).clicked() {
+            if PICKS_FONTS && ui.button("Add font file…").clicked() {
                 editor.add_font = Some(Some(id.clone()));
             }
             egui::Grid::new("layer_text").num_columns(2).show(ui, |ui| {
