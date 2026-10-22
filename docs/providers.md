@@ -43,13 +43,15 @@ does, and never treats an absent field as "opaque 8-bit sRGB".
 
 The engine builds an adapter for every provider the model catalog names
 (`engine::provider_setup`, #409). Each paid adapter reads its key from the keychain account below;
-ComfyUI reads its server from `config.toml`. An adapter that can't be built is reported with what
+ComfyUI and LiteLLM read their servers from `config.toml`, or the browser's per-site Providers
+panel (#721). An adapter that can't be built is reported with what
 to do, and a node routed to it is refused before planning, so no request is sent.
 
 | Catalog provider | Keychain account | Also needs |
 |---|---|---|
 | `openai` (chat) | `openai` | — |
 | `anthropic` (chat) | `anthropic` | — |
+| `litellm` (chat) | `litellm` (optional virtual key) | `[providers] litellm_url = "https://proxy.example"`, the proxy root without `/v1`; or save the address in the browser's Providers panel |
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
@@ -70,6 +72,12 @@ adapters off the UI thread and only for the providers a run uses; each run gets 
 from the adapters already built. ComfyUI's token is optional: a keychain that can't be opened or
 was refused means no token, not no ComfyUI. The app makes `install_salt` once and saves it at once;
 with read-only settings none is made and ComfyUI stays off.
+
+In the browser, the same server addresses and installation salt persist only for this origin,
+separately from API keys. Open Providers to edit them; a failed save keeps the previous settings.
+ComfyUI and LiteLLM must allow this page's origin in their CORS settings, and an HTTPS page may
+block an HTTP endpoint. `options.refresh` runs asynchronously on the page and hands its option
+lists to the next frame; changing server addresses cancels an old endpoint's pending list.
 
 ### Testing a key
 

@@ -193,6 +193,34 @@ fn the_setup_can_move_to_a_worker_thread() {
 }
 
 #[test]
+fn litellm_uses_the_configured_server_and_keeps_its_virtual_key_out_of_urls() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    assert!(matches!(make("litellm", &env(&keys, &http, &ProviderSettings::default())), Err(Readiness::NotSetUp(_))));
+    let settings = ProviderSettings { litellm_url: Some("https://proxy.example".into()), ..Default::default() };
+    assert_eq!(make("litellm", &env(&keys, &http, &settings)).unwrap().id(), "litellm", "local proxies may omit a key");
+    assert!(make("litellm", &HostEnv { keys: &Locked, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None }).is_ok());
+    const KEY: &str = "sk-litellm-public-fixture-721";
+    keys.set(&Account::new("litellm").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    let provider = make("litellm", &env(&keys, &http, &settings)).unwrap();
+    let job = ProviderJob {
+        model: "team-model".into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A lake".into() }],
+        idempotency_key: "public-fixture-721".into(),
+    };
+    let _ = futures::executor::block_on(provider.submit(&job));
+    let requests = http.1.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://proxy.example/v1/chat/completions");
+    assert!(requests[0].headers.iter().any(|(name, value)| name.eq_ignore_ascii_case("authorization") && value == &format!("Bearer {KEY}")));
+    assert!(!format!("{:?}", requests[0]).contains(KEY));
+    let invalid = ProviderSettings { litellm_url: Some(format!("https://user:{KEY}@proxy.example")), ..Default::default() };
+    let error = make("litellm", &env(&keys, &http, &invalid)).err().unwrap();
+    assert!(!error.message("litellm").unwrap().contains(KEY));
+}
+
+#[test]
 fn the_test_path_binds_whatever_the_maker_gives_through_the_same_routing() {
     let catalog = Catalog::builtin().unwrap();
     let mut asked = Vec::new();

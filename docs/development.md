@@ -367,8 +367,15 @@ handed over on the next frame as the desktop's keychain thread hands them over; 
 `with_inline_maker` kittest covers that path natively. Providers are called directly from the
 page, so only providers that accept cross-origin requests work. Anthropic is sent its
 `anthropic-dangerous-direct-browser-access` header, and a request the browser blocks says the
-provider may not accept requests from web pages. ComfyUI and LiteLLM endpoints and option lists
-are desktop only (#721), and so are video tools and the run journal.
+provider may not accept requests from web pages. The browser's Providers panel saves ComfyUI and
+LiteLLM server addresses per origin (#721), separately from keys. The servers must allow the
+page's origin in their CORS settings; an HTTPS page may also block an HTTP server. Save creates
+and persists the ComfyUI installation salt, and a failed save preserves the prior configuration.
+`providers.settings_get` and `providers.settings_set` expose the same settings to commands.
+`options.refresh` polls an owned future on the page and installs its result on a later frame;
+an endpoint change drops a pending old-server reply and clears its cached lists/adapters. Native
+kittests cover that async hand-over and per-origin persistence. Video tools and the run journal
+still require the desktop.
 
 Kittests inject picker futures and exercise actual native temporary-file persistence. They verify
 UI routing and lifecycle/refusal behavior; they do not prove OS dialog operation on every platform.

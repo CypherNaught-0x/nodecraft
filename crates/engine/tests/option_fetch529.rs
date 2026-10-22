@@ -207,7 +207,7 @@ fn without_a_server_or_a_fetching_host_the_error_says_what_to_do() {
     let mut session = Session::new(project).unwrap();
     let error = session.dispatch("options.refresh", &json!({})).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Unsupported);
-    assert!(error.message.contains("desktop app"), "{}", error.message);
+    assert!(error.message.contains("desktop or browser app"), "{}", error.message);
     assert!(session.dispatch("options.refresh", &json!({"extra": 1})).is_err());
 }
 

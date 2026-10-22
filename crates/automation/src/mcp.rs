@@ -121,6 +121,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "comfy.nodes.status",
     "comfy.workflow.import",
     "comfy.server.use",
+    "providers.settings_get",
     "app.check_updates",
     "app.update_status",
     "history.select",
@@ -314,6 +315,8 @@ pub const HUMAN_ONLY: &[&str] = &[
     // reads the verdict back, and each test sends the person's key out and holds the one keychain
     // thread for up to 25 s, so an agent could stall the person's own key operations.
     "keys.test",
+    // Redirecting provider requests and their credentials is the person's choice (#721).
+    "providers.settings_set",
     // Writing files on this machine is the person's call, as saving the project is (#557).
     "history.export",
     "timeline.export_interchange",

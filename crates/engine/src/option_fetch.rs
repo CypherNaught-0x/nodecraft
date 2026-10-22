@@ -170,8 +170,9 @@ fn values<'a>(options: impl IntoIterator<Item = (&'a str, &'a str)>, skipped: us
 }
 
 /// Fetches `sources` from the providers in `env`'s settings: the ComfyUI server's lists from its
-/// node catalog, the Higgsfield presets and Soul IDs and the ElevenLabs voices from their APIs. The host calls it off the UI thread: it
-/// reads keys from the keychain and calls the providers. A provider that can't be asked refuses
+/// node catalog, the Higgsfield presets and Soul IDs and the ElevenLabs voices from their APIs.
+/// The desktop awaits this on its worker; the browser polls the future on the page, with its
+/// immediate origin key store. A provider that can't be asked refuses
 /// its own lists; the fetch fails only when none could be.
 pub async fn fetch(env: &HostEnv<'_>, sources: &[String]) -> Result<Fetched, Error> {
     let sources: Vec<&String> = sources.iter().take(MAX_OPTION_LISTS).collect();
@@ -400,7 +401,7 @@ struct NoParams {}
 fn enabled_refresh(c: &Context<'_>, value: &Value) -> Result<(), Error> {
     let _: NoParams = params(value)?;
     if !c.services.contains(OPTION_SERVICE) {
-        return Err(Error::new(ErrorKind::Unsupported, "this host can't fetch option lists; the desktop app can"));
+        return Err(Error::new(ErrorKind::Unsupported, "this host can't fetch option lists; use a desktop or browser app"));
     }
     if fetchable(&wanted_in(c.resources)).is_empty() {
         return Err(Error::new(ErrorKind::Unsupported, "no model in the catalog takes a list NodeCraft can fetch"));

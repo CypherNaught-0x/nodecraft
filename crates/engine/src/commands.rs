@@ -260,6 +260,7 @@ impl Registry {
             crate::model_cmds::specs,
             crate::edge_cmds::specs,
             crate::keys_cmds::specs,
+            crate::browser_providers::specs,
             crate::stale_cmds::specs,
             crate::sheet_cmds::specs,
             crate::technique_cmds::specs,

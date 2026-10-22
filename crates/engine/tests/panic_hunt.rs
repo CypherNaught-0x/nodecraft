@@ -518,6 +518,8 @@ fn template(id: &str) -> (Session, Value) {
         "comfy.server.use" => json!({"canvas":canvas(),"id":node_id(7),"server":"studio"}),
         "comfy.workflow.import" => json!({"canvas":canvas(),"id":node_id(0x69),"pos":{"x":0,"y":0},"workflow":
             r#"{"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a fox"}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}"#}),
+        "providers.settings_get" => json!({}),
+        "providers.settings_set" => json!({"comfyui_url":"http://127.0.0.1:8188","litellm_url":"https://proxy.example"}),
         // The updates service isn't registered here: the check must be refused cleanly.
         "app.check_updates" | "app.update_status" | "app.install_update" | "app.restart_to_update" => json!({}),
         "edge.rewire" => {

@@ -58,6 +58,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
         "openai" | "openai-images" => Some("openai"),
         "anthropic" => Some("anthropic"),
+        "litellm" => Some("litellm"),
         "replicate" => Some("replicate"),
         "seedream" => Some("seedream"),
         // Seedance runs on the same BytePlus ModelArk key (#18).
@@ -157,7 +158,12 @@ pub fn comfy_instance(name: &str) -> Option<nodecraft_types::ProviderInstanceId>
 /// salt and the server's optional bearer token. Option fetches (#529) and the node list read it.
 pub fn comfyui(env: &HostEnv<'_>) -> Result<nodecraft_providers::comfyui::ComfyProvider, Readiness> {
     let Some(server) = env.settings.default_comfy() else {
-        return Err(Readiness::NotSetUp("add a ComfyUI server with the toolbar's ComfyUI button, or in settings ([[providers.comfyui]])".into()));
+        let why = if cfg!(target_arch = "wasm32") {
+            "open Providers and save the ComfyUI server address; allow this page's origin in the server's CORS settings"
+        } else {
+            "add a ComfyUI server with the toolbar's ComfyUI button, or in settings ([[providers.comfyui]])"
+        };
+        return Err(Readiness::NotSetUp(why.into()));
     };
     comfyui_server(env, server)
 }
@@ -244,6 +250,25 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         // Chat models (#503): the LLM client, keyed by its endpoint id.
         "openai" => Arc::new(llm(Endpoint::openai(ApiKey::from(&needs_key(env.keys, "openai")?)), env)),
         "anthropic" => Arc::new(llm(Endpoint::anthropic(ApiKey::from(&needs_key(env.keys, "anthropic")?)), env)),
+        "litellm" => {
+            let url = crate::browser_providers::server_url(env.settings.litellm_url.as_deref())
+                .map_err(|_| Readiness::NotSetUp("set a valid LiteLLM server address without credentials; keep its virtual key in API keys".into()))?
+                .ok_or_else(|| {
+                    let why = if cfg!(target_arch = "wasm32") {
+                        "open Providers and save the LiteLLM server address; allow this page's origin in the server's CORS settings"
+                    } else {
+                        "add the LiteLLM server's address in provider settings (litellm_url)"
+                    };
+                    Readiness::NotSetUp(why.into())
+                })?;
+            let account = Account::new("litellm").map_err(|_| Readiness::Failed("invalid LiteLLM key account".into()))?;
+            let key = match env.keys.get(&account) {
+                Ok(key) => key,
+                Err(SecretError::Unavailable(_) | SecretError::Denied(_)) => None,
+                Err(error) => return Err(read_key_error(error)),
+            };
+            Arc::new(llm(Endpoint::litellm(&url, key.as_ref().map(ApiKey::from)), env))
+        }
         "openai-images" => Arc::new(nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone())),
         "replicate" => Arc::new(nodecraft_providers::replicate::Replicate::new(needs_key(env.keys, "replicate")?, env.http.clone())),
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),

@@ -28,7 +28,7 @@ pub(super) use browser::guard_unload;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use browser::pick_package;
 
-pub(super) type PickFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>>>>;
+pub(super) type PickFuture<T, E = String> = Pin<Box<dyn Future<Output = Result<T, E>>>>;
 
 /// A file the person chose to open.
 pub(super) struct Picked {
@@ -218,7 +218,7 @@ impl Wake for Repaint {
     }
 }
 
-pub(super) fn poll<T>(future: &mut PickFuture<T>, ctx: &egui::Context) -> Poll<Result<T, String>> {
+pub(super) fn poll<T, E>(future: &mut PickFuture<T, E>, ctx: &egui::Context) -> Poll<Result<T, E>> {
     let waker = Waker::from(Arc::new(Repaint(ctx.clone())));
     future.as_mut().poll(&mut Context::from_waker(&waker))
 }
