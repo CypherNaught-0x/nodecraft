@@ -8,6 +8,7 @@ pub mod action;
 pub mod audio;
 pub mod batch;
 mod contract;
+pub mod deck;
 mod descriptor;
 pub mod document;
 pub mod element;

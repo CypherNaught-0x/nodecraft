@@ -185,6 +185,17 @@ fn template(id: &str) -> (Session, Value) {
         }
         nodecraft_graph::Change::AddNode { canvas: canvas(), node: editor }.apply(&mut document).unwrap();
     }
+    if id.starts_with("deck.") && id != "deck.create" {
+        // A Deck (node 9) holding a slide `s1` with a text layer `t1` and a source layer on node 1,
+        // so the valid templates reach the slide code rather than the kind check.
+        let mut deck = nodecraft_nodes::deck::kind().descriptor().instantiate(node_id(9), &std::collections::BTreeMap::new()).unwrap();
+        let stored = json!({"version": 1, "slides": [{"id": "s1", "name": "One", "layers": [
+            {"id":"t1","name":"Title","x":50,"y":20,"width":80,"height":30,"content":{"kind":"text","text":"Hi","size":24,"color":"#000000"}},
+            {"id":"p1","name":"Picture","x":0,"y":100,"width":200,"height":100,"content":{"kind":"source","origin":node_id(1).to_string(),"nth":0}}
+        ]}]});
+        deck.config.insert(nodecraft_nodes::deck::CONFIG.into(), nodecraft_types::Value::Text(stored.to_string()));
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node: deck }.apply(&mut document).unwrap();
+    }
     if id.starts_with("timeline.") || id == "node.timeline_set" {
         // A Timeline (node 9) holding a clip `t1` with a known end, an empty audio track 1 and a caption `c1`, so the valid templates reach
         // the clip code rather than the kind check.
@@ -528,6 +539,14 @@ fn template(id: &str) -> (Session, Value) {
         "layers.align" => json!({"canvas":canvas(),"id":node_id(9),"layers":["t1"],"to":"center"}),
         "layers.font_add" => json!({"canvas":canvas(),"id":node_id(9),"font":{"hash":"00".repeat(32),"mime":"font/ttf"}}),
         "layers.font_remove" => json!({"canvas":canvas(),"id":node_id(9),"name":"Lato"}),
+        "deck.create" => json!({"canvas":canvas(),"id":node_id(9),"pos":{"x":1,"y":2},"title":"Pitch","nodes":[node_id(1),node_id(2)]}),
+        "deck.list" => json!({"canvas":canvas(),"id":node_id(9)}),
+        "deck.set" => json!({"canvas":canvas(),"id":node_id(9),"slides":[{"id":"s1","name":"One","layers":[]},{"name":"Two"}]}),
+        "deck.slide_add" => json!({"canvas":canvas(),"id":node_id(9),"slide":{"name":"Two"},"index":0}),
+        "deck.slide_update" => json!({"canvas":canvas(),"id":node_id(9),"slide":"s1","name":"Renamed"}),
+        "deck.slide_remove" => json!({"canvas":canvas(),"id":node_id(9),"slide":"s1"}),
+        "deck.slide_move" => json!({"canvas":canvas(),"id":node_id(9),"slide":"s1","index":3}),
+        "deck.layer_update" => json!({"canvas":canvas(),"id":node_id(9),"slide":"s1","layer":"t1","set":{"x":10,"content":{"text":"Hello"}}}),
         "timeline.list" => json!({"canvas":canvas(),"id":node_id(9)}),
         "timeline.interchange" => json!({"canvas":canvas(),"id":node_id(9)}),
         "timeline.export_interchange" => json!({"canvas":canvas(),"id":node_id(9),"path":"/nodecraft-panic-hunt/cut.zip"}),

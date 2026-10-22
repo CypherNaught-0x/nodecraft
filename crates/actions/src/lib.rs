@@ -4,6 +4,8 @@
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
+/// Decks: slides of layers, read leniently so no stored data is dropped (#122).
+pub mod deck;
 /// Custom text actions: a bounded, deterministic expression language (#165).
 pub mod expr;
 /// Bounded deterministic CPU image operations.

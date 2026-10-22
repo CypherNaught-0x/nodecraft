@@ -154,6 +154,15 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "layers.align",
     "layers.font_add",
     "layers.font_remove",
+    // Decks only change the card's stored slides; nothing runs.
+    "deck.create",
+    "deck.list",
+    "deck.set",
+    "deck.slide_add",
+    "deck.slide_update",
+    "deck.slide_remove",
+    "deck.slide_move",
+    "deck.layer_update",
     // Clips only change the node's stored clips; the render runs (and is quoted) through run.start.
     "timeline.list",
     "timeline.interchange",

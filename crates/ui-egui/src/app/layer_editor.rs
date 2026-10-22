@@ -89,13 +89,13 @@ struct Input {
 pub(super) struct Rendered {
     pub(super) key: u64,
     /// None when the layer can't be drawn at this size.
-    texture: Option<egui::TextureHandle>,
+    pub(super) texture: Option<egui::TextureHandle>,
     /// Layer pixels of room around the box, as `render_layer` returns it.
-    pad: f64,
+    pub(super) pad: f64,
 }
 
 /// What a layer shows on screen this frame.
-enum Art {
+pub(super) enum Art {
     /// An image layer's preview and the source's size, once decoded.
     Image {
         texture: Option<(egui::TextureId, [u32; 2])>,
@@ -133,9 +133,9 @@ enum Guide {
 
 /// Frame pixels on screen.
 #[derive(Clone, Copy)]
-struct Stage {
-    origin: Pos2,
-    scale: f64,
+pub(super) struct Stage {
+    pub(super) origin: Pos2,
+    pub(super) scale: f64,
 }
 
 impl Stage {
@@ -292,14 +292,14 @@ impl Drag {
 }
 
 /// Render scales step by quarter octaves, so a small zoom change reuses the texture.
-fn render_scale(scale: f64) -> f64 {
+pub(super) fn render_scale(scale: f64) -> f64 {
     if !scale.is_finite() || scale <= 0.0 {
         return 1.0;
     }
     ((scale.log2() * 4.0).round() / 4.0).exp2().clamp(1.0 / 64.0, 8.0)
 }
 
-fn render_key(layer: &Layer, scale: f64, fonts: u64) -> u64 {
+pub(super) fn render_key(layer: &Layer, scale: f64, fonts: u64) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     serde_json::to_string(&layer.content).unwrap_or_default().hash(&mut hasher);
@@ -310,7 +310,7 @@ fn render_key(layer: &Layer, scale: f64, fonts: u64) -> u64 {
     hasher.finish()
 }
 
-fn render(ctx: &egui::Context, layer: &Layer, scale: f64, fonts: &Fonts<'_>, fonts_key: u64) -> Rendered {
+pub(super) fn render(ctx: &egui::Context, layer: &Layer, scale: f64, fonts: &Fonts<'_>, fonts_key: u64) -> Rendered {
     let key = render_key(layer, scale, fonts_key);
     match layers::render_layer(layer, fonts, scale, ImageLimits::default()) {
         Ok((raster, pad)) => {
@@ -1070,7 +1070,7 @@ fn quad(stage: Stage, layer: &Layer, (u0, v0): (f64, f64), (u1, v1): (f64, f64))
     [(u0, v0), (u1, v0), (u1, v1), (u0, v1)].map(|p| stage.screen(to_frame(layer, p)))
 }
 
-fn draw_layer(painter: &egui::Painter, stage: Stage, layer: &Layer, art: Option<&Art>, t: &Tokens) {
+pub(super) fn draw_layer(painter: &egui::Painter, stage: Stage, layer: &Layer, art: Option<&Art>, t: &Tokens) {
     let tint = Color32::WHITE.gamma_multiply(layer.opacity.clamp(0.0, 1.0) as f32);
     let (w, h) = (layer.width, layer.height);
     match art {
