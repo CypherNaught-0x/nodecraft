@@ -67,35 +67,38 @@ pub fn probe_sound(bytes: &[u8]) -> SoundInfo {
     info.unwrap_or_default()
 }
 
-/// WAV: `fmt ` gives the byte rate, `data` the length of the samples.
+/// WAV: `fmt ` gives the byte rate, `data` the length of the samples. Either may come first; a
+/// walk cut short keeps what it has read.
 fn wav(b: &[u8]) -> Option<SoundInfo> {
     let mut info = SoundInfo::default();
-    let mut byte_rate = None;
+    let (mut byte_rate, mut samples) = (None, None);
     let mut at = 12usize;
     for _ in 0..MAX_HEADERS {
-        let (id, stated) = (b.get(at..at.checked_add(4)?)?, le32(b, at.checked_add(4)?)?);
-        let size = usize::try_from(stated).ok()?;
-        let body = at.checked_add(8)?;
+        let Some((id, stated, body)) = (|| Some((b.get(at..at.checked_add(4)?)?, le32(b, at.checked_add(4)?)?, at.checked_add(8)?)))() else { break };
         let left = b.len().saturating_sub(body);
         match id {
             b"fmt " => {
-                info.channels = le16(b, body.checked_add(2)?).filter(|c| *c > 0);
-                info.sample_rate = le32(b, body.checked_add(4)?).filter(|r| *r > 0);
-                byte_rate = le32(b, body.checked_add(8)?).filter(|r| *r > 0);
+                info.channels = le16(b, body.saturating_add(2)).filter(|c| *c > 0);
+                info.sample_rate = le32(b, body.saturating_add(4)).filter(|r| *r > 0);
+                byte_rate = le32(b, body.saturating_add(8)).filter(|r| *r > 0);
             }
             b"data" => {
                 // A streaming writer leaves the size unknown (0 or all ones): the samples run to
                 // the end of the file. A size past the end is a cut-off file: its length is unknown.
-                let samples = if stated == 0 || stated == u32::MAX { left } else { size };
-                if samples <= left {
-                    info.duration_ms = millis(samples as u128, u128::from(byte_rate?));
-                }
-                return Some(info);
+                let size = if stated == 0 || stated == u32::MAX { left } else { usize::try_from(stated).unwrap_or(usize::MAX) };
+                samples = Some((size <= left).then_some(size));
             }
             _ => {}
         }
+        if byte_rate.is_some() && samples.is_some() {
+            break;
+        }
         // Chunks are padded to an even length.
-        at = body.checked_add(size)?.checked_add(size & 1)?;
+        let Some(next) = usize::try_from(stated).ok().and_then(|size| body.checked_add(size)?.checked_add(size & 1)) else { break };
+        at = next;
+    }
+    if let (Some(rate), Some(Some(samples))) = (byte_rate, samples) {
+        info.duration_ms = millis(samples as u128, u128::from(rate));
     }
     Some(info)
 }
@@ -248,13 +251,44 @@ fn mpeg(b: &[u8]) -> Option<SoundInfo> {
     let duration_ms = match frames {
         Some(frames) => millis(u128::from(frames) * u128::from(frame.samples()), u128::from(frame.rate)),
         None => {
-            // Constant bitrate: the audio's bytes at its bitrate, less an ID3v1 tag at the end.
-            let trailer = if b.len() >= 128 && b.get(b.len() - 128..b.len() - 125) == Some(b"TAG") { 128 } else { 0 };
-            let audio = b.len().saturating_sub(start).saturating_sub(offset).saturating_sub(trailer);
+            // Constant bitrate: the audio's bytes at its bitrate, less the tags at the end.
+            let audio = trailing_tags(b).saturating_sub(start).saturating_sub(offset);
             millis(audio as u128 * 8, u128::from(frame.kbps) * 1000)
         }
     };
     Some(SoundInfo { duration_ms, ..info })
+}
+
+/// Where an MP3's audio ends: before an ID3v1 tag, an APEv2 tag and a Lyrics3 v2 tag, which
+/// writers append in that order from the end.
+fn trailing_tags(b: &[u8]) -> usize {
+    let mut end = b.len();
+    let tail = |end: usize, len: usize| end.checked_sub(len).and_then(|start| b.get(start..end));
+    if tail(end, 128).is_some_and(|tag| tag.starts_with(b"TAG")) {
+        end = end.saturating_sub(128);
+    }
+    // Either of the other two may sit nearer the end; each is looked for once.
+    for _ in 0..2 {
+        if let Some(footer) = tail(end, 32).filter(|f| f.starts_with(b"APETAGEX")) {
+            // The size counts the items and the footer; a flagged header adds 32 bytes more.
+            let size = le32(footer, 12).and_then(|s| usize::try_from(s).ok());
+            let header = if le32(footer, 20).is_some_and(|flags| flags & (1 << 31) != 0) { 32 } else { 0 };
+            if let Some(start) = size.and_then(|size| end.checked_sub(size)?.checked_sub(header)) {
+                end = start;
+                continue;
+            }
+        }
+        if let Some(footer) = tail(end, 15).filter(|f| f.ends_with(b"LYRICS200")) {
+            // Six digits give the size of the tag before them.
+            let size = footer.get(..6).and_then(|d| std::str::from_utf8(d).ok()).and_then(|d| d.parse::<usize>().ok());
+            if let Some(start) = size.and_then(|size| end.checked_sub(15)?.checked_sub(size)) {
+                end = start;
+                continue;
+            }
+        }
+        break;
+    }
+    end
 }
 
 /// The ADTS sample rates, by index.
@@ -265,21 +299,31 @@ fn adts(b: &[u8]) -> Option<SoundInfo> {
     let mut at = 0usize;
     let mut samples = 0u64;
     let mut first = None;
+    // Whether the frames ran out before the cap: a count cut short by it isn't the length.
+    let mut counted = false;
     for _ in 0..MAX_ADTS_FRAMES {
         let h = match b.get(at..at.saturating_add(7)) {
             Some(h) if h.len() == 7 => h,
-            _ => break,
+            _ => {
+                counted = true;
+                break;
+            }
         };
         let (b1, b2, b3) = (*h.get(1)?, *h.get(2)?, *h.get(3)?);
         if *h.first()? != 0xFF || b1 & 0xF6 != 0xF0 {
+            counted = true;
             break;
         }
         let rate = *ADTS_RATES.get(usize::from((b2 >> 2) & 0x0F))?;
         let channels = u16::from(((b2 & 1) << 2) | (b3 >> 6));
         let len = (usize::from(b3 & 0b11) << 11) | (usize::from(*h.get(4)?) << 3) | usize::from(*h.get(5)? >> 5);
         // A cut-off last frame, or a change of rate (not one stream), ends the count.
-        let Some(end) = at.checked_add(len).filter(|end| len >= 7 && *end <= b.len()) else { break };
+        let Some(end) = at.checked_add(len).filter(|end| len >= 7 && *end <= b.len()) else {
+            counted = true;
+            break;
+        };
         if first.is_some_and(|(r, _)| r != rate) {
+            counted = true;
             break;
         }
         first.get_or_insert((rate, channels));
@@ -287,7 +331,8 @@ fn adts(b: &[u8]) -> Option<SoundInfo> {
         at = end;
     }
     let (rate, channels) = first?;
-    Some(SoundInfo { duration_ms: millis(u128::from(samples), u128::from(rate)), sample_rate: Some(rate), channels: Some(channels).filter(|c| *c > 0) })
+    let duration_ms = if counted || at >= b.len() { millis(u128::from(samples), u128::from(rate)) } else { None };
+    Some(SoundInfo { duration_ms, sample_rate: Some(rate), channels: Some(channels).filter(|c| *c > 0) })
 }
 
 #[cfg(test)]

@@ -34,6 +34,19 @@ fn a_wav_gets_its_length_from_its_data_chunk() {
 }
 
 #[test]
+fn a_wav_may_put_its_samples_before_its_format() {
+    let file = wav_of(1500, 8000, 2, None);
+    // Swap the chunks: RIFF header, then data, then LIST, then fmt.
+    let fmt = file.get(12..12 + 24).unwrap().to_vec();
+    let rest = file.get(12 + 24..).unwrap().to_vec();
+    let swapped = [file.get(..12).unwrap().to_vec(), rest, fmt].concat();
+    assert_eq!(probe_sound(&swapped), SoundInfo { duration_ms: Some(1500), sample_rate: Some(8000), channels: Some(2) });
+    // With no data chunk at all, the format still says the rate and channels.
+    let no_data = [file.get(..12 + 24).unwrap().to_vec()].concat();
+    assert_eq!(probe_sound(&no_data), SoundInfo { duration_ms: None, sample_rate: Some(8000), channels: Some(2) });
+}
+
+#[test]
 fn a_cut_off_or_garbage_file_has_no_length() {
     let mut cut = wav_of(1000, 8000, 1, None);
     cut.truncate(cut.len() - 100);
@@ -104,6 +117,24 @@ fn a_constant_bitrate_mp3_gets_its_length_from_its_size() {
     // An ID3v1 tag at the end isn't audio.
     file.extend_from_slice(&[b"TAG".to_vec(), vec![0; 125]].concat());
     assert_eq!(probe_sound(&file).duration_ms, Some(ms));
+    // Nor are an APEv2 tag (with its header) and a Lyrics3 tag before it.
+    let lyrics = [b"LYRICSBEGIN".to_vec(), b"IND00002\x31\x31".to_vec()].concat();
+    let lyrics = [lyrics.clone(), format!("{:06}", lyrics.len()).into_bytes(), b"LYRICS200".to_vec()].concat();
+    let items = vec![7u8; 40];
+    let ape = |header: bool| {
+        let mut part = b"APETAGEX".to_vec();
+        part.extend_from_slice(&2000u32.to_le_bytes());
+        part.extend_from_slice(&u32::try_from(items.len() + 32).unwrap().to_le_bytes());
+        part.extend_from_slice(&1u32.to_le_bytes());
+        part.extend_from_slice(&((1u32 << 31) | if header { 1 << 29 } else { 0 }).to_le_bytes());
+        part.extend_from_slice(&[0; 8]);
+        part
+    };
+    let tags = [lyrics, ape(true), items.clone(), ape(false)].concat();
+    let id3v1 = file.split_off(file.len() - 128);
+    for tagged in [[file.clone(), tags.clone(), id3v1.clone()].concat(), [file.clone(), tags].concat()] {
+        assert_eq!(probe_sound(&tagged).duration_ms, Some(ms), "tags at the end aren't counted as audio");
+    }
 }
 
 #[test]
@@ -131,6 +162,16 @@ fn an_adts_aac_counts_its_frames() {
     let mut file = frame.repeat(431);
     file.extend_from_slice(&frame[..50]);
     assert_eq!(probe_sound(&file), SoundInfo { duration_ms: Some(10_008), sample_rate: Some(44_100), channels: Some(2) });
+}
+
+#[test]
+fn an_adts_aac_past_the_frame_cap_has_no_length() {
+    // The smallest frame is its seven-byte header.
+    let frame = [0xFF, 0xF1, 0x50, 0x80, 0x00, 0xE0, 0xFC];
+    let file = frame.repeat(MAX_ADTS_FRAMES + 1);
+    assert_eq!(probe_sound(&file), SoundInfo { duration_ms: None, sample_rate: Some(44_100), channels: Some(2) });
+    let file = frame.repeat(MAX_ADTS_FRAMES);
+    assert!(probe_sound(&file).duration_ms.is_some(), "a count that reaches the end is the length");
 }
 
 #[test]
