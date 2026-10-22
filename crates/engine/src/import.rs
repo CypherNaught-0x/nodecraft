@@ -96,6 +96,23 @@ fn decodes_later(sniffed: &Sniffed) -> bool {
     matches!(sniffed.mime, "image/heic" | "image/heif" | "image/avif")
 }
 
+/// What a sound's or a movie's headers state: its length (#179, #608), and a sound's sample rate
+/// and channels or a movie's frame size. A model priced per second of source can then quote it,
+/// and one with source limits check it, before anything is paid. Headers that can't be read
+/// leave the fields unknown: the file still imports, and the provider checks it.
+pub(crate) fn timed_meta(mime: &str, bytes: &[u8]) -> MediaMeta {
+    let mut meta = MediaMeta::default();
+    if mime.starts_with("audio/") {
+        let sound = nodecraft_media::probe_sound(bytes);
+        (meta.duration_ms, meta.sample_rate, meta.channels) = (sound.duration_ms, sound.sample_rate, sound.channels);
+    } else if mime.starts_with("video/")
+        && let Ok(movie) = nodecraft_media::probe_movie(bytes)
+    {
+        (meta.duration_ms, meta.width, meta.height) = (movie.duration_ms, movie.width, movie.height);
+    }
+    meta
+}
+
 /// The plan for one file, given the text still allowed in this drop.
 fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     let Some(sniffed) = sniff(file.bytes) else {
@@ -126,13 +143,8 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
             Err(_) => return Err("the image can't be read".into()),
         }
     }
-    if sniffed.kind == MediaKind::Video
-        && let Ok(movie) = nodecraft_media::probe_movie(file.bytes)
-    {
-        // The length and frame size its headers state (#179), so a model priced per second of
-        // source can quote it and one with source limits can check it before anything is paid.
-        // A movie whose headers can't be read still imports; the provider checks it.
-        (meta.duration_ms, meta.width, meta.height) = (movie.duration_ms, movie.width, movie.height);
+    if matches!(sniffed.kind, MediaKind::Video | MediaKind::Audio) {
+        meta = timed_meta(sniffed.mime, file.bytes);
     }
     if sniffed.kind == MediaKind::Model3d {
         // Read the whole model now, so a file that can't be shown (an external buffer, Draco

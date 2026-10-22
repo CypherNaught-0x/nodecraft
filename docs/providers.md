@@ -671,7 +671,7 @@ by content, for the next submit that sends it, so quoting a run doesn't upload t
 operation, the source role, the shortest source, how much of a longer one is used, the smallest
 frame and what happens to the sound). All three take sources of at least 4 s and use only the
 first 30 s; object swap also needs frames of at least 409,600 pixels. A wired source whose length or
-frame size is known (imported MP4 and QuickTime files have theirs read from the headers) is
+frame size is known (imported or generated MP4, QuickTime, Matroska and WebM files have theirs read from the headers) is
 checked before anything is sent. Restyle keeps the source's sound; Higgsfield doesn't document what
 motion transfer and object swap do with it, so the picker says so. The price is Higgsfield's list price per started second of the part of the
 source that is used: 0.318 USD at 480p, 0.681 USD at 720p and 1.632 USD at 1080p (checked

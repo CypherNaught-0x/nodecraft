@@ -11,9 +11,11 @@
 mod error;
 mod hash;
 mod image_io;
+mod matroska;
 mod mesh;
 mod movie;
 mod sniff;
+mod sound;
 pub mod style;
 mod thumb;
 
@@ -25,6 +27,7 @@ pub use image_io::{
 pub use mesh::{Bounds, Mesh, MeshFormat, MeshInfo, MeshLimits, decode_mesh, decode_mesh_as, encode_glb, encode_obj, probe_mesh};
 pub use movie::{MovieInfo, probe_movie};
 pub use sniff::{MediaKind, Sniffed, sniff};
+pub use sound::{SoundInfo, probe_sound};
 pub use thumb::{Thumbnail, ThumbnailCache, fit_within, thumbnail};
 
 /// The `image` crate this API is built on, so callers use the same version of [`image::DynamicImage`].

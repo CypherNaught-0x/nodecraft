@@ -12,7 +12,7 @@ use nodecraft_graph::{MAX_NODE_BYTES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS};
 use nodecraft_media::{ContentHash, MediaKind};
 use nodecraft_nodes::{GenerateOutput, JobSpec};
 use nodecraft_providers::{Completed, JobInput, Output, ProviderJob};
-use nodecraft_types::{AssetRef, Blake3, Error, ErrorKind, MediaMeta, Modality, Value};
+use nodecraft_types::{AssetRef, Blake3, Error, ErrorKind, Modality, Value};
 use serde_json::{Map, Value as Json};
 use std::sync::Arc;
 
@@ -579,9 +579,12 @@ fn outputs_with_work(
                     conversion.asset_arcs += 1;
                 }
                 let hash = Blake3::from_bytes(ContentHash::of(bytes).0);
+                // A generated sound or movie records the length its headers state (#608), so a
+                // speech-to-video mode can check it against its limit before the next run.
+                let meta = crate::import::timed_meta(&mime, bytes);
                 let mime = mime.parse().map_err(|_| Error::new(ErrorKind::Internal, "a sniffed media type didn't parse"))?;
                 produced.assets.push((hash, Arc::clone(bytes)));
-                (conversion.string(port), Value::Media(AssetRef { hash, mime, meta: MediaMeta::default() }))
+                (conversion.string(port), Value::Media(AssetRef { hash, mime, meta }))
             }
         };
         #[cfg(test)]
