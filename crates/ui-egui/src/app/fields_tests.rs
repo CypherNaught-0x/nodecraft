@@ -412,3 +412,62 @@ fn membership_is_worked_out_once_per_revision() {
     let collapsed = h.state_mut().membership();
     assert!(collapsed.hidden.contains(&node), "an edit recomputes it");
 }
+
+/// Collapses a field around the fixture card, so the card is hidden.
+fn collapsed_around_card(h: &mut Harness<'static, NodeCraftApp>) -> FieldId {
+    let id = field_around_card(h);
+    let canvas = h.state().canvas;
+    h.state_mut().session.dispatch("field.update", &json!({"canvas": canvas, "field": id, "collapsed": true})).unwrap();
+    h.state_mut().selection.clear();
+    h.run();
+    assert!(card(h).is_none(), "a collapsed field hides its card");
+    id
+}
+
+#[test]
+fn search_next_expands_a_collapsed_field_to_show_its_match_in_one_undo_step() {
+    let mut h = harness();
+    h.run();
+    let node = member(&h);
+    let canvas_id = h.state().canvas;
+    h.state_mut().session.dispatch("node.title", &json!({"canvas": canvas_id, "id": node, "title": "Needle"})).unwrap();
+    let id = collapsed_around_card(&mut h);
+    let collapsed = h.state().session.document().clone();
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_search(&ctx, "canvas.search_open", &json!({})).unwrap();
+    h.state_mut().dispatch_search(&ctx, "canvas.search_query", &json!({"query": "needle"})).unwrap();
+    h.state_mut().dispatch_search(&ctx, "canvas.search_next", &json!({})).unwrap();
+    h.run();
+    assert!(
+        !canvas(&h).fields().get(&id).unwrap().collapsed,
+        "query {:?} results {:?} current {:?} notice {:?}",
+        h.state().search.query,
+        h.state().search.results,
+        h.state().search.current,
+        h.state().notice
+    );
+    assert!(h.state().selection.contains(node), "the match is focused");
+    let drawn = card(&h).expect("the match is drawn");
+    assert!(h.state().viewport.contains_rect(drawn), "the match is framed in view");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &collapsed, "expanding is one undo step");
+}
+
+#[test]
+fn tag_navigation_expands_a_collapsed_field_to_show_its_card() {
+    let mut h = harness();
+    h.run();
+    let id = collapsed_around_card(&mut h);
+    let node = member(&h);
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_open", &json!({})).unwrap();
+    h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags": [], "untagged": true})).unwrap();
+    h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_next", &json!({})).unwrap();
+    h.run();
+    assert!(!canvas(&h).fields().get(&id).unwrap().collapsed);
+    assert!(h.state().selection.contains(node), "notice {:?}", h.state().notice);
+    assert!(card(&h).is_some(), "the card is drawn");
+}

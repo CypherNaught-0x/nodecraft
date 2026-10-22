@@ -274,7 +274,9 @@ is consumed before canvas selection Escape, including egui's early focus-loss tr
 scans progress on rendered frames, and queued framing waits for completion and input availability.
 Scoped capabilities restore prior resources on errors/success and preserve unrelated services.
 Raw headless Session calls are Unsupported. Search creates no document revisions, undo entries or
-events. Search width 420, expanded height 128 and collapsed width 130 points are theme tokens.
+events, with one exception: stepping to a card inside a collapsed field expands that field first, as
+one `field.update` undo step (which, like any edit, clears redo). If the field can't be expanded,
+its header is selected and framed and a notice says the match is inside. Search width 420, expanded height 128 and collapsed width 130 points are theme tokens.
 
 ### Format selection
 
@@ -315,8 +317,10 @@ Fields (#66) draw on the canvas layer, under the noodles and cards, in their pal
 field's outline uses `accent`. `F` pads the selection by `field_padding` (32) plus the header;
 a resize stops at `field_min_width` × `field_min_height` (160 × 96). Membership is explicit:
 moving a card over a zone doesn't join it. A collapsed field shows only its header: members
-aren't drawn, select-all and box select skip them, and their noodles end at the header. Member
-counts and the hidden set are worked out once per document revision, not per frame.
+aren't drawn, select-all and box select skip them, and their noodles end at the header. Search
+and tag navigation that land on a hidden member expand its field first (one `field.update` undo
+step), then select and frame the card. Member counts and the hidden set are worked out once per
+document revision, not per frame.
 
 ## Clipboard admission and placement
 
