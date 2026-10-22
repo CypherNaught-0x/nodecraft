@@ -91,9 +91,23 @@ commands. `NodeCraftApp::comments_enabled`/`dispatch_comments` install a fresh s
 capability and restore previous resources on every result. Raw Session callers without a live
 host receive Unsupported; document CRUD is available headlessly. Programmatic calls never open
 file dialogs. The shell owns only view/draft state; every accepted mutation uses invertible graph
-changes. This is a trusted local-owner contract, without authenticated authors, ACLs or networking.
-[Sharing #121](https://github.com/CypherNaught-0x/nodecraft/issues/121) owns future central access
-control and identity; a comment-only UI restriction would not secure normal node edits/undo.
+changes. A local project trusts its owner.
+
+## Authors and roles in a shared project
+
+When a project is shared live, a share link gives its holder a role and a name
+([decision](decisions/2026-10-22-share-links.md)). Roots and replies carry an optional `author`
+(at most 128 bytes, not blank, no control characters): new messages are stamped with the
+session's share name, and an owner's own messages carry none.
+
+- A viewer's session refuses every change (`forbidden`).
+- A commenter's session accepts only discussion changes. It may reword only its own messages,
+  move and delete only its own threads and replies, and resolve, reopen and answer any thread.
+- An editor may also move and delete anyone's messages, but rewords only its own.
+
+The session's checks are for the person's sake. The relay enforces the same rules: a commenter
+never writes the shared document; the relay merges each of its changes into the thread as it
+is now, and refuses any part that isn't the commenter's to make.
 
 ## Canonical replay and format versions
 

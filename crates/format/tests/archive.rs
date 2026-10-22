@@ -259,6 +259,7 @@ fn public_journal_payload_preflight_includes_generation_depth_counts_and_record_
                     node: None,
                     replies: vec![],
                     resolved: false,
+                    author: None,
                 },
             })
             .collect(),

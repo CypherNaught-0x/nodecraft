@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use nodecraft_graph::assemble::{self, Assembled, CanvasPart, Part, Parts};
 use nodecraft_graph::{Canvas, CanvasKind, Comment, Edge, Field, Node, Position, Project, Skill, Tag};
-use nodecraft_types::{CanvasId, Error, ErrorKind, ProjectId, Value};
+use nodecraft_types::{CanvasId, CommentId, Error, ErrorKind, ProjectId, Value};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use yrs::updates::decoder::Decode;
@@ -49,6 +49,15 @@ pub struct Materialized {
     /// update goes to the other peers.
     pub repairs: Option<Vec<u8>>,
     pub dropped: usize,
+}
+
+/// One discussion a commenter changed: as it was, and as they made it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommentChange {
+    pub canvas: CanvasId,
+    pub id: CommentId,
+    pub base: Option<Comment>,
+    pub made: Option<Comment>,
 }
 
 /// One peer's copy of the shared document, and the project it last agreed with.
@@ -135,6 +144,30 @@ impl Mirror {
         })?;
         self.shadow = Some(project.clone());
         Ok(Some(update))
+    }
+
+    /// The discussions that changed in `project` since the last publish or adoption, for a
+    /// commenter to send the relay: each as it was and as it is now (`None`: it didn't exist,
+    /// or was deleted). The shared document isn't written: the relay writes each change, and it
+    /// comes back as an update.
+    pub fn comments_since(&mut self, project: &Project) -> Result<Vec<CommentChange>, Error> {
+        self.check()?;
+        let shadow = self.shadow.as_ref().ok_or_else(|| Error::new(ErrorKind::Conflict, "the shared document hasn't arrived yet"))?;
+        if shadow.id() != project.id() {
+            return Err(Error::new(ErrorKind::Conflict, "this is a different project from the one shared"));
+        }
+        let mut out = Vec::new();
+        each_changed(Some(shadow.canvases()), Some(project.canvases()), |a, b| {
+            let id = a.or(b).map(Canvas::id).ok_or_else(|| invalid("a canvas without an id"))?;
+            each_changed(open(a).map(Canvas::comments), open(b).map(Canvas::comments), |x, y| {
+                if let Some(comment) = x.or(y) {
+                    out.push(CommentChange { canvas: id, id: comment.id, base: x.cloned(), made: y.cloned() });
+                }
+                Ok(())
+            })
+        })?;
+        self.shadow = Some(project.clone());
+        Ok(out)
     }
 
     /// Records that the local document now is `project`: what later publishes compare with.
@@ -232,6 +265,31 @@ fn apply(txn: &mut TransactionMut<'_>, writes: BTreeMap<Key, Option<String>>) {
             }
         }
     }
+}
+
+/// One discussion as a shared document holds it, for the relay to check a commenter's change.
+pub(crate) fn comment_in<T: ReadTxn>(txn: &T, canvas: CanvasId, id: CommentId) -> Option<Comment> {
+    let map = txn.get_map(COMMENTS)?;
+    match map.get(txn, &in_canvas(canvas, id))? {
+        Out::Any(Any::String(text)) => serde_json::from_str::<Comment>(&text).ok().filter(|comment| comment.id == id),
+        _ => None,
+    }
+}
+
+/// Whether a shared document has `canvas`, and its discussions are entries of their own.
+pub(crate) fn open_canvas_in<T: ReadTxn>(txn: &T, canvas: CanvasId) -> bool {
+    let Some(map) = txn.get_map(CANVASES) else { return false };
+    matches!(
+        map.get(txn, &canvas.to_string()),
+        Some(Out::Any(Any::String(text))) if matches!(serde_json::from_str::<CanvasEntry>(&text), Ok(CanvasEntry::Header { .. }))
+    )
+}
+
+/// Writes one discussion into a shared document (`None` removes it).
+pub(crate) fn write_comment(txn: &mut TransactionMut<'_>, canvas: CanvasId, id: CommentId, comment: Option<&Comment>) -> Result<(), Error> {
+    let value = comment.map(json).transpose()?;
+    apply(txn, BTreeMap::from([((COMMENTS, in_canvas(canvas, id)), value)]));
+    Ok(())
 }
 
 fn in_canvas(canvas: CanvasId, id: impl std::fmt::Display) -> String {

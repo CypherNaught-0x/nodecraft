@@ -62,6 +62,7 @@ fn kind(value: &str) -> Option<&'static str> {
         "busy" => "busy",
         "budget" => "budget",
         "content_blocked" => "content_blocked",
+        "forbidden" => "forbidden",
         "internal" => "internal",
         "unknown" => "unknown",
         _ => return None,
@@ -161,6 +162,7 @@ impl NodeCraftApp {
                     ErrorKind::Busy => "busy",
                     ErrorKind::Budget => "budget",
                     ErrorKind::ContentBlocked => "content_blocked",
+                    ErrorKind::Forbidden => "forbidden",
                     ErrorKind::Internal => "internal",
                     _ => "unknown",
                 };

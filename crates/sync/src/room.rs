@@ -1,6 +1,11 @@
 //! One shared project at the relay: the merged document, so a late joiner gets all of it, and the
 //! assets its cards use, passed from the peers that have them to the peers that ask. The room
-//! never reads the project; it only merges and forwards. Every byte it keeps is capped.
+//! never reads the project; it only merges and forwards, except for a commenter's discussion
+//! changes, which it checks and writes itself (#121). Every byte it keeps is capped.
+//!
+//! Whoever joins by the room id is its owner. The owner may hand out share links, each with one
+//! role ([`Role`]); the room keeps only each link's hash. A viewer or commenter is never asked
+//! for its document, and anything it sends that would change the project is refused.
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -8,7 +13,13 @@ use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
+use nodecraft_graph::Comment;
+use nodecraft_types::{CanvasId, CommentId};
+
+use crate::discussion;
 use crate::frame::{Frame, MAX_UPDATE_BYTES};
+use crate::mirror::{comment_in, open_canvas_in, write_comment};
+use crate::role::{Grant, Role};
 
 /// One connection, numbered by the relay.
 pub type Peer = u64;
@@ -21,18 +32,29 @@ const MAX_ROOM_ASSET_BYTES: usize = 512 << 20;
 pub const MAX_PEERS: usize = 32;
 /// The most assets asked for and not yet sent; later asks wait until some arrive.
 const MAX_WANTED: usize = 4096;
+/// The most share links one room holds.
+pub const MAX_LINKS: usize = 256;
 
 /// What the relay should do after a frame.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum Out {
     Send(Peer, Frame),
     /// Send the frame, then hang up on the peer.
     Close(Peer, Frame),
 }
 
+/// Who a peer is in the room: what it may do, and through which link it came in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Member {
+    role: Role,
+    link: Option<[u8; 32]>,
+    name: Option<String>,
+}
+
 pub struct Room {
     doc: Doc,
-    peers: BTreeSet<Peer>,
+    peers: BTreeMap<Peer, Member>,
+    links: BTreeMap<[u8; 32], Grant>,
     merged: usize,
     assets: BTreeMap<[u8; 32], Vec<u8>>,
     asset_bytes: usize,
@@ -49,7 +71,16 @@ impl Default for Room {
 
 impl Room {
     pub fn new() -> Self {
-        Self { doc: Doc::new(), peers: BTreeSet::new(), merged: 0, assets: BTreeMap::new(), asset_bytes: 0, wanted: BTreeMap::new(), damaged: false }
+        Self {
+            doc: Doc::new(),
+            peers: BTreeMap::new(),
+            links: BTreeMap::new(),
+            merged: 0,
+            assets: BTreeMap::new(),
+            asset_bytes: 0,
+            wanted: BTreeMap::new(),
+            damaged: false,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -61,14 +92,45 @@ impl Room {
         self.merged.saturating_add(self.asset_bytes)
     }
 
-    /// Lets `peer` in, and asks what it has: its answer brings in what it changed while away.
+    /// The terms of the link with this hash, if the room has it.
+    pub fn grant(&self, link: &[u8; 32]) -> Option<&Grant> {
+        self.links.get(link)
+    }
+
+    /// Lets `peer` in as the owner, and asks what it has: its answer brings in what it changed
+    /// while away.
     pub fn join(&mut self, peer: Peer) -> Vec<Out> {
+        self.enter(peer, Member { role: Role::Owner, link: None, name: None })
+    }
+
+    /// Lets `peer` in through the link with this hash, if the room has it and it is still good
+    /// at `now` (seconds since 1970). The peer is told what the link lets it do.
+    pub fn join_link(&mut self, peer: Peer, link: [u8; 32], now: u64) -> Vec<Out> {
+        let Some(grant) = self.links.get(&link).filter(|grant| grant.live(now)) else {
+            return vec![Out::Close(peer, Frame::Refused(NO_LINK.into()))];
+        };
+        let (role, name) = (grant.role, grant.name.clone());
+        let mut out = vec![Out::Send(peer, Frame::Welcome { role, name: Some(name.clone()) })];
+        let entered = self.enter(peer, Member { role, link: Some(link), name: Some(name) });
+        if entered.iter().any(|o| matches!(o, Out::Close(..))) {
+            return entered;
+        }
+        out.extend(entered);
+        out
+    }
+
+    fn enter(&mut self, peer: Peer, member: Member) -> Vec<Out> {
         if self.peers.len() >= MAX_PEERS {
             return vec![Out::Close(peer, Frame::Refused("the room is full".into()))];
         }
         match self.state_vector() {
             Some(sv) => {
-                self.peers.insert(peer);
+                let edits = member.role.edits();
+                self.peers.insert(peer, member);
+                // Only an editor's document comes in; anyone else asks for the project itself.
+                if !edits {
+                    return Vec::new();
+                }
                 let mut out = vec![Out::Send(peer, Frame::Step1(sv))];
                 // Whoever asked for an asset may be waiting on someone who left: the newcomer
                 // may have it.
@@ -90,17 +152,41 @@ impl Room {
         self.wanted.retain(|_, askers| !askers.is_empty());
     }
 
+    /// Puts out everyone whose link has run out by `now` (seconds since 1970), and forgets the
+    /// links that have.
+    pub fn expire(&mut self, now: u64) -> Vec<Out> {
+        let gone: Vec<[u8; 32]> = self.links.iter().filter(|(_, grant)| !grant.live(now)).map(|(hash, _)| *hash).collect();
+        let mut out = Vec::new();
+        for hash in gone {
+            self.links.remove(&hash);
+            out.extend(self.put_out(hash, "the share link has expired"));
+        }
+        out
+    }
+
+    /// Hangs up on everyone in through `link`.
+    fn put_out(&mut self, link: [u8; 32], why: &str) -> Vec<Out> {
+        let through: Vec<Peer> = self.peers.iter().filter(|(_, member)| member.link == Some(link)).map(|(peer, _)| *peer).collect();
+        let mut out = Vec::new();
+        for peer in through {
+            self.leave(peer);
+            out.push(Out::Close(peer, Frame::Refused(why.into())));
+        }
+        out
+    }
+
     /// Takes one frame from `from`, a peer in the room.
     pub fn handle(&mut self, from: Peer, frame: Frame) -> Vec<Out> {
-        if !self.peers.contains(&from) {
+        let Some(member) = self.peers.get(&from).cloned() else {
             return vec![Out::Close(from, Frame::Refused("not in the room".into()))];
-        }
+        };
         match frame {
             Frame::Step1(sv) => match self.update_for(&sv) {
                 Some(update) if update.len() > MAX_UPDATE_BYTES => self.refuse(from, "the project is too large to send"),
                 Some(update) => vec![Out::Send(from, Frame::Step2(update))],
                 None => self.refuse(from, "the state vector isn't readable"),
             },
+            Frame::Step2(_) | Frame::Update(_) if !member.role.edits() => self.refuse(from, READ_ONLY),
             Frame::Step2(update) | Frame::Update(update) => {
                 if self.merged.saturating_add(update.len()) > MAX_ROOM_UPDATE_BYTES {
                     return self.refuse(from, "the room has grown too large");
@@ -111,6 +197,8 @@ impl Room {
                 self.merged = self.merged.saturating_add(update.len());
                 self.others(from).map(|peer| Out::Send(peer, Frame::Update(update.clone()))).collect()
             }
+            // A viewer's or commenter's media goes nowhere: it can't have added any.
+            Frame::AssetPut { .. } if !member.role.edits() => Vec::new(),
             Frame::AssetPut { hash, bytes } => {
                 // The frame checked the hash when it was read.
                 let mut out: Vec<Out> = self
@@ -118,7 +206,7 @@ impl Room {
                     .remove(&hash)
                     .unwrap_or_default()
                     .into_iter()
-                    .filter(|peer| *peer != from && self.peers.contains(peer))
+                    .filter(|peer| *peer != from && self.peers.contains_key(peer))
                     .map(|peer| Out::Send(peer, Frame::AssetPut { hash, bytes: bytes.clone() }))
                     .collect();
                 if !self.assets.contains_key(&hash) && self.asset_bytes.saturating_add(bytes.len()) <= MAX_ROOM_ASSET_BYTES {
@@ -143,17 +231,90 @@ impl Room {
                     }
                 }
                 if !missing.is_empty() {
-                    let others: Vec<Peer> = self.others(from).collect();
+                    // Only an editor can have media the project needs.
+                    let others: Vec<Peer> = self.others(from).filter(|peer| self.peers.get(peer).is_some_and(|m| m.role.edits())).collect();
                     out.extend(others.into_iter().map(|peer| Out::Send(peer, Frame::AssetGet(missing.clone()))));
                 }
                 out
             }
-            Frame::Hello { .. } | Frame::Refused(_) => self.refuse(from, "a frame a peer doesn't send"),
+            Frame::LinkPut { .. } | Frame::LinkRevoke(_) if member.role != Role::Owner => self.refuse(from, "only the owner manages share links"),
+            Frame::LinkPut { hash, grant } => {
+                if grant.validate().is_err() {
+                    return self.refuse(from, "the share link isn't valid");
+                }
+                if !self.links.contains_key(&hash) && self.links.len() >= MAX_LINKS {
+                    return vec![Out::Send(from, Frame::Refused("the room holds no more share links".into()))];
+                }
+                // Whoever is in through a link that changed comes back in on its new terms.
+                let changed = self.links.insert(hash, grant.clone()).is_some_and(|old| old != grant);
+                if changed { self.put_out(hash, "the share link changed: join again") } else { Vec::new() }
+            }
+            Frame::LinkRevoke(hash) => {
+                self.links.remove(&hash);
+                self.put_out(hash, "the share link was revoked")
+            }
+            Frame::CommentPut { .. } if member.role != Role::Comment => self.refuse(from, "editors change discussions in the document"),
+            Frame::CommentPut { seq, canvas, id, base, comment } => {
+                let Some(name) = member.name else { return self.refuse(from, NO_LINK) };
+                match self.discuss(&name, canvas, id, base.as_deref(), comment.as_deref()) {
+                    Ok(update) => {
+                        let mut out: Vec<Out> =
+                            update.map(|update| self.peers.keys().map(|peer| Out::Send(*peer, Frame::Update(update.clone()))).collect()).unwrap_or_default();
+                        out.push(Out::Send(from, Frame::CommentDone(seq)));
+                        out
+                    }
+                    Err(message) => self.refuse(from, message),
+                }
+            }
+            Frame::Hello { .. } | Frame::HelloLink { .. } | Frame::Welcome { .. } | Frame::CommentDone(_) | Frame::Refused(_) => {
+                self.refuse(from, "a frame a peer doesn't send")
+            }
         }
     }
 
+    /// Applies a commenter's change to one discussion, as the update that writes it (`None`
+    /// when it changes nothing now).
+    fn discuss(
+        &mut self,
+        name: &str,
+        canvas: CanvasId,
+        id: CommentId,
+        base: Option<&Comment>,
+        made: Option<&Comment>,
+    ) -> Result<Option<Vec<u8>>, &'static str> {
+        if self.damaged {
+            return Err(DAMAGED);
+        }
+        let (now, open) = {
+            let txn = self.doc.try_transact().map_err(|_| "the room is busy")?;
+            (comment_in(&txn, canvas, id), open_canvas_in(&txn, canvas))
+        };
+        // Someone removed the canvas (or froze it into a technique) meanwhile: the change has
+        // nowhere to go, and the commenter learns so from the update that did it.
+        if !open {
+            return Ok(None);
+        }
+        let Some(next) = discussion::merge(name, now.as_ref(), base, made)? else { return Ok(None) };
+        let size = next.as_ref().map_or(0, |c| c.text.len().saturating_add(c.replies.iter().map(|r| r.text.len()).sum()));
+        if self.merged.saturating_add(size) > MAX_ROOM_UPDATE_BYTES {
+            return Err("the room has grown too large");
+        }
+        let doc = &self.doc;
+        let written = catch_unwind(AssertUnwindSafe(|| -> Result<Vec<u8>, &'static str> {
+            let mut txn = doc.try_transact_mut().map_err(|_| "the room is busy")?;
+            write_comment(&mut txn, canvas, id, next.as_ref()).map_err(|_| "the discussion can't be written")?;
+            Ok(txn.encode_update_v1())
+        }));
+        let update = written.unwrap_or_else(|_| {
+            self.damaged = true;
+            Err(DAMAGED)
+        })?;
+        self.merged = self.merged.saturating_add(update.len());
+        Ok(Some(update))
+    }
+
     fn others(&self, from: Peer) -> impl Iterator<Item = Peer> + '_ {
-        self.peers.iter().copied().filter(move |peer| *peer != from)
+        self.peers.keys().copied().filter(move |peer| *peer != from)
     }
 
     fn refuse(&mut self, peer: Peer, message: &str) -> Vec<Out> {
@@ -194,6 +355,8 @@ impl Room {
 }
 
 const DAMAGED: &str = "the room is damaged: share the project again";
+const READ_ONLY: &str = "this share link doesn't let you edit the project";
+const NO_LINK: &str = "that share link doesn't open a project being shared now";
 
 #[cfg(test)]
 mod tests;

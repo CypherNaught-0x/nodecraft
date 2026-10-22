@@ -67,7 +67,7 @@ fn v2_writers_round_trip_pins_replies_resolved_notes_and_recovery_rejects_bad_re
     let mut root = Comment::new(id, "Review ☀", Position { x: 400.0, y: 80.0 });
     root.node = Some(node);
     root.resolved = true;
-    root.replies.push(CommentReply { id: CommentId::from_bytes([0x89; 16]), text: "Flat reply".into() });
+    root.replies.push(CommentReply::new(CommentId::from_bytes([0x89; 16]), "Flat reply"));
     let mut note = Node::new(NodeId::from_bytes([0x90; 16]), "structure.note");
     note.params.insert("text".into(), Value::Text("Local note".into()));
     Changeset::new(vec![Change::PutComment { canvas, comment: root }, Change::AddNode { canvas, node: note }]).apply(&mut snapshot.project).unwrap();

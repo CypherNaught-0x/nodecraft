@@ -1,4 +1,7 @@
-//! Local-owner discussion editing. Identity/roles and sharing are deliberately not implied.
+//! Discussion editing. In a shared session (#121) each new message is written under the
+//! session's name ([`crate::access::Access`]); a message's text is edited only by its writer,
+//! and a message is moved or deleted by its writer or by someone who may edit the project.
+//! Anyone who may comment may resolve or reopen a discussion.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_graph::{Change, Changeset, Comment, CommentReply, MAX_COMMENT_BYTES, MAX_REPLY_BYTES, Position};
 use nodecraft_types::{CanvasId, CommentId, Error, ErrorKind, NodeId, ProjectId};
@@ -103,6 +106,13 @@ fn raw(c: &Context<'_>, v: &Value, limit: usize) -> Result<(), Error> {
 fn thread<'a>(c: &'a Context<'_>, canvas: CanvasId, id: CommentId) -> Result<&'a Comment, Error> {
     c.document.canvases().get(&canvas).and_then(|canvas| canvas.comments().get(&id)).ok_or_else(|| Error::new(ErrorKind::NotFound, "discussion does not exist"))
 }
+fn forbidden(message: &str) -> Error {
+    Error::new(ErrorKind::Forbidden, message)
+}
+/// Refused unless the session may move or delete a message written by `author`.
+fn may_remove(c: &Context<'_>, author: Option<&str>) -> Result<(), Error> {
+    if c.access.owns(author) || c.access.role.edits() { Ok(()) } else { Err(forbidden("only its writer may move or delete a message")) }
+}
 fn nonempty(text: &str) -> Result<(), Error> {
     if text.trim().is_empty() { Err(invalid("message must contain non-whitespace text")) } else { Ok(()) }
 }
@@ -119,6 +129,7 @@ fn create(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
     nonempty(&p.text)?;
     let mut comment = Comment::new(p.id, p.text, p.pos.into());
     comment.node = p.node;
+    comment.author = c.access.author().map(str::to_owned);
     if let Some(old) = c.document.canvases().get(&p.canvas).and_then(|canvas| canvas.comments().get(&p.id)) {
         if *old == comment {
             return Ok(effect(None));
@@ -136,8 +147,14 @@ fn edit(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
     let root = thread(c, p.canvas, p.id)?;
     let change = if let Some(reply) = p.reply {
         let old = root.replies.iter().find(|item| item.id == reply).ok_or_else(|| Error::new(ErrorKind::NotFound, "reply does not belong to discussion"))?;
+        if !c.access.owns(old.author.as_deref()) {
+            return Err(forbidden("only its writer may edit a message"));
+        }
         (old.text != p.text).then_some(Change::SetCommentReplyText { canvas: p.canvas, id: p.id, reply, text: p.text })
     } else {
+        if !c.access.owns(root.author.as_deref()) {
+            return Err(forbidden("only its writer may edit a message"));
+        }
         (root.text != p.text).then_some(Change::SetCommentText { canvas: p.canvas, id: p.id, text: p.text })
     };
     Ok(effect(change))
@@ -151,13 +168,18 @@ fn reply(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
     if root.resolved {
         return Err(Error::new(ErrorKind::Conflict, "reopen the discussion before replying"));
     }
-    Ok(effect(Some(Change::InsertCommentReply { canvas: p.canvas, id: p.id, index: root.replies.len(), reply: CommentReply { id: p.reply, text: p.text } })))
+    let mut reply = CommentReply::new(p.reply, p.text);
+    reply.author = c.access.author().map(str::to_owned);
+    Ok(effect(Some(Change::InsertCommentReply { canvas: p.canvas, id: p.id, index: root.replies.len(), reply })))
 }
 fn reply_remove(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
     raw(c, v, 0)?;
     let p: ReplyRemove = params(v)?;
     revision(c, p.expected_revision)?;
-    thread(c, p.canvas, p.id)?;
+    let root = thread(c, p.canvas, p.id)?;
+    if let Some(reply) = root.replies.iter().find(|item| item.id == p.reply) {
+        may_remove(c, reply.author.as_deref())?;
+    }
     Ok(effect(Some(Change::RemoveCommentReply { canvas: p.canvas, id: p.id, reply: p.reply })))
 }
 fn move_pin(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
@@ -165,6 +187,7 @@ fn move_pin(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
     let p: Move = params(v)?;
     revision(c, p.expected_revision)?;
     let root = thread(c, p.canvas, p.id)?;
+    may_remove(c, root.author.as_deref())?;
     Ok(effect((root.node != p.node || root.pos != Position::from(p.pos)).then_some(Change::SetCommentPin {
         canvas: p.canvas,
         id: p.id,
@@ -183,7 +206,7 @@ fn remove(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
     raw(c, v, 0)?;
     let p: Remove = params(v)?;
     revision(c, p.expected_revision)?;
-    thread(c, p.canvas, p.id)?;
+    may_remove(c, thread(c, p.canvas, p.id)?.author.as_deref())?;
     Ok(effect(Some(Change::RemoveComment { canvas: p.canvas, id: p.id })))
 }
 fn enabled(c: &Context<'_>, v: &Value, run: fn(&Context<'_>, &Value) -> Result<Effect, Error>) -> Result<(), Error> {
@@ -309,7 +332,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 shortcut: None,
                 alternate_shortcuts: &[],
                 input_schema: || schema($action),
-                params_doc: "Local-owner discussion edit; optional expected_revision rejects stale edits; accepted content never enters errors.",
+                params_doc: "Discussion edit; new messages carry the session's share name; only a message's writer edits its text; optional expected_revision rejects stale edits; accepted content never enters errors.",
                 enabled: |c, v| enabled(c, v, $run),
                 run: $run,
             });

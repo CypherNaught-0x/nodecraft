@@ -1,8 +1,10 @@
 use super::*;
 use nodecraft_graph::{Canvas, Change, Changeset, Node};
+use nodecraft_sync::Role;
 use nodecraft_sync::{Out, Peer, Room};
-use nodecraft_types::{AssetRef, CanvasId, MediaMeta, NodeId, Value};
+use nodecraft_types::{AssetRef, CanvasId, CommentId, MediaMeta, NodeId, Value};
 use serde_json::json;
+use std::collections::BTreeMap;
 
 fn canvas() -> CanvasId {
     CanvasId::from_bytes([2; 16])
@@ -13,6 +15,11 @@ fn nid(n: u8) -> NodeId {
 fn room_id() -> RoomId {
     RoomId::from_bytes([5; 32])
 }
+fn cid(n: u8) -> CommentId {
+    CommentId::from_bytes([n; 16])
+}
+/// The relay's clock, in seconds since 1970.
+const NOW: u64 = 1_800_000_000;
 
 struct Person {
     id: Peer,
@@ -25,18 +32,41 @@ struct Net {
     room: Room,
     people: Vec<Person>,
     queue: Vec<Out>,
+    /// Why each person who was put out, or gave up, left.
+    ended: BTreeMap<Peer, String>,
 }
 
 impl Net {
+    fn new() -> Self {
+        Self { room: Room::new(), people: Vec::new(), queue: Vec::new(), ended: BTreeMap::new() }
+    }
+
     fn enter(&mut self, mut person: Person) {
-        assert!(matches!(person.collab.hello(), Frame::Hello { .. }));
-        self.queue.extend(self.room.join(person.id));
-        // A sharer answers the room's question; a joiner starts empty.
-        if let Some(session) = &person.session {
-            assert!(person.collab.publish(session).unwrap().is_empty());
+        let id = person.id;
+        match person.collab.hello() {
+            Frame::Hello { .. } => self.queue.extend(self.room.join(id)),
+            Frame::HelloLink { link, .. } => self.queue.extend(self.room.join_link(id, link.hash(), NOW)),
+            other => panic!("not a first frame: {other:?}"),
         }
+        // A sharer answers the room's question (and sends its links); a joiner starts empty.
+        let sent = person.session.as_ref().map(|session| person.collab.publish(session).unwrap()).unwrap_or_default();
+        assert!(sent.iter().all(|frame| matches!(frame, Frame::LinkPut { .. })));
         self.people.push(person);
+        for frame in sent {
+            self.queue.extend(self.room.handle(id, frame));
+        }
         self.settle();
+    }
+
+    /// Asks person `id`'s share links service, as the host would.
+    fn links(&mut self, id: Peer, request: serde_json::Value) -> Result<serde_json::Value, Error> {
+        let answer = self.people.iter_mut().find(|p| p.id == id).unwrap().collab.links_request(&request, NOW);
+        self.settle();
+        answer
+    }
+
+    fn person(&self, id: Peer) -> &Person {
+        self.people.iter().find(|p| p.id == id).unwrap()
     }
 
     /// Delivers every frame until nobody has anything more to send.
@@ -45,9 +75,14 @@ impl Net {
             let mut sent = Vec::new();
             for out in std::mem::take(&mut self.queue) {
                 let (Out::Send(to, frame) | Out::Close(to, frame)) = out;
-                let person = self.people.iter_mut().find(|p| p.id == to).unwrap();
-                for reply in person.collab.receive(frame).unwrap() {
-                    sent.push((to, reply));
+                let Some(person) = self.people.iter_mut().find(|p| p.id == to) else { continue };
+                match person.collab.receive(frame) {
+                    Ok(replies) => sent.extend(replies.into_iter().map(|reply| (to, reply))),
+                    Err(error) => {
+                        self.ended.insert(to, error.to_string());
+                        self.room.leave(to);
+                        self.people.retain(|p| p.id != to);
+                    }
                 }
             }
             for person in &mut self.people {
@@ -99,7 +134,7 @@ fn add(session: &mut Session, n: u8) {
 #[test]
 fn three_people_end_with_one_project_and_its_images() {
     let (session, asset) = sharer();
-    let mut net = Net { room: Room::new(), people: Vec::new(), queue: Vec::new() };
+    let mut net = Net::new();
     let collab = Collab::share(&session, room_id()).unwrap();
     net.enter(Person { id: 1, collab, session: Some(session) });
     net.enter(Person { id: 2, collab: Collab::join(room_id()), session: None });
@@ -173,4 +208,131 @@ fn a_card_waits_for_its_image_and_nothing_else_does() {
     }
     assert!(b.settle(&mut joined).unwrap().is_empty());
     assert_eq!(joined.document(), session.document());
+}
+
+fn note(n: u8, text: &str) -> serde_json::Value {
+    json!({"canvas": canvas(), "id": cid(n), "text": text, "pos": {"x": 10, "y": 20}})
+}
+
+fn reply(root: u8, n: u8, text: &str) -> serde_json::Value {
+    json!({"canvas": canvas(), "id": cid(root), "reply": cid(n), "text": text})
+}
+
+/// The owner, sharing, with a link for Ana in `role`; Ana is person 2.
+fn with_link(role: &str) -> (Net, serde_json::Value) {
+    let (session, _) = sharer();
+    let mut net = Net::new();
+    let collab = Collab::share(&session, room_id()).unwrap();
+    net.enter(Person { id: 1, collab, session: Some(session) });
+    let link = net.links(1, json!({"op": "create", "role": role, "name": "Ana"})).unwrap();
+    let key: LinkKey = link["key"].as_str().unwrap().parse().unwrap();
+    net.enter(Person { id: 2, collab: Collab::join_link(key), session: None });
+    (net, link)
+}
+
+#[test]
+fn a_commenter_discusses_through_the_relay_and_edits_nothing() {
+    let (mut net, _) = with_link("comment");
+    let owner = net.session(1).document().clone();
+    assert_eq!(net.session(2).document(), &owner);
+    assert_eq!(net.person(2).collab.role(), Some(Role::Comment));
+    assert_eq!(net.session(2).access().author(), Some("Ana"));
+
+    let refused = net.session(2).dispatch("node.add", &json!({"canvas": canvas(), "node": Node::new(nid(7), "text")})).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Forbidden);
+    assert!(net.session(2).dispatch("run.selected", &json!({"canvas": canvas()})).is_err());
+
+    // Ana's discussion reaches the owner in her name.
+    net.session(2).dispatch("comment.create", &note(10, "Lovely light")).unwrap();
+    net.settle();
+    let thread = &net.session(1).document().canvases()[&canvas()].comments()[&cid(10)];
+    assert_eq!(thread.author.as_deref(), Some("Ana"));
+    assert!(net.person(2).collab.pending.is_empty());
+
+    // Both answer at once; both answers stay, in both copies.
+    net.session(1).dispatch("comment.reply", &reply(10, 11, "Thanks")).unwrap();
+    net.session(2).dispatch("comment.reply", &reply(10, 12, "More of it")).unwrap();
+    net.settle();
+    let both = net.session(1).document().clone();
+    assert_eq!(net.session(2).document(), &both);
+    let replies: Vec<CommentId> = both.canvases()[&canvas()].comments()[&cid(10)].replies.iter().map(|r| r.id).collect();
+    assert_eq!(replies.len(), 2);
+    assert!(replies.contains(&cid(11)) && replies.contains(&cid(12)));
+
+    // The owner's reply isn't Ana's to change; her own is.
+    assert!(net.session(2).dispatch("comment.edit", &json!({"canvas": canvas(), "id": cid(10), "reply": cid(11), "text": "Mine now"})).is_err());
+    net.session(2).dispatch("comment.edit", &json!({"canvas": canvas(), "id": cid(10), "reply": cid(12), "text": "Much more"})).unwrap();
+    net.session(2).dispatch("comment.resolve", &json!({"canvas": canvas(), "id": cid(10), "resolved": true})).unwrap();
+    net.settle();
+    let thread = &net.session(1).document().canvases()[&canvas()].comments()[&cid(10)];
+    assert!(thread.resolved);
+    assert_eq!(thread.replies.iter().find(|r| r.id == cid(12)).unwrap().text, "Much more");
+    assert!(net.ended.is_empty(), "{:?}", net.ended);
+}
+
+#[test]
+fn a_viewer_sees_edits_changes_nothing_and_is_put_out_when_revoked() {
+    let (mut net, link) = with_link("view");
+    assert_eq!(net.person(2).collab.role(), Some(Role::View));
+    for (id, params) in [("node.add", json!({"canvas": canvas(), "node": Node::new(nid(7), "text")})), ("comment.create", note(10, "Hmm"))] {
+        assert_eq!(net.session(2).dispatch(id, &params).unwrap_err().kind, ErrorKind::Forbidden, "{id}");
+    }
+    add(net.session(1), 5);
+    net.settle();
+    assert!(net.session(2).document().canvases()[&canvas()].nodes().contains_key(&nid(5)));
+
+    // Only the owner manages links.
+    let listed = net.links(1, json!({"op": "list"})).unwrap();
+    assert_eq!(listed["links"][0]["id"], link["id"]);
+    assert!(listed["links"][0].get("key").is_none());
+    let refused = net.people.iter_mut().find(|p| p.id == 2).unwrap().collab.links_request(&json!({"op": "list"}), NOW).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Forbidden);
+
+    net.links(1, json!({"op": "revoke", "id": link["id"]})).unwrap();
+    assert!(net.ended[&2].contains("revoked"), "{:?}", net.ended);
+    assert!(net.links(1, json!({"op": "list"})).unwrap()["links"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_changed_link_brings_its_holder_back_on_new_terms() {
+    let (mut net, link) = with_link("view");
+    let mut changed = net.links(1, json!({"op": "update", "id": link["id"], "role": "edit", "name": "Ana"})).unwrap();
+    assert_eq!(changed["role"], "edit");
+    assert!(net.ended[&2].contains("changed"));
+    // Ana comes back with the same key and may now edit.
+    let key: LinkKey = link["key"].as_str().unwrap().parse().unwrap();
+    net.enter(Person { id: 3, collab: Collab::join_link(key), session: None });
+    assert_eq!(net.person(3).collab.role(), Some(Role::Edit));
+    add(net.session(3), 6);
+    net.settle();
+    assert!(net.session(1).document().canvases()[&canvas()].nodes().contains_key(&nid(6)));
+
+    // A link that has run out lets nobody in.
+    changed = net.links(1, json!({"op": "update", "id": link["id"], "role": "view", "name": "Ana", "expires": NOW + 1})).unwrap();
+    assert_eq!(changed["expired"], false);
+    assert!(net.links(1, json!({"op": "create", "role": "view", "name": "Bo", "expires": NOW})).is_err());
+    net.queue.extend(net.room.expire(NOW + 1));
+    net.settle();
+    net.enter(Person { id: 4, collab: Collab::join_link(link["key"].as_str().unwrap().parse().unwrap()), session: None });
+    assert!(net.ended[&4].contains("share link"), "{:?}", net.ended);
+}
+
+#[test]
+fn a_relay_frame_out_of_turn_ends_the_session() {
+    let (session, _) = sharer();
+    let mut owner = Collab::share(&session, room_id()).unwrap();
+    assert!(owner.receive(Frame::Welcome { role: Role::Edit, name: None }).is_err());
+    let mut joiner = Collab::join_link(LinkKey::from_bytes([3; 32]));
+    let _ = joiner.hello();
+    assert!(joiner.receive(Frame::Welcome { role: Role::Owner, name: None }).is_err());
+    let mut joiner = Collab::join_link(LinkKey::from_bytes([3; 32]));
+    let _ = joiner.hello();
+    assert!(joiner.receive(Frame::Welcome { role: Role::Comment, name: None }).is_err());
+    let mut viewer = Collab::join_link(LinkKey::from_bytes([3; 32]));
+    let _ = viewer.hello();
+    assert!(matches!(&viewer.receive(Frame::Welcome { role: Role::View, name: Some("Ana".into()) }).unwrap()[..], [Frame::Step1(_)]));
+    assert!(viewer.receive(Frame::Step1(Vec::new())).is_err());
+    assert!(viewer.receive(Frame::CommentDone(1)).is_err());
+    let ended = viewer.receive(Frame::Refused("the share link was revoked\u{7}".into())).unwrap_err();
+    assert_eq!(ended.message, "the relay ended the shared session: the share link was revoked");
 }

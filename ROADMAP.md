@@ -115,8 +115,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   each picture clip can be placed, sized, cropped, turned and faded in the frame, clips can play
   faster or slower, and the render has a quality (#577).
 - **Live sharing has no UI yet.** Sessions can be shared through `nodecraft-cli relay` (#119),
-  with every edit merged and images passed along. Only code calls it so far: the app has no
-  Share or Join yet, the browser build has no transport, and there is no presence (#121).
+  with every edit merged and images passed along. Share links let someone view, comment on or
+  edit a shared project, with signed discussions and expiry and revocation (`share.link_*`,
+  #121). Only code calls it so far: the app has no Share or Join yet, the browser build has no
+  transport, there are no private canvases yet, and there is no presence.
 - **Not started**: batch, Techniques, app mode, library, Layer editor, Elements, PDF,
   and 32 of the 41 tracked provider adapters (ComfyUI, fal.ai and
   Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,

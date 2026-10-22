@@ -17,7 +17,7 @@ impl Session {
             if nodecraft_format::assets_in_changes(&changes)?.iter().any(|hash| !self.assets.contains(hash)) {
                 return Err(Error::new(ErrorKind::NotFound, "a shared card names an asset that hasn't arrived"));
             }
-            let mut prepared = self.prepare_with_assets(Effect::Edit { changes, result: Value::Null, gesture: None }, &self.assets, true)?;
+            let mut prepared = self.prepare_remote(Effect::Edit { changes, result: Value::Null, gesture: None })?;
             prepared.direction = Direction::Remote;
             self.commit_prepared(prepared, "sync.remote").map(|_| ())
         });

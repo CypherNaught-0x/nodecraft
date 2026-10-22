@@ -298,6 +298,15 @@ impl Tag {
 pub struct CommentReply {
     pub id: CommentId,
     pub text: String,
+    /// Who wrote it, as shown in a shared session (#121); none for a local note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+}
+
+impl CommentReply {
+    pub fn new(id: CommentId, text: impl Into<String>) -> Self {
+        Self { id, text: text.into(), author: None }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -319,11 +328,14 @@ pub struct Comment {
     pub replies: Vec<CommentReply>,
     #[serde(default)]
     pub resolved: bool,
+    /// Who started the discussion, as shown in a shared session (#121); none for a local note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
 }
 
 impl Comment {
     pub fn new(id: CommentId, text: impl Into<String>, pos: Position) -> Self {
-        Self { id, text: text.into(), pos, node: None, replies: Vec::new(), resolved: false }
+        Self { id, text: text.into(), pos, node: None, replies: Vec::new(), resolved: false, author: None }
     }
 
     pub fn validate_payload(&self) -> Result<(), Error> {

@@ -122,7 +122,15 @@ fn removing_a_node_restores_all_edges_in_one_inverse_operation() {
 fn all_edit_types_and_annotation_stubs_are_reversible() {
     let field = Field::new(FieldId::from_bytes([1; 16]), "Group");
     let tag = Tag { id: TagId::from_bytes([1; 16]), title: "Tag".into(), color: None };
-    let comment = Comment { id: CommentId::from_bytes([1; 16]), text: "Note".into(), pos: Position::default(), node: None, replies: vec![], resolved: false };
+    let comment = Comment {
+        id: CommentId::from_bytes([1; 16]),
+        text: "Note".into(),
+        pos: Position::default(),
+        node: None,
+        replies: vec![],
+        resolved: false,
+        author: None,
+    };
     let mut replacement = node(1);
     replacement.field = Some(field.id);
     replacement.tag = Some(tag.id);
@@ -400,7 +408,15 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
             22 => Change::RemoveTag { canvas, id: TagId::from_bytes([n; 16]) },
             23 => Change::PutComment {
                 canvas,
-                comment: Comment { id: CommentId::from_bytes([n; 16]), text, pos: Position::default(), node: None, replies: vec![], resolved: false },
+                comment: Comment {
+                    id: CommentId::from_bytes([n; 16]),
+                    text,
+                    pos: Position::default(),
+                    node: None,
+                    replies: vec![],
+                    resolved: false,
+                    author: None,
+                },
             },
             24 => Change::RemoveComment { canvas, id: CommentId::from_bytes([n; 16]) },
             // Names from the same short text collide, ids from a tiny pool replace each other.
