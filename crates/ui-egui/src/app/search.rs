@@ -117,6 +117,19 @@ impl NodeCraftApp {
         self.frame_canvas_node(ctx, id, "Search result");
     }
     pub(super) fn frame_canvas_node(&mut self, ctx: &egui::Context, id: NodeId, source: &str) {
+        // A card hidden in a collapsed field is shown by expanding the field, one undo step (#706).
+        let collapsed = self.session.document().canvases().get(&self.canvas).and_then(|canvas| {
+            let field = canvas.nodes().get(&id)?.field?;
+            canvas.fields().get(&field).filter(|field| field.collapsed).map(|field| field.id)
+        });
+        if let Some(field) = collapsed {
+            if let Err(error) = self.session.dispatch("field.update", &json!({"canvas": self.canvas, "field": field, "collapsed": false})) {
+                self.notice = Some(format!("{source} is in a collapsed field that could not be expanded: {}", error.message));
+                ctx.request_repaint();
+                return;
+            }
+            self.fields_sync();
+        }
         self.selection.only(id);
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let Some(body) = self.navigation.geometry.rects.get(&id).copied() else {
