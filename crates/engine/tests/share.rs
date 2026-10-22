@@ -114,7 +114,7 @@ fn share_links_are_managed_through_the_sharing_host() {
     assert_eq!(made["key"].as_str().unwrap().len(), 64);
     assert_ne!(made["key"], made["id"]);
     let listed = s.dispatch("share.links", &json!({})).unwrap();
-    assert_eq!(listed["links"], json!([{"id": made["id"], "role": "comment", "name": "Ana", "expires": null, "expired": false}]));
+    assert_eq!(listed["links"], json!([{"id": made["id"], "role": "comment", "name": "Ana", "expires": null}]));
     let changed = s.dispatch("share.link_update", &json!({"id": made["id"], "role": "view", "name": "Ana", "expires": 1_900_000_000})).unwrap();
     assert_eq!(changed["role"], "view");
     s.dispatch("share.link_revoke", &json!({"id": made["id"]})).unwrap();

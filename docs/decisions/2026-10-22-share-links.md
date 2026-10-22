@@ -21,7 +21,9 @@ the person it is for, and an optional expiry in seconds since 1970 (UTC).
   assets.
 
 **The relay keeps links only while the room is open.** The relay keeps nothing on disk. The
-owner's `Collab` holds the links and sends them again on every connection. A link therefore
+owner's `Collab` holds the links and sends them again on every connection, with its 64 latest
+revokes (another device of the owner's may still hold a revoked link). An expired link is
+dropped from the owner's list too. A link therefore
 works only while its owner, or someone else in the room, is connected. Making links last is
 left to whatever later keeps rooms open with nobody in them.
 
@@ -53,7 +55,13 @@ relay then:
    now, refusing any part that isn't the commenter's to make;
 2. writes the result as its own yrs client;
 3. sends the resulting update to everyone, the commenter included;
-4. sends the commenter `CommentDone(seq)`.
+4. sends the commenter `CommentDone { seq, refused: None }`.
+
+A put that isn't the commenter's to make is dropped, and the relay answers
+`CommentDone { seq, refused: Some(why) }` without putting them out: an honest client can send
+one after an undo or a reconnect. A new thread sent again after a reconnect, which the relay
+already wrote, changes nothing. A commenter's session refuses to put a whole thread back (by
+undoing its delete) unless every message in it is theirs.
 
 Until the done arrives, the commenter's session shows its own changes laid over what the
 shared document holds, so nothing flickers. A reply someone else sent meanwhile is kept. If the
@@ -71,13 +79,20 @@ canvas has gone, the change is dropped and the commenter is not put out.
 An owner's own messages carry no name. Messages that don't name an author belong to whoever has
 no name, which is the owner.
 
+**Authors bind commenters, not editors.** An editor writes the shared document directly, so
+the relay doesn't check what it signs: an `edit` link is trusted as the owner is, and its
+session's checks are a courtesy, not a guard. Names aren't unique within a room either; two
+links for "Ana" write as the same person. Give `edit` only to people you would hand the room
+id.
+
 **`PROTOCOL` is 2.** The new frames are:
 
 - `HelloLink` and `Welcome`;
 - `LinkPut` and `LinkRevoke`, which only the owner may send;
 - `CommentPut` and `CommentDone`.
 
-They have JSON bodies, and all but `CommentPut` are capped at 4 KiB. A room holds at most 256
+They have JSON bodies (`CommentDone` is its sequence number and a reason), and all but
+`CommentPut` are capped at 4 KiB. A room holds at most 256
 links. A relay refuses a `LinkPut` whose hash another room already holds.
 
 **Commands.** These go through the host service `share.links`, which a host registers while

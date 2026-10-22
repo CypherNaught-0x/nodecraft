@@ -175,6 +175,11 @@ impl Room {
         out
     }
 
+    /// The role `peer` is in the room with, if it is in it.
+    pub fn role_of(&self, peer: Peer) -> Option<Role> {
+        self.peers.get(&peer).map(|member| member.role)
+    }
+
     /// Takes one frame from `from`, a peer in the room.
     pub fn handle(&mut self, from: Peer, frame: Frame) -> Vec<Out> {
         let Some(member) = self.peers.get(&from).cloned() else {
@@ -201,7 +206,7 @@ impl Room {
             Frame::AssetPut { .. } if !member.role.edits() => Vec::new(),
             Frame::AssetPut { hash, bytes } => {
                 // The frame checked the hash when it was read.
-                let mut out: Vec<Out> = self
+                let out: Vec<Out> = self
                     .wanted
                     .remove(&hash)
                     .unwrap_or_default()
@@ -212,9 +217,9 @@ impl Room {
                 if !self.assets.contains_key(&hash) && self.asset_bytes.saturating_add(bytes.len()) <= MAX_ROOM_ASSET_BYTES {
                     self.asset_bytes = self.asset_bytes.saturating_add(bytes.len());
                     self.assets.insert(hash, bytes);
-                } else if out.is_empty() && !self.assets.contains_key(&hash) {
-                    out.push(Out::Send(from, Frame::Refused("the room keeps no more assets".into())));
                 }
+                // Past what the room keeps, nobody else gets it from the room; whoever asks
+                // later is sent to an editor who has it.
                 out
             }
             Frame::AssetGet(hashes) => {
@@ -242,8 +247,10 @@ impl Room {
                 if grant.validate().is_err() {
                     return self.refuse(from, "the share link isn't valid");
                 }
+                // A link past the most a room holds isn't kept. Its owner's session holds no more
+                // than that itself; only two devices of the owner's together can go over.
                 if !self.links.contains_key(&hash) && self.links.len() >= MAX_LINKS {
-                    return vec![Out::Send(from, Frame::Refused("the room holds no more share links".into()))];
+                    return Vec::new();
                 }
                 // Whoever is in through a link that changed comes back in on its new terms.
                 let changed = self.links.insert(hash, grant.clone()).is_some_and(|old| old != grant);
@@ -260,13 +267,16 @@ impl Room {
                     Ok(update) => {
                         let mut out: Vec<Out> =
                             update.map(|update| self.peers.keys().map(|peer| Out::Send(*peer, Frame::Update(update.clone()))).collect()).unwrap_or_default();
-                        out.push(Out::Send(from, Frame::CommentDone(seq)));
+                        out.push(Out::Send(from, Frame::CommentDone { seq, refused: None }));
                         out
                     }
-                    Err(message) => self.refuse(from, message),
+                    Err(DAMAGED) => self.refuse(from, DAMAGED),
+                    // A change that isn't theirs to make is dropped; the commenter stays. An undo
+                    // or a reconnect can send one in good faith.
+                    Err(message) => vec![Out::Send(from, Frame::CommentDone { seq, refused: Some(message.into()) })],
                 }
             }
-            Frame::Hello { .. } | Frame::HelloLink { .. } | Frame::Welcome { .. } | Frame::CommentDone(_) | Frame::Refused(_) => {
+            Frame::Hello { .. } | Frame::HelloLink { .. } | Frame::Welcome { .. } | Frame::CommentDone { .. } | Frame::Refused(_) => {
                 self.refuse(from, "a frame a peer doesn't send")
             }
         }

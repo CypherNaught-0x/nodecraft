@@ -19,7 +19,9 @@ pub fn merge(name: &str, now: Option<&Comment>, base: Option<&Comment>, made: Op
             }
             match now {
                 None => Ok(Some(Some(made.clone()))),
-                Some(now) if now == made => Ok(None),
+                // Their own thread is there already: this is a put sent again after a reconnect,
+                // and what others added since stays.
+                Some(now) if now.author == made.author => Ok(None),
                 Some(_) => Err("that discussion already exists"),
             }
         }
@@ -117,6 +119,14 @@ mod tests {
         let mut unsigned = thread("ana");
         unsigned.author = None;
         assert!(merge("ana", None, None, Some(&unsigned)).is_err());
+    }
+
+    #[test]
+    fn a_new_thread_sent_again_takes_nothing_from_what_came_since() {
+        let mut now = thread("ana");
+        now.replies.push(reply(2, "bo", "Agreed"));
+        assert_eq!(merge("ana", Some(&now), None, Some(&thread("ana"))).unwrap(), None);
+        assert!(merge("cy", Some(&now), None, Some(&thread("cy"))).is_err());
     }
 
     #[test]

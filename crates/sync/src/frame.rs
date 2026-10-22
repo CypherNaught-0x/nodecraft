@@ -187,8 +187,9 @@ pub enum Frame {
     /// discussion as it is now, and sends the result to everyone as an update.
     CommentPut { seq: u64, canvas: CanvasId, id: CommentId, base: Option<Box<Comment>>, comment: Option<Box<Comment>> },
     /// The relay has applied (or had nothing to apply for) the commenter's puts up to `seq`;
-    /// the update holding them came first.
-    CommentDone(u64),
+    /// the update holding them came first. `refused` says why the put `seq` wasn't the
+    /// commenter's to make: it is dropped, and they stay in the room.
+    CommentDone { seq: u64, refused: Option<String> },
 }
 
 impl Frame {
@@ -222,7 +223,11 @@ impl Frame {
             Self::CommentPut { seq, canvas, id, base, comment } => {
                 (COMMENT_PUT, body(&CommentPut { seq: *seq, canvas: *canvas, id: *id, base: base.as_deref().cloned(), comment: comment.as_deref().cloned() })?)
             }
-            Self::CommentDone(seq) => (COMMENT_DONE, seq.to_le_bytes().to_vec()),
+            Self::CommentDone { seq, refused } => {
+                let mut body = seq.to_le_bytes().to_vec();
+                body.extend_from_slice(checked(refused.as_deref().unwrap_or_default().as_bytes(), MAX_SMALL_BYTES, "reason")?);
+                (COMMENT_DONE, body)
+            }
         };
         let mut frame = Vec::with_capacity(body.len().saturating_add(1));
         frame.push(tag);
@@ -283,7 +288,12 @@ impl Frame {
                 }
                 Self::CommentPut { seq: put.seq, canvas: put.canvas, id: put.id, base: put.base.map(Box::new), comment: put.comment.map(Box::new) }
             }
-            COMMENT_DONE => Self::CommentDone(u64::from_le_bytes(body.try_into().map_err(|_| invalid("a frame of an unknown kind"))?)),
+            COMMENT_DONE => {
+                let (seq, reason) = small(body).and_then(|b| b.split_at_checked(8)).ok_or_else(|| invalid("the discussion answer isn't readable"))?;
+                let seq = u64::from_le_bytes(seq.try_into().map_err(|_| invalid("the discussion answer isn't readable"))?);
+                let refused = (!reason.is_empty()).then(|| String::from_utf8_lossy(reason).into_owned());
+                Self::CommentDone { seq, refused }
+            }
             _ => return Err(invalid("a frame of an unknown kind")),
         })
     }
@@ -358,7 +368,8 @@ mod tests {
                 base: None,
                 comment: Some(Box::new(Comment::new(CommentId::from_bytes([2; 16]), "Hi", nodecraft_graph::Position { x: 0.0, y: 0.0 }))),
             },
-            Frame::CommentDone(4),
+            Frame::CommentDone { seq: 4, refused: None },
+            Frame::CommentDone { seq: 5, refused: Some("not yours".into()) },
         ] {
             assert_eq!(Frame::decode(&frame.encode().unwrap()).unwrap(), frame);
         }

@@ -49,6 +49,11 @@ impl Access {
         match self.role {
             Role::Edit | Role::Owner => Ok(()),
             Role::View => Err(view_only()),
+            // A commenter may put a whole thread only in their own name, as the relay checks:
+            // undoing the delete of a thread others answered would put back their replies.
+            Role::Comment if changes.changes.iter().any(|change| matches!(change, Change::PutComment { comment, .. } if !self.signed(comment))) => {
+                Err(Error::new(ErrorKind::Forbidden, "only a discussion's own writer may put it back, and not with other people's replies"))
+            }
             Role::Comment if changes.changes.iter().all(discussion) => Ok(()),
             Role::Comment => Err(Error::new(ErrorKind::Forbidden, "this share link lets you discuss the project, not edit it")),
         }
@@ -63,6 +68,11 @@ impl Access {
     /// (to delete or move one) anyone's when it may edit the project.
     pub fn owns(&self, author: Option<&str>) -> bool {
         author == self.author.as_deref()
+    }
+
+    /// Whether `comment` and every reply in it carry this session's name.
+    fn signed(&self, comment: &nodecraft_graph::Comment) -> bool {
+        self.owns(comment.author.as_deref()) && comment.replies.iter().all(|reply| self.owns(reply.author.as_deref()))
     }
 }
 

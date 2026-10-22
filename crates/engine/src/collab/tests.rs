@@ -50,7 +50,7 @@ impl Net {
         }
         // A sharer answers the room's question (and sends its links); a joiner starts empty.
         let sent = person.session.as_ref().map(|session| person.collab.publish(session).unwrap()).unwrap_or_default();
-        assert!(sent.iter().all(|frame| matches!(frame, Frame::LinkPut { .. })));
+        assert!(sent.iter().all(|frame| matches!(frame, Frame::LinkPut { .. } | Frame::LinkRevoke(_))));
         self.people.push(person);
         for frame in sent {
             self.queue.extend(self.room.handle(id, frame));
@@ -63,6 +63,18 @@ impl Net {
         let answer = self.people.iter_mut().find(|p| p.id == id).unwrap().collab.links_request(&request, NOW);
         self.settle();
         answer
+    }
+
+    /// Person `id`'s connection drops, with whatever was on its way to them.
+    fn drop_out(&mut self, id: Peer) -> Person {
+        self.room.leave(id);
+        self.queue.retain(|out| !matches!(out, Out::Send(to, _) | Out::Close(to, _) if *to == id));
+        let at = self.people.iter().position(|p| p.id == id).unwrap();
+        self.people.remove(at)
+    }
+
+    fn collab(&mut self, id: Peer) -> &mut Collab {
+        &mut self.people.iter_mut().find(|p| p.id == id).unwrap().collab
     }
 
     fn person(&self, id: Peer) -> &Person {
@@ -309,7 +321,7 @@ fn a_changed_link_brings_its_holder_back_on_new_terms() {
 
     // A link that has run out lets nobody in.
     changed = net.links(1, json!({"op": "update", "id": link["id"], "role": "view", "name": "Ana", "expires": NOW + 1})).unwrap();
-    assert_eq!(changed["expired"], false);
+    assert_eq!(changed["expires"], NOW + 1);
     assert!(net.links(1, json!({"op": "create", "role": "view", "name": "Bo", "expires": NOW})).is_err());
     net.queue.extend(net.room.expire(NOW + 1));
     net.settle();
@@ -332,7 +344,74 @@ fn a_relay_frame_out_of_turn_ends_the_session() {
     let _ = viewer.hello();
     assert!(matches!(&viewer.receive(Frame::Welcome { role: Role::View, name: Some("Ana".into()) }).unwrap()[..], [Frame::Step1(_)]));
     assert!(viewer.receive(Frame::Step1(Vec::new())).is_err());
-    assert!(viewer.receive(Frame::CommentDone(1)).is_err());
+    assert!(viewer.receive(Frame::CommentDone { seq: 1, refused: None }).is_err());
     let ended = viewer.receive(Frame::Refused("the share link was revoked\u{7}".into())).unwrap_err();
     assert_eq!(ended.message, "the relay ended the shared session: the share link was revoked");
+}
+
+#[test]
+fn a_restarted_relay_learns_the_owners_links_and_revokes_again() {
+    let (mut net, kept) = with_link("view");
+    let gone = net.links(1, json!({"op": "create", "role": "edit", "name": "Bo"})).unwrap();
+    net.links(1, json!({"op": "revoke", "id": gone["id"]})).unwrap();
+    // The relay restarts: it holds no rooms and no links.
+    let owner = net.drop_out(1);
+    net.drop_out(2);
+    net.room = Room::new();
+    net.enter(owner);
+    for (id, link) in [(3, &kept), (4, &gone)] {
+        net.enter(Person { id, collab: Collab::join_link(link["key"].as_str().unwrap().parse().unwrap()), session: None });
+    }
+    assert_eq!(net.person(3).collab.role(), Some(Role::View));
+    assert!(net.ended.contains_key(&4), "{:?}", net.ended);
+}
+
+#[test]
+fn a_commenters_unanswered_thread_goes_again_on_reconnect_and_keeps_what_came_since() {
+    let (mut net, _) = with_link("comment");
+    net.session(2).dispatch("comment.create", &note(10, "Lovely light")).unwrap();
+    // The relay writes the thread, but Ana's connection drops before she hears so.
+    let session = net.people.iter_mut().find(|p| p.id == 2).unwrap().session.take().unwrap();
+    for frame in net.collab(2).publish(&session).unwrap() {
+        let out = net.room.handle(2, frame);
+        net.queue.extend(out);
+    }
+    let mut ana = net.drop_out(2);
+    ana.session = Some(session);
+    net.settle();
+    net.session(1).dispatch("comment.reply", &reply(10, 11, "Thanks")).unwrap();
+    net.settle();
+    assert!(!ana.collab.pending.is_empty());
+
+    net.enter(ana);
+    assert!(net.ended.is_empty(), "{:?}", net.ended);
+    assert!(net.person(2).collab.pending.is_empty());
+    assert_eq!(net.collab(2).take_refusal(), None);
+    let both = net.session(1).document().clone();
+    assert_eq!(net.session(2).document(), &both);
+    assert_eq!(both.canvases()[&canvas()].comments()[&cid(10)].replies.len(), 1);
+}
+
+#[test]
+fn a_commenter_cant_undo_back_other_peoples_replies_and_a_refused_change_only_drops() {
+    let (mut net, _) = with_link("comment");
+    net.session(2).dispatch("comment.create", &note(10, "Lovely light")).unwrap();
+    net.settle();
+    net.session(1).dispatch("comment.reply", &reply(10, 11, "Thanks")).unwrap();
+    net.settle();
+    net.session(2).dispatch("comment.remove", &json!({"canvas": canvas(), "id": cid(10)})).unwrap();
+    net.settle();
+    assert!(!net.session(1).document().canvases()[&canvas()].comments().contains_key(&cid(10)));
+    assert_eq!(net.session(2).dispatch("edit.undo", &json!({})).unwrap_err().kind, ErrorKind::Forbidden);
+
+    // A change the relay won't make is dropped, and says why; Ana stays in.
+    let mut forged = nodecraft_graph::Comment::new(cid(20), "Bo's", nodecraft_graph::Position { x: 0.0, y: 0.0 });
+    forged.author = Some("Bo".into());
+    let put = Frame::CommentPut { seq: 1, canvas: canvas(), id: cid(20), base: None, comment: Some(Box::new(forged)) };
+    let out = net.room.handle(2, put);
+    net.queue.extend(out);
+    net.settle();
+    assert!(net.ended.is_empty(), "{:?}", net.ended);
+    assert!(net.collab(2).take_refusal().is_some());
+    assert!(!net.session(1).document().canvases()[&canvas()].comments().contains_key(&cid(20)));
 }

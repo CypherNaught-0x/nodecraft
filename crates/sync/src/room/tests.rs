@@ -186,17 +186,18 @@ fn revoking_or_changing_a_link_puts_its_holders_out() {
 fn a_commenters_discussion_is_checked_written_and_sent_to_everyone() {
     let (mut room, mut owner) = shared();
     room.join_link(10, [2; 32], 0);
-    // Under another's name: refused.
-    assert!(matches!(room.handle(10, put(1, None, Some(thread("Ed"))))[..], [Out::Close(10, _)]));
-    room.join_link(10, [2; 32], 0);
+    // Under another's name: refused, and nothing written, but the commenter stays.
+    assert!(matches!(&room.handle(10, put(1, None, Some(thread("Ed"))))[..], [Out::Send(10, Frame::CommentDone { seq: 1, refused: Some(_) })]));
     let out = room.handle(10, put(2, None, Some(thread("Cy"))));
-    let [Out::Send(1, Frame::Update(update)), Out::Send(10, Frame::Update(_)), Out::Send(10, Frame::CommentDone(2))] = &out[..] else { panic!("{out:?}") };
+    let [Out::Send(1, Frame::Update(update)), Out::Send(10, Frame::Update(_)), Out::Send(10, Frame::CommentDone { seq: 2, refused: None })] = &out[..] else {
+        panic!("{out:?}")
+    };
     owner.receive(update).unwrap();
     let project = owner.materialize().unwrap().unwrap().project;
     let comment = project.canvases().values().next().unwrap().comments().values().next().unwrap();
     assert_eq!(comment.author.as_deref(), Some("Cy"));
     // Putting the same again changes nothing, and is still acknowledged.
-    assert_eq!(room.handle(10, put(3, None, Some(thread("Cy")))), vec![Out::Send(10, Frame::CommentDone(3))]);
+    assert_eq!(room.handle(10, put(3, None, Some(thread("Cy")))), vec![Out::Send(10, Frame::CommentDone { seq: 3, refused: None })]);
     // An editor writes discussions in the document instead.
     room.join_link(11, [3; 32], 0);
     assert!(matches!(room.handle(11, put(4, None, Some(thread("Ed"))))[..], [Out::Close(11, _)]));

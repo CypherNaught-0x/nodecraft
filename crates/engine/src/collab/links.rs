@@ -13,6 +13,9 @@ use super::Collab;
 /// and passes each request to [`Collab::links_request`].
 pub const LINKS_SERVICE: &str = "share.links";
 
+/// The most revoked links each connection takes back again.
+const MAX_REVOKED: usize = 64;
+
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
@@ -44,9 +47,11 @@ impl Collab {
         }
         let request: Request =
             serde_json::from_value(request.clone()).map_err(|_| Error::new(ErrorKind::InvalidInput, "a share link request isn't readable"))?;
+        // The relay forgets a link once it runs out, and so does its owner.
+        self.links.retain(|_, grant| grant.live(now));
         match request {
             Request::List => {
-                let links: Vec<Value> = self.links.iter().map(|(hash, grant)| entry(hash, grant, now)).collect();
+                let links: Vec<Value> = self.links.iter().map(|(hash, grant)| entry(hash, grant)).collect();
                 Ok(json!({"links": links, "max": MAX_LINKS}))
             }
             Request::Create { role, name, expires } => {
@@ -59,7 +64,7 @@ impl Collab {
                 let key = LinkKey::from_bytes(bytes);
                 let hash = key.hash();
                 self.put(hash, grant.clone());
-                let mut out = entry(&hash, &grant, now);
+                let mut out = entry(&hash, &grant);
                 if let Value::Object(fields) = &mut out {
                     fields.insert("key".into(), Value::String(key.as_str().to_owned()));
                 }
@@ -69,12 +74,18 @@ impl Collab {
                 let hash = known(&self.links, &id)?;
                 let grant = terms(role, name, expires, now)?;
                 self.put(hash, grant.clone());
-                Ok(entry(&hash, &grant, now))
+                Ok(entry(&hash, &grant))
             }
             Request::Revoke { id } => {
                 let hash = known(&self.links, &id)?;
                 self.links.remove(&hash);
-                self.revoked.insert(hash);
+                // Another device of the owner's may still hold the link, so each connection
+                // takes it back again; only the latest revokes are kept for that.
+                self.revoked.retain(|old| *old != hash);
+                if self.revoked.len() >= MAX_REVOKED {
+                    self.revoked.remove(0);
+                }
+                self.revoked.push(hash);
                 self.outbox.push(Frame::LinkRevoke(hash));
                 Ok(json!({"id": id, "revoked": true}))
             }
@@ -82,7 +93,7 @@ impl Collab {
     }
 
     fn put(&mut self, hash: [u8; 32], grant: Grant) {
-        self.revoked.remove(&hash);
+        self.revoked.retain(|old| *old != hash);
         self.links.insert(hash, grant.clone());
         self.outbox.push(Frame::LinkPut { hash, grant });
     }
@@ -92,7 +103,7 @@ fn terms(role: Role, name: String, expires: Option<u64>, now: u64) -> Result<Gra
     let grant = Grant { role, name, expires };
     grant.validate()?;
     if !grant.live(now) {
-        return Err(Error::new(ErrorKind::InvalidInput, "a share link's expiry is in the future"));
+        return Err(Error::new(ErrorKind::InvalidInput, "a share link's expiry must be in the future"));
     }
     Ok(grant)
 }
@@ -101,8 +112,8 @@ fn known(links: &std::collections::BTreeMap<[u8; 32], Grant>, id: &str) -> Resul
     links.keys().find(|hash| hex(hash) == id).copied().ok_or_else(|| Error::new(ErrorKind::NotFound, "no share link has that id"))
 }
 
-fn entry(hash: &[u8; 32], grant: &Grant, now: u64) -> Value {
-    json!({"id": hex(hash), "role": grant.role.as_str(), "name": grant.name, "expires": grant.expires, "expired": !grant.live(now)})
+fn entry(hash: &[u8; 32], grant: &Grant) -> Value {
+    json!({"id": hex(hash), "role": grant.role.as_str(), "name": grant.name, "expires": grant.expires})
 }
 
 fn hex(bytes: &[u8; 32]) -> String {

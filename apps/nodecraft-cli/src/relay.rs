@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use nodecraft_sync::{Frame, MAX_FRAME_BYTES, Out, PROTOCOL, Peer, Room, RoomId};
+use nodecraft_sync::{Frame, MAX_FRAME_BYTES, Out, PROTOCOL, Peer, Role, Room, RoomId};
 use nodecraft_types::{Error, ErrorKind};
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket};
@@ -274,8 +274,12 @@ fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, 
                     Ok(Frame::Update(_) | Frame::Step2(_) | Frame::AssetPut { .. } | Frame::CommentPut { .. }) if rooms.held() > MAX_RELAY_BYTES => {
                         vec![Out::Close(peer, Frame::Refused("the relay is full".into()))]
                     }
-                    // A link names one room: another room may not take it over.
-                    Ok(Frame::LinkPut { hash, .. }) if rooms.holding(&hash).is_some_and(|holder| holder != room) => {
+                    // A link names one room: another room may not take it over. Only an owner
+                    // learns that a hash is taken; anyone else is refused by the room.
+                    Ok(Frame::LinkPut { hash, .. })
+                        if rooms.rooms.get(&room).and_then(|state| state.role_of(peer)) == Some(Role::Owner)
+                            && rooms.holding(&hash).is_some_and(|holder| holder != room) =>
+                    {
                         vec![Out::Close(peer, Frame::Refused("that share link belongs to another project".into()))]
                     }
                     Ok(frame) => rooms.rooms.get_mut(&room).map(|state| state.handle(peer, frame)).unwrap_or_default(),

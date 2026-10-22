@@ -56,7 +56,7 @@ pub struct Collab {
     /// The owner's share links, by hash, and those taken back. The relay keeps links only while
     /// the room is open, so each connection sends them again.
     links: BTreeMap<[u8; 32], Grant>,
-    revoked: BTreeSet<[u8; 32]>,
+    revoked: Vec<[u8; 32]>,
     /// Link frames for the next publish.
     outbox: Vec<Frame>,
     /// A commenter's discussion changes the relay hasn't answered yet, oldest first. The
@@ -64,6 +64,11 @@ pub struct Collab {
     pending: Vec<(u64, CommentChange)>,
     sent_pending: bool,
     seq: u64,
+    /// A commenter's local changes are held back until the relay answers: the session isn't
+    /// brought up to the shared document meanwhile, which would undo them.
+    held: bool,
+    /// Why the relay last dropped one of this commenter's changes, for the person to read.
+    refusal: Option<String>,
 }
 
 impl Collab {
@@ -97,11 +102,13 @@ impl Collab {
             arrived: BTreeMap::new(),
             wanted: BTreeSet::new(),
             links: BTreeMap::new(),
-            revoked: BTreeSet::new(),
+            revoked: Vec::new(),
             outbox: Vec::new(),
             pending: Vec::new(),
             sent_pending: false,
             seq: 0,
+            held: false,
+            refusal: None,
         }
     }
 
@@ -109,6 +116,12 @@ impl Collab {
     /// lets it do.
     pub fn role(&self) -> Option<Role> {
         self.role
+    }
+
+    /// Why the relay dropped one of this commenter's discussion changes since the last call,
+    /// if it did: the change wasn't theirs to make. The session takes back the change.
+    pub fn take_refusal(&mut self) -> Option<String> {
+        self.refusal.take()
     }
 
     /// The first frame on each new connection. Assets asked for on an earlier one are asked
@@ -166,7 +179,8 @@ impl Collab {
             }
             Role::Comment => {
                 // Too many unanswered: the relay is slow or gone. These wait for the next turn.
-                if self.pending.len() >= MAX_PENDING {
+                self.held = self.pending.len() >= MAX_PENDING;
+                if self.held {
                     return Ok(out);
                 }
                 for change in self.mirror.comments_since(session.document())? {
@@ -224,8 +238,11 @@ impl Collab {
                 // Nobody asks a viewer or commenter for its document: it asks for the project.
                 if role.edits() { Ok(Vec::new()) } else { Ok(vec![Frame::Step1(self.mirror.state_vector()?)]) }
             }
-            Frame::CommentDone(seq) if self.role == Some(Role::Comment) => {
+            Frame::CommentDone { seq, refused } if self.role == Some(Role::Comment) => {
                 self.pending.retain(|(sent, _)| *sent > seq);
+                if let Some(reason) = refused {
+                    self.refusal = Some(shown(&reason));
+                }
                 self.unsettled = true;
                 Ok(Vec::new())
             }
@@ -234,7 +251,7 @@ impl Collab {
             | Frame::Step2(_)
             | Frame::Update(_)
             | Frame::Welcome { .. }
-            | Frame::CommentDone(_)
+            | Frame::CommentDone { .. }
             | Frame::Hello { .. }
             | Frame::HelloLink { .. }
             | Frame::LinkPut { .. }
@@ -253,7 +270,7 @@ impl Collab {
             Role::Owner => Access::owner(),
             role => Access::new(role, self.name.clone())?,
         });
-        if !self.unsettled {
+        if !self.unsettled || self.held {
             return Ok(out);
         }
         let Some(Materialized { mut project, repairs, .. }) = self.mirror.materialize()? else { return Ok(out) };
