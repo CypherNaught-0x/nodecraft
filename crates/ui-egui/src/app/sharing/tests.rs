@@ -3,7 +3,7 @@
 use super::*;
 use nodecraft_engine::commands::Services;
 use nodecraft_nodes::NodeKind;
-use nodecraft_sync::{Out, Peer, Room};
+use nodecraft_sync::{Frame, Out, Peer, Room};
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{Sender, channel};
@@ -13,16 +13,22 @@ type Peers = Arc<Mutex<(Room, HashMap<Peer, Sender<Vec<u8>>>)>>;
 
 /// A relay holding one room, whatever the hello names; its address.
 fn relay() -> String {
+    relay_peers().0
+}
+
+/// [`relay`], and who is in its room.
+fn relay_peers() -> (String, Peers) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = format!("ws://{}/", listener.local_addr().unwrap());
     let peers: Peers = Arc::new(Mutex::new((Room::new(), HashMap::new())));
+    let room = Arc::clone(&peers);
     std::thread::spawn(move || {
         for (peer, stream) in listener.incoming().enumerate() {
             let peers = Arc::clone(&peers);
             std::thread::spawn(move || serve(peer as Peer, stream.unwrap(), &peers));
         }
     });
-    address
+    (address, room)
 }
 
 fn deliver(outs: Vec<Out>, to: &HashMap<Peer, Sender<Vec<u8>>>) {
@@ -149,7 +155,7 @@ fn a_shared_project_reaches_who_joins_and_stopping_keeps_it_there() {
     let canvases = |app: &NodeCraftApp| app.session.document().canvases().keys().copied().collect::<Vec<_>>();
     assert_eq!(canvases(&joiner), canvases(&owner));
     assert!(joiner.session.document().canvases().contains_key(&joiner.canvas), "the joiner shows a shared canvas");
-    assert!(joiner.sharing.as_ref().unwrap().collab.borrow().as_ref().is_some_and(|collab| collab.role() == Some(Role::Owner)), "a room id joins as its owner");
+    assert_eq!(joiner.sharing.as_ref().unwrap().live.as_ref().unwrap().status.role, Some(Role::Owner), "a room id joins as its owner");
 
     // The joiner leaves; the shared project stays open in its window, the person's own.
     joiner.session.dispatch("share.stop", &json!({})).unwrap();
@@ -160,6 +166,95 @@ fn a_shared_project_reaches_who_joins_and_stopping_keeps_it_there() {
     assert!(opened.borrow().is_empty(), "nothing here opened a window");
     // Stopping again has nothing to stop.
     assert_eq!(joiner.session.dispatch("share.stop", &json!({})).unwrap_err().kind, ErrorKind::Conflict);
+}
+
+fn text_note(app: &mut NodeCraftApp, id: NodeId) {
+    let node = nodecraft_nodes::text::kind().descriptor().instantiate(id, &BTreeMap::new()).unwrap();
+    app.session.dispatch("node.add", &json!({"canvas": app.canvas, "node": node})).unwrap();
+}
+
+fn holds(app: &NodeCraftApp, id: NodeId) -> bool {
+    app.session.document().canvases().values().any(|canvas| canvas.nodes().contains_key(&id))
+}
+
+fn live(app: &mut NodeCraftApp) -> &mut Live {
+    app.sharing.as_mut().unwrap().live.as_mut().unwrap()
+}
+
+/// Review of #714: a plan taken while the connection was down, then an edit before it came back,
+/// once settled the edit as the room's, and the next merge took it away.
+#[test]
+fn an_edit_made_while_disconnected_after_taking_a_plan_still_goes_out() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let relay = relay();
+    let mut owner = app(&opened);
+    owner.session.dispatch("share.start", &json!({"relay": relay})).unwrap();
+    until(&mut [&mut owner], |apps| chip(apps[0]) == "Live");
+    let mut joiner = app(&opened);
+    joiner.join_live(&egui::Context::default(), &link(&owner)).unwrap();
+    until(&mut [&mut owner, &mut joiner], |apps| chip(apps[1]) == "Live" && !apps[1].session.document().canvases().is_empty());
+
+    // The owner's edit comes in as a plan the joiner takes while its connection looks down.
+    let first = NodeId::from_bytes([0x61; 16]);
+    text_note(&mut owner, first);
+    let ctx = egui::Context::default();
+    let started = Instant::now();
+    let connected = loop {
+        assert!(started.elapsed() < Duration::from_secs(10), "the owner's edit never came");
+        owner.tick_sharing(&ctx);
+        joiner.tick_sharing(&ctx);
+        if live(&mut joiner).in_flight {
+            let State::Connected(n) = live(&mut joiner).state else { continue };
+            live(&mut joiner).state = State::Reconnecting { why: "test".into(), at: Instant::now() + Duration::from_secs(60) };
+            while live(&mut joiner).in_flight {
+                joiner.tick_sharing(&ctx);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            if holds(&joiner, first) {
+                break State::Connected(n);
+            }
+            live(&mut joiner).state = State::Connected(n);
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+
+    // Offline, the joiner adds its own; then the connection is back.
+    let offline = NodeId::from_bytes([0x62; 16]);
+    text_note(&mut joiner, offline);
+    joiner.tick_sharing(&ctx);
+    live(&mut joiner).state = connected;
+    until(&mut [&mut owner, &mut joiner], |apps| holds(apps[0], offline));
+    // And it stays, as the owner's next edit comes through.
+    let second = NodeId::from_bytes([0x63; 16]);
+    text_note(&mut owner, second);
+    until(&mut [&mut owner, &mut joiner], |apps| holds(apps[1], second));
+    assert!(holds(&joiner, offline) && holds(&owner, offline));
+}
+
+/// Review of #714: stopping left the worker thread and its connection running.
+#[test]
+fn stopping_closes_the_connection() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let (relay, peers) = relay_peers();
+    let mut owner = app(&opened);
+    owner.session.dispatch("share.start", &json!({"relay": relay})).unwrap();
+    until(&mut [&mut owner], |apps| chip(apps[0]) == "Live");
+    let in_room = || peers.lock().unwrap().1.len();
+    assert_eq!(in_room(), 1);
+    // Quiet first, so nothing from the relay is left to find the window gone.
+    let ctx = egui::Context::default();
+    let settled = Instant::now();
+    while settled.elapsed() < Duration::from_millis(300) {
+        owner.tick_sharing(&ctx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    owner.session.dispatch("share.stop", &json!({})).unwrap();
+    until(&mut [&mut owner], |apps| chip(apps[0]) == "Share");
+    let started = Instant::now();
+    while in_room() != 0 {
+        assert!(started.elapsed() < Duration::from_secs(10), "the connection stayed open");
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]
@@ -246,4 +341,70 @@ fn share698_visual() {
         shot.render().unwrap().save(dir.join(name)).unwrap();
         owner = shot.into_state();
     }
+}
+
+/// The longest a frame may take while a large project comes in (#714): a 60 Hz frame and a
+/// half, for a slow runner.
+const FRAME_BUDGET: Duration = Duration::from_millis(25);
+/// Cards in the large project.
+const LARGE: usize = 3000;
+
+/// `app`'s project with [`LARGE`] more cards on its canvas, each with a little text.
+fn fill(app: &mut NodeCraftApp) {
+    let canvas = app.canvas;
+    let changes = (0..LARGE)
+        .map(|n| {
+            let id = NodeId::from_bytes(*blake3::hash(&n.to_le_bytes()).as_bytes().first_chunk::<16>().unwrap());
+            let mut node = nodecraft_graph::Node::new(id, "source.text");
+            node.params.insert("text".into(), nodecraft_types::Value::Text(format!("Card {n}: a line of words to carry")));
+            nodecraft_graph::Change::AddNode { canvas, node }
+        })
+        .collect();
+    app.session.apply_remote(nodecraft_graph::Changeset::new(changes)).unwrap();
+}
+
+#[test]
+fn a_large_project_comes_in_without_a_frame_over_budget() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let relay = relay();
+    let mut owner = app(&opened);
+    fill(&mut owner);
+    let cards = |app: &NodeCraftApp| app.session.document().canvases().values().map(|canvas| canvas.nodes().len()).sum::<usize>();
+    let all = cards(&owner);
+    let ctx = egui::Context::default();
+    let mut slowest = Duration::ZERO;
+    let mut tick = |app: &mut NodeCraftApp| {
+        let started = Instant::now();
+        app.tick_sharing(&ctx);
+        slowest = slowest.max(started.elapsed());
+    };
+    owner.session.dispatch("share.start", &json!({"relay": relay})).unwrap();
+    let started = Instant::now();
+    while chip(&owner) != "Live" {
+        assert!(started.elapsed() < Duration::from_secs(60), "never shared: {}", chip(&owner));
+        tick(&mut owner);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let mut joiner = app(&opened);
+    joiner.join_live(&ctx, &link(&owner)).unwrap();
+    let started = Instant::now();
+    while !(cards(&joiner) == all && chip(&joiner) == "Live") {
+        assert!(started.elapsed() < Duration::from_secs(60), "never came: {} of {all} cards, {}", cards(&joiner), chip(&joiner));
+        tick(&mut owner);
+        tick(&mut joiner);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let caught_up = started.elapsed();
+    assert_eq!(joiner.session.document(), owner.session.document());
+
+    // The same catch-up as changesets in one frame, as it was before: far over the budget.
+    let mut session = nodecraft_engine::session::Session::new(joining(owner.session.document().id()).unwrap()).unwrap();
+    let started = Instant::now();
+    for set in nodecraft_graph::diff::diff(session.document(), owner.session.document()).unwrap() {
+        session.apply_remote(set).unwrap();
+    }
+    let in_one_frame = started.elapsed();
+    assert_eq!(session.document(), owner.session.document());
+    eprintln!("slowest frame {slowest:?}; catch-up {caught_up:?}; in one frame {in_one_frame:?}");
+    assert!(slowest < FRAME_BUDGET, "a frame took {slowest:?} (the catch-up in one frame takes {in_one_frame:?})");
 }

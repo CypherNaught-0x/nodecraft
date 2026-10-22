@@ -702,6 +702,10 @@ to different parts all survive. `engine::collab::Collab` connects a `Session` to
 are diffed into the mirror (`publish`), and what others did is materialised, repaired by
 `graph::assemble`, diffed into changesets by `graph::diff`, and applied with
 `Session::apply_remote` once the assets it names have arrived. Remote edits join no undo step.
+The desktop app does all but the last step on a thread of its own, from a copy of the document,
+and applies the resulting `Plan` only if the session hasn't changed meanwhile; a joiner takes its
+first copy of the project whole (`Session::adopt_shared`). See the
+[decision](decisions/2026-10-22-share-worker.md).
 `nodecraft-cli relay [--listen <addr>]` hosts the rooms. Nothing in the library crates touches a
 socket; the host passes frames. See the [decision](decisions/2026-10-22-crdt-sync.md) for the
 entry schema, the protocol and the limits.

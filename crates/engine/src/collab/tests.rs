@@ -525,3 +525,128 @@ fn a_room_change_that_clashes_with_a_private_canvas_waits_and_drops_nothing() {
     assert!(net.session(1).document().canvases()[&private_canvas()].is_private());
     assert!(!net.session(2).document().canvases().contains_key(&private_canvas()));
 }
+
+/// `a` and `b` share `session`'s project, and `b`'s session holds it, its image too.
+fn a_pair() -> (Session, Collab, Session, Collab) {
+    let (mut session, _) = sharer();
+    add(&mut session, 2);
+    let mut a = Collab::share(&session, room_id()).unwrap();
+    let mut b = Collab::join(room_id());
+    let _ = b.hello();
+    let replies = b.receive(Frame::Step1(Mirror::join().state_vector().unwrap())).unwrap();
+    let Some(Frame::Step1(b_has)) = replies.into_iter().nth(1) else { panic!("b asks back") };
+    let Some(Frame::Step2(everything)) = a.receive(Frame::Step1(b_has)).unwrap().into_iter().next() else { panic!("a answers") };
+    b.receive(Frame::Step2(everything)).unwrap();
+    let mut joined = Session::new(joining(b.project_id().unwrap().unwrap()).unwrap()).unwrap();
+    for frame in b.settle(&mut joined).unwrap() {
+        a.receive(frame).unwrap();
+    }
+    for frame in a.publish(&session).unwrap() {
+        b.receive(frame).unwrap();
+    }
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+    assert_eq!(joined.document(), session.document());
+    (session, a, joined, b)
+}
+
+/// What `collab` plans from a copy of `session`, as a host settling on another thread would.
+fn plan_copy(collab: &mut Collab, session: &Session) -> (Vec<Frame>, Plan) {
+    let copy = session.document().clone();
+    let held: BTreeSet<Blake3> = session.assets().hashes().copied().collect();
+    let has = |hash: &Blake3| held.contains(hash);
+    let (out, plan) = collab.plan(&View { revision: session.revision(), document: &copy, has: &has }).unwrap();
+    (out.into_iter().filter_map(|out| out.frame(session)).collect(), plan)
+}
+
+#[test]
+fn a_plan_made_from_a_copy_is_taken_only_if_nothing_changed_meanwhile() {
+    let (mut session, mut a, mut joined, mut b) = a_pair();
+    add(&mut joined, 5);
+    for frame in b.publish(&joined).unwrap() {
+        a.receive(frame).unwrap();
+    }
+    let (out, plan) = plan_copy(&mut a, &session);
+    assert!(out.is_empty() && plan.settles());
+    // An edit lands before the plan comes back: the plan would undo it, so it isn't taken.
+    add(&mut session, 8);
+    assert!(matches!(plan.take(&mut session).unwrap(), Taken::Stale));
+    assert!(!session.document().canvases()[&canvas()].nodes().contains_key(&nid(5)));
+    assert!(a.taken(session.document(), session.revision(), false).unwrap().is_empty());
+
+    // The next plan sends the edit and brings in the other's.
+    let (out, plan) = plan_copy(&mut a, &session);
+    assert!(matches!(&out[..], [Frame::Update(_)]), "{out:?}");
+    assert!(matches!(plan.take(&mut session).unwrap(), Taken::Applied(Ok(()))));
+    assert!(a.taken(session.document(), session.revision(), true).unwrap().is_empty());
+    for frame in out {
+        b.receive(frame).unwrap();
+    }
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+    assert_eq!(joined.document(), session.document());
+    let cards = session.document().canvases()[&canvas()].nodes().keys().copied().collect::<Vec<_>>();
+    assert_eq!(cards, vec![nid(1), nid(2), nid(5), nid(8)]);
+    // Taken in, nothing more goes out.
+    assert!(plan_copy(&mut a, &session).0.is_empty());
+}
+
+#[test]
+fn a_joiner_may_edit_only_once_a_plan_brought_it_the_project() {
+    let (session, mut a) = {
+        let (session, _) = sharer();
+        let a = Collab::share(&session, room_id()).unwrap();
+        (session, a)
+    };
+    let mut b = Collab::join(room_id());
+    let _ = b.hello();
+    let replies = b.receive(Frame::Step1(Mirror::join().state_vector().unwrap())).unwrap();
+    let Some(Frame::Step1(b_has)) = replies.into_iter().nth(1) else { panic!("b asks back") };
+    let Some(Frame::Step2(everything)) = a.receive(Frame::Step1(b_has)).unwrap().into_iter().next() else { panic!("a answers") };
+    b.receive(Frame::Step2(everything)).unwrap();
+    let mut joined = Session::new(joining(session.document().id()).unwrap()).unwrap();
+    joined.set_access(Access::new(Role::View, None).unwrap());
+    let (_, plan) = plan_copy(&mut b, &joined);
+    // Something else moved the session on meanwhile.
+    joined.apply_remote(Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(CanvasId::from_bytes([7; 16]), "Aside") }])).unwrap();
+    assert!(matches!(plan.take(&mut joined).unwrap(), Taken::Stale));
+    let card = json!({"canvas": CanvasId::from_bytes([7; 16]), "node": Node::new(nid(9), "text")});
+    assert!(joined.dispatch("node.add", &card).is_err(), "still only looking");
+    b.taken(joined.document(), joined.revision(), false).unwrap();
+    let (_, plan) = plan_copy(&mut b, &joined);
+    assert!(matches!(plan.take(&mut joined).unwrap(), Taken::Applied(Ok(()))));
+    assert!(joined.document().canvases().contains_key(&canvas()));
+    let card = json!({"canvas": canvas(), "node": Node::new(nid(9), "text")});
+    joined.dispatch("node.add", &card).unwrap();
+}
+
+#[test]
+fn share_links_kept_apart_answer_and_say_again_what_they_hold() {
+    let mut links = Links::default();
+    assert_eq!(links.request(Some(Role::Edit), &json!({"op": "list"}), NOW).unwrap_err().kind, ErrorKind::Forbidden);
+    let made = links.request(Some(Role::Owner), &json!({"op": "create", "role": "view", "name": "Ana"}), NOW).unwrap();
+    assert!(matches!(&links.take()[..], [Frame::LinkPut { .. }]));
+    assert!(links.take().is_empty());
+    links.request(Some(Role::Owner), &json!({"op": "revoke", "id": made["id"]}), NOW).unwrap();
+    links.request(Some(Role::Owner), &json!({"op": "create", "role": "edit", "name": "Bo"}), NOW).unwrap();
+    // A new connection hears the revoke and the live link, and nothing twice.
+    let again = links.again();
+    assert!(matches!(&again[..], [Frame::LinkRevoke(_), Frame::LinkPut { .. }]), "{again:?}");
+    assert!(links.take().is_empty());
+}
+
+#[test]
+fn a_joiner_takes_the_shared_project_whole_and_only_into_its_empty_start() {
+    let (session, _, mut joined, _) = a_pair();
+    // The first catch-up replaced the empty start in one step (#714), with nothing to undo.
+    assert!(joined.events_since(0).unwrap().iter().any(|event| event.command == "share.adopt"));
+    assert!(!joined.can_undo());
+    let whole = || SharedProject::new(session.document().clone()).unwrap();
+    let held = joined.document().clone();
+    assert_eq!(joined.adopt_shared(whole()).unwrap_err().kind, ErrorKind::Conflict, "a session with a document keeps it");
+    assert_eq!(joined.document(), &held);
+    let mut other = Session::new(joining(ProjectId::from_bytes([9; 16])).unwrap()).unwrap();
+    assert_eq!(other.adopt_shared(whole()).unwrap_err().kind, ErrorKind::Conflict, "another project's start");
+    // The shared project has an image this session hasn't been given.
+    let mut empty = Session::new(joining(session.document().id()).unwrap()).unwrap();
+    assert_eq!(empty.adopt_shared(whole()).unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(empty.document(), &joining(session.document().id()).unwrap());
+}
