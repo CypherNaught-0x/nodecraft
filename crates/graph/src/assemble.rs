@@ -320,9 +320,7 @@ impl Seen {
 /// Whether `edge` joins two of the canvas's nodes on matching ports, into a free input slot.
 fn fits(canvas: &Canvas, edge: &Edge) -> bool {
     let (Some(source), Some(target)) = (canvas.nodes.get(&edge.from.node), canvas.nodes.get(&edge.to.node)) else { return false };
-    let (Some(output), Some(input)) =
-        (source.outputs.iter().find(|p| p.name == edge.from.port), target.inputs.iter().find(|p| p.name == edge.to.port))
-    else {
+    let (Some(output), Some(input)) = (source.outputs.iter().find(|p| p.name == edge.from.port), target.inputs.iter().find(|p| p.name == edge.to.port)) else {
         return false;
     };
     if output.port_type.modality != input.port_type.modality || (output.port_type.many && !input.port_type.many) {

@@ -120,12 +120,8 @@ fn canvas(phases: &mut Phases, old: &Canvas, new: &Canvas) {
         phases.last.push(Change::SetCanvasTitle { canvas: id, title: new.title.clone() });
     }
     // A card whose ports change loses its wires until it has its new ports.
-    let reshaped: BTreeSet<NodeId> = old
-        .nodes
-        .values()
-        .filter(|n| new.nodes.get(&n.id).is_some_and(|m| m.inputs != n.inputs || m.outputs != n.outputs))
-        .map(|n| n.id)
-        .collect();
+    let reshaped: BTreeSet<NodeId> =
+        old.nodes.values().filter(|n| new.nodes.get(&n.id).is_some_and(|m| m.inputs != n.inputs || m.outputs != n.outputs)).map(|n| n.id).collect();
     let rewired = |edge: &crate::Edge| reshaped.contains(&edge.from.node) || reshaped.contains(&edge.to.node);
     for (edge_id, edge) in &old.edges {
         if new.edges.get(edge_id) != Some(edge) || rewired(edge) {

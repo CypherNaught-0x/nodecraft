@@ -35,7 +35,16 @@ fn shape() -> impl Strategy<Value = Shape> {
         proptest::collection::vec((1u8..=3, 1u8..=6, proptest::option::of(1u8..=12), 0u8..2), 0..6),
         proptest::collection::vec((1u8..=4, 0u8..3), 0..4),
     )
-        .prop_map(|(title, canvases, nodes, edges, fields, tags, comments, skills)| Shape { title, canvases, nodes, edges, fields, tags, comments, skills })
+        .prop_map(|(title, canvases, nodes, edges, fields, tags, comments, skills)| Shape {
+            title,
+            canvases,
+            nodes,
+            edges,
+            fields,
+            tags,
+            comments,
+            skills,
+        })
 }
 
 fn project(shape: &Shape) -> Project {

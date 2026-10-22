@@ -43,15 +43,7 @@ impl Collab {
     }
 
     fn with(mirror: Mirror, room: RoomId, published: Option<u64>) -> Self {
-        Self {
-            mirror,
-            room,
-            published,
-            unsettled: false,
-            asked: BTreeSet::new(),
-            arrived: BTreeMap::new(),
-            wanted: BTreeSet::new(),
-        }
+        Self { mirror, room, published, unsettled: false, asked: BTreeSet::new(), arrived: BTreeMap::new(), wanted: BTreeSet::new() }
     }
 
     /// The first frame on a new connection.

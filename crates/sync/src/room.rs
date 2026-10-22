@@ -47,15 +47,7 @@ impl Default for Room {
 
 impl Room {
     pub fn new() -> Self {
-        Self {
-            doc: Doc::new(),
-            peers: BTreeSet::new(),
-            merged: 0,
-            assets: BTreeMap::new(),
-            asset_bytes: 0,
-            wanted: BTreeMap::new(),
-            damaged: false,
-        }
+        Self { doc: Doc::new(), peers: BTreeSet::new(), merged: 0, assets: BTreeMap::new(), asset_bytes: 0, wanted: BTreeMap::new(), damaged: false }
     }
 
     pub fn is_empty(&self) -> bool {

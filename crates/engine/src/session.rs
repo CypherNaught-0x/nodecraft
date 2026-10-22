@@ -33,8 +33,8 @@ pub const MAX_EVENTS: usize = 256;
 
 mod imports;
 pub use imports::PreparedImports;
-mod remote;
 mod file_lifecycle;
+mod remote;
 pub use file_lifecycle::DocumentLineage;
 
 /// Notification log entry. Each consumer keeps its own revision cursor and reads the current

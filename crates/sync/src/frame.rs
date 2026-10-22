@@ -160,11 +160,7 @@ fn invalid(message: &str) -> Error {
 }
 
 fn checked<'a>(bytes: &'a [u8], limit: usize, what: &str) -> Result<&'a [u8], Error> {
-    if bytes.len() > limit {
-        Err(Error::new(ErrorKind::Overflow, format!("the {what} is too large to share")))
-    } else {
-        Ok(bytes)
-    }
+    if bytes.len() > limit { Err(Error::new(ErrorKind::Overflow, format!("the {what} is too large to share"))) } else { Ok(bytes) }
 }
 
 #[cfg(test)]

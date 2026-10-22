@@ -23,7 +23,12 @@ fn card(n: u8) -> Node {
 }
 
 fn edge(n: u8, from: u8, to: u8) -> Edge {
-    Edge { id: EdgeId::from_bytes([n; 16]), from: Endpoint { node: nid(from), port: "out".into() }, to: Endpoint { node: nid(to), port: "in".into() }, order: 0 }
+    Edge {
+        id: EdgeId::from_bytes([n; 16]),
+        from: Endpoint { node: nid(from), port: "out".into() },
+        to: Endpoint { node: nid(to), port: "in".into() },
+        order: 0,
+    }
 }
 
 fn edit(project: &mut Project, changes: Vec<Change>) {

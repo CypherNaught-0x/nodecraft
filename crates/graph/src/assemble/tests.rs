@@ -81,8 +81,7 @@ fn of_two_edges_into_one_single_input_the_lower_id_stays() {
     assert_eq!(edges_of(&assembled), vec![eid(4)]);
     assert_eq!(assembled.dropped, BTreeSet::from([Part::Edge(cid(1), eid(9))]));
     // A list input takes both, at different places, but not two at one place.
-    let assembled =
-        assemble(pid(), parts(&[1, 2, 3, 4], vec![edge(1, 1, 4, "many", 0), edge(2, 2, 4, "many", 1), edge(3, 3, 4, "many", 1)])).unwrap();
+    let assembled = assemble(pid(), parts(&[1, 2, 3, 4], vec![edge(1, 1, 4, "many", 0), edge(2, 2, 4, "many", 1), edge(3, 3, 4, "many", 1)])).unwrap();
     assert_eq!(edges_of(&assembled), vec![eid(1), eid(2)]);
 }
 
@@ -149,10 +148,7 @@ fn parts_without_a_canvas_or_with_a_taken_id_are_left_out() {
     parts.nodes.push((cid(3), node(2)));
     parts.canvases.push(CanvasPart::Header { id: cid(4), title: "T".into(), kind: CanvasKind::Technique });
     let assembled = assemble(pid(), parts).unwrap();
-    assert_eq!(
-        assembled.dropped,
-        BTreeSet::from([Part::Canvas(cid(4)), Part::Node(cid(2), nid(1)), Part::Node(cid(3), nid(2))])
-    );
+    assert_eq!(assembled.dropped, BTreeSet::from([Part::Canvas(cid(4)), Part::Node(cid(2), nid(1)), Part::Node(cid(3), nid(2))]));
     assert!(assembled.project.canvases[&cid(1)].nodes.contains_key(&nid(1)));
 }
 
