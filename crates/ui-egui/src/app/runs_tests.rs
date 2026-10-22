@@ -481,7 +481,7 @@ fn the_toolbar_expands_a_result_into_the_viewer() {
     h.state_mut().selection.only(N);
     h.run();
     press(&mut h, Role::Button, "Expand");
-    h.run();
+    frames_until(&mut h, |app| app.viewer == Some(N));
     assert_eq!(h.state().viewer, Some(N));
     assert!(h.query_by_label("Image").is_some(), "the viewer window is open");
     h.state_mut().selection.clear();
