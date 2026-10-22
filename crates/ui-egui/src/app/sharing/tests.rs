@@ -405,8 +405,5 @@ fn a_large_project_comes_in_without_a_frame_over_budget() {
     eprintln!("slowest frame {slowest:?}; catch-up {caught_up:?}; in one frame {in_one_frame:?}");
     // Both measurements do the same catch-up work; comparing them avoids a machine-load-sensitive
     // wall-clock limit while still catching frames that consume a substantial share of that work.
-    assert!(
-        slowest.as_secs_f64() < in_one_frame.as_secs_f64() * 0.1,
-        "a frame took {slowest:?}, at least 10% of the catch-up in one frame ({in_one_frame:?})"
-    );
+    assert!(slowest.as_secs_f64() < in_one_frame.as_secs_f64() * 0.1, "a frame took {slowest:?}, at least 10% of the catch-up in one frame ({in_one_frame:?})");
 }
