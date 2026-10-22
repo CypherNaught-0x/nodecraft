@@ -11,6 +11,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and direct-adapter reference editing | Three stable Gemini models, unknown usage price; canvas resolver/mixed/list routing limitations below. |
 | **Gemini Video** | `gemini-video` | supplied Gemini API key (`x-goog-api-key`), same `gemini` account | Omni Flash text, first/last frame and reference images → video with sound | Veo on the Gemini API is shut down; Veo now runs on Google Cloud (`google-veo`). Paid tier only; charged by measured tokens, no price before the run. See below. |
 | **Veo on Google Cloud** | `google-veo` | a service-account key file, kept compact in the `google-cloud` account; a signed JWT is exchanged for an hour's OAuth token (`Authorization: Bearer`) | Veo 3.1, Fast and Lite: text → video with sound. Veo 3.1 and Fast also: first/last frame, and up to three subject references | Runs in the account's own project in `us-central1`. Quoted per second by resolution before the run. Never replayed after an ambiguous submit; no remote cancellation. See below. |
+| **Google TTS** | `google-tts` | the same `google-cloud` service-account key as Veo (`Authorization: Bearer`, billed to the account's project) | text → speech (MP3): Chirp 3 HD, Neural2, WaveNet, Standard and Studio voices with speaking rate, pitch and SSML; Gemini 2.5 Pro, Flash, Flash-Lite and 3.1 Flash voices with a style prompt and two-speaker dialogue | One synchronous request per line. Classic voices quoted per character before the run; Gemini voices are billed by tokens Google doesn't report, so no price before the run. Never replayed; nothing to cancel. See below. |
 | **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded credential-free delivery downloads; unknown usage price. See below. |
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
@@ -54,6 +55,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `higgsfield` | `higgsfield` (the key id and secret joined as `id:secret`) | — |
 | `elevenlabs` | `elevenlabs` | — |
 | `google-veo` | `google-cloud` (paste the whole service-account key file; it is stored compactly) | the Vertex AI API enabled, and the Vertex AI User role on the account's project |
+| `google-tts` | `google-cloud` (the same key as `google-veo`) | the Cloud Text-to-Speech API enabled in the account's project; Gemini voices also need the Vertex AI User role |
 | `comfy-cloud` | `comfy-cloud` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[providers] comfyui_url = "http://127.0.0.1:8188"` and the per-install `install_salt` |
 
@@ -240,6 +242,56 @@ never runs in CI, and requires fresh human spending authorization plus both
 NODECRAFT_LIVE_OPENAI_IMAGES=1 and NODECRAFT_LIVE_OPENAI_IMAGES_ACKNOWLEDGE_COST=1 before it
 reads OPENAI_API_KEY. Explicit --ignored selection is also required. No paid call was used to
 validate this adapter. Ordinary cargo xtask ci enables the feature for tests/Clippy/wasm.
+
+## Google TTS (`google-tts` feature)
+
+`GoogleTts` speaks text with Cloud Text-to-Speech (#21), signed in with the same service account
+as Veo (see below). Enable the *Cloud Text-to-Speech API* in the account's project; Gemini voices
+also need the *Vertex AI User* role. Each line is one `POST
+https://texttospeech.googleapis.com/v1/text:synthesize`, billed to the account's project
+(`x-goog-user-project`), and returns one MP3 inline.
+
+- **Classic voices**, one model per family because each family has its own price:
+
+  | Model | Voices | Price per 1M characters | Rate | Pitch |
+  |---|---|---|---|---|
+  | `google-tts.chirp3-hd` | `en-US-Chirp3-HD-…` | 30 USD | 0.25–2 | — |
+  | `google-tts.neural2` | `en-US-Neural2-…` | 16 USD | 0.25–4 | ±20 |
+  | `google-tts.wavenet` | `en-US-Wavenet-…` | 4 USD | 0.25–4 | ±20 |
+  | `google-tts.standard` | `en-US-Standard-…` | 4 USD | 0.25–4 | ±20 |
+  | `google-tts.studio` | `en-US-Studio-…` | 160 USD | 0.25–4 | — |
+
+  The card offers a few US English voices; `voice_name` takes any voice of the model's family in
+  any language (`de-DE-Neural2-B`), and the language is read from the name. A voice of another
+  family is refused before sending, so a run is never billed at another family's price than the
+  one quoted. The text may be plain or SSML (`input_format`), at most 5,000 bytes. Google counts
+  every character sent, SSML tags included, and so does the quote.
+- **Gemini voices:** `google-tts.gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-3.1-flash`
+  (preview) and `gemini-2.5-flash-lite` (preview). One of the 30 prebuilt voices (default Kore),
+  a BCP-47 `language_code` (default `en-US`), and an optional `style` prompt ("Say this warmly,
+  slowly"). Naming both `speaker_1` and `speaker_2` (letters and digits) with a voice each makes
+  a dialogue: lines in the text start with a speaker's name and a colon. Flash-Lite speaks with
+  one voice only. Text and style are at most 4,000 bytes each. Gemini-TTS is billed by tokens
+  (for example 2.5 Flash at 0.50 USD per 1M input and 10 USD per 1M output tokens), and the
+  reply reports none, so the catalog marks these `by_usage`: no price before the run, and none
+  after it.
+- **Flow:** everything is checked before the free token exchange; the synthesis request is the
+  paid step and is never replayed. A 400, 401, 403, 404 or 429 that carries Google's matching
+  error status is a refusal made before any speech, so it isn't billed; anything else (a 5xx, a
+  lost reply, an unreadable body) may have been. A 400 quotes Google's explanation (a bad voice,
+  language or SSML), unless it echoes the token. The audio must sniff as MP3 and stay under
+  16 MiB. No redirects are followed. There is nothing to poll or cancel.
+- **Not verified live:** whether Studio voices take a pitch (it isn't sent), the 5,000-byte
+  limit for classic voices, and whether the preview Gemini model names stay as they are.
+  Spending money needs authorization. With it, run `NODECRAFT_LIVE_GOOGLE_TTS=1
+  NODECRAFT_LIVE_GOOGLE_TTS_ACKNOWLEDGE_COST=1 GOOGLE_TTS_KEY_FILE=/path/to/key.json cargo test
+  -p nodecraft-providers --features http,google-tts --test live_google_tts -- --ignored`. It
+  speaks one short Standard line and one Gemini 2.5 Flash line, well under 0.01 USD.
+
+Contract checked 2026-10-23: [pricing](https://cloud.google.com/text-to-speech/pricing),
+[`text:synthesize`](https://cloud.google.com/text-to-speech/docs/reference/rest/v1/text/synthesize),
+[Gemini-TTS](https://docs.cloud.google.com/text-to-speech/docs/gemini-tts),
+[Chirp 3: HD voices](https://cloud.google.com/text-to-speech/docs/chirp3-hd).
 
 ## Veo on Google Cloud (`google-veo` feature)
 

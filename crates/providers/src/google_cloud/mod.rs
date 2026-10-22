@@ -5,6 +5,9 @@ mod credential;
 #[cfg(test)]
 mod tests;
 mod token;
+#[cfg(feature = "google-tts")]
+pub mod tts;
+#[cfg(feature = "google-veo")]
 pub mod veo;
 pub use credential::{ACCOUNT, ServiceAccount, TOKEN_URI, compact};
 pub use token::{Clock, Tokens, system_clock};

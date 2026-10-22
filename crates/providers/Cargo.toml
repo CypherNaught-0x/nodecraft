@@ -39,9 +39,12 @@ higgsfield = []
 elevenlabs = []
 # Comfy Cloud: workflows on Comfy-hosted GPUs through its v2 jobs and assets API.
 comfy-cloud = ["comfyui"]
-# Veo on Google Cloud: a service account's key signs the token request; predictLongRunning and
-# operation polling.
-google-veo = ["dep:base64", "dep:rsa", "dep:web-time", "dep:getrandom02"]
+# Google Cloud service accounts: the account's key signs the token request.
+google-cloud = ["dep:base64", "dep:rsa", "dep:web-time", "dep:getrandom02"]
+# Veo on Google Cloud: predictLongRunning and operation polling.
+google-veo = ["google-cloud"]
+# Cloud Text-to-Speech: classic and Gemini voices, one synchronous request each.
+google-tts = ["google-cloud"]
 # Opt-in deterministic testing tools; never enabled by adapter defaults.
 testkit = ["dep:blake3"]
 
@@ -57,7 +60,7 @@ url = { workspace = true }
 base64 = { version = "=0.22.1", optional = true }
 blake3 = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
-# RS256 for Google Cloud service-account tokens (google-veo): pure Rust, MIT OR Apache-2.0.
+# RS256 for Google Cloud service-account tokens (google-cloud): pure Rust, MIT OR Apache-2.0.
 # Signing needs no RNG; `std` stays off so it isn't asked for one.
 rsa = { version = "=0.9.10", optional = true, default-features = false, features = ["pem", "u64_digit", "sha2"] }
 # The wall clock a token's issue and expiry times need, in the browser too.
