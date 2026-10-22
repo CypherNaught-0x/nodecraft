@@ -381,6 +381,7 @@ fn template(id: &str) -> (Session, Value) {
         "field.move" => json!({"canvas":canvas(),"field":nodecraft_types::FieldId::from_bytes([8;16]),"delta":{"x":12,"y":3}}),
         "field.remove" => json!({"canvas":canvas(),"field":nodecraft_types::FieldId::from_bytes([8;16])}),
         "node.field_set" => json!({"canvas":canvas(),"nodes":[node_id(1)],"field":nodecraft_types::FieldId::from_bytes([8;16])}),
+        "node.migrate" => json!({"canvas":canvas(),"node":node_id(1)}),
         "canvas.tag_filter_open" | "canvas.tag_filter_close" | "canvas.tag_filter_next" | "canvas.tag_filter_previous" => json!({}),
         "canvas.tag_filter_set" => json!({"tags":[],"untagged":true}),
         "comment.create" => json!({"canvas":canvas(),"id":nodecraft_types::CommentId::from_bytes([20;16]),"text":"New","pos":{"x":1,"y":2}}),

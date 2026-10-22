@@ -298,15 +298,22 @@ fn drag88_visual() {
     shoot(&mut h, "3-released.png");
 }
 
+const SHOUT: &str = r#"{"id":"user.shout","inputs":[{"kind":"text","name":"words"}],"label":"Shout","outputs":[{"expr":"upper(words)","kind":"text","name":"out"}],"schema":1,"version":1}"#;
+
 /// A store holding one granted, enabled text action package whose `warm` action shouts its input.
 fn shout_store() -> nodecraft_plugin_store::Store<nodecraft_plugin_store::MemoryBackend> {
+    shout_store_at("1.0.0", SHOUT)
+}
+
+/// The same package at `version`, with `definition` as its `warm` action.
+fn shout_store_at(version: &str, definition: &str) -> nodecraft_plugin_store::Store<nodecraft_plugin_store::MemoryBackend> {
     use nodecraft_plugin::json::{self, Json};
     let s = |t: &str| Json::Str(t.to_owned());
     let obj = |f: Vec<(&str, Json)>| Json::Object(f.into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
     let manifest = json::canonical(&obj(vec![
         ("manifest_version", Json::Int(1)),
         ("package_id", s("io.example.text")),
-        ("version", s("1.0.0")),
+        ("version", s(version)),
         ("host_protocol", obj(vec![("major", Json::Int(1)), ("min_minor", Json::Int(0)), ("max_minor", Json::Int(0))])),
         ("descriptor_contract", obj(vec![("major", Json::Int(1)), ("minor", Json::Int(0))])),
         ("license", s("MIT")),
@@ -316,7 +323,6 @@ fn shout_store() -> nodecraft_plugin_store::Store<nodecraft_plugin_store::Memory
         ("registrations", Json::Array(vec![obj(vec![("id", s("warm")), ("kind", s("action")), ("descriptor", s("d/warm.json"))])])),
     ]))
     .unwrap();
-    let definition = r#"{"id":"user.shout","inputs":[{"kind":"text","name":"words"}],"label":"Shout","outputs":[{"expr":"upper(words)","kind":"text","name":"out"}],"schema":1,"version":1}"#;
     let bytes =
         nodecraft_plugin_store::archive::build(&[("manifest.json", manifest.as_bytes()), ("LICENSE", b"MIT\n"), ("d/warm.json", definition.as_bytes())], None)
             .unwrap();
@@ -361,4 +367,45 @@ fn a_plugin_card_that_ran_before_its_plugin_was_published_runs_once_it_is() {
     };
     assert!(!text.is_empty() && text == text.to_uppercase(), "{text}");
     assert!(h.state().session.revision() > revision, "recorded");
+}
+
+#[test]
+fn a_card_whose_plugin_is_missing_says_what_it_needs() {
+    use nodecraft_engine::plugin_runtime::PluginSnapshot;
+    let store = shout_store();
+    let mut app = app();
+    let canvas = app.canvas;
+    let shout = NodeId::from_bytes([81; 16]);
+    app.session.set_plugins(PluginSnapshot::of(&store)).unwrap();
+    app.session.dispatch("node.create", &json!({"canvas": canvas, "id": shout, "kind": "plugin.io.example.text.warm", "pos": {"x": 420, "y": 300}})).unwrap();
+    // As in a project opened where the plugin isn't installed.
+    app.session.set_plugins(PluginSnapshot::default()).unwrap();
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run();
+    h.get_by_label("Node Shout");
+    h.get_by_label_contains("This card needs io.example.text 1.0.0");
+}
+
+#[test]
+fn update_card_brings_an_older_card_to_its_plugins_version() {
+    use nodecraft_engine::plugin_runtime::{PluginLock, PluginSnapshot};
+    let phrase = r#"{"id":"user.shout","inputs":[{"kind":"text","name":"phrase"}],"label":"Shout","outputs":[{"expr":"upper(phrase)","kind":"text","name":"out"}],"schema":1,"version":1}"#;
+    let mut app = app();
+    let canvas = app.canvas;
+    let shout = NodeId::from_bytes([82; 16]);
+    app.session.set_plugins(PluginSnapshot::of(&shout_store())).unwrap();
+    app.session.dispatch("node.create", &json!({"canvas": canvas, "id": shout, "kind": "plugin.io.example.text.warm", "pos": {"x": 420, "y": 300}})).unwrap();
+    // The project is opened where version 1.1.0 is installed, which renamed the input.
+    app.session.set_plugins(PluginSnapshot::of(&shout_store_at("1.1.0", phrase))).unwrap();
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run();
+    h.get_by_label_contains("made with another version of its plugin");
+    assert!(h.query_by_label_contains("This card needs").is_none(), "its plugin is installed, at another version");
+    h.get_by_label("Update card").click();
+    h.run();
+    let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&shout).unwrap().clone();
+    assert_eq!(node.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["phrase"]);
+    assert_eq!(PluginLock::of(&node).unwrap().version, "1.1.0");
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Updated the card.") && n.contains("words")), "{:?}", h.state().notice);
+    assert!(h.query_by_label("Update card").is_none(), "a current card offers no update");
 }

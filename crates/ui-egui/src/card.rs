@@ -71,6 +71,8 @@ pub enum Intent {
     Video(crate::video::VideoIntent),
     /// Play, pause or seek the card's sound (#106); view state, not an edit.
     Audio(crate::audio::AudioIntent),
+    /// Bring a plugin card to its plugin's current version (#173).
+    Migrate,
 }
 pub struct CardResponse {
     pub response: egui::Response,
@@ -88,7 +90,9 @@ pub const PORT_HIT: f32 = 10.0;
 
 /// Automatic titles are derived view data, never written back during rendering.
 pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
-    let fallback = || descriptor.map_or("Unknown node", |d| d.label.as_str());
+    // A plugin card whose plugin is missing still knows what it was.
+    let lock = descriptor.is_none().then(|| nodecraft_engine::plugin_runtime::PluginLock::of(node)).flatten();
+    let fallback = || descriptor.map_or_else(|| lock.as_ref().map_or("Unknown node", |l| l.label.as_str()), |d| d.label.as_str());
     let text = if node.title.trim().is_empty() {
         ["prompt", "text"]
             .into_iter()
@@ -166,6 +170,9 @@ pub struct CardView<'a> {
     pub audio: Option<crate::audio::AudioView>,
     /// The node's 3D model, when it has one (#111).
     pub mesh: Option<crate::mesh_view::CardMesh<'a>>,
+    /// A plugin card its plugin's current version would change (#173): another version's
+    /// ports, lock or settings.
+    pub outdated: bool,
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -208,6 +215,7 @@ pub fn show(
         video,
         audio,
         mesh,
+        outdated,
     } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
@@ -385,7 +393,18 @@ pub fn show(
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
         egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height()).auto_shrink([false, false]).show(&mut body, |ui| {
             ui.set_width(inner.width());
+            // Another version's ports or settings may not fit this one's schema at all.
+            if outdated {
+                ui.label(egui::RichText::new("This card was made with another version of its plugin.").color(t.text_muted));
+                if ui.button("Update card").clicked() {
+                    intents.push(Intent::Migrate);
+                }
+            }
             match descriptor {
+                None if outdated => {}
+                None if let Some(lock) = nodecraft_engine::plugin_runtime::PluginLock::of(node) => {
+                    ui.label(missing_plugin(&lock));
+                }
                 None => {
                     ui.label("This node kind or its controls are unavailable. Check its schema and view cache budget.");
                     if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, nodecraft_nodes::generation::MODEL)
@@ -671,6 +690,15 @@ fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, in
         None => {
             row.label(egui::RichText::new(time).color(t.text_muted));
         }
+    }
+}
+
+/// What a plugin card whose plugin isn't here says it needs.
+fn missing_plugin(lock: &nodecraft_engine::plugin_runtime::PluginLock) -> String {
+    if cfg!(target_arch = "wasm32") {
+        format!("This card runs {} {}, and plugins can't run in the browser yet. Its settings and connections are kept.", lock.package, lock.version)
+    } else {
+        format!("This card needs {} {}. Install, grant and enable it to run the card; its settings and connections are kept.", lock.package, lock.version)
     }
 }
 

@@ -185,3 +185,159 @@ fn every_compiled_definition_makes_a_card_that_runs() {
     let error = compiled(none).unwrap_err();
     assert!(error.message.contains("at least one input"), "{}", error.message);
 }
+
+fn card_node(s: &Session) -> Node {
+    s.document().canvases().get(&CANVAS).unwrap().nodes().get(&SHOUT_NODE).unwrap().clone()
+}
+
+/// Shout, renamed and with a setting: its one input is now `phrase`.
+const SHOUT_2: &str = r#"{"id":"user.shout","inputs":[{"kind":"text","name":"phrase"}],"label":"Shout louder","outputs":[{"expr":"upper(phrase) + mark","kind":"text","name":"out"}],"params":[{"default":"!","kind":"text","name":"mark"}],"schema":1,"version":1}"#;
+
+#[test]
+fn a_card_records_its_package_and_keeps_it_when_the_plugin_goes() {
+    let store = granted(SHOUT);
+    let digest = store.index().active.get(&id()).unwrap().0;
+    let mut s = session(PluginSnapshot::of(&store));
+    let lock = PluginLock::of(&card_node(&s)).unwrap();
+    assert_eq!(lock, PluginLock { package: id(), version: "1.0.0".into(), digest, label: "Shout".into() });
+    assert_eq!(referenced(s.document()), BTreeSet::from([digest]));
+    assert!(s.kinds().get(KIND).unwrap().prepare_migration(&card_node(&s)).unwrap().is_none(), "a current card has nothing to migrate");
+
+    // Without its plugin the card, its lock and its wire are all still there, and survive a save.
+    s.set_plugins(PluginSnapshot::default()).unwrap();
+    assert!(s.kinds().get(KIND).is_err());
+    let snapshot = nodecraft_format::Snapshot { project: s.document().clone(), assets: Default::default(), epoch: 1 };
+    let reopened = nodecraft_format::decode(&nodecraft_format::encode(&snapshot).unwrap()).unwrap().project;
+    let node = reopened.canvases().get(&CANVAS).unwrap().nodes().get(&SHOUT_NODE).unwrap();
+    assert_eq!(PluginLock::of(node), Some(lock));
+    assert_eq!(reopened.canvases().get(&CANVAS).unwrap().edges().len(), 1);
+    assert_eq!(referenced(&reopened), BTreeSet::from([digest]));
+
+    // Updating a card whose plugin is gone says so rather than guessing.
+    let params = json!({"canvas": CANVAS, "node": SHOUT_NODE});
+    assert_eq!(s.dispatch("node.migrate", &params).unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[test]
+fn a_lock_counts_only_on_a_card_of_its_own_package() {
+    let store = granted(SHOUT);
+    let s = session(PluginSnapshot::of(&store));
+    let card = card_node(&s);
+    let with = |key: &str, value: &str| {
+        let mut node = card.clone();
+        node.config.insert(key.into(), Value::Text(value.into()));
+        node
+    };
+    let mut elsewhere = card.clone();
+    elsewhere.kind = "source.text".into();
+    let mut foreign = card.clone();
+    foreign.kind = "plugin.io.example.other.shout".into();
+    let spoofed = [
+        elsewhere,
+        foreign,
+        with("plugin.package", "io.example.other"),
+        with("plugin.version", "1.0"),
+        with("plugin.version", "01.0.0"),
+        with("plugin.label", "Shout\u{7}"),
+        with("plugin.label", " "),
+        with("plugin.label", &"x".repeat(129)),
+        with("plugin.digest", "blake3:00"),
+    ];
+    for node in &spoofed {
+        assert_eq!(PluginLock::of(node), None, "{node:?}");
+    }
+    assert!(PluginLock::of(&card).is_some());
+}
+
+#[test]
+fn a_project_names_at_most_max_referenced_digests() {
+    let store = granted(SHOUT);
+    let s = session(PluginSnapshot::of(&store));
+    let card = card_node(&s);
+    let nodes: Vec<Node> = (0..=MAX_REFERENCED)
+        .map(|n| {
+            let mut node = card.clone();
+            node.config.insert("plugin.digest".into(), Value::Text(format!("blake3:{n:064x}")));
+            node
+        })
+        .collect();
+    let named = super::digests(&nodes);
+    assert_eq!(named.len(), MAX_REFERENCED);
+    // A digest already named still counts past the cap; the request stays valid.
+    let request = json!({"op": "prune", "referenced": named.iter().map(ToString::to_string).collect::<Vec<_>>()});
+    assert!(crate::plugin_cmds::referenced_of(&request).is_ok());
+}
+
+#[test]
+fn a_card_from_an_older_version_migrates_in_one_undo_step() {
+    let trust = TrustStore::default();
+    let mut store = granted(SHOUT);
+    let old = store.index().active.get(&id()).unwrap().0;
+    let mut s = session(PluginSnapshot::of(&store));
+    store.disable(&id()).unwrap();
+    store.update(&package("1.1.0", SHOUT_2), &trust, false).unwrap();
+    store.grant(&id(), &trust).unwrap();
+    store.enable(&id(), &trust, &BTreeSet::new(), &BTreeSet::new()).unwrap();
+    s.set_plugins(PluginSnapshot::of(&store)).unwrap();
+    let before = s.document().clone();
+    let params = json!({"canvas": CANVAS, "node": SHOUT_NODE});
+
+    let dry = s.dispatch("node.migrate", &json!({"canvas": CANVAS, "node": SHOUT_NODE, "dry_run": true})).unwrap();
+    assert_eq!((dry["pending"].as_bool(), dry["disconnected"].as_u64()), (Some(true), Some(1)));
+    assert_eq!(s.document(), &before, "a dry run changes nothing");
+
+    let done = s.dispatch("node.migrate", &params).unwrap();
+    assert_eq!(done["migrated"], json!(true));
+    let warnings = done["warnings"].as_array().unwrap();
+    assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("1.0.0 to 1.1.0")), "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("words input")), "{warnings:?}");
+    let node = card_node(&s);
+    let lock = PluginLock::of(&node).unwrap();
+    assert_eq!((lock.version.as_str(), lock.label.as_str()), ("1.1.0", "Shout louder"));
+    assert_ne!(lock.digest, old);
+    assert_eq!(node.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["phrase"]);
+    assert_eq!(node.params.get("mark"), Some(&Value::Text("!".into())));
+    assert!(s.document().canvases().get(&CANVAS).unwrap().edges().is_empty(), "the wire to the dropped input went with it");
+    assert!(s.kinds().get(KIND).unwrap().validate_instance(&node, false).is_ok());
+    assert_eq!(s.dispatch("node.migrate", &params).unwrap(), json!({"migrated": false, "warnings": []}));
+
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document(), &before, "one undo puts the card and its wire back");
+}
+
+#[test]
+fn uninstall_and_prune_keep_what_the_open_project_uses() {
+    let store = granted(SHOUT);
+    let digest = store.index().active.get(&id()).unwrap().0.to_string();
+    let mut s = session(PluginSnapshot::of(&store));
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    s.register_host_service(crate::plugin_cmds::PLUGIN_SERVICE, move |request| {
+        sink.lock().unwrap().push(request.clone());
+        Ok(json!({}))
+    })
+    .unwrap();
+    s.dispatch("plugins.uninstall", &json!({"package_id": "io.example.text"})).unwrap();
+    s.dispatch("plugins.prune", &json!({})).unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    for request in seen.iter() {
+        assert_eq!(request["referenced"], json!([digest]), "{request}");
+    }
+}
+
+#[test]
+fn the_store_keeps_a_referenced_digest_on_uninstall() {
+    let trust = TrustStore::default();
+    let mut store = granted(SHOUT);
+    let old = store.index().active.get(&id()).unwrap().0;
+    store.disable(&id()).unwrap();
+    store.update(&package("1.1.0", SHOUT_2), &trust, false).unwrap();
+    let host = crate::plugin_cmds::PluginHost { trust: None, taken: BTreeSet::new(), bindings: BTreeSet::new() };
+    let request = json!({"op": "uninstall", "package_id": "io.example.text", "referenced": [old.to_string()]});
+    let report = crate::plugin_cmds::handle(&mut store, &host, &request).unwrap();
+    assert_eq!(report["kept"], json!([old.to_string()]), "{report}");
+    for bad in [json!({"op": "prune", "referenced": ["nope"]}), json!({"op": "prune", "referenced": "blake3:00"})] {
+        assert_eq!(crate::plugin_cmds::handle(&mut store, &host, &bad).unwrap_err().kind, ErrorKind::InvalidInput);
+    }
+}

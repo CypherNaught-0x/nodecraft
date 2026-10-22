@@ -3,15 +3,21 @@
 //! their actions through [`Routed`]. Every action carries the grant it was published under:
 //! once that grant is gone it is flagged revoked, its running jobs stop, and a result that
 //! still arrives is dropped rather than recorded.
+//!
+//! A card records the package it was made with ([`PluginLock`]) in its node's config, so a
+//! project keeps the card, says what it needs when the plugin is missing, and names the digest
+//! to the store so uninstalling or pruning keeps it.
 use crate::plugin_text::{PluginTextAction, compile};
 use nodecraft_actions::expr::{self, CompiledTextAction, ExprLimits, InputKind, OutputKind, ParamKind};
 use nodecraft_exec::run::ActionExecutor;
-use nodecraft_graph::Port;
-use nodecraft_nodes::NodeKind;
+use nodecraft_graph::{Node, Port};
+use nodecraft_nodes::action::ActionKind;
+use nodecraft_nodes::{JobSpec, ModeId, NodeContract, NodeDescriptor, NodeKind, NodeMigration, PlanCtx};
 use nodecraft_plugin::PackageDigest;
-use nodecraft_plugin::id::{PLUGIN_PREFIX, PackageId};
+use nodecraft_plugin::id::{PLUGIN_PREFIX, PackageId, RegisteredId};
+use nodecraft_plugin::manifest::Version;
 use nodecraft_plugin_store::{State, Store, StoreBackend};
-use nodecraft_types::{Error, ErrorKind, Integer, Modality, ParamControl, ParamSpec, ParamValues, PortType, Unsigned, Value};
+use nodecraft_types::{Error, ErrorKind, Integer, Modality, NodeId, ParamControl, ParamSpec, ParamValues, PortType, Unsigned, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +35,7 @@ pub struct PluginStamp {
 #[derive(Debug)]
 pub struct PluginAction {
     pub stamp: PluginStamp,
+    pub lock: PluginLock,
     action: CompiledTextAction,
     revoked: AtomicBool,
 }
@@ -86,10 +93,159 @@ impl PluginAction {
     }
 }
 
+const LOCK_PACKAGE: &str = "plugin.package";
+const LOCK_VERSION: &str = "plugin.version";
+const LOCK_DIGEST: &str = "plugin.digest";
+const LOCK_LABEL: &str = "plugin.label";
+/// Longest text a lock keeps; a label follows the definition's own limit.
+const MAX_LOCK_TEXT: usize = 256;
+const MAX_LOCK_LABEL: usize = 128;
+/// Most package digests a project names to the store; past that, uninstall and prune keep
+/// only the first (a project rarely uses more than a few packages).
+pub const MAX_REFERENCED: usize = 4096;
+
+/// The package a plugin card was made with, kept in its node's config.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PluginLock {
+    pub package: PackageId,
+    pub version: String,
+    pub digest: PackageDigest,
+    /// The action's label, shown when its plugin is missing.
+    pub label: String,
+}
+
+impl PluginLock {
+    /// The lock `node` records; none when it records none, one this build can't read, or one
+    /// for another package than the plugin kind it is on.
+    pub fn of(node: &Node) -> Option<Self> {
+        let text = |key: &str| match node.config.get(key) {
+            Some(Value::Text(t)) if t.len() <= MAX_LOCK_TEXT => Some(t.as_str()),
+            _ => None,
+        };
+        let lock = Self {
+            package: PackageId::parse(text(LOCK_PACKAGE)?).ok()?,
+            version: text(LOCK_VERSION)?.to_owned(),
+            digest: PackageDigest::parse(text(LOCK_DIGEST)?).ok()?,
+            label: text(LOCK_LABEL)?.to_owned(),
+        };
+        lock.fits(&node.kind).then_some(lock)
+    }
+
+    /// Whether this lock may sit on a card of `kind`: a kind of its own package, a canonical
+    /// version, and a label as a definition has one.
+    fn fits(&self, kind: &str) -> bool {
+        let label = &self.label;
+        RegisteredId::parse(kind).is_ok_and(|kind| kind.is_in(&self.package))
+            && Version::parse(&self.version).is_ok()
+            && !label.trim().is_empty()
+            && label.len() <= MAX_LOCK_LABEL
+            && !label.chars().any(char::is_control)
+    }
+
+    fn write(&self, config: &mut BTreeMap<String, Value>) {
+        config.insert(LOCK_PACKAGE.into(), Value::Text(self.package.to_string()));
+        config.insert(LOCK_VERSION.into(), Value::Text(self.version.clone()));
+        config.insert(LOCK_DIGEST.into(), Value::Text(self.digest.to_string()));
+        config.insert(LOCK_LABEL.into(), Value::Text(self.label.clone()));
+    }
+}
+
+/// Every package digest the plugin cards of `document` were made with, at most
+/// [`MAX_REFERENCED`] of them.
+pub fn referenced(document: &nodecraft_graph::Project) -> std::collections::BTreeSet<PackageDigest> {
+    digests(document.canvases().values().flat_map(|c| c.nodes().values()))
+}
+
+fn digests<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> std::collections::BTreeSet<PackageDigest> {
+    let mut digests = std::collections::BTreeSet::new();
+    for lock in nodes.into_iter().filter_map(PluginLock::of) {
+        if digests.len() >= MAX_REFERENCED && !digests.contains(&lock.digest) {
+            break;
+        }
+        digests.insert(lock.digest);
+    }
+    digests
+}
+
+/// A plugin action's card: the action kind, recording its package in every card it makes.
+struct PluginCard {
+    kind: ActionKind,
+    lock: PluginLock,
+}
+
+impl NodeKind for PluginCard {
+    fn descriptor(&self) -> &NodeDescriptor {
+        self.kind.descriptor()
+    }
+
+    fn contract(&self, descriptor: &NodeDescriptor) -> NodeContract {
+        self.kind.contract(descriptor)
+    }
+
+    fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
+        self.kind.mode(inputs)
+    }
+
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        self.kind.plan(ctx)
+    }
+
+    fn instantiate_instance(&self, id: NodeId, mut config: BTreeMap<String, Value>, supplied: &ParamValues) -> Result<Node, Error> {
+        self.lock.write(&mut config);
+        self.kind.instantiate_instance(id, config, supplied)
+    }
+
+    /// Brings a card made with another version of its package to this one: the ports and lock
+    /// of this version, the settings it still has, and a warning for everything that goes.
+    fn migrate(&self, node: &Node) -> Result<Option<NodeMigration>, Error> {
+        let descriptor = self.descriptor();
+        let old = PluginLock::of(node);
+        let known = |name: &String| descriptor.params.params.iter().any(|p| &p.name == name);
+        if old.as_ref() == Some(&self.lock) && node.inputs == descriptor.inputs && node.outputs == descriptor.outputs && node.params.keys().all(known) {
+            return Ok(None);
+        }
+        let mut warnings = Vec::new();
+        match &old {
+            Some(old) if old.digest != self.lock.digest => {
+                warnings.push(format!("Updates the card from version {} to {} of {}.", old.version, self.lock.version, self.lock.package))
+            }
+            _ => {}
+        }
+        let gone = |ports: &[Port], now: &[Port]| ports.iter().filter(|p| !now.contains(p)).map(|p| p.name.clone()).collect::<Vec<_>>();
+        for name in gone(&node.inputs, &descriptor.inputs) {
+            warnings.push(format!("Drops the {name} input as it was, and its connections."));
+        }
+        for name in gone(&node.outputs, &descriptor.outputs) {
+            warnings.push(format!("Drops the {name} output as it was, and its connections."));
+        }
+        let mut kept = ParamValues::new();
+        for (name, value) in &node.params {
+            if known(name) {
+                kept.insert(name.clone(), value.clone());
+            } else {
+                warnings.push(format!("Drops the {name} setting, which this version doesn't have."));
+            }
+        }
+        let params = match descriptor.params.resolve(&kept, false) {
+            Ok(resolved) => resolved.values,
+            Err(_) => {
+                warnings.push("Resets the settings, which don't fit this version.".to_owned());
+                descriptor.params.resolve(&ParamValues::new(), false)?.values
+            }
+        };
+        let mut next = node.clone();
+        self.lock.write(&mut next.config);
+        next.params = params;
+        next.inputs = descriptor.inputs.clone();
+        next.outputs = descriptor.outputs.clone();
+        Ok(Some(NodeMigration { node: next, warnings }))
+    }
+}
+
 /// The card kind of a plugin action registered as `id`: one port per input (a text list takes
 /// many), one output, and a parameter per definition parameter. Checked as the registry checks
 /// it, so a kind that is made always registers.
-pub(crate) fn card(id: &str, action: &CompiledTextAction) -> Result<Box<dyn NodeKind>, Error> {
+pub(crate) fn card(id: &str, action: &CompiledTextAction, lock: PluginLock) -> Result<Box<dyn NodeKind>, Error> {
     let definition = action.definition();
     let text = |name: &str, many: bool| Port { name: name.into(), port_type: PortType { modality: Modality::Text, many } };
     let inputs = definition.inputs.iter().map(|p| text(&p.name, p.kind == InputKind::TextList)).collect();
@@ -100,7 +256,11 @@ pub(crate) fn card(id: &str, action: &CompiledTextAction) -> Result<Box<dyn Node
     let descriptor = kind.descriptor();
     descriptor.validate()?;
     kind.contract(descriptor).validate(descriptor)?;
-    Ok(Box::new(kind))
+    // The lock must read back from every card it is written on.
+    if !lock.fits(id) {
+        return Err(Error::new(ErrorKind::InvalidInput, "a plugin action's card can't record its package"));
+    }
+    Ok(Box::new(PluginCard { kind, lock }))
 }
 
 fn revoked() -> String {
@@ -166,8 +326,9 @@ impl PluginSnapshot {
             let Some(grant) = (*state == State::Enabled).then(|| grants.live(id, digest)).flatten() else { continue };
             let Ok(compiled) = store.load(id).and_then(|package| compile(&package)) else { continue };
             let stamp = PluginStamp { grant_id: grant.grant_id.clone(), package: id.clone(), digest: *digest, epoch: grant.epoch };
-            for PluginTextAction { id, action } in compiled {
-                actions.insert(id.as_str().to_owned(), Arc::new(PluginAction { stamp: stamp.clone(), action, revoked: AtomicBool::new(false) }));
+            for PluginTextAction { id: action_id, action, lock } in compiled {
+                let action = PluginAction { stamp: stamp.clone(), lock, action, revoked: AtomicBool::new(false) };
+                actions.insert(action_id.as_str().to_owned(), Arc::new(action));
             }
         }
         Self { actions }
@@ -188,7 +349,7 @@ impl PluginSnapshot {
 
     /// The node kinds of its actions; a definition that makes no kind is left out.
     pub fn kinds(&self) -> Vec<Box<dyn NodeKind>> {
-        self.actions.iter().filter_map(|(id, action)| card(id, &action.action).ok()).collect()
+        self.actions.iter().filter_map(|(id, action)| card(id, &action.action, action.lock.clone()).ok()).collect()
     }
 
     /// `next`, keeping this snapshot's actions that kept their grants (running jobs hold them);

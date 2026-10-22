@@ -179,6 +179,14 @@ impl Blocker {
             (Reason::NoResult, Some(port), Some(up)) => format!("Can't run {node} yet: its {port} input needs a result from {}.", name(up)),
             (Reason::NoResult, ..) => format!("Can't run {node} yet: an input has no result."),
             (Reason::UnknownKind, _, Some(up)) if up != self.node => format!("Can't run {node}: the node kind of {} isn't available.", name(up)),
+            // `plugin.` is nodecraft_plugin's PLUGIN_PREFIX; exec doesn't depend on that crate.
+            (Reason::UnknownKind, ..) if canvas.nodes().get(&self.node).is_some_and(|n| n.kind.starts_with("plugin.")) => {
+                if cfg!(target_arch = "wasm32") {
+                    format!("Can't run {node}: plugins can't run in the browser yet.")
+                } else {
+                    format!("Can't run {node}: its plugin isn't installed, granted or enabled here.")
+                }
+            }
             (Reason::UnknownKind, ..) => format!("Can't run {node}: its node kind isn't available."),
             (Reason::UnsupportedInputs, ..) => format!("Can't run {node}: it doesn't accept this combination of inputs."),
             (Reason::ProviderTarget(reason), ..) => format!("Can't run {node}: {}.", reason.message()),

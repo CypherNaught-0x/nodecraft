@@ -209,7 +209,7 @@ fn blocker_messages_fall_back_to_kind_for_automatic_titles() {
     let missing_result = Blocker { node: id(1), port: Some("in".into()), upstream: Some(id(2)), reason: Reason::NoResult };
     assert_eq!(missing_result.message(canvas), "Can't run test.relay yet: its in input needs a result from plugin.gone.");
     let missing_kind = Blocker { node: id(2), port: None, upstream: None, reason: Reason::UnknownKind };
-    assert_eq!(missing_kind.message(canvas), "Can't run plugin.gone: its node kind isn't available.");
+    assert_eq!(missing_kind.message(canvas), "Can't run plugin.gone: its plugin isn't installed, granted or enabled here.");
 }
 
 #[test]
@@ -467,7 +467,7 @@ fn unknown_upstream_kinds_still_lend_their_results() {
     // With no result, with-upstream pulls the unknown node in, and it blocks as itself.
     let Planned::Blocked(blockers) = plan_run(canvas, &kinds, &RunMode::WithUpstream, &ids(&[5]), &BTreeSet::new()).unwrap() else { panic!() };
     assert_eq!(blockers, vec![Blocker { node: id(4), port: None, upstream: None, reason: Reason::UnknownKind }]);
-    assert_eq!(blockers.first().unwrap().message(canvas), "Can't run Relay: its node kind isn't available.");
+    assert_eq!(blockers.first().unwrap().message(canvas), "Can't run Relay: its plugin isn't installed, granted or enabled here.");
     let named = Blocker { node: id(5), port: Some("in".into()), upstream: Some(id(4)), reason: Reason::UnknownKind };
     assert_eq!(named.message(canvas), "Can't run Relay: the node kind of Relay isn't available.");
 }

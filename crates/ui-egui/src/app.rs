@@ -362,6 +362,7 @@ mod ownership_panel;
 mod paste_image;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perf_run;
+mod plugin_cards;
 mod queue_panel;
 mod reader;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1583,6 +1584,7 @@ impl NodeCraftApp {
                 let rejected = self.marquee.is_some() && self.marquee_geometry.placeholder(node.id);
                 let schema = if rejected { None } else { cached_schema(&mut self.schemas, &self.session, node, self.cache_clock) };
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
+                let outdated = plugin_cards::outdated(&self.session, node);
                 let editor = self.editors.entry(node.id).or_default();
                 // Cards use their parent's max_rect origin as the canvas origin. A layout
                 // scope would advance that origin between cards; an independent disabled
@@ -1618,6 +1620,7 @@ impl NodeCraftApp {
                         video,
                         audio,
                         mesh,
+                        outdated,
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -2120,6 +2123,10 @@ impl NodeCraftApp {
                     None => continue,
                 },
                 Intent::Model => continue,
+                Intent::Migrate => {
+                    self.migrate_card(id);
+                    continue;
+                }
                 Intent::Video(intent) => {
                     self.videos.act(ui.ctx(), id, intent);
                     continue;
