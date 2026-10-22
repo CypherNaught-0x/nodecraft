@@ -105,7 +105,11 @@ returns the same verified `RenderedVideo` as a render. It shares the single rend
 - **Verification.** The output is probed for its size, rate, audio, frame count and running time
   (each within two frames) before it is accepted.
 - **Command line.** Every number on it is formatted from validated integers. No project or caller
-  string reaches FFmpeg.
+  string reaches FFmpeg. The generated filter graph is a bounded, disk-charged scratch file,
+  kept until the encoder stops and removed by the service's normal cleanup. The service probes
+  for `-/filter_complex`, with `-filter_complex_script` as the fallback for older tools.
+  Composition inputs, script and output use generated basenames relative to the private working
+  directory, keeping the command below Windows' limit even with a long scratch parent.
 
 ## Video actions
 

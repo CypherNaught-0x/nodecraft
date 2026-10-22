@@ -680,6 +680,8 @@ struct Context {
     cache: Arc<Mutex<FrameCache>>,
     /// The `ffmpeg -h` topics already found present, so sound checks each one once.
     present: Arc<Mutex<BTreeSet<String>>>,
+    /// Successfully parsed file-loading syntax for complex filters, checked on first compose.
+    filter_script_option: Option<&'static str>,
 }
 impl Context {
     fn open(config: ServiceConfig, closed: Arc<AtomicBool>, deadline: Instant) -> Result<Self> {
@@ -745,6 +747,7 @@ impl Context {
             registry: Arc::new(Mutex::new(RecordRegistry { records, next: 0 })),
             cache: Arc::new(Mutex::new(cache)),
             present: Arc::new(Mutex::new(BTreeSet::new())),
+            filter_script_option: None,
         };
         let cancel = Arc::new(AtomicBool::new(false));
         for (tool, arg) in [(ctx.config.tools.ffmpeg.clone(), "-version"), (ctx.config.tools.ffprobe.clone(), "-version")] {
