@@ -6,8 +6,9 @@ use std::fmt;
 use futures::FutureExt;
 
 use crate::http::{Http, HttpRequest};
-use crate::provider::{BoxFuture, CancelSignal, Clock, Completed, JobProgress, Provider, ProviderJob, Submission};
+use crate::provider::{BoxFuture, CancelSignal, Clock, Completed, JobProgress, Provider, ProviderJob, StagedSubmit, Stager, Submission};
 use crate::{ErrorKind, JobHandle, ProviderError};
+use std::sync::Arc;
 
 /// How long a job may take overall before it counts as expired.
 pub const DEFAULT_JOB_DEADLINE_MS: u64 = 60 * 60 * 1000;
@@ -102,14 +103,66 @@ pub async fn run_to_completion(
     cancel: &dyn CancelSignal,
     clock: &dyn Clock,
     limits: RunLimits,
+    on_update: impl FnMut(RunUpdate),
+) -> Result<Completed, RunFailure> {
+    send(provider, Sending::Fresh(job, None), cancel, clock, limits, on_update).await
+}
+
+/// [`run_to_completion`], saving through `stager` the paid request an adapter stages before it
+/// sends it (#664), so a restart can [`replay`] it.
+pub async fn run_to_completion_staged(
+    provider: &dyn Provider,
+    job: &ProviderJob,
+    stager: Option<Arc<Stager>>,
+    cancel: &dyn CancelSignal,
+    clock: &dyn Clock,
+    limits: RunLimits,
+    on_update: impl FnMut(RunUpdate),
+) -> Result<Completed, RunFailure> {
+    send(provider, Sending::Fresh(job, stager), cancel, clock, limits, on_update).await
+}
+
+/// Sends again a request staged before a restart ([`Provider::replay`]) and follows it to the
+/// end like [`run_to_completion`].
+pub async fn replay(
+    provider: &dyn Provider,
+    job: &ProviderJob,
+    staged: &StagedSubmit,
+    cancel: &dyn CancelSignal,
+    clock: &dyn Clock,
+    limits: RunLimits,
+    on_update: impl FnMut(RunUpdate),
+) -> Result<Completed, RunFailure> {
+    send(provider, Sending::Replay(job, staged), cancel, clock, limits, on_update).await
+}
+
+/// What [`send`] sends: a job afresh, or a request staged before a restart.
+enum Sending<'a> {
+    Fresh(&'a ProviderJob, Option<Arc<Stager>>),
+    Replay(&'a ProviderJob, &'a StagedSubmit),
+}
+
+async fn send(
+    provider: &dyn Provider,
+    sending: Sending<'_>,
+    cancel: &dyn CancelSignal,
+    clock: &dyn Clock,
+    limits: RunLimits,
     mut on_update: impl FnMut(RunUpdate),
 ) -> Result<Completed, RunFailure> {
     if cancel.is_cancelled() {
         return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled before it started")));
     }
     let context = if limits.stream_text { crate::SubmitContext::streaming_text() } else { crate::SubmitContext::new() };
+    let (context, job, staged) = match sending {
+        Sending::Fresh(job, stager) => (context.with_stager(stager), job, None),
+        Sending::Replay(job, staged) => (context, job, Some(staged)),
+    };
     let submitted = {
-        let mut submit = provider.submit_with_delivery(job, &context);
+        let mut submit = match staged {
+            Some(staged) => provider.replay(job, staged, &context),
+            None => provider.submit_with_delivery(job, &context),
+        };
         let on_update = &mut on_update;
         // Each time the submit makes progress, report the text it streamed meanwhile.
         let streamed = futures::future::poll_fn(|cx| {

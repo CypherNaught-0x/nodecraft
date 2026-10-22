@@ -15,7 +15,7 @@ mod training;
 use crate::secrets::Secret;
 use crate::{
     BoxFuture, Completed, ErrorKind, Http, HttpMethod, HttpRequest, HttpResponse, JobHandle, JobProgress, Output, Provider, ProviderError, ProviderJob,
-    Submission,
+    StagedSubmit, Submission,
 };
 use nodecraft_media::ContentHash;
 use std::collections::VecDeque;
@@ -349,14 +349,59 @@ impl Higgsfield {
             .header("Idempotency-Key", key)
             .timeout_ms(60_000);
         submit.max_response_bytes = self.limits.response_bytes;
+        let data = serde_json::json!({"v": 1, "model": prepared.model, "count": prepared.count});
         // Everything local is done; from here a lost reply may hide an accepted, billed request,
-        // unless Higgsfield answers with a refusal it documents as made before acceptance.
+        // unless Higgsfield answers with a refusal it documents as made before acceptance. Saved
+        // first, so a restart can send these same bytes again (#664).
         if let Some(context) = context {
+            let staged = String::from_utf8(body.to_vec()).map_err(|_| malformed("a Higgsfield request body wasn't text"))?;
+            context.stage(&StagedSubmit { body: staged, data: data.clone() })?;
             context.paid();
         }
         let reply = self.send(submit, true, context).await?;
         let id = response::receipt(&reply.body)?;
-        Ok(Submission::Queued(JobHandle { remote_id: id, data: serde_json::json!({"v": 1, "model": prepared.model, "count": prepared.count}) }))
+        Ok(Submission::Queued(JobHandle { remote_id: id, data }))
+    }
+    /// Sends a request staged before a restart again, byte for byte under its key (#664). Its
+    /// uploads are never staged again: Higgsfield would take new links for different parameters.
+    /// If it refuses the request (its uploads may have expired), that is reported, not resent.
+    async fn replay_staged(&self, job: &ProviderJob, staged: &StagedSubmit, context: &crate::SubmitContext) -> Result<Submission, ProviderError> {
+        let damaged = || {
+            invalid(
+                "the Higgsfield request saved before NodeCraft closed is damaged, so it wasn't sent again; it may have been billed, so check Higgsfield before running it again",
+            )
+        };
+        let model = request::model(&job.model).ok_or_else(damaged)?;
+        if staged.body.len() > crate::MAX_STAGED_BODY || job.idempotency_key.is_empty() {
+            return Err(damaged());
+        }
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&staged.body).map_err(|_| damaged())?;
+        // The handle it will be followed by must be one polling accepts, or it would be paid for
+        // and never found.
+        if Self::record(&staged.data).ok().map(|(saved, _)| saved) != Some(model) {
+            return Err(damaged());
+        }
+        let key = request::idempotency_key(&job.idempotency_key);
+        let mut submit = HttpRequest { method: HttpMethod::Post, body: staged.body.as_bytes().to_vec(), ..HttpRequest::get(format!("{API}/{model}")) }
+            .header("Content-Type", "application/json")
+            .header("Idempotency-Key", key)
+            .timeout_ms(60_000);
+        submit.max_response_bytes = self.limits.response_bytes;
+        context.arm();
+        context.paid();
+        let reply = match self.send(submit, true, Some(context)).await {
+            Ok(reply) => reply,
+            Err(e) if e.is_transient() => return Err(e),
+            Err(e) => {
+                let message = format!(
+                    "Higgsfield refused the request saved before NodeCraft closed, sent again with the files uploaded then (they may have expired): {}. It wasn't uploaded and sent anew under the same key; check Higgsfield, then run it again",
+                    e.message
+                );
+                return Err(ProviderError { message, ..e });
+            }
+        };
+        let id = response::receipt(&reply.body)?;
+        Ok(Submission::Queued(JobHandle { remote_id: id, data: staged.data.clone() }))
     }
     /// What Higgsfield says this job would cost this account. Free, and it uses no idempotency
     /// key: it uploads the job's files, and the next submit sending the same files reuses them.
@@ -430,7 +475,11 @@ impl Higgsfield {
     }
     fn handle(handle: &JobHandle) -> Result<(&'static str, u64), ProviderError> {
         request_id(&handle.remote_id)?;
-        let model = match handle.data.get("model").and_then(serde_json::Value::as_str) {
+        Self::record(&handle.data)
+    }
+    /// A handle's saved record: its model and how many outputs it asked for.
+    fn record(data: &serde_json::Value) -> Result<(&'static str, u64), ProviderError> {
+        let model = match data.get("model").and_then(serde_json::Value::as_str) {
             Some(SOUL) => SOUL,
             Some(KLING_I2V) => KLING_I2V,
             Some(MOTION_TRANSFER) => MOTION_TRANSFER,
@@ -439,8 +488,8 @@ impl Higgsfield {
             Some(SOUL_TRAINER) => SOUL_TRAINER,
             _ => return Err(invalid("Higgsfield handle record refused")),
         };
-        let count = handle.data.get("count").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 4) && (model == SOUL || *n == 1));
-        match (handle.data.get("v").and_then(serde_json::Value::as_u64), count) {
+        let count = data.get("count").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 4) && (model == SOUL || *n == 1));
+        match (data.get("v").and_then(serde_json::Value::as_u64), count) {
             (Some(1), Some(count)) => Ok((model, count)),
             _ => Err(invalid("Higgsfield handle record refused")),
         }
@@ -526,6 +575,14 @@ impl Provider for Higgsfield {
         // This constructor is pure; create marks the paid request before it sends it.
         context.arm();
         Box::pin(self.create(j, Some(context)))
+    }
+    fn replay<'a>(
+        &'a self,
+        j: &'a ProviderJob,
+        staged: &'a StagedSubmit,
+        context: &'a crate::SubmitContext,
+    ) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+        Box::pin(self.replay_staged(j, staged, context))
     }
     fn poll<'a>(&'a self, h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
         Box::pin(self.progress(h))

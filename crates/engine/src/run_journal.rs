@@ -5,12 +5,14 @@
 //! so a crash loses at most what changed since the last pump. On the next launch the log comes
 //! back with its open reservations, each submitted job is resumed (polled, never sent again) and
 //! its charge settled when it ends, and an open reservation with no handle (its submit may or may
-//! not have reached the provider) is charged as unresolved.
+//! not have reached the provider) is charged as unresolved, unless its adapter staged the request
+//! before sending it (#664): that one is sent again byte for byte under the same key, so the
+//! provider answers with the request it may already have accepted.
 use crate::jobs::sent_key;
 use nodecraft_exec::cost::UsageLog;
 use nodecraft_exec::run::ResumeRecipe;
 use nodecraft_nodes::GenerateOutput;
-use nodecraft_providers::JobHandle;
+use nodecraft_providers::{JobHandle, StagedSubmit};
 use nodecraft_types::{CanvasId, Error, ErrorKind, Money, NodeId, ProjectId, ProviderTarget};
 use serde::{Deserialize, Serialize};
 
@@ -37,7 +39,8 @@ pub struct Journal {
 }
 
 /// A paid job the provider accepted and that hasn't ended: enough to poll it again, settle its
-/// charge, and record its result on its card.
+/// charge, and record its result on its card. Or one whose request was staged and may have been
+/// sent, with no handle back yet (#664): its handle is empty, and `staged` is sent again exactly.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Submitted {
@@ -64,6 +67,9 @@ pub struct Submitted {
     /// Launches it has waited through without being followed (see [`MAX_PARKED_LAUNCHES`]).
     #[serde(default)]
     pub launches: u32,
+    /// The request its adapter staged before sending it, while no handle is known (#664).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staged: Option<StagedSubmit>,
 }
 
 impl Submitted {

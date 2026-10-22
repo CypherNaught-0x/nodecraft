@@ -56,9 +56,13 @@ pub use error::{ErrorKind, ProviderError};
 pub use http::ReqwestHttp;
 pub use http::{ChunkSink, Http, HttpMethod, HttpRequest, HttpResponse, MAX_REDIRECTS, USER_AGENT};
 pub use provider::{
-    BoxFuture, CancelSignal, Clock, Completed, JobHandle, JobInput, JobProgress, MaybeSendSync, Output, Provider, ProviderJob, Submission, Usage,
+    BoxFuture, CancelSignal, Clock, Completed, JobHandle, JobInput, JobProgress, MAX_STAGED_BODY, MaybeSendSync, Output, Provider, ProviderJob, StagedSubmit,
+    Stager, Submission, Usage,
 };
-pub use task::{DEFAULT_JOB_DEADLINE_MS, Downloaded, RunFailure, RunLimits, RunUpdate, check_media, fetch_output, resume, run_to_completion};
+pub use task::{
+    DEFAULT_JOB_DEADLINE_MS, Downloaded, RunFailure, RunLimits, RunUpdate, check_media, fetch_output, replay, resume, run_to_completion,
+    run_to_completion_staged,
+};
 
 #[cfg(test)]
 #[path = "mock/tests.rs"]

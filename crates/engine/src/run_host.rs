@@ -39,7 +39,7 @@ use crate::Session;
 use crate::action_exec::LocalActions;
 use crate::commands::Services;
 use crate::generate;
-use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner, Sent, WriteAhead};
+use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner, Sent, Stage, WriteAhead};
 use crate::ownership_cmds::{self, OWNERSHIP_SERVICE};
 use crate::provider_routing::RegisteredProvider;
 use crate::resolve_cmds::{self, RESOLUTION_SERVICE};
@@ -51,7 +51,7 @@ use nodecraft_exec::driver::{CancelToken, Handle, JobRunner, Runtime, TaskFuture
 use nodecraft_exec::run::{Progress, RunOptions, SourceRunner, StepResult, take_outputs};
 use nodecraft_exec::scheduler::{CancelScope, Event, JobId, Outcome, RetryPolicy, Scheduler, Start};
 use nodecraft_nodes::{GenerateOutput, JobSpec};
-use nodecraft_providers::{Completed, JobHandle, RunUpdate};
+use nodecraft_providers::{Completed, JobHandle, RunUpdate, StagedSubmit};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ProjectId};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -197,8 +197,11 @@ struct Active {
     cancelled: bool,
     /// What the queue panel shows of its jobs.
     jobs: RunJobs,
-    /// What each queued model job is saved as once the provider accepts it, less its handle.
-    templates: BTreeMap<JobId, Submitted>,
+    /// What each queued model job is saved as once the provider accepts it, less its handle;
+    /// shared with the runner's stage hook, which saves it with its staged request (#664).
+    templates: Arc<Mutex<BTreeMap<JobId, Submitted>>>,
+    /// The host's journal, where this run's staged requests are kept until they get a handle.
+    shared: Arc<Mutex<Shared>>,
     /// Model jobs the provider accepted and that haven't ended, as saved.
     journal: BTreeMap<JobId, Submitted>,
     /// The paid result of each model job converted and not yet used, until its step is recorded
@@ -262,10 +265,20 @@ struct Shared {
     /// `None` saves nothing.
     store: Option<Box<dyn JournalStore>>,
     submitted: Vec<Submitted>,
+    /// Model jobs whose request was staged and may have been sent, with no handle back yet, by
+    /// run and job (#664). Saved with `submitted`, and saved at once each time one is staged.
+    staging: BTreeMap<(u64, JobId), Submitted>,
     /// The host is shutting down: nothing new is sent.
     closing: bool,
     /// An ownership decision changed the usage log since the budget resources were refreshed.
     reconciled: bool,
+}
+
+impl Shared {
+    /// What a save made now writes: the jobs as last saved, and every staged one.
+    fn saved(&self) -> Vec<Submitted> {
+        self.submitted.iter().chain(self.staging.values()).cloned().collect()
+    }
 }
 
 impl RunHost {
@@ -445,10 +458,21 @@ impl RunHost {
             .chain(self.runs.iter().flat_map(|active| active.journal.values()))
             .cloned()
             .collect();
+        let handled = submitted.len();
+        // A staged job that got its handle is saved by its handle, and its staged copy dropped
+        // only once that is on disk: a save in between still has it staged.
+        let followed: Vec<(u64, JobId)> = self.runs.iter().flat_map(|active| active.journal.keys().map(|job| (active.seq, *job))).collect();
+        let staged = shared.staging.iter().filter(|(at, _)| !followed.contains(at)).map(|(_, entry)| entry.clone());
+        let submitted = submitted.into_iter().chain(staged).collect();
         let journal = Journal { version: JOURNAL_VERSION, usage, submitted };
         match store.save(&journal) {
             Ok(()) => {
-                shared.submitted = journal.submitted;
+                let mut submitted = journal.submitted;
+                submitted.truncate(handled);
+                shared.submitted = submitted;
+                for at in &followed {
+                    shared.staging.remove(at);
+                }
                 self.saved_log = Some(journal.usage);
                 self.journal_changed = false;
                 self.save_failed = None;
@@ -481,8 +505,34 @@ impl RunHost {
                 return Ok(());
             }
             let Some(store) = &shared.store else { return Ok(()) };
-            let journal = Journal { version: JOURNAL_VERSION, usage: lock(&log).clone(), submitted: shared.submitted.clone() };
+            let journal = Journal { version: JOURNAL_VERSION, usage: lock(&log).clone(), submitted: shared.saved() };
             store.save(&journal).map_err(|error| format!("it wasn't sent, because its charge couldn't be saved: {}", error.message))
+        })
+    }
+
+    /// Run `seq`'s stage hook (#664): saves a model job with the request its adapter staged,
+    /// before the request is sent, so a restart sends the same bytes again under its key.
+    fn stage(&self, seq: u64, templates: &Arc<Mutex<BTreeMap<JobId, Submitted>>>) -> Arc<Stage> {
+        let shared = Arc::clone(&self.journal);
+        let log = Arc::clone(&self.budget.log);
+        let templates = Arc::clone(templates);
+        Arc::new(move |job, sent: Sent<'_>, staged: &StagedSubmit| {
+            let Some(template) = lock(&templates).get(&job).cloned() else {
+                return Err("it wasn't sent, because NodeCraft couldn't save it first".into());
+            };
+            let mut shared = lock(&shared);
+            if shared.closing {
+                return Err("NodeCraft was quitting, so it wasn't sent".into());
+            }
+            let entry = Submitted { key: sent.base.to_owned(), generation: sent.generation, staged: Some(staged.clone()), ..template };
+            shared.staging.insert((seq, job), entry);
+            let Some(store) = &shared.store else { return Ok(()) };
+            let journal = Journal { version: JOURNAL_VERSION, usage: lock(&log).clone(), submitted: shared.saved() };
+            if let Err(error) = store.save(&journal) {
+                shared.staging.remove(&(seq, job));
+                return Err(format!("it wasn't sent, because it couldn't be saved first: {}", error.message));
+            }
+            Ok(())
         })
     }
 
@@ -657,7 +707,9 @@ impl RunHost {
             !ended
         });
         lock(&self.inbox).running = self.runs.len();
-        for ended in self.resumes.absorb(session, &self.budget, &self.results, &mut notices) {
+        let (resumed, handled) = self.resumes.absorb(session, &self.budget, &self.results, &mut notices);
+        journal_changed |= handled;
+        for ended in resumed {
             settled = true;
             journal_changed = true;
             match ended {
@@ -711,12 +763,14 @@ impl RunHost {
         .with_budget(self.budget.clone())
         .with_write_ahead(self.write_ahead())
         .with_kept_handles(Arc::clone(&self.kept_handles));
+        let seq = self.next_run;
+        self.next_run = self.next_run.saturating_add(1);
+        let templates: Arc<Mutex<BTreeMap<JobId, Submitted>>> = Arc::default();
+        let provider = provider.with_stage(self.stage(seq, &templates));
         let actions = Arc::new(LocalActions::new(session.assets().clone()).with_video_tools(self.video_tools.clone()));
         let sources = SourceRunner::default().with_actions(actions.clone());
         let runner = Arc::new(Either { provider: Arc::new(provider), sources, local: Mutex::default() });
         let (driver, handle) = driver(Scheduler::new(Default::default()));
-        let seq = self.next_run;
-        self.next_run = self.next_run.saturating_add(1);
         let mut active = Active {
             seq,
             canvas,
@@ -729,7 +783,8 @@ impl RunHost {
             live: BTreeMap::new(),
             cancelled: false,
             jobs: RunJobs::default(),
-            templates: BTreeMap::new(),
+            templates,
+            shared: Arc::clone(&self.journal),
             journal: BTreeMap::new(),
             awaiting: BTreeMap::new(),
             journal_changed: false,
@@ -947,8 +1002,9 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
                 routes: outputs.clone(),
                 recipe: active.run.resume_recipe(session.kinds(), spec.id),
                 launches: 0,
+                staged: None,
             };
-            active.templates.insert(spec.id, template);
+            lock(&active.templates).insert(spec.id, template);
             active.runner.provider.register(spec.id, queued);
             active.provider_jobs.insert(spec.id);
         }
@@ -1076,8 +1132,10 @@ fn absorb(
 fn note_submitted(active: &mut Active) {
     let submitted = std::mem::take(&mut lock(&active.mailbox).submitted);
     for (job, key, generation, handle) in submitted {
-        let Some(template) = active.templates.get(&job) else { continue };
-        active.journal.insert(job, Submitted { key, generation, handle, ..template.clone() });
+        let Some(template) = lock(&active.templates).get(&job).cloned() else { continue };
+        // Followed by its handle from here on, not sent again; its staged copy goes once the
+        // handle is saved.
+        active.journal.insert(job, Submitted { key, generation, handle, ..template });
         active.journal_changed = true;
     }
 }
@@ -1107,7 +1165,8 @@ fn unaccounted(active: &Active, job: JobId, budget: &JobBudget) -> Option<Result
 /// it may have been billed, released when it provably wasn't); returns whether it was one.
 fn finish(active: &mut Active, job: JobId) -> bool {
     active.live.remove(&job);
-    active.templates.remove(&job);
+    lock(&active.templates).remove(&job);
+    active.journal_changed |= lock(&active.shared).staging.remove(&(active.seq, job)).is_some();
     active.journal_changed |= active.journal.remove(&job).is_some();
     lock(&active.runner.local).remove(&job);
     let provider = active.provider_jobs.contains(&job);
@@ -1155,7 +1214,7 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
     let Some(JobSpec::Generate { node: step, outputs: routes, .. }) = active.run.work(job) else { return Err("the job is not a model call".into()) };
     let step = *step;
     let converted = convert(session, &active.run, job, routes, &delivery.completed);
-    let Some(template) = active.templates.get(&job) else { return converted.map(|outputs| (outputs, delivery.completed.usage.billable_units)) };
+    let Some(template) = lock(&active.templates).get(&job).cloned() else { return converted.map(|outputs| (outputs, delivery.completed.usage.billable_units)) };
     let kept = |reason: String, completed: Completed| held::HeldResult {
         project: template.project,
         canvas: template.canvas,

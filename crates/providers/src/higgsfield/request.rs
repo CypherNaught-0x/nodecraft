@@ -144,15 +144,13 @@ fn edits(model: &str) -> bool {
 fn edit_images(model: &str) -> usize {
     if model == RESTYLE { RESTYLE_IMAGES } else { EDIT_IMAGES }
 }
+/// The endpoint of a model this version supports.
+pub(super) fn model(id: &str) -> Option<&'static str> {
+    [SOUL, KLING_I2V, MOTION_TRANSFER, OBJECT_SWAP, RESTYLE].into_iter().find(|model| *model == id)
+}
+
 pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, ProviderError> {
-    let model = match job.model.as_str() {
-        SOUL => SOUL,
-        KLING_I2V => KLING_I2V,
-        MOTION_TRANSFER => MOTION_TRANSFER,
-        OBJECT_SWAP => OBJECT_SWAP,
-        RESTYLE => RESTYLE,
-        _ => return Err(invalid("choose a Higgsfield model this version supports")),
-    };
+    let model = model(&job.model).ok_or_else(|| invalid("choose a Higgsfield model this version supports"))?;
     let most = if edits(model) { edit_images(model) + 2 } else { 3 };
     if job.inputs.len() > most || job.params.len() > 8 {
         return Err(if edits(model) {

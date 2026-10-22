@@ -28,6 +28,8 @@ pub struct SubmitContext {
     state: Arc<Mutex<Operation>>,
     /// Text streamed so far and not yet reported, when the runner asked for it (#504).
     text: Option<Mutex<Streamed>>,
+    /// Where a paid request is saved before it is sent, when the runner keeps them (#664).
+    stager: Option<Arc<crate::Stager>>,
 }
 
 /// Most bytes of streamed text one submit reports; the rest of a longer answer arrives only with
@@ -91,11 +93,26 @@ pub(crate) struct SubmitNotAccepted;
 
 impl SubmitContext {
     pub(crate) fn new() -> Self {
-        Self { state: Arc::default(), text: None }
+        Self { state: Arc::default(), text: None, stager: None }
     }
     /// A context that collects a text answer as it streams, for [`Self::take_text`].
     pub(crate) fn streaming_text() -> Self {
-        Self { state: Arc::default(), text: Some(Mutex::default()) }
+        Self { state: Arc::default(), text: Some(Mutex::default()), stager: None }
+    }
+    /// Saves staged requests with `stager` (see [`Self::stage`]).
+    pub(crate) fn with_stager(mut self, stager: Option<Arc<crate::Stager>>) -> Self {
+        self.stager = stager;
+        self
+    }
+    /// Saves the paid request about to be sent, before [`Self::paid`], so it can be sent again
+    /// unchanged after a restart. Without a stager nothing is saved. An error means it couldn't
+    /// be saved: the adapter must return it without sending anything.
+    pub(crate) fn stage(&self, staged: &crate::StagedSubmit) -> Result<(), ProviderError> {
+        let Some(stager) = &self.stager else { return Ok(()) };
+        if staged.body.len() > crate::MAX_STAGED_BODY {
+            return Err(ProviderError::new(crate::ErrorKind::UnsupportedInput, "the request is too large to save before sending it, so it wasn't sent"));
+        }
+        stager(staged).map_err(|reason| ProviderError::new(crate::ErrorKind::UnsupportedInput, reason))
     }
     /// Whether the runner wants text as it streams.
     pub(crate) fn wants_text(&self) -> bool {
