@@ -1168,9 +1168,10 @@ Six catalog models share it, one per model or endpoint:
 | `elevenlabs.voice-changer` | `POST /v1/speech-to-speech/{voice}` (multipart) | one recording | by usage (0.12 USD per minute of input) |
 
 Prices are from the [API pricing page](https://elevenlabs.io/pricing/api), checked 2026-10-21.
-Speech is priced per character, so a speech run has no quote until the text is known: the catalog
-prices it per 1,000 characters with no count, like token-priced chat, and the result records the
-characters sent as its billable units. Sound effects are 0.12 USD per minute of sound, so the
+Speech is priced per 1,000 characters. Admission counts the known prompt's Unicode characters
+after trimming it, just as the adapter does; a prompt made earlier in the same run stays
+unpriced until it is known. A fanned step reserves the most expensive prompt for each job.
+The result records the characters sent as its billable units. Sound effects are 0.12 USD per minute of sound, so the
 quote follows the chosen duration. Eleven v3 takes only three stabilities, 0 (creative), 0.5
 (natural) and 1 (robust); its slider steps between them and any other value is refused before
 sending. Descriptions for sound effects and music are capped locally at 5,000

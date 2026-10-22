@@ -10,6 +10,7 @@ use nodecraft_graph::{Canvas, Node};
 use nodecraft_nodes::{Category, JobSpec, Registry};
 use nodecraft_types::{CanvasId, Error, ErrorKind, Money, NodeId, ParamControl, ParamSchema, ParamValues, Value};
 use std::{collections::BTreeMap, mem::size_of};
+mod characters;
 pub mod measure;
 #[cfg(test)]
 thread_local! {static CANONICAL_COPIES:std::cell::Cell<usize>=const{std::cell::Cell::new(0)};}
@@ -450,6 +451,7 @@ fn document_pages(step: &crate::planner::Step, document: &nodecraft_types::Docum
 fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, Error> {
     quote_bound(plan, selected)?;
     let mut result = Quote::default();
+    let mut text_bytes = crate::planner::MAX_PLAN_INPUT_BYTES;
     for step in &plan.steps {
         let mut total: Option<Money> = None;
         let mut reason = None;
@@ -480,7 +482,11 @@ fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, E
             // The PDFs' prompt tokens, read by the mode this step runs.
             let document = model.mode(step.mode.as_str()).and_then(|mode| mode.document.as_ref());
             let input_tokens = document.map_or(0, |document| document.tokens(document_pages(step, document)));
-            match model.quote_inputs(&s.source.params, source_ms, input_tokens) {
+            let price = model.quote_inputs(&s.source.params, source_ms, input_tokens).and_then(|price| match price {
+                Some(_) => Ok(price),
+                None => characters::quote(model, step, &mut text_bytes),
+            });
+            match price {
                 Ok(Some(m)) => match total {
                     Some(t) => match t.checked_add(m) {
                         Ok(sum) => total = Some(sum),

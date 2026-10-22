@@ -6,6 +6,7 @@ use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, Param
 use nodecraft_types::{Currency, EdgeId, GenerationId, Modality, PortType, ProjectId, Unsigned, Value as V};
 use std::sync::Mutex;
 
+mod character673;
 mod reasons655;
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);

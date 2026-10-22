@@ -83,8 +83,10 @@ default = { type = "unsigned", value = "1" }
   1 (0 for `thousand_tokens` and `thousand_characters`), with a default or a `default_count`, and
   it must be the only parameter that scales the cost. `thousand_*` prices are per 1000 counted
   units; trainers use `thousand_steps`, counted from their steps setting. Prices are decimal strings with a currency,
-  at most six decimals, and quotes round up. Token- and character-priced models without a
-  `count` are quoted at run time.
+  at most six decimals, and quotes round up. Token-priced models without a `count` are quoted
+  at run time. Character-priced models without a `count` or `default_count` are priced from
+  the known jobs' text inputs at run admission; text made by an upstream step stays unknown.
+  A fanned step reserves its most expensive job per item, so its total is an upper bound.
   `per_source_second` (`param`, `prices`) prices a source video edit by each started second of
   the source the provider uses (after `uses_ms`). `param` is a `choice` setting with a default,
   and `prices` maps each of its options, and only those, to a price in one currency:
