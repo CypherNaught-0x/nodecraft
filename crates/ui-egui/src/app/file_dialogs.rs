@@ -215,14 +215,6 @@ impl NodeCraftApp {
             Err(error) => self.notice = Some(error),
         }
     }
-    fn after_file_open(&mut self) {
-        if let Some(canvas) = super::sheet_view::home_canvas(self.session.document()) {
-            self.canvas = canvas;
-        }
-        self.selection.clear();
-        self.editors.clear();
-        self.centred = false;
-    }
     fn choose_open(&mut self, path: PathBuf, stamp: Stamp) {
         if let Err(error) = admitted(&path, false) {
             self.notice = Some(error);

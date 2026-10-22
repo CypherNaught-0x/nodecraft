@@ -384,6 +384,8 @@ mod technique_menu;
 mod timeline_editor;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod updates;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod web_files;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -409,6 +411,9 @@ pub struct NodeCraftApp {
     store: Option<nodecraft_engine::settings::SettingsStore>,
     #[cfg(not(target_arch = "wasm32"))]
     files: file_dialogs::FileDialogs,
+    /// Project files in the browser (#118).
+    #[cfg(any(test, target_arch = "wasm32"))]
+    web_files: web_files::WebFiles,
     pub viewport: Rect,
     pub notice: Option<String>,
     stale_snapshot: Option<stale::StaleSnapshot>,
@@ -768,7 +773,9 @@ impl NodeCraftApp {
             log::warn!("API keys unavailable: {e}");
             Vec::new()
         });
-        let app = Self::in_memory(services, Box::new(nodecraft_engine::library::MemoryLibrary::default()))?;
+        let app = Self::with_web_files(services, web_files::WebFiles::browser())?;
+        // The browser keeps no recovery journal: leaving with unsaved work asks first.
+        web_files::guard_unload(Rc::clone(&app.web_files.unsaved));
         Ok((app, accounts))
     }
 
@@ -812,10 +819,29 @@ impl NodeCraftApp {
         Self::from_session(session, canvas)
     }
 
-    /// The browser build has no project files yet (#99).
+    /// ⌘S, ⇧⌘S and ⌘O in the browser (#118).
     #[cfg(target_arch = "wasm32")]
-    fn file_shortcut(&mut self, _ctx: &egui::Context, _save: bool, _save_as: bool) -> Option<String> {
-        Some("Saving isn't available in the browser yet.".into())
+    fn file_shortcut(&mut self, ctx: &egui::Context, save: bool, save_as: bool) -> Option<String> {
+        let id = if save_as {
+            "file.save_as"
+        } else if save {
+            "file.save"
+        } else {
+            "file.open"
+        };
+        self.notice = None;
+        self.web_file(id, ctx);
+        self.notice.take()
+    }
+
+    /// After a project replaced the document: its first canvas, nothing selected or edited.
+    fn after_file_open(&mut self) {
+        if let Some(canvas) = sheet_view::home_canvas(self.session.document()) {
+            self.canvas = canvas;
+        }
+        self.selection.clear();
+        self.editors.clear();
+        self.centred = false;
     }
 
     /// The project a new window starts with: one canvas holding a sample Text node.
@@ -899,6 +925,8 @@ impl NodeCraftApp {
             store: None,
             #[cfg(not(target_arch = "wasm32"))]
             files: Default::default(),
+            #[cfg(any(test, target_arch = "wasm32"))]
+            web_files: web_files::WebFiles::detached(),
             viewport: Rect::NOTHING,
             notice: None,
             stale_snapshot: None,
@@ -1053,7 +1081,7 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         let file_owns_input = self.file_dialog_frame(ui.ctx());
         #[cfg(target_arch = "wasm32")]
-        let file_owns_input = false;
+        let file_owns_input = self.web_files_frame(ui.ctx());
         // The grid picked in last frame's menu shows this frame; it goes when the menu closes.
         self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
@@ -2112,7 +2140,11 @@ impl NodeCraftApp {
                         self.dispatch_palette_command(id);
                     }
                     #[cfg(target_arch = "wasm32")]
-                    self.dispatch_palette_command(id);
+                    if matches!(id, "file.open" | "file.save" | "file.save_as") {
+                        self.web_file(id, ui.ctx());
+                    } else {
+                        self.dispatch_palette_command(id);
+                    }
                 }
             }
         }
@@ -2136,6 +2168,8 @@ impl NodeCraftApp {
         self.keys_button(ui, viewport);
         #[cfg(not(target_arch = "wasm32"))]
         self.file_button(ui, t);
+        #[cfg(target_arch = "wasm32")]
+        self.web_file_button(ui, t);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2543,7 +2577,7 @@ impl NodeCraftApp {
             .registry()
             .specs()
             .filter(|spec| {
-                #[cfg(not(target_arch = "wasm32"))]
+                // They pick their file when chosen.
                 if matches!(spec.id, "file.open" | "file.save" | "file.save_as") {
                     return self.session.file_status().available;
                 }
