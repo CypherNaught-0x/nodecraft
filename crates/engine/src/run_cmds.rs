@@ -274,9 +274,9 @@ fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -
 // Fixed UUID/static reason records only. Bound before each retained format, including
 // separators when reused by run.start. Native hook strings never enter this report.
 const BLOCKED_BYTES: usize = 16 * 1024;
-/// Oversized-media reasons listed in a quote: each is at most about 310 bytes (a role is at most
-/// 128), so these fit in [`BLOCKED_BYTES`].
-const MAX_OVERSIZED_LISTED: usize = 50;
+/// Oversized-media and reshaped-mask reasons listed in a quote, together: each is at most about
+/// 310 bytes (a role is at most 128), so these fit in [`BLOCKED_BYTES`].
+const MAX_RUN_BLOCKS_LISTED: usize = 50;
 fn blocked_reasons(blockers: &[nodecraft_exec::planner::Blocker]) -> Vec<String> {
     use nodecraft_exec::planner::{Reason, TargetReason};
     let mut bytes = 0usize;
@@ -353,10 +353,17 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     };
     let canvas = &*expanded.canvas;
     crate::generation_catalog::validate_plan(resources, kinds, canvas, run_plan.steps.iter().map(|s| s.node))?;
-    // A job that couldn't send its media would fail after the cost was accepted (#675).
+    // A job that couldn't send its media would fail after the cost was accepted (#675); a mask
+    // over an image that changed shape would stretch its strokes (#546): ask first.
     let oversized = media_size::oversized(&run_plan, c.assets);
-    if !oversized.is_empty() {
-        let reasons: Vec<String> = oversized.iter().take(MAX_OVERSIZED_LISTED).map(|o| o.reason(expanded.owner(o.node))).collect();
+    let reshaped = crate::mask_cmds::binding::reshaped(canvas, run_plan.steps.iter().map(|s| s.node));
+    if !oversized.is_empty() || !reshaped.is_empty() {
+        let reasons: Vec<String> = oversized
+            .iter()
+            .map(|o| o.reason(expanded.owner(o.node)))
+            .chain(reshaped.iter().map(|id| crate::mask_cmds::binding::reason(expanded.owner(*id))))
+            .take(MAX_RUN_BLOCKS_LISTED)
+            .collect();
         let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": []});
         return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
     }
@@ -597,6 +604,9 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     crate::generation_catalog::validate_plan(c.resources, c.kinds, &expanded.canvas, plan.steps.iter().map(|s| s.node))?;
     if let Some(oversized) = media_size::oversized(&plan, c.assets).first() {
         return Err(invalid(oversized.reason(expanded.owner(oversized.node))));
+    }
+    if let Some(mask) = crate::mask_cmds::binding::reshaped(&expanded.canvas, plan.steps.iter().map(|s| s.node)).first() {
+        return Err(invalid(crate::mask_cmds::binding::reason(expanded.owner(*mask))));
     }
     #[cfg(test)]
     PREPARED_COPIES.with(|n| n.set(n.get() + 1));

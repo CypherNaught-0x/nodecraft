@@ -41,6 +41,32 @@ pub struct Stroke {
 #[serde(deny_unknown_fields)]
 pub struct Strokes {
     pub strokes: Vec<Stroke>,
+    /// The image the strokes were painted over (#546); absent in projects saved before, and
+    /// while nothing is painted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub over: Option<Painted>,
+}
+
+/// The image a mask was painted over: its content hash (64 lowercase hex digits) and size in
+/// pixels, before any expansion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Painted {
+    pub hash: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Aspect ratios closer than this (relative) count as the same shape, so rounding to whole
+/// pixels never reads as a reshape.
+const SAME_SHAPE: f64 = 0.01;
+
+impl Painted {
+    /// Whether a `width` × `height` image has a different aspect ratio from this one.
+    pub fn reshaped(&self, width: u32, height: u32) -> bool {
+        let (a, b) = (f64::from(self.width) * f64::from(height), f64::from(width) * f64::from(self.height));
+        (a - b).abs() > SAME_SHAPE * a.max(b)
+    }
 }
 
 /// How a mask renders beyond its strokes.
@@ -80,6 +106,11 @@ impl Strokes {
 
     /// Every bound a stored mask keeps.
     pub fn check(&self) -> Result<(), ImageError> {
+        if let Some(over) = &self.over
+            && (over.hash.len() != 64 || !over.hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) || over.width == 0 || over.height == 0)
+        {
+            return Err(parameter("mask.over"));
+        }
         if self.strokes.len() > MAX_STROKES {
             return Err(parameter("mask.strokes"));
         }

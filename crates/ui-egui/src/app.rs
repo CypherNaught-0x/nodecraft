@@ -343,6 +343,7 @@ mod layout;
 mod library_view;
 #[cfg(not(target_arch = "wasm32"))]
 mod live;
+mod mask_badges;
 mod mask_editor;
 mod mentions;
 mod mesh_capture;
@@ -408,6 +409,7 @@ pub struct NodeCraftApp {
     stale_snapshot: Option<stale::StaleSnapshot>,
     /// Which cards show a stale badge, as of a revision (#211).
     stale_badges: Option<stale_badges::StaleBadges>,
+    mask_badges: Option<mask_badges::MaskBadges>,
     #[cfg(not(target_arch = "wasm32"))]
     drop_acquisition: drop::Acquisition,
     /// A copied image being read off the UI thread (#319).
@@ -850,6 +852,7 @@ impl NodeCraftApp {
             notice: None,
             stale_snapshot: None,
             stale_badges: None,
+            mask_badges: None,
             #[cfg(not(target_arch = "wasm32"))]
             drop_acquisition: drop::Acquisition::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1316,6 +1319,7 @@ impl NodeCraftApp {
         let mut tag_action = None;
         let mut refresh = None;
         self.refresh_stale_badges();
+        self.refresh_mask_badges();
         let tag_menu_allowed = !self.text_focused
             && !canvas::text_input_focused(ui.ctx())
             && self.drag.is_none()
@@ -1470,7 +1474,13 @@ impl NodeCraftApp {
                     let running = self.runs.as_ref().is_some_and(|runs| runs.is_running(self.canvas, node.id));
                     #[cfg(target_arch = "wasm32")]
                     let running = false;
-                    if !running
+                    // A mask whose image drifted shows that instead: refreshing it would paint the
+                    // old strokes onto the new image.
+                    if let Some(drift) = self.mask_badges.as_ref().and_then(|badges| badges.masks.get(&node.id).copied()) {
+                        if mask_badges::badge(ui, &tag_painter, &self.view, viewport, r.rect, node.id, drift, t) && !canvas_blocks {
+                            mask_request = Some((node.id, false));
+                        }
+                    } else if !running
                         && self.stale_badges.as_ref().is_some_and(|badges| badges.nodes.contains(&node.id))
                         && stale_badges::badge(ui, &tag_painter, &self.view, viewport, r.rect, node.id, t)
                         && !canvas_blocks

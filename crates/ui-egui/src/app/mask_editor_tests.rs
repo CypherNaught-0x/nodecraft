@@ -217,3 +217,68 @@ fn typing_a_margin_keeps_the_painted_stroke_over_the_same_pixels() {
     assert_eq!(nodecraft_engine::mask_cmds::margins(&of_kind(&h, "image.expand").unwrap()).right, 0);
     assert_eq!(strokes(&h).strokes[0].points, before);
 }
+
+/// Imports another image of `w`×`h` and wires it under the Expand card in place of the first.
+fn swap_image(h: &mut Harness<'static, NodeCraftApp>, w: u32, height: u32) {
+    let other = NodeId::from_bytes([42; 16]);
+    let png = nodecraft_media::encode_png(w, height, &vec![60; (w * height * 4) as usize], &Default::default()).unwrap();
+    let canvas = h.state().canvas;
+    let at = nodecraft_graph::Position { x: 200.0, y: 400.0 };
+    import_files(&mut h.state_mut().session, canvas, at, 300.0, &[Incoming { name: "other.png", bytes: &png }], &[other]).unwrap();
+    let expand = of_kind(h, "image.expand").unwrap().id;
+    let document = h.state().session.document();
+    let old = document.canvases().get(&canvas).unwrap().edges().values().find(|e| e.to.node == expand && e.to.port == "image").unwrap().id;
+    let wire = json!({"id": EdgeId::from_bytes([43; 16]), "from": {"node": other, "port": "out"}, "to": {"node": expand, "port": "image"}, "order": 0});
+    h.state_mut().session.dispatch("edge.rewire", &json!({"canvas": canvas, "edge": wire, "replace": [old]})).unwrap();
+    h.run_steps(3);
+}
+
+#[test]
+fn a_reshaped_image_badges_the_mask_and_the_editor_fits_the_strokes() {
+    let mut h = opened();
+    stroke(&mut h, Vec2::new(0.2, 0.5), Vec2::new(0.8, 0.5));
+    assert_eq!(strokes(&h).over.map(|o| (o.width, o.height)), Some((16, 12)), "painting records the image");
+    h.get_by_label("Close").click();
+    h.run_steps(3);
+    assert!(h.state().mask_editor.is_none());
+
+    // 16×12 → 32×12: the strokes would stretch, so the card says so and opens the editor.
+    swap_image(&mut h, 32, 12);
+    let mask = of_kind(&h, nodecraft_nodes::mask::ID).unwrap().id;
+    let world = {
+        let app = h.state();
+        let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&mask).unwrap();
+        let descriptor = app.session.kinds().get(&node.kind).ok().map(|k| k.descriptor());
+        card::world_rect(node, descriptor, app.theme.tokens())
+    };
+    let app = h.state_mut();
+    app.view.pan = app.viewport.center() - app.viewport.min - world.center().to_vec2() * app.view.zoom;
+    h.run_steps(3);
+    h.get_by_label("Mask image reshaped: keep or fit the strokes").click();
+    h.run_steps(3);
+    assert_eq!(h.state().mask_editor.as_ref().map(|e| e.mask), Some(mask));
+    h.get_by_label("Fit to new image").click();
+    h.run_steps(3);
+    let fitted = strokes(&h);
+    assert_eq!(fitted.over.map(|o| (o.width, o.height)), Some((32, 12)), "{:?}", h.state().notice);
+    // The old image sits in the middle half of the new one.
+    let x = fitted.strokes[0].points[0][0];
+    assert!((x - (0.25 + 0.2 * 0.5)).abs() < 0.05, "{x}");
+    assert!(h.query_by_label("Fit to new image").is_none(), "the banner goes once the strokes are fitted");
+    assert!(h.query_by_label("Mask image reshaped: keep or fit the strokes").is_none());
+}
+
+#[test]
+fn a_new_image_of_the_same_shape_offers_to_keep_the_strokes() {
+    let mut h = opened();
+    stroke(&mut h, Vec2::new(0.2, 0.5), Vec2::new(0.8, 0.5));
+    let before = strokes(&h).strokes;
+    swap_image(&mut h, 32, 24);
+    assert!(h.query_by_label("Fit to new image").is_none(), "same shape: nothing to fit");
+    h.get_by_label("Keep strokes").click();
+    h.run_steps(3);
+    let kept = strokes(&h);
+    assert_eq!(kept.strokes, before);
+    assert_eq!(kept.over.map(|o| (o.width, o.height)), Some((32, 24)));
+    assert!(h.query_by_label("Keep strokes").is_none());
+}
