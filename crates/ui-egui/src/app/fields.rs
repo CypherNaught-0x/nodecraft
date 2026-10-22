@@ -274,7 +274,8 @@ impl NodeCraftApp {
         let sense = if blocked || typing { Sense::hover() } else { Sense::click_and_drag() };
         // Shift-drag on a header or a resize corner draws a marquee, as it does everywhere else.
         let header_sense = if sense.senses_drag() && ui.input(|i| i.modifiers.shift) { Sense::click() } else { sense };
-        self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
+        // No geometry refresh here: Fit to members falls back to a card's stored position, and
+        // a second full refresh in a frame that took remote edits blows the frame budget.
         let membership = self.membership();
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return pan };
         let painter = ui.painter_at(viewport);
