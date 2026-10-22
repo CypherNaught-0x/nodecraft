@@ -214,6 +214,44 @@ pub struct AudioMetadata {
     /// 1..=8.
     pub channels: u32,
 }
+/// The most slices a [`Waveform`] may have.
+pub const MAX_WAVEFORM_BUCKETS: usize = 4096;
+/// The longest sound a [`Waveform`] is made for: a few hours.
+pub const MAX_WAVEFORM_US: u64 = 4 * 3600 * 1_000_000;
+/// The rate [`PcmChunk`]s are decoded at, in frames per second.
+pub const PCM_RATE: u32 = 48_000;
+/// The channels of a [`PcmChunk`]: stereo, interleaved left then right.
+pub const PCM_CHANNELS: u16 = 2;
+/// The longest [`PcmChunk`] one request decodes.
+pub const MAX_PCM_US: u64 = 4_000_000;
+
+/// A sound's loudness at a glance: the largest absolute sample of each of its equal slices,
+/// on a scale from silence (0) to full scale (255).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Waveform {
+    pub peaks: Vec<u8>,
+}
+
+/// Interleaved stereo signed 16-bit samples at [`PCM_RATE`], from `start_us` into a sound.
+#[derive(Clone, Debug)]
+pub struct PcmChunk {
+    pub start_us: u64,
+    samples: Arc<[i16]>,
+}
+impl PcmChunk {
+    pub(crate) fn new(start_us: u64, samples: Arc<[i16]>) -> Self {
+        Self { start_us, samples }
+    }
+    /// Left, right, left, right, …: always whole frames.
+    pub fn samples(&self) -> &[i16] {
+        &self.samples
+    }
+    /// How many stereo frames it holds.
+    pub fn frames(&self) -> usize {
+        self.samples.len() / usize::from(PCM_CHANNELS)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameRequest {
     pub(crate) time_us: u64,

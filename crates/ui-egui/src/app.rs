@@ -464,6 +464,8 @@ pub struct NodeCraftApp {
     previews: crate::preview::Previews,
     /// Video posters and players on cards (#105).
     videos: crate::video::Videos,
+    /// Waveforms and the one sound playing, on cards (#106).
+    audios: crate::audio::Audios,
     /// 3D models on cards (#111): decoded models, each card's camera, and whether a renderer is
     /// installed to draw them.
     meshes: crate::mesh_view::Meshes,
@@ -729,6 +731,7 @@ impl NodeCraftApp {
         self.canvas_prefs = settings.canvas.clone();
         self.key_accounts = settings.keys.clone();
         self.videos.configure(settings.media.tools());
+        self.audios.configure(settings.media.tools());
         #[cfg(not(target_arch = "wasm32"))]
         {
             // Timelines render with the same tools the cards play with.
@@ -972,6 +975,7 @@ impl NodeCraftApp {
             title: String::new(),
             previews: crate::preview::Previews::default(),
             videos: crate::video::Videos::default(),
+            audios: crate::audio::Audios::default(),
             meshes: crate::mesh_view::Meshes::default(),
             mesh_views: std::collections::HashMap::new(),
             mesh_gpu: false,
@@ -1104,6 +1108,7 @@ impl NodeCraftApp {
         self.previews.poll(ui.ctx());
         self.poll_export(ui.ctx());
         self.videos.poll(ui.ctx());
+        self.audios.poll(ui.ctx());
         self.meshes.poll();
         if let Some(render) = &self.mesh_render {
             crate::mesh_view::prune(render, ui.ctx().cumulative_frame_nr());
@@ -1452,6 +1457,7 @@ impl NodeCraftApp {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
             self.videos.retain(|id| canvas.nodes().contains_key(&id));
+            self.audios.retain(|id| canvas.nodes().contains_key(&id));
             self.mesh_views.retain(|id, _| canvas.nodes().contains_key(id));
             self.schemas.retain(|id| canvas.nodes().contains_key(id));
             self.selection.retain_existing(canvas);
@@ -1517,6 +1523,15 @@ impl NodeCraftApp {
                         let assets = self.session.assets();
                         self.videos.view(ui.ctx(), node.id, asset, edge, || assets.preview_read(asset))
                     });
+                // And sounds; which card plays, and where, is view state too (#106).
+                let audio = (self.view.zoom >= card::BODY_MIN_ZOOM)
+                    .then(|| crate::audio::audio_of(node))
+                    .flatten()
+                    .filter(|_| images.0.is_empty() && video.is_none())
+                    .map(|asset| {
+                        let assets = self.session.assets();
+                        self.audios.view(ui.ctx(), node.id, asset, || assets.preview_read(asset))
+                    });
                 let mesh = match crate::mesh_view::mesh_of(node) {
                     Some(asset) if self.view.zoom >= card::BODY_MIN_ZOOM => {
                         let assets = self.session.assets();
@@ -1561,6 +1576,7 @@ impl NodeCraftApp {
                         mention_blocked: mention_blocked.get(&node.id).map(String::as_str),
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
                         video,
+                        audio,
                         mesh,
                     },
                     editor,
@@ -2066,6 +2082,10 @@ impl NodeCraftApp {
                 Intent::Model => continue,
                 Intent::Video(intent) => {
                     self.videos.act(ui.ctx(), id, intent);
+                    continue;
+                }
+                Intent::Audio(intent) => {
+                    self.audios.act(ui.ctx(), id, intent);
                     continue;
                 }
                 Intent::KeepPartial | Intent::DiscardPartial => {
@@ -2820,6 +2840,7 @@ impl eframe::App for NodeCraftApp {
         self.show(ui);
     }
     fn on_exit(&mut self) {
+        self.audios.stop();
         #[cfg(not(target_arch = "wasm32"))]
         self.close_storage();
         #[cfg(not(target_arch = "wasm32"))]
@@ -2850,6 +2871,8 @@ impl eframe::App for NodeCraftApp {
 mod action_tests;
 #[cfg(test)]
 mod app_mode_tests;
+#[cfg(test)]
+mod audio_tests;
 #[cfg(test)]
 mod deck_editor_tests;
 #[cfg(test)]

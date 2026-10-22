@@ -33,6 +33,7 @@ same structure with the values inverted.
 | `mention_fill` | `#23362d` | `#d5eee1` | behind an `@` mention chip in a prompt being edited (text ≥ 7:1 against it) |
 | `wire_text` / `_image` / `_video` | `#d9b45a` / `#5aa7e0` / `#c678dd` | `#9a7414` / `#1f6fb0` / `#8a3fb0` | noodles and port rings by modality |
 | `wire_audio` / `_mesh` / `_document` / `_style` | `#e07a5a` / `#8fc35a` / `#a0a0a8` / `#e06fa8` | `#b0482a` / `#4f8a1f` / `#6b6b74` / `#a82f6c` | (a test keeps each ≥ 3:1 against canvas and cards, and all distinct) |
+| `waveform` | `#5c5c66` | `#a8a8b2` | a sound card's waveform still to play (≥ 2:1 against the canvas); what has played is `wire_audio` |
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide, at least 220 high, with 64 points per

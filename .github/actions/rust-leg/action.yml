@@ -41,13 +41,13 @@ runs:
         PLATFORM: ${{ inputs.platform }}
       run: printf 'once=%s\n' "$([ "$PLATFORM" = linux ] && echo true || echo false)" >>"$GITHUB_OUTPUT"
 
-    - name: Linux system dependencies (egui/winit)
+    - name: Linux system dependencies (egui/winit, and ALSA for sound on cards)
       if: steps.plat.outputs.once == 'true'
       shell: bash
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
-          libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+          libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libgl1-mesa-dev libasound2-dev
 
     - name: toolchain
       shell: bash

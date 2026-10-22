@@ -2,7 +2,7 @@ use super::quota::{Budget, Usage};
 use super::*;
 use crate::ContentHash;
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::Path,
@@ -678,6 +678,8 @@ struct Context {
     control: Arc<Control>,
     registry: Arc<Mutex<RecordRegistry>>,
     cache: Arc<Mutex<FrameCache>>,
+    /// The `ffmpeg -h` topics already found present, so sound checks each one once.
+    present: Arc<Mutex<BTreeSet<String>>>,
 }
 impl Context {
     fn open(config: ServiceConfig, closed: Arc<AtomicBool>, deadline: Instant) -> Result<Self> {
@@ -742,6 +744,7 @@ impl Context {
             control,
             registry: Arc::new(Mutex::new(RecordRegistry { records, next: 0 })),
             cache: Arc::new(Mutex::new(cache)),
+            present: Arc::new(Mutex::new(BTreeSet::new())),
         };
         let cancel = Arc::new(AtomicBool::new(false));
         for (tool, arg) in [(ctx.config.tools.ffmpeg.clone(), "-version"), (ctx.config.tools.ffprobe.clone(), "-version")] {
@@ -1329,6 +1332,7 @@ fn composite(rgba: &[u8], rgb: &mut [u8], background: [u8; 3]) -> Result<()> {
 
 mod compose;
 mod extract;
+mod sound;
 #[cfg(test)]
 mod tests;
 

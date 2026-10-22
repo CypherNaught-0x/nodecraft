@@ -64,6 +64,8 @@ pub fn clock(us: u64) -> String {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::Videos;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use native::{Retry, stale};
 #[cfg(target_arch = "wasm32")]
 pub use web::Videos;
 
@@ -243,7 +245,7 @@ mod native {
 
     /// When to try failed work again.
     #[derive(Clone, Copy, Debug, PartialEq)]
-    pub(super) struct Retry {
+    pub(crate) struct Retry {
         at: f64,
         tries: u8,
     }
@@ -251,12 +253,12 @@ mod native {
     impl Retry {
         /// After `error` at `now`, following `previous` tries: when to try again, or `None` to
         /// give up (the error won't pass, or it has been tried enough).
-        pub(super) fn after(previous: Option<Retry>, error: VideoError, now: f64) -> Option<Retry> {
+        pub(crate) fn after(previous: Option<Retry>, error: VideoError, now: f64) -> Option<Retry> {
             let tries = previous.map_or(0, |r| r.tries).saturating_add(1);
             (transient(error) && tries < MAX_TRIES).then(|| Retry { at: now + RETRY_S * f64::from(tries), tries })
         }
 
-        pub(super) fn due(self, now: f64) -> bool {
+        pub(crate) fn due(self, now: f64) -> bool {
             now >= self.at
         }
     }
@@ -267,7 +269,7 @@ mod native {
     }
 
     /// Neither shown this frame nor the last, so it can go.
-    pub(super) fn stale(used: u64, clock: u64) -> bool {
+    pub(crate) fn stale(used: u64, clock: u64) -> bool {
         clock.wrapping_sub(used) > 1
     }
 

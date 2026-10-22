@@ -69,6 +69,8 @@ pub enum Intent {
     DiscardPartial,
     /// Play, pause or scrub the card's video (#105); view state, not an edit.
     Video(crate::video::VideoIntent),
+    /// Play, pause or seek the card's sound (#106); view state, not an edit.
+    Audio(crate::audio::AudioIntent),
 }
 pub struct CardResponse {
     pub response: egui::Response,
@@ -114,8 +116,11 @@ pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
     let count = descriptor.map_or(1, |d| d.params.params.len().min(12));
     let params = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
     // The history strip sits under the parameters and is never squeezed out by them; an image
-    // or video or 3D preview sits above them.
-    let shows = nodecraft_engine::split::image_of(node).is_some() || crate::video::video_of(node).is_some() || crate::mesh_view::mesh_of(node).is_some();
+    // or video or sound or 3D preview sits above them.
+    let shows = nodecraft_engine::split::image_of(node).is_some()
+        || crate::video::video_of(node).is_some()
+        || crate::audio::audio_of(node).is_some()
+        || crate::mesh_view::mesh_of(node).is_some();
     let preview = if shows { t.card_preview_height } else { 0.0 };
     // A text card always has room for its answer, so the card doesn't jump when one starts
     // streaming in (#504).
@@ -157,6 +162,8 @@ pub struct CardView<'a> {
     pub partial: Option<generate::Partial<'a>>,
     /// The node's video and its player, when it has one (#105).
     pub video: Option<crate::video::VideoView>,
+    /// The node's sound and its player, when it has one (#106).
+    pub audio: Option<crate::audio::AudioView>,
     /// The node's 3D model, when it has one (#111).
     pub mesh: Option<crate::mesh_view::CardMesh<'a>>,
 }
@@ -199,6 +206,7 @@ pub fn show(
         mention_blocked,
         partial,
         video,
+        audio,
         mesh,
     } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
@@ -348,6 +356,10 @@ pub fn show(
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
             inner = rest;
             show_video(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), video, &mut intents, t);
+        } else if let Some(audio) = &audio {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            show_audio(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), audio, &mut intents, t);
         } else if let Some(mesh) = mesh {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
             inner = rest;
@@ -559,21 +571,7 @@ fn show_video(ui: &mut egui::Ui, area: Rect, video: &crate::video::VideoView, in
     let mut row = ui.new_child(egui::UiBuilder::new().id_salt("video_controls").max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)));
     row.set_clip_rect(controls.intersect(ui.clip_rect()));
     let name = if *playing { "Pause video" } else { "Play video" };
-    let (square, toggle) = row.allocate_exact_size(Vec2::splat(button), Sense::click());
-    toggle.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
-    // Drawn, not a glyph: the default fonts have no pause sign.
-    let style = row.style().interact(&toggle);
-    row.painter().rect(square, style.corner_radius, style.weak_bg_fill, style.bg_stroke, StrokeKind::Inside);
-    let icon = Rect::from_center_size(square.center(), Vec2::splat(button * 0.4));
-    if *playing {
-        let bar = Vec2::new(icon.width() / 3.0, icon.height());
-        row.painter().rect_filled(Rect::from_min_size(icon.left_top(), bar), 0.0, style.fg_stroke.color);
-        row.painter().rect_filled(Rect::from_min_size(icon.right_top() - Vec2::new(bar.x, 0.0), bar), 0.0, style.fg_stroke.color);
-    } else {
-        let points = vec![icon.left_top(), Pos2::new(icon.right(), icon.center().y), icon.left_bottom()];
-        row.painter().add(egui::Shape::convex_polygon(points, style.fg_stroke.color, Stroke::NONE));
-    }
-    if toggle.on_hover_text(name).clicked() {
+    if play_button(&mut row, *playing, name, button).clicked() {
         intents.push(Intent::Video(VideoIntent::Toggle));
     }
     let time = format!("{} / {}", clock(*position_us), clock(*duration_us));
@@ -587,6 +585,93 @@ fn show_video(ui: &mut egui::Ui, area: Rect, video: &crate::video::VideoView, in
         intents.push(Intent::Video(VideoIntent::Seek((seconds.max(0.0) * 1_000_000.0).min(u64::MAX as f64) as u64)));
     }
     row.label(egui::RichText::new(time).color(t.text_muted));
+}
+
+/// A square play or pause button `size` across, named `name`.
+fn play_button(row: &mut egui::Ui, playing: bool, name: &str, size: f32) -> egui::Response {
+    let (square, toggle) = row.allocate_exact_size(Vec2::splat(size), Sense::click());
+    toggle.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    // Drawn, not a glyph: the default fonts have no pause sign.
+    let style = row.style().interact(&toggle);
+    row.painter().rect(square, style.corner_radius, style.weak_bg_fill, style.bg_stroke, StrokeKind::Inside);
+    let icon = Rect::from_center_size(square.center(), Vec2::splat(size * 0.4));
+    if playing {
+        let bar = Vec2::new(icon.width() / 3.0, icon.height());
+        row.painter().rect_filled(Rect::from_min_size(icon.left_top(), bar), 0.0, style.fg_stroke.color);
+        row.painter().rect_filled(Rect::from_min_size(icon.right_top() - Vec2::new(bar.x, 0.0), bar), 0.0, style.fg_stroke.color);
+    } else {
+        let points = vec![icon.left_top(), Pos2::new(icon.right(), icon.center().y), icon.left_bottom()];
+        row.painter().add(egui::Shape::convex_polygon(points, style.fg_stroke.color, Stroke::NONE));
+    }
+    toggle.on_hover_text(name.to_owned())
+}
+
+/// A card's sound (#106): its waveform over `area`, which a click or a drag seeks, above a row
+/// with play/pause and the time. Without the sound, why not.
+fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, intents: &mut Vec<Intent>, t: &Tokens) {
+    use crate::audio::{AudioIntent, AudioView, time_at};
+    use crate::video::clock;
+    let button = ui.spacing().interact_size.y;
+    let (wave, controls) = area.split_top_bottom_at_y(area.bottom() - button - t.control_gap);
+    let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
+    painter.rect_filled(wave, t.card_radius, t.canvas_bg);
+    let AudioView::Sound { peaks, position_us, duration_us, playing, notice } = audio else {
+        let text = match audio {
+            AudioView::Unavailable(why) => *why,
+            _ => "Loading sound…",
+        };
+        let response = ui.interact(wave, ui.id().with("audio"), Sense::hover());
+        let galley = painter.layout(text.to_owned(), FontId::proportional(t.body_size), t.text_muted, wave.width() - 2.0 * t.card_padding);
+        painter.galley(wave.center() - galley.size() / 2.0, galley, t.text_muted);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+        return;
+    };
+    let (position, duration) = (*position_us, *duration_us);
+    let bars = wave.shrink2(Vec2::new(t.card_padding, t.control_gap));
+    let response = ui.interact(wave, ui.id().with("audio"), Sense::click_and_drag());
+    let seconds = position as f64 / 1_000_000.0;
+    response.widget_info(|| egui::WidgetInfo::slider(true, seconds, format!("Sound, {}", clock(duration))));
+    let moved = response.clicked() || response.drag_started() || (response.dragged() && response.drag_delta().x != 0.0);
+    if let Some(at) = response.interact_pointer_pos().filter(|_| moved) {
+        intents.push(Intent::Audio(AudioIntent::Seek(time_at(at.x, bars.left(), bars.width(), duration))));
+    }
+    let along = if duration == 0 { 0.0 } else { (position as f64 / duration as f64).clamp(0.0, 1.0) as f32 };
+    let playhead = bars.left() + bars.width() * along;
+    match peaks {
+        Some(peaks) if !peaks.is_empty() => {
+            // A bar and a gap every three points, each the loudest of the slices under it.
+            let count = ((bars.width() / 3.0).floor() as usize).max(1);
+            let width = bars.width() / count as f32;
+            for i in 0..count {
+                let from = i * peaks.len() / count;
+                let to = ((i + 1) * peaks.len() / count).max(from + 1);
+                let peak = peaks.get(from..to.min(peaks.len())).and_then(|s| s.iter().max()).copied().unwrap_or(0);
+                let height = (f32::from(peak) / 255.0 * bars.height()).max(1.0);
+                let x = bars.left() + width * i as f32;
+                let bar = Rect::from_center_size(Pos2::new(x + width / 2.0, bars.center().y), Vec2::new((width - 1.0).max(1.0), height));
+                painter.rect_filled(bar, 0.0, if bar.center().x <= playhead { t.wire_audio } else { t.waveform });
+            }
+        }
+        _ => {
+            painter.hline(bars.x_range(), bars.center().y, Stroke::new(1.0, t.waveform));
+        }
+    }
+    painter.vline(playhead, bars.y_range(), Stroke::new(1.5, t.text));
+    let mut row = ui.new_child(egui::UiBuilder::new().id_salt("audio_controls").max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    row.set_clip_rect(controls.intersect(ui.clip_rect()));
+    let name = if *playing { "Pause sound" } else { "Play sound" };
+    if play_button(&mut row, *playing, name, button).clicked() {
+        intents.push(Intent::Audio(AudioIntent::Toggle));
+    }
+    let time = format!("{} / {}", clock(position), clock(duration));
+    match notice {
+        Some(why) => {
+            row.add(egui::Label::new(egui::RichText::new(*why).color(t.danger)).truncate()).on_hover_text(time);
+        }
+        None => {
+            row.label(egui::RichText::new(time).color(t.text_muted));
+        }
+    }
 }
 
 /// Where the split's cuts fall on `fitted`, the image drawn on screen: the same edges

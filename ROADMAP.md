@@ -20,7 +20,7 @@ an agent can actually do today.
 | 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 5/12 |
 | 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92), app mode (#95), installing updates (#540), result export (#557), CLI `run` (#97) | 2/16 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101), Elements (#104) | 3/6 |
-| 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105), video generation (#559), Timeline (#109) | 4/15 |
+| 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105), sound on cards (#106), video generation (#559), Timeline (#109) | 4/15 |
 | 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22), PDF node (#113), Meshy 3D generation (#23) | 5/7 |
 | 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, agent sidebar (#114), HTTP serve (#117) with signed webhooks (#632) | 2/6 |
 | 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | 🟡 decks (#122), CRDT sync and the relay (#119) | 2/6 |
@@ -111,7 +111,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   pasting a copied image works in the desktop app only.
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
   and ffprobe set under `[media]` in settings; it neither finds them on `PATH` nor bundles them
-  (#411). There is no audio playback (#106). Video actions (#108) trim, change speed, stitch, replace
+  (#411). Sound cards show a waveform and play through the default output device (#106); there
+  is no sound while a video plays on its card yet. Video actions (#108) trim, change speed, stitch, replace
   sound, extract frames, reverse, grade, key, watermark, split and extract sound.
   Video generation (#559) has text, frame, reference and speech-to-video modes declared per
   model; fal's Wan 2.2 maps text, first/last-frame and speech to video (#607), and no adapter
