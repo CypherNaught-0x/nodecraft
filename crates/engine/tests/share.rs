@@ -124,3 +124,54 @@ fn share_links_are_managed_through_the_sharing_host() {
     let frames = collab.borrow_mut().publish(&s).unwrap();
     assert_eq!(frames.len(), 3);
 }
+
+#[test]
+fn live_sharing_is_asked_of_the_host_with_a_checked_relay_and_link() {
+    use nodecraft_engine::live_cmds::LIVE_SERVICE;
+    let room = format!("ws://relay.example:7070/#room={}", "ab".repeat(32));
+    let mut s = Session::new(common::project()).unwrap();
+    for (command, params) in [("share.start", json!({})), ("share.join", json!({"link": room})), ("share.stop", json!({})), ("share.status", json!({}))] {
+        assert_eq!(s.dispatch(command, &params).unwrap_err().kind, ErrorKind::Unsupported, "{command}");
+    }
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let host = Rc::clone(&asked);
+    s.register_host_service(LIVE_SERVICE, move |request| {
+        host.borrow_mut().push(request.clone());
+        Ok(json!({"accepted": true}))
+    })
+    .unwrap();
+    for (params, why) in [
+        (json!({"relay": "http://relay.example"}), ErrorKind::InvalidInput),
+        (json!({"relay": "wss://relay.example"}), ErrorKind::Unsupported),
+        (json!({"relay": "ws://relay", "room": "x"}), ErrorKind::InvalidInput),
+    ] {
+        assert_eq!(s.dispatch("share.start", &params).unwrap_err().kind, why, "{params}");
+    }
+    let bad = s.dispatch("share.join", &json!({"link": room.replace("#room", "#rooms")})).unwrap_err();
+    assert!(!bad.message.contains(&"ab".repeat(8)), "{}", bad.message);
+    s.dispatch("share.start", &json!({})).unwrap();
+    s.dispatch("share.start", &json!({"relay": " ws://relay.example "})).unwrap();
+    s.dispatch("share.join", &json!({"link": format!("  {room}\n")})).unwrap();
+    s.dispatch("share.stop", &json!({})).unwrap();
+    assert_eq!(
+        *asked.borrow(),
+        vec![
+            json!({"op": "start", "relay": null}),
+            json!({"op": "start", "relay": "ws://relay.example"}),
+            json!({"op": "join", "link": room}),
+            json!({"op": "stop"})
+        ]
+    );
+}
+
+#[test]
+fn a_joiner_takes_up_the_shared_projects_id_unless_it_has_edits() {
+    let id = nodecraft_types::ProjectId::from_bytes([9; 16]);
+    let mut s = Session::new(common::project()).unwrap();
+    s.adopt_joined(nodecraft_engine::collab::joining(id).unwrap()).unwrap();
+    assert_eq!(s.document().id(), id);
+    assert!(s.document().canvases().is_empty() && !s.can_undo());
+    let mut edited = Session::new(common::project()).unwrap();
+    edited.dispatch("node.add", &json!({"canvas": common::canvas(), "node": common::node(5)})).unwrap();
+    assert_eq!(edited.adopt_joined(nodecraft_engine::collab::joining(id).unwrap()).unwrap_err().kind, ErrorKind::Conflict);
+}

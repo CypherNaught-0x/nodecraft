@@ -41,6 +41,7 @@ pub struct NodeCraftSettings {
     pub updates: UpdateSettings,
     pub media: MediaSettings,
     pub agent: AgentSettings,
+    pub share: ShareSettings,
 }
 
 /// External tools for video (#105). NodeCraft never downloads or bundles them, and never takes
@@ -102,6 +103,15 @@ impl ProviderSettings {
         self.install_salt = crate::execution_identity::nonce()?.iter().map(|b| format!("{b:02x}")).collect();
         Ok(true)
     }
+}
+
+/// Sharing a project live (#698).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShareSettings {
+    /// The relay `share.start` shares through when it isn't given one, such as
+    /// `ws://relay.example:7070`; `nodecraft-cli relay` runs one.
+    pub relay: Option<String>,
 }
 
 impl craft_settings::Settings for NodeCraftSettings {

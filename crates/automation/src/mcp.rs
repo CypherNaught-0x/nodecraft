@@ -129,6 +129,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "run.held_place",
     "share.links",
     "share.link_revoke",
+    "share.stop",
+    "share.status",
     "usage.export_csv",
     "perf.start",
     "perf.stop",
@@ -249,6 +251,9 @@ pub const HUMAN_ONLY: &[&str] = &[
     "share.link_update",
     // Sharing a private canvas gives it to everyone in the room, and no undo takes it back (#121).
     "canvas.set_private",
+    // Sharing the project, or opening someone else's, is the person's call (#698).
+    "share.start",
+    "share.join",
     "canvas.auto_format",
     "comment.compose",
     "comment.open",

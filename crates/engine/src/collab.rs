@@ -24,8 +24,10 @@ use nodecraft_types::{Blake3, CanvasId, Error, ErrorKind, ProjectId};
 use crate::access::Access;
 use crate::session::Session;
 
+mod join;
 mod links;
 
+pub use join::{JoinLink, Key, MAX_RELAY_BYTES, relay_address};
 pub use links::LINKS_SERVICE;
 
 /// The most assets kept waiting for the edit that needs them.
@@ -122,6 +124,17 @@ impl Collab {
             clash: None,
             clash_said: None,
         }
+    }
+
+    /// How many assets this session waits for before it can take in what the others did.
+    pub fn waiting_for_assets(&self) -> usize {
+        self.asked.len()
+    }
+
+    /// Whether this session holds what the room holds, as far as it has heard: the relay has
+    /// said what it may do and nothing that came in waits to be taken.
+    pub fn caught_up(&self) -> bool {
+        self.role.is_some() && !self.unsettled
     }
 
     /// What this session may do in the room; `None` until the relay has said what a link
