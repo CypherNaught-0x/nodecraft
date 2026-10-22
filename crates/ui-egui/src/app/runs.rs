@@ -630,6 +630,8 @@ impl Runs {
 
 impl Drop for Runs {
     fn drop(&mut self) {
+        // on_exit cancels before the GPU drain; Drop also covers non-eframe owners such as
+        // Harnesses, so keep this fallback even when shutdown was already requested.
         // With a journal, running jobs are saved and left at the provider for the next launch.
         self.host.shut_down();
         // Don't wait on a provider that is slow to answer a cancel: the window is closing.

@@ -409,6 +409,11 @@ fn capture(actions: &LocalActions, action: &str, params: &ParamValues, model: &V
 
 #[test]
 fn a_3d_photo_is_an_image_of_its_size_and_repeats_exactly() {
+    if std::env::var_os("NODECRAFT_TEST_CAPTURE_LOG_STRESS").is_some() {
+        // Only the process-exit parent enables this: exceed ordinary pipe capacity to prove
+        // that driver diagnostics cannot block the child's renderer or exit.
+        std::io::Write::write_all(&mut std::io::stderr(), &vec![b'x'; 256 * 1024]).unwrap();
+    }
     let mut assets = AssetStore::default();
     let model = Value::Media(AssetRef { hash: assets.insert(OBJ).unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
     let actions = LocalActions::new(assets);
@@ -438,17 +443,30 @@ fn a_3d_photo_is_an_image_of_its_size_and_repeats_exactly() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+/// Three real renderer processes on each ordinary native test run. A CI summary distinguishes
+/// rendered photos from no-GPU skips; file-backed output cannot fill an unread child pipe.
 fn real_capture_processes_exit_cleanly_repeatedly() {
+    use std::io::{Read, Seek, SeekFrom};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
+    fn tail(file: &mut std::fs::File) -> String {
+        let start = file.metadata().unwrap().len().saturating_sub(64 * 1024);
+        file.seek(SeekFrom::Start(start)).unwrap();
+        let mut bytes = Vec::new();
+        file.take(64 * 1024).read_to_end(&mut bytes).unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
     let executable = std::env::current_exe().unwrap();
     let mut rendered = 0;
     let mut skipped = 0;
     for _ in 0..3 {
+        let mut stdout = tempfile::tempfile().unwrap();
+        let mut stderr = tempfile::tempfile().unwrap();
         let mut child = Command::new(&executable)
             .args(["--exact", "action_exec::tests::a_3d_photo_is_an_image_of_its_size_and_repeats_exactly", "--nocapture"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .env("NODECRAFT_TEST_CAPTURE_LOG_STRESS", "1")
+            .stdout(Stdio::from(stdout.try_clone().unwrap()))
+            .stderr(Stdio::from(stderr.try_clone().unwrap()))
             .spawn()
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(180);
@@ -462,14 +480,10 @@ fn real_capture_processes_exit_cleanly_repeatedly() {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        let output = child.wait_with_output().unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            completed && output.status.success(),
-            "capture subprocess did not exit successfully: {}\n{}\n{stderr}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout)
-        );
+        let status = child.wait().unwrap();
+        let stdout = tail(&mut stdout);
+        let stderr = tail(&mut stderr);
+        assert!(completed && status.success(), "capture subprocess did not exit successfully: {status}\n{stdout}\n{stderr}");
         if stderr.contains("NODECRAFT_CAPTURE_EVIDENCE: rendered three photos") {
             rendered += 1;
         } else {

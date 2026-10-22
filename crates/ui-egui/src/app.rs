@@ -2838,6 +2838,35 @@ fn consume_shortcut_with_policy(input: &mut egui::InputState, shortcut: &str, na
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl NodeCraftApp {
+    /// Persist before entering a potentially stuck driver. The injected drain also keeps
+    /// lifecycle tests independent from captures owned by other concurrent app fixtures.
+    fn finish_native_exit_with(&mut self, drain: impl FnOnce(std::time::Duration) -> nodecraft_engine::action_exec::CaptureShutdown) {
+        self.close_storage();
+        // A read-only store (newer schema, unwritable folder) was reported at startup.
+        if let Some(store) = &mut self.store
+            && !store.is_read_only()
+            && let Err(e) = store.flush()
+        {
+            log::warn!("settings not saved on exit: {e}");
+        }
+        let deadline = std::time::Instant::now() + nodecraft_engine::action_exec::CAPTURE_CLOSE_WAIT;
+        self.live.cancel();
+        if let Some(runs) = &mut self.runs {
+            runs.shut_down();
+        }
+        let captures = drain(deadline.saturating_duration_since(std::time::Instant::now()));
+        if captures.remaining > 0 {
+            log::warn!("3D capture close deadline expired with {} captures still running", captures.remaining);
+        }
+        if captures.panicked > 0 {
+            log::warn!("{} 3D capture workers panicked", captures.panicked);
+        }
+        self.live.stop(deadline);
+    }
+}
+
 impl eframe::App for NodeCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(not(target_arch = "wasm32"))]
@@ -2891,34 +2920,10 @@ impl eframe::App for NodeCraftApp {
         self.show(ui);
     }
     fn on_exit(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let deadline = std::time::Instant::now() + nodecraft_engine::action_exec::CAPTURE_CLOSE_WAIT;
-            self.live.cancel();
-            if let Some(runs) = &mut self.runs {
-                runs.shut_down();
-            }
-            let captures = nodecraft_engine::action_exec::shutdown_captures(deadline.saturating_duration_since(std::time::Instant::now()));
-            if captures.remaining > 0 {
-                log::warn!("3D capture close deadline expired with {} captures still running", captures.remaining);
-            }
-            if captures.panicked > 0 {
-                log::warn!("{} 3D capture workers panicked", captures.panicked);
-            }
-            self.live.stop(deadline);
-        }
         self.audios.stop();
         #[cfg(not(target_arch = "wasm32"))]
-        self.close_storage();
-        #[cfg(not(target_arch = "wasm32"))]
-        // A read-only store (newer schema, unwritable folder) was reported at startup.
-        if let Some(store) = &mut self.store
-            && !store.is_read_only()
-            && let Err(e) = store.flush()
-        {
-            log::warn!("settings not saved on exit: {e}");
-        }
-        // Last: the project and settings are closed before the updated copy opens them (#540).
+        self.finish_native_exit_with(nodecraft_engine::action_exec::shutdown_captures);
+        // Last: storage is closed and captures drained before the updated copy opens (#540).
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(updates) = &self.updates {
             let project = match self.session.file_status().location {

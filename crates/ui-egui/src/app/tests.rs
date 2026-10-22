@@ -605,7 +605,7 @@ fn separate_drag_gestures_remain_separate_undo_steps() {
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
-fn settings_constructor_and_exit_preserve_native_store_lifecycle() {
+fn settings_and_recovery_close_before_a_capture_drain_can_block() {
     let path = std::env::temp_dir().join(format!(
         "nodecraft-ui-settings-{}-{}",
         std::process::id(),
@@ -622,10 +622,26 @@ fn settings_constructor_and_exit_preserve_native_store_lifecycle() {
     assert_eq!(app.theme, ThemeKind::Light);
     assert_eq!(app.canvas_prefs.zoom_speed(), 2.5);
     assert_eq!(app.canvas_prefs.scroll, nodecraft_engine::settings::ScrollAction::Zoom);
-    eframe::App::on_exit(&mut app);
+    let journal = path.join("recovery.journal");
+    let (session, canvas, _, _) = NodeCraftApp::storage_session(storage::StorageSetup { recovery: journal.clone(), open: None }).unwrap();
+    app.session = session;
+    app.canvas = canvas;
+    app.store.as_mut().unwrap().update(|settings| settings.canvas.zoom_speed = 3.5);
+    assert!(journal.exists(), "a live session has a recovery checkpoint");
+    let mut entered = false;
+    app.finish_native_exit_with(|wait| {
+        entered = true;
+        assert!(wait <= nodecraft_engine::action_exec::CAPTURE_CLOSE_WAIT);
+        assert!(!journal.exists(), "clean recovery must already be closed if a driver now stalls");
+        let (saved, _) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Dir(path.clone()));
+        assert_eq!(saved.get().appearance.theme, Theme::Light);
+        assert_eq!(saved.get().canvas.zoom_speed, 3.5, "settings must already be durable before the wait");
+        nodecraft_engine::action_exec::CaptureShutdown { remaining: 1, panicked: 0 }
+    });
+    assert!(entered);
     let (restored, _) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Dir(path.clone()));
     assert_eq!(restored.get().appearance.theme, Theme::Light);
-    assert_eq!(restored.get().canvas.zoom_speed(), 2.5);
+    assert_eq!(restored.get().canvas.zoom_speed, 3.5);
     drop(restored);
     drop(app);
     std::fs::remove_dir_all(path).unwrap();
