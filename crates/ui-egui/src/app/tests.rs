@@ -1347,7 +1347,7 @@ fn noodles_follow_a_card_while_it_is_dragged_and_commit_on_release() {
     let start = |h: &Harness<'static, NodeCraftApp>| {
         let app = h.state();
         let canvas = app.session.document().canvases().get(&app.canvas).unwrap();
-        let curves = curves(canvas, &app.painted, app.session.kinds(), app.theme.tokens());
+        let curves = curves(canvas, &app.painted, app.session.kinds(), app.theme.tokens(), &app.input_ports);
         let edge = canvas.edges().values().find(|e| e.from.node == chain_id(2)).unwrap().id;
         curves.iter().find(|(id, ..)| *id == edge).map(|(_, curve, _)| curve[0]).unwrap()
     };
@@ -2313,7 +2313,7 @@ fn crossing_noodles_and_culled_wiring_origin_keep_fallback_geometry() {
     assert!(h.state().wiring.is_some());
     let app = h.state();
     let canvas = app.session.document().canvases().get(&app.canvas).unwrap();
-    let lines = curves(canvas, &app.painted, app.session.kinds(), app.theme.tokens());
+    let lines = curves(canvas, &app.painted, app.session.kinds(), app.theme.tokens(), &app.input_ports);
     let first = lines.iter().find(|(id, ..)| *id == EdgeId::from_bytes([10; 16])).unwrap();
     assert!(first.1.first().unwrap().x < 360.0 && first.1.last().unwrap().x > 360.0, "crossing edge still spans viewport boundary");
     let target = port_point(&h, 3, noodle::Side::Input);

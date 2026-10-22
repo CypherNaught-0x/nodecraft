@@ -147,6 +147,8 @@ pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
 
 pub struct CardView<'a> {
     pub descriptor: Option<&'a NodeDescriptor>,
+    /// Saved inputs or a checked, warning-free additive migration preview.
+    pub inputs: &'a [nodecraft_graph::Port],
     pub visible: Option<&'a BTreeSet<String>>,
     /// Resolved editability; disabling retains field drafts.
     pub enabled: Option<&'a BTreeSet<String>>,
@@ -210,6 +212,7 @@ pub fn show(
 ) -> Option<CardResponse> {
     let CardView {
         descriptor,
+        inputs,
         visible,
         enabled,
         preview_pos,
@@ -499,13 +502,18 @@ pub fn show(
     }
     let mut ports = Vec::new();
     let hit = PORT_HIT / view.zoom;
-    for (index, port) in node.inputs.iter().enumerate() {
-        let c = noodle::anchor(rect, Side::Input, index, node.inputs.len());
+    for (index, port) in inputs.iter().enumerate() {
+        let c = noodle::anchor(rect, Side::Input, index, inputs.len());
         let radius = t.port_radius.max(t.port_min_radius / view.zoom);
         ui.painter().circle(c, radius, t.card_fill, Stroke::new(t.port_stroke / view.zoom, t.wire(port.port_type.modality)));
         let r = ui.interact(Rect::from_center_size(c, Vec2::splat(radius + hit) * 2.0), ui.id().with(("in", &port.name)), Sense::drag());
         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} input", port.name)));
-        ports.push((Side::Input, port.name.clone(), r.on_hover_text(&port.name)));
+        let hint = if node.inputs.iter().any(|saved| saved == port) {
+            port.name.clone()
+        } else {
+            format!("{}: connect to add the new inputs to this older card. Undo restores its saved inputs.", port.name)
+        };
+        ports.push((Side::Input, port.name.clone(), r.on_hover_text(hint)));
     }
     let radius = t.handle_radius.max(t.handle_min_screen_radius / view.zoom);
     for (index, port) in node.outputs.iter().enumerate() {

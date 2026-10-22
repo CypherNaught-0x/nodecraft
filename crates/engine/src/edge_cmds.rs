@@ -40,7 +40,7 @@ fn edit(changes: Vec<Change>, result: Value) -> Effect {
     Effect::Edit { changes: Changeset::new(changes), result, gesture: None }
 }
 
-fn rewire(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+fn rewire(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: RewireParams = params(value)?;
     if p.replace.len() > MAX_REPLACED {
         return Err(invalid("rewire replaces at most two edges"));
@@ -48,6 +48,9 @@ fn rewire(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let replace: BTreeSet<EdgeId> = p.replace.into_iter().collect();
     let result = json!({"id": p.edge.id});
     let mut changes: Vec<Change> = replace.into_iter().map(|id| Change::Disconnect { canvas: p.canvas, id }).collect();
+    if let Some(node) = crate::graph_cmds::upgraded(c, p.canvas, p.edge.to.node, &p.edge.to.port) {
+        changes.push(Change::SetNode { canvas: p.canvas, node });
+    }
     changes.push(Change::Connect { canvas: p.canvas, edge: p.edge });
     Ok(edit(changes, result))
 }
@@ -322,3 +325,7 @@ mod tests {
         assert_eq!(s.document(), &before);
     }
 }
+
+#[cfg(test)]
+#[path = "edge_cmds/ports638_tests.rs"]
+mod ports638_tests;
