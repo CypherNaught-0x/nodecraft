@@ -9,7 +9,11 @@ use egui::{Pos2, Rect, Vec2};
 use nodecraft_engine::Session;
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ProjectId};
 use serde_json::{Value, json};
-use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 // A private host resource, never serialized. Retaining its Arc in the cache keeps
 // the previous allocation alive, so a replacement Session cannot reuse its identity.
@@ -275,6 +279,9 @@ pub struct OverlayInput<'a> {
     /// A live app freezes fresh-press admission before clipboard/quick-add; isolated overlays use None.
     pub press_admitted: Option<bool>,
     pub preview: Option<(NodeId, Vec2)>,
+    /// Cards in collapsed fields, which the canvas doesn't draw, and those fields' header rects.
+    pub hidden: &'a BTreeSet<NodeId>,
+    pub collapsed: &'a [Rect],
     pub canvas_gesture: bool,
     pub tokens: &'a Tokens,
 }
@@ -301,6 +308,18 @@ impl Navigation {
                     .is_some_and(|pos| layout(viewport, self.visible, t).map.contains(pos))
             })
     }
+    /// What the minimap draws, in world space: each card the canvas draws (moved by a card drag's
+    /// `preview`) and each collapsed field's header (`None`), matching the canvas.
+    pub fn shapes(&self, preview: Option<(NodeId, Vec2)>, hidden: &BTreeSet<NodeId>, collapsed: &[Rect]) -> Vec<(Option<NodeId>, Rect)> {
+        let cards = self.geometry.rects.iter().filter(|(id, _)| !hidden.contains(id)).map(|(id, body)| {
+            let body = match preview {
+                Some((moving, delta)) if moving == *id => body.translate(delta),
+                _ => *body,
+            };
+            (Some(*id), body)
+        });
+        collapsed.iter().map(|header| (None, *header)).chain(cards).collect()
+    }
     pub fn show(&mut self, ui: &mut egui::Ui, input: OverlayInput<'_>) -> (bool, Vec<(&'static str, Value)>) {
         let OverlayInput {
             view,
@@ -312,19 +331,17 @@ impl Navigation {
             pan_enabled,
             press_admitted,
             preview,
+            hidden,
+            collapsed,
             canvas_gesture,
             tokens: t,
         } = input;
         let layout = layout(viewport, self.visible, t);
         let mut actions = Vec::new();
         let visible = view.visible_world(viewport);
-        let node_bounds = self.geometry.bounds(None, t);
-        let mut domain = node_bounds.map_or(visible, |nodes| if valid_rect(visible) { nodes.union(visible) } else { nodes });
-        if let Some((id, delta)) = preview
-            && let Some(body) = self.geometry.rects.get(&id)
-        {
-            domain = domain.union(decorated(body.translate(delta), t));
-        }
+        let shapes = self.shapes(preview, hidden, collapsed);
+        let node_bounds = if self.geometry.error { None } else { shapes.iter().map(|(_, rect)| decorated(*rect, t)).reduce(|a, b| a.union(b)) };
+        let domain = node_bounds.map_or(visible, |nodes| if valid_rect(visible) { nodes.union(visible) } else { nodes });
         let mapping = self.drag.or_else(|| Mapping::new(domain, layout.map.shrink(t.navigation_gap)));
         let pointer = ui.input(|i| i.pointer.interact_pos());
         if self.drag.is_none() && press_admitted.unwrap_or_else(|| self.press_pending(ui.ctx(), viewport, pan_enabled, t)) {
@@ -349,22 +366,20 @@ impl Navigation {
                         ui.interact(layout.map, ui.id().with("minimap"), if pan_enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() });
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, pan_enabled, "Minimap: click or drag to pan canvas"));
                     if let Some(mapping) = mapping {
-                        for (id, body) in &self.geometry.rects {
-                            let body = if let Some((preview_id, delta)) = preview
-                                && preview_id == *id
-                            {
-                                body.translate(delta)
-                            } else {
-                                *body
-                            };
-                            let mut rect = mapping.rect(body);
+                        for (id, body) in &shapes {
+                            let mut rect = mapping.rect(*body);
                             if rect.width() < t.minimap_node_min {
                                 rect = rect.expand2(Vec2::new(t.minimap_node_min * 0.5, 0.0));
                             }
                             if rect.height() < t.minimap_node_min {
                                 rect = rect.expand2(Vec2::new(0.0, t.minimap_node_min * 0.5));
                             }
-                            painter.rect_filled(rect.intersect(layout.map), t.panel_radius, if selection.contains(*id) { t.accent } else { t.text_muted });
+                            let fill = match id {
+                                Some(id) if selection.contains(*id) => t.accent,
+                                Some(_) => t.text_muted,
+                                None => t.panel_stroke,
+                            };
+                            painter.rect_filled(rect.intersect(layout.map), t.panel_radius, fill);
                         }
                         if valid_rect(visible) {
                             painter.rect(

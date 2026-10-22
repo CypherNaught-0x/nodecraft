@@ -339,7 +339,8 @@ moving a card over a zone doesn't join it. A collapsed field shows only its head
 aren't drawn, select-all and box select skip them, and their noodles end at the header. Search
 and tag navigation that land on a hidden member expand its field first (one `field.update` undo
 step), then select and frame the card. Member counts and the hidden set are worked out once per
-document revision, not per frame.
+document revision, not per frame. The minimap likewise draws the header (in `panel_stroke`) and
+not the members.
 
 ## Clipboard admission and placement
 

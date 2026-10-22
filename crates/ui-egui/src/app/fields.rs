@@ -199,6 +199,23 @@ impl NodeCraftApp {
         membership
     }
 
+    /// The cards collapsed fields hide, and those fields' header rects in world space, moved
+    /// with a field drag.
+    pub(super) fn minimap_fields(&mut self) -> (Arc<Membership>, Vec<Rect>) {
+        let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return Default::default() };
+        let (t, zoom, shift) = (self.theme.tokens(), self.view.zoom, self.field_shift());
+        let headers = canvas
+            .fields()
+            .values()
+            .filter(|field| field.collapsed)
+            .map(|field| {
+                let header = world_rect(field, t, zoom);
+                shift.filter(|(id, _)| *id == field.id).map_or(header, |(_, delta)| header.translate(delta))
+            })
+            .collect();
+        (self.membership(), headers)
+    }
+
     /// Where a field drag shows a member card this frame.
     pub(super) fn field_preview(drag: Option<(FieldId, Vec2)>, node: &Node) -> Option<nodecraft_graph::Position> {
         let (_, delta) = drag.filter(|(id, _)| node.field == Some(*id))?;
