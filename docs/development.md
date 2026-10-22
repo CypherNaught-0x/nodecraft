@@ -19,10 +19,40 @@ cargo run -p nodecraft-cli -- --help
 
 ```sh
 cargo xtask ci                       # the full gate: fmt, clippy -D warnings, tests, layers, wasm
+cargo xtask ci --quick               # the quick gate, for iterating (below)
 cargo test -p nodecraft-ui-egui      # one crate
-cargo nextest run --workspace        # optional, parallel across test binaries
+cargo nextest run --workspace        # parallel across test binaries
 node --test scripts/claim/*.test.js  # the claim bot
 ```
+
+### Quick and full
+
+Run the **full** gate, `cargo xtask ci`, before you open a pull request or push to one. With
+cargo-nextest installed its test step runs every test with `cargo nextest run --workspace`, then the
+doctests with `cargo test --doc`; without nextest it falls back to `cargo test --workspace`, which
+runs the test binaries one at a time and takes several times as long.
+
+While iterating, `cargo xtask ci --quick` runs fmt, clippy and layers as the full gate does, and
+then:
+
+- tests only the packages changed since the merge base with `origin/main` (`--base REF` picks
+  another), counting committed, staged, unstaged and untracked files, together with every package
+  that depends on them (nextest's `rdeps()`; a stray untracked file outside every package therefore
+  tests everything). A change outside every package that a build can read
+  (`Cargo.toml`, `Cargo.lock`, `.config/`, `assets/`, …) tests everything; one only in `docs/`,
+  `.github/`, `scripts/` or a top-level Markdown file tests nothing;
+- leaves out the slow tests, the doctests and the wasm check.
+
+Quick needs nextest. It compiles with the same `--workspace` and features as the full gate, so the
+two share one build: Cargo resolves features per selection, and `cargo test -p <crate>` rebuilds the
+crate's dependencies with a different feature set.
+
+The slow tests are the generated block at the end of `.config/nextest.toml`: every test that took
+at least five seconds in a full parallel run. The block also gives them a high nextest
+`priority`, so every profile, CI's included, starts them first and the longest test does not finish
+last. Regenerate it with `cargo xtask slow-tests [--threshold SECS]` after adding a heavy test or
+when the list looks stale; it runs every test once and reads the timings from nextest's JUnit report.
+Don't edit the block by hand.
 
 ### One integration test binary per crate
 
@@ -64,8 +94,8 @@ GitHub CI runs `cargo nextest run --workspace --profile ci` and then `cargo test
 on Linux, Windows and macOS. The workflow pins nextest and verifies each release archive against
 a checked-in SHA-256 before extracting it. When updating nextest, update the version and all three
 checksums together from the `.sha256` files published beside the archives on the
-[official nextest release](https://github.com/nextest-rs/nextest/releases). `cargo xtask ci` continues to use `cargo test`
-so local checks do not require nextest.
+[official nextest release](https://github.com/nextest-rs/nextest/releases). `cargo xtask ci` uses
+nextest when it is installed and `cargo test` otherwise, so the full local gate does not require it.
 
 A pull request that changes nothing but documentation and repository tooling skips those three legs:
 a `rust scope` job classifies the change set and the three `rust (<os>)` legs run on its answer.
@@ -201,6 +231,8 @@ rather than reusing an old recorder-only nanosecond estimate.
 | `cargo xtask catalog-check` | validate `assets/catalog/*.toml` and that each file is built in (`docs/catalog.md`); also part of `cargo test` |
 | `cargo xtask decisions` | check `docs/decisions/`: dated record files with matching headings, and no entries in `docs/decisions.md`; also part of the `layers` step of `ci` |
 | `cargo xtask ci` | all of the above plus fmt, clippy and tests; stops at the first failure |
+| `cargo xtask ci --quick [--base REF]` | fmt, clippy, layers and the changed packages' tests without the slow ones ([Quick and full](#quick-and-full)) |
+| `cargo xtask slow-tests [--threshold SECS]` | time every test and regenerate the slow-test block of `.config/nextest.toml` |
 | `cargo xtask version [set X.Y.Z]` | print or set the workspace version (Cargo.toml + Cargo.lock) |
 
 `xtask` resolves the invoking workspace at runtime with Cargo's
