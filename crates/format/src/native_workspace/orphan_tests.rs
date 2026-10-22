@@ -330,6 +330,21 @@ fn live_cleanup_debt_keeps_its_charge_and_cannot_be_swept_by_another_workspace()
     workspace.cleanup().unwrap();
     assert_eq!(workspace.quota().cleanup_retained_bytes().unwrap(), 0);
     drop(workspace);
-    assert!(!root.exists());
+    // Drop retires an empty root synchronously, but its nonblocking parent admission
+    // can be Busy. Retry the same exact-name maintenance used by the app instead of
+    // assuming that a contended Drop removed the root.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while root.exists() {
+        let name = root.file_name().unwrap().to_str().unwrap();
+        match crate::native_workspace::sweep_named_orphan(parent.path(), name, &TransferCancel::default()) {
+            Ok(_) | Err(Error { kind: ErrorKind::Busy, .. }) => {}
+            Err(error) => panic!("could not sweep retired workspace root {root:?}: {error}"),
+        }
+        assert!(Instant::now() < deadline, "retired workspace root {root:?} still exists after 30 seconds of exact-name maintenance");
+        if root.exists() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(!root.exists(), "retired workspace root must be removed after owner cleanup");
     drop(other);
 }
