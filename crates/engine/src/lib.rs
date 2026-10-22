@@ -59,6 +59,7 @@ pub mod resolve_cmds;
 pub mod search_cmds;
 pub mod style_cmds;
 
+pub mod field_cmds;
 pub mod generation_catalog;
 pub mod interchange_cmds;
 pub mod run_ceiling;
@@ -76,7 +77,6 @@ pub mod skill_cmds;
 pub mod skills;
 pub mod split;
 pub mod stale_cmds;
-pub mod field_cmds;
 pub mod tag_cmds;
 pub mod tag_filter_cmds;
 pub mod technique_cmds;
