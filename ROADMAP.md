@@ -131,8 +131,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   `share.stop`, `share.status`, #698). The relay is reached over `ws://` only, the browser build
   has no transport yet, and there is no presence.
 - **Not started**: batch, Techniques, app mode, library, Layer editor, Elements, PDF,
-  and 32 of the 41 tracked provider adapters (ComfyUI, fal.ai and
-  Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling,
+  and 31 of the 41 tracked provider adapters (ComfyUI, fal.ai and
+  Gemini are in progress, and Gemini Omni Flash video replaces the shut-down Veo API (#17); Comfy Cloud, Veo on Google Cloud (#742), Google TTS, Seedance, Kling,
   and 24 of the 25 `future` names have no work started; Higgsfield's adapter is written, #177).
   ElevenLabs (#20) has speech (v3, Multilingual v2, Flash v2.5), sound effects, music and voice
   changer models, run from the canvas on a Generate audio card (#672). 3D generation has a Generate 3D card

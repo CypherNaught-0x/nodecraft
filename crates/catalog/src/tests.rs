@@ -205,6 +205,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.wan22", false),
             ("fal.wan22-i2v", false),
             ("fal.wan22-s2v", false),
+            ("gemini-video.omni-flash", false),
             ("higgsfield.genjutsu-motion-transfer", false),
             ("higgsfield.genjutsu-object-swap", false),
             ("higgsfield.genjutsu-restyle", false),
@@ -539,6 +540,21 @@ fn gemini_models_have_exact_wire_options_and_unknown_cost() {
             assert!(m.quote(&p).is_err());
         }
     }
+}
+
+#[test]
+fn gemini_omni_flash_is_charged_by_measured_tokens() {
+    // Gemini pricing page, checked 2026-10-22: 1.50 USD per million input tokens, 17.50 USD per
+    // million video output tokens. The clip's length is the model's choice: no quote before the run.
+    let c = Catalog::builtin().unwrap();
+    let m = c.get("gemini-video.omni-flash").unwrap();
+    assert_eq!(m.quote(&ParamValues::new()).unwrap(), None);
+    let rates = m.usage.as_ref().unwrap();
+    assert_eq!((rates.input.0, rates.output.0), (Money::new(Currency::USD, 1_500), Money::new(Currency::USD, 17_500)));
+    assert_eq!(m.mode("reference-to-video").unwrap().inputs.iter().find(|i| i.role == "reference").unwrap().max, 3);
+    let mut p = ParamValues::new();
+    p.insert("resolution".into(), Value::Text("4k".into()));
+    assert!(m.quote(&p).is_err(), "4K's token rate isn't published");
 }
 
 #[test]
