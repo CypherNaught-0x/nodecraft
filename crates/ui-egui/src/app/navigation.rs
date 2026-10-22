@@ -168,6 +168,8 @@ impl NodeCraftApp {
                 .get(&drag.id)
                 .map(|node| (drag.id, Vec2::new(drag.pos.x - node.pos.x, drag.pos.y - node.pos.y)))
         });
+        // The minimap shows a collapsed field as its header, as the canvas does (#707).
+        let (membership, collapsed) = self.minimap_fields();
         let (blocked, actions) = self.navigation.show(
             ui,
             crate::navigation::OverlayInput {
@@ -180,6 +182,8 @@ impl NodeCraftApp {
                 pan_enabled: pan,
                 press_admitted,
                 preview,
+                hidden: &membership.hidden,
+                collapsed: &collapsed,
                 canvas_gesture: self.wiring.is_some()
                     || self.drag.is_some()
                     || self.marquee.is_some()

@@ -471,3 +471,27 @@ fn tag_navigation_expands_a_collapsed_field_to_show_its_card() {
     assert!(h.state().selection.contains(node), "notice {:?}", h.state().notice);
     assert!(card(&h).is_some(), "the card is drawn");
 }
+
+#[test]
+fn the_minimap_shows_a_collapsed_field_as_its_header_without_its_cards() {
+    let mut h = harness();
+    h.run();
+    let id = field_around_card(&mut h);
+    let node = member(&h);
+    let shapes = |h: &mut Harness<'static, NodeCraftApp>| {
+        let (membership, collapsed) = h.state_mut().minimap_fields();
+        h.state().navigation.shapes(None, &membership.hidden, &collapsed)
+    };
+    let open = shapes(&mut h);
+    assert!(open.iter().any(|(shown, _)| *shown == Some(node)), "an open field's card is drawn");
+    assert!(open.iter().all(|(shown, _)| shown.is_some()), "an open field adds no header");
+    let canvas_id = h.state().canvas;
+    h.state_mut().session.dispatch("field.update", &json!({"canvas": canvas_id, "field": id, "collapsed": true})).unwrap();
+    h.run();
+    let closed = shapes(&mut h);
+    assert!(closed.iter().all(|(shown, _)| *shown != Some(node)), "a hidden card is not drawn");
+    let field = canvas(&h).fields().get(&id).unwrap().clone();
+    let header = super::fields::world_rect(&field, h.state().theme.tokens(), h.state().view.zoom);
+    assert_eq!(closed.iter().filter(|(shown, _)| shown.is_none()).map(|(_, rect)| *rect).collect::<Vec<_>>(), vec![header]);
+    assert!(header.height() < field.rect.height, "only the header, not the whole zone");
+}
