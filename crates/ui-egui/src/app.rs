@@ -1290,10 +1290,12 @@ impl NodeCraftApp {
         {
             self.marquee = Some(Marquee { start: self.view.to_world(viewport.min, origin), base: self.selection.clone(), cancelled: false });
         }
+        let collapsed = self.session.document().canvases().get(&self.canvas).map(fields::hidden).unwrap_or_default();
         let over_card = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pointer| {
             // navigation_overlay refreshed actual-instance geometry for this revision above.
             // The visible-card schema cache is refreshed later and may still describe an old size.
-            self.navigation.geometry.rects.values().any(|rect| self.view.rect_to_screen(viewport.min, *rect).contains(pointer))
+            // Cards hidden in a collapsed field aren't there to scroll.
+            self.navigation.geometry.rects.iter().any(|(id, rect)| !collapsed.contains(id) && self.view.rect_to_screen(viewport.min, *rect).contains(pointer))
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
@@ -1727,8 +1729,10 @@ impl NodeCraftApp {
                 curves(canvas, &self.painted, kinds, t)
             } else {
                 let mut geometry = self.painted.clone();
-                geometry.extend(fields::stand_ins(canvas, &hidden, t, self.view.zoom));
-                curves(canvas, &geometry, kinds, t)
+                geometry.extend(fields::stand_ins(canvas, &hidden, t, self.view.zoom, field_shift));
+                let mut curves = curves(canvas, &geometry, kinds, t);
+                curves.retain(|(id, _, _)| canvas.edges().get(id).is_none_or(|edge| !fields::inside_collapsed(canvas, &hidden, edge.from.node, edge.to.node)));
+                curves
             };
             if !overlay_blocks && !file_owns_input && !file_menu_owns_input && background.clicked() {
                 let hit = ui.input(|i| i.pointer.interact_pos()).and_then(|p| {
@@ -2149,6 +2153,7 @@ impl NodeCraftApp {
             || self.reordering.is_some()
             || self.comments.drag.is_some()
             || self.comments.gesture_cancelled
+            || self.fields.drag.is_some()
             || minimap_owned
             // #472: a model swap in flight owns every canvas key, so it owns this one too. Main's
             // inline quick-add ran inside the canvas-keys guard that starts with `!model_blocks`,

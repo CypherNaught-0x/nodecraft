@@ -131,6 +131,11 @@ fn header_drag_moves_the_field_and_its_members_and_escape_cancels() {
     h.hover_at(grab + Vec2::new(90.0, 45.0));
     h.run();
     assert!(h.state().fields.drag.is_some());
+    let cards = canvas(&h).nodes().len();
+    h.key_press(egui::Key::T);
+    h.run();
+    assert_eq!(canvas(&h).nodes().len(), cards, "kind keys wait for the field drag");
+    assert!(h.state().fields.drag.is_some(), "and the drag goes on");
     h.key_press(egui::Key::Escape);
     h.run();
     press(&mut h, grab + Vec2::new(90.0, 45.0), egui::PointerButton::Primary, false);
@@ -282,4 +287,22 @@ fn undoing_a_field_mid_drag_drops_the_drag() {
     press(&mut h, grab + Vec2::new(60.0, 30.0), egui::PointerButton::Primary, false);
     assert!(canvas(&h).fields().is_empty());
     assert!(h.state().fields.drag.is_none());
+}
+
+#[test]
+fn a_wire_inside_a_collapsed_field_is_hidden_and_stand_ins_follow_a_drag() {
+    let mut h = harness();
+    h.run();
+    let id = field_around_card(&mut h);
+    let node = member(&h);
+    let t = h.state().theme.tokens();
+    let mut hidden = std::collections::BTreeSet::new();
+    let outside = NodeId::from_bytes([7; 16]);
+    assert!(!fields::inside_collapsed(canvas(&h), &hidden, node, node), "an open field hides nothing");
+    hidden.insert(node);
+    assert!(fields::inside_collapsed(canvas(&h), &hidden, node, node));
+    assert!(!fields::inside_collapsed(canvas(&h), &hidden, node, outside), "a wire out of the field still shows");
+    let still: Vec<_> = fields::stand_ins(canvas(&h), &hidden, t, 1.0, None).collect();
+    let moved: Vec<_> = fields::stand_ins(canvas(&h), &hidden, t, 1.0, Some((id, Vec2::new(30.0, 10.0)))).collect();
+    assert_eq!(moved[0].1, still[0].1.translate(Vec2::new(30.0, 10.0)));
 }

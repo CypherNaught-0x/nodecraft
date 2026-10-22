@@ -52,12 +52,26 @@ pub(super) fn hidden(canvas: &Canvas) -> BTreeSet<NodeId> {
     canvas.nodes().values().filter(|node| node.field.and_then(|f| canvas.fields().get(&f)).is_some_and(|f| f.collapsed)).map(|node| node.id).collect()
 }
 
-/// Where noodles to hidden nodes end: their collapsed field's header.
-pub(super) fn stand_ins<'a>(canvas: &'a Canvas, hidden: &'a BTreeSet<NodeId>, t: &'a Tokens, zoom: f32) -> impl Iterator<Item = (NodeId, Rect)> + 'a {
+/// Where noodles to hidden nodes end: their collapsed field's header, following it while it is
+/// dragged (`shift`).
+pub(super) fn stand_ins<'a>(
+    canvas: &'a Canvas,
+    hidden: &'a BTreeSet<NodeId>,
+    t: &'a Tokens,
+    zoom: f32,
+    shift: Option<(FieldId, Vec2)>,
+) -> impl Iterator<Item = (NodeId, Rect)> + 'a {
     hidden.iter().filter_map(move |id| {
         let field = canvas.nodes().get(id)?.field.and_then(|f| canvas.fields().get(&f))?;
-        Some((*id, world_rect(field, t, zoom)))
+        let offset = shift.filter(|(moving, _)| *moving == field.id).map_or(Vec2::ZERO, |(_, delta)| delta);
+        Some((*id, world_rect(field, t, zoom).translate(offset)))
     })
+}
+
+/// Whether a wire runs inside one collapsed field: both ends hidden in it, so it isn't drawn.
+pub(super) fn inside_collapsed(canvas: &Canvas, hidden: &BTreeSet<NodeId>, from: NodeId, to: NodeId) -> bool {
+    let field = |id: NodeId| canvas.nodes().get(&id).and_then(|node| node.field);
+    hidden.contains(&from) && hidden.contains(&to) && field(from).is_some() && field(from) == field(to)
 }
 
 /// A field title as shown: one bounded line, never blank.
@@ -87,7 +101,7 @@ pub(super) enum FieldAction {
 pub(super) fn card_menu(ui: &mut egui::Ui, canvas: &Canvas, selection: &Selection, t: &Tokens) -> Option<FieldAction> {
     let mut action = None;
     ui.menu_button("Field", |ui| {
-        let any = !selection.is_empty();
+        let any = !selection.nodes().is_empty();
         let member = selection.nodes().iter().any(|id| canvas.nodes().get(id).is_some_and(|n| n.field.is_some()));
         if ui.add_enabled(any && member, egui::Button::new("Remove from field")).clicked() {
             action = Some(FieldAction::Clear);
@@ -310,7 +324,9 @@ impl NodeCraftApp {
                 if corner.drag_started_by(egui::PointerButton::Primary)
                     && let Some(start) = ui.input(|i| i.pointer.press_origin()).or(pointer)
                 {
-                    let base = world_rect(field, t, zoom);
+                    // The stored rect, not the drawn one: at low zoom the header is drawn taller
+                    // than a short field, and a width-only resize must keep its height.
+                    let base = Rect::from_min_size(Pos2::new(field.rect.pos.x, field.rect.pos.y), Vec2::new(field.rect.width, field.rect.height));
                     self.fields.drag = Some(FieldDrag { id: field.id, revision: self.session.revision(), start, delta: Vec2::ZERO, resize: true, base });
                 }
             }
@@ -322,7 +338,7 @@ impl NodeCraftApp {
                 let delta = (p - drag.start) / zoom.max(f32::MIN_POSITIVE);
                 drag.delta = if delta.is_finite() { delta } else { Vec2::ZERO };
                 if drag.resize {
-                    let floor = Vec2::new(t.field_min_width, t.field_min_height.max(header_height(t, zoom)));
+                    let floor = Vec2::new(t.field_min_width, t.field_min_height);
                     drag.delta = drag.delta.max(floor - drag.base.size());
                 }
             }
