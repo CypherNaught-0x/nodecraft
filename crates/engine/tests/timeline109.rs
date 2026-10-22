@@ -103,8 +103,9 @@ fn wired_videos_render_through_the_run_host_into_one_webm() {
     }
     // Drop the first half second of the first video and cross into the second.
     let listed = session.dispatch("timeline.list", &json!({"canvas": C, "id": TIMELINE})).unwrap();
-    // An imported video's length isn't known until the render probes it.
     assert_eq!(listed["clips"][0]["wired"], json!(true), "{listed}");
+    assert_eq!(listed["clips"][0]["media_us"], 2_000_000, "normal import exposes duration before rendering: {listed}");
+    assert_eq!(listed["clips"][1]["media_us"], 1_000_000, "{listed}");
     let first = listed["clips"][0]["id"].clone();
     session.dispatch("timeline.update", &json!({"canvas": C, "id": TIMELINE, "clip": first, "set": {"in_us": 500_000, "transition_us": 300_000}})).unwrap();
 

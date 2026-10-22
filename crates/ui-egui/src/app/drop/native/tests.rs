@@ -126,7 +126,7 @@ fn completed_batch_holds_slot_and_poll_is_single_use() {
     let Poll::Ready(batch) = wait(&mut ticket) else { panic!("ready") };
     assert!(matches!(ticket.poll(), Poll::Failed(Failure::Cancelled)), "single-use handoff");
     drop(ticket);
-    assert_eq!(batch.files[0].bytes, b"words");
+    assert_eq!(&*batch.files[0].bytes, b"words");
     assert!(batch.check().is_ok());
     assert!(matches!(worker.service.start(&handles(&["next"])), Err(Failure::Busy)));
     drop(batch);
@@ -250,7 +250,7 @@ fn aggregate_capacity_and_oversize_admission_precede_read_and_retention() {
         let Poll::Ready(batch) = wait(&mut ticket) else { panic!("ready") };
         if len == MAX_DROP_BYTES {
             assert_eq!(batch.files.len(), 3);
-            assert_eq!(batch.files.iter().map(|f| f.bytes.capacity()).sum::<usize>(), MAX_DROP_TOTAL_BYTES);
+            assert_eq!(batch.files.iter().map(|f| f.bytes.len()).sum::<usize>(), MAX_DROP_TOTAL_BYTES);
             assert_eq!(backend.opens.load(Ordering::SeqCst), 3);
         } else {
             assert!(batch.files.is_empty());
@@ -746,7 +746,7 @@ fn real_symlink_to_regular_file_uses_opened_handle_metadata() {
     let worker = TestService::filesystem();
     let mut ticket = start(&worker.service, &[Arc::new(Dropped(link))]);
     let Poll::Ready(batch) = wait(&mut ticket) else { panic!("ready") };
-    assert_eq!(batch.files[0].bytes, b"real opened content");
+    assert_eq!(&*batch.files[0].bytes, b"real opened content");
     drop(batch);
     drop(ticket);
     idle(&worker.service);
@@ -780,7 +780,7 @@ fn opened_object_failures_skip_individually_and_keep_a_later_regular_file() {
     let mut ticket = start(&worker.service, &handles(&["regular-before-open", "private", "later"]));
     let Poll::Ready(batch) = wait(&mut ticket) else { panic!("ready") };
     assert_eq!(batch.files.len(), 1);
-    assert_eq!(batch.files[0].bytes, b"later regular");
+    assert_eq!(&*batch.files[0].bytes, b"later regular");
     assert_eq!(batch.skipped.count, 2);
     assert_eq!(batch.skipped.first.as_ref().unwrap().1, Reason::Nonregular);
     drop(batch);

@@ -98,7 +98,7 @@ struct FileRequest {
 }
 pub(super) struct ReadFile {
     pub name: String,
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<[u8]>,
 }
 trait Clock: Send + Sync {
     fn now(&self) -> Instant;
@@ -194,6 +194,10 @@ pub(super) struct Batch {
 impl Batch {
     pub(super) fn check(&self) -> Result<(), Failure> {
         self.state.check()
+    }
+    pub(super) fn may_probe(&self) -> bool {
+        !self.state.cancelled.load(Ordering::Acquire)
+            && self.state.deadline.checked_duration_since(self.state.clock.now()).is_some_and(|left| left > Duration::from_secs(1))
     }
 }
 pub(super) enum Poll {

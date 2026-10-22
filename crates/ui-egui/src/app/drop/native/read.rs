@@ -133,7 +133,8 @@ pub(super) fn acquire(shared: &Shared, files: Vec<FileRequest>, extra: usize, co
         match result {
             Ok(bytes) => {
                 retained = retained.checked_add(bytes.capacity()).filter(|n| *n <= MAX_DROP_TOTAL_BYTES).ok_or(Failure::Unexpected)?;
-                read.push(ReadFile { name: request.name, bytes });
+                // The one bounded Vec-to-Arc conversion runs on the reader, never a UI frame.
+                read.push(ReadFile { name: request.name, bytes: Arc::from(bytes) });
             }
             Err(ReadError::File(reason)) => skipped.add(Some(request.name), reason, 1)?,
             Err(ReadError::Whole(e)) => return Err(e),

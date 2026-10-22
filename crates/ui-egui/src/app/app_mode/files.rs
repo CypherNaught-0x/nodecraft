@@ -13,7 +13,7 @@ use std::{
 };
 
 type Pick = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
-type Answer = mpsc::Receiver<Result<(String, Vec<u8>), String>>;
+type Answer = mpsc::Receiver<Result<(String, Arc<[u8]>), String>>;
 
 pub(super) struct Loading {
     port: String,
@@ -24,6 +24,7 @@ pub(super) struct Loading {
 enum Phase {
     Picking(Pick),
     Reading(Answer),
+    Probing { name: String, bytes: Arc<[u8]>, probe: crate::video::import::Probe },
 }
 
 impl Loading {
@@ -59,7 +60,7 @@ impl Wake for Repaint {
 }
 
 /// Reads `path` whole: a regular file no larger than one media asset may be.
-fn read(path: &Path) -> Result<(String, Vec<u8>), String> {
+fn read(path: &Path) -> Result<(String, Arc<[u8]>), String> {
     let name: String = path.file_name().map(|n| n.to_string_lossy().chars().take(80).collect()).unwrap_or_else(|| "The file".into());
     let unreadable = |_| format!("{name} can't be read.");
     // A stat never blocks on a special file; only a regular file is opened.
@@ -78,7 +79,7 @@ fn read(path: &Path) -> Result<(String, Vec<u8>), String> {
     if bytes.len() > MAX_MEDIA_BYTES {
         return Err(format!("{name} is larger than the {} MiB a file can be.", MAX_MEDIA_BYTES / (1024 * 1024)));
     }
-    Ok((name, bytes))
+    Ok((name, Arc::from(bytes)))
 }
 
 impl NodeCraftApp {
@@ -118,7 +119,24 @@ impl NodeCraftApp {
                 Err(mpsc::TryRecvError::Empty) => app.loading = Some(loading),
                 Err(mpsc::TryRecvError::Disconnected) => self.notice = Some("The file couldn't be read; try again.".into()),
                 Ok(Err(message)) => self.notice = Some(message),
-                Ok(Ok((name, bytes))) => self.app_fill_file(app, form, &loading.port, loading.slot, &name, &bytes),
+                Ok(Ok((name, bytes))) => {
+                    if let Some(probe) = crate::video::import::Probe::new(Arc::clone(&bytes)) {
+                        loading.phase = Phase::Probing { name, bytes, probe };
+                        app.loading = Some(loading);
+                        ctx.request_repaint();
+                    } else {
+                        self.app_fill_file(app, form, &loading.port, loading.slot, &name, &bytes);
+                    }
+                }
+            },
+            Phase::Probing { ref name, ref bytes, ref mut probe } => match probe.poll(&mut self.videos, ctx) {
+                None => {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                    app.loading = Some(loading);
+                }
+                Some(movie) => {
+                    self.app_fill_probed_file(app, form, &loading.port, loading.slot, &nodecraft_engine::import::Incoming { name, bytes }, movie.as_ref())
+                }
             },
         }
     }
