@@ -40,6 +40,9 @@ pub(super) struct Live {
     previewed: Option<(CanvasId, u64, Draft)>,
     /// The preview images each card last showed in full, kept while the next ones decode.
     held: BTreeMap<NodeId, Vec<Vec<crate::preview::Preview>>>,
+    /// Times a frame asked the engine what live work is pending, as counted by [`Live::noticed`].
+    #[cfg(test)]
+    pub(super) pending_looks: usize,
 }
 
 impl Live {
@@ -65,6 +68,24 @@ impl Live {
         self.preview = None;
         self.previewed = None;
         self.held.clear();
+    }
+
+    /// Records that a frame is about to ask the engine what live work is pending. In the build
+    /// people run that is nothing at all; tests count the asks, because the `settled` skip above
+    /// changes no document, notice or result, and a test that watched wall-clock time instead
+    /// would be measuring this machine (#556).
+    #[cfg(test)]
+    fn noticed(&mut self) {
+        self.pending_looks += 1;
+    }
+
+    #[cfg(not(test))]
+    fn noticed(&self) {}
+
+    /// Whether the app believes this canvas has nothing to recompute right now (#556, tests).
+    #[cfg(test)]
+    pub(super) fn settled(&self) -> bool {
+        self.settled.is_some()
     }
 }
 
@@ -167,6 +188,7 @@ impl NodeCraftApp {
             return;
         }
         self.live.settled = None;
+        self.live.noticed();
         let job = match live_actions::pending(&self.session, self.canvas, &self.live.failed) {
             Ok(Some(job)) => job,
             Ok(None) => {

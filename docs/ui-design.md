@@ -115,7 +115,8 @@ message. Asset controls display/remove existing references; OS file drop and des
 - **Frame budget (#65).** `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`
   times frames over generated 200- and 1,000-node graphs (text sources and relays with a toggle,
   slider, choice and note, wired in rows, in a square grid) while panning at fixed zooms, sweeping
-  zoom from 10% to 100% and back, and on the frame after an edit, with the pointer moving. It
+  zoom from 10% to 100% and back, and on the frame after an edit — a move, and (#556) a parameter
+  change on a node that is not an action — with the pointer moving. It
   measures the egui pass (with AccessKit) plus tessellation at 1 and 2 pixels per point, not
   windowing, texture upload or GPU work. Selection, palette and clipboard interactions are not
   benchmark workloads. Historical observations on an Apple M3 Pro, 2026-10-17: 200 nodes stayed under
@@ -136,6 +137,24 @@ message. Asset controls display/remove existing references; OS file drop and des
   presented-frame measurement used to close #65 is in [performance.md](performance.md#the-60-fps-criterion).
   Title font sizes still change with every zoom step (a new glyph size per frame in a sweep);
   snapping them to a few sizes is the next lever if sweeps get heavier.
+- **The frame after a parameter edit (#556).** A parameter edit changes what an action reads, so
+  nothing skips it, and #556 adds it to that command: `node.param_set` on the text source at the
+  head of a row of the same generated graphs, at the same 10% zoom and in the same span (the egui
+  pass with AccessKit plus tessellation; the edit itself is untimed, dispatched just before the
+  frame it is measured in), with a move loop from the same process printed beside it. These are
+  load-condition numbers, not quiet-machine measurements: five runs on an Apple M3 Pro, 12 CPUs,
+  2026-10-21, at load average 12-15. The least-contended of them, at 1 pixel per point: 2.27 ms after a move and 4.95 ms after a parameter edit at 200 nodes, 7.97 and
+  22.93 ms at 1,000; the median of the five is the same 2.27 against 5.14, and 9.31 against 27.03
+  ms. At 2 pixels that same run reads 2.18 against 4.97 and 8.02 against 22.30 ms. The moves took
+  no live look at all and the edits one per frame, which is the difference the pair is measuring:
+  the edit costs about 2× a move at 200 nodes and about 3× at 1,000. The gap grows with node count
+  because the edit runs the O(nodes) `live_actions::pending` path that a move skips. The move half
+  also lands on the #549 line above, 2.3 and 7.8 ms, within 0.2 ms, which is what makes the two
+  worth reading together. #203's frame after an edit was 1.82 and 6.21 ms; these loaded runs
+  cannot establish a comparable change from that quiet-machine baseline. A quiet re-measure is
+  tracked in #743. The spread matters as much as the figures: runs taken earlier the same day, while other builds held the load average at 40-55, came out up to 3× worse
+  (a 1,000-node pan read 9.4 ms in one and 27.7 ms in the other). Pass `--test-threads=1` when
+  rerunning, or the ignored cases share the machine with each other on top of everything else.
 - Grid dots keep a fixed screen size. When zooming out would put them closer than 12 points, the
   grid skips every other dot (`canvas::grid_step`), so it never turns into a haze; at most 120,000
   dots are drawn per frame, and they are tiny squares (4 vertices) rather than circles.

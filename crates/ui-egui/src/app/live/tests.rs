@@ -106,6 +106,43 @@ fn a_failing_action_is_reported_once_and_not_retried_until_an_edit() {
     assert_eq!(h.state().session.revision(), revision);
 }
 
+/// The seam is `Live::pending_looks`, a count on the app of the frames that asked the engine what
+/// live work is pending (#556). The `Settled` skip changes no document, no notice, no result and
+/// no message, so without a count the only assertion left would be one about wall-clock time,
+/// which measures this machine rather than the code.
+#[test]
+fn a_move_skips_the_live_look_and_a_parameter_edit_still_asks() {
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app());
+    settle(&mut h, |app| output(app).is_some());
+    let canvas = h.state().canvas;
+    let source = *h.state().session.document().canvases().get(&canvas).unwrap().nodes().keys().next().unwrap();
+    // The look that follows the result finds nothing to do: that is what a move is skipped by.
+    for _ in 0..20 {
+        h.step();
+    }
+    assert!(h.state().live.settled.is_some(), "the canvas has settled");
+    let looks = h.state().live.pending_looks;
+
+    // A move on a settled canvas changes where a card is, which nothing a run reads.
+    let revision = h.state().session.revision();
+    h.state_mut().session.dispatch("node.move", &json!({"canvas": canvas, "id": source, "pos": {"x": 40.0, "y": 80.0}})).unwrap();
+    h.step();
+    assert!(h.state().session.revision() > revision, "the move did happen");
+    assert_eq!(h.state().live.pending_looks, looks, "and still the app never asked what is pending");
+    assert!(h.state().live.running.is_none(), "so no worker started");
+
+    // A parameter edit on that same non-action node changes what the action reads: it asks, and
+    // the result follows.
+    h.state_mut()
+        .session
+        .dispatch("node.param_set", &json!({"canvas": canvas, "id": source, "name": "text", "value": Value::Text("a quiet harbour at dusk".into())}))
+        .unwrap();
+    h.step();
+    assert!(h.state().live.pending_looks > looks, "a parameter edit takes the full look");
+    settle(&mut h, |app| output(app).is_some_and(|out| out.contains("harbour") && !out.contains("forest")));
+    assert!(output(h.state()).is_some_and(|out| out.contains("harbour")), "the action recomputed from the new text");
+}
+
 #[test]
 #[ignore = "manual public-safe PR evidence"]
 fn render_live_review_evidence() {

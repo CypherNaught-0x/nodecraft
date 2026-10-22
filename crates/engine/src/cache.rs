@@ -73,8 +73,10 @@ pub fn hits(
 ) -> Result<Vec<Hit>, Error> {
     let Some(canvas) = project.canvases().get(&canvas_id) else { return Ok(Vec::new()) };
     let mut wanted: BTreeSet<NodeId> = nodes.into_iter().filter(|id| canvas.nodes().get(id).is_some_and(|n| enabled(n, kinds))).collect();
-    // The project with this call's hits applied, copied only once there is one: most calls (one
-    // per edit, from live recompute) find none (#549).
+    // The project with this call's hits applied, copied only once there is one. Live recompute
+    // gets here only for an edit that changed what a run reads — a settled canvas skips the look
+    // entirely (#549) — and `run.reuse` gets here when asked; an input that has just changed
+    // usually matches no result to reuse, so the copy stays the exception (#556).
     let mut scratch: Option<Project> = None;
     let mut found: Vec<Hit> = Vec::new();
     while !wanted.is_empty() && found.len() < MAX_HITS {
