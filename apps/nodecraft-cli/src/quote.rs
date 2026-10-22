@@ -95,9 +95,18 @@ pub fn targets(session: &Session, canvas: CanvasId, nodes: &[NodeId]) -> Result<
 /// Builds the adapters a run of `targets` and their upstream needs with `maker`, routes the
 /// canvas's cards to them and installs empty budgets: what `run.quote` reads.
 pub fn prepare(session: &mut Session, canvas: CanvasId, targets: &[NodeId], maker: &mut Maker<'_>) -> Result<(), Error> {
+    prepare_selection(session, canvas, targets, maker, true)
+}
+
+/// The same routing setup for a command whose selected/field mode excludes upstream cards.
+pub fn prepare_selection(session: &mut Session, canvas: CanvasId, targets: &[NodeId], maker: &mut Maker<'_>, upstream: bool) -> Result<(), Error> {
     let graph = session.document().canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "no such canvas"))?;
-    let stale = nodecraft_exec::staleness::stale(graph, session.kinds())?;
-    let mut reached = with_upstream(graph, targets, &stale);
+    let mut reached = if upstream {
+        let stale = nodecraft_exec::staleness::stale(graph, session.kinds())?;
+        with_upstream(graph, targets, &stale)
+    } else {
+        targets.iter().copied().collect()
+    };
     let (adapters, inner) = adapters_of(session, graph)?;
     reached.extend(inner.iter().filter(|(_, owner)| reached.contains(owner)).map(|(id, _)| *id).collect::<Vec<_>>());
     let needed: BTreeSet<&str> = reached.iter().filter_map(|node| adapters.get(node).map(String::as_str)).collect();

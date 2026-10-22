@@ -154,7 +154,9 @@ the step unknown before execution. New quotes change the quote token, so a run q
 them must be quoted again. The desktop confirmation asks for estimates by itself when part of the
 price is unknown (also when a budget refuses that unknown part), says the inputs are sent while it
 asks, then re-prices. Mock fixtures cover this (`MockProvider::with_quote`); nothing
-here calls a real provider in tests.
+here calls a real provider in tests. Native CLI `quote`/`run --estimate` and standalone MCP also
+wait for their matching terminal estimate before the next quote; see [MCP server](mcp.md#tools)
+for the result fields, input-upload behavior and timeout.
 
 ## Live tests
 

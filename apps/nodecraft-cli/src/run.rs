@@ -76,6 +76,15 @@ impl Runner {
     /// A runner whose commands are registered in `services`; give them to the session, then
     /// [`Self::install`] it.
     pub fn new(services: &mut Services, session_id: String) -> Result<Self, Error> {
+        Self::with_runs(services, session_id, true)
+    }
+
+    /// A host that can ask prices but cannot submit paid work (standalone MCP and `quote`).
+    pub fn estimates_only(services: &mut Services, session_id: String) -> Result<Self, Error> {
+        Self::with_runs(services, session_id, false)
+    }
+
+    fn with_runs(services: &mut Services, session_id: String, runs: bool) -> Result<Self, Error> {
         let tokio = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("nodecraft-runs")
@@ -92,10 +101,51 @@ impl Runner {
             }),
         };
         let host = RunHost::new(runtime, budget);
-        host.register(services)?;
-        host.register_ownership(services)?;
-        host.register_resolution(services)?;
+        if runs {
+            host.register(services)?;
+            host.register_ownership(services)?;
+            host.register_resolution(services)?;
+        }
+        host.register_estimates(services)?;
         Ok(Self { host, tokio: Some(tokio) })
+    }
+
+    /// Dispatches the shared estimate command and waits for its own terminal host notice.
+    /// The engine finishes partial answers after 60 seconds; the outer deadline also bounds a
+    /// broken host. No run is started, no consent is accepted, and no generation is submitted.
+    pub fn estimate(&mut self, session: &mut Session, params: &Value) -> Result<Value, Error> {
+        if self.host.is_busy() {
+            return Err(Error::new(ErrorKind::Busy, "finish the active run before asking for provider prices"));
+        }
+        let accepted = session.dispatch("run.estimate", params)?;
+        let request = accepted.get("request").and_then(Value::as_u64).ok_or_else(|| Error::new(ErrorKind::Internal, "the estimate returned no request id"))?;
+        Ok(self.wait_estimate(session, request, Duration::from_secs(62)))
+    }
+
+    fn wait_estimate(&mut self, session: &mut Session, request: u64, timeout: Duration) -> Value {
+        let started = Instant::now();
+        loop {
+            for notice in self.host.pump(session) {
+                match notice {
+                    RunNotice::Estimated { request: done, canvas, quoted, unquoted } if done == request => {
+                        return json!({"accepted": true, "request": request, "status": "estimated", "canvas": canvas, "quoted": quoted, "unquoted": unquoted});
+                    }
+                    RunNotice::NotEstimated { request: done, reason } if done == request => {
+                        return json!({"accepted": true, "request": request, "status": "not_estimated", "reason": reason});
+                    }
+                    _ => {}
+                }
+            }
+            if started.elapsed() >= timeout {
+                return json!({"accepted": true, "request": request, "status": "not_estimated", "reason": "the price request did not finish within the headless wait limit"});
+            }
+            std::thread::sleep(PUMP_EVERY);
+        }
+    }
+
+    /// Refreshes estimates/expiry for a headless host that has no background frame pump.
+    pub fn refresh_estimates(&mut self, session: &mut Session) {
+        let _ = self.host.pump(session);
     }
 
     /// Hands the run host's budget state to `session`; call after the providers are routed.
@@ -118,8 +168,7 @@ impl Runner {
         loop {
             for notice in self.host.pump(session) {
                 match notice {
-                    // Only placing a held result by hand raises `Placed`; nothing here asks for
-                    // estimates.
+                    // Estimates were awaited before this run; only manual placement raises `Placed`.
                     RunNotice::Started { .. }
                     | RunNotice::Unsaved { .. }
                     | RunNotice::Placed { .. }
@@ -339,7 +388,7 @@ pub fn report_text(report: &Value) -> String {
     if out.is_empty() {
         out.push_str("Nothing needed running.\n");
     }
-    out
+    format!("{}{}", crate::estimates::summary(&report["estimate"]), out)
 }
 
 #[cfg(test)]
