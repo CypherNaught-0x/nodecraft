@@ -2,6 +2,7 @@ use super::*;
 use egui_kittest::{Harness, kittest::Queryable};
 use nodecraft_types::Value;
 use serde_json::json;
+use std::sync::Arc;
 
 const REPLACE: NodeId = NodeId::from_bytes([77; 16]);
 

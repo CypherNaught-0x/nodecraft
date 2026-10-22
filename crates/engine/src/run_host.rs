@@ -187,6 +187,8 @@ struct Active {
     run: AuthorizedRun,
     runner: Arc<Either>,
     actions: Arc<LocalActions>,
+    /// The granted plugins' actions the run started with (#173).
+    plugins: Option<Arc<crate::plugin_runtime::PluginSnapshot>>,
     mailbox: Arc<Mutex<Mailbox>>,
     handle: Option<Handle>,
     /// Model jobs, which settle when they end without a result.
@@ -768,7 +770,9 @@ impl RunHost {
         let templates: Arc<Mutex<BTreeMap<JobId, Submitted>>> = Arc::default();
         let provider = provider.with_stage(self.stage(seq, &templates));
         let actions = Arc::new(LocalActions::new(session.assets().clone()).with_video_tools(self.video_tools.clone()));
-        let sources = SourceRunner::default().with_actions(actions.clone());
+        let plugins = (!session.plugins().is_empty()).then(|| Arc::clone(session.plugins()));
+        let routed = crate::plugin_runtime::Routed { local: actions.clone(), plugins: plugins.clone() };
+        let sources = SourceRunner::default().with_actions(Arc::new(routed));
         let runner = Arc::new(Either { provider: Arc::new(provider), sources, local: Mutex::default() });
         let (driver, handle) = driver(Scheduler::new(Default::default()));
         let mut active = Active {
@@ -777,6 +781,7 @@ impl RunHost {
             run,
             runner,
             actions,
+            plugins,
             mailbox,
             handle: Some(handle),
             provider_jobs: BTreeSet::new(),
@@ -1208,7 +1213,15 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
                 return Err("a rendered video changed while it was imported".into());
             }
         }
-        return Ok((take_outputs(&active.runner.sources.outputs, job), None));
+        let outputs = take_outputs(&active.runner.sources.outputs, job);
+        // A plugin's result is recorded only while the grant it ran under stands (#173).
+        if let Some(JobSpec::Action { action, .. }) = active.run.work(job)
+            && crate::plugin_runtime::is_plugin(action)
+            && !active.plugins.as_ref().and_then(|p| p.get(action)).is_some_and(|a| !a.is_revoked())
+        {
+            return Err("this plugin's grant was revoked; its result was dropped".into());
+        }
+        return Ok((outputs, None));
     }
     let delivery = lock(&active.mailbox).deliveries.remove(&job).ok_or("the model's result went missing")?;
     let Some(JobSpec::Generate { node: step, outputs: routes, .. }) = active.run.work(job) else { return Err("the job is not a model call".into()) };

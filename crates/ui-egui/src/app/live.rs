@@ -12,7 +12,6 @@ use super::NodeCraftApp;
 use nodecraft_engine::live_actions::{self, Draft, LiveJob, LiveOutcome, LivePreview};
 use nodecraft_types::{CanvasId, Error, NodeId};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
@@ -32,7 +31,6 @@ pub(super) struct Live {
     /// Nodes that failed, with the input hash they failed with: not retried (or reported
     /// again) until their inputs or settings change.
     failed: BTreeMap<NodeId, nodecraft_types::Blake3>,
-    kinds: Option<Arc<nodecraft_nodes::Registry>>,
     /// The canvas as it was when there was nothing to recompute: moving its nodes changes the
     /// revision but not that (#549).
     settled: Option<live_actions::Settled>,
@@ -173,22 +171,12 @@ impl NodeCraftApp {
 
     /// Computes `job` on a worker thread (in this frame in the browser, which has none).
     fn live_spawn(&mut self, ctx: &egui::Context, job: LiveJob) {
-        let kinds = match &self.live.kinds {
-            Some(kinds) => Arc::clone(kinds),
-            None => match nodecraft_nodes::Registry::builtins() {
-                Ok(kinds) => Arc::clone(self.live.kinds.insert(Arc::new(kinds))),
-                Err(error) => {
-                    log::warn!("live recompute unavailable: {}", error.message);
-                    return;
-                }
-            },
-        };
         let (send, receive) = channel();
         // The browser has no worker threads: there the round runs in this frame. A drag's
         // previews are small; a full-size render holds the frame once, as a click's work would.
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = send.send(live_actions::compute(job, &kinds));
+            let _ = send.send(live_actions::compute(job));
             self.live.running = Some(receive);
             ctx.request_repaint();
         }
@@ -196,7 +184,7 @@ impl NodeCraftApp {
         {
             let repaint = ctx.clone();
             let started = std::thread::Builder::new().name("nodecraft-live".into()).spawn(move || {
-                let _ = send.send(live_actions::compute(job, &kinds));
+                let _ = send.send(live_actions::compute(job));
                 repaint.request_repaint();
             });
             match started {

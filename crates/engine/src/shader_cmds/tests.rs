@@ -72,7 +72,7 @@ fn a_shader_node_runs_live_on_the_gpu() {
     )
     .unwrap();
     let job = pending(&s, CANVAS, &Default::default()).unwrap().unwrap();
-    let outcome = compute(job, &nodecraft_nodes::Registry::builtins().unwrap()).unwrap();
+    let outcome = compute(job).unwrap();
     assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
     assert!(apply(&mut s, outcome).unwrap());
     let node = s.document().canvases().get(&CANVAS).unwrap().nodes().get(&SHADER).unwrap();
