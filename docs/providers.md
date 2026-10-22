@@ -726,8 +726,9 @@ name the type asked for. The request names the public link. A Genjutsu source is
 `video/mp4` (Higgsfield's uploads take no other video type, so convert a QuickTime or WebM clip
 first; planning refuses any other type before anything is sent). Higgsfield takes sources of up to
 200 MiB, but NodeCraft reads at most 64 MiB of media for one job, the source and its images
-together, so keep the source under that. Its reference images follow in order, at most 20 MiB
-each. Uploads may take two minutes plus 8 ms per KiB, enough for a 1 Mbit/s uplink.
+together, so keep the source under that (`run.quote` shows a run over it as blocked). Its
+reference images follow in order, at most 20 MiB each. Uploads may take two minutes plus 8 ms
+per KiB, enough for a 1 Mbit/s uplink.
 
 **Idempotency and replay.** Each submit carries the run's idempotency key (hashed if Higgsfield
 wouldn't accept it as is). The staged body is kept per key and job, so a retry after a lost reply

@@ -41,6 +41,7 @@ const READER: NodeId = NodeId::from_bytes([1; 16]);
 const READER_MODEL: &str = "fixture.reader";
 const MIXER_MODEL: &str = "fixture.mixer";
 const PAIR_MODEL: &str = "fixture.pair";
+const ALBUM_MODEL: &str = "fixture.album";
 
 fn model(id: &str, output: &str, modes: &str) -> Catalog {
     Catalog::from_toml(&format!(
@@ -58,8 +59,8 @@ pricing = {{ type = "per_call", price = "0.01 USD" }}
     .unwrap()
 }
 
-/// A text model that reads up to two images, one that compares two or three, and an image model
-/// with one optional role of every media modality.
+/// A text model that reads up to two images, one that compares two or three, one that reads up to
+/// six, and an image model with one optional role of every media modality.
 fn catalog() -> Catalog {
     let mut catalog = model(
         READER_MODEL,
@@ -105,8 +106,21 @@ inputs = [
 ]
 "#,
     );
+    let album = model(
+        ALBUM_MODEL,
+        "text",
+        r#"[[model.modes]]
+id = "album"
+output = "text"
+inputs = [
+  { role = "prompt", modality = "text", min = 1, max = 1, inline = true },
+  { role = "image", modality = "image", min = 1, max = 6 },
+]
+"#,
+    );
     catalog.merge(mixer).unwrap();
     catalog.merge(pair).unwrap();
+    catalog.merge(album).unwrap();
     catalog
 }
 
@@ -241,6 +255,30 @@ fn oversized_media_is_refused_before_any_bytes_are_read() {
     assert_eq!(generate::provider_job(&job(vec![asset(1, "image/png")]), "k").unwrap_err().kind, ErrorKind::Unsupported);
 }
 
+#[test]
+fn media_too_large_for_one_call_is_blocked_in_the_quote_and_refused_at_start() {
+    // Five wires of one file, together just over the cap (#675).
+    let padding = usize::try_from(MAX_MEDIA_INPUT_BYTES / 5).unwrap();
+    let (mut s, captured, mock, _) = session_padded(ALBUM_MODEL, "image", 5, padding);
+    let q = s.dispatch("run.quote", &request()).unwrap();
+    assert_eq!(q["allowed"], false, "{q}");
+    let [reason] = q["blocked"].as_array().unwrap().as_slice() else { panic!("{q}") };
+    let reason = reason.as_str().unwrap();
+    assert!(reason.starts_with(&format!("node {READER} [media_too_large]")), "{reason}");
+    assert!(reason.contains("65 MiB") && reason.contains("the 64 MiB one model call can send") && reason.contains("image"), "{reason}");
+    // Even with the token, the run can't start, so nothing is handed to the host or sent.
+    let mut start = request();
+    start["accept"] = json!({"token":q["token"],"partial":false,"unpriced_jobs":0,"amounts":{"USD":10_000}});
+    let refused = s.dispatch("run.start", &start).unwrap_err();
+    assert!(refused.message.contains("[media_too_large]"), "{refused}");
+    assert!(captured.lock().unwrap().is_empty());
+    assert!(mock.requests().is_empty());
+    // Under the cap it is quoted as usual.
+    let (mut s, ..) = session_padded(ALBUM_MODEL, "image", 5, padding - 1024);
+    let q = s.dispatch("run.quote", &request()).unwrap();
+    assert_eq!(q["allowed"], true, "{q}");
+}
+
 #[derive(Default)]
 struct Immediate(Arc<AtomicU64>);
 impl Runtime for Immediate {
@@ -271,6 +309,12 @@ fn session(port: &str) -> (Session, Captured, MockProvider, Vec<u8>) {
 /// A text card running `model` with `wires` distinct stored PNGs wired into its `port`. Edge
 /// order runs opposite to creation order, so the job's order proves which one the planner used.
 fn session_with(model: &str, port: &str, wires: u8) -> (Session, Captured, MockProvider, Vec<Vec<u8>>) {
+    session_padded(model, port, wires, 0)
+}
+
+/// [`session_with`], each PNG followed by `padding` zero bytes. Padded wires share one stored
+/// file, which keeps the store small while every wire still counts towards the call.
+fn session_padded(model: &str, port: &str, wires: u8, padding: usize) -> (Session, Captured, MockProvider, Vec<Vec<u8>>) {
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([51; 16]), "Media inputs").unwrap();
@@ -306,7 +350,8 @@ fn session_with(model: &str, port: &str, wires: u8) -> (Session, Captured, MockP
     s.set_provider_routing(routing).unwrap();
     let mut images = Vec::new();
     for i in 0..wires {
-        let bytes = png(40 + i);
+        let mut bytes = png(if padding == 0 { 40 + i } else { 40 });
+        bytes.resize(bytes.len() + padding, 0);
         let hash = s.import_asset(&bytes).unwrap();
         let supplied = [(
             "asset".into(),

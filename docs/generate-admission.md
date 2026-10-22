@@ -14,6 +14,13 @@ parameter names and idempotency key count. Media inputs need a `MediaSource` (#5
 512 plus its MIME, and their stored sizes are summed against 64 MiB before any bytes are read. These logical bounds
 are not exact JSON sizes, allocator backing or RSS limits.
 
+The media sum is checked earlier too (#675): for each planned job whose inputs are already known,
+`run.quote` adds a `node <id> [media_too_large]` reason to `blocked` (giving the total in MiB,
+rounded up, and the role of the largest input) and `run.start` refuses the run, so an oversized
+call is caught before its cost is accepted. Each wire counts, even when several wires carry the
+same file. An input whose size can't be found, or one produced by an earlier step of the same run,
+is left to admission when the job runs.
+
 Results retain the 4,096 item/route ceiling, 1 MiB aggregate routed text, 256 MiB binary item/raw
 aggregate ceiling and 8 MiB converted representation/work budget. Existing route/record/string/media
 charges remain. A private borrowed classification proof additionally costs 64 logical bytes per
