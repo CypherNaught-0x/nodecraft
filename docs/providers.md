@@ -864,7 +864,7 @@ local ComfyUI adapter's: `params.workflow` in API format, `params.values` overri
   fraction and message, and failures with the node that failed. Finished outputs are downloaded
   from `/api/v2/assets/{id}/content` with the key, and its redirect to a signed `https` storage
   URL is followed without it (no request follows redirects on its own). Outputs are capped per
-  file (512 MiB), in total (2 GiB) and in count (256), sniffed, and latents are skipped; an
+  file and in total (256 MiB, all NodeCraft keeps of one run) and in count (256), sniffed, and latents are skipped; an
   expired signed link is a retryable failure so the next poll fetches fresh ones, while Comfy's own
   refusal of a download (a revoked key, an expired asset, blocked content) is reported as such.
 - **Cancel** posts to `/api/v2/jobs/{id}/cancel`.

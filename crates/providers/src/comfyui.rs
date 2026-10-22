@@ -234,6 +234,8 @@ impl ComfyProvider {
             uploads.push((node, name, loader, bytes));
         }
         workflow.check(catalog).into_result().map_err(from_catalog)?;
+        // Every input is checked before any is uploaded: a refused run leaves nothing on the server.
+        let mut checked_uploads = Vec::with_capacity(uploads.len());
         for (node, name, loader, bytes) in uploads {
             let checked = crate::check_media(bytes, None).map_err(plain)?;
             upload::check_kind(&format!("{node}.{name}"), loader, bytes, checked.mime)
@@ -247,6 +249,9 @@ impl ComfyProvider {
                     format!("can't upload {node}.{name}: NodeCraft can't read {} files yet; convert the input to PNG or JPEG", checked.mime),
                 )));
             }
+            checked_uploads.push((node, name, bytes, checked));
+        }
+        for (node, name, bytes, checked) in checked_uploads {
             let ext = upload::extension(checked.mime);
             // Named by content: a name collision means identical bytes, so overwriting is harmless
             // and repeated uploads of the same input dedupe.
@@ -724,8 +729,9 @@ mod tests {
             model: "comfyui:workflow".into(),
             params: serde_json::json!({"workflow": workflow}).as_object().cloned().unwrap(),
             inputs: vec![
-                JobInput::Media { role: sound_to.into(), mime: "audio/wav".into(), bytes: Arc::from(WAV) },
+                // The video comes first, so a refused sound shows nothing at all was uploaded.
                 JobInput::Media { role: "2.file".into(), mime: "video/mp4".into(), bytes: Arc::from(MP4) },
+                JobInput::Media { role: sound_to.into(), mime: "audio/wav".into(), bytes: Arc::from(WAV) },
             ],
             idempotency_key: "nodecraft:run-uuid:av".into(),
         }
@@ -742,7 +748,7 @@ mod tests {
             .map(|r| String::from_utf8_lossy(&r.body).split("filename=\"").nth(1).unwrap_or_default().split('"').next().unwrap_or_default().to_owned())
             .collect();
         assert_eq!(names.len(), 2, "{names:?}");
-        assert!(names[0].starts_with("nodecraft-") && names[0].ends_with(".wav") && names[1].ends_with(".mp4"), "{names:?}");
+        assert!(names[0].starts_with("nodecraft-") && names[0].ends_with(".mp4") && names[1].ends_with(".wav"), "{names:?}");
         assert!(seen.iter().any(|r| r.url.ends_with("/prompt")));
     }
 
