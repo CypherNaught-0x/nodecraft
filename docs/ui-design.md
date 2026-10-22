@@ -84,8 +84,8 @@ selected border more visible than the resting one, in both themes.
 | Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, ↑↓ to move, ↵ to choose, Escape or a click elsewhere to close. A kind is created where you double-clicked |
 | ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; a copied image (desktop) pastes as an Image node at the pointer, read off the UI thread, encoded as PNG and held to 16384×16384 pixels and 16 MiB, one undo step (#319) |
 | ⌘/Ctrl+D outside text fields | duplicate the selection, offset 40 points |
-| `F` (no modifier, outside text fields) | make a field: around the selected cards, which become its members, or an empty 320×240 zone at the pointer (`field.create`, one undo step). The new field is selected |
-| Drag a field's header / its lower-right corner | move the field and every member (`field.move`) / resize the zone alone (`field.update`); one undo step on release, Escape cancels. Double-click the header to collapse or expand it |
+| `F` (no modifier, outside text fields) | make a field: around the selected cards, which become its members, or an empty 320×240 zone at the pointer (`field.create`, one undo step). The zone takes in every selected card, including one added this frame. The new field is selected |
+| Drag a field's header / its lower-right corner | move the field and every member (`field.move`) / resize the zone alone (`field.update`); one undo step on release, Escape cancels. Double-click the header to collapse or expand it. Shift-drag from a header or corner draws a box select, as anywhere else on the canvas |
 | Right-click a field's header | rename, collapse or expand, fit to members, colour, or remove the field (its nodes stay) |
 | Right-click a card → **Field** | move the selected nodes into a field, or take them out (`node.field_set`) |
 | Right-click (or long-press) a card | menu: select the upstream / downstream chain of the selection, or all nodes of the card's kind; an unselected card becomes the selection first |
@@ -311,7 +311,8 @@ Fields (#66) draw on the canvas layer, under the noodles and cards, in their pal
 field's outline uses `accent`. `F` pads the selection by `field_padding` (32) plus the header;
 a resize stops at `field_min_width` × `field_min_height` (160 × 96). Membership is explicit:
 moving a card over a zone doesn't join it. A collapsed field shows only its header: members
-aren't drawn, select-all and box select skip them, and their noodles end at the header.
+aren't drawn, select-all and box select skip them, and their noodles end at the header. Member
+counts and the hidden set are worked out once per document revision, not per frame.
 
 ## Clipboard admission and placement
 

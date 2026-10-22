@@ -19,6 +19,16 @@ pub(super) struct Fields {
     /// The field being renamed and its draft title.
     pub(super) rename: Option<(FieldId, String)>,
     owner: Option<(CanvasId, Arc<()>)>,
+    membership: Option<((CanvasId, u64), Arc<Membership>)>,
+}
+
+/// Who is in which field, worked out once per document revision (#709).
+#[derive(Default)]
+pub(super) struct Membership {
+    /// Nodes in a collapsed field: their cards are not drawn and can't be selected.
+    pub(super) hidden: BTreeSet<NodeId>,
+    /// Member count per field.
+    pub(super) counts: BTreeMap<FieldId, usize>,
 }
 
 /// A header (move) or corner (resize) drag, previewed locally and dispatched on release.
@@ -47,9 +57,31 @@ pub(super) fn world_rect(field: &Field, t: &Tokens, zoom: f32) -> Rect {
     Rect::from_min_size(Pos2::new(field.rect.pos.x, field.rect.pos.y), Vec2::new(field.rect.width, height))
 }
 
-/// Nodes in a collapsed field: their cards are not drawn and can't be selected.
-pub(super) fn hidden(canvas: &Canvas) -> BTreeSet<NodeId> {
-    canvas.nodes().values().filter(|node| node.field.and_then(|f| canvas.fields().get(&f)).is_some_and(|f| f.collapsed)).map(|node| node.id).collect()
+impl Membership {
+    fn of(canvas: &Canvas) -> Self {
+        let mut membership = Self::default();
+        for node in canvas.nodes().values() {
+            let Some(field) = node.field.and_then(|f| canvas.fields().get(&f)) else { continue };
+            let count = membership.counts.entry(field.id).or_default();
+            *count = count.saturating_add(1);
+            if field.collapsed {
+                membership.hidden.insert(node.id);
+            }
+        }
+        membership
+    }
+}
+
+/// The world rect around `nodes`' cards, with room for every one of them: measured geometry
+/// where there is some, else the stored position, so a card without geometry yet (just added,
+/// or one that failed to measure) still ends up inside the zone (#709).
+fn members_rect(canvas: &Canvas, rects: &BTreeMap<NodeId, Rect>, nodes: impl Iterator<Item = NodeId>) -> Option<Rect> {
+    nodes
+        .filter_map(|id| {
+            rects.get(&id).copied().or_else(|| canvas.nodes().get(&id).map(|node| Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::ZERO)))
+        })
+        .filter(|rect| rect.is_finite())
+        .reduce(|a, b| a.union(b))
 }
 
 /// Where noodles to hidden nodes end: their collapsed field's header, following it while it is
@@ -144,13 +176,27 @@ impl NodeCraftApp {
         if self.fields.drag.as_ref().is_some_and(|drag| drag.revision != self.session.revision() || !exists(&drag.id)) {
             self.fields.drag = None;
         }
-        let hidden = hidden(canvas);
-        if !hidden.is_empty() {
-            self.selection.remove_nodes(&hidden);
+        let membership = self.membership();
+        if !membership.hidden.is_empty() {
+            self.selection.remove_nodes(&membership.hidden);
         }
         if !self.selection.is_empty() {
             self.fields.selected = None;
         }
+    }
+
+    /// This revision's field membership, recomputed only when the document changes. The field
+    /// view state, and so this cache, resets with the session or canvas.
+    pub(super) fn membership(&mut self) -> Arc<Membership> {
+        let key = (self.canvas, self.session.revision());
+        if let Some((cached, membership)) = &self.fields.membership
+            && *cached == key
+        {
+            return Arc::clone(membership);
+        }
+        let membership = Arc::new(self.session.document().canvases().get(&self.canvas).map(Membership::of).unwrap_or_default());
+        self.fields.membership = Some((key, Arc::clone(&membership)));
+        membership
     }
 
     /// Where a field drag shows a member card this frame.
@@ -184,7 +230,13 @@ impl NodeCraftApp {
     /// `F`: a field around the selected cards, or an empty one at the pointer. One undo step.
     pub(super) fn quick_field(&mut self, pointer: Option<Pos2>) {
         let t = self.theme.tokens();
-        let members = self.selection.nodes().iter().filter_map(|id| self.navigation.geometry.rects.get(id).copied()).reduce(|a, b| a.union(b));
+        self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
+        let members = self
+            .session
+            .document()
+            .canvases()
+            .get(&self.canvas)
+            .and_then(|canvas| members_rect(canvas, &self.navigation.geometry.rects, self.selection.nodes().iter().copied()));
         let rect = match members {
             Some(members) => zone(members, t),
             None => {
@@ -220,6 +272,11 @@ impl NodeCraftApp {
         let pointer = ui.input(|i| i.pointer.interact_pos());
         let typing = self.text_focused || canvas::text_input_focused(ui.ctx());
         let sense = if blocked || typing { Sense::hover() } else { Sense::click_and_drag() };
+        // Shift-drag on a header or a resize corner draws a marquee, as it does everywhere else.
+        let header_sense = if sense.senses_drag() && ui.input(|i| i.modifiers.shift) { Sense::click() } else { sense };
+        // No geometry refresh here: Fit to members falls back to a card's stored position, and
+        // a second full refresh in a frame that took remote edits blows the frame budget.
+        let membership = self.membership();
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return pan };
         let painter = ui.painter_at(viewport);
         for field in canvas.fields().values() {
@@ -238,7 +295,7 @@ impl NodeCraftApp {
             let header = Rect::from_min_size(screen.min, Vec2::new(screen.width(), (header_height(t, zoom) * zoom).min(screen.height())));
             painter.rect_filled(header, t.panel_radius, color.gamma_multiply(t.field_fill_opacity * 2.0));
             let name = label(&field.title);
-            let members = canvas.nodes().values().filter(|n| n.field == Some(field.id)).count();
+            let members = membership.counts.get(&field.id).copied().unwrap_or(0);
             let marker = if field.collapsed { "+" } else { "−" };
             let mut job = egui::text::LayoutJob::simple_singleline(
                 format!("{marker}  {name} · {members}"),
@@ -255,7 +312,7 @@ impl NodeCraftApp {
             let text_at = Pos2::new(header.min.x + t.control_gap, header.center().y - galley.size().y * 0.5);
             painter.with_clip_rect(header.intersect(viewport)).galley(text_at, galley, t.text);
 
-            let response = ui.interact(header, ui.id().with(("field", field.id)), sense);
+            let response = ui.interact(header, ui.id().with(("field", field.id)), header_sense);
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !blocked, format!("Field {name}")));
             if response.dragged_by(egui::PointerButton::Middle) || response.dragged_by(egui::PointerButton::Secondary) {
                 pan += response.drag_delta();
@@ -285,12 +342,8 @@ impl NodeCraftApp {
                         action = Some(("field.update", json!({"canvas": self.canvas, "field": field.id, "collapsed": !field.collapsed})));
                         ui.close();
                     }
-                    let members = canvas
-                        .nodes()
-                        .values()
-                        .filter(|n| n.field == Some(field.id))
-                        .filter_map(|n| self.navigation.geometry.rects.get(&n.id).copied())
-                        .reduce(|a, b| a.union(b));
+                    let members =
+                        members_rect(canvas, &self.navigation.geometry.rects, canvas.nodes().values().filter(|n| n.field == Some(field.id)).map(|n| n.id));
                     if ui.add_enabled(members.is_some(), egui::Button::new("Fit to members")).on_disabled_hover_text("The field has no members").clicked()
                         && let Some(members) = members
                     {
@@ -315,7 +368,7 @@ impl NodeCraftApp {
             if !field.collapsed {
                 let side = (t.field_header_height * 0.5 * zoom).min(screen.width()).min(screen.height() - header.height()).max(0.0);
                 let handle = Rect::from_min_size(screen.max - Vec2::splat(side), Vec2::splat(side));
-                let corner = ui.interact(handle, ui.id().with(("field_resize", field.id)), sense);
+                let corner = ui.interact(handle, ui.id().with(("field_resize", field.id)), header_sense);
                 corner.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !blocked, format!("Resize field {name}")));
                 painter.line_segment([handle.left_bottom(), handle.right_top()], egui::Stroke::new(t.handle_stroke, color));
                 if corner.hovered() || corner.dragged() {

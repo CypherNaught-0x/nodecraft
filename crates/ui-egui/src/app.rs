@@ -1382,9 +1382,11 @@ impl NodeCraftApp {
                 },
                 None => {}
             }
-            if select_all && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
-                let hidden = fields::hidden(canvas);
-                self.selection.replace(canvas.nodes().keys().filter(|id| !hidden.contains(id)).copied().collect());
+            if select_all {
+                let membership = self.membership();
+                if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
+                    self.selection.replace(canvas.nodes().keys().filter(|id| !membership.hidden.contains(id)).copied().collect());
+                }
             }
             // Quick-add moved to the end of the frame (`quick_add` below), after every floating
             // Window has laid out, so the canvas can tell whether it really owns the pointer.
@@ -1426,7 +1428,8 @@ impl NodeCraftApp {
         {
             self.marquee = Some(Marquee { start: self.view.to_world(viewport.min, origin), base: self.selection.clone(), cancelled: false });
         }
-        let collapsed = self.session.document().canvases().get(&self.canvas).map(fields::hidden).unwrap_or_default();
+        let membership = self.membership();
+        let collapsed = &membership.hidden;
         let over_card = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pointer| {
             // navigation_overlay refreshed actual-instance geometry for this revision above.
             // The visible-card schema cache is refreshed later and may still describe an old size.
@@ -1494,6 +1497,8 @@ impl NodeCraftApp {
             && ui.input(|i| i.raw.hovered_files.is_empty() && i.raw.dropped_files.is_empty());
         // Cards the viewers' capture buttons asked for last frame.
         self.take_mesh_captures();
+        // After `fields_show`, which may have collapsed or expanded a field this frame.
+        let membership = self.membership();
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
@@ -1511,7 +1516,7 @@ impl NodeCraftApp {
             self.mention_cache.refresh(self.session.revision(), self.canvas, canvas, kinds);
             let mention_cards = &self.mention_cache.cards;
             let mention_blocked = &self.mention_cache.blocked;
-            let hidden = fields::hidden(canvas);
+            let hidden = &membership.hidden;
             let field_shift = self.field_shift();
             for node in
                 canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
@@ -1880,9 +1885,9 @@ impl NodeCraftApp {
                 curves(canvas, &self.painted, kinds, t)
             } else {
                 let mut geometry = self.painted.clone();
-                geometry.extend(fields::stand_ins(canvas, &hidden, t, self.view.zoom, field_shift));
+                geometry.extend(fields::stand_ins(canvas, hidden, t, self.view.zoom, field_shift));
                 let mut curves = curves(canvas, &geometry, kinds, t);
-                curves.retain(|(id, _, _)| canvas.edges().get(id).is_none_or(|edge| !fields::inside_collapsed(canvas, &hidden, edge.from.node, edge.to.node)));
+                curves.retain(|(id, _, _)| canvas.edges().get(id).is_none_or(|edge| !fields::inside_collapsed(canvas, hidden, edge.from.node, edge.to.node)));
                 curves
             };
             if !overlay_blocks && !file_owns_input && !file_menu_owns_input && background.clicked() {
@@ -2013,7 +2018,7 @@ impl NodeCraftApp {
                     selection::in_box(canvas, world, |node| box_geometry(&self.painted, &self.session, &mut self.marquee_geometry, node, world, t)),
                     curves.iter().filter(|(_, curve, _)| noodle::touches(curve, world)).map(|(id, _, _)| *id),
                 );
-                self.selection.remove_nodes(&hidden);
+                self.selection.remove_nodes(hidden);
                 // Above the card layers, which are drawn over the background painter.
                 ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("marquee"))).with_clip_rect(viewport).rect(
                     self.view.rect_to_screen(viewport.min, world),

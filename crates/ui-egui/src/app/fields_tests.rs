@@ -340,3 +340,75 @@ fn delete_removes_a_selected_field_keeping_its_cards_in_one_undo_step() {
     h.run();
     assert!(canvas(&h).fields().is_empty());
 }
+
+#[test]
+fn f_fits_the_zone_around_cards_added_this_frame() {
+    let mut h = harness();
+    h.run();
+    let first = member(&h);
+    let mut added = canvas(&h).nodes().get(&first).unwrap().clone();
+    added.id = NodeId::from_bytes([71; 16]);
+    added.pos = nodecraft_graph::Position { x: added.pos.x + 900.0, y: added.pos.y + 500.0 };
+    let canvas_id = h.state().canvas;
+    h.state_mut().session.dispatch("node.add", &json!({"canvas": canvas_id, "node": added})).unwrap();
+    // No frame in between: the new card has no geometry yet when F runs.
+    assert!(!h.state().navigation.geometry.rects.contains_key(&added.id));
+    h.state_mut().selection.replace([first, added.id].into_iter().collect());
+    h.state_mut().quick_field(None);
+    h.run();
+    let id = only_field(&h);
+    let rect = canvas(&h).fields().get(&id).unwrap().rect;
+    let zone = Rect::from_min_size(Pos2::new(rect.pos.x, rect.pos.y), Vec2::new(rect.width, rect.height));
+    for node in [first, added.id] {
+        assert_eq!(canvas(&h).nodes().get(&node).unwrap().field, Some(id));
+        assert!(zone.contains_rect(*h.state().navigation.geometry.rects.get(&node).unwrap()), "every member's card is inside the zone");
+    }
+}
+
+#[test]
+fn shift_drag_from_a_header_draws_a_marquee_instead_of_moving_the_field() {
+    let mut h = harness();
+    h.run();
+    let id = field_around_card(&mut h);
+    h.run();
+    let node = member(&h);
+    let before = h.state().session.document().clone();
+    let grab = header(&h, "Field").left_center() + Vec2::new(60.0, 0.0);
+    let to = card(&h).unwrap().right_bottom() + Vec2::new(20.0, 20.0);
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+    h.hover_at(grab);
+    h.run();
+    h.event(egui::Event::PointerButton { pos: grab, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::SHIFT });
+    h.run();
+    h.hover_at(grab + (to - grab) * 0.5);
+    h.run();
+    h.hover_at(to);
+    h.run();
+    assert!(h.state().marquee.is_some(), "shift-drag on a header starts a marquee");
+    assert!(h.state().fields.drag.is_none(), "and doesn't move the field");
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::SHIFT });
+    h.run();
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    h.run();
+    assert_eq!(h.state().session.document(), &before, "the field stays where it was");
+    assert!(h.state().selection.contains(node), "the marquee selected the card it covered");
+    assert_eq!(canvas(&h).fields().get(&id).unwrap().rect, before.canvases().get(&h.state().canvas).unwrap().fields().get(&id).unwrap().rect);
+}
+
+#[test]
+fn membership_is_worked_out_once_per_revision() {
+    let mut h = harness();
+    h.run();
+    let id = field_around_card(&mut h);
+    h.run();
+    let node = member(&h);
+    let first = h.state_mut().membership();
+    assert_eq!(first.counts.get(&id), Some(&1));
+    assert!(first.hidden.is_empty());
+    h.run();
+    assert!(Arc::ptr_eq(&first, &h.state_mut().membership()), "an unchanged document reuses it");
+    let canvas_id = h.state().canvas;
+    h.state_mut().session.dispatch("field.update", &json!({"canvas": canvas_id, "field": id, "collapsed": true})).unwrap();
+    let collapsed = h.state_mut().membership();
+    assert!(collapsed.hidden.contains(&node), "an edit recomputes it");
+}
