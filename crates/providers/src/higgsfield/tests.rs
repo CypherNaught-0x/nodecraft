@@ -736,5 +736,7 @@ fn the_soul_id_list_keeps_ready_soul_2_identities_across_pages() {
     assert_eq!(t.requests().len(), 21);
 }
 
+#[path = "replay_tests.rs"]
+mod replay_tests;
 #[path = "training_tests.rs"]
 mod training_tests;

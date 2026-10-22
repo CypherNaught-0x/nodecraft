@@ -733,10 +733,22 @@ each. Uploads may take two minutes plus 8 ms per KiB, enough for a 1 Mbit/s upli
 wouldn't accept it as is). The staged body is kept per key and job, so a retry after a lost reply
 sends the same bytes under the same key without uploading again, and Higgsfield returns the
 original request instead of starting a second one; the engine therefore retries an ambiguous submit.
-A different job under the same key is staged afresh. The cache is in memory only: after a restart a
-replay restages the image, its link changes, and Higgsfield answers that the key was used with
-different parameters. That reply is reported as "may have been billed" and never retried, so a
-second charge can't happen silently.
+A different job under the same key is staged afresh. Before the first POST the body is also saved
+in the run journal (#664), so a submit cut off by a crash or quit is sent again after the next
+launch's resume: the same bytes under the same key, without uploading again, so Higgsfield bills it
+once. If the request can't be saved, it isn't sent. If Higgsfield refuses the saved request (its
+upload links may have expired), that is reported as possibly billed and nothing is uploaded or sent
+anew. A request staged by an older NodeCraft, or one that only lived in memory, still can't be
+replayed: after a restart a replay would restage the image, its link would change, and Higgsfield
+would answer that the key was used with different parameters. That reply is reported as "may have
+been billed" and never retried, so a second charge can't happen silently.
+
+**Replay after a restart, for any adapter.** An adapter that sends a body it built from uploads calls
+`SubmitContext::stage` with that exact body (at most 1 MiB) before `paid()`; the engine saves it
+with the job in the run journal and refuses the send if that save fails. After a restart the job
+has no handle but a staged request, and `Provider::replay` sends it unchanged. Adapters that don't
+stage keep the old rule: a job with no handle after a restart is settled as unresolved, never sent
+again.
 
 **Errors.** Replies that prove nothing was accepted (400 including "too many concurrent requests",
 which waits 15 s, 401 key, 403 credits, 404, 422 validation, 423 blocked, 503 disabled), each with

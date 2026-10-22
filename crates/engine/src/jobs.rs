@@ -38,7 +38,7 @@ use nodecraft_exec::driver::{CancelToken, JobRunner, Runtime, TaskFuture};
 use nodecraft_exec::scheduler::{JobId, Outcome, Start};
 #[cfg(test)]
 use nodecraft_providers::Provider;
-use nodecraft_providers::{BoxFuture, CancelSignal, Clock, Completed, ErrorKind, JobHandle, ProviderError, ProviderJob, RunLimits, RunUpdate};
+use nodecraft_providers::{BoxFuture, CancelSignal, Clock, Completed, ErrorKind, JobHandle, ProviderError, ProviderJob, RunLimits, RunUpdate, StagedSubmit};
 
 /// Where a finished job's outputs and usage go (the engine turns the outputs into an
 /// `AddGeneration` changeset; budgets charge the usage's reported cost).
@@ -236,6 +236,9 @@ struct State {
     /// Handles of jobs a provider accepted, by provider and idempotency key, so retries resume
     /// them, and a job moved to another provider never resumes the first one's handle (#228).
     handles: HashMap<(nodecraft_types::ProviderTarget, String), JobHandle>,
+    /// Requests staged before a restart without a handle back (#664), by provider and sent key:
+    /// sent again exactly, never afresh.
+    staged: HashMap<(nodecraft_types::ProviderTarget, String), StagedSubmit>,
     /// Open reservations of jobs that haven't settled.
     reserved: HashMap<JobId, Reserved>,
     /// Jobs inside `run` right now, and those asked to settle meanwhile (done when `run` ends).
@@ -327,6 +330,7 @@ impl State {
             || self.invocations.values().any(|(_, active)| active.provider == attempt.provider && active.base == attempt.base);
         if !referenced {
             self.handles.remove(&(attempt.provider.clone(), attempt.key.clone()));
+            self.staged.remove(&(attempt.provider.clone(), attempt.key.clone()));
             self.failures.remove(&(attempt.provider.clone(), attempt.base.clone()));
         }
     }
@@ -367,6 +371,7 @@ pub struct ProviderRunner {
     on_update: Arc<UpdateSink>,
     budget: Option<JobBudget>,
     write_ahead: Option<Arc<WriteAhead>>,
+    stage: Option<Arc<Stage>>,
     kept: Arc<Mutex<KeptHandles>>,
 }
 
@@ -375,6 +380,11 @@ pub struct ProviderRunner {
 /// dies mid-submit (#508), and refuses while results it couldn't keep fill the host's held
 /// results (#369). An error stops the job before it is sent, and is its failure reason.
 pub type WriteAhead = dyn Fn(bool) -> Result<(), String> + Send + Sync;
+
+/// Called with the paid request a provider is about to send, once its adapter has staged it
+/// (#664): saves it with the job, so a restart that lost the reply sends these same bytes again
+/// under the same key. An error stops the request unsent, and is the job's failure reason.
+pub type Stage = dyn Fn(JobId, Sent<'_>, &StagedSubmit) -> Result<(), String> + Send + Sync;
 
 fn lock_log(budget: &JobBudget) -> std::sync::MutexGuard<'_, UsageLog> {
     budget.log.lock().unwrap_or_else(PoisonError::into_inner)
@@ -612,12 +622,18 @@ impl Drop for RunGuard {
 
 impl ProviderRunner {
     pub fn new(runtime: Arc<dyn Runtime>, limits: RunLimits, on_output: Arc<OutputSink>, on_update: Arc<UpdateSink>) -> Self {
-        Self { state: Arc::default(), runtime, limits, on_output, on_update, budget: None, write_ahead: None, kept: Arc::default() }
+        Self { state: Arc::default(), runtime, limits, on_output, on_update, budget: None, write_ahead: None, stage: None, kept: Arc::default() }
     }
 
     /// Calls `write_ahead` before each job is first sent (see [`WriteAhead`]).
     pub fn with_write_ahead(mut self, write_ahead: Arc<WriteAhead>) -> Self {
         self.write_ahead = Some(write_ahead);
+        self
+    }
+
+    /// Calls `stage` with each request a provider stages before sending it (see [`Stage`]).
+    pub fn with_stage(mut self, stage: Arc<Stage>) -> Self {
+        self.stage = Some(stage);
         self
     }
 
@@ -740,6 +756,28 @@ impl ProviderRunner {
         self.restore_identity(binding.target().try_clone()?, idempotency_key, generation, handle);
         Ok(())
     }
+    /// Restores a request staged before a restart that got no handle back (#664): the job sends
+    /// it again exactly, under the key it went with. Requires the actual endpoint binding.
+    pub fn restore_target_staged(
+        &self,
+        binding: &crate::provider_routing::RegisteredProvider,
+        idempotency_key: String,
+        generation: u32,
+        staged: StagedSubmit,
+    ) -> Result<(), nodecraft_types::Error> {
+        if idempotency_key.is_empty() || idempotency_key.len() > 64 || !idempotency_key.is_ascii() {
+            return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::InvalidInput, "invalid restored scheduler identity"));
+        }
+        let provider = binding.target().try_clone()?;
+        let mut s = self.lock();
+        let key = sent_key(&idempotency_key, generation);
+        if generation > 0 {
+            let n = s.failures.entry((provider.clone(), idempotency_key)).or_insert(0);
+            *n = (*n).max(generation);
+        }
+        s.staged.insert((provider, key), staged);
+        Ok(())
+    }
     fn restore_identity(&self, provider: nodecraft_types::ProviderTarget, idempotency_key: String, generation: u32, handle: JobHandle) {
         let mut s = self.lock();
         let key = sent_key(&idempotency_key, generation);
@@ -831,6 +869,7 @@ impl JobRunner for ProviderRunner {
         let on_update = Arc::clone(&self.on_update);
         let budget = self.budget.clone();
         let write_ahead = self.write_ahead.clone();
+        let stage = self.stage.clone();
         let kept = Arc::clone(&self.kept);
         Box::pin(async move {
             let lock = || state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -891,7 +930,9 @@ impl JobRunner for ProviderRunner {
                     }
                 }
             };
-            if handle.is_none() && queued.resume_only {
+            // A request staged before a restart is sent again as it was, never staged afresh.
+            let staged = if handle.is_none() { lock().staged.get(&(provider_id.clone(), key.clone())).cloned() } else { None };
+            if handle.is_none() && staged.is_none() && queued.resume_only {
                 return Outcome::Failed {
                     error: "the provider's handle for this job is gone, so it can't be followed without sending it again".into(),
                     transient: false,
@@ -1018,7 +1059,7 @@ impl JobRunner for ProviderRunner {
                         s.metadata.remove(&attempt)
                     };
                     if let Some(held) = retained {
-                        if handle.is_none() {
+                        if handle.is_none() && staged.is_none() {
                             let caps = budget.budgets.lock().unwrap_or_else(PoisonError::into_inner);
                             if caps.per_call.is_some() || caps.session.is_some() || caps.project.is_some() {
                                 drop(caps);
@@ -1042,7 +1083,9 @@ impl JobRunner for ProviderRunner {
                 if guard.metadata.is_none()
                     && let (Some(budget), Some(price)) = (&budget, queued.charged_price())
                 {
-                    match reserve(budget, &attempt, price, handle.is_some(), at_ms) {
+                    // A staged request may have been accepted before the restart, like a handled one: its
+                    // charge stays possibly billed even if the replay is refused (#664).
+                    match reserve(budget, &attempt, price, handle.is_some() || staged.is_some(), at_ms) {
                         Ok(Some(r)) => {
                             let mut s = lock();
                             let maybe = s.reserved.get(&job_id).is_some_and(|old| old.matches(&attempt) && old.maybe_billed) || r.maybe_billed;
@@ -1133,10 +1176,24 @@ impl JobRunner for ProviderRunner {
                     }
                     return Outcome::Failed { error: reason, transient: false };
                 }
-                let result = match handle {
-                    Some(handle) => nodecraft_providers::resume(queued.provider.provider().as_ref(), &handle, &signal, &clock, limits, record).await,
-                    None => nodecraft_providers::run_to_completion(queued.provider.provider().as_ref(), &queued.job, &signal, &clock, limits, record).await,
+                let provider = queued.provider.provider();
+                let result = match (handle, &staged) {
+                    (Some(handle), _) => nodecraft_providers::resume(provider.as_ref(), &handle, &signal, &clock, limits, record).await,
+                    (None, Some(staged)) => nodecraft_providers::replay(provider.as_ref(), &queued.job, staged, &signal, &clock, limits, record).await,
+                    (None, None) => {
+                        let stager = stage.clone().map(|stage| {
+                            let (job, key, base, target, attempt) = (job_id, key.clone(), start.idempotency_key.clone(), provider_id.clone(), start.attempt);
+                            Arc::new(move |staged: &StagedSubmit| stage(job, Sent { key: &key, base: &base, generation, target: &target, attempt }, staged))
+                                as Arc<nodecraft_providers::Stager>
+                        });
+                        nodecraft_providers::run_to_completion_staged(provider.as_ref(), &queued.job, stager, &signal, &clock, limits, record).await
+                    }
                 };
+                // Sent again once: a handle now follows it, and a refusal ends it.
+                let replayed = staged.is_some();
+                if replayed && !matches!(&result, Err(failure) if failure.handle.is_none() && failure.is_transient()) {
+                    lock().staged.remove(&(provider_id.clone(), key.clone()));
+                }
                 match result {
                     Ok(done) => {
                         let reserved = {

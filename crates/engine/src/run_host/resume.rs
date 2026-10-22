@@ -1,5 +1,7 @@
 //! Following jobs submitted before a restart (#508). A restored job is polled from its saved
-//! handle, never sent again: its runner registration is resume-only. When it ends its charge
+//! handle, never sent again: its runner registration is resume-only. One saved with only the
+//! request its adapter staged (#664) has that request sent again exactly, under its key, and is
+//! polled from the handle that brings. When it ends its charge
 //! settles like any other job's, and a finished one's result is recorded on its card when it can
 //! be (see [`super::RunHost::resume`]).
 use super::held::{self, Held, HeldResult};
@@ -33,6 +35,8 @@ struct Mailbox {
     deliveries: BTreeMap<JobId, CompletionDelivery>,
     outcomes: Vec<(JobId, Outcome)>,
     reports: Reports,
+    /// Handles a staged request sent again got back (#664).
+    submitted: Vec<(JobId, nodecraft_providers::JobHandle)>,
 }
 
 /// Restored jobs being followed.
@@ -75,7 +79,13 @@ impl Resumes {
                 Arc::new(move |job, delivery| {
                     lock(&deliveries).deliveries.insert(job, delivery);
                 }),
-                Arc::new(move |job, sent: Sent<'_>, update: RunUpdate| lock(&reports).reports.note(job, sent.attempt, &update)),
+                Arc::new(move |job, sent: Sent<'_>, update: RunUpdate| {
+                    let mut mailbox = lock(&reports);
+                    if let RunUpdate::Submitted(handle) = &update {
+                        mailbox.submitted.push((job, handle.clone()));
+                    }
+                    mailbox.reports.note(job, sent.attempt, &update);
+                }),
             )
             .with_budget(budget.clone()),
         );
@@ -102,7 +112,11 @@ impl Resumes {
         // at its estimate. Chat adapters answer from submit, so they save no handle to resume.
         let price = entry.priced.then(|| JobPrice::new(entry.node, entry.model.clone(), entry.estimate));
         runner.register(id, QueuedJob::resume(binding.clone(), job, price));
-        if let Err(error) = runner.restore_target_generation(binding, entry.key.clone(), entry.generation, entry.handle.clone()) {
+        let restored = match &entry.staged {
+            Some(staged) if entry.handle.remote_id.is_empty() => runner.restore_target_staged(binding, entry.key.clone(), entry.generation, staged.clone()),
+            _ => runner.restore_target_generation(binding, entry.key.clone(), entry.generation, entry.handle.clone()),
+        };
+        if let Err(error) = restored {
             runner.forget(id);
             return Err(Box::new((entry, error.message)));
         }
@@ -161,12 +175,21 @@ impl Resumes {
     }
 
     /// Absorbs what the restored jobs reported: records finished ones, settles every one that
-    /// ended. Returns how each ended.
-    pub(super) fn absorb(&mut self, session: &mut Session, budget: &JobBudget, held: &Mutex<Held>, notices: &mut Vec<RunNotice>) -> Vec<Ended> {
-        let (outcomes, mut reports) = {
+    /// ended. Returns how each ended, and whether a job sent again got a handle to save.
+    pub(super) fn absorb(&mut self, session: &mut Session, budget: &JobBudget, held: &Mutex<Held>, notices: &mut Vec<RunNotice>) -> (Vec<Ended>, bool) {
+        let (outcomes, mut reports, submitted) = {
             let mut mailbox = lock(&self.mailbox);
-            (std::mem::take(&mut mailbox.outcomes), std::mem::take(&mut mailbox.reports))
+            (std::mem::take(&mut mailbox.outcomes), std::mem::take(&mut mailbox.reports), std::mem::take(&mut mailbox.submitted))
         };
+        let mut handled = false;
+        for (id, handle) in submitted {
+            if let Some((entry, _)) = self.live.get_mut(&id) {
+                // Followed by its handle from here on, after another restart too.
+                entry.handle = handle;
+                entry.staged = None;
+                handled = true;
+            }
+        }
         self.jobs.absorb_reports(&mut reports);
         let mut ended = Vec::new();
         for (id, outcome) in outcomes {
@@ -241,7 +264,7 @@ impl Resumes {
             }
         }
         self.jobs.absorb_reports(&mut reports);
-        ended
+        (ended, handled)
     }
 }
 
