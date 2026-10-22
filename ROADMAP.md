@@ -52,7 +52,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   whose text goes into the prompt where it is mentioned and which runs first, like a wire (#505).
   Present selection makes a Deck card with a slide per card and presents it full-window; slides
   are layer stacks whose source layers show what their card shows now, and `deck.*` commands
-  list and edit them with revision checks (#122).
+  list and edit them with revision checks (#122). Edit slides opens a slide sorter beside the
+  Layer Editor's stage, to arrange each slide's text, shapes and sources (#694).
   The viewer's Photo and Views buttons add a 3D photo or a
   4/8/16-view sheet card that draws the model from the current view as an image (#112). PDFs become PDF cards showing the
   first page and page count; PDF to images draws a page range as images and PDF to text reads

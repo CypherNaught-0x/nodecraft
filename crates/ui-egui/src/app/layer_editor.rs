@@ -4,12 +4,17 @@
 //! every gesture is one undo step. Image layers draw from the card previews; each text and shape
 //! layer is rendered by the same code a run uses, with the fonts the node holds, into its own
 //! texture, and placed on screen with the layer's transform.
+//!
+//! The same stage, layer list and fields edit one slide of a deck (#694); then every change is a
+//! `deck.*` command on that slide instead, and the slide's layers this version can't read are
+//! kept where they are.
 use super::NodeCraftApp;
 use super::layer_fonts::{self, FontFiles, HeldFont};
 use crate::theme::Tokens;
 use egui::{Color32, Pos2, Rect, Sense, Vec2};
+use nodecraft_actions::deck::{self, Item};
 use nodecraft_actions::image::ImageLimits;
-use nodecraft_actions::layers::{self, Align, Content, Fonts, Layer, ShapeKind, same_name};
+use nodecraft_actions::layers::{self, Align, Content, Edge, Fonts, Layer, ShapeKind, same_name};
 use nodecraft_types::{AssetRef, CanvasId, NodeId, Value};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -19,11 +24,23 @@ use std::collections::HashMap;
 const ROTATE_STEP: f64 = 15.0;
 /// Arrow keys move the selection this many frame pixels, ten times as far with Shift.
 const NUDGE: f64 = 1.0;
-const ALIGN: [(&str, &str); 6] = [("left", "Left"), ("center", "Centre"), ("right", "Right"), ("top", "Top"), ("middle", "Middle"), ("bottom", "Bottom")];
+const ALIGN: [(Edge, &str); 6] =
+    [(Edge::Left, "Left"), (Edge::Center, "Centre"), (Edge::Right, "Right"), (Edge::Top, "Top"), (Edge::Middle, "Middle"), (Edge::Bottom, "Bottom")];
+
+/// What the editor's layers belong to.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Target {
+    /// A Layer Editor card, changed with `layers.*` and `node.layers_set`.
+    Card,
+    /// The slide of this id on a Deck card, changed with `deck.slide_update` and
+    /// `deck.layer_update`; the host fills in each one's `expected_revision`.
+    Slide(String),
+}
 
 pub(super) struct LayerEditor {
     canvas: CanvasId,
     pub(super) node: NodeId,
+    pub(super) target: Target,
     /// The selected layers' ids.
     pub(super) selected: Vec<String>,
     drag: Option<Drag>,
@@ -54,6 +71,7 @@ impl LayerEditor {
         Self {
             canvas,
             node,
+            target: Target::Card,
             selected: Vec::new(),
             drag: None,
             listing: None,
@@ -68,16 +86,87 @@ impl LayerEditor {
             picking: None,
         }
     }
+
+    /// An editor for one slide of the Deck card `node`.
+    pub(super) fn slide(canvas: CanvasId, node: NodeId, slide: String) -> Self {
+        Self { target: Target::Slide(slide), ..Self::new(canvas, node) }
+    }
+
+    /// Ids of the layers being dragged.
+    pub(super) fn dragged(&self) -> Vec<String> {
+        self.drag.iter().flat_map(|d| d.now.iter().map(|l| l.id.clone())).collect()
+    }
+
+    /// Before drawing: Escape in a field abandons what was typed, and does nothing else. True
+    /// when it did, so a caller with fields of its own drops their drafts too.
+    pub(super) fn begin(&mut self, ctx: &egui::Context) -> bool {
+        let abandon = self.typing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if abandon {
+            self.draft = None;
+        }
+        abandon
+    }
+
+    /// After drawing: whether a field has focus, for the next frame's Escape.
+    pub(super) fn end(&mut self, ctx: &egui::Context) {
+        self.typing = crate::canvas::text_input_focused(ctx);
+    }
+
+    /// Keeps the selection and renderings to layers that still exist.
+    pub(super) fn keep(&mut self, listing: &Listing) {
+        self.textures.retain(|id, _| listing.layers.iter().any(|l| &l.id == id));
+        self.selected.retain(|id| listing.layers.iter().any(|l| &l.id == id));
+    }
+}
+
+/// A text or shape layer's art from `textures`, rendered again when it changed. Mid-drag, the
+/// old rendering stretches; it renders again on release.
+pub(super) fn vector_art(
+    textures: &mut HashMap<String, Rendered>,
+    ctx: &egui::Context,
+    layer: &Layer,
+    scale: f64,
+    fonts: &Fonts<'_>,
+    fonts_key: u64,
+    dragged: &[String],
+) -> Art {
+    let key = render_key(layer, scale, fonts_key);
+    let stale = textures.get(&layer.id).is_none_or(|r| r.key != key);
+    if stale && !(dragged.contains(&layer.id) && textures.contains_key(&layer.id)) {
+        textures.insert(layer.id.clone(), render(ctx, layer, scale, fonts, fonts_key));
+    }
+    let rendered = textures.get(&layer.id);
+    Art::Vector { texture: rendered.and_then(|r| r.texture.as_ref().map(|t| t.id())), pad: rendered.map_or(0.0, |r| r.pad) }
 }
 
 #[derive(Deserialize)]
-struct Listing {
+pub(super) struct Listing {
     width: u32,
     height: u32,
-    layers: Vec<Layer>,
+    pub(super) layers: Vec<Layer>,
+    #[serde(default)]
     inputs: Vec<Input>,
     #[serde(default)]
     fonts: Vec<HeldFont>,
+    /// A slide's layers as stored, bottom first, those this version can't read included.
+    #[serde(skip)]
+    raw: Vec<Json>,
+    /// The cards a slide's new source layer can show: (node id, title).
+    #[serde(skip)]
+    choices: Vec<(String, String)>,
+}
+
+impl Listing {
+    /// A slide of a `width` × `height` deck, its layers as `deck.list` gives them.
+    pub(super) fn slide(width: u32, height: u32, raw: Vec<Json>, choices: Vec<(String, String)>) -> Self {
+        let layers = raw.iter().filter_map(|r| serde_json::from_value::<Item>(r.clone()).ok()).filter_map(|item| item.layer().cloned()).collect();
+        Self { width, height, layers, inputs: Vec::new(), fonts: Vec::new(), raw, choices }
+    }
+
+    /// Every layer id in use, those of layers this version can't read included.
+    fn taken(&self) -> impl Iterator<Item = &str> {
+        self.layers.iter().map(|l| l.id.as_str()).chain(self.raw.iter().filter_map(|r| r.get("id").and_then(Json::as_str)))
+    }
 }
 
 #[derive(Deserialize)]
@@ -312,7 +401,17 @@ pub(super) fn render_key(layer: &Layer, scale: f64, fonts: u64) -> u64 {
 
 pub(super) fn render(ctx: &egui::Context, layer: &Layer, scale: f64, fonts: &Fonts<'_>, fonts_key: u64) -> Rendered {
     let key = render_key(layer, scale, fonts_key);
-    match layers::render_layer(layer, fonts, scale, ImageLimits::default()) {
+    // A texture past the GPU's largest side would panic in egui: render again smaller, to fit.
+    let largest = ctx.input(|i| i.max_texture_side).max(1) as f64;
+    let rendered = layers::render_layer(layer, fonts, scale, ImageLimits::default()).and_then(|(raster, pad)| {
+        let side = f64::from(raster.width().max(raster.height()));
+        if side <= largest {
+            return Ok((raster, pad));
+        }
+        let (raster, pad) = layers::render_layer(layer, fonts, scale * (largest - 2.0).max(1.0) / side, ImageLimits::default())?;
+        if f64::from(raster.width().max(raster.height())) <= largest { Ok((raster, pad)) } else { Err(nodecraft_actions::image::ImageError::Dimensions) }
+    });
+    match rendered {
         Ok((raster, pad)) => {
             let size = [raster.width() as usize, raster.height() as usize];
             let image = egui::ColorImage::from_rgba_unmultiplied(size, raster.pixels());
@@ -323,8 +422,9 @@ pub(super) fn render(ctx: &egui::Context, layer: &Layer, scale: f64, fonts: &Fon
 }
 
 /// A free id `stem-n`.
-fn fresh_id(layers: &[Layer], stem: &str) -> String {
-    (1..=layers.len().saturating_add(1)).map(|n| format!("{stem}-{n}")).find(|id| layers.iter().all(|l| &l.id != id)).unwrap_or_else(|| stem.into())
+fn fresh_id(listing: &Listing, stem: &str) -> String {
+    let taken: Vec<&str> = listing.taken().collect();
+    (1..=taken.len().saturating_add(1)).map(|n| format!("{stem}-{n}")).find(|id| !taken.contains(&id.as_str())).unwrap_or_else(|| stem.into())
 }
 
 fn new_layer(listing: &Listing, content: Content, stem: &str, name: &str) -> Layer {
@@ -334,7 +434,7 @@ fn new_layer(listing: &Listing, content: Content, stem: &str, name: &str) -> Lay
         _ => (w.min(h) * 0.3, w.min(h) * 0.3),
     };
     Layer {
-        id: fresh_id(&listing.layers, stem),
+        id: fresh_id(listing, stem),
         name: name.into(),
         visible: true,
         locked: false,
@@ -456,7 +556,7 @@ pub(super) fn colour_field(
     out
 }
 
-type Commands = Vec<(&'static str, Json)>;
+pub(super) type Commands = Vec<(&'static str, Json)>;
 
 impl NodeCraftApp {
     pub(super) fn open_layer_editor(&mut self, node: NodeId) {
@@ -507,14 +607,11 @@ impl NodeCraftApp {
         };
         let t = *self.theme.tokens();
         let ctx = ui.ctx().clone();
-        // Escape in a field abandons what was typed, and does nothing else.
-        if editor.typing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            editor.draft = None;
-        }
+        let _ = editor.begin(&ctx);
         let edge = (ctx.content_rect().size().max_elem() * ctx.pixels_per_point()).min(2048.0);
 
         // What each layer shows: previews for images, a rendering for text and shapes.
-        let dragged: Vec<String> = editor.drag.iter().flat_map(|d| d.now.iter().map(|l| l.id.clone())).collect();
+        let dragged = editor.dragged();
         let scale = render_scale(editor.scale * f64::from(ctx.pixels_per_point()));
         editor.font_files.load(self.session.assets(), &listing.fonts);
         let fonts = editor.font_files.fonts(&listing.fonts);
@@ -534,22 +631,12 @@ impl NodeCraftApp {
                     Art::Image { texture, fit: *fit }
                 }
                 Content::Image { fit, .. } => Art::Image { texture: None, fit: *fit },
-                Content::Text { .. } | Content::Shape { .. } => {
-                    let key = render_key(layer, scale, fonts_key);
-                    let stale = editor.textures.get(&layer.id).is_none_or(|r| r.key != key);
-                    // Mid-drag, the old rendering stretches; it renders again on release.
-                    if stale && !(dragged.contains(&layer.id) && editor.textures.contains_key(&layer.id)) {
-                        editor.textures.insert(layer.id.clone(), render(&ctx, layer, scale, &fonts, fonts_key));
-                    }
-                    let rendered = editor.textures.get(&layer.id);
-                    Art::Vector { texture: rendered.and_then(|r| r.texture.as_ref().map(|t| t.id())), pad: rendered.map_or(0.0, |r| r.pad) }
-                }
+                Content::Text { .. } | Content::Shape { .. } => vector_art(&mut editor.textures, &ctx, layer, scale, &fonts, fonts_key, &dragged),
             };
             art.insert(layer.id.clone(), shown);
         }
         drop(fonts);
-        editor.textures.retain(|id, _| listing.layers.iter().any(|l| &l.id == id));
-        editor.selected.retain(|id| listing.layers.iter().any(|l| &l.id == id));
+        editor.keep(&listing);
 
         let transparent = matches!(node.params.get("transparent"), Some(Value::Bool(true)));
         let background = match node.params.get("background") {
@@ -557,8 +644,13 @@ impl NodeCraftApp {
             _ => None,
         }
         .unwrap_or([255, 255, 255, 255]);
-        let frame_params =
-            FrameParams { width: listing.width, height: listing.height, background, transparent, colour: node.params.get("background").cloned() };
+        let frame_params = FrameParams {
+            width: listing.width,
+            height: listing.height,
+            background,
+            transparent: Some(transparent),
+            colour: node.params.get("background").cloned(),
+        };
 
         let mut commands: Commands = Vec::new();
         let mut close = false;
@@ -599,7 +691,7 @@ impl NodeCraftApp {
             ui.allocate_rect(body, Sense::hover());
         });
         close |= keys(ui, &mut editor, &listing, &mut commands);
-        editor.typing = crate::canvas::text_input_focused(&ctx);
+        editor.end(&ctx);
         self.layer_font_pick(&mut editor, &ctx, &mut commands);
         editor.listing = Some((revision, listing));
         for (command, params) in commands {
@@ -714,34 +806,121 @@ fn fonts_panel(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, t
     );
 }
 
-struct FrameParams {
-    width: u32,
-    height: u32,
-    background: [u8; 4],
-    transparent: bool,
-    colour: Option<Value>,
+pub(super) struct FrameParams {
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) background: [u8; 4],
+    /// Whether the background is see-through; `None` where there's no such choice (a slide).
+    pub(super) transparent: Option<bool>,
+    pub(super) colour: Option<Value>,
 }
 
 fn on(editor: &LayerEditor, layer: &str) -> Json {
     json!({"canvas": editor.canvas, "id": editor.node, "layer": layer})
 }
 
+/// A slide's stored layers rewritten as one `deck.slide_update`.
+fn slide_layers(editor: &LayerEditor, slide: &str, layers: Vec<Json>) -> (&'static str, Json) {
+    ("deck.slide_update", json!({"canvas": editor.canvas, "id": editor.node, "slide": slide, "layers": layers}))
+}
+
+fn layer_json(layer: &Layer) -> Json {
+    serde_json::to_value(layer).unwrap_or(Json::Null)
+}
+
+fn raw_id(raw: &Json) -> Option<&str> {
+    raw.get("id").and_then(Json::as_str)
+}
+
 fn update(editor: &LayerEditor, layer: &str, set: Json) -> (&'static str, Json) {
     let mut params = on(editor, layer);
     params["set"] = set;
-    ("layers.update", params)
+    match &editor.target {
+        Target::Card => ("layers.update", params),
+        Target::Slide(slide) => {
+            params["slide"] = json!(slide);
+            ("deck.layer_update", params)
+        }
+    }
 }
 
-/// The whole stack with `changed` in place of the layers it names: one `node.layers_set`.
+/// The whole stack with `changed` in place of the layers it names, as one command.
 fn set_all(editor: &LayerEditor, listing: &Listing, changed: &[Layer]) -> (&'static str, Json) {
-    let layers: Vec<&Layer> = listing.layers.iter().map(|l| changed.iter().find(|c| c.id == l.id).unwrap_or(l)).collect();
-    ("node.layers_set", json!({"canvas": editor.canvas, "id": editor.node, "layers": layers}))
+    match &editor.target {
+        Target::Card => {
+            let layers: Vec<&Layer> = listing.layers.iter().map(|l| changed.iter().find(|c| c.id == l.id).unwrap_or(l)).collect();
+            ("node.layers_set", json!({"canvas": editor.canvas, "id": editor.node, "layers": layers}))
+        }
+        Target::Slide(slide) => {
+            let layers = listing.raw.iter().map(|r| changed.iter().find(|c| raw_id(r) == Some(c.id.as_str())).map_or_else(|| r.clone(), layer_json)).collect();
+            slide_layers(editor, slide, layers)
+        }
+    }
+}
+
+/// `layer` added on top.
+fn add_layer(editor: &LayerEditor, listing: &Listing, layer: &Layer) -> (&'static str, Json) {
+    match &editor.target {
+        Target::Card => ("layers.add", json!({"canvas": editor.canvas, "id": editor.node, "layer": layer})),
+        Target::Slide(slide) => {
+            let mut layers = listing.raw.clone();
+            layers.push(layer_json(layer));
+            slide_layers(editor, slide, layers)
+        }
+    }
+}
+
+/// The layers `ids` taken away: one undo step on a slide, one each on a card.
+fn remove_layers(editor: &LayerEditor, listing: &Listing, ids: &[String], commands: &mut Commands) {
+    match &editor.target {
+        Target::Card => commands.extend(ids.iter().map(|id| ("layers.remove", on(editor, id)))),
+        Target::Slide(slide) if !ids.is_empty() => {
+            let layers = listing.raw.iter().filter(|r| raw_id(r).is_none_or(|id| !ids.iter().any(|i| i == id))).cloned().collect();
+            commands.push(slide_layers(editor, slide, layers));
+        }
+        Target::Slide(_) => {}
+    }
+}
+
+/// Layer `id`, at `index` in the readable stack, moved one place up (`raise`) or down.
+fn reorder(editor: &LayerEditor, listing: &Listing, id: &str, index: usize, raise: bool) -> Option<(&'static str, Json)> {
+    match &editor.target {
+        Target::Card => {
+            let mut params = on(editor, id);
+            params["index"] = json!(if raise { index.saturating_add(1) } else { index.saturating_sub(1) });
+            Some(("layers.reorder", params))
+        }
+        Target::Slide(slide) => {
+            // Past the readable layer next to it; layers this version can't read stay put.
+            let neighbour = if raise { listing.layers.get(index.saturating_add(1)) } else { index.checked_sub(1).and_then(|i| listing.layers.get(i)) }?;
+            let mut layers = listing.raw.clone();
+            let from = layers.iter().position(|r| raw_id(r) == Some(id))?;
+            let moved = layers.remove(from);
+            let at = layers.iter().position(|r| raw_id(r) == Some(neighbour.id.as_str()))?;
+            layers.insert(if raise { at.saturating_add(1) } else { at }, moved);
+            Some(slide_layers(editor, slide, layers))
+        }
+    }
+}
+
+/// The layers `ids` lined up along `to`.
+fn align_cmd(editor: &LayerEditor, listing: &Listing, ids: &[&str], to: Edge) -> Option<(&'static str, Json)> {
+    match &editor.target {
+        Target::Card => Some(("layers.align", json!({"canvas": editor.canvas, "id": editor.node, "layers": ids, "to": to}))),
+        Target::Slide(_) => {
+            let mut layers = listing.layers.clone();
+            let picked: Vec<usize> = ids.iter().filter_map(|id| layers.iter().position(|l| l.id == *id)).collect();
+            layers::align(&mut layers, &picked, to, (f64::from(listing.width), f64::from(listing.height)));
+            let moved: Vec<Layer> = layers.into_iter().filter(|l| listing.layers.iter().any(|o| o.id == l.id && o != l)).collect();
+            (!moved.is_empty()).then(|| set_all(editor, listing, &moved))
+        }
+    }
 }
 
 /// Keys the editor answers while no field has focus: arrows nudge, Delete removes, Escape
 /// cancels a drag, then clears the selection, then closes; undo and redo work as on the canvas.
 /// True to close.
-fn keys(ui: &egui::Ui, editor: &mut LayerEditor, listing: &Listing, commands: &mut Commands) -> bool {
+pub(super) fn keys(ui: &egui::Ui, editor: &mut LayerEditor, listing: &Listing, commands: &mut Commands) -> bool {
     use egui::{Key, Modifiers};
     if crate::canvas::text_input_focused(ui.ctx()) {
         return false;
@@ -761,9 +940,8 @@ fn keys(ui: &egui::Ui, editor: &mut LayerEditor, listing: &Listing, commands: &m
             return;
         }
         if i.consume_key(Modifiers::NONE, Key::Delete) || i.consume_key(Modifiers::NONE, Key::Backspace) {
-            for id in std::mem::take(&mut editor.selected) {
-                commands.push(("layers.remove", on(editor, &id)));
-            }
+            let ids = std::mem::take(&mut editor.selected);
+            remove_layers(editor, listing, &ids, commands);
             return;
         }
         let step = if i.modifiers.shift { NUDGE * 10.0 } else { NUDGE };
@@ -801,53 +979,66 @@ fn pick(editor: &mut LayerEditor, id: &str, add: bool) {
 }
 
 /// The stack, top first, with buttons to add, raise, lower and delete.
-fn layers_panel(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, t: &Tokens, commands: &mut Commands) {
+pub(super) fn layers_panel(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, t: &Tokens, commands: &mut Commands) {
     ui.horizontal_wrapped(|ui| {
         if ui.button("Add text").clicked() {
             let mut layer = new_layer(listing, text_content(1.0), "text", "Text");
             layer.content = text_content(layer.height);
             editor.selected = vec![layer.id.clone()];
-            commands.push(("layers.add", json!({"canvas": editor.canvas, "id": editor.node, "layer": layer})));
+            commands.push(add_layer(editor, listing, &layer));
         }
         ui.menu_button("Add shape", |ui| {
             for shape in [ShapeKind::Rectangle, ShapeKind::Ellipse, ShapeKind::Triangle] {
                 if ui.button(shape_label(shape)).clicked() {
                     let layer = new_layer(listing, shape_content(shape), "shape", shape_label(shape));
                     editor.selected = vec![layer.id.clone()];
-                    commands.push(("layers.add", json!({"canvas": editor.canvas, "id": editor.node, "layer": layer})));
+                    commands.push(add_layer(editor, listing, &layer));
                     ui.close();
                 }
             }
         });
+        if matches!(editor.target, Target::Slide(_)) {
+            ui.menu_button("Add source", |ui| {
+                if listing.choices.is_empty() {
+                    ui.label(egui::RichText::new("No other cards on this canvas.").color(t.text_muted));
+                }
+                for (origin, title) in &listing.choices {
+                    if ui.button(title).clicked() {
+                        let (w, h) = (f64::from(listing.width), f64::from(listing.height));
+                        let mut layer = deck::source_layer(origin, title, (w / 2.0, h / 2.0), (w / 2.0, h / 2.0));
+                        layer.id = fresh_id(listing, "source");
+                        editor.selected = vec![layer.id.clone()];
+                        commands.push(add_layer(editor, listing, &layer));
+                        ui.close();
+                    }
+                }
+            });
+        }
     });
     let one = (editor.selected.len() == 1).then(|| editor.selected.first().cloned()).flatten();
     let index = one.as_ref().and_then(|id| listing.layers.iter().position(|l| &l.id == id));
     ui.horizontal_wrapped(|ui| {
         let top = listing.layers.len().saturating_sub(1);
-        if ui.add_enabled(index.is_some_and(|i| i < top), egui::Button::new("Raise")).clicked()
-            && let (Some(id), Some(i)) = (&one, index)
-        {
-            let mut params = on(editor, id);
-            params["index"] = json!(i.saturating_add(1));
-            commands.push(("layers.reorder", params));
-        }
-        if ui.add_enabled(index.is_some_and(|i| i > 0), egui::Button::new("Lower")).clicked()
-            && let (Some(id), Some(i)) = (&one, index)
-        {
-            let mut params = on(editor, id);
-            params["index"] = json!(i.saturating_sub(1));
-            commands.push(("layers.reorder", params));
+        for (label, raise, enabled) in [("Raise", true, index.is_some_and(|i| i < top)), ("Lower", false, index.is_some_and(|i| i > 0))] {
+            if ui.add_enabled(enabled, egui::Button::new(label)).clicked()
+                && let (Some(id), Some(i)) = (&one, index)
+            {
+                commands.extend(reorder(editor, listing, id, i, raise));
+            }
         }
         if ui.add_enabled(!editor.selected.is_empty(), egui::Button::new("Delete")).clicked() {
-            for id in std::mem::take(&mut editor.selected) {
-                commands.push(("layers.remove", on(editor, &id)));
-            }
+            let ids = std::mem::take(&mut editor.selected);
+            remove_layers(editor, listing, &ids, commands);
         }
     });
     ui.separator();
     egui::ScrollArea::vertical().id_salt("layer_list").show(ui, |ui| {
         if listing.layers.is_empty() {
-            ui.label(egui::RichText::new("Wire images into the card, or add text or a shape.").color(t.text_muted));
+            let empty = match editor.target {
+                Target::Card => "Wire images into the card, or add text or a shape.",
+                Target::Slide(_) => "Add text, a shape or a source.",
+            };
+            ui.label(egui::RichText::new(empty).color(t.text_muted));
         }
         for layer in listing.layers.iter().rev() {
             ui.horizontal(|ui| {
@@ -875,7 +1066,7 @@ fn layers_panel(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, 
 }
 
 /// The selected layer's fields, alignment, or (with nothing selected) the frame's.
-fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, frame: &FrameParams, t: &Tokens, commands: &mut Commands) {
+pub(super) fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, frame: &FrameParams, t: &Tokens, commands: &mut Commands) {
     // A field still holding an edit stays on screen until it applies, even when the press that
     // took its focus also changed the selection.
     let held = editor.draft.as_ref().map(|(key, _)| key.as_str());
@@ -894,7 +1085,7 @@ fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, fr
             for (to, label) in ALIGN {
                 let hint = if chosen.len() == 1 { "Against the frame" } else { "Against the selection" };
                 if ui.button(label).on_hover_text(hint).clicked() {
-                    commands.push(("layers.align", json!({"canvas": editor.canvas, "id": editor.node, "layers": ids, "to": to})));
+                    commands.extend(align_cmd(editor, listing, &ids, to));
                 }
             }
         });
@@ -903,7 +1094,9 @@ fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, fr
     let [layer] = chosen.as_slice() else {
         if chosen.is_empty() {
             frame_properties(ui, editor, frame, t, commands);
-            fonts_panel(ui, editor, listing, t, commands);
+            if editor.target == Target::Card {
+                fonts_panel(ui, editor, listing, t, commands);
+            }
         } else {
             ui.label(egui::RichText::new(format!("{} layers selected", chosen.len())).color(t.text_muted));
         }
@@ -961,14 +1154,18 @@ fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, fr
             if let Some(v) = text_field(ui, draft, &key("text"), "Text", text, true) {
                 set.push(json!({"content": {"text": v}}));
             }
-            if let Some(v) = font_choice(ui, &key("font"), font, listing) {
-                set.push(json!({"content": {"font": v}}));
-            }
-            if let Some(why) = font_fallback(&editor.font_files, listing, font) {
-                ui.label(egui::RichText::new(why).color(t.stale).small());
-            }
-            if PICKS_FONTS && ui.button("Add font file…").clicked() {
-                editor.add_font = Some(Some(id.clone()));
+            if editor.target == Target::Card {
+                if let Some(v) = font_choice(ui, &key("font"), font, listing) {
+                    set.push(json!({"content": {"font": v}}));
+                }
+                if let Some(why) = font_fallback(&editor.font_files, listing, font) {
+                    ui.label(egui::RichText::new(why).color(t.stale).small());
+                }
+                if PICKS_FONTS && ui.button("Add font file…").clicked() {
+                    editor.add_font = Some(Some(id.clone()));
+                }
+            } else if !same_name(font, "Lato") {
+                ui.label(egui::RichText::new(format!("{font}: decks draw text in Lato for now.")).color(t.stale).small());
             }
             egui::Grid::new("layer_text").num_columns(2).show(ui, |ui| {
                 for (field, label, value, range, speed) in [
@@ -1029,6 +1226,12 @@ fn frame_properties(ui: &mut egui::Ui, editor: &mut LayerEditor, frame: &FramePa
     let (canvas, id) = (editor.canvas, editor.node);
     let param = |name: &str, value: Value| ("node.param_set", json!({"canvas": canvas, "id": id, "name": name, "value": param_json(value)}));
     ui.label(egui::RichText::new("Frame").color(t.text_muted));
+    if matches!(editor.target, Target::Slide(_)) {
+        // Every slide shares the deck's frame, and slide edits are all `deck.*` commands.
+        ui.label(format!("{} × {} pixels", frame.width, frame.height));
+        ui.label(egui::RichText::new("Every slide shares this size; change it on the Deck card.").color(t.text_muted).small());
+        return;
+    }
     let (min, max) = (f64::from(layers::MIN_FRAME), f64::from(layers::MAX_FRAME));
     egui::Grid::new("layer_frame").num_columns(2).show(ui, |ui| {
         for (name, label, value) in [("width", "Width", frame.width), ("height", "Height", frame.height)] {
@@ -1045,8 +1248,9 @@ fn frame_properties(ui: &mut egui::Ui, editor: &mut LayerEditor, frame: &FramePa
     if let Some(Some(v)) = colour_field(ui, &mut editor.draft, "frame.background", "Background", Some(&colour), t) {
         commands.push(param("background", Value::Text(v)));
     }
-    let mut clear = frame.transparent;
-    if ui.checkbox(&mut clear, "Transparent background").changed() {
+    if let Some(mut clear) = frame.transparent
+        && ui.checkbox(&mut clear, "Transparent background").changed()
+    {
         commands.push(param("transparent", Value::Bool(clear)));
     }
     ui.label(egui::RichText::new("Pixels, 100 to 4096. Layers keep their place when the frame changes size.").color(t.text_muted).small());
@@ -1129,7 +1333,15 @@ fn grip_at(editor: &LayerEditor, listing: &Listing, stage: Stage, p: Pos2, t: &T
 
 /// The frame and its layers, the selection with its handles, and pointer gestures.
 #[allow(clippy::too_many_arguments)]
-fn stage(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, art: &HashMap<String, Art>, frame: &FrameParams, t: &Tokens, commands: &mut Commands) {
+pub(super) fn stage(
+    ui: &mut egui::Ui,
+    editor: &mut LayerEditor,
+    listing: &Listing,
+    art: &HashMap<String, Art>,
+    frame: &FrameParams,
+    t: &Tokens,
+    commands: &mut Commands,
+) {
     let area = ui.available_rect_before_wrap();
     let (fw, fh) = (f64::from(listing.width.max(1)), f64::from(listing.height.max(1)));
     let room = area.shrink(f32::from(t.panel_radius));
@@ -1192,7 +1404,7 @@ fn stage(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, art: &H
     // The frame, then each shown layer bottom first, as dragged.
     let painter = ui.painter().with_clip_rect(area);
     painter.rect_filled(area, 0.0, t.canvas_bg);
-    if frame.transparent {
+    if frame.transparent == Some(true) {
         checker(&painter, frame_rect, t);
     } else {
         let [r, g, b, _] = frame.background;
@@ -1268,6 +1480,19 @@ mod tests {
             flip_y: false,
             content: shape_content(ShapeKind::Rectangle),
         }
+    }
+
+    #[test]
+    fn a_layer_wider_than_the_largest_texture_renders_smaller_instead_of_panicking() {
+        let ctx = egui::Context::default();
+        let largest = ctx.input(|i| i.max_texture_side);
+        let mut wide = layer(0.0, false);
+        wide.width = largest as f64 * 1.5;
+        wide.height = 400.0;
+        wide.content = Content::Shape { shape: ShapeKind::Rectangle, fill: Some("#ff0000".into()), stroke: None, stroke_width: 0.0 };
+        let rendered = render(&ctx, &wide, 1.0, &Fonts::default(), 0);
+        let size = rendered.texture.map(|t| t.size()).unwrap();
+        assert!(size[0] <= largest && size[1] <= largest, "{size:?}");
     }
 
     #[test]
