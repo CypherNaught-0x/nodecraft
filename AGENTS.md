@@ -237,6 +237,10 @@ that drive real pointer and key events through the canvas.
   checkout and judges freshness by file times, so one checkout can link another's stale code.
   Agents sharing the primary checkout use `CARGO_TARGET_DIR=target/agent-<name>` instead and
   delete it when they are done.
+- Disk is the scarce resource. Agent worktrees build with `CARGO_INCREMENTAL=0` exported for the
+  whole task: it drops the incremental cache, about half of a worktree's `target/` (some 6 GB), for
+  roughly 30–40 s more per rebuild after an edit to a core crate. Set it before the first build and
+  leave it set; flipping it rebuilds every workspace crate.
 - Build with `cargo xtask ci` and `cargo xtask ci --quick` rather than `cargo test -p <crate>` or
   `cargo clippy -p <crate>`: every new feature combination keeps another copy of every binary it
   links.
