@@ -296,3 +296,6 @@ The near-term order follows the remaining open issues, not an already-finished w
   wgpu image path (#89) remains a tested library the app doesn't use for built-in actions. The M4
   close-out (#375) refreshed README, ROADMAP and docs. Elsewhere, Kling's own task API (#19),
   browser live sharing (#699) and several ComfyUI servers per install (#864) landed.
+- **2026-10-23** — card option pickers filter labels and values, open at the current choice,
+  keep a stable width and clear stale overrides with Default (#678). Indexed selected labels,
+  virtual rows and bounded filter work support fetched lists of up to 16,384 choices.
