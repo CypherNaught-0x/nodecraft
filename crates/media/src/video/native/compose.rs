@@ -226,7 +226,10 @@ fn script_option(mut probe: impl FnMut(&'static str) -> Result<()>) -> Result<&'
     for option in SCRIPT_OPTIONS {
         match probe(option) {
             Ok(()) => return Ok(option),
-            Err(VideoError::Process) => {}
+            Err(VideoError::Process) => {
+                // The script was just written and pinned. Other process failures are deliberately
+                // indistinguishable from unsupported syntax in this small compatibility probe.
+            }
             Err(error) => return Err(error),
         }
     }

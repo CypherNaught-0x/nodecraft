@@ -195,4 +195,5 @@ fn actual_maximum_clips_layers_and_captions_render_from_a_script() {
     assert!(rendered.asset().metadata().has_audio());
     drop((job, rendered, still));
     assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
+    println!("NODECRAFT_TIMELINE_MAXIMUM_RENDER: 32 clips/layers + 64 captions; 24 frames with audio; cleanup complete");
 }
