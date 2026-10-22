@@ -238,9 +238,9 @@ fn stopping_closes_the_connection() {
     let (relay, peers) = relay_peers();
     let mut owner = app(&opened);
     owner.session.dispatch("share.start", &json!({"relay": relay})).unwrap();
-    until(&mut [&mut owner], |apps| chip(apps[0]) == "Live");
     let in_room = || peers.lock().unwrap().1.len();
-    assert_eq!(in_room(), 1);
+    // The relay may count the owner in a moment after the owner counts itself live.
+    until(&mut [&mut owner], |apps| chip(apps[0]) == "Live" && in_room() == 1);
     // Quiet first, so nothing from the relay is left to find the window gone.
     let ctx = egui::Context::default();
     let settled = Instant::now();
