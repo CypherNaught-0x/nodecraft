@@ -163,6 +163,10 @@ fn template(id: &str) -> (Session, Value) {
         let node = seed.kinds().get("generation.image").unwrap().instantiate_instance(node_id(7), Default::default(), &supplied).unwrap();
         nodecraft_graph::Change::AddNode { canvas: canvas(), node }.apply(&mut document).unwrap();
     }
+    if id.starts_with("field.") && id != "field.create" || id == "node.field_set" {
+        let field = nodecraft_graph::Field::new(nodecraft_types::FieldId::from_bytes([8; 16]), "Before");
+        nodecraft_graph::Change::PutField { canvas: canvas(), field }.apply(&mut document).unwrap();
+    }
     if matches!(id, "tag.put" | "tag.remove" | "node.tag_set") {
         let tag = nodecraft_types::TagId::from_bytes([9; 16]);
         nodecraft_graph::Changeset::new(vec![
@@ -365,6 +369,13 @@ fn template(id: &str) -> (Session, Value) {
         "tag.put" => json!({"canvas":canvas(),"tag":{"id":nodecraft_types::TagId::from_bytes([9;16]),"title":"After","color":"blue"}}),
         "tag.remove" => json!({"canvas":canvas(),"tag":nodecraft_types::TagId::from_bytes([9;16])}),
         "node.tag_set" => json!({"canvas":canvas(),"nodes":[node_id(1)],"tag":null}),
+        "field.create" => {
+            json!({"canvas":canvas(),"field":{"id":nodecraft_types::FieldId::from_bytes([8;16]),"title":"New","rect":{"pos":{"x":0,"y":0},"width":320,"height":240}},"nodes":[node_id(1)]})
+        }
+        "field.update" => json!({"canvas":canvas(),"field":nodecraft_types::FieldId::from_bytes([8;16]),"collapsed":true}),
+        "field.move" => json!({"canvas":canvas(),"field":nodecraft_types::FieldId::from_bytes([8;16]),"delta":{"x":12,"y":3}}),
+        "field.remove" => json!({"canvas":canvas(),"field":nodecraft_types::FieldId::from_bytes([8;16])}),
+        "node.field_set" => json!({"canvas":canvas(),"nodes":[node_id(1)],"field":nodecraft_types::FieldId::from_bytes([8;16])}),
         "canvas.tag_filter_open" | "canvas.tag_filter_close" | "canvas.tag_filter_next" | "canvas.tag_filter_previous" => json!({}),
         "canvas.tag_filter_set" => json!({"tags":[],"untagged":true}),
         "comment.create" => json!({"canvas":canvas(),"id":nodecraft_types::CommentId::from_bytes([20;16]),"text":"New","pos":{"x":1,"y":2}}),
@@ -599,6 +610,10 @@ fn typed_template_panic_hunt() {
             }
         }
         for path in [
+            "/field/rect/pos/x",
+            "/field/rect/width",
+            "/delta/x",
+            "/rect/pos/x",
             "/pos/x",
             "/pos/y",
             "/node/id",

@@ -76,6 +76,7 @@ pub mod skill_cmds;
 pub mod skills;
 pub mod split;
 pub mod stale_cmds;
+pub mod field_cmds;
 pub mod tag_cmds;
 pub mod tag_filter_cmds;
 pub mod technique_cmds;

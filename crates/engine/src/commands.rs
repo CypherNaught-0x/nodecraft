@@ -239,6 +239,7 @@ impl Registry {
             .chain(crate::history_cmds::specs())
             .chain(crate::export_cmds::specs())
             .chain(crate::turn_into_cmds::specs())
+            .chain(crate::field_cmds::specs())
             .chain(crate::tag_cmds::specs())
             .chain(crate::tag_filter_cmds::specs())
             .chain(crate::skill_cmds::specs())
