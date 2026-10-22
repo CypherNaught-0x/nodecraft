@@ -244,6 +244,7 @@ impl Registry {
             .chain(crate::resolve_cmds::specs())
             .chain(crate::held_cmds::specs())
             .chain(crate::share_cmds::specs())
+            .chain(crate::private_cmds::specs())
             .chain(crate::order_cmds::specs())
             .chain(crate::history_cmds::specs())
             .chain(crate::export_cmds::specs())

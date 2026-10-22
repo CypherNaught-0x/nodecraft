@@ -129,6 +129,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "run.held_place",
     "share.links",
     "share.link_revoke",
+    "canvas.set_private",
     "usage.export_csv",
     "perf.start",
     "perf.stop",

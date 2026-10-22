@@ -117,8 +117,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 - **Live sharing has no UI yet.** Sessions can be shared through `nodecraft-cli relay` (#119),
   with every edit merged and images passed along. Share links let someone view, comment on or
   edit a shared project, with signed discussions and expiry and revocation (`share.link_*`,
-  #121). Only code calls it so far: the app has no Share or Join yet, the browser build has no
-  transport, there are no private canvases yet, and there is no presence.
+  #121), and canvases kept private (`canvas.set_private`) stay out of the room. Only code calls
+  it so far: the app has no Share or Join yet, the browser build has no transport, and there is
+  no presence.
 - **Not started**: batch, Techniques, app mode, library, Layer editor, Elements, PDF,
   and 32 of the 41 tracked provider adapters (ComfyUI, fal.ai and
   Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,

@@ -390,6 +390,7 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "share.link_create",
         "share.link_update",
         "share.link_revoke",
+        "canvas.set_private",
         "element.create",
         "element.sheet",
         "element.list",
@@ -407,8 +408,8 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     }
     assert_eq!(
         registry.specs().count(),
-        184,
-        "canvas.auto_format, 9 sheet, 8 technique, 8 tag/filter, 5 field, 10 discussion, 7 graph, 3 node editing, 2 model migration, node.prompt_assist, 3 edge, node.create, node.create_connected, canvas.paste, 3 keys, 4 library, canvas.stale, node.describe, node.options, 2 option fetch, 2 update check, 2 update install, 4 navigation, 5 search, 4 file, 4 run/usage, run.estimate, 2 usage ownership, 2 charge resolution, 4 held results, 7 history, 4 perf, 10 plugin, 2 cache commands, node.shader_set, 6 mask, 7 layer, 2 layer font, 8 deck, 3 element, 3 style, 2 app mode, mesh.capture, document.use_pages, 11 timeline, 2 timeline interchange, 4 share link and 8 skill"
+        185,
+        "canvas.auto_format, 9 sheet, 8 technique, 8 tag/filter, 5 field, 10 discussion, 7 graph, 3 node editing, 2 model migration, node.prompt_assist, 3 edge, node.create, node.create_connected, canvas.paste, 3 keys, 4 library, canvas.stale, node.describe, node.options, 2 option fetch, 2 update check, 2 update install, 4 navigation, 5 search, 4 file, 4 run/usage, run.estimate, 2 usage ownership, 2 charge resolution, 4 held results, 7 history, 4 perf, 10 plugin, 2 cache commands, node.shader_set, 6 mask, 7 layer, 2 layer font, 8 deck, 3 element, 3 style, 2 app mode, mesh.capture, document.use_pages, 11 timeline, 2 timeline interchange, 4 share link, canvas.set_private and 8 skill"
     );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }

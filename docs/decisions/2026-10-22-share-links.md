@@ -106,5 +106,5 @@ it shares a session and passes to `Collab::links_request`:
 A session that isn't shared returns *unsupported*. A refused role check has its own error kind,
 `forbidden`.
 
-**Not done here:** private canvases (a second PR under #121), the desktop Share and Join UI, and
+**Not done here:** private canvases ([their own record](2026-10-22-private-canvases.md)), the desktop Share and Join UI, and
 presence.

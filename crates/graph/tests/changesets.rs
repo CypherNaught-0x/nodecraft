@@ -150,6 +150,7 @@ fn all_edit_types_and_annotation_stubs_are_reversible() {
         connected_project(),
         Changeset::new(vec![
             Change::SetCanvasTitle { canvas: canvas(), title: "Renamed".into() },
+            Change::SetCanvasPrivate { canvas: canvas(), private: true },
             Change::PutField { canvas: canvas(), field: field.clone() },
             Change::PutTag { canvas: canvas(), tag: tag.clone() },
             Change::PutComment { canvas: canvas(), comment: comment.clone() },
@@ -366,7 +367,7 @@ fn skills_put_replace_and_remove_undoably_and_refuse_invalid_ones() {
 
 fn arbitrary_change() -> impl Strategy<Value = Change> {
     // Deliberately tiny ID pools generate missing references, collisions, cycles and reuse.
-    (0u8..28, 1u8..5, 1u8..5, 1u8..3, ".{0,16}").prop_map(|(op, n, other, c, text)| {
+    (0u8..29, 1u8..5, 1u8..5, 1u8..3, ".{0,16}").prop_map(|(op, n, other, c, text)| {
         let canvas = CanvasId::from_bytes([c; 16]);
         let id = node_id(n);
         let generation = GenerationId::from_bytes([n; 16]);
@@ -422,6 +423,7 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
             // Names from the same short text collide, ids from a tiny pool replace each other.
             25 => Change::PutSkill { skill: skill(n, text) },
             26 => Change::PutSkill { skill: skill(n, format!("skill {other}")) },
+            27 => Change::SetCanvasPrivate { canvas, private: other % 2 == 0 },
             _ => Change::RemoveSkill { id: SkillId::from_bytes([n; 16]) },
         }
     })
