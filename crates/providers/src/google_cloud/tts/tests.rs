@@ -49,7 +49,8 @@ fn a_classic_voice_sends_the_documented_body_and_counts_the_characters() {
         json!({"input": {"text": "Héllo, world!"}, "voice": {"languageCode": "en-GB", "name": "en-GB-Neural2-A"},
             "audioConfig": {"audioEncoding": "MP3", "speakingRate": 1.25, "pitch": -2.5}})
     );
-    assert_eq!(header(&r, "x-goog-user-project"), Some(PROJECT));
+    // The token alone names the project: a quota-project header would demand a Service Usage role.
+    assert_eq!(header(&r, "x-goog-user-project"), None);
     assert_eq!(header(&r, "user-agent"), Some(crate::USER_AGENT));
     assert!(r.headers.iter().any(|(n, v)| n == "Authorization" && v == &format!("Bearer {TOKEN}")));
     assert!(r.secret_headers.iter().any(|n| n == "authorization"), "the token travels only as a secret header");
@@ -75,6 +76,8 @@ fn chirp_and_studio_voices_send_no_pitch_and_chirp_paces_up_to_double() {
     assert_eq!(body(&r)["audioConfig"], json!({"audioEncoding": "MP3", "speakingRate": 1.0}), "a pitch setting is ignored where it isn't offered");
     let (_, r) = sent(&job(STANDARD, "Hi", json!({"voice": "en-US-Standard-C", "voice_name": "cmn-CN-Standard-A"})));
     assert_eq!(body(&r)["voice"], json!({"languageCode": "cmn-CN", "name": "cmn-CN-Standard-A"}), "the typed name overrides the choice");
+    let (_, r) = sent(&job(STANDARD, "Hi", json!({"voice": 7, "voice_name": "en-GB-Standard-A"})));
+    assert_eq!(body(&r)["voice"]["name"], "en-GB-Standard-A", "a typed name stands even when the choice is unreadable");
 }
 
 #[test]

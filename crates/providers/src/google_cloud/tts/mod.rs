@@ -79,7 +79,6 @@ impl GoogleTts {
         let req = crate::HttpRequest::post_json(URL, &prepared.body)?
             .timeout_ms(300_000)
             .header("User-Agent", crate::USER_AGENT)
-            .header("x-goog-user-project", project)
             .secret_header("Authorization", format!("Bearer {bearer}"))
             .max_response_bytes(self.limits.response_bytes);
         // Everything local is done; from here a lost reply may hide billed speech, unless Google

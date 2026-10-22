@@ -140,7 +140,10 @@ fn prompt(job: &ProviderJob) -> Result<&str, ProviderError> {
 /// model's family, so a run is never billed at another family's price than the one quoted.
 /// Returns the name and its language (`en-US` of `en-US-Neural2-F`).
 fn classic_voice<'a>(p: &'a Map<String, Value>, family: &Family) -> Result<(&'a str, &'a str), ProviderError> {
-    let name = text(p, "voice_name")?.or(text(p, "voice")?).ok_or_else(|| invalid("Google TTS needs a voice"))?;
+    let name = match text(p, "voice_name")? {
+        Some(name) => name,
+        None => text(p, "voice")?.ok_or_else(|| invalid("Google TTS needs a voice"))?,
+    };
     let shaped = name.len() <= VOICE_BYTES && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
     let mut parts = name.splitn(3, '-');
     let (Some(lang), Some(region), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {
