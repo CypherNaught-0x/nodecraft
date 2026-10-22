@@ -26,6 +26,8 @@ pub mod tags;
 pub mod theme;
 pub mod turn_into;
 pub mod video;
+#[cfg(target_arch = "wasm32")]
+mod web_storage;
 
 pub use app::NodeCraftApp;
 /// The update restart's helper modes, which the desktop app's `main` runs before any window (#540).

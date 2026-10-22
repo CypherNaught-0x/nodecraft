@@ -6,8 +6,8 @@
 //! live in `providers::secrets`, so adapters receive a [`Secret`]; this module adds the OS
 //! keychain and the `keys` host service behind the `keys.*` commands.
 //!
-//! The browser build has no keychain; it will keep keys per origin with a notice (M10). Until then
-//! hosts use a [`MemoryStore`] there (keys last for the session).
+//! The browser build has no keychain: it keeps keys in the browser's storage for that origin only
+//! ([`OriginStore`] over the host's `localStorage`), and the keys panel says so (#118).
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -150,6 +150,64 @@ pub fn register_key_service(services: &mut Services, store: Arc<dyn SecretStore>
         let store = store.lock().unwrap_or_else(PoisonError::into_inner);
         execute(store.as_ref(), &account, &op)
     })
+}
+
+/// String storage scoped to one web origin (the browser's `localStorage`), as [`OriginStore`]
+/// needs it. The host provides it; this crate has no browser bindings.
+pub trait OriginStorage: Send + Sync {
+    fn get(&self, key: &str) -> Result<Option<String>, SecretError>;
+    fn set(&self, key: &str, value: &str) -> Result<(), SecretError>;
+    fn remove(&self, key: &str) -> Result<(), SecretError>;
+    /// Every key stored for the origin, NodeCraft's or not.
+    fn keys(&self) -> Result<Vec<String>, SecretError>;
+}
+
+/// Where [`OriginStore`] puts a key: this prefix and the account name.
+pub const ORIGIN_KEY_PREFIX: &str = "nodecraft.key.";
+
+/// Keys kept per origin in the browser (#118): readable by anyone using that browser profile, so
+/// the panel says so. Values are checked like a keychain's on the way out.
+pub struct OriginStore<S>(S);
+
+impl<S: OriginStorage> OriginStore<S> {
+    pub fn new(storage: S) -> Self {
+        Self(storage)
+    }
+
+    /// The accounts with a key stored here, for listing them in the panel (the browser build has
+    /// no settings file to remember them in). Entries that aren't valid account names are skipped.
+    pub fn accounts(&self) -> Result<Vec<Account>, SecretError> {
+        let mut accounts: Vec<Account> =
+            self.0.keys()?.iter().filter_map(|key| key.strip_prefix(ORIGIN_KEY_PREFIX)).filter_map(|name| Account::new(name).ok()).collect();
+        accounts.sort();
+        accounts.dedup();
+        Ok(accounts)
+    }
+}
+
+fn origin_key(account: &Account) -> String {
+    format!("{ORIGIN_KEY_PREFIX}{}", account.as_str())
+}
+
+impl<S: OriginStorage> SecretStore for OriginStore<S> {
+    fn get(&self, account: &Account) -> Result<Option<Secret>, SecretError> {
+        match self.0.get(&origin_key(account))? {
+            // Edited by hand or by another page script: never echo it.
+            Some(value) => Secret::new(&value).map(Some).map_err(|_| SecretError::Failed("the stored key can't be used; set it again".into())),
+            None => Ok(None),
+        }
+    }
+    fn set(&self, account: &Account, secret: &Secret) -> Result<(), SecretError> {
+        self.0.set(&origin_key(account), secret.expose())
+    }
+    fn delete(&self, account: &Account) -> Result<bool, SecretError> {
+        let key = origin_key(account);
+        if self.0.get(&key)?.is_none() {
+            return Ok(false);
+        }
+        self.0.remove(&key)?;
+        Ok(true)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -390,6 +448,63 @@ mod tests {
         assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "remove", "account": "openai"})).unwrap(), json!({"removed": true}));
         assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "status", "account": "openai"})).unwrap(), json!({"stored": false, "masked": null}));
         assert!(services.invoke(KEY_SERVICE, &json!({"op": "drop_all"})).is_err());
+    }
+
+    use std::collections::BTreeMap;
+
+    /// `localStorage` as a map, with a switch that makes it refuse writes (a full quota).
+    #[derive(Default)]
+    struct Origin(Mutex<BTreeMap<String, String>>, std::sync::atomic::AtomicBool);
+
+    impl OriginStorage for Origin {
+        fn get(&self, key: &str) -> Result<Option<String>, SecretError> {
+            Ok(self.0.lock().unwrap().get(key).cloned())
+        }
+        fn set(&self, key: &str, value: &str) -> Result<(), SecretError> {
+            if self.1.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(SecretError::Failed("this site's browser storage is full".into()));
+            }
+            self.0.lock().unwrap().insert(key.into(), value.into());
+            Ok(())
+        }
+        fn remove(&self, key: &str) -> Result<(), SecretError> {
+            self.0.lock().unwrap().remove(key);
+            Ok(())
+        }
+        fn keys(&self) -> Result<Vec<String>, SecretError> {
+            Ok(self.0.lock().unwrap().keys().cloned().collect())
+        }
+    }
+
+    #[test]
+    fn origin_keys_round_trip_under_their_own_prefix() {
+        let store = Arc::new(OriginStore::new(Origin::default()));
+        let mut services = Services::default();
+        register_key_service(&mut services, Arc::clone(&store) as Arc<dyn SecretStore>).unwrap();
+        let set = services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "openai", "key": "sk-proj-abcdefghij1234"})).unwrap();
+        assert_eq!(set, json!({"stored": true, "masked": "…1234"}));
+        assert_eq!(store.0.get("nodecraft.key.openai").unwrap().as_deref(), Some("sk-proj-abcdefghij1234"));
+        services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "comfyui:gpu-box:8188", "key": "tok-12345678"})).unwrap();
+        // Other page data and names that aren't accounts are not listed.
+        store.0.set("theme", "dark").unwrap();
+        store.0.set("nodecraft.key.Not Valid", "x").unwrap();
+        let names: Vec<String> = store.accounts().unwrap().iter().map(|a| a.as_str().to_owned()).collect();
+        assert_eq!(names, ["comfyui:gpu-box:8188", "openai"]);
+        assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "remove", "account": "openai"})).unwrap(), json!({"removed": true}));
+        assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "remove", "account": "openai"})).unwrap(), json!({"removed": false}));
+        assert_eq!(store.0.get("theme").unwrap().as_deref(), Some("dark"), "other entries are left alone");
+    }
+
+    #[test]
+    fn a_damaged_or_refused_origin_key_says_so_without_echoing_it() {
+        let store = OriginStore::new(Origin::default());
+        let account = Account::new("openai").unwrap();
+        store.0.set("nodecraft.key.openai", "sk-leaked with space").unwrap();
+        let err = store.get(&account).unwrap_err();
+        assert!(!err.to_string().contains("sk-leaked"), "{err}");
+        store.0.1.store(true, std::sync::atomic::Ordering::Relaxed);
+        let err = to_error(store.set(&account, &Secret::new("sk-proj-abcdefghij1234").unwrap()).unwrap_err());
+        assert!(err.message.contains("full") && !err.message.contains("abcdefghij"), "{}", err.message);
     }
 
     /// A keychain that takes a while to answer (an unlock prompt).

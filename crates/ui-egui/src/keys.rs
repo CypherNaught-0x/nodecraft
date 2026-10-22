@@ -3,8 +3,9 @@
 //! Every action is a `keys.*` command dispatched through the app's session. In the app the
 //! `keys.store` service runs on a keychain thread (`engine::secrets::KeyWorker`), so commands
 //! answer `{pending: id}` and the outcome arrives later through `KeyResults`. The panel accepts
-//! both that and an immediate answer (tests, the browser build). Keys are never shown: only
-//! the masked tail the engine returns. A typed key is cleared from the field as soon as it is sent.
+//! both that and an immediate answer (tests, and the browser build, which keeps keys in the
+//! browser's storage for the site). Keys are never shown: only the masked tail the engine returns.
+//! A typed key is cleared from the field as soon as it is sent.
 //!
 //! Accounts are listed from settings (`[keys] accounts`) and never read at startup, since each
 //! keychain read can show a prompt; "Check" reads one on request.
@@ -22,6 +23,14 @@ use crate::theme::Tokens;
 /// How long a request may wait for the keychain (an unanswered unlock prompt) before the row
 /// says so and can be used again. A late answer is then ignored.
 pub const KEYCHAIN_TIMEOUT_S: f64 = 120.0;
+
+/// Where keys are kept, shown at the top of the panel.
+#[cfg(not(target_arch = "wasm32"))]
+pub const STORED_WHERE: &str = "Keys are kept in your system keychain, never in projects or settings.";
+/// The browser has no keychain (#118): say plainly who else can read the keys.
+#[cfg(target_arch = "wasm32")]
+pub const STORED_WHERE: &str = "Keys are kept in this browser's storage for this site only, never in projects or settings. \
+    Anyone who uses this browser profile can read them, so remove them when you finish on a shared computer.";
 
 /// Common providers, offered as quick picks.
 const PRESETS: &[&str] = &["openai", "anthropic", "openrouter", "fal", "replicate", "seedream", "tripo", "meshy", "higgsfield"];
@@ -204,7 +213,7 @@ impl KeysPanel {
         let frame =
             egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
         egui::Window::new("API keys").id(egui::Id::new("nodecraft.keys")).open(&mut open).collapsible(false).resizable(false).frame(frame).show(ctx, |ui| {
-            ui.label(egui::RichText::new("Keys are kept in your system keychain, never in projects or settings.").color(t.text_muted));
+            ui.label(egui::RichText::new(STORED_WHERE).color(t.text_muted));
             ui.add_space(t.control_gap);
             let rows = self.rows.clone();
             if rows.is_empty() {

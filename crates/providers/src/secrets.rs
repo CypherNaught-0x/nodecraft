@@ -131,7 +131,7 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, account: &Account) -> Result<bool, SecretError>;
 }
 
-/// Keys in memory: tests, and the browser build until per-origin storage lands.
+/// Keys in memory: tests, and hosts with nowhere to keep them (keys last for the session).
 #[derive(Default)]
 pub struct MemoryStore(Mutex<BTreeMap<Account, Secret>>);
 
