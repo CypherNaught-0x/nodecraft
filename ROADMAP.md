@@ -130,8 +130,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   has no transport yet, and there is no presence.
 - **Not started**: batch, Techniques, app mode, library, Layer editor, Elements, PDF,
   and 32 of the 41 tracked provider adapters (ComfyUI, fal.ai and
-  Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling, ElevenLabs,
-  and 24 of the 25 `future` names have no work started; Higgsfield's adapter is written, #177). 3D generation has a Generate 3D card
+  Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling,
+  and 24 of the 25 `future` names have no work started; Higgsfield's adapter is written, #177).
+  ElevenLabs (#20) has speech (v3, Multilingual v2, Flash v2.5), sound effects, music and voice
+  changer models; there is no Generate audio card yet to run them from the canvas. 3D generation has a Generate 3D card
   with Tripo text, image and multiview models and fal's Trellis (#22), and Meshy text, image,
   multi-image, retexture and remesh models (#23).
 

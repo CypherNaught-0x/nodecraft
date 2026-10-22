@@ -69,7 +69,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
 fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     let catalog = Catalog::builtin().unwrap();
     let keys = MemoryStore::default();
-    for account in ["openai", "anthropic", "replicate", "seedream", "gemini", "fal", "tripo", "meshy", "higgsfield", "comfyui:gpu-box:8188"] {
+    for account in ["openai", "anthropic", "replicate", "seedream", "gemini", "fal", "tripo", "meshy", "higgsfield", "elevenlabs", "comfyui:gpu-box:8188"] {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
     }
     let http = Arc::new(Wire::default());
@@ -80,7 +80,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         assert_eq!(readiness, &Readiness::Ready, "{adapter}");
     }
     let selections: Vec<_> =
-        ["openai-images", "openai", "anthropic", "replicate", "seedream", "gemini-images", "fal", "tripo", "meshy", "higgsfield", "comfyui"]
+        ["openai-images", "openai", "anthropic", "replicate", "seedream", "gemini-images", "fal", "tripo", "meshy", "higgsfield", "elevenlabs", "comfyui"]
             .into_iter()
             .enumerate()
             .map(|(i, a)| (NodeId::from_bytes([i as u8 + 0x10; 16]), a))
