@@ -178,6 +178,14 @@ that drive real pointer and key events through the canvas.
 - PRs with visible changes include real screenshots or a short recording, before and after,
   with a small public-safe example (no private projects, keys, paths or account details).
   Diagrams don't replace evidence of visible behaviour. Attach media to the PR; don't commit it.
+- **Attach media with GitHub CLI.** Use `--attach` on `gh pr create`, `gh pr edit` or
+  `gh pr comment`; check the installed command's help for support. This was verified with
+  GitHub CLI 2.101.0. Pass a Markdown body using `--body-file` and repeat `--attach` for each
+  image or video. Matching local image references in the body are rewritten to uploaded URLs;
+  unreferenced attachments are appended. Image alt text can also follow the file path after
+  `#`. Uploading requires repository push access. Read back the posted body to confirm remote
+  attachment URLs replaced local paths. The local body file is unchanged: fetch the posted
+  body before later edits so they preserve uploaded URLs. See [GitHub's attachment instructions](https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli).
 - Say in the PR what you changed, how you tested it, and what you measured. If something could
   not be verified (e.g. a platform you couldn't run), say so.
 
