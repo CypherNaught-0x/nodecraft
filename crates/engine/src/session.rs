@@ -168,7 +168,10 @@ pub struct Session {
     routing: crate::provider_routing::RoutingAuthority,
     document: Project,
     registry: Registry,
-    kinds: nodecraft_nodes::Registry,
+    /// Shared with live recompute, which runs on the kinds it was planned with.
+    kinds: Arc<nodecraft_nodes::Registry>,
+    /// The granted plugins' actions (#173); their kinds are in `kinds`.
+    plugins: Arc<crate::plugin_runtime::PluginSnapshot>,
     resources: Resources,
     services: Services,
     undo: History,
@@ -226,7 +229,8 @@ impl Session {
             file_lifecycle: file_lifecycle::FileLifecycle::new(),
             document,
             registry,
-            kinds,
+            kinds: Arc::new(kinds),
+            plugins: Arc::default(),
             resources: Resources::default(),
             routing: Default::default(),
             services: Services::default(),
@@ -272,6 +276,39 @@ impl Session {
     }
     pub fn kinds(&self) -> &nodecraft_nodes::Registry {
         &self.kinds
+    }
+    /// The node kinds, to plan or run with off the session.
+    pub fn kinds_shared(&self) -> Arc<nodecraft_nodes::Registry> {
+        Arc::clone(&self.kinds)
+    }
+    /// The granted plugins' actions runs execute (#173).
+    pub fn plugins(&self) -> &Arc<crate::plugin_runtime::PluginSnapshot> {
+        &self.plugins
+    }
+    /// Publishes what the plugin store may run now (#173): its actions' node kinds replace the
+    /// plugin kinds, and actions whose grant is gone are flagged revoked, so their running jobs
+    /// stop and their results are dropped. Changes no document.
+    pub fn set_plugins(&mut self, next: crate::plugin_runtime::PluginSnapshot) -> Result<(), Error> {
+        if self.plugins.same(&next) {
+            return Ok(());
+        }
+        let prefix = nodecraft_plugin::id::PLUGIN_PREFIX;
+        let next = self.plugins.succeed(next);
+        match self.kinds.with_replaced(prefix, next.kinds()) {
+            Ok(kinds) => {
+                self.plugins = Arc::new(next);
+                self.kinds = Arc::new(kinds);
+                Ok(())
+            }
+            Err(error) => {
+                // Cards and actions must agree: if the cards can't be published, nothing runs
+                // until the next snapshot, which is tried afresh since it differs from none.
+                let none = next.succeed(crate::plugin_runtime::PluginSnapshot::default());
+                self.kinds = Arc::new(self.kinds.with_replaced(prefix, Vec::new())?);
+                self.plugins = Arc::new(none);
+                Err(error)
+            }
+        }
     }
     #[cfg(test)]
     pub(crate) fn exhaust_execution_generation(&mut self) {

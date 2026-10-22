@@ -3500,6 +3500,7 @@ dependencies = [
  "nodecraft-graph",
  "nodecraft-media",
  "nodecraft-nodes",
+ "nodecraft-plugin",
  "nodecraft-plugin-store",
  "nodecraft-provider-testkit",
  "nodecraft-providers",

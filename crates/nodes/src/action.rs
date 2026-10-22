@@ -130,6 +130,21 @@ pub(crate) fn kind(id: &str, label: &str, inputs: Vec<Port>, outputs: Vec<Port>,
     }
 }
 
+/// A plugin's action kind (#173): its id is under `plugin.`, so it can't stand in for a built-in
+/// one, and it has one output. A list input must be the last; it takes every connected value.
+pub fn plugin_kind(id: String, label: String, inputs: Vec<Port>, output: Port, params: Vec<ParamSpec>) -> Result<ActionKind, Error> {
+    if !id.starts_with("plugin.") {
+        return Err(invalid("a plugin action kind is named under plugin."));
+    }
+    if inputs.iter().rev().skip(1).any(|p| p.port_type.many) {
+        return Err(invalid("only a plugin action's last input may take a list"));
+    }
+    Ok(ActionKind {
+        descriptor: NodeDescriptor { id, label, category: Category::Action, inputs, outputs: vec![output], params: ParamSchema { params }, quick_add: None },
+        optional_last: false,
+    })
+}
+
 /// Every action kind.
 pub fn kinds() -> Result<Vec<ActionKind>, Error> {
     Ok(vec![
