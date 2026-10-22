@@ -24,6 +24,7 @@ openai-images = ["dep:base64", "dep:blake3"]
 replicate = ["dep:base64"]
 # Stateless Gemini Interactions image generation and editing.
 gemini-images = ["dep:base64"]
+gemini-video = ["dep:base64"]
 # Queue models, and style training (#167), whose images go up as one zip.
 fal = ["dep:base64", "dep:zip"]
 # Dated Seedream text generation and ordered multi-reference edits.

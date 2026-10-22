@@ -53,6 +53,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     assert_eq!(setup.readiness("replicate"), Some(&Readiness::NeedsKey { account: "replicate".into() }));
     assert_eq!(setup.readiness("seedream"), Some(&Readiness::NeedsKey { account: "seedream".into() }));
     assert_eq!(setup.readiness("gemini-images"), Some(&Readiness::NeedsKey { account: "gemini".into() }));
+    assert_eq!(setup.readiness("gemini-video"), Some(&Readiness::NeedsKey { account: "gemini".into() }));
     assert_eq!(setup.readiness("fal"), Some(&Readiness::NeedsKey { account: "fal".into() }));
     assert_eq!(setup.readiness("tripo"), Some(&Readiness::NeedsKey { account: "tripo".into() }));
     assert_eq!(setup.readiness("meshy"), Some(&Readiness::NeedsKey { account: "meshy".into() }));
@@ -79,12 +80,25 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     for (adapter, readiness) in setup.adapters() {
         assert_eq!(readiness, &Readiness::Ready, "{adapter}");
     }
-    let selections: Vec<_> =
-        ["openai-images", "openai", "anthropic", "replicate", "seedream", "gemini-images", "fal", "tripo", "meshy", "higgsfield", "elevenlabs", "comfyui"]
-            .into_iter()
-            .enumerate()
-            .map(|(i, a)| (NodeId::from_bytes([i as u8 + 0x10; 16]), a))
-            .collect();
+    let selections: Vec<_> = [
+        "openai-images",
+        "openai",
+        "anthropic",
+        "replicate",
+        "seedream",
+        "gemini-images",
+        "gemini-video",
+        "fal",
+        "tripo",
+        "meshy",
+        "higgsfield",
+        "elevenlabs",
+        "comfyui",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, a)| (NodeId::from_bytes([i as u8 + 0x10; 16]), a))
+    .collect();
     let mut session = crate::Session::new(nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([1; 16]), "P").unwrap()).unwrap();
     session.set_provider_routing(setup.routing(selections.iter().copied()).unwrap()).unwrap();
     // Each run gets a fresh routing from the same adapters, without reading keys again.

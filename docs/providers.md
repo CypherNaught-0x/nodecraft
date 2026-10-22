@@ -9,6 +9,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
 | **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and direct-adapter reference editing | Three stable Gemini models, unknown usage price; canvas resolver/mixed/list routing limitations below. |
+| **Gemini Video** | `gemini-video` | supplied Gemini API key (`x-goog-api-key`), same `gemini` account | Omni Flash text, first/last frame and reference images → video with sound | Veo on the Gemini API is shut down (Veo on Google Cloud is #742). Paid tier only; charged by measured tokens, no price before the run. See below. |
 | **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded credential-free delivery downloads; unknown usage price. See below. |
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
@@ -353,6 +354,38 @@ The synchronous request allowance is 300 seconds, providing local service/body-t
 Original synthetic fixtures run offline. The ignored native smoke requires NODECRAFT_LIVE_GEMINI_IMAGES=1 plus NODECRAFT_LIVE_GEMINI_IMAGES_ACKNOWLEDGE_COST=1 and explicit spending authorization; optional second paid edit additionally requires NODECRAFT_LIVE_GEMINI_IMAGES_EDIT=1. No live test is selected in CI. Current source has not been validated against a paid service call.
 
 Contract checked 2026-10-18: [REST](https://ai.google.dev/api/interactions-api), [image guide](https://ai.google.dev/gemini-api/docs/image-generation), [Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image), [Nano](https://ai.google.dev/gemini-api/docs/models/gemini-nano-banana-2.1), [Pro](https://ai.google.dev/gemini-api/docs/models/gemini-3-pro-image).
+## Gemini Video (`gemini-video` feature)
+
+`GeminiVideo` runs Gemini Omni Flash (`gemini-omni-1.1-flash`), Google's video model on the Gemini
+API now that every Veo model there is shut down (Veo 3.1 on 2026-10-22). It uses the `gemini`
+keychain account, like Gemini Images. Catalog model `gemini-video.omni-flash`:
+
+- **Modes:** text to video; a first frame with an optional last frame; one to three subject
+  references. Images are PNG or JPEG, at most 15 MiB each and 45 MiB together, sent inline. The
+  prompt is required; there is no negative prompt, seed or duration (ask for timing in the
+  prompt, e.g. `[0-3s] …`). The video comes with generated sound.
+- **Options:** aspect ratio 16:9 (default) or 9:16; resolution 360p, 720p (default) or 1080p
+  (upscaled). 4K, editing and extending a video, and video references are not offered yet.
+- **Flow:** one synchronous `POST /v1beta/interactions` (store, background and stream false,
+  `delivery: "uri"`; allowed up to 15 minutes) is the paid step and is never replayed. The reply
+  names a Files API file, which is polled every 5 s with `GET /v1beta/files/{id}` until `ACTIVE`
+  and downloaded from `files/{id}:download?alt=media` (redirects followed; the key is dropped on
+  leaving Google's API origin). The video must sniff as MP4 and stay under 256 MiB. A reply that
+  carries the video inline finishes at submit. Files expire on Google's side after two days and
+  are not deleted by NodeCraft.
+- **Cost:** no quote before the run: the clip's length is the model's choice. The result is
+  charged by measured tokens at 1.50 USD per million input and 17.50 USD per million output
+  tokens (about 0.10 USD a second of 720p). Finite budgets refuse by-usage models.
+- **Not verified live:** whether a reply ever carries the video inline despite `uri` delivery,
+  and the exact form of the file reference (both `files/<id>` and the full API URL are read). Run
+  `NODECRAFT_LIVE_GEMINI_VIDEO=1 NODECRAFT_LIVE_GEMINI_VIDEO_ACKNOWLEDGE_COST=1 GEMINI_API_KEY=…
+  cargo test -p nodecraft-providers --features http,gemini-video --test live_gemini_video --
+  --ignored` with authorization to spend.
+
+Contract checked 2026-10-22: [Omni guide](https://ai.google.dev/gemini-api/docs/omni),
+[pricing](https://ai.google.dev/gemini-api/docs/pricing),
+[deprecations](https://ai.google.dev/gemini-api/docs/deprecations).
+
 ## fal.ai queue models
 
 The optional `fal` feature supports nine explicit live aliases, checked against official HTTP

@@ -28,6 +28,8 @@ mod error;
 pub mod fal;
 #[cfg(feature = "gemini-images")]
 pub mod gemini_images;
+#[cfg(feature = "gemini-video")]
+pub mod gemini_video;
 #[cfg(feature = "higgsfield")]
 pub mod higgsfield;
 pub mod http;
