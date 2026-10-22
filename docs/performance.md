@@ -1,8 +1,9 @@
 # Reproducing M1 performance measurements
 
 `cargo xtask perf` is a release-only regression harness (#152). It does not run in ordinary
-correctness CI, contact providers or measure GPU/display performance. #65 owns canvas optimization
-and its desktop 60-fps criterion; a headless result cannot close that criterion.
+correctness CI, contact providers or measure GPU/display performance. The separate desktop
+vsync frame-pump run (#526, #634) supplied the presented-frame proof used to close #65 on the
+measured Apple M3 Pro/Metal 120 Hz machine. A headless result alone cannot close that criterion.
 
 ## Collect
 
@@ -132,6 +133,25 @@ A report without a `presentation_source` (a host that couldn't promise vsync) pr
 either way. The headless `cargo xtask perf` canvas records below remain CPU regression evidence
 and can't stand in for this run.
 
+#634's two release-mode desktop runs on an Apple M3 Pro/Metal **120 Hz** display observed p99
+presented intervals of 8.65–8.79 ms (200-node pan) and 8.70–8.95 ms (200-node zoom), with
+0 and 1–2 dropped frames respectively and longest drops of 0 and 1–2. The 1,000-node pan/zoom
+runs also met P1–P3. CPU *frame preparation* p95 in those runs was 0.58–0.84 ms at 200 nodes
+and 1.00–2.19 ms at 1,000 nodes: those are **not** CPU preparation-plus-tessellation numbers
+from the headless benchmark. This is measured evidence on that machine, not proof on 60 Hz,
+Windows or Linux hardware. The #634 PR states the measured run preceded its review corrections
+(which did not change the hot path); no new current-head measurements are asserted here.
+
+The older UI kittest figures (1.90 ms at 200 nodes and 5.4/6.39 ms at 1,000) were CPU egui
+preparation **plus tessellation**, measured at `481700ba` on 2026-10-17, not present intervals.
+At `aa1efc86` a quiet-machine repeat found 17.09 ms at 200 nodes and 283.55 ms at 1,000
+for an after-edit frame, so treating the older figures as current would have concealed a real
+regression (#549). #551 fixed quadratic live-action planning and reported 2.28/7.84 ms on
+Apple M3 Pro at load ~18, using `node.move` (which now takes the settled-layout fast path).
+That busy-machine result is neither a quiet-machine comparison with `481700ba` nor a benchmark
+of full non-layout parameter-edit planning. Do not extrapolate it into a current general edit
+or displayed-frame claim; rerun a named workload and record its commit and machine.
+
 ## Compare and establish a baseline
 
 ```sh
@@ -210,11 +230,11 @@ pinned; that toolchain was observed in PR #478's successful hosted Linux correct
 requires a new comparable performance baseline. Shared GitHub runner CPU models can also change;
 exact environment comparison then refuses rather than equating different hardware.
 
-The first hosted performance workflow execution is still pending. Ordinary hosted correctness CI
-and local release collection do not establish its Ubuntu runtime, build-watchdog margin or recurring
-baseline stability. Run it deliberately after the workflow exists on the default branch, retain its
-actual result, and adjust operational limits only from that evidence. No hosted performance pass is
-claimed here.
+The first hosted performance workflow run (GitHub Actions run 39341922791, source
+`8898cd2254714c7efd1fd0f53554db49810f15df`) completed successfully on 2026-10-19.
+That one collection is not evidence of recurring baseline stability or a cross-revision win.
+Retain its actual report before changing operational limits; ordinary correctness CI remains
+separate from this release-mode performance workflow.
 
 Investigate a signal by checking the compared revision/fixture/environment identities, actual
 counts and supported metrics first, then raw sample order/range/MAD and each matching quantile.

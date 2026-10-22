@@ -108,7 +108,7 @@ that is already selected keeps the rest of the selection; dragging still moves o
 cancelled; changing another field does not discard them. Slider drags preview locally and commit
 once on release. Titles default to the first nonempty prompt/text line, or the kind label, and are
 clipped to 64 Unicode characters. Unknown node kinds retain their title and show an unavailable
-message. Asset controls display/remove existing references; file import is tracked separately (#63).
+message. Asset controls display/remove existing references; OS file drop and desktop clipboard image import create source nodes (#197, #63).
 
 ## Level of detail and performance
 
@@ -128,10 +128,14 @@ message. Asset controls display/remove existing references; file import is track
   every edit plan each action node alone, rebuilding the planner graph per node (O(nodes²), 284 ms
   after an edit at 1,000 nodes); one walk now decides for all of them, the project is copied only
   when a cached result applies, and a settled canvas skips the look entirely for moves and
-  grouping (#549). Apple M3 Pro, 2026-10-21, load average about 18: 2.3 ms after an edit at 200
-  nodes and 7.8 ms at 1,000, against 1.7 and 5.4 ms panning. Title font sizes still change
-  with every zoom step (a new glyph size per frame in a sweep); snapping them to a few sizes is
-  the next lever if sweeps get heavier.
+  grouping (#549). In PR #551's pre-merge measurement (landed as `9867f144`), Apple M3 Pro,
+  2026-10-21, load average about 18: 2.3 ms after `node.move` at 200 nodes and 7.8 ms at
+  1,000, against 1.7 and 5.4 ms panning. These are CPU egui preparation plus tessellation,
+  **not** presented frames; the move takes the settled-layout fast path and this busy-machine
+  result is not a quiet remeasurement of full parameter-edit planning. The independent desktop
+  presented-frame measurement used to close #65 is in [performance.md](performance.md#the-60-fps-criterion).
+  Title font sizes still change with every zoom step (a new glyph size per frame in a sweep);
+  snapping them to a few sizes is the next lever if sweeps get heavier.
 - Grid dots keep a fixed screen size. When zooming out would put them closer than 12 points, the
   grid skips every other dot (`canvas::grid_step`), so it never turns into a haze; at most 120,000
   dots are drawn per frame, and they are tiny squares (4 vertices) rather than circles.

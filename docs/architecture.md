@@ -176,8 +176,8 @@ planners must use `visible_values()` or `into_visible_values()` so hidden fields
 Visibility currently supports equality against an earlier field. Choice values deliberately use
 Text identifiers; numeric enums require explicit conversion by the owning adapter. Exact integer
 MCP/CLI schemas must describe the tagged Value with a canonical decimal string, not JSON numbers.
-Source card snapshots are added by canvas issue #57; this crate's golden graph tests cover pure
-planning independently of rendering.
+Canvas issue #57 shipped graph-backed source cards; golden graph tests cover pure planning
+independently of rendering.
 
 ## Document edits
 
