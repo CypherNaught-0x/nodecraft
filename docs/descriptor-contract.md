@@ -344,13 +344,15 @@ registration, exposes it through `node.describe`, and plans and runs every kind 
 [Running](#running)). Version 1.1 adds option sources and the store a host fills; 1.2 adds
 fan-out on list inputs.
 
-These are tracked on #162 and on the issues that need them:
+Remaining limits are tracked in follow-up issues, rather than treating completed #162 as open:
 
-- fetching provider inventories (voices, account models), lists narrowed by a scope, and
-  fetching from the CLI;
-- typed nested records and lists;
-- generated UI reading rules (enabled state, reset) and the bulk panel itself (#71);
-- per-provider parameter inventories.
+- typed nested records and lists (#528);
+- additional per-provider parameter inventories where not supplied by the adapter.
+
+Generated UI reading of enabled state/reset and the bulk panel shipped in #71. The desktop
+fetches supported provider option lists (#529), and run planning consults resolved option lists
+(#527); see [Option sources](#option-sources) for host and CLI limitations. Neither is an open
+contract-1.2 item.
 
 Each of these is added as a minor version where it is optional, or a major version where it
 changes meaning.

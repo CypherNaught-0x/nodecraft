@@ -14,7 +14,7 @@
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
   <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-native-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: M1 finishing, M3 wiring" src="https://img.shields.io/badge/status-M1%20finishing%20%C2%B7%20M3%20wiring-d69e2e?style=flat-square">
+  <img alt="Status: M1 feature work done, later milestones in progress" src="https://img.shields.io/badge/status-M1%20done%20%C2%B7%20later%20milestones%20in%20progress-d69e2e?style=flat-square">
 </p>
 
 <p align="center">
@@ -24,10 +24,11 @@
 ---
 
 > [!NOTE]
-> NodeCraft is being built in the open, three days in. The canvas, the document model, undo,
-> automation surfaces and the whole generation engine are in the tree; the step in progress is
-> wiring that engine to the app, so **the app does not generate yet**; it does save and open `.ncraft` projects.
-> [`ROADMAP.md`](ROADMAP.md) says exactly what works, what does not, and what is next.
+> NodeCraft is being built in the open. M1 canvas feature work and its measured exit criterion
+> are complete; the milestone still awaits this documentation close-out. The desktop saves and
+> opens `.ncraft` projects and can run supported generation cards through its wired host. That
+> does **not** mean every catalog model or provider works on every platform. See
+> [`ROADMAP.md`](ROADMAP.md) for current limitations and next steps.
 
 ## What it does today
 
@@ -39,15 +40,29 @@
   a searchable quick-add palette with per-key shortcuts, "Turn into" when you drop a noodle on
   empty canvas, drag-to-reorder input order badges, copy/cut/paste/duplicate through the OS
   clipboard, OS file drop that creates source nodes, pinned discussions and Notes, grid/dependency
-  formatting, and named colour tags with a bounded highlight filter.
+  formatting, fields, a bulk parameter panel, and named colour tags with a bounded highlight
+  filter. Save/open `.ncraft` projects and recover unsaved work on desktop; image and text actions
+  recompute locally, and supported generation cards can run through the desktop host.
 - **Never lose work**: every edit is an invertible changeset, so undo/redo covers everything, and
   command dispatch runs under a panic guard. No `unsafe` and no `unwrap` outside tests.
 - **Keep your keys yours**: an API keys panel over the OS keychain.
 - **Drive it from outside**: an MCP server (`nodecraft-cli mcp`, and `--bridge` to drive the app
   you have open), a headless control channel (`nodecraft --control`, `nodecraft-cli control`), all
-  dispatching the same 66 commands the UI uses. `nodecraft-cli inspect`, `quote` and `providers`
+  dispatching the same stable dotted commands the UI uses. `nodecraft-cli inspect`, `quote` and `providers`
   read a project's canvases, price a run as the canvas would, and say which providers can run;
   `nodecraft-cli run` runs it (a paid run needs `--yes`) and exports the results to a folder.
+
+## What does not work yet
+
+- A model in the catalog is not proof that its adapter, mode and credentials are usable in every
+  host. Browser provider options and some local endpoints differ from desktop; see
+  [`docs/providers.md`](docs/providers.md) and [`ROADMAP.md`](ROADMAP.md).
+- The text card's chat-style turn UI (#84) and first signed release (#100) are still open.
+  `nodecraft-cli serve` exists on current `main` even though its tracking issue #117 remains open;
+  see [`docs/serve.md`](docs/serve.md). The published release candidates predate current `main`.
+- Presented-frame P1–P3 passed on one 120 Hz Apple M3 Pro/Metal setup (#65, #634), not a 60 Hz
+  display or Windows/Linux hardware; the older headless CPU timings are commit-bound historical
+  results, not current universal frame guarantees. See [`docs/performance.md`](docs/performance.md).
 
 ## The canvas, frame by frame
 
@@ -57,7 +72,8 @@ the same `egui_kittest` wgpu path the snapshot tests use, committed by an opt-in
 distances. The cards were placed by engine commands, the plate came in through the same import path
 a file drop takes,
 and the graded, softened and cropped thumbnails are local deterministic actions the app recomputed
-for itself. What is *not* in them: a model call. Provider wiring is the milestone in progress.
+for itself. What is *not* in these captured frames: a model call. They are not evidence of a live
+provider response; supported desktop generation is described separately below.
 
 ### A card is generated from its node's parameter schema
 
@@ -101,8 +117,8 @@ Comments live on the canvas, anchor to a card, move with it, and thread.
 
 Text, image, video, audio, 3D and document each own a colour, so a noodle tells you what it carries
 before you hover it. Here the video pair is purple and the audio pair orange; the 3D and document
-routers carry green and grey ports and have nothing upstream to take yet — the app has no source
-card for either. A router carries one modality per instance and adds no step and no cost: the run
+routers carry green and grey ports with no upstream connection in this pictured project. A router
+carries one modality per instance and adds no step and no cost: the run
 planner resolves it away.
 
 ### One set of theme tokens, both palettes
@@ -134,32 +150,36 @@ report, so an honest frame has none in it.
 
 ## What it will do
 
-The engine behind generation is already built and tested — plan → quote → budget → schedule →
-execute → record → history, with cost shown before a run and budgets held while jobs run. The work
-now is connecting it to the window. The target:
+The generation path is built and connected to the desktop for supported models: plan → quote →
+budget → schedule → execute → record → history. Before a paid run, inspect its quote and budget.
+The following are goals or partial capabilities, **not** a promise that every mode works today:
 
 - **Any model, one node per modality.** The model is a parameter: search compatible models, swap
   without rewiring, or run several side by side. Each run shows its cost before it starts.
 - **ComfyUI first-class.** Import any workflow as a node with typed ports, follow live progress,
   and switch a node between cloud models and local ComfyUI without rewiring.
 - **Providers**: LLM endpoints (OpenAI-compatible, Anthropic, LiteLLM, Ollama), OpenAI Images,
-  Replicate, Seedream, Tripo, Meshy, Higgsfield, Gemini images and Gemini Omni Flash video are written; fal.ai, Google Imagen/TTS,
-  ElevenLabs, Seedance and Kling are tracked as issues.
+  Replicate, Seedream, Tripo, Meshy, Higgsfield, Gemini images and Gemini Omni Flash video have
+  adapters. ComfyUI now accepts video/audio workflows; fal.ai and ElevenLabs also have adapters,
+  while Google Imagen/TTS, Seedance and other Kling work remain separately tracked. Adapters and
+  catalog entries are not proof of usable workflows in every host. Consult
+  [`docs/providers.md`](docs/providers.md) for per-adapter modes, authentication and limitations;
+  desktop and browser support differ.
 - **Deterministic actions** — colour grading, blur, crop, aspect ratio, split into grid, text and
   video operations, PDF pages and text — recompute live, with custom actions authored as GPU shaders.
 - **Editors inside nodes**: a Layer Editor, a Timeline, Mask/Inpaint, and a 3D viewer that captures
   photos, turntables and multi-view sheets.
-- **Reuse**: Batch and Router nodes, Elements, and a Technique Builder that turns a workflow into
-  one node, an app-mode form, a CLI command and an MCP tool.
+- **Reuse**: Batch and Router nodes, Elements, Techniques and app mode have shipped in part; the
+  milestone still has open issues before promising identical results on every surface.
 - **Agent-ready**: an in-canvas agent builds and runs workflows with the same commands as the UI.
 - **Yours**: local `.ncraft` projects with content-addressed assets, working offline with your own
   keys.
 
 ## Under the hood
 
-- A Rust 2024 workspace of 17 layered crates and 3 apps (`types` → `graph` →
-  `nodes`/`catalog`/`actions` → `exec`/`providers`/`gpu`/`format` → `engine` →
-  `ui-egui`/`agent`/`automation`), with the layering enforced by `cargo xtask layers`.
+- A Rust 2024 workspace of layered crates and desktop, CLI and browser apps (`types` →
+  `graph` → `nodes`/`catalog`/`actions` → `exec`/`providers`/`gpu`/`format` →
+  `engine` → `ui-egui`/`agent`/`automation`), enforced by `cargo xtask layers`.
 - egui/eframe on wgpu. Every library crate also builds for `wasm32-unknown-unknown`, checked by
   `cargo xtask wasm`; `apps/nodecraft-web` runs the same app in a browser (a preview).
 - Every action is a command with typed JSON params, and every edit is an invertible changeset —
@@ -191,7 +211,7 @@ orientation for contributors and coding agents.
 
 Two pre-releases exist. [`v0.2.0-rc.1`](../../releases/tag/v0.2.0-rc.1) is the current build:
 installers for macOS, Windows and Linux of that pre-release snapshot. Build `main` for the latest
-canvas features; generation and saving from the app are still being wired. [`v0.1.0-rc.1`](../../releases/tag/v0.1.0-rc.1) is the
+canvas features: this pre-release predates much of the current desktop storage and generation wiring. [`v0.1.0-rc.1`](../../releases/tag/v0.1.0-rc.1) is the
 M0-era build that proved the release pipeline. Signed installers arrive with the first real
 release ([#100](../../issues/100)); macOS and Windows builds are unsigned for now, so the first
 launch shows a warning — [`docs/install.md`](docs/install.md) shows how to open them anyway.
@@ -209,11 +229,11 @@ and checklists for adding commands, node kinds and providers.
 | Milestone | Focus | Where it stands |
 |---|---|---|
 | M0 | Workspace skeleton, lints, CI, empty canvas | done |
-| M1–M2 | Canvas core, organisation tools | canvas nearly done; fields UI to wire |
-| M3 | Generation engine, providers, history, cost | engine built and tested, app not wired yet |
-| M4–M5 | Actions, Batch, Techniques, CLI | actions built as a library; M5 not started |
-| M6–M8 | Layer/Timeline/Mask editors, video, audio, 3D, PDF | not started |
-| M9–M10 | Agent, MCP, browser build, collaboration | MCP and control channel work; no agent yet |
+| M1–M2 | Canvas core, organisation tools | M1 feature work and exit criterion done; M2 partial |
+| M3 | Generation engine, providers, history, cost | desktop host wired; remaining modes and issues open |
+| M4–M5 | Actions, Batch, Techniques, CLI | local action nodes work; reuse and first signed release partial |
+| M6–M8 | Layer/Timeline/Mask editors, video, audio, 3D, PDF | partial, with working desktop surfaces and open gaps |
+| M9–M10 | Agent, MCP, browser build, collaboration | agent, control and sync work on desktop; other surfaces partial |
 
 Full detail, including what does not work yet: [`ROADMAP.md`](ROADMAP.md).
 

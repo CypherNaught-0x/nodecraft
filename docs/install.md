@@ -76,8 +76,11 @@ Use the `aarch64` files on ARM machines.
 `nodecraft-web-<version>.zip` is a static site. Unzip it and serve the folder over HTTP from any
 host or path, for example `python3 -m http.server` inside it, then open the page in a browser with
 WebGPU or WebGL 2. Opening `index.html` from disk does not work, because browsers refuse to load
-WebAssembly from `file://`. The preview opens the starter canvas only: project files, API keys and
-runs are not available in the browser yet.
+WebAssembly from `file://`. The `v0.2.0-rc.1` archive is an older snapshot; do not infer current
+`main` capabilities from that build. On current source, browser project pickers/downloads and
+site-local keys work (#118), and supported cloud cards can run when the provider permits direct
+browser requests. Local endpoints, option lists (#721) and clipboard image paste remain desktop-only;
+see [`../ROADMAP.md`](../ROADMAP.md).
 
 ## Building from source
 

@@ -1,30 +1,31 @@
 # Roadmap
 
-**Now: the wiring milestones.** M0 is done and M1 is nearly done; the generation engine (M3) and
-the action library (M4) are built and heavily tested, and the current work is connecting them to
-the app. Details and exit criteria per milestone: [`docs/plan.md`](docs/plan.md) §7. Work is
-tracked as GitHub issues in milestones; comment `/claim` to take one.
+**Now: M1 canvas core is complete; the later milestones are in progress.** The desktop can
+edit, save and run projects, while milestone exit criteria for generation, reuse and sharing still
+have open work. Details and exit criteria: [`docs/plan.md`](docs/plan.md) §7. Work is tracked as
+GitHub issues in milestones; comment `/claim` to take one.
 
-Status is measured from the issues in each milestone as of 2026-10-18: 271 filed, 153 open,
-116 closed as completed and 2 closed as not planned. **Done** counts issues closed as *completed*,
-so M1 reads 20/32 where GitHub says 21 closed (#135 was declined rather than built). Status
-describes shipped behaviour, not code that merely exists: a milestone only counts what a person or
-an agent can actually do today.
+As of 2026-10-22, **Done** counts only issues closed as *completed* (not `not planned`); the
+denominator is all filed issues, including open and declined issues. M1 is 35 completed, one
+`not planned` (#135), and this close-out (#372) still open: its feature work and #65's exit
+criterion are done, but GitHub will only close the milestone after this issue lands. Other rows
+likewise reflect GitHub's live issue state, not a declaration that all milestone exit criteria
+have passed. Status distinguishes tested library capabilities from what someone can use in the app.
 
 | M | Name | Status | Done |
 |---|---|---|---|
-| 0 | **Skeleton** — workspace, lints, xtask, CI, release pipeline, themed canvas | ✅ done | 10/10 |
-| 1 | **Canvas core** — graph + changesets + undo, commands, canvas widget, `.ncraft` | 🟡 nearly — see caveat | 20/32 |
-| 2 | **Organise** — fields, tags, comments, search, auto-format, router, input order | 🟡 partial | 7/9 |
-| 3 | **Generation** — exec, queue, cost, catalog, ComfyUI, LLMs, cloud providers | 🟡 engine done, app not wired | 17/30 |
-| 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 5/12 |
-| 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92), app mode (#95), installing updates (#540), result export (#557), CLI `run` (#97) | 2/16 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101), Elements (#104) | 3/6 |
-| 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105), sound on cards (#106), video generation (#559), audio generation (#672), Timeline (#109) | 4/15 |
-| 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22), PDF node (#113), Meshy 3D generation (#23) | 5/7 |
-| 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, agent sidebar (#114), HTTP serve (#117) with signed webhooks (#632) | 2/6 |
-| 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | 🟡 decks (#122), CRDT sync and the relay (#119) | 2/6 |
-| — | **Future providers** — the 25 further adapters tracked as `future` | 🟡 Higgsfield SOUL 2 and Kling image to video (#177) | 1/26 |
+| 0 | **Skeleton** — workspace, CI, release pipeline, themed canvas | ✅ feature work done | 10/10 |
+| 1 | **Canvas core** — graph, undo, commands, canvas, `.ncraft` | ✅ feature work done; close-out open | 35/37 |
+| 2 | **Organise** — fields, tags, comments, search, format, router | 🟡 partial | 10/14 |
+| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired | 38/44 |
+| 4 | **Actions** — image/text actions, GPU, live recompute | 🟡 partial; action nodes work in app | 8/12 |
+| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 16/27 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial | 6/10 |
+| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110) | 16/30 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 6/12 |
+| 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 4/8 |
+| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence pending | 6/14 |
+| — | **Future providers** — separately tracked adapters | 🟡 partial | 1/27 |
 
 ## What works today
 
@@ -71,12 +72,17 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   are a fanned step's results, as one (#611). The desktop saves held results so they survive a
   restart (#614).
   A fal result's `X-Fal-Billable-Units` header is kept, exactly, with the job's settings in the
-  project as evidence of what was billed; it is never turned into money (#437).
+  project as evidence of what was billed; it is never turned into money (#437). Run quotes also
+  surface aggregate admission feedback before confirmation (#307). Imported video and audio
+  sources probe duration (#608); ComfyUI accepts video and audio workflows (#110). Plugin cards
+  keep their package identity, migrate with their package, and survive uninstall (#173).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
-  command dispatch under a panic guard; 66 registered commands with typed JSON params.
+  command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
   running app, `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
-  screenshots). See [`docs/mcp.md`](docs/mcp.md) and [`docs/control.md`](docs/control.md).
+  screenshots), plus `nodecraft-cli serve` for a project's published Techniques over a local
+  authenticated HTTP API with optional signed webhooks. See [`docs/mcp.md`](docs/mcp.md),
+  [`docs/control.md`](docs/control.md) and [`docs/serve.md`](docs/serve.md).
 - **Headless**: the planner, scheduler, driver, run executor, cost quotes, budgets, usage ledger,
   staleness hashing and router resolution exist and are tested end to end against the mock
   provider.
@@ -85,15 +91,15 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
 
 The honest list, because "it's in the repo" and "you can use it" are different claims:
 
-- **The app cannot generate.** Image generation cards (`generation.image`, #465) can be placed,
-  configured and swapped between catalog models (#157), but nothing constructs a provider adapter
-  or installs the run host, so `run.start` reports *unsupported* (#409, #362). Five adapters (LLM
-  endpoints, OpenAI Images, Replicate, ComfyUI and Seedream) have tested library integrations,
-  with catalog definitions available to engine callers.
-- **Actions are live.** The 13 image and 4 text operations are node kinds (#410) and
-  recompute on a worker after each edit, joining that edit's undo step (#433). While a slider
-  drags, cards show a preview made from scaled-down images, and the full-size render follows on
-  release (#88). The browser build, which has no worker threads, runs each round in the frame.
+- **Generation is not finished across every model or surface.** The desktop run host now constructs
+  supported catalog adapters and runs authorized generation cards (#409, #362, #83); a listed model
+  is not proof that every provider, modality or input mode runs in every host. The text card's
+  chat-style turn UI remains open (#84), and browser provider settings/option lists differ from
+  desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
+- **Local actions work in the app.** Image/text action node kinds (#410) recompute on a worker
+  after edits (#88); slider drags preview with smaller images before full-size rendering. The
+  browser has no equivalent worker threads and runs rounds in the frame. This is not evidence
+  that all paid provider operations or video/audio actions work in every host.
 - **The in-canvas agent works in the desktop app.** Cmd+/ opens the agent sidebar (#114): ask in
   words, with the selection and @-mentioned nodes as context. `crates/agent` runs the model's tool
   calls over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
@@ -116,8 +122,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   sound, extract frames, reverse, grade, key, watermark, split and extract sound.
   Video generation (#559) has text, frame, reference and speech-to-video modes declared per
   model; fal's Wan 2.2 maps text, first/last-frame and speech to video (#607), and no adapter
-  maps reference-to-video yet. A Generate audio card (#672) runs the catalog's text-to-audio and
-  audio-to-audio models, such as fal's Kokoro speech, and plays its result.
+  maps reference-to-video yet. Gemini Omni Flash video (#17) supports text, first/last-frame and
+  reference-image inputs; Veo on Google Cloud is still tracked separately (#742). A Generate
+  audio card (#672) runs the catalog's text-to-audio and audio-to-audio models, such as fal's
+  Kokoro speech, and plays its result.
   The Timeline (#109) renders clips with fades and cross-fades on a main track, with picture
   tracks over it and sound tracks mixed under it (#576), and captions over the picture (#574);
   each picture clip can be placed, sized, cropped, turned and faded in the frame, clips can play
@@ -130,31 +138,34 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   window, and a dropped connection reconnects on its own (`share.start`, `share.join`,
   `share.stop`, `share.status`, #698). The relay is reached over `ws://` only, the browser build
   has no transport yet, and there is no presence.
-- **Not started**: batch, Techniques, app mode, library, Layer editor, Elements, PDF,
-  and 31 of the 41 tracked provider adapters (ComfyUI, fal.ai and
-  Gemini are in progress, and Gemini Omni Flash video replaces the shut-down Veo API (#17); Comfy Cloud, Veo on Google Cloud (#742), Google TTS, Seedance, Kling,
-  and 24 of the 25 `future` names have no work started; Higgsfield's adapter is written, #177).
-  ElevenLabs (#20) has speech (v3, Multilingual v2, Flash v2.5), sound effects, music and voice
-  changer models, run from the canvas on a Generate audio card (#672). 3D generation has a Generate 3D card
-  with Tripo text, image and multiview models and fal's Trellis (#22), and Meshy text, image,
-  multi-image, retexture and remesh models (#23).
+- **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,
+  the Layer Editor, Elements and PDF cards have shipped in some form. The first signed release
+  (#100), typed nested descriptor records/lists (#528), and browser option-list parity (#721)
+  remain open. HTTP serve's tracker #117 is open although `nodecraft-cli serve` and signed
+  completion webhooks are already in current source; see [`docs/serve.md`](docs/serve.md).
+  Provider availability and modes vary by adapter and host: Google Gemini Omni Flash video
+  replaces the shut-down Veo API (#17), while Veo on Google Cloud (#742), Google TTS, Seedance,
+  Kling and most `future` adapters remain tracked separately. ElevenLabs speech (v3,
+  Multilingual v2, Flash v2.5), effects, music and voice changer models (#20) have a Generate
+  audio card (#672); 3D has Tripo text/image/multiview and fal Trellis (#22), plus Meshy
+  text/image/multi-image/retexture/remesh (#23). Consult [`docs/providers.md`](docs/providers.md)
+  rather than inferring app support from a catalog entry. Published pre-releases are snapshots,
+  not the current `main`.
 
 ## Next up
 
-The open pull requests say what is in flight; the near-term order that makes the engine usable is:
+The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
-1. ~~**Wire the app to storage**~~ — done: session storage (#406), open/save dialogs (#407) and
-   the recovery prompt (#408), so save, open and crash recovery work in `cargo run -p nodecraft`.
-2. **Wire a run host** — construct adapters from the catalog (#409), register the `run.start`
-   service and the host resources (#362), and put a Run button on the card (#211, #201, #157).
-3. **First generation node kinds** — image/text generation kinds so there is something to run
-   (#83, #84), then stale badges with one-click refresh (#211).
-4. **Action nodes** — expose the CPU/GPU operations as node kinds (#410) with live recompute
-   (#88, #90).
-5. **Organise** — fields (#66), tags (#67), comments/Notes (#68), selected-node auto-format
-   (#70), the bulk parameter panel (#71), and the v3 tags/fields persistence bridge (#193) have shipped.
-6. **Then M5**: batch, Technique Builder, app mode, library, and the CLI `run`/`quote`/`inspect`
-   that turn a canvas into a reusable command, and the first signed release (#100).
+1. **Close M1 paperwork** (#372): save/open/recovery, the run host and the canvas performance
+   exit criterion (#65) have landed. On Apple M3 Pro at 120 Hz, the desktop presented-frame
+   pan/zoom run met P1–P3 for 200 and 1,000 nodes (#634); this does not assert a result on 60 Hz,
+   Windows or Linux hardware. See [`docs/performance.md`](docs/performance.md).
+2. **Finish current M2/M3 interactions**: the chat-style text-card turn UI (#84) and remaining
+   open milestone issues; do not mistake a tested adapter for a working mode in every host.
+3. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
+   then browser option-list parity (#721), verification/closure of HTTP serve's still-open
+   tracker (#117), and later milestone gaps.
+   For the changing priority order, use the [open milestone issues](https://github.com/CypherNaught-0x/nodecraft/milestones).
 
 ## Milestone log
 
@@ -201,4 +212,10 @@ The open pull requests say what is in flight; the near-term order that makes the
 - **2026-10-22** — fields shipped (#66): named, coloured zones under the cards. `F` makes one
   around the selection (or an empty one at the pointer), a header drag moves it with every
   member, the corner resizes it, and collapsing hides the members. Five commands: `field.create`,
-  `field.update`, `field.move`, `field.remove` and `node.field_set`; the registry has 180 entries.
+  `field.update`, `field.move`, `field.remove` and `node.field_set`.
+- **2026-10-22** — M1 feature work and its exit criterion finished: #549 removed the quadratic
+  after-edit live-action plan (measured 2.28/7.84 ms at 200/1,000 nodes on a busy Apple M3 Pro;
+  not comparable to the quiet #203 baseline). #65 closed after #634 measured presented pan/zoom
+  frames on a 120 Hz Metal display against P1–P3. This closes the 2026-10-20 17.09/283.55 ms
+  CPU regression report, **not** a blanket 60 fps claim across hardware or all edit workloads.
+  GitHub still has #372 open until this documentation close-out lands.

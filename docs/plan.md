@@ -700,9 +700,29 @@ parts of a later milestone already built ahead of their host — is tracked in
 | 9 | **Agent & automation** | Agent sidebar (assist/auto), control channel, MCP servers (headless, bridge, in-app; commands + techniques), `serve` | Agent builds and runs a 5-node workflow from one sentence within budget |
 | 10 | **Share & collaborate** | Browser release polish (the wasm bundle ships from M5 as a preview), CRDT sync, presence, shared comments, share links, decks | Two users edit one canvas live |
 
+M1's feature and exit-criterion checklist (completed issues; #372 closes the documentation
+follow-up):
+
+- [x] Graph model, invertible changesets, command registry, bounded undo/redo and source kinds
+  (#50–#53); `.ncraft` archives, asset storage and native save/open/recovery (#54, #406–#408).
+- [x] Editable cards and noodles, selection, searchable quick-add, Turn into, minimap and fit,
+  input order, clipboard and OS file drop (#57–#64, #197); source import has bounded admission.
+- [x] Build and save a 200-node graph, undo it and reopen identical (#65, #464). The old
+  after-edit CPU regression at `aa1efc86` (17.09 ms at 200 nodes; 283.55 ms at 1,000)
+  blocked the criterion until #549/#551 fixed its quadratic path. #551's 2.28/7.84 ms
+  `node.move` results were taken at load ~18 and do **not** prove general edit performance.
+- [x] Presented pan/zoom P1–P3 measured by the desktop frame pump (#526/#634), then #65
+  closed on Apple M3 Pro/Metal at 120 Hz (not measured on a 60 Hz display or Windows/Linux).
+  The legacy UI kittest numbers at `481700ba` measure CPU preparation plus tessellation,
+  **not** displayed frames. See [the measurement boundaries](performance.md#the-60-fps-criterion).
+- [ ] Close the M1 documentation follow-up (#372), then GitHub can mark its milestone closed.
+
 ---
 
-## 8. First steps (M0 checklist)
+## 8. First steps (M0 checklist and M1 hand-off)
+
+M0 is complete; the M1 checklist and exit evidence are in §7 above. These were the initial
+workspace steps, not an outstanding list of canvas features.
 
 - [x] `Cargo.toml` workspace with the settings in §5; `rustfmt.toml`, `clippy.toml`,
       `.cargo/config.toml`, `.config/nextest.toml`
