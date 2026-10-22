@@ -31,15 +31,19 @@ fn output(app: &NodeCraftApp) -> Option<String> {
     }
 }
 
-/// Runs frames until `done` and no round is running, for at most 30 seconds (the work is on
+/// Runs frames until `done` and no round is running, for at most [`PATIENCE`] (the work is on
 /// another thread).
 fn settle(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraftApp) -> bool) {
     assert!(until(h, |app| done(app) && app.live.running.is_none()), "live recompute didn't settle");
 }
 
-/// Runs frames until `done`, for at most 30 seconds; whether it got there.
+/// How long a test waits for live work. Blurs run unoptimised in test builds, and a busy CI runner
+/// has taken half a minute for one full-size render.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Runs frames until `done`, for at most [`PATIENCE`]; whether it got there.
 fn until(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraftApp) -> bool) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + PATIENCE;
     while std::time::Instant::now() < deadline {
         h.step();
         if done(h.state()) {
@@ -169,7 +173,7 @@ fn closing_waits_for_a_recompute_still_running() {
 const SOURCE: NodeId = NodeId::from_bytes([80; 16]);
 const BLUR: NodeId = NodeId::from_bytes([81; 16]);
 
-/// A large image feeding a Blur, with the blur's first result recorded.
+/// An image wider than a preview's edge feeding a Blur, with the blur's first result recorded.
 fn blurring() -> Harness<'static, NodeCraftApp> {
     blurring_in(Harness::builder())
 }
@@ -177,8 +181,8 @@ fn blurring() -> Harness<'static, NodeCraftApp> {
 fn blurring_in(builder: egui_kittest::HarnessBuilder<NodeCraftApp>) -> Harness<'static, NodeCraftApp> {
     let mut app = NodeCraftApp::headless().unwrap();
     let canvas = app.canvas;
-    let pixels: Vec<u8> = (0..800u32 * 500).flat_map(|i| [(i % 251) as u8, 80, 160, 255]).collect();
-    let png = nodecraft_media::encode_png(800, 500, &pixels, &nodecraft_media::Limits::default()).unwrap();
+    let pixels: Vec<u8> = (0..800u32 * 160).flat_map(|i| [(i % 251) as u8, 80, 160, 255]).collect();
+    let png = nodecraft_media::encode_png(800, 160, &pixels, &nodecraft_media::Limits::default()).unwrap();
     let hash = app.session.import_asset(&png).unwrap();
     let asset = nodecraft_types::AssetRef { hash, mime: "image/png".parse().unwrap(), meta: Default::default() };
     for (id, kind, x) in [(SOURCE, "source.image", -900), (BLUR, "image.blur", -450)] {
