@@ -28,7 +28,7 @@ use nodecraft_exec::{
     driver::{Runtime, TaskFuture},
 };
 use nodecraft_providers::{Provider, http::Http};
-use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
+use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
@@ -136,6 +136,8 @@ pub(super) struct Tick {
     pub notice: Option<String>,
     /// Providers answered `run.estimate` requests (#663), or they couldn't ask them.
     pub estimated: Vec<Estimated>,
+    /// A Soul ID training was recorded, so the account's Soul IDs are worth fetching again (#680).
+    pub trained: bool,
 }
 
 /// How the `run.estimate` that returned `request` ended.
@@ -150,6 +152,9 @@ pub(super) enum Estimated {
         reason: String,
     },
 }
+
+/// The catalog model whose recorded result is a new identity on the Higgsfield account.
+const SOUL_TRAINER: &str = "higgsfield.soul-id-trainer";
 
 pub(super) struct Runs {
     host: RunHost,
@@ -423,7 +428,12 @@ impl Runs {
                         self.failed.remove(&(canvas, node));
                     }
                 }
-                RunNotice::Recorded { canvas, node } | RunNotice::Cancelled { canvas, node } => {
+                RunNotice::Recorded { canvas, node } => {
+                    self.failed.remove(&(canvas, node));
+                    let card = session.document().canvases().get(&canvas).and_then(|c| c.nodes().get(&node));
+                    tick.trained |= card.is_some_and(|card| matches!(card.params.get("model"), Some(Value::Text(model)) if model == SOUL_TRAINER));
+                }
+                RunNotice::Cancelled { canvas, node } => {
                     self.failed.remove(&(canvas, node));
                 }
                 RunNotice::Failed { canvas, node, reason } | RunNotice::Unaccounted { canvas, node, reason } => {

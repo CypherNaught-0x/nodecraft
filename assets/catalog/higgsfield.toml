@@ -240,3 +240,30 @@ name="resolution"
 label="Resolution"
 control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
 default={type="text",value="720p"}
+
+# Soul ID training (#680), checked 2026-10-22 against
+# https://open.higgsfield.ai/models/soul-id/api-reference, which lists 2.50 USD a training. Higgsfield
+# documents no idempotency key for it: the adapter tags each name with the run's key and lists the
+# account before sending, so a lost reply is found rather than paid for twice.
+[[model]]
+id="higgsfield.soul-id-trainer"
+provider="higgsfield"
+provider_model="higgsfield/soul-id/v2"
+label="Higgsfield Soul ID training"
+description="Trains a SOUL 2 identity from 1 to 100 photos of one person (5 to 20 varied ones work best); it stays on your Higgsfield account. 2.50 USD a training, dated 2026-10-22."
+latency_s=600
+quality=4
+style_family="soul-2"
+pricing={type="per_call",price="2.5 USD"}
+
+[[model.modes]]
+id="images-to-soul-id"
+output="style"
+inputs=[{role="images",modality="image",min=1,max=100}]
+
+[[model.params.params]]
+name="name"
+label="Name"
+description="How the Soul ID is listed on Higgsfield and in SOUL 2's picker, up to 84 characters."
+control={type="text",multiline=false,max_bytes=336}
+default={type="text",value=""}

@@ -101,6 +101,10 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             // Priced per source second (#179): no quote until the source's length is known.
             assert!(matches!(&model.pricing, Pricing::PerSourceSecond { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
+        } else if model.id == "higgsfield.soul-id-trainer" {
+            // Soul ID training's list price per request (#680), checked 2026-10-22.
+            assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 2_500_000)));
         } else {
             assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD });
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
@@ -169,6 +173,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("higgsfield.genjutsu-motion-transfer", false),
             ("higgsfield.genjutsu-object-swap", false),
             ("higgsfield.genjutsu-restyle", false),
+            ("higgsfield.soul-id-trainer", false),
             ("higgsfield.kling-2.5-turbo-i2v", false),
             ("meshy.image-to-3d", false),
             ("meshy.multi-image-to-3d", false),

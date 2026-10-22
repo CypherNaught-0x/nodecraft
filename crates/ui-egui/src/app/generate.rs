@@ -275,6 +275,11 @@ impl NodeCraftApp {
         for estimated in tick.estimated {
             self.estimated(estimated);
         }
+        // A new Soul ID can be picked once the list is fetched again; a fetch already running
+        // refuses as busy and the person can refresh later.
+        if tick.trained {
+            let _ = self.session.dispatch("options.refresh", &serde_json::json!({}));
+        }
         // Quoted last: if it can't be, that is the newest thing to say.
         if let Some((nodes, kind)) = tick.ready
             && let Err(error) = self.request_runs(nodes, kind)

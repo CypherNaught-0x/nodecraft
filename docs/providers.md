@@ -21,7 +21,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
-| **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
+| **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video); Soul ID training (images → identity) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
 
 ## Image facts on inputs and outputs
@@ -643,7 +643,7 @@ NODECRAFT_LIVE_MESHY=1 NODECRAFT_LIVE_MESHY_ACKNOWLEDGE_COST=1 MESHY_API_KEY=…
 
 The optional `higgsfield` adapter (#177) drives the
 [Higgsfield platform API](https://docs.higgsfield.ai/docs) at the fixed base
-`https://api.higgsfield.ai`. Five catalog models share it:
+`https://api.higgsfield.ai`. Six catalog models share it:
 
 | Catalog model | Endpoint | Inputs | Settings |
 |---|---|---|---|
@@ -652,6 +652,7 @@ The optional `higgsfield` adapter (#177) drives the
 | `higgsfield.genjutsu-motion-transfer` | `higgsfield/genjutsu/motion-transfer/v1.0` | an optional prompt, one MP4 source, 1–8 ordered reference images | 480p, 720p or 1080p |
 | `higgsfield.genjutsu-object-swap` | `higgsfield/genjutsu/object-swap/v1.0` | an optional prompt, one MP4 source, 1–8 ordered reference images | 480p, 720p or 1080p |
 | `higgsfield.genjutsu-restyle` | `higgsfield/genjutsu/restyle/v1.0` | an optional prompt, one MP4 source, 0–5 ordered reference images | a preset, 480p, 720p or 1080p |
+| `higgsfield.soul-id-trainer` | `POST /v1/custom-references` (a Train style card) | 1–100 ordered pictures | a name |
 
 Every setting is sent explicitly, defaults included, so a request means the same thing if
 Higgsfield's defaults change. Higgsfield's key is two parts; store them in the keychain as one
@@ -700,7 +701,22 @@ them, so before a run is paid the adapter reads the documented `GET /v1/custom-r
 once, when it stages the body: an id the account doesn't have, one still training (or in a state
 Higgsfield doesn't document), one whose training failed (with Higgsfield's reason) or one trained
 for another SOUL is refused with that reason, and nothing is billed. A retry of the same job
-replays the checked body. Creating a Soul ID from images is #680.
+replays the checked body.
+
+**Training Soul IDs (#680).** A Train style card on **Higgsfield Soul ID training** trains one from its
+wired pictures (1–100 PNG, JPEG or WebP, each staged like Kling's image) under the card's name (1–84
+characters). It is quoted at Higgsfield's list price, 2.50 USD a request (checked 2026-10-22), and
+sends `model_version: "v2"`. Higgsfield documents no idempotency key for creation, so the name sent
+carries a tag from the run's idempotency key (`Mara [nc-…]`), and every submit first lists the
+account for it: the engine's retry after a lost or unreadable reply adopts the identity already
+created instead of training and paying again. A POST this process sent that the list doesn't show
+yet fails the job rather than risk a second charge, and says to look for the identity before
+training again, since a new run has a new key and trains (and bills) a new one. Only a 400, 401,
+403 or 422 that Higgsfield explains counts as refused, letting the same run send it again. The card polls `GET /v1/custom-references/{id}`
+until training completes, and keeps a style descriptor naming the identity; a failed training
+shows Higgsfield's reason on the card. Training can't be cancelled. When the desktop app records a
+training it refreshes the option lists, so the new identity appears in SOUL 2's Soul ID picker,
+labelled without the tag, once it is ready.
 
 **Inputs.** Kling's image (PNG, JPEG or WebP whose bytes match their type, at most 20 MiB) is
 staged through Higgsfield's upload grant: the adapter asks for an upload link with the key, then
