@@ -522,7 +522,7 @@ impl Session {
     /// session's file, or untitled), history starts fresh, and the change is published like an
     /// open (`file.recover`, a synthetic lifecycle event id, not a registered command).
     /// Refused once this session has edits of its own: they'd be lost.
-    pub fn recover(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
+    pub fn recover(&mut self, snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
         self.settle_for_edit()?;
         if self.can_undo() || self.can_redo() {
             return Err(Error::new(ErrorKind::Conflict, "recovering would discard this session's changes"));
@@ -530,6 +530,20 @@ impl Session {
         if !self.file_status().available {
             return Err(Error::new(ErrorKind::Unsupported, "project storage is not available"));
         }
+        self.replace_untouched(snapshot, location, "file.recover")
+    }
+    /// Host boundary for joining a shared project (#698): replaces the document with `project`,
+    /// the empty start a joiner takes the shared project in from ([`crate::collab::joining`]).
+    /// It is untitled and unsaved, history starts fresh, and the change is published like an
+    /// open (`share.adopt`, a synthetic lifecycle event id, not a registered command). Refused once this session has edits of its own: they'd be lost.
+    pub fn adopt_joined(&mut self, project: Project) -> Result<(), Error> {
+        self.settle_for_edit()?;
+        if self.can_undo() || self.can_redo() {
+            return Err(Error::new(ErrorKind::Conflict, "joining would discard this session's changes"));
+        }
+        self.replace_untouched(Snapshot { project, assets: AssetStore::default(), epoch: 0 }, None, "share.adopt")
+    }
+    fn replace_untouched(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str) -> Result<(), Error> {
         snapshot.project.validate()?;
         snapshot.assets = snapshot.assets.in_context(
             self.assets.context().clone(),
@@ -541,8 +555,9 @@ impl Session {
         let identity = Arc::new(());
         self.reserve_event()?;
         let before = self.file_status();
-        let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
-        storage.adopt_recovered(&snapshot, location)?;
+        if let Some(storage) = self.persistence.as_mut() {
+            storage.adopt_recovered(&snapshot, location)?;
+        }
         self.document = snapshot.project;
         self.assets = snapshot.assets;
         self.undo = History::default();
@@ -550,7 +565,7 @@ impl Session {
         self.gesture = None;
         self.state = revision;
         self.file_lifecycle.replaced(Arc::clone(&identity));
-        self.publish(revision, "file.recover", next, identity);
+        self.publish(revision, command, next, identity);
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
         }

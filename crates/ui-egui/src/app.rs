@@ -371,6 +371,8 @@ mod recovery;
 #[cfg(not(target_arch = "wasm32"))]
 mod runs;
 mod search;
+#[cfg(not(target_arch = "wasm32"))]
+mod sharing;
 mod sheet_view;
 mod split;
 mod stale;
@@ -524,6 +526,9 @@ pub struct NodeCraftApp {
     /// Checks for a newer release (#123).
     #[cfg(not(target_arch = "wasm32"))]
     updates: Option<updates::UpdateChecker>,
+    /// Shares the project live through a relay, or joins one (#698).
+    #[cfg(not(target_arch = "wasm32"))]
+    sharing: Option<sharing::Sharing>,
     /// The queue panel is open (#82).
     #[cfg(not(target_arch = "wasm32"))]
     queue_open: bool,
@@ -621,6 +626,7 @@ impl NodeCraftApp {
                 None
             }
         };
+        let sharing = Self::register_sharing(&mut services, Box::new(sharing::open_window));
         // Preserve the existing plugin/trust location. All package I/O, including opening
         // its index, runs on the worker; requests expose retained results through commands.
         let mut plugin_problem = None;
@@ -693,6 +699,7 @@ impl NodeCraftApp {
             app.notice = Some(app.notice.map_or(told.clone(), |notice| format!("{told} {notice}")));
         }
         app.updates = updates;
+        app.sharing = sharing;
         app.check_updates_at_startup(&settings.updates);
         app.apply_settings(ctx, &NodeCraftSettings::default());
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -717,6 +724,9 @@ impl NodeCraftApp {
                 runs.set_video_tools(settings.media.tools());
             }
             self.files.projects = nodecraft_engine::settings::ProjectSettings { recent: settings.projects.recent() };
+            if let Some(sharing) = self.sharing.as_mut() {
+                sharing.set_relay(settings.share.relay.clone());
+            }
         }
         theme::apply(ctx, self.theme);
     }
@@ -938,6 +948,8 @@ impl NodeCraftApp {
             option_fetch: None,
             #[cfg(not(target_arch = "wasm32"))]
             updates: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            sharing: None,
             #[cfg(not(target_arch = "wasm32"))]
             queue_open: false,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2095,6 +2107,8 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.queue_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
+        self.share_panel(ui.ctx(), t);
+        #[cfg(not(target_arch = "wasm32"))]
         self.ownership_panel(ui.ctx(), t);
         self.sheets_panel(ui.ctx(), t);
         self.techniques_panel(ui.ctx(), t);
@@ -2253,6 +2267,8 @@ impl NodeCraftApp {
                         {
                             self.queue_open = !self.queue_open;
                         }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        self.share_button(ui, t);
                         if ui
                             .add(egui::Button::new(egui::RichText::new("API keys").color(t.text_muted)).frame(false))
                             .on_hover_text("Add, check and remove provider keys")
@@ -2720,6 +2736,8 @@ impl eframe::App for NodeCraftApp {
         self.tick_option_fetch(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_updates(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_sharing(ctx);
         // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
         craft_quit::on_close_request(ctx);
     }

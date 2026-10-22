@@ -15,7 +15,7 @@ mod shell;
 /// file name (packaging/linux) so the desktop finds the icon; also the macOS bundle id.
 const APP_ID: &str = "io.github.cyphernaught0x.nodecraft";
 
-/// The command line: `[--control] [--version] [--wait-for <pid>] [--finish-update <msi> <blake3> <exe>] [--perf-run <out.json>] [project]`.
+/// The command line: `[--control] [--version] [--wait-for <pid>] [--finish-update <msi> <blake3> <exe>] [--perf-run <out.json>] [--join] [project]`.
 #[derive(Debug, Default, PartialEq)]
 struct Args {
     /// `--control`: accept local automation clients (see `control.rs`).
@@ -29,6 +29,9 @@ struct Args {
     /// `--perf-run <out.json>`: time presented frames over generated graphs, write the reports
     /// and quit (#526).
     perf_run: Option<std::path::PathBuf>,
+    /// `--join`: join the project the link on standard input shares live (#698). The link is a
+    /// capability, so it never comes on the command line, where others could read it.
+    join: bool,
     /// The first other argument that isn't a flag: a project to open (#406). OS paths are kept as
     /// they are; relative ones are made absolute here, while the working directory is the
     /// launcher's.
@@ -43,6 +46,7 @@ impl Args {
             match arg.to_str() {
                 Some("--control") => parsed.control = true,
                 Some("--version" | "-V") => parsed.version = true,
+                Some("--join") => parsed.join = true,
                 Some("--wait-for") => parsed.wait_for = args.next().map(|pid| pid.to_string_lossy().into_owned()),
                 Some("--perf-run") => parsed.perf_run = args.next().map(Into::into),
                 Some("--finish-update") => {
@@ -82,6 +86,7 @@ fn main() -> ExitCode {
         return perf_run(out);
     }
     let (control, project) = (args.control, args.project);
+    let join = args.join.then(read_join_link);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_app_id(APP_ID)
@@ -108,13 +113,24 @@ fn main() -> ExitCode {
             let dir = store.dir().map(std::path::Path::to_path_buf);
             // Project files and crash recovery: the journal lives in the settings folder. Without
             // one (an in-memory settings store), the window still opens, without saving.
+            // A joined window holds the shared project, not this person's files.
             let storage = dir
                 .as_ref()
+                .filter(|_| join.is_none())
                 .map(|dir| nodecraft_ui_egui::app::storage::StorageSetup { recovery: dir.join("recovery").join("session.journal"), open: project.clone() });
-            if storage.is_none() {
+            if storage.is_none() && join.is_none() {
                 log::warn!("no settings folder: project files are unavailable in this window");
             }
             let mut app = nodecraft_ui_egui::NodeCraftApp::with_settings_and_storage(&cc.egui_ctx, store, storage)?;
+            match &join {
+                Some(Some(link)) => {
+                    if let Err(error) = app.join_live(&cc.egui_ctx, link) {
+                        app.notice = Some(format!("Couldn't join: {}", error.message));
+                    }
+                }
+                Some(None) => app.notice = Some("Couldn't join: no join link came with this window.".into()),
+                None => {}
+            }
             // Performance reports name what draws the frames (#151).
             if let Some(render) = cc.wgpu_render_state.as_ref() {
                 let info = render.adapter.get_info();
@@ -188,6 +204,19 @@ fn perf_run(out: std::path::PathBuf) -> ExitCode {
     }
 }
 
+/// The join link `--join` reads from standard input: one line of at most 4 KiB.
+fn read_join_link() -> Option<String> {
+    use std::io::{BufRead, IsTerminal, Read};
+    // Run by hand there is nobody to write the link: the window opens and says none came.
+    if std::io::stdin().is_terminal() {
+        return None;
+    }
+    let mut line = String::new();
+    std::io::stdin().lock().take(4096).read_line(&mut line).ok()?;
+    let link = line.trim();
+    (!link.is_empty()).then(|| link.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::Args;
@@ -213,5 +242,6 @@ mod tests {
         assert_eq!(parse(&["--perf-run", "run.json"]).perf_run, Some("run.json".into()));
         assert_eq!(parse(&["--perf-run"]), Args::default());
         assert!(parse(&["-V"]).version);
+        assert!(parse(&["--join"]).join);
     }
 }

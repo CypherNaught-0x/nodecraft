@@ -22,6 +22,8 @@ nodecraft-media = { workspace = true, features = ["pdf"] }
 # The 3D preview renderer (#111), drawn through eframe's wgpu paint callbacks.
 nodecraft-gpu.workspace = true
 nodecraft-plugin-store.workspace = true
+# Sharing a project live (#698): the frames a relay connection carries.
+nodecraft-sync.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 egui = { workspace = true, features = ["default_fonts"] }
@@ -47,6 +49,8 @@ nodecraft-media = { workspace = true, features = ["video"] }
 # Installing updates (#540): the zipped macOS app bundle (ditto deflates it) and the release keys.
 zip = { workspace = true, features = ["deflate-flate2-zlib-rs"] }
 ed25519-dalek = { workspace = true }
+# The connection to a live-sharing relay (#698), on its own thread.
+tungstenite = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Browser drops (#319): a dropped file's size before reading it, and the read on the browser's queue.
 wasm-bindgen-futures = "0.4.79"
