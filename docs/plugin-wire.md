@@ -62,7 +62,7 @@ A package holds `manifest.json`, its descriptors, data or module, its license fi
 | `descriptor_contract` | `{major, minor}` of the #162 contract its descriptors use |
 | `publisher_key_id` | optional token |
 | `license` | SPDX expression, ≤ 128 ASCII bytes |
-| `runtime` | `{"kind":"data"}`, `{"kind":"text_actions","schema":1}` or `{"kind":"rust_wasm","module":<path>}`; a `text_actions` package registers only `action`s, each descriptor a text action definition (schema 1, #165), and requires no capability (`incompatible`); another schema is `unsupported_feature` |
+| `runtime` | `{"kind":"data"}`, `{"kind":"text_actions","schema":1}`, `{"kind":"provider_operations","schema":1}` or `{"kind":"rust_wasm","module":<path>}`; a `text_actions` package registers only `action`s, each descriptor a text action definition (schema 1, #165), and requires no capability (`incompatible`); a `provider_operations` package registers only `provider`s, each descriptor a provider operation template (below), and requires `network` and at most `secret` besides (`incompatible`); another schema is `unsupported_feature` |
 | `dependencies` | ≤ 16 `{package_id, version, digest}` exact locks; not itself, not twice |
 | `capabilities` | `{required, optional}`: `asset.read`, `asset.write`, `network`, `filesystem`, `process`, `gpu`, `secret`; an unknown required one is `unsupported_feature`, an unknown optional one is kept and ignored; a data package requires none (`incompatible`) |
 | `features` | optional `{required, optional}` protocol features, dotted lowercase |
@@ -93,6 +93,41 @@ a bad signature (`bad_signature`) or a signature for another digest (`bad_digest
 proves integrity and a signature proves who signed; neither proves safety or licensing. There is
 no registry, network lookup or rotation chain; a revoked key stays listed so re-importing it
 can't silently trust it again.
+
+## Provider operation templates (#174)
+
+A `provider_operations` descriptor is a JSON template the host's provider broker
+(`crates/providers/src/broker`) sends itself; the package never talks to the network. The broker
+checks a template when it loads it, before anything is sent; installing a package doesn't decode
+its templates. Unknown fields are refused, and so is any template that breaks a rule below.
+
+| Field | Rule |
+|---|---|
+| `schema` | `1` |
+| `label` | 1 to 64 bytes, no control characters |
+| `origin` | the API: `https://` and a public DNS name in canonical form, with no port, path, user, query or fragment. IP literals and local names (`localhost`, `.local`, `.internal`, `.lan`, `.home.arpa`, …) are refused |
+| `output_origins` | up to 4 more origins, under the same rule, that output links may point to |
+| `credential` | optional: where the host puts the key, one of `bearer`, `key` (`Authorization: Key`), `x_api_key`, `api_key`, `x_goog_api_key`. A template names no other header |
+| `idempotency` | optional: `idempotency-key` or `x-idempotency-key`, which carries the host's key. Without one, an ambiguous submit is never retried |
+| `models` | 1 to 64 `{id, price}`. An ID is `/`-separated parts of letters, digits, `.`, `_` and `-`. `price` is the publisher's positive per-job price in exact money (`{"currency":"USD","micros":"40000"}`); a zero price is refused. It is a floor the host's quote never goes under, not a price the host trusts |
+| `submit` | `POST`, a `path`, a JSON `body`, and either `handle` (a JSON pointer to the job id) or `outputs` |
+| `poll` | needed for a queued submit, refused for one that finishes in its reply: `GET`, a `path` naming `{job}`, `status` (pointer), `states` (`queued`, `running`, `done`, `failed` status lists; `done` and `failed` required; no value in two), `outputs`, optional `error` (pointer), and `interval_ms` (500 to 60000) |
+| `cancel` | optional, queued jobs only: `POST` or `DELETE`, and a `path` naming `{job}` |
+| `limits` | `response_bytes` (up to 4 MiB), `timeout_ms` (1 to 120 s) and `concurrency` (1 to 4): host ceilings a template can lower, never raise |
+
+A path segment is a literal of unreserved characters, or a whole `{model}` (a model the template
+lists) or `{job}` (an id from a reply of at most 128 unreserved characters). Paths have no query,
+empty segment, `.` or `..`. In a body, a string that is exactly `{model}`, `{param:NAME}` or
+`{text:ROLE}` is filled with that whole value from the job; an object member whose value the job
+doesn't set is left out. Any other `{…}` string is refused. A body nests at most 12 deep and holds
+at most 64 placeholders. An output is `{at, kind, mime?}`: a pointer to a string or an array of
+strings, at most 16 in all, of kind `text` or `url`. An output link must be on the template's
+origin or one of its output origins, with no user name. Nothing else in a reply is read, and a job
+failure's message is cut to 300 bytes. The credential goes only to the API origin, never to an
+output origin.
+
+A package that requires a capability is neither granted nor enabled until grants record which
+capabilities they cover. Until then, a provider operations package installs, but nothing runs.
 
 ## Frames and messages
 

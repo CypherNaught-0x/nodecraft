@@ -335,6 +335,7 @@ impl<B: StoreBackend> Store<B> {
         if !executable(&loaded.manifest.runtime) {
             return Err(Error::new(ErrorKind::InvalidInput, "a data package runs nothing, so it needs no grant"));
         }
+        ungrantable(&loaded.manifest)?;
         provenance(&loaded, trust)?;
         let mut grants = match self.read_grants() {
             Ok(grants) => grants,
@@ -544,6 +545,7 @@ impl<B: StoreBackend> Store<B> {
         let loaded = self.load_digest(&digest)?;
         provenance(&loaded, trust)?;
         let grant = if executable(&loaded.manifest.runtime) {
+            ungrantable(&loaded.manifest)?;
             let grants = self.read_grants()?;
             let live = grants.live(package, &digest).cloned();
             Some(live.ok_or_else(|| Error::new(ErrorKind::Forbidden, "this package runs text actions; grant it first (plugins.grant)"))?)
@@ -685,6 +687,15 @@ fn depth(index: &Index, digest: &PackageDigest) -> Result<usize, Error> {
 /// Whether a package's registrations run anything when used.
 fn executable(runtime: &Runtime) -> bool {
     !matches!(runtime, Runtime::Data)
+}
+
+/// Grants hold no capabilities yet (#174 scopes them), so a package that requires one can be
+/// neither granted nor enabled: a grant of nothing must never stand for network or a secret.
+fn ungrantable(manifest: &nodecraft_plugin::Manifest) -> Result<(), Error> {
+    match manifest.capabilities.required.iter().next() {
+        Some(c) => Err(Error::new(ErrorKind::Unsupported, format!("this package requires the {} capability, which this build can't grant yet", c.as_str()))),
+        None => Ok(()),
+    }
 }
 
 /// A package's signature checked against `trust` now.
