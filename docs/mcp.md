@@ -130,3 +130,6 @@ skills are offered to the agent, are the person's call. A skill is guidance: rea
 nothing, and it never overrides approvals, budgets or cost confirmations.
 
 Persistent tag commands (`tag.put`, `tag.remove`, `node.tag_set`) are available to agents. Tag-filter view commands remain human-only until the MCP live host routes their scoped view intents.
+
+Field commands (`field.create`, `field.update`, `field.move`, `field.remove`,
+`node.field_set`) are available to agents.

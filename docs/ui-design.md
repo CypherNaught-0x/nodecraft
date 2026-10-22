@@ -83,6 +83,10 @@ selected border more visible than the resting one, in both themes.
 | Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, ↑↓ to move, ↵ to choose, Escape or a click elsewhere to close. A kind is created where you double-clicked |
 | ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; a copied image (desktop) pastes as an Image node at the pointer, read off the UI thread, encoded as PNG and held to 16384×16384 pixels and 16 MiB, one undo step (#319) |
 | ⌘/Ctrl+D outside text fields | duplicate the selection, offset 40 points |
+| `F` (no modifier, outside text fields) | make a field: around the selected cards, which become its members, or an empty 320×240 zone at the pointer (`field.create`, one undo step). The new field is selected |
+| Drag a field's header / its lower-right corner | move the field and every member (`field.move`) / resize the zone alone (`field.update`); one undo step on release, Escape cancels. Double-click the header to collapse or expand it |
+| Right-click a field's header | rename, collapse or expand, fit to members, colour, or remove the field (its nodes stay) |
+| Right-click a card → **Field** | move the selected nodes into a field, or take them out (`node.field_set`) |
 | Right-click (or long-press) a card | menu: select the upstream / downstream chain of the selection, or all nodes of the card's kind; an unselected card becomes the selection first |
 | Double-click the title | rename; Enter or blur commits, Escape cancels; empty restores the automatic title |
 | Enter on a focused generation card, ⌘/Ctrl+Enter in its prompt, or its round arrow button | quote a run of that card (`run.quote`) and show its price, anything blocking it and any unknown part (a by-usage step whose provider can quote it is asked first, `run.estimate`, and the price shown again with its answer); **Generate for …** starts it (`run.start` with the quote's token and totals), Cancel or Escape starts nothing. An edit after the quote makes it stale: nothing starts until it is quoted again. If the start fails, the dialog offers only Close, since the host may have taken the run. F2 or double-click still renames a generation card |
@@ -297,6 +301,16 @@ capability before widgets render; keyboard, scroll, other buttons and popup owne
 ### Colour tags
 
 Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_width`, `tag_panel_width`, `tag_panel_height` and `tag_row_height`. Dark and light colors are deliberately distinct; unknown/missing palette identifiers use `text_muted`. A marker identifies the tag independently of the selected border. Filter matches use the existing accent token, while nonmatches use the quiet panel stroke without fading text. Behavior, command inventory and persistence compatibility are specified in [color-tags.md](color-tags.md).
+
+### Fields
+
+Fields (#66) draw on the canvas layer, under the noodles and cards, in their palette colour
+(`Tokens::tag_color`) at `field_fill_opacity` (0.10, doubled for the header band). The header is
+`field_header_height` (32) tall, or taller at low zoom so its title stays readable; the selected
+field's outline uses `accent`. `F` pads the selection by `field_padding` (32) plus the header;
+a resize stops at `field_min_width` × `field_min_height` (160 × 96). Membership is explicit:
+moving a card over a zone doesn't join it. A collapsed field shows only its header: members
+aren't drawn, select-all and box select skip them, and their noodles end at the header.
 
 ## Clipboard admission and placement
 
