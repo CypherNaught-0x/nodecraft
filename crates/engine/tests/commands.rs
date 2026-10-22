@@ -479,4 +479,12 @@ fn keys_commands_go_through_the_host_service_and_never_echo_keys() {
     assert!(!err.to_string().contains("sk-leak"), "{err}");
     assert!(session.dispatch("keys.set", &serde_json::json!({"account": "openai"})).is_err(), "the key is required");
     assert_eq!(session.dispatch("keys.remove", &serde_json::json!({"account": "anthropic"})).unwrap(), serde_json::json!({"removed": true}));
+    // A Google Cloud key is a service-account key file, checked and kept compact; one that isn't
+    // is refused without being quoted (#742).
+    let err = session
+        .dispatch("keys.set", &serde_json::json!({"account": "google-cloud", "key": "{\"type\": \"service_account\", \"private_key\": \"leak-me\"}"}))
+        .unwrap_err();
+    assert_eq!(err.kind, nodecraft_types::ErrorKind::InvalidInput);
+    assert!(!err.to_string().contains("leak-me") && err.to_string().contains("key file"), "{err}");
+    assert_eq!(session.dispatch("keys.status", &serde_json::json!({"account": "google-cloud"})).unwrap()["stored"], false);
 }

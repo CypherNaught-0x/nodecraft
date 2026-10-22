@@ -9,7 +9,8 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
 | **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and direct-adapter reference editing | Three stable Gemini models, unknown usage price; canvas resolver/mixed/list routing limitations below. |
-| **Gemini Video** | `gemini-video` | supplied Gemini API key (`x-goog-api-key`), same `gemini` account | Omni Flash text, first/last frame and reference images → video with sound | Veo on the Gemini API is shut down (Veo on Google Cloud is #742). Paid tier only; charged by measured tokens, no price before the run. See below. |
+| **Gemini Video** | `gemini-video` | supplied Gemini API key (`x-goog-api-key`), same `gemini` account | Omni Flash text, first/last frame and reference images → video with sound | Veo on the Gemini API is shut down; Veo now runs on Google Cloud (`google-veo`). Paid tier only; charged by measured tokens, no price before the run. See below. |
+| **Veo on Google Cloud** | `google-veo` | a service-account key file, kept compact in the `google-cloud` account; a signed JWT is exchanged for an hour's OAuth token (`Authorization: Bearer`) | Veo 3.1, Fast and Lite: text → video with sound. Veo 3.1 and Fast also: first/last frame, and up to three subject references | Runs in the account's own project in `us-central1`. Quoted per second by resolution before the run. Never replayed after an ambiguous submit; no remote cancellation. See below. |
 | **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded credential-free delivery downloads; unknown usage price. See below. |
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
@@ -52,6 +53,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `meshy` | `meshy` | — |
 | `higgsfield` | `higgsfield` (the key id and secret joined as `id:secret`) | — |
 | `elevenlabs` | `elevenlabs` | — |
+| `google-veo` | `google-cloud` (paste the whole service-account key file; it is stored compactly) | the Vertex AI API enabled, and the Vertex AI User role on the account's project |
 | `comfy-cloud` | `comfy-cloud` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[providers] comfyui_url = "http://127.0.0.1:8188"` and the per-install `install_salt` |
 
@@ -238,6 +240,75 @@ never runs in CI, and requires fresh human spending authorization plus both
 NODECRAFT_LIVE_OPENAI_IMAGES=1 and NODECRAFT_LIVE_OPENAI_IMAGES_ACKNOWLEDGE_COST=1 before it
 reads OPENAI_API_KEY. Explicit --ignored selection is also required. No paid call was used to
 validate this adapter. Ordinary cargo xtask ci enables the feature for tests/Clippy/wasm.
+
+## Veo on Google Cloud (`google-veo` feature)
+
+`Veo` runs Veo 3.1 on Vertex AI (#742). Since the Gemini API's Veo models were shut down, this is
+how NodeCraft reaches Veo. It signs in as a Google Cloud **service account**:
+
+- **The key.** Create a service account in a project with the Vertex AI API enabled, give it the
+  *Vertex AI User* role, create a JSON key and paste the whole file as the `google-cloud` key. A
+  key file is about 2.3 KB, more than a keychain entry holds everywhere. So only what signing
+  needs is stored, as one line (`gsa1:<email>:<project>:<key id>:<p>:<q>`, the RSA key's primes in
+  base64url). Files for other account types, other token endpoints or domain-scoped projects are
+  refused without being quoted, as are RSA keys outside 2048–4096 bits. The `rsa` crate (pinned)
+  does the signing.
+- **Tokens.** The adapter signs a JWT (RS256, scope `cloud-platform`) and exchanges it at
+  `https://oauth2.googleapis.com/token` for an access token. The token is held until five minutes
+  before it expires, and the exchange is free. A 401 from Vertex AI drops the held token, so the
+  next request gets a new one. A refused exchange is an `Auth` error naming the likely cause (a
+  deleted key or a wrong clock).
+- **Models:** `google-veo.veo-3.1` (`veo-3.1-generate-001`), `google-veo.veo-3.1-fast` and
+  `google-veo.veo-3.1-lite`, run in the account's project at `us-central1`.
+- **Modes:** all three make video from text. Veo 3.1 and Fast also take a first frame with an
+  optional last frame, or one to three subject references (`referenceType: asset`, 8-second clips
+  only). Images are PNG or JPEG, at most 20 MiB each and 60 MiB together, sent inline. Lite's image
+  input isn't documented on Vertex AI, so Lite is text only.
+- **Options:**
+  - aspect ratio 16:9 (default) or 9:16
+  - resolution 720p (default), 1080p, or 4K on Veo 3.1 only
+  - 4, 6 or 8 seconds (default 8)
+  - an optional seed
+
+  Each run makes one clip, always with sound.
+- **Flow:**
+  - `POST …/publishers/google/models/{model}:predictLongRunning` is the paid step and is never
+    replayed.
+  - The returned operation name is the job's remote id. It is polled every 10 s with
+    `POST …/{model}:fetchPredictOperation`. Only operation names of a known Veo model in `us-central1` are
+    polled, and always at the account's own project.
+  - The finished video comes inline (`bytesBase64Encoded`). It must sniff as MP4 and stay under
+    128 MiB. A reply with only a Cloud Storage URI is refused, since no bucket is configured.
+  - No redirects are followed.
+  - A video removed by Google's safety filters is reported as blocked content with the filter
+    categories, and so is an error carrying Google's support codes.
+- **Cost:** quoted before the run, at the list price per second of video with audio:
+
+  | Model | 720p | 1080p | 4K |
+  |---|---|---|---|
+  | Veo 3.1 | 0.40 USD | 0.40 USD | 0.60 USD |
+  | Fast | 0.10 USD | 0.12 USD | — |
+  | Lite | 0.05 USD | 0.08 USD | — |
+
+  The catalog prices this with `per_unit_by_choice`: the duration counts the seconds and the
+  resolution picks the price. Operations can't be cancelled.
+- **Not verified live:**
+  - whether the pricing page's "/1 count" means per second
+  - whether 4K is generally available
+  - whether a video removed by the safety filters is billed
+  - what the model page's "pay-as-you-go isn't supported" means (perhaps that a quota request is
+    needed)
+
+  Spending money needs authorization. With it, run
+  `NODECRAFT_LIVE_GOOGLE_VEO=1 NODECRAFT_LIVE_GOOGLE_VEO_ACKNOWLEDGE_COST=1
+  GOOGLE_VEO_KEY_FILE=/path/to/key.json cargo test -p nodecraft-providers --features
+  http,google-veo --test live_google_veo -- --ignored`. It makes one 4-second 720p Fast clip, about
+  0.40 USD.
+
+Contract checked 2026-10-22: [Veo 3.1 model](https://cloud.google.com/vertex-ai/generative-ai/docs/models/veo/3-1-generate),
+[video generation API](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/veo-video-generation),
+[pricing](https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing) (section "Veo"),
+[service-account JWT flow](https://developers.google.com/identity/protocols/oauth2/service-account).
 
 ## Replicate predictions
 

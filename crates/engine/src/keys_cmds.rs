@@ -16,7 +16,7 @@ fn account_schema() -> Value {
 fn set_schema() -> Value {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": ["account", "key"], "properties": {
         "account": account_schema(),
-        "key": {"type": "string", "minLength": 1, "maxLength": 1024, "description": "The API key (visible ASCII). Stored in the OS keychain only."}
+        "key": {"type": "string", "minLength": 1, "maxLength": 16384, "description": "The API key (visible ASCII), or for account google-cloud the whole service-account key file (JSON), which is stored compactly. Stored in the OS keychain only."}
     }})
 }
 

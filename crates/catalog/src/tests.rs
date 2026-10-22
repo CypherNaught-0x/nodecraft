@@ -130,6 +130,10 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             // Priced per source second (#179): no quote until the source's length is known.
             assert!(matches!(&model.pricing, Pricing::PerSourceSecond { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
+        } else if model.provider == "google-veo" {
+            // Per second by resolution (#742); quoted in veo_on_google_cloud_is_quoted_by_length_and_resolution.
+            assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
+            assert!(model.quote(&ParamValues::new()).unwrap().is_some(), "{}", model.id);
         } else if model.id == "higgsfield.soul-id-trainer" {
             // Soul ID training's list price per request (#680), checked 2026-10-22.
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
@@ -206,6 +210,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.wan22-i2v", false),
             ("fal.wan22-s2v", false),
             ("gemini-video.omni-flash", false),
+            ("google-veo.veo-3.1", false),
+            ("google-veo.veo-3.1-fast", false),
+            ("google-veo.veo-3.1-lite", false),
             ("higgsfield.genjutsu-motion-transfer", false),
             ("higgsfield.genjutsu-object-swap", false),
             ("higgsfield.genjutsu-restyle", false),
@@ -555,6 +562,27 @@ fn gemini_omni_flash_is_charged_by_measured_tokens() {
     let mut p = ParamValues::new();
     p.insert("resolution".into(), Value::Text("4k".into()));
     assert!(m.quote(&p).is_err(), "4K's token rate isn't published");
+}
+
+#[test]
+fn veo_on_google_cloud_is_quoted_by_length_and_resolution() {
+    // Vertex AI pricing page, checked 2026-10-22: per second of video with audio.
+    let c = Catalog::builtin().unwrap();
+    let quote = |id: &str, seconds: u64, resolution: &str| {
+        let mut p = ParamValues::new();
+        p.insert("duration_seconds".into(), Value::Unsigned(nodecraft_types::Unsigned(seconds)));
+        p.insert("resolution".into(), Value::Text(resolution.into()));
+        c.get(id).unwrap().quote(&p)
+    };
+    assert_eq!(c.get("google-veo.veo-3.1").unwrap().quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 3_200_000)), "8 s at 720p");
+    assert_eq!(quote("google-veo.veo-3.1", 4, "4k").unwrap(), Some(Money::new(Currency::USD, 2_400_000)));
+    assert_eq!(quote("google-veo.veo-3.1-fast", 6, "1080p").unwrap(), Some(Money::new(Currency::USD, 720_000)));
+    assert_eq!(quote("google-veo.veo-3.1-lite", 8, "1080p").unwrap(), Some(Money::new(Currency::USD, 640_000)));
+    assert!(quote("google-veo.veo-3.1-fast", 8, "4k").is_err(), "4K is Veo 3.1's alone");
+    assert!(quote("google-veo.veo-3.1", 5, "720p").is_err(), "4, 6 or 8 seconds");
+    let lite = c.get("google-veo.veo-3.1-lite").unwrap();
+    assert!(lite.mode("image-to-video").is_none() && lite.mode("reference-to-video").is_none(), "Lite is text only");
+    assert_eq!(c.get("google-veo.veo-3.1-fast").unwrap().mode("reference-to-video").unwrap().inputs.iter().find(|i| i.role == "reference").unwrap().max, 3);
 }
 
 #[test]

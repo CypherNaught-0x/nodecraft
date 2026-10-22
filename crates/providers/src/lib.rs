@@ -30,6 +30,8 @@ pub mod fal;
 pub mod gemini_images;
 #[cfg(feature = "gemini-video")]
 pub mod gemini_video;
+#[cfg(feature = "google-veo")]
+pub mod google_cloud;
 #[cfg(feature = "higgsfield")]
 pub mod higgsfield;
 pub mod http;
