@@ -74,6 +74,11 @@ pub struct Collab {
     held: bool,
     /// Why the relay last dropped one of this commenter's changes, for the person to read.
     refusal: Option<String>,
+    /// The session revision at which what the room holds clashed with one of the session's
+    /// private canvases; nothing is taken in until the session or the room changes again.
+    clash: Option<u64>,
+    /// Why, for the person to read.
+    clash_said: Option<String>,
 }
 
 impl Collab {
@@ -114,6 +119,8 @@ impl Collab {
             seq: 0,
             held: false,
             refusal: None,
+            clash: None,
+            clash_said: None,
         }
     }
 
@@ -127,6 +134,13 @@ impl Collab {
     /// if it did: the change wasn't theirs to make. The session takes back the change.
     pub fn take_refusal(&mut self) -> Option<String> {
         self.refusal.take()
+    }
+
+    /// Why what the room holds can't be taken in beside one of this session's private canvases,
+    /// once each time it happens: someone else used one of its ids or technique versions. The
+    /// room's changes wait until the canvas is shared, changed or removed.
+    pub fn take_clash(&mut self) -> Option<String> {
+        self.clash_said.take()
     }
 
     /// The first frame on each new connection. Assets asked for on an earlier one are asked
@@ -216,6 +230,7 @@ impl Collab {
             Frame::Step2(update) | Frame::Update(update) if self.role.is_some() => {
                 self.mirror.receive(&update)?;
                 self.unsettled = true;
+                self.clash = None;
                 Ok(Vec::new())
             }
             Frame::AssetPut { hash, bytes } => {
@@ -278,7 +293,7 @@ impl Collab {
             Role::Owner => Access::owner(),
             role => Access::new(role, self.name.clone())?,
         });
-        if !self.unsettled || self.held {
+        if !self.unsettled || self.held || self.clash == Some(session.revision()) {
             return Ok(out);
         }
         let Some(Materialized { mut project, repairs, .. }) = self.mirror.materialize()? else { return Ok(out) };
@@ -302,7 +317,18 @@ impl Collab {
                 lingering.push(there.clone());
                 kept.insert(0, Change::RemoveCanvas { id: canvas.id() });
             }
-            Changeset::new(kept).apply(&mut project)?;
+            // Others can't see a private canvas, so they may reuse what it holds: a technique
+            // version, or an id they saw before it went private. Neither side's work is dropped;
+            // the room's changes wait, and the person is told why.
+            if let Err(error) = Changeset::new(kept).apply(&mut project) {
+                self.clash = Some(session.revision());
+                self.clash_said = Some(format!(
+                    "a change from the room clashes with your private canvas “{}” ({}); share, change or remove that canvas to take in the others' changes",
+                    canvas.title(),
+                    error.message
+                ));
+                return Ok(out);
+            }
         }
         let mut missing = BTreeSet::new();
         for (canvas_id, canvas) in project.canvases() {

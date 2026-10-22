@@ -125,7 +125,10 @@ impl Canvas {
     pub fn retired_technique(&self) -> Result<Self, Error> {
         let info = self.technique.as_ref().filter(|info| !info.retired).ok_or_else(|| invalid("only a published technique version can be retired"))?;
         let stub = Technique { inputs: Vec::new(), outputs: Vec::new(), params: Vec::new(), retired: true, ..info.clone() };
-        Self::technique(self.id, self.title.clone(), stub, Vec::new(), Vec::new())
+        let mut retired = Self::technique(self.id, self.title.clone(), stub, Vec::new(), Vec::new())?;
+        // A private version stays out of a shared room once retired, too.
+        retired.private = self.private;
+        Ok(retired)
     }
 }
 
@@ -341,6 +344,10 @@ mod tests {
         assert_eq!((info.id, info.version, stub.title()), (TechniqueId::from_bytes([9; 16]), 1, "Caption v1"));
         assert!(stub.retired_technique().is_err(), "retired once");
         assert!(Canvas::new(CanvasId::from_bytes([1; 16]), "Plain").retired_technique().is_err());
+        assert!(!stub.is_private());
+        let mut private = canvas.clone();
+        private.private = true;
+        assert!(private.retired_technique().unwrap().is_private(), "a private version stays private once retired");
         Change::AddCanvas { canvas: stub }.apply(&mut project).unwrap();
         // Its number stays taken.
         assert!(Change::AddCanvas { canvas: version(8, 10, 1) }.apply(&mut project).is_err());

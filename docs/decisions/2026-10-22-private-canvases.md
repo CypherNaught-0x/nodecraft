@@ -23,8 +23,21 @@ again; the private copy is kept as it was.
 
 **The flag is saved with the project.** A canvas stays private when the project is shared
 again. Only a role that edits may change it. A commenter's or viewer's session is refused by its
-access check, and they can't make canvases anyway. Agents may use `canvas.set_private`: it is an
-ordinary, undoable edit.
+access check, and they can't make canvases anyway. `canvas.set_private` is human only: undo
+turns the flag back, but a canvas once shared stays with whoever received it, so sharing one is
+the person's call, as making a share link is.
+
+**Others may reuse what a private canvas holds.** They can't see it, so an editor may publish a
+technique version the private canvas already has, or reuse an id they saw before it went
+private. The project would then hold the same version or id twice. Neither side's work is
+dropped: the session keeps its private canvas, the room's changes wait, and `Collab::take_clash`
+tells the person which canvas clashes. Sharing, changing or removing that canvas lets the room's
+changes in. A retired private technique version stays private.
+
+**What a shared canvas says about a private one goes out with it.** A technique node on a shared
+canvas carries the version's interface (its name, ports and parameters), and a technique
+published from a private draft names that draft as its source. The others can't open or run
+either. An older NodeCraft opening a project ignores the flag, and would share the canvas.
 
 **Not done here:** private canvases shared with chosen people rather than nobody. That would
 need a separate document per canvas (yrs subdocuments) and a relay that routes by grant.
