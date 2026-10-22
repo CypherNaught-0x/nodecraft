@@ -446,7 +446,7 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
         Some("grant") => {
             let id = package_id(request)?;
             compiles(store, &id)?;
-            let grant = store.grant(&id)?;
+            let grant = store.grant(&id, &trust(host)?)?;
             let mut out = grant_json(&grant);
             if let Some(o) = out.as_object_mut() {
                 o.insert("package_id".into(), json!(grant.package_id.as_str()));
@@ -461,7 +461,8 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
                 .filter(|id| valid_grant_id(id))
                 .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "invalid grant ID"))?;
             let report = store.revoke(grant_id)?;
-            Ok(json!({"grant_id": report.grant.grant_id, "revoked": true, "disabled": report.disabled}))
+            let dependents: Vec<&str> = report.dependents.iter().map(PackageId::as_str).collect();
+            Ok(json!({"grant_id": report.grant.grant_id, "revoked": true, "disabled": report.disabled, "dependents": dependents}))
         }
         Some("disable") => store.disable(&package_id(request)?).map(|()| json!({"disabled": true})),
         Some("rollback") => {

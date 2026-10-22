@@ -149,7 +149,7 @@ fn a_text_action_package_runs_only_once_granted() {
     assert_eq!(enabled["registered"], json!(["plugin.io.example.text.warm"]));
     assert_eq!(enabled["grant"], json!({"grant_id": "g1", "epoch": 1}));
     let revoked = s.dispatch("plugins.revoke", &json!({"grant_id": "g1"})).unwrap();
-    assert_eq!(revoked, json!({"grant_id": "g1", "revoked": true, "disabled": true}));
+    assert_eq!(revoked, json!({"grant_id": "g1", "revoked": true, "disabled": true, "dependents": []}));
     assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["state"], "disabled");
     for bad in ["g0", "g", "x1", "g01", "g123456789012345678901"] {
         assert_eq!(s.dispatch("plugins.revoke", &json!({"grant_id": bad})).unwrap_err().kind, ErrorKind::InvalidInput, "{bad}");

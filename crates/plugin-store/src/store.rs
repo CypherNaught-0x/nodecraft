@@ -138,6 +138,8 @@ pub struct RevokeReport {
     pub grant: Grant,
     /// Whether the package was enabled under it, and is now disabled.
     pub disabled: bool,
+    /// Enabled packages depending on it, disabled with it.
+    pub dependents: Vec<PackageId>,
 }
 
 /// What uninstalling did.
@@ -299,12 +301,12 @@ impl<B: StoreBackend> Store<B> {
         self.backend.write_grants(&bytes)
     }
 
-    /// Revokes `package`'s grants before its active digest changes or it goes. Grants that can't
-    /// be read (damaged, or from a newer build) grant nothing here anyway, and are left alone.
+    /// Revokes `package`'s grants before its active digest changes or it goes. Damaged grants
+    /// grant nothing and are left alone; grants from a newer build may, so nothing changes.
     fn revoke_all(&mut self, package: &PackageId) -> Result<(), Error> {
         let mut grants = match self.read_grants() {
             Ok(grants) => grants,
-            Err(e) if matches!(e.kind, ErrorKind::InvalidInput | ErrorKind::Unsupported) => return Ok(()),
+            Err(e) if e.kind == ErrorKind::InvalidInput => return Ok(()),
             Err(e) => return Err(e),
         };
         if grants.revoke_package(package) {
@@ -321,8 +323,11 @@ impl<B: StoreBackend> Store<B> {
 
     /// Grants the active digest of `package` the right to run: the user's yes, after reading
     /// what it is. Only text action packages run anything; a data package needs no grant.
-    /// Granting a digest that already has a live grant returns that grant.
-    pub fn grant(&mut self, package: &PackageId) -> Result<Grant, Error> {
+    /// Granting a digest that already has a live grant returns that grant. Its signature must
+    /// still verify against `trust`. Damaged grants are replaced, starting again from nothing
+    /// granted; a host holding an old grant compares its package and digest too, so a number
+    /// given again never stands for an old yes.
+    pub fn grant(&mut self, package: &PackageId, trust: &TrustStore) -> Result<Grant, Error> {
         let _transaction = self.backend.transaction()?;
         self.ensure_current()?;
         let (digest, _) = self.index.active.get(package).copied().ok_or_else(not_installed)?;
@@ -330,7 +335,12 @@ impl<B: StoreBackend> Store<B> {
         if !executable(&loaded.manifest.runtime) {
             return Err(Error::new(ErrorKind::InvalidInput, "a data package runs nothing, so it needs no grant"));
         }
-        let mut grants = self.read_grants()?;
+        provenance(&loaded, trust)?;
+        let mut grants = match self.read_grants() {
+            Ok(grants) => grants,
+            Err(e) if e.kind == ErrorKind::InvalidInput => Grants::default(),
+            Err(e) => return Err(e),
+        };
         if let Some(live) = grants.live(package, &digest) {
             return Ok(live.clone());
         }
@@ -339,8 +349,9 @@ impl<B: StoreBackend> Store<B> {
         Ok(grant)
     }
 
-    /// Revokes `grant_id`, disabling its package if it is enabled under it. Revoking a revoked
-    /// grant changes nothing.
+    /// Revokes `grant_id`, disabling its package if it is enabled under it, and every enabled
+    /// package depending on it. Revoking a revoked grant changes nothing. The package is
+    /// disabled first, so a failed write never leaves it enabled with no grant.
     pub fn revoke(&mut self, grant_id: &str) -> Result<RevokeReport, Error> {
         let _transaction = self.backend.transaction()?;
         self.ensure_current()?;
@@ -351,20 +362,41 @@ impl<B: StoreBackend> Store<B> {
         let was_live = !found.revoked;
         found.revoked = true;
         let grant = found.clone();
+        let mut report = RevokeReport { grant, disabled: false, dependents: Vec::new() };
+        if let Some((digest, State::Enabled)) = self.index.active.get(&report.grant.package_id).copied()
+            && digest == report.grant.digest
+        {
+            let mut next = self.index.clone();
+            next.active.insert(report.grant.package_id.clone(), (digest, State::Disabled));
+            report.dependents = self.enabled_dependents(&report.grant.package_id)?;
+            for id in &report.dependents {
+                if let Some((_, state)) = next.active.get_mut(id) {
+                    *state = State::Disabled;
+                }
+            }
+            self.commit(next)?;
+            report.disabled = true;
+        }
         if was_live {
             self.write_grants(&grants)?;
         }
-        // Dependents stay enabled: a text action package's locks are checked, never called.
-        let mut disabled = false;
-        if let Some((digest, State::Enabled)) = self.index.active.get(&grant.package_id).copied()
-            && digest == grant.digest
-        {
-            let mut next = self.index.clone();
-            next.active.insert(grant.package_id.clone(), (digest, State::Disabled));
-            self.commit(next)?;
-            disabled = true;
+        Ok(report)
+    }
+
+    /// Enabled packages that depend on `package`, directly or through others.
+    fn enabled_dependents(&self, package: &PackageId) -> Result<Vec<PackageId>, Error> {
+        let mut found: Vec<PackageId> = Vec::new();
+        let mut frontier = vec![package.clone()];
+        // `found` is a seen-set: each package is queued once, so a cyclic lock still ends.
+        while let Some(of) = frontier.pop() {
+            for (id, (digest, state)) in &self.index.active {
+                if *state == State::Enabled && id != package && !found.contains(id) && self.entry(digest)?.dependencies.iter().any(|d| d.package_id == of) {
+                    found.push(id.clone());
+                    frontier.push(id.clone());
+                }
+            }
         }
-        Ok(RevokeReport { grant, disabled })
+        Ok(found)
     }
 
     fn report(&self, package: &Package, provenance: Provenance, bytes: usize, replaced: Option<PackageDigest>) -> ImportReport {
