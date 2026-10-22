@@ -339,6 +339,7 @@ mod export;
 mod file_dialogs;
 mod generate;
 mod layer_editor;
+mod layer_fonts;
 mod layout;
 mod library_view;
 #[cfg(not(target_arch = "wasm32"))]

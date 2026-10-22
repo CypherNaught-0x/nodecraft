@@ -1,7 +1,7 @@
 //! Captions (#574): a line or a few of text laid out as a text layer is, filled over an optional
 //! outline, and placed in a video frame. Only the part of the frame the text covers is drawn, so
 //! a video compositor can lay the picture over its frames where it says.
-use super::{Align, Content, Layer, bad, paint, text, within};
+use super::{Align, Content, Fonts, Layer, bad, paint, text, within};
 use crate::image::{ImageError, ImageLimits, Raster};
 use vello_cpu::kurbo::{Affine, Join, Stroke};
 use vello_cpu::{Level, Pixmap, RenderContext, RenderSettings, Resources};
@@ -84,7 +84,7 @@ pub fn caption(style: &CaptionStyle<'_>, width: u32, height: u32, limits: ImageL
             color: String::new(),
         },
     };
-    let (tw, th) = text::text_size(&layer)?;
+    let (tw, th) = text::text_size(&layer, &Fonts::default())?;
     layer.width = tw;
     layer.height = th;
     let (fw, fh) = (f64::from(width), f64::from(height));
@@ -125,7 +125,7 @@ pub fn caption(style: &CaptionStyle<'_>, width: u32, height: u32, limits: ImageL
         return Err(ImageError::WorkLimit);
     }
     let (Ok(pw), Ok(ph)) = (u16::try_from(w), u16::try_from(h)) else { return Err(ImageError::Dimensions) };
-    let path = text::outline(&layer)?;
+    let path = text::outline(&layer, &Fonts::default())?;
     let mut ctx = RenderContext::new_with(pw, ph, RenderSettings { level: Level::baseline(), num_threads: 0 });
     ctx.set_transform(Affine::translate((left - f64::from(x), top - f64::from(y))));
     if let Some((c, _)) = style.stroke.filter(|_| outline > 0.0) {

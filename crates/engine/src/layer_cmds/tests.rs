@@ -252,3 +252,94 @@ fn over_the_layer_cap_a_stored_layer_can_still_be_removed() {
     s.dispatch("layers.remove", &on("s0")).unwrap();
     assert_eq!(ids(&mut s).len(), layers::MAX_LAYERS);
 }
+
+/// Lato under another name, so it isn't the built-in font.
+fn lito() -> Vec<u8> {
+    let mut bytes = include_bytes!("../../../../assets/fonts/Lato-Regular.ttf").to_vec();
+    for (from, to) in [(&b"\0L\0a\0t\0o"[..], &b"\0L\0i\0t\0o"[..]), (b"Lato", b"Lito")] {
+        let mut at = 0;
+        while let Some(found) = bytes[at..].windows(from.len()).position(|w| w == from) {
+            bytes[at + found..at + found + from.len()].copy_from_slice(to);
+            at += found + from.len();
+        }
+    }
+    bytes
+}
+
+fn font(s: &mut Session, bytes: &[u8]) -> Json {
+    let hash = s.import_asset(bytes).unwrap();
+    json!({"canvas": CANVAS, "id": EDITOR, "font": {"hash": hash, "mime": "application/octet-stream"}})
+}
+
+#[test]
+fn a_font_is_added_by_the_name_it_declares_and_removed_by_name() {
+    let mut s = session();
+    let bytes = lito();
+    let params = font(&mut s, &bytes);
+    assert_eq!(s.dispatch("layers.font_add", &params).unwrap(), json!({"changed": true, "name": "Lito"}));
+    let listed = s.dispatch("layers.list", &json!({"canvas": CANVAS, "id": EDITOR})).unwrap();
+    assert_eq!(listed["fonts"][0]["name"], json!("Lito"));
+    assert_eq!(listed["fonts"][0]["font"]["mime"], json!("font/ttf"), "the type the file declares, not the caller's");
+    // The same font again changes nothing; a font of the same name replaces it.
+    assert_eq!(s.dispatch("layers.font_add", &params).unwrap()["changed"], json!(false));
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert!(nodecraft_nodes::layers::fonts(&node(&s)).unwrap().is_empty(), "one undo step");
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert_eq!(s.dispatch("layers.font_remove", &json!({"canvas": CANVAS, "id": EDITOR, "name": " lito "})).unwrap(), json!({"changed": true}));
+    assert!(!node(&s).config.contains_key(nodecraft_nodes::layers::FONTS_CONFIG));
+    let gone = s.dispatch("layers.font_remove", &json!({"canvas": CANVAS, "id": EDITOR, "name": "Lito"})).unwrap_err();
+    assert_eq!(gone.kind, ErrorKind::NotFound);
+}
+
+#[test]
+fn only_a_font_the_project_holds_can_be_added() {
+    let mut s = session();
+    // Not a font, the built-in font, and a font that was never imported.
+    let png = font(&mut s, b"\x89PNG\r\n\x1a\n not a font");
+    assert_eq!(s.dispatch("layers.font_add", &png).unwrap_err().kind, ErrorKind::InvalidInput);
+    let lato = font(&mut s, include_bytes!("../../../../assets/fonts/Lato-Regular.ttf"));
+    assert_eq!(s.dispatch("layers.font_add", &lato).unwrap_err().kind, ErrorKind::InvalidInput);
+    let missing = json!({"canvas": CANVAS, "id": EDITOR, "font": {"hash": "ab".repeat(32), "mime": "font/ttf"}});
+    assert_eq!(s.dispatch("layers.font_add", &missing).unwrap_err().kind, ErrorKind::NotFound);
+    // Only a Layer Editor holds fonts.
+    let mut on_source = font(&mut s, &lito());
+    on_source["id"] = json!(A);
+    assert!(s.dispatch("layers.font_add", &on_source).is_err());
+    assert!(node(&s).config.get(nodecraft_nodes::layers::FONTS_CONFIG).is_none());
+}
+
+#[test]
+fn a_node_holds_at_most_sixteen_fonts() {
+    let mut s = session();
+    let base = lito();
+    for n in 0..=layers::MAX_FONTS {
+        // Each its own family: "Lita", "Litb", … (one byte changed in each name string).
+        let mut bytes = base.clone();
+        let digit = b'a' + n as u8;
+        for (from, to) in [(&b"\0L\0i\0t\0o"[..], vec![0, b'L', 0, b'i', 0, b't', 0, digit]), (b"Lito", vec![b'L', b'i', b't', digit])] {
+            let mut at = 0;
+            while let Some(found) = bytes[at..].windows(from.len()).position(|w| w == from) {
+                bytes[at + found..at + found + from.len()].copy_from_slice(&to);
+                at += found + from.len();
+            }
+        }
+        let params = font(&mut s, &bytes);
+        let added = s.dispatch("layers.font_add", &params);
+        if n < layers::MAX_FONTS {
+            assert_eq!(added.unwrap()["name"], json!(format!("Lit{}", digit as char)));
+        } else {
+            assert_eq!(added.unwrap_err().kind, ErrorKind::InvalidInput, "the seventeenth is refused");
+        }
+    }
+}
+
+#[test]
+fn importing_a_font_file_adds_it_and_a_file_that_isnt_one_stores_nothing() {
+    let mut s = session();
+    assert_eq!(fonts::import(&mut s, CANVAS, EDITOR, &lito()).unwrap(), "Lito");
+    assert_eq!(nodecraft_nodes::layers::fonts(&node(&s)).unwrap().len(), 1);
+    let held = s.assets().len();
+    let refused = fonts::import(&mut s, CANVAS, EDITOR, b"\x89PNG\r\n\x1a\n").unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::InvalidInput);
+    assert_eq!(s.assets().len(), held, "refused before it was stored");
+}

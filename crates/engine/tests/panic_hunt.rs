@@ -526,6 +526,8 @@ fn template(id: &str) -> (Session, Value) {
         "layers.remove" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1"}),
         "layers.reorder" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1","index":0}),
         "layers.align" => json!({"canvas":canvas(),"id":node_id(9),"layers":["t1"],"to":"center"}),
+        "layers.font_add" => json!({"canvas":canvas(),"id":node_id(9),"font":{"hash":"00".repeat(32),"mime":"font/ttf"}}),
+        "layers.font_remove" => json!({"canvas":canvas(),"id":node_id(9),"name":"Lato"}),
         "timeline.list" => json!({"canvas":canvas(),"id":node_id(9)}),
         "timeline.interchange" => json!({"canvas":canvas(),"id":node_id(9)}),
         "timeline.export_interchange" => json!({"canvas":canvas(),"id":node_id(9),"path":"/nodecraft-panic-hunt/cut.zip"}),

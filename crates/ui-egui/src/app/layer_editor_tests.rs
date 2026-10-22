@@ -242,6 +242,61 @@ fn escape_in_a_field_discards_the_edit_and_keeps_the_selection() {
 
 use nodecraft_actions::layers::{Content, Layer};
 
+/// Lato under another name, so it isn't the built-in font.
+fn lito() -> Vec<u8> {
+    let mut bytes = include_bytes!("../../../../assets/fonts/Lato-Regular.ttf").to_vec();
+    for (from, to) in [(&b"\0L\0a\0t\0o"[..], &b"\0L\0i\0t\0o"[..]), (b"Lato", b"Lito")] {
+        let mut at = 0;
+        while let Some(found) = bytes[at..].windows(from.len()).position(|w| w == from) {
+            bytes[at + found..at + found + from.len()].copy_from_slice(to);
+            at += found + from.len();
+        }
+    }
+    bytes
+}
+
+fn font_of(h: &Harness<'static, NodeCraftApp>) -> String {
+    match &layer(h, "text-1").content {
+        Content::Text { font, .. } => font.clone(),
+        other => panic!("not text: {other:?}"),
+    }
+}
+
+#[test]
+fn a_text_layer_picks_a_project_font_and_a_missing_one_says_it_draws_as_lato() {
+    let mut h = opened();
+    add_text(&mut h);
+    let canvas = h.state().canvas;
+    let before = h.state().layer_editor.as_ref().unwrap().textures.get("text-1").map(|r| r.key);
+    let name = nodecraft_engine::layer_cmds::fonts::import(&mut h.state_mut().session, canvas, EDITOR, &lito()).unwrap();
+    assert_eq!(name, "Lito");
+    h.run_steps(2);
+    // Choosing the font sets it on the layer, and the layer renders again with it.
+    h.get_by_label("Font").click();
+    h.run_steps(2);
+    h.get_by_label("Lito").click();
+    h.run_steps(3);
+    assert_eq!(font_of(&h), "Lito", "{:?}", h.state().notice);
+    let after = h.state().layer_editor.as_ref().unwrap().textures.get("text-1").map(|r| r.key);
+    assert!(before.is_some() && after.is_some() && before != after, "rendered again");
+    assert!(h.query_by_label_contains("draws as Lato").is_none());
+    // With nothing selected the node's fonts are listed, and removing one leaves the layer
+    // naming a font that isn't here.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    h.get_by_label("Remove Lito").click();
+    h.run_steps(3);
+    assert!(nodecraft_nodes::layers::fonts(&editor_node(&h)).unwrap().is_empty(), "{:?}", h.state().notice);
+    h.state_mut().layer_editor.as_mut().unwrap().selected = vec!["text-1".into()];
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Lito isn't in this project, so it draws as Lato").is_some());
+    // The picker is offered; a cancelled pick changes nothing.
+    h.get_by_label("Add font file…").click();
+    h.run_steps(3);
+    assert!(h.state().layer_editor.as_ref().unwrap().picking.is_none());
+    assert_eq!(font_of(&h), "Lito");
+}
+
 #[test]
 #[ignore = "manual public-safe capture; LAYERS101_RENDER_DIR"]
 fn layers101_visual() {

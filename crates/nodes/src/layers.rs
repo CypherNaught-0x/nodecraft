@@ -3,10 +3,11 @@
 //! node's `config["nodecraft.layers"]` as JSON (`{"layers": [...]}`, bottom first; the format is
 //! `nodecraft-actions::layers`). The host checks them where they are set (`layers.*` commands)
 //! and again before it draws; this kind only carries them, with the node each connected image
-//! came from, so a layer stays with its image when wires are reordered.
+//! came from, so a layer stays with its image when wires are reordered, and the fonts its text
+//! layers can name (`config["nodecraft.layers.fonts"]`, #548).
 use crate::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx, descriptor::invalid};
 use nodecraft_graph::{Node, Port};
-use nodecraft_types::{Error, Modality, ParamControl, ParamSchema, ParamSpec, PortType, Unsigned, Value};
+use nodecraft_types::{AssetRef, Error, Modality, ParamControl, ParamSchema, ParamSpec, PortType, Unsigned, Value};
 
 /// The kind's id.
 pub const ID: &str = "image.layers";
@@ -16,6 +17,11 @@ pub const CONFIG: &str = "nodecraft.layers";
 pub const SPEC_PARAM: &str = "nodecraft.layers";
 /// The parameter the planned job carries each input's origin node in (not a control).
 pub const SOURCES_PARAM: &str = "nodecraft.layers.sources";
+/// The config key holding the fonts imported for its text layers (#548): a list of
+/// `[name, font asset]` pairs.
+pub const FONTS_CONFIG: &str = "nodecraft.layers.fonts";
+/// The parameter the planned job carries those fonts in (not a control), as stored.
+pub const FONTS_PARAM: &str = "nodecraft.layers.fonts";
 /// No layers, as stored.
 pub const EMPTY: &str = r#"{"layers":[]}"#;
 /// The input port.
@@ -31,6 +37,25 @@ pub fn stored(node: &Node) -> Result<&str, Error> {
         None => Ok(EMPTY),
         Some(Value::Text(json)) => Ok(json),
         Some(_) => Err(invalid("the node's layers can't be read")),
+    }
+}
+
+/// The fonts `node` holds, as stored: each its name and file (none when it has none).
+pub fn fonts(node: &Node) -> Result<Vec<(&str, &AssetRef)>, Error> {
+    let unreadable = || invalid("the node's fonts can't be read");
+    match node.config.get(FONTS_CONFIG) {
+        None => Ok(Vec::new()),
+        Some(Value::List(pairs)) => pairs
+            .iter()
+            .map(|pair| match pair {
+                Value::List(pair) => match pair.as_slice() {
+                    [Value::Text(name), Value::Media(asset)] => Ok((name.as_str(), asset)),
+                    _ => Err(unreadable()),
+                },
+                _ => Err(unreadable()),
+            })
+            .collect(),
+        Some(_) => Err(unreadable()),
     }
 }
 
@@ -97,6 +122,11 @@ impl NodeKind for LayersKind {
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
         let mut params = self.validate_instance(ctx.node, true)?.into_visible_values();
         params.insert(SPEC_PARAM.into(), Value::Text(stored(ctx.node)?.into()));
+        // Checked here so a run refuses fonts it can't read; carried as stored.
+        fonts(ctx.node)?;
+        if let Some(fonts) = ctx.node.config.get(FONTS_CONFIG) {
+            params.insert(FONTS_PARAM.into(), fonts.clone());
+        }
         let mut inputs = Vec::new();
         let mut sources = Vec::new();
         for input in ctx.inputs.iter().filter(|i| i.port == INPUT) {

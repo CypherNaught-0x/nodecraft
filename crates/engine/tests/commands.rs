@@ -337,6 +337,8 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "layers.remove",
         "layers.reorder",
         "layers.align",
+        "layers.font_add",
+        "layers.font_remove",
         "timeline.list",
         "timeline.interchange",
         "timeline.export_interchange",

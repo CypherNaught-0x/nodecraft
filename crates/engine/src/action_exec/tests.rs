@@ -597,3 +597,36 @@ fn a_document_action_without_a_readable_pdf_is_a_message() {
         assert!(actions.execute(action, &ParamValues::new(), std::slice::from_ref(&junk)).is_err(), "{action}");
     }
 }
+
+#[test]
+fn a_text_layer_draws_with_the_font_its_node_holds() {
+    let kinds = Registry::builtins().unwrap();
+    let mut assets = AssetStore::default();
+    // Lato with its em halved draws every glyph twice as large, so it shows which font was used.
+    let mut big = include_bytes!("../../../../assets/fonts/Lato-Regular.ttf").to_vec();
+    let tables = u16::from_be_bytes([big[4], big[5]]) as usize;
+    let head = (0..tables).map(|i| 12 + 16 * i).find(|at| &big[*at..*at + 4] == b"head").unwrap();
+    let offset = u32::from_be_bytes(big[head + 8..head + 12].try_into().unwrap()) as usize;
+    let em = u16::from_be_bytes([big[offset + 18], big[offset + 19]]);
+    big[offset + 18..offset + 20].copy_from_slice(&(em / 2).to_be_bytes());
+    let hash = assets.insert(&big).unwrap();
+    let actions = LocalActions::new(assets);
+    let mut params = defaults(&kinds, nodecraft_nodes::layers::ID);
+    let text = r##"{"layers":[{"id":"t","name":"T","x":200,"y":200,"width":360,"height":200,"content":{"kind":"text","text":"Hi","font":"Display","size":40,"color":"#000000"}}]}"##;
+    params.insert(nodecraft_nodes::layers::SPEC_PARAM.into(), Value::Text(text.into()));
+    let ink = |params: &ParamValues| {
+        let Value::Media(out) = actions.execute(nodecraft_nodes::layers::ID, params, &[]).unwrap() else { panic!("an image") };
+        let staged = actions.take_staged();
+        let (_, decoded) = nodecraft_media::decode_image(staged.get(&out.hash).unwrap(), &nodecraft_media::Limits::default()).unwrap();
+        decoded.to_rgba8().pixels().filter(|p| p.0[0] < 128).count()
+    };
+    let fallback = ink(&params);
+    let font = Value::Media(AssetRef { hash, mime: "font/ttf".parse().unwrap(), meta: MediaMeta::default() });
+    params.insert(nodecraft_nodes::layers::FONTS_PARAM.into(), Value::List(vec![Value::List(vec![Value::Text("display".into()), font])]));
+    let held = ink(&params);
+    assert!(fallback > 0 && held > fallback * 3, "the held font draws ({held} dark pixels against Lato's {fallback})");
+    // A font that isn't in the project draws as Lato, not an error.
+    let missing = Value::Media(AssetRef { hash: nodecraft_types::Blake3::from_bytes([7; 32]), mime: "font/ttf".parse().unwrap(), meta: MediaMeta::default() });
+    params.insert(nodecraft_nodes::layers::FONTS_PARAM.into(), Value::List(vec![Value::List(vec![Value::Text("Display".into()), missing])]));
+    assert_eq!(ink(&params), fallback);
+}

@@ -152,6 +152,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "layers.remove",
     "layers.reorder",
     "layers.align",
+    "layers.font_add",
+    "layers.font_remove",
     // Clips only change the node's stored clips; the render runs (and is quoted) through run.start.
     "timeline.list",
     "timeline.interchange",
