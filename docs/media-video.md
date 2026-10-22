@@ -9,8 +9,13 @@ build is unchanged.
 
 ## Tools and platforms
 
-Configure absolute paths to your installed **ffmpeg** and **ffprobe**, plus a trusted private
-scratch parent. NodeCraft does not download, package or redistribute either tool. Their build
+The desktop host discovers installed **ffmpeg** and **ffprobe** once at startup: each absolute
+`NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` override takes precedence over its absolute `[media]`
+setting, followed by the first executable on `PATH` (`.exe` on Windows). Empty and relative
+`PATH` directories are skipped; at most 256 entries and 64 KiB of path data are searched.
+An invalid explicit choice never falls back silently. Discovery is not persisted. The low-level
+service still receives explicit absolute paths plus a trusted private scratch parent.
+NodeCraft does not download, package or redistribute either tool. Their build
 configuration determines codec availability and licensing; invoking them is not a certification
 of their licence. The service requires the tested MOV/Matroska demuxer controls, H264/VP8/VP9
 decoders, libvpx-vp9 encoder and colorspace/scale/transpose filters. Unsupported configurations
@@ -230,8 +235,8 @@ final cleanup before replacing services without bound.
 ## On cards
 
 The desktop app compiles the service in and plays a video on its card: a `source.video` node's
-asset, or the first `video/*` result of a generation card. Set both tools, as absolute paths, in
-the settings file:
+asset, or the first `video/*` result of a generation card. Install both tools on `PATH`, use the
+environment overrides above, or set their absolute paths in the settings file:
 
 ```toml
 [media]
@@ -239,7 +244,7 @@ ffmpeg = "/opt/homebrew/bin/ffmpeg"
 ffprobe = "/opt/homebrew/bin/ffprobe"
 ```
 
-They come from settings only, never from a project. Without them, or in the browser build, the
+They come from the trusted native host, never from a project. Without them, or in the browser build, the
 card says what is missing instead of a frame. A card shows a poster frame from the start of the
 clip, a play/pause button, a position slider and the time. Playing and scrubbing are view state:
 they change nothing in the document and are not commands.

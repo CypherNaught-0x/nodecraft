@@ -56,9 +56,12 @@ fn tools_that_arent_there_say_so_without_panicking() {
     let mut said = None;
     for _ in 0..400 {
         h.step();
-        said = ["The ffmpeg or ffprobe in [media] settings can't play videos", "Can't run ffmpeg or ffprobe; check [media] in settings"]
-            .into_iter()
-            .find(|label| h.query_by_label(label).is_some());
+        said = [
+            "The selected ffmpeg or ffprobe can't play videos; check the installed tools, environment overrides or [media] settings",
+            "Can't run ffmpeg or ffprobe; check the installed tools, environment overrides or [media] settings",
+        ]
+        .into_iter()
+        .find(|label| h.query_by_label(label).is_some());
         if said.is_some() {
             break;
         }

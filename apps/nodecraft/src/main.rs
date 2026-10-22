@@ -10,6 +10,7 @@ use std::process::ExitCode;
 mod agent_panel;
 mod control;
 mod shell;
+mod video_tools;
 
 /// Stable application id: the Wayland app id and X11 WM class, which must match the `.desktop`
 /// file name (packaging/linux) so the desktop finds the icon; also the macOS bundle id.
@@ -111,6 +112,7 @@ fn main() -> ExitCode {
                 log::warn!("{problem}");
             }
             let dir = store.dir().map(std::path::Path::to_path_buf);
+            let tools = video_tools::discover(&store.get().media);
             // Project files and crash recovery: the journal lives in the settings folder. Without
             // one (an in-memory settings store), the window still opens, without saving.
             // A joined window holds the shared project, not this person's files.
@@ -122,6 +124,14 @@ fn main() -> ExitCode {
                 log::warn!("no settings folder: project files are unavailable in this window");
             }
             let mut app = nodecraft_ui_egui::NodeCraftApp::with_settings_and_storage(&cc.egui_ctx, store, storage)?;
+            match tools {
+                Ok(tools) => app.set_media_tools(tools.tools()),
+                Err(problem) => {
+                    app.set_media_tools(None);
+                    app.notice = Some(problem.into());
+                    log::warn!("{problem}");
+                }
+            }
             match &join {
                 Some(Some(link)) => {
                     if let Err(error) = app.join_live(&cc.egui_ctx, link) {
