@@ -51,7 +51,8 @@ pub fn font_info(bytes: &[u8]) -> Result<FontInfo, ImageError> {
 
 /// Runs `read`, which parses or draws an imported font, refusing the font as damaged if the
 /// font libraries panic on it (#705). They are meant to return errors, but a font is hostile
-/// input, and one bounds check they miss must not take the app down.
+/// input, and one bounds check they miss must not take the app down. Native builds only: in
+/// the browser a panic aborts, so a fix belongs upstream too.
 pub(super) fn guarded<T>(read: impl FnOnce() -> Result<T, ImageError>) -> Result<T, ImageError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(read)).unwrap_or_else(|_| Err(bad("font: it is damaged and can't be drawn")))
 }

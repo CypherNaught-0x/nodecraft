@@ -379,12 +379,13 @@ fn a_text_layer_draws_with_the_project_font_it_names_and_falls_back_to_lato() {
     assert!(render_layer(&shown, &fonts, 1.0, ImageLimits::default()).is_ok());
 }
 
-/// The case `a_damaged_font_never_panics` shrank to (#705): one byte in Lato's `glyf` data gives a
-/// glyph no points but a flag byte, which read-fonts 0.41 indexed out of bounds.
+/// The case `a_damaged_font_never_panics` shrank to (#705): one byte in the offset of Lato's
+/// `glyf` table record points it at other data, read as a glyph with no points but a flag byte,
+/// which read-fonts 0.41 indexed out of bounds.
 #[test]
 fn a_glyph_with_no_points_is_drawn_or_refused() {
     let mut bytes = LATO_BYTES.to_vec();
-    bytes[372_870 % 4096] = 38;
+    bytes[134] = 38;
     for bytes in [&bytes[..], &bytes[..12]] {
         let _ = font_info(bytes);
         let mut fonts = Fonts::default();

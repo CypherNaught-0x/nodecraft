@@ -47,8 +47,9 @@ eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 image = { version = "0.25", default-features = false }
-# The layer editor's compositor and text (#101). egui already builds these three; the versions
-# match epaint's so the tree carries one copy of each.
+# The layer editor's compositor and text (#101). Keep harfrust and skrifa on read-fonts 0.43.3 or
+# later, which stops a damaged font's empty glyph from panicking (#705); epaint's older copies only
+# ever see the bundled fonts.
 harfrust = { version = "0.13.3", default-features = false, features = ["std"] }
 skrifa = { version = "0.46.2", default-features = false, features = ["std"] }
 vello_cpu = { version = "0.1", default-features = false, features = ["std", "u8_pipeline"] }
