@@ -118,7 +118,7 @@ fn main() -> ExitCode {
                 .as_ref()
                 .filter(|_| join.is_none())
                 .map(|dir| nodecraft_ui_egui::app::storage::StorageSetup { recovery: dir.join("recovery").join("session.journal"), open: project.clone() });
-            if storage.is_none() {
+            if storage.is_none() && join.is_none() {
                 log::warn!("no settings folder: project files are unavailable in this window");
             }
             let mut app = nodecraft_ui_egui::NodeCraftApp::with_settings_and_storage(&cc.egui_ctx, store, storage)?;
@@ -206,7 +206,11 @@ fn perf_run(out: std::path::PathBuf) -> ExitCode {
 
 /// The join link `--join` reads from standard input: one line of at most 4 KiB.
 fn read_join_link() -> Option<String> {
-    use std::io::{BufRead, Read};
+    use std::io::{BufRead, IsTerminal, Read};
+    // Run by hand there is nobody to write the link: the window opens and says none came.
+    if std::io::stdin().is_terminal() {
+        return None;
+    }
     let mut line = String::new();
     std::io::stdin().lock().take(4096).read_line(&mut line).ok()?;
     let link = line.trim();

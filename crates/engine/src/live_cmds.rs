@@ -88,7 +88,7 @@ fn schema(required: &[&str], properties: Value) -> Value {
 fn start_schema() -> Value {
     schema(
         &[],
-        json!({"relay": {"type": ["string", "null"], "maxLength": MAX_RELAY_BYTES, "pattern": "^ws://", "description": "The relay to share through; absent for the one in settings."}}),
+        json!({"relay": {"type": ["string", "null"], "maxLength": MAX_RELAY_BYTES, "pattern": "^\\s*ws://", "description": "The relay to share through; absent for the one in settings."}}),
     )
 }
 
@@ -131,7 +131,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: plain_schema,
-            params_doc: "{} -> {sharing: false}. Leaves the shared session; the project stays open here as it is, and others keep theirs.",
+            params_doc: "{} -> {sharing: false}. Leaves the shared session; the project stays open here as it is, and others keep theirs. Refused when nothing is shared.",
             enabled: enabled_plain,
             run: run_stop,
         },

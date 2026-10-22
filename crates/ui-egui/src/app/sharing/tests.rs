@@ -134,7 +134,17 @@ fn a_shared_project_reaches_who_joins_and_stopping_keeps_it_there() {
     joiner.join_live(&ctx, &link).unwrap();
     let has_note = |app: &NodeCraftApp| app.session.document().canvases().values().any(|canvas| canvas.nodes().contains_key(&note));
     assert!(!has_note(&joiner));
+    // Nothing can be made in the joining window before the shared project comes: it would be lost.
+    let early = nodecraft_nodes::text::kind().descriptor().instantiate(NodeId::from_bytes([0x5b; 16]), &BTreeMap::new()).unwrap();
+    assert!(joiner.session.dispatch("node.add", &json!({"canvas": joiner.canvas, "node": early})).is_err());
     until(&mut [&mut owner, &mut joiner], |apps| has_note(apps[1]) && chip(apps[1]) == "Live");
+
+    // And the joiner's edits reach the owner.
+    let reply = NodeId::from_bytes([0x5c; 16]);
+    let node = nodecraft_nodes::text::kind().descriptor().instantiate(reply, &BTreeMap::new()).unwrap();
+    joiner.session.dispatch("node.add", &json!({"canvas": joiner.canvas, "node": node})).unwrap();
+    let has_reply = |app: &NodeCraftApp| app.session.document().canvases().values().any(|canvas| canvas.nodes().contains_key(&reply));
+    until(&mut [&mut owner, &mut joiner], |apps| has_reply(apps[0]));
     assert_eq!(joiner.session.document().id(), owner.session.document().id());
     let canvases = |app: &NodeCraftApp| app.session.document().canvases().keys().copied().collect::<Vec<_>>();
     assert_eq!(canvases(&joiner), canvases(&owner));
@@ -148,6 +158,23 @@ fn a_shared_project_reaches_who_joins_and_stopping_keeps_it_there() {
     assert_eq!(joiner.session.dispatch("share.status", &json!({})).unwrap(), json!({"state": "off"}));
     assert!(joiner.notice.as_deref().is_some_and(|notice| notice.contains("stays open")));
     assert!(opened.borrow().is_empty(), "nothing here opened a window");
+    // Stopping again has nothing to stop.
+    assert_eq!(joiner.session.dispatch("share.stop", &json!({})).unwrap_err().kind, ErrorKind::Conflict);
+}
+
+#[test]
+fn opening_another_copy_of_the_project_ends_sharing_and_sends_nothing() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let relay = relay();
+    let mut owner = app(&opened);
+    owner.session.dispatch("share.start", &json!({"relay": relay})).unwrap();
+    assert_eq!(owner.session.dispatch("share.status", &json!({})).unwrap()["state"], "connecting", "status says so at once");
+    until(&mut [&mut owner], |apps| chip(apps[0]) == "Live");
+    // Another document with the same project id, as an older copy of the file would be.
+    let id = owner.session.document().id();
+    owner.session.adopt_joined(nodecraft_engine::collab::joining(id).unwrap()).unwrap();
+    until(&mut [&mut owner], |apps| chip(apps[0]) == "Share");
+    assert!(owner.notice.as_deref().is_some_and(|notice| notice.contains("another project was opened")), "{:?}", owner.notice);
 }
 
 #[test]

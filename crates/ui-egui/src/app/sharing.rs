@@ -16,8 +16,10 @@
 //! (hidden until asked for), and Stop. The room id never reaches a log, a notice or a command's
 //! result.
 use super::*;
+use nodecraft_engine::access::Access;
 use nodecraft_engine::collab::{Collab, JoinLink, Key, LINKS_SERVICE, joining, relay_address};
 use nodecraft_engine::live_cmds::LIVE_SERVICE;
+use nodecraft_engine::session::DocumentLineage;
 use nodecraft_sync::{Frame, Role};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -66,6 +68,8 @@ struct Live {
     state: State,
     /// A joiner whose session hasn't yet taken up the shared project.
     joining: bool,
+    /// The document being shared; sharing ends if another takes its place in this window.
+    lineage: Option<DocumentLineage>,
 }
 
 /// The share panel's view state.
@@ -108,7 +112,7 @@ impl Sharing {
         let wake = ctx.clone();
         let connection = Connection::open(link.relay().to_owned(), move || wake.request_repaint())?;
         *self.collab.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "live sharing is busy"))? = Some(collab);
-        self.live = Some(Live { link, connection, state: State::Connecting, joining });
+        self.live = Some(Live { link, connection, state: State::Connecting, joining, lineage: None });
         if let Ok(mut shared) = self.shared.try_borrow_mut() {
             shared.live = true;
         }
@@ -125,7 +129,7 @@ impl Sharing {
         }
     }
 
-    /// The chip's words: `None` while nothing is shared.
+    /// The chip's words: "Share" while nothing is shared, else how sharing is going.
     pub(crate) fn chip(&self) -> String {
         let Some(live) = &self.live else { return "Share".into() };
         let collab = self.collab.try_borrow().ok();
@@ -180,6 +184,7 @@ fn ask(shared: &Rc<RefCell<Shared>>, request: &serde_json::Value) -> Result<serd
             };
             let relay = relay_address(&relay)?;
             shared.live = true;
+            shared.status = json!({"state": "connecting"});
             shared.asks.push_back(Ask::Start(relay));
             Ok(json!({"sharing": true}))
         }
@@ -189,6 +194,9 @@ fn ask(shared: &Rc<RefCell<Shared>>, request: &serde_json::Value) -> Result<serd
             Ok(json!({"opening": true}))
         }
         Some("stop") => {
+            if !shared.live {
+                return Err(Error::new(ErrorKind::Conflict, "this project isn't shared live"));
+            }
             shared.asks.push_back(Ask::Stop);
             Ok(json!({"sharing": false}))
         }
@@ -247,7 +255,10 @@ impl NodeCraftApp {
             return Err(Error::new(ErrorKind::Conflict, "this window is shared live already"));
         }
         let collab = link.join();
-        sharing.begin(ctx, link, collab, true)
+        sharing.begin(ctx, link, collab, true)?;
+        // Nothing made here before the shared project comes would survive taking it in.
+        self.session.set_access(Access::new(Role::View, None)?);
+        Ok(())
     }
 
     fn start_sharing(&mut self, ctx: &egui::Context, relay: &str) -> Result<(), Error> {
@@ -259,6 +270,14 @@ impl NodeCraftApp {
         }
         sharing.begin(ctx, link, collab, false)?;
         sharing.panel.open = true;
+        if let Some(live) = &mut sharing.live {
+            live.lineage = Some(self.session.document_lineage());
+        }
+        // The relay someone shared through is the one they'll want next time.
+        sharing.set_relay(Some(relay.to_owned()));
+        if let Some(store) = &mut self.store {
+            store.update(|settings| settings.share.relay = Some(relay.to_owned()));
+        }
         Ok(())
     }
 
@@ -266,7 +285,7 @@ impl NodeCraftApp {
     fn stop_sharing(&mut self, said: Option<String>) {
         if let Some(sharing) = &mut self.sharing {
             if sharing.live.take().is_some() {
-                self.session.set_access(nodecraft_engine::access::Access::owner());
+                self.session.set_access(Access::owner());
             }
             if let Ok(mut collab) = sharing.collab.try_borrow_mut() {
                 *collab = None;
@@ -304,7 +323,14 @@ impl NodeCraftApp {
                         self.notice = Some(format!("Couldn't join: {}", error.message));
                     }
                 }
-                Ask::Stop => self.stop_sharing(Some("Stopped sharing live. The project stays open here.".into())),
+                Ask::Stop => {
+                    let said = if self.session.file_status().available {
+                        "Stopped sharing live. The project stays open here."
+                    } else {
+                        "Stopped sharing live. The project stays open here, but this window can't save it."
+                    };
+                    self.stop_sharing(Some(said.into()));
+                }
             }
         }
         if let Err(why) = self.drive_sharing() {
@@ -344,11 +370,10 @@ impl NodeCraftApp {
             }
         }
         let State::Connected(n) = live.state else { return Ok(()) };
-        // Opening another project here must not send it into the room.
-        if !live.joining
-            && let Some(id) = collab.project_id().map_err(|e| e.message)?
-            && id != self.session.document().id()
-        {
+        // Opening another project here, or another copy of this one, must not send it into the
+        // room.
+        let replaced_here = live.lineage.as_ref().is_some_and(|lineage| !self.session.is_current_document(lineage));
+        if !live.joining && (replaced_here || collab.project_id().map_err(|e| e.message)?.is_some_and(|id| id != self.session.document().id())) {
             return Err("another project was opened in this window".into());
         }
         let mut replaced = false;
@@ -357,6 +382,7 @@ impl NodeCraftApp {
         {
             self.session.adopt_joined(joining(id).map_err(|e| e.message)?).map_err(|e| e.message)?;
             live.joining = false;
+            live.lineage = Some(self.session.document_lineage());
             replaced = true;
         }
         if !live.joining {
@@ -422,21 +448,10 @@ impl NodeCraftApp {
                 }
             });
         sharing.panel.open &= open;
-        if let Some((id, params)) = command {
-            if let Err(error) = self.session.dispatch(id, &params) {
-                self.notice = Some(error.message);
-            } else if id == "share.start"
-                && let Some(relay) = params.get("relay").and_then(serde_json::Value::as_str)
-            {
-                // The relay someone shared through is the one they'll want next time.
-                let relay = relay.trim().to_owned();
-                if let Some(store) = &mut self.store {
-                    store.update(|settings| settings.share.relay = Some(relay.clone()));
-                }
-                if let Some(sharing) = &mut self.sharing {
-                    sharing.set_relay(Some(relay));
-                }
-            }
+        if let Some((id, params)) = command
+            && let Err(error) = self.session.dispatch(id, &params)
+        {
+            self.notice = Some(error.message);
         }
     }
 }

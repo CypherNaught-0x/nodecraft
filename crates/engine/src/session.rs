@@ -535,13 +535,13 @@ impl Session {
     /// Host boundary for joining a shared project (#698): replaces the document with `project`,
     /// the empty start a joiner takes the shared project in from ([`crate::collab::joining`]).
     /// It is untitled and unsaved, history starts fresh, and the change is published like an
-    /// open (`share.join`). Refused once this session has edits of its own: they'd be lost.
+    /// open (`share.adopt`, a synthetic lifecycle event id, not a registered command). Refused once this session has edits of its own: they'd be lost.
     pub fn adopt_joined(&mut self, project: Project) -> Result<(), Error> {
         self.settle_for_edit()?;
         if self.can_undo() || self.can_redo() {
             return Err(Error::new(ErrorKind::Conflict, "joining would discard this session's changes"));
         }
-        self.replace_untouched(Snapshot { project, assets: AssetStore::default(), epoch: 0 }, None, "share.join")
+        self.replace_untouched(Snapshot { project, assets: AssetStore::default(), epoch: 0 }, None, "share.adopt")
     }
     fn replace_untouched(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str) -> Result<(), Error> {
         snapshot.project.validate()?;

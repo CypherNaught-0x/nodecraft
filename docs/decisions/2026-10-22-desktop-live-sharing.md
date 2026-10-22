@@ -33,6 +33,16 @@ network: each frame it takes what came, settles the session and hands over what 
   1 s, doubling to at most 30 s, and the chip says *Reconnecting…*.
 - Each connection has a number. Frames the app made for an earlier connection are dropped, so
   the next connection always starts with its hello, which catches both sides up.
+- A quiet relay is pinged every 10 s. If nothing at all comes back for 30 s, the connection is
+  taken for lost, so a half-open socket (a laptop that slept, a NAT that forgot the mapping)
+  reconnects instead of showing *Live* while nothing moves.
+- Frames waiting for the app are capped at two frames' worth of bytes. Past that the thread
+  stops reading until the app catches up, and the app takes at most one frame's worth per
+  frame. Reading stops after 16 messages to send what is waiting, so a busy room never holds
+  this side's changes back.
+- A joining window is view-only until the shared project arrives, since anything made there
+  would be replaced. Sharing ends if another document replaces the shared one in its window,
+  even another copy of the same project.
 - Connection errors are described in words, never with the relay's address.
 
 **Joining opens a new window.** The app starts itself again with `--join` and writes the link to

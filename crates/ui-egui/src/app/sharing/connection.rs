@@ -4,7 +4,9 @@
 //! so nothing meant for a connection that has gone reaches the next before its hello.
 use std::io::ErrorKind as IoKind;
 use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
 use nodecraft_sync::MAX_FRAME_BYTES;
@@ -19,8 +21,30 @@ pub(super) const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a read waits before the thread looks for frames to send.
 const POLL: Duration = Duration::from_millis(15);
-/// Frames waiting for the app; the thread waits when they're all taken.
-const INBOX: usize = 256;
+/// Bytes of frames waiting for the app; past this the thread stops reading until the app catches
+/// up, so a flooding relay can't fill memory.
+const INBOX_BYTES: usize = 2 * MAX_FRAME_BYTES;
+/// Bytes the app takes from the inbox in one frame; the rest wait for the next.
+const TAKE_BYTES: usize = MAX_FRAME_BYTES;
+/// What a frame costs in the inbox beyond its bytes, so empty frames count too.
+const FRAME_COST: usize = 64;
+/// Messages read in one pass before the thread sends what is waiting, so a busy room never holds
+/// back this side's changes.
+const READ_BURST: usize = 16;
+
+/// How often the thread asks a quiet relay whether it is still there, and how long it waits for
+/// anything at all before it takes the connection for lost.
+#[derive(Clone, Copy)]
+pub(super) struct Keepalive {
+    pub(super) ping: Duration,
+    pub(super) silent: Duration,
+}
+
+impl Default for Keepalive {
+    fn default() -> Self {
+        Self { ping: Duration::from_secs(10), silent: Duration::from_secs(30) }
+    }
+}
 
 /// What the thread tells the app.
 #[derive(Debug, PartialEq)]
@@ -43,19 +67,29 @@ enum Out {
 pub(super) struct Connection {
     out: Sender<Out>,
     events: Receiver<Event>,
+    queued: Arc<AtomicUsize>,
+    wake: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl Connection {
     /// Connects to `relay` (a checked `ws://` address); `wake` asks for a frame when something
     /// comes in.
-    pub(super) fn open(relay: String, wake: impl Fn() + Send + 'static) -> Result<Self, Error> {
+    pub(super) fn open(relay: String, wake: impl Fn() + Send + Sync + 'static) -> Result<Self, Error> {
+        Self::open_with(relay, wake, Keepalive::default())
+    }
+
+    pub(super) fn open_with(relay: String, wake: impl Fn() + Send + Sync + 'static, keepalive: Keepalive) -> Result<Self, Error> {
         let (out, outbox) = channel();
-        let (inbox, events) = sync_channel(INBOX);
+        let (inbox, events) = channel();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+        let inbox = Inbox { events: inbox, queued: Arc::clone(&queued) };
+        let thread_wake = Arc::clone(&wake);
         std::thread::Builder::new()
             .name("nodecraft-share".into())
-            .spawn(move || run(&relay, &outbox, &inbox, &wake))
+            .spawn(move || run(&relay, &outbox, &inbox, &*thread_wake, keepalive))
             .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the sharing connection: {e}")))?;
-        Ok(Self { out, events })
+        Ok(Self { out, events, queued, wake })
     }
 
     /// Sends `frame` on connection `n`, if it is still the open one.
@@ -64,19 +98,51 @@ impl Connection {
         let _ = self.out.send(Out::Frame(n, frame));
     }
 
-    /// What came in since the last call.
+    /// What came in since the last call, up to [`TAKE_BYTES`] of frames; more asks for another
+    /// frame.
     pub(super) fn events(&self) -> Vec<Event> {
         let mut events = Vec::new();
-        while let Ok(event) = self.events.try_recv() {
+        let mut taken = 0usize;
+        while taken < TAKE_BYTES {
+            let Ok(event) = self.events.try_recv() else { return events };
+            let cost = cost(&event);
+            self.queued.fetch_sub(cost.min(self.queued.load(Ordering::Acquire)), Ordering::AcqRel);
+            taken = taken.saturating_add(cost);
             events.push(event);
         }
+        (self.wake)();
         events
+    }
+}
+
+fn cost(event: &Event) -> usize {
+    match event {
+        Event::Frame(bytes) => bytes.len().saturating_add(FRAME_COST),
+        _ => 0,
+    }
+}
+
+/// The thread's end of what goes to the app, counting the bytes waiting there.
+struct Inbox {
+    events: Sender<Event>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl Inbox {
+    /// Hands `event` to the app; `None` once the app has let go.
+    fn send(&self, event: Event) -> Option<()> {
+        self.queued.fetch_add(cost(&event), Ordering::AcqRel);
+        self.events.send(event).ok()
+    }
+
+    fn full(&self) -> bool {
+        self.queued.load(Ordering::Acquire) >= INBOX_BYTES
     }
 }
 
 type Socket = WebSocket<TcpStream>;
 
-fn run(relay: &str, outbox: &Receiver<Out>, inbox: &SyncSender<Event>, wake: &dyn Fn()) {
+fn run(relay: &str, outbox: &Receiver<Out>, inbox: &Inbox, wake: &dyn Fn(), keepalive: Keepalive) {
     let mut n = 0u64;
     let mut backoff = Duration::from_secs(1);
     loop {
@@ -86,11 +152,11 @@ fn run(relay: &str, outbox: &Receiver<Out>, inbox: &SyncSender<Event>, wake: &dy
                 backoff = Duration::from_secs(1);
                 // Frames for the connection before this one go nowhere.
                 while outbox.try_recv().is_ok() {}
-                if inbox.send(Event::Connected(n)).is_err() {
+                if inbox.send(Event::Connected(n)).is_none() {
                     return;
                 }
                 wake();
-                match carry(&mut socket, n, outbox, inbox, wake) {
+                match carry(&mut socket, n, outbox, inbox, wake, keepalive) {
                     Some(why) => why,
                     None => {
                         let _ = socket.close(None);
@@ -101,7 +167,7 @@ fn run(relay: &str, outbox: &Receiver<Out>, inbox: &SyncSender<Event>, wake: &dy
             }
             Err(why) => why,
         };
-        if inbox.send(Event::Dropped { why, retry: backoff }).is_err() {
+        if inbox.send(Event::Dropped { why, retry: backoff }).is_none() {
             return;
         }
         wake();
@@ -119,18 +185,36 @@ fn run(relay: &str, outbox: &Receiver<Out>, inbox: &SyncSender<Event>, wake: &dy
 }
 
 /// Moves frames both ways until the connection drops (`Some(why)`) or the app lets go (`None`).
-fn carry(socket: &mut Socket, n: u64, outbox: &Receiver<Out>, inbox: &SyncSender<Event>, wake: &dyn Fn()) -> Option<String> {
+fn carry(socket: &mut Socket, n: u64, outbox: &Receiver<Out>, inbox: &Inbox, wake: &dyn Fn(), keepalive: Keepalive) -> Option<String> {
+    let mut heard = Instant::now();
+    let mut pinged = Instant::now();
     loop {
-        loop {
-            match socket.read() {
-                Ok(Message::Binary(bytes)) => {
-                    inbox.send(Event::Frame(bytes.to_vec())).ok()?;
-                    wake();
+        if inbox.full() {
+            // The app is behind, not the relay: wait for it without reading.
+            heard = Instant::now();
+            std::thread::sleep(POLL);
+        } else {
+            for _ in 0..READ_BURST {
+                match socket.read() {
+                    Ok(Message::Binary(bytes)) => {
+                        heard = Instant::now();
+                        inbox.send(Event::Frame(bytes.to_vec()))?;
+                        wake();
+                    }
+                    Ok(Message::Close(_)) => return Some("the relay closed the connection".into()),
+                    Ok(_) => heard = Instant::now(),
+                    Err(tungstenite::Error::Io(e)) if matches!(e.kind(), IoKind::WouldBlock | IoKind::TimedOut) => break,
+                    Err(e) => return Some(said(&e)),
                 }
-                Ok(Message::Close(_)) => return Some("the relay closed the connection".into()),
-                Ok(_) => {}
-                Err(tungstenite::Error::Io(e)) if matches!(e.kind(), IoKind::WouldBlock | IoKind::TimedOut) => break,
-                Err(e) => return Some(said(&e)),
+            }
+        }
+        if heard.elapsed() >= keepalive.silent {
+            return Some("the relay stopped answering".into());
+        }
+        if pinged.elapsed() >= keepalive.ping {
+            pinged = Instant::now();
+            if let Err(e) = socket.send(Message::Ping(Default::default())) {
+                return Some(said(&e));
             }
         }
         loop {
@@ -165,12 +249,14 @@ fn connect(relay: &str) -> Result<Socket, String> {
                 let _ = stream.set_nodelay(true);
                 stream.set_read_timeout(Some(CONNECT_TIMEOUT)).map_err(|e| e.to_string())?;
                 stream.set_write_timeout(Some(CONNECT_TIMEOUT)).map_err(|e| e.to_string())?;
-                let (socket, _) = tungstenite::client::client_with_config(request, stream, Some(config())).map_err(|e| match e {
-                    tungstenite::HandshakeError::Failure(e) => said(&e),
-                    tungstenite::HandshakeError::Interrupted(_) => "the relay didn't answer in time".to_string(),
-                })?;
-                socket.get_ref().set_read_timeout(Some(POLL)).map_err(|e| e.to_string())?;
-                return Ok(socket);
+                match tungstenite::client::client_with_config(request.clone(), stream, Some(config())) {
+                    Ok((socket, _)) => {
+                        socket.get_ref().set_read_timeout(Some(POLL)).map_err(|e| e.to_string())?;
+                        return Ok(socket);
+                    }
+                    Err(tungstenite::HandshakeError::Failure(e)) => last = said(&e),
+                    Err(tungstenite::HandshakeError::Interrupted(_)) => last = "the relay didn't answer in time".to_string(),
+                }
             }
             Err(e) => last = io_said(&e),
         }
@@ -253,6 +339,25 @@ mod tests {
         connection.send(1, vec![8]);
         connection.send(2, vec![9]);
         events.until(|e| *e == Event::Frame(vec![1, 9]));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_relay_that_stops_answering_is_dropped_and_retried() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let relay = format!("ws://{}/", listener.local_addr().unwrap());
+        // Accepts and then never reads again, so pings go unanswered, as on a half-open socket.
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let socket = tungstenite::accept(stream).unwrap();
+            std::thread::sleep(Duration::from_secs(2));
+            drop(socket);
+        });
+        let keepalive = Keepalive { ping: Duration::from_millis(100), silent: Duration::from_millis(400) };
+        let connection = Connection::open_with(relay, || {}, keepalive).unwrap();
+        let seen = Events(&connection, Default::default()).until(|e| matches!(e, Event::Dropped { .. }));
+        assert_eq!(seen.first(), Some(&Event::Connected(1)));
+        assert!(matches!(seen.last(), Some(Event::Dropped { why, .. }) if why == "the relay stopped answering"), "{seen:?}");
         server.join().unwrap();
     }
 
