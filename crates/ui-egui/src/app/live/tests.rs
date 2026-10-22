@@ -1,5 +1,5 @@
 use super::*;
-use egui_kittest::Harness;
+use egui_kittest::{Harness, kittest::Queryable};
 use nodecraft_types::Value;
 use serde_json::json;
 
@@ -31,16 +31,23 @@ fn output(app: &NodeCraftApp) -> Option<String> {
     }
 }
 
-/// Runs frames until `done` or a few seconds pass (the work is on another thread).
+/// Runs frames until `done` and no round is running, for at most 30 seconds (the work is on
+/// another thread).
 fn settle(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraftApp) -> bool) {
-    for _ in 0..400 {
+    assert!(until(h, |app| done(app) && app.live.running.is_none()), "live recompute didn't settle");
+}
+
+/// Runs frames until `done`, for at most 30 seconds; whether it got there.
+fn until(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraftApp) -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
         h.step();
-        if done(h.state()) && h.state().live.running.is_none() {
-            return;
+        if done(h.state()) {
+            return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    panic!("live recompute didn't settle");
+    false
 }
 
 #[test]
@@ -157,4 +164,131 @@ fn closing_waits_for_a_recompute_still_running() {
     live.worker = Some(worker);
     drop(live);
     assert!(done.load(std::sync::atomic::Ordering::SeqCst), "the app closed before its worker finished");
+}
+
+const SOURCE: NodeId = NodeId::from_bytes([80; 16]);
+const BLUR: NodeId = NodeId::from_bytes([81; 16]);
+
+/// A large image feeding a Blur, with the blur's first result recorded.
+fn blurring() -> Harness<'static, NodeCraftApp> {
+    blurring_in(Harness::builder())
+}
+
+fn blurring_in(builder: egui_kittest::HarnessBuilder<NodeCraftApp>) -> Harness<'static, NodeCraftApp> {
+    let mut app = NodeCraftApp::headless().unwrap();
+    let canvas = app.canvas;
+    let pixels: Vec<u8> = (0..800u32 * 500).flat_map(|i| [(i % 251) as u8, 80, 160, 255]).collect();
+    let png = nodecraft_media::encode_png(800, 500, &pixels, &nodecraft_media::Limits::default()).unwrap();
+    let hash = app.session.import_asset(&png).unwrap();
+    let asset = nodecraft_types::AssetRef { hash, mime: "image/png".parse().unwrap(), meta: Default::default() };
+    for (id, kind, x) in [(SOURCE, "source.image", -900), (BLUR, "image.blur", -450)] {
+        app.session.dispatch("node.create", &json!({"canvas": canvas, "id": id, "kind": kind, "pos": {"x": x, "y": -200}})).unwrap();
+    }
+    app.session.dispatch("node.param_set", &json!({"canvas": canvas, "id": SOURCE, "name": "asset", "value": Value::Media(asset)})).unwrap();
+    let edge = nodecraft_types::EdgeId::from_bytes([82; 16]);
+    app.session
+        .dispatch(
+            "edge.connect",
+            &json!({"canvas": canvas, "edge": {"id": edge, "from": {"node": SOURCE, "port": "out"}, "to": {"node": BLUR, "port": "image"}, "order": 0}}),
+        )
+        .unwrap();
+    let mut h = builder.with_size(egui::Vec2::new(1400.0, 900.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    settle(&mut h, |app| blurred(app).is_some());
+    h
+}
+
+fn blurred(app: &NodeCraftApp) -> Option<nodecraft_types::Blake3> {
+    let node = app.session.document().canvases().get(&app.canvas)?.nodes().get(&BLUR)?;
+    match node.history.iter().find(|g| Some(g.id) == node.active)?.outputs.first()? {
+        Value::Media(asset) => Some(asset.hash),
+        _ => None,
+    }
+}
+
+/// The image the preview shows for the blur, and its width.
+fn previewed(app: &NodeCraftApp) -> Option<(nodecraft_types::Blake3, Option<u32>)> {
+    match app.live.preview(app.canvas, BLUR)?.0.outputs.first()? {
+        Value::Media(asset) => Some((asset.hash, asset.meta.width)),
+        _ => None,
+    }
+}
+
+#[test]
+fn dragging_a_slider_previews_small_and_releasing_records_the_full_render() {
+    let mut h = blurring();
+    let (first, revision) = (blurred(h.state()).unwrap(), h.state().session.revision());
+    let rect = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Strength").rect();
+    let from = rect.center();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + egui::Vec2::new(8.0, 0.0));
+    // Frames run while the drag holds, until the preview lands.
+    until(&mut h, |app| previewed(app).is_some() && app.live.running.is_none());
+    let (shown, width) = previewed(h.state()).expect("the dragged blur shows a preview");
+    assert_eq!(width, Some(512), "made from the scaled-down image");
+    assert_ne!(shown, first);
+    assert!(h.state().session.assets().get(&shown).is_none(), "the preview isn't in the project");
+    assert_eq!((blurred(h.state()), h.state().session.revision()), (Some(first), revision), "nothing recorded while it drags");
+    // Release: the value is recorded, and the full-size render replaces the preview.
+    h.drop_at(from + egui::Vec2::new(8.0, 0.0));
+    settle(&mut h, |app| blurred(app).is_some_and(|now| now != first));
+    assert!(previewed(h.state()).is_none(), "the preview is gone");
+    let node = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&BLUR).unwrap();
+    let Some(Value::Media(asset)) = node.history.iter().find(|g| Some(g.id) == node.active).and_then(|g| g.outputs.first()) else { panic!("a result") };
+    assert_eq!(asset.meta.width, Some(800), "full size");
+    // One undo takes the value and its result back together.
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(blurred(h.state()), Some(first));
+}
+
+#[test]
+fn an_edit_from_elsewhere_during_a_drag_replaces_its_preview() {
+    let mut h = blurring();
+    let first = blurred(h.state()).unwrap();
+    let rect = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Strength").rect();
+    let from = rect.center();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + egui::Vec2::new(8.0, 0.0));
+    until(&mut h, |app| previewed(app).is_some() && app.live.running.is_none());
+    assert!(previewed(h.state()).is_some());
+    // An agent sets the strength: its round is recorded, and the drag, still held, previews
+    // again from the document as it is now.
+    let canvas = h.state().canvas;
+    let value = Value::Number(nodecraft_types::Number::new(1.0).unwrap());
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas": canvas, "id": BLUR, "name": "sigma", "value": value})).unwrap();
+    let current = |app: &NodeCraftApp| app.live.preview.as_ref().is_some_and(|preview| preview.base == app.session.revision());
+    settle(&mut h, |app| blurred(app).is_some_and(|now| now != first) && current(app));
+    let revision = h.state().session.revision();
+    h.drop_at(from + egui::Vec2::new(8.0, 0.0));
+    settle(&mut h, |app| app.session.revision() != revision && previewed(app).is_none());
+}
+
+/// PR evidence: the card before a drag, while it drags (the preview) and after release.
+#[test]
+#[ignore = "manual public-safe PR evidence"]
+fn drag88_visual() {
+    let folder = std::path::PathBuf::from(std::env::var_os("LIVE88_RENDER_DIR").unwrap());
+    std::fs::create_dir_all(&folder).unwrap();
+    let mut h = blurring_in(Harness::builder().wgpu());
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    let shoot = |h: &mut Harness<'static, NodeCraftApp>, name: &str| {
+        for _ in 0..40 {
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        h.render().unwrap().save(folder.join(name)).unwrap();
+    };
+    shoot(&mut h, "1-before.png");
+    let from = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Strength").rect().center();
+    h.drag_at(from);
+    h.run();
+    h.hover_at(from + egui::Vec2::new(20.0, 0.0));
+    until(&mut h, |app| previewed(app).is_some() && app.live.running.is_none());
+    shoot(&mut h, "2-dragging.png");
+    h.drop_at(from + egui::Vec2::new(20.0, 0.0));
+    settle(&mut h, |app| previewed(app).is_none());
+    shoot(&mut h, "3-released.png");
 }

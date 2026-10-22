@@ -860,6 +860,11 @@ impl EditorState {
     pub(crate) fn begin_empty(&mut self, name: &str) {
         self.text.insert(name.to_owned(), Draft { original: String::new(), text: String::new(), focus: true, was_focused: false });
     }
+    /// The slider being dragged on this card, and the value it is at (#88): shown as a preview
+    /// until it is released and recorded.
+    pub(crate) fn dragging(&self) -> Option<(&str, f64)> {
+        self.sliders.iter().next().map(|(name, draft)| (name.as_str(), draft.value))
+    }
     pub(crate) fn error(&self) -> Option<&str> {
         self.error.as_ref().map(|(_, message)| message.as_str())
     }

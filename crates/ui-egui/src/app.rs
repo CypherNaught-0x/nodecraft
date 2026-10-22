@@ -345,7 +345,6 @@ mod layer_editor;
 mod layer_fonts;
 mod layout;
 mod library_view;
-#[cfg(not(target_arch = "wasm32"))]
 mod live;
 mod mask_badges;
 mod mask_editor;
@@ -441,7 +440,6 @@ pub struct NodeCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     recovery: Option<recovery::RecoveryOffer>,
     /// Live recompute of action nodes (#88).
-    #[cfg(not(target_arch = "wasm32"))]
     live: live::Live,
     /// Recovered work's kept journal, removed once that work is saved (#408).
     #[cfg(not(target_arch = "wasm32"))]
@@ -894,7 +892,6 @@ impl NodeCraftApp {
             palette: None,
             #[cfg(not(target_arch = "wasm32"))]
             recovery: None,
-            #[cfg(not(target_arch = "wasm32"))]
             live: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             recovered: None,
@@ -1021,6 +1018,9 @@ impl NodeCraftApp {
                 self.live_recompute(ui.ctx());
             }
         }
+        // The browser has no recovery question to wait for.
+        #[cfg(target_arch = "wasm32")]
+        self.live_recompute(ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         let file_owns_input = self.file_dialog_frame(ui.ctx());
         #[cfg(target_arch = "wasm32")]
@@ -1413,20 +1413,25 @@ impl NodeCraftApp {
                 }
                 // Only cards on screen at a readable zoom ask for their image (#386).
                 let images = if self.view.zoom >= card::BODY_MIN_ZOOM {
-                    let (rows, count) = match node.params.get("asset") {
+                    // A slider dragging shows its preview's images, from the preview's own store (#88).
+                    let preview = self.live.preview(self.canvas, node.id);
+                    let (rows, count) = match (node.params.get("asset"), preview) {
+                        (_, Some((result, _))) => nodecraft_engine::split::result_rows(result),
                         // A PDF source shows its first page (#113).
-                        Some(nodecraft_types::Value::Media(pdf)) if node.kind == nodecraft_nodes::document::SOURCE => (vec![vec![pdf]], 1),
+                        (Some(nodecraft_types::Value::Media(pdf)), None) if node.kind == nodecraft_nodes::document::SOURCE => (vec![vec![pdf]], 1),
                         _ => nodecraft_engine::split::image_rows(node),
                     };
                     // A tile's edge: the card's width shared by the widest row (#519).
                     let columns = rows.iter().map(Vec::len).max().unwrap_or(1).max(1) as f32;
                     let edge = t.card_width / columns * self.view.zoom * ui.ctx().pixels_per_point();
-                    let assets = self.session.assets();
+                    let assets = preview.map_or(self.session.assets(), |(_, staged)| staged);
                     let previews = &mut self.previews;
                     let rows = rows
                         .iter()
                         .map(|row| row.iter().map(|asset| previews.request_asset(ui.ctx(), asset.hash, edge, || assets.preview_read(asset))).collect())
                         .collect();
+                    // Each step of a drag makes new images: the last ones stay until these decode.
+                    let rows = if preview.is_some() { self.live.steady(node.id, rows) } else { rows };
                     (rows, count)
                 } else {
                     (Vec::new(), 0)
