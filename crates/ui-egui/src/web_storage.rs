@@ -31,6 +31,9 @@ impl OriginStorage for LocalStorage {
     fn keys(&self) -> Result<Vec<String>, SecretError> {
         let storage = storage()?;
         let len = storage.length().map_err(|_| SecretError::Failed("the browser couldn't read its storage".into()))?;
+        if len > MAX_ENTRIES {
+            log::warn!("this site's browser storage has {len} entries; only the first {MAX_ENTRIES} are checked for keys");
+        }
         Ok((0..len.min(MAX_ENTRIES)).filter_map(|i| storage.key(i).ok().flatten()).collect())
     }
 }

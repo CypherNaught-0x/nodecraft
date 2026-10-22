@@ -100,8 +100,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   OpenAI, OpenRouter, Ollama, LM Studio) and model are set in `[agent]` in the settings file; there
   is no settings screen for them yet, and the browser build has no agent.
 - **The browser build is a bare preview.** `apps/nodecraft-web` runs the canvas in a browser and
-  releases ship it as `nodecraft-web-<v>.zip` (#99), but no browser host provides project storage,
-  keys or runs yet. Files dropped in a browser are read asynchronously and added as nodes (#319);
+  releases ship it as `nodecraft-web-<v>.zip` (#99). Provider keys are kept in the browser's
+  storage for the site (#118), but nothing in the browser uses them yet: there is no browser
+  project storage or runs. Files dropped in a browser are read asynchronously and added as nodes (#319);
   pasting a copied image works in the desktop app only.
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
   and ffprobe set under `[media]` in settings; it neither finds them on `PATH` nor bundles them

@@ -8,7 +8,8 @@
 //! A typed key is cleared from the field as soon as it is sent.
 //!
 //! Accounts are listed from settings (`[keys] accounts`) and never read at startup, since each
-//! keychain read can show a prompt; "Check" reads one on request.
+//! keychain read can show a prompt; "Check" reads one on request. The browser build also lists
+//! the accounts it finds in the site's storage at startup (names only; no key is read).
 
 use std::collections::BTreeMap;
 
