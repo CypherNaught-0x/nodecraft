@@ -118,8 +118,13 @@ impl Runner {
         loop {
             for notice in self.host.pump(session) {
                 match notice {
-                    // Only placing a held result by hand raises `Placed`.
-                    RunNotice::Started { .. } | RunNotice::Unsaved { .. } | RunNotice::Placed { .. } => {}
+                    // Only placing a held result by hand raises `Placed`; nothing here asks for
+                    // estimates.
+                    RunNotice::Started { .. }
+                    | RunNotice::Unsaved { .. }
+                    | RunNotice::Placed { .. }
+                    | RunNotice::Estimated { .. }
+                    | RunNotice::NotEstimated { .. } => {}
                     RunNotice::Recorded { node, .. } => steps.push(json!({"node": node, "status": "recorded"})),
                     RunNotice::Failed { node, reason, .. } => steps.push(json!({"node": node, "status": "failed", "reason": reason})),
                     RunNotice::Cancelled { node, .. } => steps.push(json!({"node": node, "status": "cancelled"})),

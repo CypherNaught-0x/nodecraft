@@ -238,7 +238,7 @@ fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -
     // no project/plan serialization, recursive walk or large temporary JSON allocation.
     let bytes = b"nodecraft.run.quote.v3"
         .len()
-        .checked_add(32 + 8 + 8 + 16 + 16 + 32 + 32 + 1 + 8 + if matches!(mode, RunMode::Field(_)) { 16 } else { 0 })
+        .checked_add(32 + 8 + 8 + 16 + 16 + 32 + 32 + 8 + 1 + 8 + if matches!(mode, RunMode::Field(_)) { 16 } else { 0 })
         .and_then(|n| requested.len().checked_mul(16).and_then(|ids| n.checked_add(ids)))
         .ok_or_else(|| invalid("run quote binding exceeds its byte budget"))?;
     if bytes > limit {
@@ -252,6 +252,8 @@ fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -
     hash.update(p.canvas.as_bytes());
     hash.update(&catalog.0.nonce);
     c.routing.bind(&mut hash);
+    // A quote a provider gave since (#663) can price the run differently.
+    crate::provider_quotes::bind(c.resources, &mut hash);
     let (tag, field) = match mode {
         RunMode::Selected => (0, None),
         RunMode::WithUpstream => (1, None),
@@ -342,14 +344,14 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
             // Admission diagnostics never copy native hook messages, node titles or
             // unknown model values into a report. One hundred fixed UUID/code records.
             let reasons = blocked_reasons(&blockers);
-            let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": []});
+            let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": []});
             return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
         }
     };
     let canvas = &*expanded.canvas;
     crate::generation_catalog::validate_plan(resources, kinds, canvas, run_plan.steps.iter().map(|s| s.node))?;
     let scratch_headroom = request_scratch(p)?;
-    let priced = match nodecraft_exec::admission::quote_with_scratch(
+    let mut priced = match nodecraft_exec::admission::quote_with_scratch(
         &run_plan,
         canvas,
         kinds,
@@ -360,7 +362,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         Err(error) => {
             let reason = admission_reason(&error);
             return Ok(Priced {
-                response: json!({"token":token,"blocked":[reason],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[],"resumable":[]}),
+                response: json!({"token":token,"blocked":[reason],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[],"resumable":[],"quoted":[]}),
                 totals: BTreeMap::new(),
                 complete: false,
                 allowed: false,
@@ -368,6 +370,9 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
             });
         }
     };
+    // Prices providers quoted (#663) count against budgets like catalog prices.
+    let found = crate::provider_quotes::found(&run_plan, resources, c.routing.nonce)?;
+    let quoted = crate::provider_quotes::apply(&mut priced, &found)?;
     let admission = check(&priced, &budget.budgets, &budget.spent)?;
     let totals: BTreeMap<String, u64> = priced.totals.iter().map(|(currency, m)| (String::from(*currency), m.micros)).collect();
     let mut totals_json = Map::new();
@@ -379,6 +384,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     let estimated = owned(&mut priced.estimated());
     let resumable = owned(&mut run_plan.resumable(canvas));
     let provisional = owned(&mut admission.provisional.iter().copied());
+    let quoted = owned(&mut quoted.into_iter());
     let response = json!({
         "steps": priced.steps.iter().take(MAX_LISTED).map(|step| step_json(step, expanded.owner(step.node))).collect::<Vec<_>>(),
         "steps_total": priced.steps.len(),
@@ -389,6 +395,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         "provisional": provisional,
         "estimated": estimated,
         "resumable": resumable,
+        "quoted": quoted,
         "token": token,
     });
     Ok(Priced { response, totals, complete: priced.is_complete(), allowed: admission.allowed(), token })
@@ -583,7 +590,9 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let mut limits = nodecraft_exec::admission::AdmissionLimits::default();
     let temporary = nodecraft_exec::admission::measure::add(metadata, request_scratch(&run)?)?;
     limits.scratch_bytes = limits.scratch_bytes.checked_sub(temporary).ok_or_else(|| invalid("run request metadata exceeds scratch limit"))?;
-    let (mut admitted, quote) = nodecraft_exec::admission::admit_run_with_targets(
+    // Read before admission takes the plan; applied to the admitted quote below.
+    let found = crate::provider_quotes::found(&plan, c.resources, c.routing.nonce)?;
+    let (mut admitted, mut quote) = nodecraft_exec::admission::admit_run_with_targets(
         plan,
         run.canvas,
         expanded.canvas.into_owned(),
@@ -593,6 +602,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         c.routing.routing.targets(),
     )
     .map_err(|error| Error::new(error.kind, admission_reason(&error)))?;
+    crate::provider_quotes::apply(&mut quote, &found)?;
     // Parsed request ownership is transferred, never cloned. Reserve all extra metadata
     // before Box/PreparedRun retention; quote ownership was pre-admitted inside exec.
     admitted.reserve_metadata(metadata)?;
@@ -779,10 +789,11 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: quote_schema,
-            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, blocked?, token}. `nodes` is used by selected and with_upstream. `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. Read-only.",
+            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, blocked?, token}. `nodes` is used by selected and with_upstream. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. Read-only.",
             enabled: enabled_quote,
             run: run_quote,
         },
+        estimate::spec(),
         CommandSpec {
             id: "run.start",
             label: "Run",
@@ -815,6 +826,10 @@ pub fn specs() -> Vec<CommandSpec> {
         },
     ]
 }
+
+mod estimate;
+pub(crate) use estimate::jobs as estimate_jobs;
+pub use estimate::{EstimateJob, Estimating};
 
 #[cfg(test)]
 mod tests;

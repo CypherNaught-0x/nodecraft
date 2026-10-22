@@ -639,7 +639,7 @@ fn binding_byte_budget_and_entropy_failures_are_explicit() {
     let c = s.context(crate::commands::Phase::Preview);
     let p: RunParams = params(&request(&[2])).unwrap();
     let catalog = c.resources.require::<RunCatalog>().unwrap();
-    let exact = b"nodecraft.run.quote.v3".len() + 32 + 8 + 8 + 16 + 16 + 32 + 32 + 1 + 8 + 16;
+    let exact = b"nodecraft.run.quote.v3".len() + 32 + 8 + 8 + 16 + 16 + 32 + 32 + 8 + 1 + 8 + 16;
     assert!(binding(&c, catalog, &p, exact).is_ok());
     assert!(binding(&c, catalog, &p, exact - 1).is_err());
     crate::execution_identity::without_entropy(|| {

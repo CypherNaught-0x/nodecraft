@@ -75,6 +75,8 @@ struct State {
     cancel_refused: u32,
     polls: u64,
     scripted: BTreeMap<String, scripts::Progress>,
+    /// Every job asked for a quote, in order.
+    quoted: Vec<ProviderJob>,
 }
 
 /// See the module docs.
@@ -85,13 +87,23 @@ pub struct MockProvider {
     scripts: Arc<scripts::Scripts>,
     /// Pieces a model streams before its answer, when the runner asks for streamed text.
     streams: Arc<BTreeMap<String, Vec<String>>>,
+    /// What a model quotes before it runs (#663): a price, or the kind of error the quote fails
+    /// with. A model without one can't quote.
+    quotes: Arc<BTreeMap<String, Result<Money, ErrorKind>>>,
     state: Arc<Mutex<State>>,
 }
 
 impl MockProvider {
     /// A mock provider called `id` with `models` (model id → behaviour).
     pub fn new(id: impl Into<String>, models: impl IntoIterator<Item = (String, MockModel)>) -> Self {
-        Self { id: id.into(), models: Arc::new(models.into_iter().collect()), scripts: Arc::default(), streams: Arc::default(), state: Arc::default() }
+        Self {
+            id: id.into(),
+            models: Arc::new(models.into_iter().collect()),
+            scripts: Arc::default(),
+            streams: Arc::default(),
+            quotes: Arc::default(),
+            state: Arc::default(),
+        }
     }
 
     /// The default mock provider (`mock`): `mock-text` and `mock-image`, `mock-video`,
@@ -116,6 +128,18 @@ impl MockProvider {
     pub fn with_stream(mut self, model: impl Into<String>, pieces: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Arc::make_mut(&mut self.streams).insert(model.into(), pieces.into_iter().map(Into::into).collect());
         self
+    }
+
+    /// Makes `model` quote `price` before it runs, or fail its quote with the error kind.
+    #[must_use]
+    pub fn with_quote(mut self, model: impl Into<String>, price: Result<Money, ErrorKind>) -> Self {
+        Arc::make_mut(&mut self.quotes).insert(model.into(), price);
+        self
+    }
+
+    /// Every job asked for a quote, in order. Quotes are free: they never bill.
+    pub fn quoted(&self) -> Vec<ProviderJob> {
+        self.lock().quoted.clone()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -234,6 +258,16 @@ impl Provider for MockProvider {
             }
             self.submit(job).await
         })
+    }
+
+    fn quote<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Money, ProviderError>> {
+        self.lock().quoted.push(job.clone());
+        let quote = match self.quotes.get(&job.model) {
+            Some(Ok(price)) => Ok(*price),
+            Some(Err(kind)) => Err(ProviderError::new(*kind, "mock quote failed")),
+            None => Err(ProviderError::new(ErrorKind::UnsupportedInput, "this provider can't quote a job before it runs")),
+        };
+        Box::pin(async move { quote })
     }
 
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {

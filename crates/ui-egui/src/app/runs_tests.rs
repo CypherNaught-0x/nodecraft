@@ -51,6 +51,20 @@ output = "image"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
 
 [[model]]
+id = "mock-metered"
+provider = "mock"
+provider_model = "mock-image"
+label = "Mock metered image"
+description = "Public deterministic test fixture"
+quality = 1
+latency_s = 0
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model]]
 id = "other-writer"
 provider = "other"
 provider_model = "other-text"
@@ -173,6 +187,55 @@ fn generate_sets_up_the_provider_first_then_quotes_and_records_the_run() {
     frames_until(&mut h, |app| idle(app) && !node(app).history.is_empty());
     assert_eq!(mock.requests().len(), 1, "one accepted run, one request");
     assert!(h.query_by_label("Run failed").is_none(), "notice: {:?}", h.state().notice);
+}
+
+/// The scene, its card on the by-usage model, which its provider quotes at 0.3 USD.
+fn metered() -> (Harness<'static, NodeCraftApp>, MockProvider) {
+    let price = nodecraft_types::Money { currency: nodecraft_types::Currency::USD, micros: 300_000 };
+    let mock = image(MockModel::new(MockOutput::Image)).with_quote("mock-image", Ok(price));
+    let mut h = scene(making(mock.clone()));
+    let session = &mut h.state_mut().session;
+    let preview = session.dispatch("node.model_preview", &json!({"canvas": C, "nodes": [N], "model": "mock-metered"})).unwrap();
+    let revision = session.revision();
+    let set = json!({"canvas": C, "nodes": [N], "model": "mock-metered", "expected_revision": revision, "preview_binding": preview["binding"]});
+    session.dispatch("node.set_model", &set).unwrap();
+    h.run();
+    (h, mock)
+}
+
+#[test]
+fn a_by_usage_card_is_priced_by_its_providers_quote_before_it_runs() {
+    let (mut h, mock) = metered();
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.as_ref().is_some_and(|confirm| !confirm.estimating()));
+    assert_eq!(mock.quoted().len(), 1, "the provider was asked once");
+    assert!(mock.requests().is_empty(), "asking for a price sends nothing");
+    // The dialog grew with the provider's price: let it settle where it is shown.
+    h.run();
+    h.run();
+    h.get_by_label_contains("priced by their provider's quote");
+    let label = h.get_by_label_contains("Generate for").accesskit_node().label().unwrap_or_default();
+    assert!(label.ends_with("for 0.3 USD"), "the quoted price is the whole price: {label}");
+    accept(&mut h);
+    frames_until(&mut h, |app| idle(app) && !node(app).history.is_empty());
+    assert_eq!(mock.requests().len(), 1);
+}
+
+#[test]
+fn a_budget_refusing_an_unknown_price_is_checked_again_with_the_providers_quote() {
+    let (mut h, mock) = metered();
+    let usd = |micros| nodecraft_types::Money { currency: nodecraft_types::Currency::USD, micros };
+    let budgets = nodecraft_exec::cost::Budgets { session: Some(usd(1_000_000)), ..Default::default() };
+    h.state_mut().session.swap_resource(Some(nodecraft_engine::run_cmds::BudgetState { budgets, spent: Default::default() }));
+    let request = json!({"canvas": C, "mode": "selected", "nodes": [N]});
+    assert_eq!(h.state_mut().session.dispatch("run.quote", &request).unwrap()["allowed"], false, "a capped session refuses an unknown price");
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.as_ref().is_some_and(|confirm| !confirm.estimating()));
+    assert_eq!(mock.quoted().len(), 1, "the provider is asked even though the run couldn't start yet");
+    h.run();
+    h.run();
+    let label = h.get_by_label_contains("Generate for").accesskit_node().label().unwrap_or_default();
+    assert!(label.ends_with("for 0.3 USD"), "the quoted price is within the cap: {label}");
 }
 
 #[test]

@@ -116,6 +116,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "comment.remove",
     "keys.status",
     "run.quote",
+    // Free, and refused by a host that can't ask (the CLI's).
+    "run.estimate",
     "run.start",
     "run.held",
     "run.held_retry",

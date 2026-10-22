@@ -316,6 +316,26 @@ impl Session {
     ) -> Result<(crate::run_cmds::AuthorizedRun, nodecraft_exec::run::Progress), Error> {
         guard(|| crate::run_cmds::authorize(&self.context(Phase::Dispatch), prepared, options))
     }
+    /// The by-usage jobs `run.estimate` asked about (#663), built for the run host to quote.
+    pub fn provider_estimates(&self, request: &Value) -> Result<crate::run_cmds::Estimating, Error> {
+        guard(|| crate::run_cmds::estimate_jobs(&self.context(Phase::Dispatch), request))
+    }
+    /// Keeps quotes providers gave, asked under `routing` and answered at `at_ms` on the host's
+    /// clock (see [`crate::provider_quotes`]).
+    pub fn keep_provider_quotes(&mut self, routing: Option<[u8; 32]>, at_ms: u64, answers: Vec<(crate::provider_quotes::QuoteKey, nodecraft_types::Money)>) {
+        let mut quotes = self.swap_resource::<crate::provider_quotes::ProviderQuotes>(None).unwrap_or_default();
+        quotes.keep(routing, at_ms, answers);
+        self.swap_resource(Some(quotes));
+    }
+    /// Drops the provider quotes answered before `before_ms`, so a run is quoted again.
+    pub fn expire_provider_quotes(&mut self, before_ms: u64) {
+        if !self.resources.get::<crate::provider_quotes::ProviderQuotes>().is_some_and(|quotes| quotes.has_expired(before_ms)) {
+            return;
+        }
+        let Some(mut quotes) = self.swap_resource::<crate::provider_quotes::ProviderQuotes>(None) else { return };
+        quotes.expire(before_ms);
+        self.swap_resource(Some(quotes));
+    }
     pub fn with_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage>) -> Result<Self, Error> {
         Self::with_store(snapshot, crate::persistence::Store::Local(storage))
     }
