@@ -39,10 +39,9 @@ fn session() -> Session {
 
 /// Live rounds until nothing is pending; how many rounds ran.
 fn settle(s: &mut Session) -> usize {
-    let kinds = Registry::builtins().unwrap();
     let mut rounds = 0;
     while let Some(job) = pending(s, CANVAS, &BTreeMap::new()).unwrap() {
-        let outcome = compute(job, &kinds).unwrap();
+        let outcome = compute(job).unwrap();
         assert!(apply(s, outcome).unwrap(), "the round recorded");
         rounds += 1;
         assert!(rounds < 10);

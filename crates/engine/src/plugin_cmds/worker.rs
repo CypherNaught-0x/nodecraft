@@ -31,6 +31,24 @@ struct State {
     stopped: bool,
 }
 
+/// What the store may run, as last published, and how often it has changed (#173).
+#[derive(Default)]
+struct Published {
+    changes: u64,
+    plugins: crate::plugin_runtime::PluginSnapshot,
+}
+
+/// Publishes what `store` may run now, if that changed.
+fn publish<B: StoreBackend>(published: &Mutex<Published>, store: &Store<B>) {
+    let next = crate::plugin_runtime::PluginSnapshot::of(store);
+    // Only snapshots are stored under this lock, so a poisoned one still holds a whole one.
+    let mut published = published.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !published.plugins.same(&next) {
+        published.changes = published.changes.saturating_add(1);
+        published.plugins = next;
+    }
+}
+
 fn stopped() -> Error {
     Error::new(ErrorKind::Internal, "the plugin worker stopped; inspect the store before retrying an operation")
 }
@@ -118,6 +136,7 @@ fn try_lock(shared: &Mutex<State>) -> Result<MutexGuard<'_, State>, Error> {
 pub struct PluginWorker {
     jobs: SyncSender<Job>,
     state: Arc<Mutex<State>>,
+    published: Arc<Mutex<Published>>,
     prefix: String,
     next: AtomicU64,
 }
@@ -143,13 +162,35 @@ impl PluginWorker {
         let mut slots = Vec::new();
         slots.try_reserve_exact(MAX_PENDING).map_err(|_| Error::new(ErrorKind::Internal, "plugin result slots can't be reserved"))?;
         let state = Arc::new(Mutex::new(State { slots, stopped: false }));
-        let (jobs, inbox) = sync_channel::<Job>(MAX_PENDING);
+        // One more for a refresh, which takes no slot.
+        let (jobs, inbox) = sync_channel::<Job>(MAX_PENDING.saturating_add(1));
         let shared = Arc::clone(&state);
+        let published = Arc::new(Mutex::new(Published::default()));
+        let publishing = Arc::clone(&published);
         std::thread::Builder::new()
             .name("nodecraft-plugins".into())
             .spawn(move || {
                 let mut store = None;
                 for job in inbox {
+                    if job.id.is_empty() {
+                        if lock(&shared).stopped {
+                            break;
+                        }
+                        let refreshed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if store.is_none() {
+                                store = Some(factory()?);
+                            }
+                            let store = store.as_mut().ok_or_else(stopped)?;
+                            store.refresh()?;
+                            publish(&publishing, store);
+                            Ok::<(), Error>(())
+                        }));
+                        if refreshed.is_err() {
+                            lock(&shared).stop();
+                            break;
+                        }
+                        continue;
+                    }
                     {
                         let mut state = lock(&shared);
                         if state.stopped {
@@ -166,7 +207,10 @@ impl PluginWorker {
                             store = Some(factory()?);
                         }
                         let store = store.as_mut().ok_or_else(stopped)?;
-                        handle(store, &host, &job.request)
+                        let result = handle(store, &host, &job.request);
+                        // Whatever the request did, what may run is published from the store.
+                        publish(&publishing, store);
+                        result
                     }));
                     match result {
                         Ok(result) => {
@@ -190,7 +234,7 @@ impl PluginWorker {
                 }
             })
             .map_err(|_| Error::new(ErrorKind::Unsupported, "the plugin worker can't be started"))?;
-        Ok(Arc::new(Self { jobs, state, prefix, next: AtomicU64::new(1) }))
+        Ok(Arc::new(Self { jobs, state, published, prefix, next: AtomicU64::new(1) }))
     }
 
     /// Accepts one bounded, owned request, or refuses without accepting a package operation.
@@ -232,6 +276,23 @@ impl PluginWorker {
             },
         }
     }
+    /// Asks the worker to read the store again and publish what may run; one already asked for
+    /// is enough; whether it was asked (the queue may be full). Never performs package I/O here.
+    pub fn refresh(&self) -> bool {
+        self.jobs.try_send(Job { id: String::new(), request: Value::Null }).is_ok()
+    }
+
+    /// A count that changes whenever what the store may run does.
+    pub fn changes(&self) -> u64 {
+        self.published.lock().unwrap_or_else(std::sync::PoisonError::into_inner).changes
+    }
+
+    /// What the store may run, and a count that changes whenever that does (#173).
+    pub fn plugins(&self) -> (u64, crate::plugin_runtime::PluginSnapshot) {
+        let published = self.published.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (published.changes, published.plugins.clone())
+    }
+
     /// Non-consuming. A terminal envelope stays identical until acknowledgement or eviction
     /// as the oldest terminal at capacity. An evicted ID returns NotFound.
     pub fn result(&self, id: &str) -> Result<Value, Error> {

@@ -1,6 +1,6 @@
 //! Paired immutable catalog/production-generation definitions (#465): one generation kind per
 //! output the catalog's modes make (image; text since #84, 3D since #22, video since #559,
-//! trained styles since #167),
+//! trained styles since #167, audio since #672),
 //! each looked up by node kind.
 use crate::{Session, commands::Resources, run_cmds::RunCatalog};
 use nodecraft_catalog::Catalog;
@@ -23,7 +23,7 @@ struct Snapshot {
     kinds: Vec<GenerationKind>,
 }
 /// The outputs that get a generation kind, in registration order.
-const OUTPUTS: [Modality; 5] = [Modality::Image, Modality::Text, Modality::Mesh, Modality::Video, Modality::Style];
+const OUTPUTS: [Modality; 6] = [Modality::Image, Modality::Text, Modality::Mesh, Modality::Video, Modality::Style, Modality::Audio];
 #[derive(Clone)]
 pub struct GenerationCatalogStamp(RunCatalog);
 impl GenerationCatalogStamp {
@@ -64,6 +64,7 @@ impl GenerationCatalog {
                 Modality::Text => kinds.push(GenerationKind::text(models, identity)?),
                 Modality::Video => kinds.push(GenerationKind::video(models, identity)?),
                 Modality::Style => kinds.push(GenerationKind::style(models, identity)?),
+                Modality::Audio => kinds.push(GenerationKind::audio(models, identity)?),
                 _ => kinds.push(GenerationKind::mesh(models, identity)?),
             }
         }
@@ -303,6 +304,7 @@ pub(crate) fn validate_plan(
                     nodecraft_nodes::generation::MESH_KIND => "selected 3D model is unavailable",
                     nodecraft_nodes::generation::VIDEO_KIND => "selected video model is unavailable",
                     nodecraft_nodes::generation::STYLE_KIND => "selected style trainer is unavailable",
+                    nodecraft_nodes::generation::AUDIO_KIND => "selected audio model is unavailable",
                     _ => "selected image model is unavailable",
                 },
             )

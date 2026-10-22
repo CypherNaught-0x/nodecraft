@@ -82,6 +82,11 @@ fn panic_hunt() {
     corpus.push(json!({"canvas":common::canvas(),"edge":common::edge(),"replace":[common::edge().id, common::edge().id]}));
     corpus.push(json!({"canvas":common::canvas(),"nodes":[common::node_id(1), common::node_id(1)],"edges":[common::edge().id]}));
     corpus.push(json!({"canvas":common::canvas(),"nodes":vec![common::node_id(9); 20_000]}));
+    let field = nodecraft_types::FieldId::from_bytes([7; 16]);
+    corpus.push(json!({"canvas":common::canvas(),"fields":[field, field]}));
+    corpus.push(json!({"canvas":common::canvas(),"nodes":[common::node_id(1)],"fields":[field]}));
+    corpus.push(json!({"canvas":common::canvas(),"fields":vec![field; 20_000]}));
+    corpus.push(json!({"canvas":common::canvas(),"nodes":vec![common::node_id(9); 5_000],"fields":vec![field; 5_001]}));
     // Bulk decoding must be exercised with the complete envelope, beyond its target preflight.
     for raw in [Value::Null, json!("wrong"), json!({"type":"list","value":[null]}), json!({"type":"number","value":1e100})] {
         corpus.push(json!({"canvas":common::canvas(),"ids":[common::node_id(1),common::node_id(2)],"revision":0,"name":"text","value":raw}));

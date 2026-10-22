@@ -18,7 +18,7 @@ use nodecraft_engine::{
     settings::{CanvasSettings, NodeCraftSettings, Theme},
 };
 use nodecraft_graph::{Canvas, Change, Endpoint, Node, Project};
-use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, Modality, NodeId, PortType, ProjectId, Value};
+use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, FieldId, Modality, NodeId, PortType, ProjectId, Value};
 use serde_json::json;
 use std::{
     borrow::Cow,
@@ -536,6 +536,9 @@ pub struct NodeCraftApp {
     /// Shares the project live through a relay, or joins one (#698).
     #[cfg(not(target_arch = "wasm32"))]
     sharing: Option<sharing::Sharing>,
+    /// The plugin worker, and the change of what may run the session last took from it (#173).
+    #[cfg(not(target_arch = "wasm32"))]
+    plugins: Option<(Arc<nodecraft_engine::plugin_cmds::PluginWorker>, Option<u64>)>,
     /// The queue panel is open (#82).
     queue_open: bool,
     /// The quarantined-charge review, when open (#362).
@@ -644,11 +647,15 @@ impl NodeCraftApp {
         // Preserve the existing plugin/trust location. All package I/O, including opening
         // its index, runs on the worker; requests expose retained results through commands.
         let mut plugin_problem = None;
-        if let Some(dir) = store.dir().map(|d| d.join("plugins"))
-            && let Err(error) = Self::register_plugins(&mut services, dir)
-        {
-            log::warn!("plugin packages unavailable: {}", error.message);
-            plugin_problem = Some(format!("Plugin packages are unavailable: {}", error.message));
+        let mut plugins = None;
+        if let Some(dir) = store.dir().map(|d| d.join("plugins")) {
+            match Self::register_plugins(&mut services, dir) {
+                Ok(worker) => plugins = Some((worker, None)),
+                Err(error) => {
+                    log::warn!("plugin packages unavailable: {}", error.message);
+                    plugin_problem = Some(format!("Plugin packages are unavailable: {}", error.message));
+                }
+            }
         }
         // Storage that can't start (another window holds the journal, or the project won't
         // open) still opens the window, without project files, and says why.
@@ -676,6 +683,7 @@ impl NodeCraftApp {
             None => Self::with_services(services)?,
         };
         app.notice = problem.or(plugin_problem);
+        app.plugins = plugins;
         // Unsaved work from a session that didn't close cleanly: ask before anything else (#408).
         if let Some(journal) = journal {
             app.attach_recovery(journal, kept);
@@ -816,13 +824,43 @@ impl NodeCraftApp {
     /// The `plugins` service over the package store in `dir` (`store/`, `trust.json`). No
     /// package may take an ID the app registers; no host implementation is bindable yet.
     #[cfg(not(target_arch = "wasm32"))]
-    fn register_plugins(services: &mut nodecraft_engine::commands::Services, dir: std::path::PathBuf) -> Result<(), Error> {
+    fn register_plugins(
+        services: &mut nodecraft_engine::commands::Services,
+        dir: std::path::PathBuf,
+    ) -> Result<Arc<nodecraft_engine::plugin_cmds::PluginWorker>, Error> {
         use nodecraft_engine::plugin_cmds::{PluginHost, PluginWorker, register_plugin_worker};
         let mut taken: std::collections::BTreeSet<String> = nodecraft_engine::commands::Registry::builtins()?.specs().map(|s| s.id.to_owned()).collect();
         taken.extend(nodecraft_engine::generation_catalog::default_registry()?.0.descriptors().map(|d| d.id.clone()));
         let host = PluginHost { trust: Some(dir.join("trust.json")), taken, bindings: Default::default() };
         let worker = PluginWorker::spawn(move || nodecraft_plugin_store::Store::open(nodecraft_plugin_store::FolderBackend::new(dir.join("store"))?), host)?;
-        register_plugin_worker(services, worker)
+        register_plugin_worker(services, Arc::clone(&worker))?;
+        Ok(worker)
+    }
+
+    /// Hands the session what the plugin store may run whenever that changes (#173); the first
+    /// frame asks the worker to read the store.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tick_plugins(&mut self, ctx: &egui::Context) {
+        let Some((worker, seen)) = &mut self.plugins else { return };
+        // Until the first refresh is queued, ask again each frame.
+        if seen.is_none() && !worker.refresh() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            return;
+        }
+        let changes = worker.changes();
+        if *seen == Some(changes) {
+            return;
+        }
+        let (changes, plugins) = worker.plugins();
+        *seen = Some(changes);
+        let before = Arc::clone(self.session.plugins());
+        if let Err(error) = self.session.set_plugins(plugins) {
+            log::warn!("plugin actions unavailable: {}", error.message);
+        }
+        if !Arc::ptr_eq(&before, self.session.plugins()) {
+            self.plugins_changed();
+        }
+        ctx.request_repaint();
     }
 
     /// The headless app with these host services on its session (the keychain, for one).
@@ -1020,6 +1058,8 @@ impl NodeCraftApp {
             updates: None,
             #[cfg(not(target_arch = "wasm32"))]
             sharing: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            plugins: None,
             queue_open: false,
             #[cfg(not(target_arch = "wasm32"))]
             ownership: None,
@@ -2403,24 +2443,21 @@ impl NodeCraftApp {
             store.update(|settings| apply(&mut settings.keys));
         }
     }
-    /// Delete the selection (nodes and noodles) in one undo step.
+    /// Delete the selection (nodes, noodles and the selected field) in one undo step, skipping
+    /// ids an undo already removed. A deleted field's cards stay.
     fn dispatch_delete(&mut self) {
-        let (nodes, edges) = (self.selection.nodes().clone(), self.selection.edges().clone());
-        self.dispatch_delete_of(&nodes, &edges);
-    }
-
-    /// Delete these nodes and noodles in one undo step, skipping ids an undo already removed.
-    fn dispatch_delete_of(&mut self, nodes: &std::collections::BTreeSet<NodeId>, edges: &std::collections::BTreeSet<EdgeId>) {
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return };
-        let nodes: Vec<NodeId> = nodes.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect();
-        let edges: Vec<EdgeId> = edges.iter().copied().filter(|id| canvas.edges().contains_key(id)).collect();
-        if nodes.is_empty() && edges.is_empty() {
+        let nodes: Vec<NodeId> = self.selection.nodes().iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect();
+        let edges: Vec<EdgeId> = self.selection.edges().iter().copied().filter(|id| canvas.edges().contains_key(id)).collect();
+        let fields: Vec<FieldId> = self.fields.selected.into_iter().filter(|id| canvas.fields().contains_key(id)).collect();
+        if nodes.is_empty() && edges.is_empty() && fields.is_empty() {
             return;
         }
-        match self.session.dispatch("canvas.delete", &json!({"canvas": self.canvas, "nodes": nodes, "edges": edges})) {
+        match self.session.dispatch("canvas.delete", &json!({"canvas": self.canvas, "nodes": nodes, "edges": edges, "fields": fields})) {
             Ok(_) => {
                 self.notice = None;
                 self.selection.clear();
+                self.fields.selected = None;
             }
             Err(error) => self.notice = Some(error.message),
         }
@@ -2831,6 +2868,8 @@ impl eframe::App for NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_updates(ctx);
         #[cfg(not(target_arch = "wasm32"))]
+        self.tick_plugins(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
         self.tick_sharing(ctx);
         // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
         craft_quit::on_close_request(ctx);
@@ -2871,6 +2910,8 @@ impl eframe::App for NodeCraftApp {
 mod action_tests;
 #[cfg(test)]
 mod app_mode_tests;
+#[cfg(test)]
+mod audio672_tests;
 #[cfg(test)]
 mod audio_tests;
 #[cfg(test)]

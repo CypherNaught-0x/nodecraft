@@ -19,6 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Whether `node` reuses identical results.
 pub fn enabled(node: &Node, kinds: &Registry) -> bool {
+    // A plugin's results depend on its package, which the input hash doesn't cover (#173).
+    if crate::plugin_runtime::is_plugin(&node.kind) {
+        return false;
+    }
     match node.config.get(CACHE_CONFIG) {
         Some(Value::Bool(on)) => *on,
         _ => kinds.get(&node.kind).is_ok_and(|k| k.descriptor().category != Category::Generation),

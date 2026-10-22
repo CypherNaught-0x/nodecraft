@@ -40,8 +40,7 @@ fn connect(s: &mut Session) {
 /// Plans, runs and records whatever is pending; whether something was recorded.
 fn settle(s: &mut Session) -> bool {
     let Some(job) = pending(s, CANVAS, &BTreeMap::new()).unwrap() else { return false };
-    let kinds = Registry::builtins().unwrap();
-    let outcome = compute(job, &kinds).unwrap();
+    let outcome = compute(job).unwrap();
     assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
     apply(s, outcome).unwrap()
 }
@@ -101,7 +100,7 @@ fn results_for_an_older_revision_are_dropped() {
     let mut s = session();
     connect(&mut s);
     let job = pending(&s, CANVAS, &BTreeMap::new()).unwrap().unwrap();
-    let outcome = compute(job, &Registry::builtins().unwrap()).unwrap();
+    let outcome = compute(job).unwrap();
     s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": BLUR, "name": "sigma", "value": Value::Number(nodecraft_types::Number::new(3.0).unwrap())}))
         .unwrap();
     let revision = s.revision();
@@ -178,8 +177,7 @@ fn a_failed_node_waits_for_its_inputs_to_change() {
         &json!({"canvas": CANVAS, "edge": {"id": edge, "from": {"node": text, "port": "out"}, "to": {"node": split, "port": "text"}, "order": 0}}),
     )
     .unwrap();
-    let kinds = Registry::builtins().unwrap();
-    let outcome = compute(pending(&s, CANVAS, &BTreeMap::new()).unwrap().unwrap(), &kinds).unwrap();
+    let outcome = compute(pending(&s, CANVAS, &BTreeMap::new()).unwrap().unwrap()).unwrap();
     let failed: BTreeMap<_, _> = outcome.failed.iter().filter_map(|(id, _, hash)| hash.map(|h| (*id, h))).collect();
     assert!(failed.contains_key(&split));
     // An unrelated edit: still skipped.
@@ -475,7 +473,7 @@ fn a_dragged_value_previews_small_and_records_nothing() {
     let (recorded, before, revision) = (result(&s), sigma(&s), s.revision());
     let job = preview(&s, CANVAS, &draft(6.0)).unwrap().expect("the dragged blur previews");
     assert!(job.is_preview());
-    let outcome = compute(job, &Registry::builtins().unwrap()).unwrap();
+    let outcome = compute(job).unwrap();
     assert!(outcome.is_preview() && outcome.failed.is_empty(), "{:?}", outcome.failed);
     let shown = outcome.into_preview().unwrap();
     assert_eq!((shown.canvas, shown.base), (CANVAS, revision));
@@ -491,7 +489,7 @@ fn a_preview_outcome_is_never_applied() {
     let mut s = session();
     connect(&mut s);
     let job = preview(&s, CANVAS, &draft(4.0)).unwrap().unwrap();
-    let outcome = compute(job, &Registry::builtins().unwrap()).unwrap();
+    let outcome = compute(job).unwrap();
     let revision = s.revision();
     assert!(!apply(&mut s, outcome).unwrap());
     assert_eq!((s.revision(), result(&s)), (revision, None), "nothing recorded");
@@ -515,7 +513,7 @@ fn a_preview_covers_what_the_dragged_node_feeds_and_nothing_else() {
         )
         .unwrap();
     }
-    let outcome = compute(preview(&s, CANVAS, &draft(3.0)).unwrap().unwrap(), &Registry::builtins().unwrap()).unwrap();
+    let outcome = compute(preview(&s, CANVAS, &draft(3.0)).unwrap().unwrap()).unwrap();
     let shown = outcome.into_preview().unwrap();
     assert_eq!(shown.results.keys().copied().collect::<Vec<_>>(), vec![BLUR, after], "the dragged blur and the one it feeds");
 }

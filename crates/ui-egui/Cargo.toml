@@ -104,6 +104,8 @@ nodecraft-testkit = { workspace = true }
 nodecraft-provider-testkit = { workspace = true }
 nodecraft-catalog.workspace = true
 nodecraft-format.workspace = true
+# Plugin card tests build a text action package (#173).
+nodecraft-plugin.workspace = true
 nodecraft-media = { workspace = true, features = ["fixtures"] }
 egui_kittest = { workspace = true, features = ["wgpu"] }
 # The staged-update tests hash their payloads like the signed feed does (#567).

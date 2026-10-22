@@ -1,14 +1,16 @@
 use crate::{NodeDescriptor, NodeKind};
 use nodecraft_types::{Error, ErrorKind, PortType};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 fn shortcut_key(key: &str) -> String {
     key.chars().flat_map(char::to_lowercase).collect()
 }
 
-#[derive(Default)]
+/// Kinds are shared, so a copy with other plugin kinds costs one count per kind.
+#[derive(Clone, Default)]
 pub struct Registry {
-    kinds: BTreeMap<String, Box<dyn NodeKind>>,
+    kinds: BTreeMap<String, Arc<dyn NodeKind>>,
 }
 
 impl Registry {
@@ -64,12 +66,25 @@ impl Registry {
         {
             return Err(Error::new(ErrorKind::Conflict, "quick-add shortcut is already registered"));
         }
-        self.kinds.insert(descriptor.id.clone(), kind);
+        self.kinds.insert(descriptor.id.clone(), Arc::from(kind));
         Ok(())
     }
 
+    /// A copy whose kinds under `prefix` are exactly `kinds`; refused whole if any kind is
+    /// invalid, outside `prefix`, or clashes with another.
+    pub fn with_replaced(&self, prefix: &str, kinds: Vec<Box<dyn NodeKind>>) -> Result<Self, Error> {
+        let mut next = Self { kinds: self.kinds.iter().filter(|(id, _)| !id.starts_with(prefix)).map(|(id, k)| (id.clone(), Arc::clone(k))).collect() };
+        for kind in kinds {
+            if !kind.descriptor().id.starts_with(prefix) {
+                return Err(Error::new(ErrorKind::InvalidInput, "a plugin node kind must be named under its prefix"));
+            }
+            next.register(kind)?;
+        }
+        Ok(next)
+    }
+
     pub fn get(&self, id: &str) -> Result<&dyn NodeKind, Error> {
-        self.kinds.get(id).map(Box::as_ref).ok_or_else(|| Error::new(ErrorKind::NotFound, "unknown node kind"))
+        self.kinds.get(id).map(Arc::as_ref).ok_or_else(|| Error::new(ErrorKind::NotFound, "unknown node kind"))
     }
 
     /// The checked static contract of a registered kind.

@@ -9,7 +9,7 @@
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use crate::generation_catalog::GenerationCatalog;
 use nodecraft_graph::{Change, Changeset, Edge, Endpoint, Position};
-use nodecraft_nodes::generation::{self, GenerationModel, GenerationRole, MAX_PROMPT_BYTES, MODEL, PROMPT, TEXT_KIND};
+use nodecraft_nodes::generation::{self, AUDIO_KIND, GenerationModel, GenerationRole, MAX_PROMPT_BYTES, MODEL, PROMPT, TEXT_KIND};
 use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, Modality, NodeId, Value};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -114,6 +114,10 @@ fn assist(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     if !generation::is_generation(&target.kind) {
         return Err(invalid("only a Generate card's prompt can be improved"));
     }
+    // A speech model says its prompt word for word; a rewrite would change what it says (#672).
+    if target.kind == AUDIO_KIND {
+        return Err(invalid("a Generate audio card's prompt is what it says, so it isn't rewritten"));
+    }
     let catalog = GenerationCatalog::current(c.resources)?;
     let takes_prompt = match target.params.get(MODEL) {
         Some(Value::Text(id)) => {
@@ -187,7 +191,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: assist_schema,
-        params_doc: "{canvas, node: a Generate card, id: new NodeId, edge: new EdgeId, model?: text model id, instruction?: text of at most 4096 bytes} -> {id, edge, model}; adds a text Generate card left of `node`, asked to rewrite its typed prompt (or to follow `instruction`), and wires its answer into `node`'s prompt, as one undo step. Nothing runs: run the new card, or `node`, with run.quote/run.start. `model` defaults to a text model already used on this canvas, else the first installed. Refused when the prompt is empty, already connected or too long to improve, or no installed text model answers a typed prompt alone.",
+        params_doc: "{canvas, node: a Generate card, id: new NodeId, edge: new EdgeId, model?: text model id, instruction?: text of at most 4096 bytes} -> {id, edge, model}; adds a text Generate card left of `node`, asked to rewrite its typed prompt (or to follow `instruction`), and wires its answer into `node`'s prompt, as one undo step. Nothing runs: run the new card, or `node`, with run.quote/run.start. `model` defaults to a text model already used on this canvas, else the first installed. Refused for a Generate audio card (it says its prompt as written), when the prompt is empty, already connected or too long to improve, or when no installed text model answers a typed prompt alone.",
         enabled: enabled_assist,
         run: assist,
     }]
