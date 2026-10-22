@@ -359,7 +359,12 @@ fn keychain_errors_and_silence_become_retryable_failures() {
     panel.tick(2.0);
     assert!(!panel.is_waiting());
     // Its late answer is not this panel's any more.
-    let late = nodecraft_engine::secrets::KeyOutcome { id: 9, account: "fal".into(), result: Ok(serde_json::json!({"stored": true, "masked": "…"})) };
+    let late = nodecraft_engine::secrets::KeyOutcome {
+        id: 9,
+        account: "fal".into(),
+        operation: nodecraft_engine::secrets::KeyOperation::Status,
+        result: Ok(serde_json::json!({"stored": true, "masked": "…"})),
+    };
     let (changes, others) = panel.receive(vec![late]);
     assert!(changes.is_empty() && others.len() == 1);
     assert!(matches!(&panel.rows()[0].1, KeyStatus::Failed(_)));
