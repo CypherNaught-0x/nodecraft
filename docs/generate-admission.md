@@ -23,13 +23,18 @@ is left to admission when the job runs.
 
 The whole request is checked earlier as well (#307). `generate::check_request` runs the same
 admission without converting anything, using the longest idempotency key (64 bytes), so a request
-it admits is admitted under whatever key the run sends. For each step whose jobs are already known,
-`run.quote` returns a `requests` entry for that step's largest job, or for its first refused one.
-The entry carries the node, the number of jobs checked, the values, inputs, bytes and media bytes
-counted against their limits, and `refused`. When that request would be refused,
-`blocked` gets a `node <id> [request_too_large]` reason and `run.start` refuses the run. This
-covers parameters that pass graph validation one by one but exceed the limits together.
-An asset whose size can't be found counts as empty there and is left to the job itself. On refusal the counts stop at the point where the limit was hit. A quote checks at most 4,096 jobs.
+it admits is admitted under whatever key the run sends. That key can cost a request about 90 bytes
+more than a typical key, so a request that close to the byte limit is refused before the run.
+For each step whose jobs are already known, `run.quote` returns a `requests` entry for that step's
+largest job, or for its first refused one, listing refused entries first. The entry carries the
+node, the jobs checked out of the step's total, the values, inputs, bytes and media bytes counted
+against their limits, and `refused`. When that request would be refused, `blocked` gets a
+`node <id> [request_refused]` reason and `run.start` refuses the run. This covers parameters that
+pass graph validation one by one but exceed the limits together, and any other reason the call's
+admission would refuse it. An asset whose size can't be found counts as empty there and is left to
+the job itself. On refusal the counts stop at the point where the limit was hit. A quote checks at
+most 4,096 jobs, every step's first job before any step's second; `requests_complete` is false when
+some were left to runtime admission.
 Steps that wait on upstream results are still checked when their jobs are converted.
 
 Results retain the 4,096 item/route ceiling, 1 MiB aggregate routed text, 256 MiB binary item/raw

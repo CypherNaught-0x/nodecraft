@@ -142,17 +142,17 @@ fn a_request_over_the_combined_limit_is_blocked_in_the_quote_and_refused_at_star
     assert_eq!(requests[0]["values"], json!(HALF + 1));
     assert_eq!(requests[0]["value_limit"], json!(4096));
     assert_eq!(requests[0]["refused"], json!(null));
-    assert!(!q.to_string().contains("request_too_large"), "{q}");
+    assert!(!q.to_string().contains("request_refused"), "{q}");
 
     let q = s.dispatch("run.quote", &request(&[WIDE])).unwrap();
     assert_eq!(q["blocked"].as_array().map(Vec::len), Some(1), "{q}");
     assert_eq!(q["allowed"], false, "{q}");
     assert!(q["requests"][0]["refused"].is_string(), "{q}");
-    assert!(q.to_string().contains("[request_too_large]"), "{q}");
+    assert!(q.to_string().contains("[request_refused]"), "{q}");
     let mut start = request(&[WIDE]);
     start["accept"] = json!({"token":q["token"],"partial":false,"unpriced_jobs":0,"amounts":{"USD":10_000}});
     let refused = s.dispatch("run.start", &start).unwrap_err();
-    assert!(refused.message.contains("[request_too_large]"), "{refused:?}");
+    assert!(refused.message.contains("[request_refused]"), "{refused:?}");
 }
 
 #[test]
@@ -164,9 +164,14 @@ fn a_quote_taken_before_an_edit_cannot_start_the_larger_request() {
     let mut start = request(&[NARROW]);
     start["accept"] = json!({"token":q["token"],"partial":false,"unpriced_jobs":0,"amounts":{"USD":10_000}});
     let refused = s.dispatch("run.start", &start).unwrap_err();
-    assert!(!refused.message.is_empty());
+    assert!(refused.message.contains("changed since quotation"), "{refused:?}");
     let q = s.dispatch("run.quote", &request(&[NARROW])).unwrap();
-    assert!(q["blocked"][0].as_str().is_some_and(|reason| reason.contains("[request_too_large]")), "{q}");
+    assert!(q["blocked"][0].as_str().is_some_and(|reason| reason.contains("[request_refused]")), "{q}");
+    assert_eq!(q["requests_complete"], true, "{q}");
+    // Starting with the fresh token reaches the request check itself.
+    start["accept"]["token"] = q["token"].clone();
+    let refused = s.dispatch("run.start", &start).unwrap_err();
+    assert!(refused.message.contains("[request_refused]"), "{refused:?}");
 }
 
 #[test]
