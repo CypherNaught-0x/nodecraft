@@ -37,6 +37,9 @@ tripo = []
 meshy = ["dep:base64"]
 # Higgsfield SOUL 2 images and Kling image to video: presigned uploads, keyed submits, polling and downloads.
 higgsfield = []
+# Kling text, image and multi-image to video and text to image: one paid task, polling and the
+# download. An access key and secret key sign an HS256 token against the wall clock.
+kling = ["dep:base64", "dep:hmac", "dep:sha2", "dep:web-time"]
 # ElevenLabs speech, sound effects, music and voice changer: one synchronous request each.
 elevenlabs = []
 # Comfy Cloud: workflows on Comfy-hosted GPUs through its v2 jobs and assets API.
@@ -62,6 +65,8 @@ url = { workspace = true }
 base64 = { version = "=0.22.1", optional = true }
 blake3 = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 # RS256 for Google Cloud service-account tokens (google-cloud): pure Rust, MIT OR Apache-2.0.
 # Signing needs no RNG; `std` stays off so it isn't asked for one.
 rsa = { version = "=0.9.10", optional = true, default-features = false, features = ["pem", "u64_digit", "sha2"] }

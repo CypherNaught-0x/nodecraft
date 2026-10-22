@@ -36,6 +36,8 @@ pub mod google_cloud;
 #[cfg(feature = "higgsfield")]
 pub mod higgsfield;
 pub mod http;
+#[cfg(feature = "kling")]
+pub mod kling;
 #[cfg(feature = "llm")]
 pub mod llm;
 #[cfg(feature = "meshy")]
@@ -43,7 +45,7 @@ pub mod meshy;
 /// Deterministic testing tools, available locally in unit tests or with feature `testkit`.
 #[cfg(any(test, feature = "testkit"))]
 pub mod mock;
-#[cfg(any(feature = "tripo", feature = "meshy", feature = "higgsfield", feature = "seedance"))]
+#[cfg(any(feature = "tripo", feature = "meshy", feature = "higgsfield", feature = "seedance", feature = "kling"))]
 mod model_file;
 #[cfg(feature = "openai-images")]
 pub mod openai_images;

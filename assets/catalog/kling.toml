@@ -1,0 +1,130 @@
+# Kling task API (legacy v1 endpoints), checked 2026-10-23 against the Kling developer docs as
+# mirrored by the AI SDK Kling provider page and the kling-api README (the official pages refuse
+# scripted reads). Kling bills prepaid resource units by model, mode and duration, so there is no
+# USD price before the run: the cost shows on the Kling account after it.
+
+[[model]]
+id = "kling.v2_5_turbo"
+provider = "kling"
+provider_model = "kling-v2-5-turbo"
+label = "Kling 2.5 Turbo"
+description = "Generate a 5 or 10 second video from a prompt, or from a start frame (and, in Professional mode, an end frame). Billed in Kling resource units by mode and length after the run."
+latency_s = 120
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "negative_prompt", modality = "text", min = 0, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 0, max = 1, inline = true }, { role = "negative_prompt", modality = "text", min = 0, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }, { role = "last_frame", modality = "image", min = 0, max = 1 }]
+params = ["duration", "mode"]
+[[model.params.params]]
+name = "duration"
+label = "Duration"
+control = { type = "choice", options = [{ value = "5", label = "5 s" }, { value = "10", label = "10 s" }] }
+default = { type = "text", value = "5" }
+[[model.params.params]]
+name = "mode"
+label = "Mode"
+control = { type = "choice", options = [{ value = "std", label = "Standard" }, { value = "pro", label = "Professional (needed for an end frame)" }] }
+default = { type = "text", value = "std" }
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "16:9", label = "16:9" }, { value = "9:16", label = "9:16" }, { value = "1:1", label = "1:1" }] }
+default = { type = "text", value = "16:9" }
+
+[[model]]
+id = "kling.v2_1_master"
+provider = "kling"
+provider_model = "kling-v2-1-master"
+label = "Kling 2.1 Master"
+description = "Generate a 5 or 10 second high-fidelity video from a prompt or a start frame. Billed in Kling resource units by length after the run."
+latency_s = 240
+quality = 5
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "negative_prompt", modality = "text", min = 0, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 0, max = 1, inline = true }, { role = "negative_prompt", modality = "text", min = 0, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }]
+params = ["duration"]
+[[model.params.params]]
+name = "duration"
+label = "Duration"
+control = { type = "choice", options = [{ value = "5", label = "5 s" }, { value = "10", label = "10 s" }] }
+default = { type = "text", value = "5" }
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "16:9", label = "16:9" }, { value = "9:16", label = "9:16" }, { value = "1:1", label = "1:1" }] }
+default = { type = "text", value = "16:9" }
+
+[[model]]
+id = "kling.v1_6"
+provider = "kling"
+provider_model = "kling-v1-6"
+label = "Kling 1.6"
+description = "Generate a 5 or 10 second video from a prompt, a start frame (and, in Professional mode, an end frame) or up to four reference images. Billed in Kling resource units by mode and length after the run."
+latency_s = 180
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "negative_prompt", modality = "text", min = 0, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 0, max = 1, inline = true }, { role = "negative_prompt", modality = "text", min = 0, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }, { role = "last_frame", modality = "image", min = 0, max = 1 }]
+params = ["duration", "mode", "cfg_scale"]
+[[model.modes]]
+id = "reference-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "negative_prompt", modality = "text", min = 0, max = 1, inline = true }, { role = "reference", modality = "image", min = 1, max = 4 }]
+params = ["duration", "mode", "aspect_ratio"]
+[[model.params.params]]
+name = "duration"
+label = "Duration"
+control = { type = "choice", options = [{ value = "5", label = "5 s" }, { value = "10", label = "10 s" }] }
+default = { type = "text", value = "5" }
+[[model.params.params]]
+name = "mode"
+label = "Mode"
+control = { type = "choice", options = [{ value = "std", label = "Standard" }, { value = "pro", label = "Professional (needed for an end frame)" }] }
+default = { type = "text", value = "std" }
+[[model.params.params]]
+name = "cfg_scale"
+label = "Prompt adherence"
+control = { type = "slider", min = 0.0, max = 1.0, step = 0.05 }
+default = { type = "number", value = 0.5 }
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "16:9", label = "16:9" }, { value = "9:16", label = "9:16" }, { value = "1:1", label = "1:1" }] }
+default = { type = "text", value = "16:9" }
+
+[[model]]
+id = "kling.image_v2_1"
+provider = "kling"
+provider_model = "kling-v2-1"
+label = "Kling Image 2.1"
+description = "Generate one image from a prompt. Billed in Kling resource units after the run."
+latency_s = 30
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "negative_prompt", modality = "text", min = 0, max = 1, inline = true }]
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "16:9", label = "16:9" }, { value = "9:16", label = "9:16" }, { value = "1:1", label = "1:1" }, { value = "4:3", label = "4:3" }, { value = "3:4", label = "3:4" }, { value = "3:2", label = "3:2" }, { value = "2:3", label = "2:3" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "1:1" }
