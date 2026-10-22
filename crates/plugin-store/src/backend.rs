@@ -14,6 +14,9 @@ pub struct MemoryBackend {
     pub objects: BTreeMap<PackageDigest, Vec<u8>>,
     /// Fails the next index write (tests: a full disk).
     pub fail_next_write: bool,
+    pub grants: Option<Vec<u8>>,
+    /// Fails the next grants write.
+    pub fail_next_grants_write: bool,
 }
 
 impl StoreBackend for MemoryBackend {
@@ -41,6 +44,16 @@ impl StoreBackend for MemoryBackend {
     fn list_objects(&self) -> Result<Vec<PackageDigest>, Error> {
         Ok(self.objects.keys().copied().collect())
     }
+    fn read_grants(&self) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self.grants.clone())
+    }
+    fn write_grants(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if std::mem::take(&mut self.fail_next_grants_write) {
+            return Err(Error::new(ErrorKind::Internal, "the plugin store couldn't be written (disk full)"));
+        }
+        self.grants = Some(bytes.to_vec());
+        Ok(())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -52,7 +65,7 @@ mod native {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
-    /// A folder holding `index.json` and `objects/<digest>.ncraft-plugin`. Files are written
+    /// A folder holding `index.json`, `grants.json` and `objects/<digest>.ncraft-plugin`. Files are written
     /// aside, flushed and renamed over, so a crash or a full disk leaves the old file whole.
     #[derive(Debug)]
     pub struct FolderBackend {
@@ -90,7 +103,8 @@ mod native {
             if let Ok(entries) = std::fs::read_dir(&self.root) {
                 for entry in entries.flatten().take(1024) {
                     let settled = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= SETTLED);
-                    if settled && entry.file_name().to_str().is_some_and(|n| n.starts_with("index.json.") && n.ends_with(".new")) {
+                    let aside = |n: &str| (n.starts_with("index.json.") || n.starts_with("grants.json.")) && n.ends_with(".new");
+                    if settled && entry.file_name().to_str().is_some_and(aside) {
                         let _ = std::fs::remove_file(entry.path());
                     }
                 }
@@ -161,6 +175,12 @@ mod native {
         }
         fn write_index(&mut self, bytes: &[u8]) -> Result<(), Error> {
             Self::replace(&self.root.join("index.json"), bytes)
+        }
+        fn read_grants(&self) -> Result<Option<Vec<u8>>, Error> {
+            Self::read(&self.root.join("grants.json"))
+        }
+        fn write_grants(&mut self, bytes: &[u8]) -> Result<(), Error> {
+            Self::replace(&self.root.join("grants.json"), bytes)
         }
         fn read_object(&self, digest: &PackageDigest) -> Result<Vec<u8>, Error> {
             Self::read(&self.object(digest))?.ok_or_else(|| Error::new(ErrorKind::NotFound, "a stored package is missing; import it again"))

@@ -228,6 +228,9 @@ pub const HUMAN_ONLY: &[&str] = &[
     "plugins.disable",
     "plugins.rollback",
     "plugins.uninstall",
+    // Letting a package run, or stopping it, is the person's yes or no (#173).
+    "plugins.grant",
+    "plugins.revoke",
     "plugins.prune",
     // Replacing the app and restarting it stays the person's choice (#540).
     "app.install_update",

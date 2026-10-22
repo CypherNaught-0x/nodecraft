@@ -86,7 +86,8 @@ own provider records (#325), as does `usage.resolve_charge` for what a reconcile
 results with `run.held` and retry or place them with `run.held_retry` and `run.held_place`. The
 `plugins.*` changes (import, update, enable, disable, rollback, uninstall, prune) read package files
 and decide what extends the app, like installing software, so only a person runs them; agents can
-see what is installed with `plugins.list` (#172). Worker-backed hosts return an opaque pending
+see what is installed with `plugins.list` (#172). Granting a text action package the right to run,
+or revoking it (`plugins.grant`, `plugins.revoke`, #173), is the person's yes or no as well. Worker-backed hosts return an opaque pending
 ID; agents may read its retained envelope with `plugins.result` and acknowledge a terminal result
 with `plugins.forget`. These two commands do not acquire files or mutate packages.
 `share.link_create` and `share.link_update` decide who may come into a shared project, so only

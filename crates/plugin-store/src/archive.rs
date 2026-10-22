@@ -103,8 +103,8 @@ pub fn open(bytes: &[u8], limits: ArchiveLimits) -> Result<Package, Error> {
     let manifest_path = InventoryPath::parse(MANIFEST_PATH).map_err(wire)?;
     let manifest = Manifest::decode(checked.get(&manifest_path).map(|b| &b[..]).unwrap_or_default()).map_err(wire)?;
     inventory.check_manifest(&manifest).map_err(wire)?;
-    if manifest.runtime != Runtime::Data {
-        return Err(Error::new(ErrorKind::Unsupported, "only data packages can be installed; executable packages come later"));
+    if let Runtime::RustWasm { .. } = manifest.runtime {
+        return Err(Error::new(ErrorKind::Unsupported, "only data and text action packages can be installed; module packages come later"));
     }
     for r in &manifest.registrations {
         let bytes = checked.get(&r.descriptor).map(|b| &b[..]).unwrap_or_default();

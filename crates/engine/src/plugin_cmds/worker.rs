@@ -273,7 +273,14 @@ fn bounded_request(request: &Value) -> Result<Value, Error> {
             }
             &["op", "location", "dry_run"]
         }
-        "enable" | "disable" | "uninstall" | "rollback" => {
+        "revoke" => {
+            let grant = object.get("grant_id").and_then(Value::as_str).ok_or_else(invalid)?;
+            if !super::valid_grant_id(grant) {
+                return Err(invalid());
+            }
+            &["op", "grant_id"]
+        }
+        "enable" | "disable" | "uninstall" | "rollback" | "grant" => {
             let package = object.get("package_id").and_then(Value::as_str).ok_or_else(invalid)?;
             PackageId::parse(package).map_err(|_| invalid())?;
             if op == "rollback" {

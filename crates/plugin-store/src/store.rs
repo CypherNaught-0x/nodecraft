@@ -15,13 +15,17 @@
 //! - **One writer wins.** Before writing, the store checks the index is still the one it read;
 //!   if another NodeCraft (the app, the CLI) changed it meanwhile, the change is refused rather
 //!   than lost, and the store reloads.
+//! - **Running needs a grant.** A text action package (#173) installs and enables like a data
+//!   package, but enabling it also needs the user's grant for its exact digest; updating, rolling
+//!   back or uninstalling revokes the package's grants, and revoking one disables the package.
 //! - **Trust is checked when it matters.** A package's signature is checked against the trust
 //!   file at import and again at enable, so a key revoked since import stops it being enabled.
 use crate::archive::{self, ArchiveLimits, Package, wire};
+use crate::grants::{self, Grant, Grants};
 use nodecraft_plugin::id::{HostId, PackageId, RegisteredId};
 use nodecraft_plugin::json::{self, Json, Limits};
 use nodecraft_plugin::lock;
-use nodecraft_plugin::manifest::{Dependency, Version};
+use nodecraft_plugin::manifest::{Dependency, Runtime, Version};
 use nodecraft_plugin::signature::{self, Provenance, TrustStore};
 use nodecraft_plugin::{PackageDigest, register};
 use nodecraft_types::{Error, ErrorKind};
@@ -61,6 +65,16 @@ pub trait StoreBackend {
     /// process writes leaves out recent ones: they may belong to an import whose index isn't
     /// written yet.
     fn list_objects(&self) -> Result<Vec<PackageDigest>, Error>;
+    /// The execution grants (#173), or `None` before the first. A backend that keeps none
+    /// reports none, so nothing it holds ever runs.
+    fn read_grants(&self) -> Result<Option<Vec<u8>>, Error> {
+        Ok(None)
+    }
+    /// Replaces the grants atomically, like the index.
+    fn write_grants(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let _ = bytes;
+        Err(Error::new(ErrorKind::Unsupported, "this plugin store can't keep grants, so its packages can't run"))
+    }
 }
 
 /// Whether an installed package's registrations are published.
@@ -114,6 +128,16 @@ pub struct EnableReport {
     pub registered: Vec<RegisteredId>,
     /// Entries bound to a host implementation this host doesn't allow: kept, but off.
     pub unbound: Vec<RegisteredId>,
+    /// The grant a text action package was enabled under.
+    pub grant: Option<Grant>,
+}
+
+/// What revoking did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevokeReport {
+    pub grant: Grant,
+    /// Whether the package was enabled under it, and is now disabled.
+    pub disabled: bool,
 }
 
 /// What uninstalling did.
@@ -263,6 +287,86 @@ impl<B: StoreBackend> Store<B> {
         Ok(())
     }
 
+    fn read_grants(&self) -> Result<Grants, Error> {
+        match self.backend.read_grants()? {
+            Some(bytes) => grants::decode(&bytes),
+            None => Ok(Grants::default()),
+        }
+    }
+
+    fn write_grants(&mut self, grants: &Grants) -> Result<(), Error> {
+        let bytes = grants::encode(grants)?.into_bytes();
+        self.backend.write_grants(&bytes)
+    }
+
+    /// Revokes `package`'s grants before its active digest changes or it goes. Grants that can't
+    /// be read (damaged, or from a newer build) grant nothing here anyway, and are left alone.
+    fn revoke_all(&mut self, package: &PackageId) -> Result<(), Error> {
+        let mut grants = match self.read_grants() {
+            Ok(grants) => grants,
+            Err(e) if matches!(e.kind, ErrorKind::InvalidInput | ErrorKind::Unsupported) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        if grants.revoke_package(package) {
+            self.write_grants(&grants)?;
+        }
+        Ok(())
+    }
+
+    /// Every grant, live and revoked.
+    pub fn grants(&self) -> Result<Grants, Error> {
+        let _transaction = self.backend.transaction()?;
+        self.read_grants()
+    }
+
+    /// Grants the active digest of `package` the right to run: the user's yes, after reading
+    /// what it is. Only text action packages run anything; a data package needs no grant.
+    /// Granting a digest that already has a live grant returns that grant.
+    pub fn grant(&mut self, package: &PackageId) -> Result<Grant, Error> {
+        let _transaction = self.backend.transaction()?;
+        self.ensure_current()?;
+        let (digest, _) = self.index.active.get(package).copied().ok_or_else(not_installed)?;
+        let loaded = self.load_digest(&digest)?;
+        if !executable(&loaded.manifest.runtime) {
+            return Err(Error::new(ErrorKind::InvalidInput, "a data package runs nothing, so it needs no grant"));
+        }
+        let mut grants = self.read_grants()?;
+        if let Some(live) = grants.live(package, &digest) {
+            return Ok(live.clone());
+        }
+        let grant = grants.grant(package, &digest)?;
+        self.write_grants(&grants)?;
+        Ok(grant)
+    }
+
+    /// Revokes `grant_id`, disabling its package if it is enabled under it. Revoking a revoked
+    /// grant changes nothing.
+    pub fn revoke(&mut self, grant_id: &str) -> Result<RevokeReport, Error> {
+        let _transaction = self.backend.transaction()?;
+        self.ensure_current()?;
+        let mut grants = self.read_grants()?;
+        let Some(found) = grants.grants.iter_mut().find(|g| g.grant_id == grant_id) else {
+            return Err(Error::new(ErrorKind::NotFound, "no such grant"));
+        };
+        let was_live = !found.revoked;
+        found.revoked = true;
+        let grant = found.clone();
+        if was_live {
+            self.write_grants(&grants)?;
+        }
+        // Dependents stay enabled: a text action package's locks are checked, never called.
+        let mut disabled = false;
+        if let Some((digest, State::Enabled)) = self.index.active.get(&grant.package_id).copied()
+            && digest == grant.digest
+        {
+            let mut next = self.index.clone();
+            next.active.insert(grant.package_id.clone(), (digest, State::Disabled));
+            self.commit(next)?;
+            disabled = true;
+        }
+        Ok(RevokeReport { grant, disabled })
+    }
+
     fn report(&self, package: &Package, provenance: Provenance, bytes: usize, replaced: Option<PackageDigest>) -> ImportReport {
         let signed_by = match &provenance {
             Provenance::Verified { key_id } => Some(key_id.to_string()),
@@ -352,6 +456,7 @@ impl<B: StoreBackend> Store<B> {
             if let Some(bytes) = write {
                 self.backend.write_object(&package.digest, &bytes)?;
             }
+            self.revoke_all(&package.manifest.package_id)?;
             self.commit(next)?;
         }
         Ok(report)
@@ -372,6 +477,7 @@ impl<B: StoreBackend> Store<B> {
         }
         let mut next = self.index.clone();
         next.active.insert(package.clone(), (*digest, State::Disabled));
+        self.revoke_all(package)?;
         self.commit(next)
     }
 
@@ -405,6 +511,13 @@ impl<B: StoreBackend> Store<B> {
         }
         let loaded = self.load_digest(&digest)?;
         provenance(&loaded, trust)?;
+        let grant = if executable(&loaded.manifest.runtime) {
+            let grants = self.read_grants()?;
+            let live = grants.live(package, &digest).cloned();
+            Some(live.ok_or_else(|| Error::new(ErrorKind::Forbidden, "this package runs text actions; grant it first (plugins.grant)"))?)
+        } else {
+            None
+        };
         // Every lock names an installed, enabled package at exactly that version and digest.
         // Enabled packages had their own locks checked when enabled, and stay put while
         // enabled, so the chain below them holds too.
@@ -424,7 +537,7 @@ impl<B: StoreBackend> Store<B> {
         let mut registered: BTreeSet<String> = taken.clone();
         registered.extend(self.installed_ids(package)?);
         let staged = register::stage(&loaded.manifest, &registered).map_err(|e| conflict(format!("nothing was enabled: {e}")))?;
-        let mut report = EnableReport { registered: Vec::new(), unbound: Vec::new() };
+        let mut report = EnableReport { registered: Vec::new(), unbound: Vec::new(), grant };
         for (r, id) in loaded.manifest.registrations.iter().zip(staged) {
             match &r.binding {
                 Some(binding) if !bindings.contains(binding) => report.unbound.push(id),
@@ -496,6 +609,7 @@ impl<B: StoreBackend> Store<B> {
         }
         report.dependents.sort();
         report.dependents.dedup();
+        self.revoke_all(package)?;
         self.commit(next)?;
         Ok(report)
     }
@@ -534,6 +648,11 @@ fn depth(index: &Index, digest: &PackageDigest) -> Result<usize, Error> {
         level = next;
     }
     Ok(depth)
+}
+
+/// Whether a package's registrations run anything when used.
+fn executable(runtime: &Runtime) -> bool {
+    !matches!(runtime, Runtime::Data)
 }
 
 /// A package's signature checked against `trust` now.

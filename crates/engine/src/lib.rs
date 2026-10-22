@@ -56,6 +56,7 @@ pub mod perf;
 pub mod perf_cmds;
 mod persistence;
 pub mod plugin_cmds;
+pub mod plugin_text;
 pub mod private_cmds;
 pub mod provider_quotes;
 pub mod resolve_cmds;

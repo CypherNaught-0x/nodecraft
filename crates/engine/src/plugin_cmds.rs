@@ -1,9 +1,10 @@
 //! `plugins.*` commands (#172): list, import, update, enable, disable, roll back, uninstall and
-//! prune data packages in the local store. They change no document and add no undo step; the
+//! prune packages in the local store, and grant or revoke a text action package's right to run
+//! (#173; people only, never agents). They change no document and add no undo step; the
 //! host's `plugins` service ([`register_plugin_service`]) owns the store and the trust file.
 //! Native desktop admission returns `{pending: string}` immediately. Poll `plugins.result`, then
 //! explicitly acknowledge terminal results with `plugins.forget`. Synchronous hosts retain the
-//! direct result contract. Nothing in a package runs, and nothing here opens a dialog.
+//! direct result contract. Nothing here runs a package or opens a dialog.
 //!
 //! Projects don't yet record which package digests they use (#172 part 3), so uninstall and
 //! prune keep only what installed packages lock.
@@ -89,6 +90,13 @@ fn package_only_schema() -> Value {
     object(&["package_id"], json!({"package_id": package_schema()}))
 }
 
+fn grant_id_schema() -> Value {
+    object(
+        &["grant_id"],
+        json!({"grant_id": {"type": "string", "pattern": "^g[1-9][0-9]{0,19}$", "description": "Grant ID from plugins.grant or plugins.list"}}),
+    )
+}
+
 fn rollback_schema() -> Value {
     object(&["package_id", "digest"], json!({"package_id": package_schema(), "digest": {"type": "string", "pattern": "^blake3:[0-9a-f]{64}$"}}))
 }
@@ -105,6 +113,17 @@ struct FileParams {
 #[serde(deny_unknown_fields)]
 struct PackageParams {
     package_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrantParams {
+    grant_id: String,
+}
+
+/// `g` and an epoch: the shape the store gives grant IDs.
+fn valid_grant_id(id: &str) -> bool {
+    id.len() <= 21 && id.strip_prefix('g').is_some_and(|n| !n.is_empty() && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[derive(Deserialize)]
@@ -170,6 +189,18 @@ fn uninstall(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
     package_op("uninstall", p)
 }
 
+fn grant(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
+    package_op("grant", p)
+}
+
+fn revoke(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
+    if p.get("grant_id").and_then(Value::as_str).is_none_or(|id| !valid_grant_id(id)) {
+        return Err(Error::new(ErrorKind::InvalidInput, "invalid grant ID"));
+    }
+    let p: GrantParams = params(p)?;
+    Ok(service(json!({"op": "revoke", "grant_id": p.grant_id})))
+}
+
 fn rollback(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
     let p: RollbackParams = params(p)?;
     PackageId::parse(&p.package_id).map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))?;
@@ -193,7 +224,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.list",
             "List plugin packages",
             none_schema,
-            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest]}]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch}|null}]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             list,
         ),
         spec(
@@ -214,7 +245,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.enable",
             "Enable plugin package",
             package_only_schema,
-            "{package_id}; checks signature, locks and IDs before publishing registrations. Direct result: {registered: [id], unbound: [id]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{package_id}; checks signature, locks and IDs before publishing registrations; a text action package also needs a live grant (plugins.grant) and definitions that compile. Direct result: {registered: [id], unbound: [id], grant: {grant_id, epoch}|null}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             enable,
         ),
         spec(
@@ -237,6 +268,20 @@ pub fn specs() -> Vec<CommandSpec> {
             package_only_schema,
             "{package_id}; removes a disabled package, retaining locked digests. Direct result: {removed: [digest], kept: [digest], dependents: [package_id]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No project edit.",
             uninstall,
+        ),
+        spec(
+            "plugins.grant",
+            "Allow plugin package to run",
+            package_only_schema,
+            "{package_id}; grants the active version of a text action package the right to run, after its definitions compile. People only: agents can't call it. Direct result: {grant_id, epoch, package_id, digest}; the same live grant if there is one. An update, rollback or uninstall revokes it. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            grant,
+        ),
+        spec(
+            "plugins.revoke",
+            "Revoke plugin package grant",
+            grant_id_schema,
+            "{grant_id}; revokes a grant and disables its package if enabled under it; running actions stop and their results are dropped. People only. Direct result: {grant_id, revoked: true, disabled: bool}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            revoke,
         ),
         spec(
             "plugins.prune",
@@ -333,6 +378,20 @@ fn report_json(r: &ImportReport, dry_run: bool) -> Value {
     })
 }
 
+fn grant_json(grant: &nodecraft_plugin_store::Grant) -> Value {
+    json!({"grant_id": grant.grant_id, "epoch": grant.epoch})
+}
+
+/// A text action package's definitions must compile before it is granted or enabled; other
+/// packages have nothing to compile.
+fn compiles<B: StoreBackend>(store: &Store<B>, id: &PackageId) -> Result<(), Error> {
+    let package = store.load(id)?;
+    if matches!(package.manifest.runtime, nodecraft_plugin::manifest::Runtime::TextActions { .. }) {
+        crate::plugin_text::compile(&package)?;
+    }
+    Ok(())
+}
+
 fn package_id(request: &Value) -> Result<PackageId, Error> {
     let text = request.get("package_id").and_then(Value::as_str).unwrap_or_default();
     PackageId::parse(text).map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))
@@ -345,6 +404,8 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
     let referenced = BTreeSet::new();
     match request.get("op").and_then(Value::as_str) {
         Some("list") => {
+            // Grants that can't be read grant nothing; the list still shows the packages.
+            let grants = store.grants().unwrap_or_default();
             let index = store.index();
             let packages: Vec<Value> = index
                 .active
@@ -357,6 +418,7 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
                         "package_id": id.as_str(), "version": entry.version.to_string(), "digest": digest.to_string(),
                         "state": if *state == State::Enabled { "enabled" } else { "disabled" },
                         "license": entry.license, "signed_by": entry.signed_by, "kept": kept,
+                        "grant": grants.live(id, digest).map(grant_json),
                     }))
                 })
                 .collect();
@@ -372,10 +434,34 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
             Ok(report_json(&report, dry_run))
         }
         Some("enable") => {
-            let report = store.enable(&package_id(request)?, &trust(host)?, &host.taken, &host.bindings)?;
-            Ok(
-                json!({"registered": report.registered.iter().map(|i| i.as_str()).collect::<Vec<_>>(), "unbound": report.unbound.iter().map(|i| i.as_str()).collect::<Vec<_>>()}),
-            )
+            let id = package_id(request)?;
+            compiles(store, &id)?;
+            let report = store.enable(&id, &trust(host)?, &host.taken, &host.bindings)?;
+            Ok(json!({
+                "registered": report.registered.iter().map(|i| i.as_str()).collect::<Vec<_>>(),
+                "unbound": report.unbound.iter().map(|i| i.as_str()).collect::<Vec<_>>(),
+                "grant": report.grant.as_ref().map(grant_json),
+            }))
+        }
+        Some("grant") => {
+            let id = package_id(request)?;
+            compiles(store, &id)?;
+            let grant = store.grant(&id)?;
+            let mut out = grant_json(&grant);
+            if let Some(o) = out.as_object_mut() {
+                o.insert("package_id".into(), json!(grant.package_id.as_str()));
+                o.insert("digest".into(), json!(grant.digest.to_string()));
+            }
+            Ok(out)
+        }
+        Some("revoke") => {
+            let grant_id = request
+                .get("grant_id")
+                .and_then(Value::as_str)
+                .filter(|id| valid_grant_id(id))
+                .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "invalid grant ID"))?;
+            let report = store.revoke(grant_id)?;
+            Ok(json!({"grant_id": report.grant.grant_id, "revoked": true, "disabled": report.disabled}))
         }
         Some("disable") => store.disable(&package_id(request)?).map(|()| json!({"disabled": true})),
         Some("rollback") => {

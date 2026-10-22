@@ -62,7 +62,7 @@ A package holds `manifest.json`, its descriptors, data or module, its license fi
 | `descriptor_contract` | `{major, minor}` of the #162 contract its descriptors use |
 | `publisher_key_id` | optional token |
 | `license` | SPDX expression, ≤ 128 ASCII bytes |
-| `runtime` | `{"kind":"data"}` or `{"kind":"rust_wasm","module":<path>}` |
+| `runtime` | `{"kind":"data"}`, `{"kind":"text_actions","schema":1}` or `{"kind":"rust_wasm","module":<path>}`; a `text_actions` package registers only `action`s, each descriptor a text action definition (schema 1, #165), and requires no capability (`incompatible`); another schema is `unsupported_feature` |
 | `dependencies` | ≤ 16 `{package_id, version, digest}` exact locks; not itself, not twice |
 | `capabilities` | `{required, optional}`: `asset.read`, `asset.write`, `network`, `filesystem`, `process`, `gpu`, `secret`; an unknown required one is `unsupported_feature`, an unknown optional one is kept and ignored; a data package requires none (`incompatible`) |
 | `features` | optional `{required, optional}` protocol features, dotted lowercase |
