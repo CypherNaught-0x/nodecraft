@@ -211,6 +211,11 @@ fn invalid_inputs_foreign_ids_and_overflow_do_not_enter_the_factory() {
         json!({"op":"import","location":"x".repeat(4097)}),
         json!({"op":"enable","package_id":"bad"}),
         json!({"op":"rollback","package_id":"io.example.one","digest":"bad"}),
+        json!({"op":"grant","package_id":"bad"}),
+        json!({"op":"grant","package_id":"io.example.one","grant_id":"g1"}),
+        json!({"op":"revoke","grant_id":"g0"}),
+        json!({"op":"revoke","grant_id":1}),
+        json!({"op":"revoke","grant_id":"g1","package_id":"io.example.one"}),
     ] {
         assert_eq!(worker.submit(&bad).unwrap_err().kind, ErrorKind::InvalidInput);
     }
@@ -220,6 +225,11 @@ fn invalid_inputs_foreign_ids_and_overflow_do_not_enter_the_factory() {
     assert_eq!(calls.load(Ordering::Relaxed), 0);
     let a = PluginWorker::spawn(memory, host()).unwrap();
     let b = PluginWorker::spawn(memory, host()).unwrap();
+    // Well-formed grant requests reach the store, which answers them.
+    let grant = a.submit(&json!({"op":"grant","package_id":"io.example.one"})).unwrap();
+    assert_eq!(wait(&a, &grant)["status"], "failed");
+    let revoke = a.submit(&json!({"op":"revoke","grant_id":"g1"})).unwrap();
+    assert_eq!(wait(&a, &revoke)["status"], "failed");
     let aid = a.submit(&json!({"op":"list"})).unwrap();
     let bid = b.submit(&json!({"op":"list"})).unwrap();
     assert_ne!(aid, bid);

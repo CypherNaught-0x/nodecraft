@@ -74,11 +74,17 @@ pub struct ContractVersion {
     pub minor: u32,
 }
 
+/// The text action definition schema a `text_actions` package's descriptors use.
+pub const TEXT_ACTIONS_SCHEMA: u32 = 1;
+
 /// What runs a package's registrations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runtime {
     /// Data only: descriptors, catalog data, Technique references. Nothing executes.
     Data,
+    /// Text actions written as definitions (#173): pure expressions over text the host evaluates
+    /// itself, so nothing foreign executes. Still runs only once the user grants it.
+    TextActions { schema: u32 },
     /// A sandboxed module (a later phase; the contract fixes its shape now).
     RustWasm { module: InventoryPath },
 }
@@ -271,6 +277,16 @@ impl Manifest {
         if runtime == Runtime::Data && !capabilities.required.is_empty() {
             return Err(WireError::new(Code::Incompatible, "a data package runs nothing, so it can't require capabilities").at("/capabilities/required"));
         }
+        if let Runtime::TextActions { .. } = runtime {
+            if !capabilities.required.is_empty() {
+                return Err(
+                    WireError::new(Code::Incompatible, "text actions only read their inputs, so they can't require capabilities").at("/capabilities/required")
+                );
+            }
+            if let Some(i) = registrations.iter().position(|r| r.kind != RegistrationKind::Action) {
+                return Err(WireError::new(Code::Incompatible, "a text_actions package registers only actions").at(&format!("/registrations/{i}/kind")));
+            }
+        }
         Ok(Self {
             package_id,
             version,
@@ -313,8 +329,12 @@ fn runtime(value: Json) -> Result<Runtime> {
     let mut f = Fields::new(value, "/runtime")?;
     let runtime = match f.string("kind")?.as_str() {
         "data" => Runtime::Data,
+        "text_actions" => match f.u32("schema")? {
+            TEXT_ACTIONS_SCHEMA => Runtime::TextActions { schema: TEXT_ACTIONS_SCHEMA },
+            _ => return Err(WireError::new(Code::UnsupportedFeature, "text_actions schema is 1").at("/runtime/schema")),
+        },
         "rust_wasm" => Runtime::RustWasm { module: located(InventoryPath::parse(&f.string("module")?), "/runtime/module")? },
-        _ => return Err(WireError::new(Code::UnsupportedFeature, "runtime kind is data or rust_wasm").at("/runtime/kind")),
+        _ => return Err(WireError::new(Code::UnsupportedFeature, "runtime kind is data, text_actions or rust_wasm").at("/runtime/kind")),
     };
     f.finish()?;
     Ok(runtime)

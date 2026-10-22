@@ -53,7 +53,7 @@ fn packages_go_through_the_whole_lifecycle_without_touching_the_document() {
     let list = s.dispatch("plugins.list", &json!({})).unwrap();
     assert_eq!(list["packages"][0]["state"], "disabled");
     let enabled = s.dispatch("plugins.enable", &json!({"package_id": "io.example.palette"})).unwrap();
-    assert_eq!(enabled, json!({"registered": ["plugin.io.example.palette.warm"], "unbound": []}));
+    assert_eq!(enabled, json!({"registered": ["plugin.io.example.palette.warm"], "unbound": [], "grant": null}));
     assert_eq!(
         s.dispatch("plugins.update", &json!({"location": package(dir.path(), "io.example.palette", "1.1.0")})).unwrap_err().kind,
         ErrorKind::Conflict,
@@ -120,4 +120,62 @@ fn locations_must_be_absolute_files_and_unknown_signers_are_named() {
     assert_eq!(a.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["state"], "enabled", "not a stale view");
     a.dispatch("plugins.disable", &json!({"package_id": "io.example.palette"})).unwrap();
     assert_eq!(b.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["state"], "disabled");
+}
+
+/// Writes a text action package whose one action is `definition`.
+fn text_package(dir: &std::path::Path, id: &str, version: &str, definition: &str) -> String {
+    let manifest =
+        manifest(id, version).replace(r#"{"kind":"data"}"#, r#"{"kind":"text_actions","schema":1}"#).replace(r#""kind":"catalog""#, r#""kind":"action""#);
+    let bytes = archive::build(&[("manifest.json", manifest.as_bytes()), ("LICENSE", b"MIT\n"), ("d/warm.json", definition.as_bytes())], None).unwrap();
+    let path = dir.join(format!("{id}-{version}.ncraft-plugin"));
+    std::fs::write(&path, bytes).unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
+const SHOUT: &str = r#"{"id":"user.shout","inputs":[{"kind":"text","name":"words"}],"label":"Shout","outputs":[{"expr":"upper(words)","kind":"text","name":"out"}],"schema":1,"version":1}"#;
+
+#[test]
+fn a_text_action_package_runs_only_once_granted() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(BTreeSet::new(), None);
+    let pkg = json!({"package_id": "io.example.text"});
+    s.dispatch("plugins.import", &json!({"location": text_package(dir.path(), "io.example.text", "1.0.0", SHOUT)})).unwrap();
+    assert_eq!(s.dispatch("plugins.enable", &pkg).unwrap_err().kind, ErrorKind::Forbidden);
+    assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["grant"], Value::Null);
+    let grant = s.dispatch("plugins.grant", &pkg).unwrap();
+    assert_eq!((grant["grant_id"].as_str(), grant["epoch"].as_u64(), grant["package_id"].as_str()), (Some("g1"), Some(1), Some("io.example.text")));
+    assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["grant"], json!({"grant_id": "g1", "epoch": 1}));
+    let enabled = s.dispatch("plugins.enable", &pkg).unwrap();
+    assert_eq!(enabled["registered"], json!(["plugin.io.example.text.warm"]));
+    assert_eq!(enabled["grant"], json!({"grant_id": "g1", "epoch": 1}));
+    let revoked = s.dispatch("plugins.revoke", &json!({"grant_id": "g1"})).unwrap();
+    assert_eq!(revoked, json!({"grant_id": "g1", "revoked": true, "disabled": true, "dependents": []}));
+    assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["state"], "disabled");
+    for bad in ["g0", "g", "x1", "g01", "g123456789012345678901"] {
+        assert_eq!(s.dispatch("plugins.revoke", &json!({"grant_id": bad})).unwrap_err().kind, ErrorKind::InvalidInput, "{bad}");
+    }
+    assert_eq!(s.dispatch("plugins.revoke", &json!({"grant_id": "g9"})).unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[test]
+fn a_broken_definition_is_refused_before_it_is_granted() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(BTreeSet::new(), None);
+    let two = SHOUT.replace(
+        r#"{"expr":"upper(words)","kind":"text","name":"out"}"#,
+        r#"{"expr":"upper(words)","kind":"text","name":"out"},{"expr":"lower(words)","kind":"text","name":"low"}"#,
+    );
+    for (i, definition) in
+        [SHOUT.replace("upper(words)", "upper(nope)"), SHOUT.replace(r#""schema":1"#, r#""schema":2"#), "[]".to_owned(), two].into_iter().enumerate()
+    {
+        let id = format!("io.example.bad{i}");
+        s.dispatch("plugins.import", &json!({"location": text_package(dir.path(), &id, "1.0.0", &definition)})).unwrap();
+        let error = s.dispatch("plugins.grant", &json!({"package_id": id})).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{definition}");
+        assert!(error.message.contains("its action warm can't be used"), "{}", error.message);
+        assert_eq!(s.dispatch("plugins.enable", &json!({"package_id": id})).unwrap_err().kind, ErrorKind::InvalidInput);
+    }
+    // A data package needs no grant.
+    s.dispatch("plugins.import", &json!({"location": package(dir.path(), "io.example.palette", "1.0.0")})).unwrap();
+    assert_eq!(s.dispatch("plugins.grant", &json!({"package_id": "io.example.palette"})).unwrap_err().kind, ErrorKind::InvalidInput);
 }

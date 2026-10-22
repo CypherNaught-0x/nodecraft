@@ -134,7 +134,13 @@ impl<B: crate::StoreBackend> EnableUnsigned for Store<B> {
 
 /// The store reopened over a copy of its backend (removing files its index no longer names).
 fn reopen(st: &Store<MemoryBackend>) -> Store<MemoryBackend> {
-    Store::open(MemoryBackend { index: st.backend().index.clone(), objects: st.backend().objects.clone(), fail_next_write: false }).unwrap()
+    Store::open(MemoryBackend {
+        index: st.backend().index.clone(),
+        objects: st.backend().objects.clone(),
+        grants: st.backend().grants.clone(),
+        ..MemoryBackend::default()
+    })
+    .unwrap()
 }
 
 #[test]
@@ -150,7 +156,13 @@ fn a_package_installs_disabled_and_survives_reopening() {
     assert_eq!(report.registrations[0].as_str(), "plugin.io.example.palette.warm");
     assert_eq!(st.index().active.get(&id("io.example.palette")), Some(&(report.entry.digest, State::Disabled)));
     assert_eq!(st.import(&bytes, &TrustStore::default(), false).unwrap_err().kind, ErrorKind::Conflict, "already installed");
-    let reopened = Store::open(MemoryBackend { index: st.backend().index.clone(), objects: st.backend().objects.clone(), fail_next_write: false }).unwrap();
+    let reopened = Store::open(MemoryBackend {
+        index: st.backend().index.clone(),
+        objects: st.backend().objects.clone(),
+        grants: st.backend().grants.clone(),
+        ..MemoryBackend::default()
+    })
+    .unwrap();
     assert_eq!(reopened.index(), st.index());
     assert_eq!(reopened.load(&id("io.example.palette")).unwrap().digest, report.entry.digest);
 }
@@ -322,7 +334,13 @@ fn a_failed_write_leaves_the_store_as_it_was() {
     let bytes = package(&spec("io.example.palette"));
     st.import(&bytes, &TrustStore::default(), false).unwrap();
     let before = (st.index().clone(), st.backend().index.clone());
-    let mut st = Store::open(MemoryBackend { index: st.backend().index.clone(), objects: st.backend().objects.clone(), fail_next_write: true }).unwrap();
+    let mut st = Store::open(MemoryBackend {
+        index: st.backend().index.clone(),
+        objects: st.backend().objects.clone(),
+        fail_next_write: true,
+        ..MemoryBackend::default()
+    })
+    .unwrap();
     assert!(st.enable_with(&id("io.example.palette"), &none(), &BTreeSet::new()).is_err());
     assert_eq!((st.index().clone(), st.backend().index.clone()), before, "still disabled, on disk too");
     st.enable_with(&id("io.example.palette"), &none(), &BTreeSet::new()).unwrap();
@@ -600,5 +618,6 @@ fn an_import_in_flight_elsewhere_isnt_swept_and_refresh_sees_other_windows() {
     assert!(a.index().active.contains_key(&id("io.example.other")));
 }
 
+mod grant_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod lock_tests;
