@@ -151,13 +151,19 @@ impl NodeCraftApp {
 
     /// Keeps or discards the partial answer a cancelled or failed run left on text card `id` (#504).
     pub(super) fn partial_intent(&mut self, id: NodeId, keep: bool) {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(runs) = &mut self.runs {
             let done = if keep { runs.keep_partial(&mut self.session, self.canvas, id) } else { runs.discard_partial(self.canvas, id) };
             self.notice = done.err().map(|error| error.message);
         }
+    }
+
+    /// The provider settings runs are set up with: the settings file's, and the defaults in the
+    /// browser, which has none (so ComfyUI isn't set up there yet).
+    fn provider_settings(&self) -> nodecraft_engine::settings::ProviderSettings {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default();
         #[cfg(target_arch = "wasm32")]
-        let _ = (id, keep);
+        nodecraft_engine::settings::ProviderSettings::default()
     }
 
     /// Quote a run from card `id` and ask before starting it.
@@ -173,12 +179,11 @@ impl NodeCraftApp {
         if self.run_confirm.is_some() {
             return Ok(());
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if self.runs.is_some() {
             if kind == RunKind::Refresh {
                 self.refresh_stale_badges();
             }
-            let settings = self.store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default();
+            let settings = self.provider_settings();
             let stale = self.stale_badges.as_ref().map(|badges| &badges.nodes).cloned().unwrap_or_default();
             if let Some(runs) = &mut self.runs
                 && runs.route(&mut self.session, self.canvas, &nodes, kind, &stale, &settings)? == super::runs::Route::Waiting
@@ -215,7 +220,6 @@ impl NodeCraftApp {
     }
 
     /// Prices the open confirmation again once its providers answered a `run.estimate`.
-    #[cfg(not(target_arch = "wasm32"))]
     fn estimated(&mut self, estimated: super::runs::Estimated) {
         let request = match &estimated {
             super::runs::Estimated::Answered { request, .. } | super::runs::Estimated::Failed { request, .. } => *request,
@@ -251,15 +255,18 @@ impl NodeCraftApp {
     }
 
     /// Pumps the runs once a frame, and quotes a card whose provider just became ready.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn tick_runs(&mut self, ctx: &egui::Context) {
+        // Not while the recovery dialog decides which document is open: a result recorded now
+        // would be lost if the person then recovers the other one.
+        #[cfg(not(target_arch = "wasm32"))]
+        let deciding = self.recovery.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let deciding = false;
+        let settings = self.runs.as_ref().is_some_and(|runs| runs.has_waiting() && !deciding).then(|| self.provider_settings());
         let Some(runs) = &mut self.runs else {
             return;
         };
-        // Not while the recovery dialog decides which document is open: a result recorded now
-        // would be lost if the person then recovers the other one.
-        if runs.has_waiting() && self.recovery.is_none() {
-            let settings = self.store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default();
+        if let Some(settings) = settings {
             runs.resume_waiting(&self.session, &settings);
         }
         let tick = runs.tick(&mut self.session, self.canvas);

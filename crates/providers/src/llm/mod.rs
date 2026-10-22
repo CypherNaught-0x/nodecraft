@@ -522,6 +522,12 @@ impl LlmClient {
         }
         if self.endpoint.dialect == Dialect::Anthropic {
             http = http.header("anthropic-version", anthropic::VERSION);
+            // Anthropic answers a page's request only when it says it comes from a browser with the
+            // person's own key (#118); the key is theirs, kept in their browser.
+            #[cfg(target_arch = "wasm32")]
+            {
+                http = http.header("anthropic-dangerous-direct-browser-access", "true");
+            }
         }
         http
     }

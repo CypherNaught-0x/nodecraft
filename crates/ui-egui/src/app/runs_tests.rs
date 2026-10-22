@@ -99,6 +99,17 @@ fn scene_with(make: Make, edit: impl FnOnce(&mut Project, &nodecraft_nodes::Regi
 
 /// The card on `model`, from the `catalog` given.
 fn scene_in(catalog: &str, model: &str, make: Make, edit: impl FnOnce(&mut Project, &nodecraft_nodes::Registry)) -> Harness<'static, NodeCraftApp> {
+    scene_on(catalog, model, Runs::with_maker, make, edit)
+}
+
+/// [`scene_in`], its runs built by `build`.
+fn scene_on(
+    catalog: &str,
+    model: &str,
+    build: fn(&mut Services, Make) -> Result<Runs, nodecraft_types::Error>,
+    make: Make,
+    edit: impl FnOnce(&mut Project, &nodecraft_nodes::Registry),
+) -> Harness<'static, NodeCraftApp> {
     let catalog = nodecraft_catalog::Catalog::from_toml(catalog).unwrap();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
@@ -120,7 +131,7 @@ fn scene_in(catalog: &str, model: &str, make: Make, edit: impl FnOnce(&mut Proje
     resources.insert(snapshot.clone());
     resources.insert(snapshot.run_catalog());
     let mut services = Services::default();
-    let runs = Runs::with_maker(&mut services, make).unwrap();
+    let runs = build(&mut services, make).unwrap();
     let mut session = Session::with_registries(project, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
     runs.install(&mut session);
     let mut app = NodeCraftApp::from_session(session, C).unwrap();
@@ -192,6 +203,19 @@ fn generate_sets_up_the_provider_first_then_quotes_and_records_the_run() {
     frames_until(&mut h, |app| idle(app) && !node(app).history.is_empty());
     assert_eq!(mock.requests().len(), 1, "one accepted run, one request");
     assert!(h.query_by_label("Run failed").is_none(), "notice: {:?}", h.state().notice);
+}
+
+#[test]
+fn the_browsers_inline_maker_hands_the_provider_over_on_the_next_tick() {
+    let mock = image(MockModel::new(MockOutput::Image));
+    let mut h = scene_on(MOCK_IMAGE, "mock-square", Runs::with_inline_maker, making(mock.clone()), |_, _| {});
+    press(&mut h, Role::Button, "Generate");
+    assert!(h.state().run_confirm.is_none(), "the adapter is handed over on a tick, not inside the click");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert_eq!(h.state().notice, None);
+    accept(&mut h);
+    frames_until(&mut h, |app| idle(app) && !node(app).history.is_empty());
+    assert_eq!(mock.requests().len(), 1);
 }
 
 /// The scene, its card on the by-usage model, which its provider quotes at 0.3 USD.

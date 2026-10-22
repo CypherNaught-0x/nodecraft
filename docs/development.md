@@ -289,5 +289,15 @@ so leaving the page with unsaved work, or with a save the browser failed to writ
 Projects over 64 MiB are refused before they are read. `app/web_files/tests.rs` drives the flow
 through a fake browser port.
 
+Runs work in the browser too (#118), through the same run host as the desktop. Its tasks run on
+the page's queue, its sleeps are `setTimeout`s and its clock is `performance.now()`
+(`app/runs/browser.rs`). Adapters are built at once from the keys in the page's storage, and are
+handed over on the next frame as the desktop's keychain thread hands them over; the
+`with_inline_maker` kittest covers that path natively. Providers are called directly from the
+page, so only providers that accept cross-origin requests work. Anthropic is sent its
+`anthropic-dangerous-direct-browser-access` header, and a request the browser blocks says the
+provider may not accept requests from web pages. ComfyUI and LiteLLM endpoints and option lists
+are desktop only (#721), and so are video tools and the run journal.
+
 Kittests inject picker futures and exercise actual native temporary-file persistence. They verify
 UI routing and lifecycle/refusal behavior; they do not prove OS dialog operation on every platform.

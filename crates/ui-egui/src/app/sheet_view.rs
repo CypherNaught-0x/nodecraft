@@ -183,7 +183,6 @@ impl NodeCraftApp {
         self.file_button(ui, t);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
-        #[cfg(not(target_arch = "wasm32"))]
         self.queue_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
         self.ownership_panel(ui.ctx(), t);
@@ -439,7 +438,6 @@ impl NodeCraftApp {
 
     /// The row's live run status, or the reason its last run failed.
     fn row_status(&self, id: NodeId, t: &Tokens) -> egui::RichText {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(runs) = &self.runs {
             if let Some(status) = runs.card_status(self.canvas, id) {
                 return egui::RichText::new(status).color(t.accent);
@@ -448,8 +446,6 @@ impl NodeCraftApp {
                 return egui::RichText::new(line(reason)).color(t.danger);
             }
         }
-        #[cfg(target_arch = "wasm32")]
-        let _ = id;
         egui::RichText::new("").color(t.text_muted)
     }
 

@@ -1,5 +1,6 @@
-//! The desktop app's runs (#409): the engine's [`RunHost`] on a tokio runtime, with provider
-//! adapters built from the keychain on their own thread.
+//! The app's runs (#409): the engine's [`RunHost`] on a tokio runtime, with provider adapters
+//! built from the keychain on their own thread. In the browser (#118) the host runs on the page's
+//! queue and adapters are built at once from the keys the page keeps ([`browser`]).
 //!
 //! Generate first makes sure the card's adapter is built ([`Runs::route`]). Building reads the
 //! provider's key, which can show a keychain prompt, so it happens on the provider thread and
@@ -7,42 +8,49 @@
 //! to it and quoted as before. [`Runs::tick`] pumps the host once a frame and keeps what the
 //! cards show: which are running and why the last run of one failed.
 //!
-//! With a run journal ([`Runs::open_journal`], #508) jobs cut off by quitting or a crash are
+//! With a run journal ([`Runs::open_journal`], #508, desktop only) jobs cut off by quitting or a crash are
 //! followed again once their provider is set up ([`Runs::resume_waiting`]), and quitting leaves
 //! running jobs at the provider instead of cancelling them.
 use super::generate::RunKind;
 use nodecraft_engine::{
     Session,
-    held_store::FileHeld,
     jobs::JobBudget,
     provider_routing::{ProviderRouting, RegisteredProvider},
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
     run_host::{HeldView, RunHost, RunNotice},
     run_jobs::{JobKey, JobState, JobView},
-    run_journal::FileJournal,
-    secrets::KeyringStore,
+    secrets::SecretStore,
     settings::ProviderSettings,
 };
-use nodecraft_exec::{
-    cost::{Budgets, UsageLog},
-    driver::{Runtime, TaskFuture},
-};
+#[cfg(not(target_arch = "wasm32"))]
+use nodecraft_engine::{held_store::FileHeld, run_journal::FileJournal};
+use nodecraft_exec::cost::{Budgets, UsageLog};
+#[cfg(not(target_arch = "wasm32"))]
+use nodecraft_exec::driver::{Runtime, TaskFuture};
 use nodecraft_providers::{Provider, http::Http};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, Value};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
+#[cfg(target_arch = "wasm32")]
+mod browser;
+
 /// Adapters the provider thread may be asked for before it answers; more fail as busy.
+#[cfg(not(target_arch = "wasm32"))]
 const ASKS: usize = 16;
 
 /// The engine's runtime over a tokio runtime the app owns.
+#[cfg(not(target_arch = "wasm32"))]
 struct Tokio {
     handle: tokio::runtime::Handle,
     start: Instant,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Runtime for Tokio {
     fn spawn(&self, task: TaskFuture<()>) {
         self.handle.spawn(task);
@@ -62,7 +70,9 @@ impl Runtime for Tokio {
 }
 
 /// A sleep's timer task, aborted when the sleep is dropped unfinished.
+#[cfg(not(target_arch = "wasm32"))]
 struct Timer(tokio::task::JoinHandle<()>);
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for Timer {
     fn drop(&mut self) {
         self.0.abort();
@@ -76,15 +86,25 @@ pub(super) const SETTING_UP: &str = "Setting up the provider…";
 type Ask = (u64, String, ProviderSettings);
 type Made = (u64, String, Result<Arc<dyn Provider>, Readiness>);
 /// Builds one adapter; the app's reads the keychain ([`provider_setup::make`]), tests pass mocks.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) type Make = Box<dyn Fn(&str, &ProviderSettings) -> Result<Arc<dyn Provider>, Readiness> + Send>;
+/// In the browser adapters are built on the page's one thread.
+#[cfg(target_arch = "wasm32")]
+pub(super) type Make = Box<dyn Fn(&str, &ProviderSettings) -> Result<Arc<dyn Provider>, Readiness>>;
 
-/// The thread that builds adapters: it reads keys, so an unlock prompt never blocks a frame.
-struct Maker {
-    asks: SyncSender<Ask>,
-    made: Receiver<Made>,
+/// Builds adapters as runs ask for them.
+enum Maker {
+    /// On a thread: the keychain may show an unlock prompt, which must never block a frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    Thread { asks: SyncSender<Ask>, made: Receiver<Made> },
+    /// At once, in the browser: its key store answers without a prompt. They are handed over on
+    /// the next tick, as the thread's are.
+    #[cfg(any(test, target_arch = "wasm32"))]
+    Inline { make: Make, made: Vec<Made> },
 }
 
 impl Maker {
+    #[cfg(not(target_arch = "wasm32"))]
     fn spawn(make: Make) -> Result<Self, Error> {
         let (asks, inbox) = sync_channel::<Ask>(ASKS);
         let (outbox, made) = sync_channel::<Made>(ASKS);
@@ -101,7 +121,44 @@ impl Maker {
                 }
             })
             .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the provider thread: {e}")))?;
-        Ok(Self { asks, made })
+        Ok(Self::Thread { asks, made })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn spawn(make: Make) -> Result<Self, Error> {
+        Ok(Self::inline(make))
+    }
+
+    #[cfg(any(test, target_arch = "wasm32"))]
+    fn inline(make: Make) -> Self {
+        Self::Inline { make, made: Vec::new() }
+    }
+
+    fn ask(&mut self, ask: Ask) -> Result<(), Error> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Thread { asks, .. } => match asks.try_send(ask) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(_)) => Err(Error::new(ErrorKind::Busy, "providers are still being set up; try again")),
+                Err(TrySendError::Disconnected(_)) => Err(Error::new(ErrorKind::Internal, "the provider thread has stopped")),
+            },
+            #[cfg(any(test, target_arch = "wasm32"))]
+            Self::Inline { make, made } => {
+                let (epoch, adapter, settings) = ask;
+                let result = make(&adapter, &settings);
+                made.push((epoch, adapter, result));
+                Ok(())
+            }
+        }
+    }
+
+    fn made(&mut self) -> Vec<Made> {
+        match self {
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Thread { made, .. } => made.try_iter().collect(),
+            #[cfg(any(test, target_arch = "wasm32"))]
+            Self::Inline { made, .. } => std::mem::take(made),
+        }
     }
 }
 
@@ -174,21 +231,22 @@ pub(super) struct Runs {
     /// Paid results the host couldn't keep, waiting for a decision (#369).
     held: Vec<HeldView>,
     /// Runs the host's tasks; shut down without waiting when the app closes.
+    #[cfg(not(target_arch = "wasm32"))]
     tokio: Option<tokio::runtime::Runtime>,
     /// Why the run journal couldn't be opened, told on the first frame.
     journal_problem: Option<String>,
 }
 
 impl Runs {
-    /// The runtime, HTTP client and provider thread; registers `run.start` in `services`.
-    pub(super) fn new(services: &mut nodecraft_engine::commands::Services) -> Result<Self, Error> {
+    /// The runtime, HTTP client and provider thread, with adapters reading their keys from
+    /// `keys`; registers `run.start` in `services`.
+    pub(super) fn new(services: &mut nodecraft_engine::commands::Services, keys: Arc<dyn SecretStore>) -> Result<Self, Error> {
         let http: Arc<dyn Http> = Arc::new(nodecraft_providers::http::ReqwestHttp::new().map_err(|e| Error::new(ErrorKind::Unsupported, e.message))?);
-        let start = Instant::now();
-        let now_ms: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(move || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX));
+        let now_ms = monotonic_ms();
         Self::with_maker(
             services,
             Box::new(move |adapter, settings| {
-                let env = HostEnv { keys: &KeyringStore, http: http.clone(), settings, now_ms: now_ms.clone() };
+                let env = HostEnv { keys: keys.as_ref(), http: http.clone(), settings, now_ms: now_ms.clone() };
                 provider_setup::make(adapter, &env)
             }),
         )
@@ -196,24 +254,34 @@ impl Runs {
 
     /// [`Self::new`] with adapters built by `make`.
     pub(super) fn with_maker(services: &mut nodecraft_engine::commands::Services, make: Make) -> Result<Self, Error> {
+        Self::on(services, Maker::spawn(make)?)
+    }
+
+    /// [`Self::with_maker`] building adapters at once, as the browser does.
+    #[cfg(test)]
+    pub(super) fn with_inline_maker(services: &mut nodecraft_engine::commands::Services, make: Make) -> Result<Self, Error> {
+        Self::on(services, Maker::inline(make))
+    }
+
+    fn on(services: &mut nodecraft_engine::commands::Services, maker: Maker) -> Result<Self, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
         let tokio = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("nodecraft-runs")
             .enable_all()
             .build()
             .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the run threads: {e}")))?;
-        let start = Instant::now();
-        let runtime = Arc::new(Tokio { handle: tokio.handle().clone(), start });
-        let maker = Maker::spawn(make)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let runtime = Arc::new(Tokio { handle: tokio.handle().clone(), start: Instant::now() });
+        #[cfg(target_arch = "wasm32")]
+        let runtime = Arc::new(browser::Page::new());
         let mut id = [0u8; 8];
         getrandom::fill(&mut id).map_err(|_| Error::new(ErrorKind::Internal, "session identity entropy is unavailable"))?;
         let budget = JobBudget {
             log: Arc::new(Mutex::new(UsageLog::default())),
             budgets: Arc::new(Mutex::new(Budgets::default())),
             session: id.iter().map(|b| format!("{b:02x}")).collect(),
-            wall_clock_ms: Arc::new(|| {
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-            }),
+            wall_clock_ms: wall_clock_ms(),
         };
         let host = RunHost::new(runtime, budget);
         host.register(services)?;
@@ -231,12 +299,14 @@ impl Runs {
             running: BTreeSet::new(),
             jobs: Vec::new(),
             held: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             tokio: Some(tokio),
             journal_problem: None,
         })
     }
 
     /// The ffmpeg and ffprobe the settings name, for the Timeline's renders (#109).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn set_video_tools(&mut self, tools: Option<(&std::path::Path, &std::path::Path)>) {
         self.host.set_video_tools(tools);
     }
@@ -244,6 +314,7 @@ impl Runs {
     /// Keeps runs in the journal at `path` across restarts (see the module docs), restoring
     /// what it holds, and held results in the `held` folder beside it (#614). Call before
     /// [`Self::install`], and only while this window owns `path`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn open_journal(&mut self, path: std::path::PathBuf) {
         let held = path.with_file_name("held");
         let mut problems = Vec::new();
@@ -300,6 +371,7 @@ impl Runs {
 
     /// Refreshes the usage snapshot after a charge-ownership decision, so the review panel reads
     /// the log as it now is.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn sync_usage(&self, session: &mut Session) {
         self.host.sync_usage(session);
     }
@@ -360,11 +432,7 @@ impl Runs {
         if self.asked.contains(adapter) {
             return Ok(());
         }
-        match self.maker.asks.try_send((self.epoch, adapter.to_owned(), settings.clone())) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => return Err(Error::new(ErrorKind::Busy, "providers are still being set up; try again")),
-            Err(TrySendError::Disconnected(_)) => return Err(Error::new(ErrorKind::Internal, "the provider thread has stopped")),
-        }
+        self.maker.ask((self.epoch, adapter.to_owned(), settings.clone()))?;
         self.asked.insert(adapter.to_owned());
         Ok(())
     }
@@ -400,7 +468,7 @@ impl Runs {
     /// One frame: takes built adapters and pumps the host.
     pub(super) fn tick(&mut self, session: &mut Session, canvas: CanvasId) -> Tick {
         let mut tick = Tick::default();
-        let made: Vec<Made> = self.maker.made.try_iter().collect();
+        let made = self.maker.made();
         for (epoch, adapter, result) in made {
             if epoch != self.epoch {
                 continue;
@@ -558,10 +626,33 @@ impl Drop for Runs {
         // With a journal, running jobs are saved and left at the provider for the next launch.
         self.host.shut_down();
         // Don't wait on a provider that is slow to answer a cancel: the window is closing.
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(tokio) = self.tokio.take() {
             tokio.shutdown_background();
         }
     }
+}
+
+/// Milliseconds on a monotonic clock, for the adapters (ComfyUI's prompt bookkeeping).
+#[cfg(not(target_arch = "wasm32"))]
+fn monotonic_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
+    let start = Instant::now();
+    Arc::new(move || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX))
+}
+#[cfg(target_arch = "wasm32")]
+fn monotonic_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
+    Arc::new(browser::now_ms)
+}
+
+/// Wall-clock milliseconds since the Unix epoch, for the usage log.
+#[cfg(not(target_arch = "wasm32"))]
+fn wall_clock_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
+    Arc::new(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX)))
+}
+#[cfg(target_arch = "wasm32")]
+fn wall_clock_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
+    // `SystemTime::now` isn't there in the browser.
+    Arc::new(|| browser::millis(js_sys::Date::now()))
 }
 
 /// `ids` and every node upstream of them on `canvas` that a `with_upstream` run would run too.
