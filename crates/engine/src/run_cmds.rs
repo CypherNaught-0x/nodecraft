@@ -357,14 +357,21 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     // over an image that changed shape would stretch its strokes (#546): ask first.
     let oversized = media_size::oversized(&run_plan, c.assets);
     let reshaped = crate::mask_cmds::binding::reshaped(canvas, run_plan.steps.iter().map(|s| s.node), &expanded.inner);
-    if !oversized.is_empty() || !reshaped.is_empty() {
+    // Parameters and inputs that pass graph validation one by one may still be too many for one
+    // model call together (#307): the same admission the call runs, over the jobs known now.
+    let requests = request_size::requests(&run_plan, c.assets);
+    let requests_json: Vec<Value> = requests.iter().take(MAX_LISTED).map(|r| r.json(expanded.owner(r.node))).collect();
+    // A step whose media alone is too large already says so; one reason per cause.
+    let refused = requests.iter().filter(|r| !oversized.iter().any(|o| o.node == r.node)).filter_map(|r| r.reason(expanded.owner(r.node)));
+    if !oversized.is_empty() || !reshaped.is_empty() || requests.iter().any(|r| r.check.refusal.is_some()) {
         let reasons: Vec<String> = oversized
             .iter()
             .map(|o| o.reason(expanded.owner(o.node)))
             .chain(reshaped.iter().map(|id| crate::mask_cmds::binding::reason(expanded.owner(*id))))
+            .chain(refused)
             .take(MAX_RUN_BLOCKS_LISTED)
             .collect();
-        let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": []});
+        let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": [], "requests": requests_json});
         return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
     }
     let scratch_headroom = request_scratch(p)?;
@@ -413,6 +420,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         "estimated": estimated,
         "resumable": resumable,
         "quoted": quoted,
+        "requests": requests_json,
         "token": token,
     });
     Ok(Priced { response, totals, complete: priced.is_complete(), allowed: admission.allowed(), token })
@@ -604,6 +612,9 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     crate::generation_catalog::validate_plan(c.resources, c.kinds, &expanded.canvas, plan.steps.iter().map(|s| s.node))?;
     if let Some(oversized) = media_size::oversized(&plan, c.assets).first() {
         return Err(invalid(oversized.reason(expanded.owner(oversized.node))));
+    }
+    if let Some(reason) = request_size::requests(&plan, c.assets).iter().find_map(|r| r.reason(expanded.owner(r.node))) {
+        return Err(invalid(reason));
     }
     if let Some(mask) = crate::mask_cmds::binding::reshaped(&expanded.canvas, plan.steps.iter().map(|s| s.node), &expanded.inner).first() {
         return Err(invalid(crate::mask_cmds::binding::reason(expanded.owner(*mask))));
@@ -812,7 +823,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: quote_schema,
-            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, blocked?, token}. `nodes` is used by selected and with_upstream. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. Read-only.",
+            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, requests, blocked?, token}. `nodes` is used by selected and with_upstream. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. `requests` lists, per node whose model calls are already known, its largest call counted against one call's limits (`values`, `inputs`, `bytes`, `media_bytes`, each with its `*_limit`) and why it would be `refused`; a refused call blocks the run. Read-only.",
             enabled: enabled_quote,
             run: run_quote,
         },
@@ -852,6 +863,7 @@ pub fn specs() -> Vec<CommandSpec> {
 
 mod estimate;
 mod media_size;
+mod request_size;
 pub(crate) use estimate::jobs as estimate_jobs;
 pub use estimate::{EstimateJob, Estimating};
 

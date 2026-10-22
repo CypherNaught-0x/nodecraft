@@ -218,25 +218,83 @@ struct AdmittedRequest<'a> {
     spec: &'a JobSpec,
     key: &'a str,
 }
-fn admit_request<'a>(spec: &'a JobSpec, key: &'a str, limits: Limits, source: Option<&dyn MediaSource>) -> Result<AdmittedRequest<'a>, Error> {
-    let JobSpec::Generate { provider, model, params, inputs, .. } = spec else { return Err(invalid("not a model call")) };
-    if params.len() > limits.items || inputs.len() > limits.items {
-        return Err(invalid("model request exceeds item limit"));
-    }
+/// Counts `spec`'s request against `limits`: the budget as far as it got, and the first
+/// refusal. Advisory checks and runtime admission share this, so they count alike.
+fn measure<'a>(spec: &JobSpec, key: &str, limits: Limits, source: Option<&'a dyn MediaSource>) -> (RequestBudget<'a>, Result<(), Error>) {
     let mut budget = RequestBudget { bytes: Budget(limits.request), values: 0, inputs: 0, limits, source, media: 0 };
-    for text in [provider.as_str(), model.as_str(), key] {
-        budget.bytes.string(text)?;
-    }
-    for (name, value) in params {
-        budget.bytes.string(name)?;
-        budget.value(value, None)?;
-    }
-    for input in inputs {
-        budget.bytes.charge(64)?;
-        budget.bytes.string(&input.role)?;
-        budget.value(&input.value, Some(&input.role))?;
-    }
+    let result = (|| {
+        let JobSpec::Generate { provider, model, params, inputs, .. } = spec else { return Err(invalid("not a model call")) };
+        if params.len() > limits.items || inputs.len() > limits.items {
+            return Err(invalid("model request exceeds item limit"));
+        }
+        for text in [provider.as_str(), model.as_str(), key] {
+            budget.bytes.string(text)?;
+        }
+        for (name, value) in params {
+            budget.bytes.string(name)?;
+            budget.value(value, None)?;
+        }
+        for input in inputs {
+            budget.bytes.charge(64)?;
+            budget.bytes.string(&input.role)?;
+            budget.value(&input.value, Some(&input.role))?;
+        }
+        Ok(())
+    })();
+    (budget, result)
+}
+fn admit_request<'a>(spec: &'a JobSpec, key: &'a str, limits: Limits, source: Option<&dyn MediaSource>) -> Result<AdmittedRequest<'a>, Error> {
+    measure(spec, key, limits, source).1?;
     Ok(AdmittedRequest { spec, key })
+}
+
+/// The longest idempotency key a model call is sent with.
+pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 64;
+
+/// What a model request counts against the limits [`provider_job`] admits it under (#307):
+/// aggregate values (parameters and inputs, nested lists and their items), flattened inputs,
+/// the representation budget (strings, metadata and repeated roles) and stored media bytes.
+/// When `refusal` is set the counts stop where it was found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestCheck {
+    pub values: usize,
+    pub value_limit: usize,
+    pub inputs: usize,
+    pub input_limit: usize,
+    pub bytes: usize,
+    pub byte_limit: usize,
+    pub media_bytes: u64,
+    pub media_limit: u64,
+    /// Why runtime admission would refuse the request; `None` when it would admit it.
+    pub refusal: Option<Error>,
+}
+
+/// Checks `spec` as [`provider_job_with_media`] would admit it, without converting or copying
+/// it, reading media content or calling a provider. A request it admits with `key` is admitted
+/// at runtime with that key or any shorter one; [`check_request`] checks with the longest.
+/// Advisory only: runtime admission still runs before conversion.
+pub fn check_request_with_key(spec: &JobSpec, key: &str, source: Option<&dyn MediaSource>) -> RequestCheck {
+    let limits = Limits::default();
+    let (budget, result) = measure(spec, key, limits, source);
+    RequestCheck {
+        values: budget.values,
+        value_limit: limits.items,
+        inputs: budget.inputs,
+        input_limit: limits.inputs,
+        bytes: limits.request.saturating_sub(budget.bytes.0),
+        byte_limit: limits.request,
+        media_bytes: budget.media,
+        media_limit: limits.media,
+        refusal: result.err(),
+    }
+}
+
+/// [`check_request_with_key`] with the longest idempotency key, so a request it admits is
+/// admitted whatever key the run sends it with.
+pub fn check_request(spec: &JobSpec, source: Option<&dyn MediaSource>) -> RequestCheck {
+    const LONGEST: &str = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk";
+    const _: () = assert!(LONGEST.len() == MAX_IDEMPOTENCY_KEY_BYTES);
+    check_request_with_key(spec, LONGEST, source)
 }
 
 // Recursive conversion is only reached after complete standalone depth/item/byte admission.
