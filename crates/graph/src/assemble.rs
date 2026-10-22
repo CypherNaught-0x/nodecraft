@@ -199,10 +199,11 @@ pub fn assemble(id: ProjectId, parts: Parts) -> Result<Assembled, Error> {
         seen.take(&node);
         canvas.nodes.insert(node.id, node);
     }
+    let mut slots = Slots::default();
     for (canvas_id, edge) in edges {
         let part = Part::Edge(canvas_id, edge.id);
         let Some(canvas) = project.canvases.get_mut(&canvas_id) else { continue };
-        if seen.edges.len() >= MAX_EDGES || seen.edges.contains(&edge.id) || !fits(canvas, &edge) {
+        if seen.edges.len() >= MAX_EDGES || seen.edges.contains(&edge.id) || !slots.fit(canvas, &edge) {
             dropped.insert(part);
             continue;
         }
@@ -262,9 +263,9 @@ pub fn assemble(id: ProjectId, parts: Parts) -> Result<Assembled, Error> {
     Ok(Assembled { project, dropped, repaired })
 }
 
-/// Parts in id order (a stable sort: of two with one id, the first given is taken).
+/// Parts in id order, then canvas order: the same on every peer, whatever order they came in.
 fn sorted<T, K: Ord>(mut parts: Vec<(CanvasId, T)>, key: impl Fn(&T) -> K) -> Vec<(CanvasId, T)> {
-    parts.sort_by_key(|(_, part)| key(part));
+    parts.sort_by(|(a, x), (b, y)| key(x).cmp(&key(y)).then(a.cmp(b)));
     parts
 }
 
@@ -317,19 +318,33 @@ impl Seen {
     }
 }
 
-/// Whether `edge` joins two of the canvas's nodes on matching ports, into a free input slot.
-fn fits(canvas: &Canvas, edge: &Edge) -> bool {
-    let (Some(source), Some(target)) = (canvas.nodes.get(&edge.from.node), canvas.nodes.get(&edge.to.node)) else { return false };
-    let (Some(output), Some(input)) = (source.outputs.iter().find(|p| p.name == edge.from.port), target.inputs.iter().find(|p| p.name == edge.to.port)) else {
-        return false;
-    };
-    if output.port_type.modality != input.port_type.modality || (output.port_type.many && !input.port_type.many) {
-        return false;
+/// The inputs wired so far, by canvas, card and port: the orders taken, so a check doesn't
+/// walk every edge.
+#[derive(Default)]
+struct Slots(BTreeMap<(CanvasId, NodeId, String), BTreeSet<u32>>);
+
+impl Slots {
+    /// Whether `edge` joins two of the canvas's nodes on matching ports, into a free input slot;
+    /// if it does, the slot is taken.
+    fn fit(&mut self, canvas: &Canvas, edge: &Edge) -> bool {
+        let (Some(source), Some(target)) = (canvas.nodes.get(&edge.from.node), canvas.nodes.get(&edge.to.node)) else { return false };
+        let (Some(output), Some(input)) = (source.outputs.iter().find(|p| p.name == edge.from.port), target.inputs.iter().find(|p| p.name == edge.to.port))
+        else {
+            return false;
+        };
+        if output.port_type.modality != input.port_type.modality || (output.port_type.many && !input.port_type.many) {
+            return false;
+        }
+        if !input.port_type.many && edge.order != 0 {
+            return false;
+        }
+        let taken = self.0.entry((canvas.id, edge.to.node, edge.to.port.clone())).or_default();
+        if (!input.port_type.many && !taken.is_empty()) || taken.contains(&edge.order) {
+            return false;
+        }
+        taken.insert(edge.order);
+        true
     }
-    if !input.port_type.many && edge.order != 0 {
-        return false;
-    }
-    !canvas.edges.values().any(|e| e.to.node == edge.to.node && e.to.port == edge.to.port && (e.order == edge.order || !input.port_type.many))
 }
 
 /// The nodes Kahn's algorithm can't order: those in a cycle, or downstream of one.

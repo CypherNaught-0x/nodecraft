@@ -52,6 +52,9 @@ struct MoveKey {
     gesture: String,
 }
 
+/// The state of a document no save holds: an undo step's, after another peer's edit.
+const NEVER_SAVED: u64 = u64::MAX;
+
 struct Entry {
     inverse: Changeset,
     bytes: usize,
@@ -956,7 +959,12 @@ impl Session {
                 self.undo.push(prepared.inverse);
             }
             // Local history stays: an undo later puts back what this peer had, part by part.
-            Direction::Remote => {}
+            // No step leads back to a saved document any more, since this edit isn't undone.
+            Direction::Remote => {
+                for entry in self.undo.entries.iter_mut().chain(self.redo.entries.iter_mut()) {
+                    entry.state = NEVER_SAVED;
+                }
+            }
         }
         self.document = prepared.document;
         self.assets = prepared.assets;

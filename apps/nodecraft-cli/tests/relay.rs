@@ -58,7 +58,7 @@ struct Person {
 }
 
 impl Person {
-    fn connect(relay: &Relay, collab: Collab, session: Option<Session>) -> Self {
+    fn connect(relay: &Relay, mut collab: Collab, session: Option<Session>) -> Self {
         let (mut socket, _) = tungstenite::connect(&relay.url).unwrap();
         if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
             stream.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
@@ -164,6 +164,21 @@ fn a_connection_that_doesnt_start_with_a_hello_is_refused() {
         }
     };
     assert!(matches!(reply, Frame::Refused(_)), "{reply:?}");
+}
+
+#[test]
+fn a_large_message_before_the_hello_ends_the_connection() {
+    let relay = relay();
+    let (mut socket, _) = tungstenite::connect(&relay.url).unwrap();
+    socket.send(Message::binary(vec![0; 64 << 10])).unwrap();
+    // The relay hangs up without reading it as a frame: no refusal comes, just the end.
+    loop {
+        match socket.read() {
+            Ok(Message::Binary(bytes)) => panic!("the relay answered: {:?}", Frame::decode(&bytes)),
+            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
 }
 
 #[test]

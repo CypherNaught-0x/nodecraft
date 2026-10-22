@@ -178,6 +178,35 @@ fn unreadable_entries_and_updates_are_refused_not_kept() {
     assert!(hostile.read().unwrap().get_map(NODES).unwrap().get(&hostile.read().unwrap(), "nonsense").is_none());
 }
 
+#[test]
+fn a_second_spelling_of_a_key_or_an_orphan_is_removed_and_then_nothing_more_is_sent() {
+    let project = start();
+    let (mut a, _) = Mirror::share(&project).unwrap();
+    let mut hostile = Mirror::join();
+    hostile.receive(&a.update_for(&[0]).unwrap()).unwrap();
+    let card = serde_json::to_string(&serde_json::json!({"id": nid(1), "kind": "test.text"})).unwrap();
+    let upper = format!("{}/{{{}}}", cid(), nid(1));
+    let garbage = hostile
+        .write(|txn| {
+            // Card 1 again under a key spelt another way, and a prompt for a card nobody has.
+            txn.get_or_insert_map(NODES).insert(txn, upper.clone(), Any::String(Arc::from(card.as_str())));
+            txn.get_or_insert_map(PARAMS).insert(txn, format!("{}/prompt", in_canvas(cid(), nid(42))), Any::String(Arc::from("\"x\"")));
+            Ok(())
+        })
+        .unwrap();
+    a.receive(&garbage).unwrap();
+    let first = a.materialize().unwrap().unwrap();
+    assert_eq!(first.project, project, "the real card 1 stays as it was");
+    hostile.receive(&first.repairs.unwrap()).unwrap();
+    let txn = hostile.read().unwrap();
+    assert!(txn.get_map(NODES).unwrap().get(&txn, &upper).is_none());
+    assert_eq!(txn.get_map(PARAMS).unwrap().len(&txn), 3, "only the prompts of cards 1-3 are left");
+    drop(txn);
+    // Both sides are clean: reading again repairs nothing, so nobody sends anything.
+    assert!(a.materialize().unwrap().unwrap().repairs.is_none());
+    assert!(hostile.materialize().unwrap().unwrap().repairs.is_none());
+}
+
 /// One random edit a peer makes to its copy, valid or not (an invalid one is skipped).
 fn change(pick: (u8, u8, u8, u8)) -> Change {
     let (kind, a, b, c) = pick;

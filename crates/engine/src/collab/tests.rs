@@ -142,3 +142,35 @@ fn a_session_of_another_project_is_refused() {
     assert!(joiner.settle(&mut session).is_err());
     assert!(collab.receive(Frame::Refused("bye".into())).is_err());
 }
+
+#[test]
+fn a_card_waits_for_its_image_and_nothing_else_does() {
+    let (mut session, asset) = sharer();
+    add(&mut session, 2);
+    let mut a = Collab::share(&session, room_id()).unwrap();
+    let mut b = Collab::join(room_id());
+    let _ = b.hello();
+    // The handshake, by hand: b says what it has, a sends the rest.
+    let replies = b.receive(Frame::Step1(Mirror::join().state_vector().unwrap())).unwrap();
+    let Some(Frame::Step1(b_has)) = replies.into_iter().nth(1) else { panic!("b asks back") };
+    let Some(Frame::Step2(everything)) = a.receive(Frame::Step1(b_has)).unwrap().into_iter().next() else { panic!("a answers") };
+    b.receive(Frame::Step2(everything)).unwrap();
+    let mut joined = Session::new(joining(b.project_id().unwrap().unwrap()).unwrap()).unwrap();
+
+    // The image hasn't come: card 2 is in, card 1 waits, and b asks for the image once.
+    let sent = b.settle(&mut joined).unwrap();
+    assert_eq!(sent, vec![Frame::AssetGet(vec![*asset.hash.as_bytes()])]);
+    let cards = joined.document().canvases()[&canvas()].nodes().keys().copied().collect::<Vec<_>>();
+    assert_eq!(cards, vec![nid(2)]);
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+
+    // It comes; card 1 follows.
+    assert!(a.receive(Frame::AssetGet(vec![*asset.hash.as_bytes()])).unwrap().is_empty());
+    let put = a.publish(&session).unwrap();
+    assert!(matches!(&put[..], [Frame::AssetPut { .. }]));
+    for frame in put {
+        b.receive(frame).unwrap();
+    }
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+    assert_eq!(joined.document(), session.document());
+}

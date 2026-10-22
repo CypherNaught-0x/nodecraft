@@ -8,7 +8,7 @@ use yrs::updates::decoder::Decode;
 use yrs::updates::encoder::Encode;
 use yrs::{Doc, ReadTxn, StateVector, Transact, Update};
 
-use crate::frame::Frame;
+use crate::frame::{Frame, MAX_UPDATE_BYTES};
 
 /// One connection, numbered by the relay.
 pub type Peer = u64;
@@ -19,6 +19,8 @@ const MAX_ROOM_UPDATE_BYTES: usize = 512 << 20;
 const MAX_ROOM_ASSET_BYTES: usize = 512 << 20;
 /// The most peers in one room.
 pub const MAX_PEERS: usize = 32;
+/// The most assets asked for and not yet sent; later asks wait until some arrive.
+const MAX_WANTED: usize = 4096;
 
 /// What the relay should do after a frame.
 #[derive(Debug, PartialEq, Eq)]
@@ -54,6 +56,11 @@ impl Room {
         self.peers.is_empty()
     }
 
+    /// The bytes the room has taken in: merged updates and kept assets.
+    pub fn held(&self) -> usize {
+        self.merged.saturating_add(self.asset_bytes)
+    }
+
     /// Lets `peer` in, and asks what it has: its answer brings in what it changed while away.
     pub fn join(&mut self, peer: Peer) -> Vec<Out> {
         if self.peers.len() >= MAX_PEERS {
@@ -62,7 +69,14 @@ impl Room {
         match self.state_vector() {
             Some(sv) => {
                 self.peers.insert(peer);
-                vec![Out::Send(peer, Frame::Step1(sv))]
+                let mut out = vec![Out::Send(peer, Frame::Step1(sv))];
+                // Whoever asked for an asset may be waiting on someone who left: the newcomer
+                // may have it.
+                let wanted: Vec<[u8; 32]> = self.wanted.keys().copied().collect();
+                if !wanted.is_empty() {
+                    out.push(Out::Send(peer, Frame::AssetGet(wanted)));
+                }
+                out
             }
             None => vec![Out::Close(peer, Frame::Refused(DAMAGED.into()))],
         }
@@ -83,6 +97,7 @@ impl Room {
         }
         match frame {
             Frame::Step1(sv) => match self.update_for(&sv) {
+                Some(update) if update.len() > MAX_UPDATE_BYTES => self.refuse(from, "the project is too large to send"),
                 Some(update) => vec![Out::Send(from, Frame::Step2(update))],
                 None => self.refuse(from, "the state vector isn't readable"),
             },
@@ -120,10 +135,11 @@ impl Room {
                 for hash in hashes {
                     match self.assets.get(&hash) {
                         Some(bytes) => out.push(Out::Send(from, Frame::AssetPut { hash, bytes: bytes.clone() })),
-                        None => {
+                        None if self.wanted.len() < MAX_WANTED || self.wanted.contains_key(&hash) => {
                             self.wanted.entry(hash).or_default().insert(from);
                             missing.push(hash);
                         }
+                        None => {}
                     }
                 }
                 if !missing.is_empty() {

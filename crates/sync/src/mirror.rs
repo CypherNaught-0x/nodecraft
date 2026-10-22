@@ -156,14 +156,16 @@ impl Mirror {
         let Some(Read { id, parts, bad }) = read else { return Ok(None) };
         let Assembled { project, dropped, repaired } = assemble::assemble(id, parts)?;
         let mut writes: BTreeMap<Key, Option<String>> = bad.into_iter().map(|key| (key, None)).collect();
+        let params = if dropped.iter().any(|part| matches!(part, Part::Node(..))) { params_by_card(&self.doc)? } else { BTreeMap::new() };
         for part in &dropped {
-            for key in part_keys(&self.doc, part)? {
+            for key in part_keys(&params, part) {
                 writes.insert(key, None);
             }
         }
         for part in &repaired {
             writes.extend(part_entries(&project, part)?);
         }
+        let writes = effective(&self.doc, writes)?;
         let repairs = if writes.is_empty() {
             None
         } else {
@@ -367,10 +369,12 @@ fn entries<T: ReadTxn>(txn: &T, name: &'static str, bad: &mut Vec<Key>) -> Vec<(
     out
 }
 
-/// `canvas/id` keys, and what the id is.
-fn split<I: std::str::FromStr>(key: &str) -> Option<(CanvasId, I)> {
+/// `canvas/id` keys, and what the id is. Only the one spelling an id is written in is read:
+/// another (upper case, braces) would be a second entry for the same part.
+fn split<I: std::str::FromStr + std::fmt::Display>(key: &str) -> Option<(CanvasId, I)> {
     let (canvas, id) = key.split_once('/')?;
-    Some((canvas.parse().ok()?, id.parse().ok()?))
+    let (canvas, id): (CanvasId, I) = (canvas.parse().ok()?, id.parse().ok()?);
+    (in_canvas(canvas, &id) == key).then_some((canvas, id))
 }
 
 fn read<T: ReadTxn>(txn: &T) -> Result<Option<Read>, Error> {
@@ -379,7 +383,7 @@ fn read<T: ReadTxn>(txn: &T) -> Result<Option<Read>, Error> {
     let Some(id) = meta.get(ID).and_then(|id| id.parse::<ProjectId>().ok()) else { return Ok(None) };
     let mut parts = Parts { title: meta.get(TITLE).and_then(|t| serde_json::from_str(t).ok()).unwrap_or_default(), ..Parts::default() };
     for (key, value) in entries(txn, CANVASES, &mut bad) {
-        let Ok(canvas) = key.parse::<CanvasId>() else {
+        let Some(canvas) = key.parse::<CanvasId>().ok().filter(|canvas| canvas.to_string() == key) else {
             bad.push((CANVASES, key));
             continue;
         };
@@ -399,6 +403,8 @@ fn read<T: ReadTxn>(txn: &T) -> Result<Option<Read>, Error> {
         }
     }
     let mut params: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
+    let mut params_keys = Vec::new();
+    let mut cards = BTreeSet::new();
     for (key, value) in entries(txn, PARAMS, &mut bad) {
         let mut pieces = key.splitn(3, '/');
         let (Some(canvas), Some(node), Some(name)) = (pieces.next(), pieces.next(), pieces.next()) else {
@@ -407,7 +413,9 @@ fn read<T: ReadTxn>(txn: &T) -> Result<Option<Read>, Error> {
         };
         match serde_json::from_str::<Value>(&value) {
             Ok(value) => {
-                params.entry(format!("{canvas}/{node}")).or_default().insert(name.to_owned(), value);
+                let card = format!("{canvas}/{node}");
+                params.entry(card.clone()).or_default().insert(name.to_owned(), value);
+                params_keys.push((card, key));
             }
             Err(_) => bad.push((PARAMS, key)),
         }
@@ -422,10 +430,16 @@ fn read<T: ReadTxn>(txn: &T) -> Result<Option<Read>, Error> {
             (node.id == id).then_some((canvas, node))
         });
         match node {
-            Some(node) => parts.nodes.push(node),
+            Some(node) => {
+                cards.insert(key);
+                parts.nodes.push(node);
+            }
             None => bad.push((NODES, key)),
         }
     }
+    // A position or parameter written while someone removed its card belongs to nothing.
+    bad.extend(positions.keys().filter(|key| !cards.contains(*key)).map(|key| (POSITIONS, key.clone())));
+    bad.extend(params_keys.into_iter().filter(|(card, _)| !cards.contains(card)).map(|(_, key)| (PARAMS, key)));
     simple(txn, EDGES, &mut bad, &mut parts.edges, |e: &Edge| e.id)?;
     simple(txn, FIELDS, &mut bad, &mut parts.fields, |f: &Field| f.id)?;
     simple(txn, TAGS, &mut bad, &mut parts.tags, |t: &Tag| t.id)?;
@@ -440,7 +454,7 @@ fn read<T: ReadTxn>(txn: &T) -> Result<Option<Read>, Error> {
 }
 
 /// Reads one map of `canvas/id` entries whose value is the part itself.
-fn simple<T: ReadTxn, P: serde::de::DeserializeOwned, I: std::str::FromStr + PartialEq>(
+fn simple<T: ReadTxn, P: serde::de::DeserializeOwned, I: std::str::FromStr + std::fmt::Display + PartialEq>(
     txn: &T,
     name: &'static str,
     bad: &mut Vec<Key>,
@@ -460,19 +474,30 @@ fn simple<T: ReadTxn, P: serde::de::DeserializeOwned, I: std::str::FromStr + Par
     Ok(())
 }
 
-/// Every entry a part has in the document now.
-fn part_keys(doc: &Doc, part: &Part) -> Result<Vec<Key>, Error> {
-    Ok(match part {
+/// Every parameter entry in the document, by its card's `canvas/node` key.
+fn params_by_card(doc: &Doc) -> Result<BTreeMap<String, Vec<String>>, Error> {
+    let txn = doc.try_transact().map_err(|_| busy())?;
+    let mut by_card: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    if let Some(map) = txn.get_map(PARAMS) {
+        for key in map.keys(&txn) {
+            let mut pieces = key.splitn(3, '/');
+            if let (Some(canvas), Some(node), Some(_)) = (pieces.next(), pieces.next(), pieces.next()) {
+                by_card.entry(format!("{canvas}/{node}")).or_default().push(key.to_owned());
+            }
+        }
+    }
+    Ok(by_card)
+}
+
+/// Every entry a part has in the document now; `params` from [`params_by_card`].
+fn part_keys(params: &BTreeMap<String, Vec<String>>, part: &Part) -> Vec<Key> {
+    match part {
         Part::Title => vec![(META, TITLE.to_owned())],
         Part::Canvas(canvas) => vec![(CANVASES, canvas.to_string())],
         Part::Node(canvas, node) => {
             let at = in_canvas(*canvas, node);
-            let prefix = format!("{at}/");
-            let txn = doc.try_transact().map_err(|_| busy())?;
-            let mut keys = vec![(NODES, at.clone()), (POSITIONS, at)];
-            if let Some(map) = txn.get_map(PARAMS) {
-                keys.extend(map.keys(&txn).filter(|k| k.starts_with(&prefix)).map(|k| (PARAMS, k.to_owned())));
-            }
+            let mut keys: Vec<Key> = params.get(&at).into_iter().flatten().map(|key| (PARAMS, key.clone())).collect();
+            keys.extend([(NODES, at.clone()), (POSITIONS, at)]);
             keys
         }
         Part::Edge(canvas, id) => vec![(EDGES, in_canvas(*canvas, id))],
@@ -480,7 +505,22 @@ fn part_keys(doc: &Doc, part: &Part) -> Result<Vec<Key>, Error> {
         Part::Tag(canvas, id) => vec![(TAGS, in_canvas(*canvas, id))],
         Part::Comment(canvas, id) => vec![(COMMENTS, in_canvas(*canvas, id))],
         Part::Skill(id) => vec![(SKILLS, id.to_string())],
-    })
+    }
+}
+
+/// The writes that would change the document: a value it doesn't hold yet, or a removal of an
+/// entry it has. A repair that changes nothing sends nothing, so peers can't trade empty
+/// repairs back and forth.
+fn effective(doc: &Doc, writes: BTreeMap<Key, Option<String>>) -> Result<BTreeMap<Key, Option<String>>, Error> {
+    let txn = doc.try_transact().map_err(|_| busy())?;
+    Ok(writes
+        .into_iter()
+        .filter(|((name, key), value)| match (txn.get_map(*name).and_then(|map| map.get(&txn, key)), value) {
+            (None, None) => false,
+            (Some(Out::Any(Any::String(now))), Some(value)) => &*now != value.as_str(),
+            _ => true,
+        })
+        .collect())
 }
 
 /// The entries a repaired part writes, from the assembled project.

@@ -77,3 +77,19 @@ fn a_bad_frame_or_a_stranger_is_turned_away() {
     }
     assert!(matches!(room.join(99)[..], [Out::Close(99, _)]));
 }
+
+#[test]
+fn a_newcomer_is_asked_for_what_someone_still_waits_on() {
+    let mut room = Room::new();
+    room.join(1);
+    room.join(2);
+    let bytes = b"image".to_vec();
+    let hash = *blake3::hash(&bytes).as_bytes();
+    // Peer 2 asks; peer 1, who had it, leaves without answering.
+    room.handle(2, Frame::AssetGet(vec![hash]));
+    room.leave(1);
+    // Peer 3 comes with it, is asked, and it goes on to peer 2.
+    let out = room.join(3);
+    assert!(out.contains(&Out::Send(3, Frame::AssetGet(vec![hash]))), "{out:?}");
+    assert_eq!(room.handle(3, Frame::AssetPut { hash, bytes: bytes.clone() }), vec![Out::Send(2, Frame::AssetPut { hash, bytes })]);
+}

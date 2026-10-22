@@ -6,9 +6,9 @@
 //! frame from the relay, and [`Collab::settle`] before drawing, sending whatever each returns.
 use std::collections::{BTreeMap, BTreeSet};
 
-use nodecraft_graph::{Project, diff};
+use nodecraft_graph::{CanvasKind, Change, Changeset, Node, Project, diff};
 use nodecraft_sync::{Frame, MAX_ASSET_BYTES, Materialized, Mirror, PROTOCOL, RoomId};
-use nodecraft_types::{Blake3, Error, ErrorKind, ProjectId};
+use nodecraft_types::{Blake3, CanvasId, Error, ErrorKind, ProjectId};
 
 use crate::session::Session;
 
@@ -46,8 +46,11 @@ impl Collab {
         Self { mirror, room, published, unsettled: false, asked: BTreeSet::new(), arrived: BTreeMap::new(), wanted: BTreeSet::new() }
     }
 
-    /// The first frame on a new connection.
-    pub fn hello(&self) -> Frame {
+    /// The first frame on each new connection. Assets asked for on an earlier one are asked
+    /// for again.
+    pub fn hello(&mut self) -> Frame {
+        self.asked.clear();
+        self.unsettled = true;
         Frame::Hello { protocol: PROTOCOL, room: self.room.clone() }
     }
 
@@ -119,10 +122,13 @@ impl Collab {
         if project.id() != session.document().id() {
             return Err(Error::new(ErrorKind::Conflict, "this session holds a different project from the one shared"));
         }
-        let sets = diff::diff(session.document(), &project)?;
         let mut missing = BTreeSet::new();
-        for set in &sets {
-            missing.extend(nodecraft_format::assets_in_changes(set)?.into_iter().filter(|hash| !session.assets().contains(hash)));
+        for (canvas_id, canvas) in project.canvases() {
+            let now = session.document().canvases().get(canvas_id);
+            // A card the session already holds as it is has its assets.
+            for node in canvas.nodes().values().filter(|node| now.and_then(|now| now.nodes().get(&node.id)) != Some(*node)) {
+                missing.extend(assets_of(canvas.id(), node)?.into_iter().filter(|hash| !session.assets().contains(hash)));
+            }
         }
         for hash in &missing {
             if let Some(bytes) = self.arrived.remove(hash) {
@@ -130,29 +136,73 @@ impl Collab {
             }
         }
         missing.retain(|hash| !session.assets().contains(hash));
-        if !missing.is_empty() {
-            // Hold the whole update until its assets are here, asking once for each.
-            let ask: Vec<[u8; 32]> = missing.iter().filter(|hash| self.asked.insert(**hash)).map(|hash| *hash.as_bytes()).collect();
-            if !ask.is_empty() {
-                out.push(Frame::AssetGet(ask));
-            }
-            return Ok(out);
+        // Ask once for each asset still missing; the cards that use one wait for it, and the
+        // rest goes in now.
+        let ask: Vec<[u8; 32]> = missing.iter().filter(|hash| self.asked.insert(**hash)).map(|hash| *hash.as_bytes()).collect();
+        if !ask.is_empty() {
+            out.push(Frame::AssetGet(ask));
         }
+        let project = if missing.is_empty() { project } else { waiting_without(session.document(), project, &missing)? };
+        let sets = diff::diff(session.document(), &project)?;
         self.unsettled = false;
         let applied = take(session, sets);
-        // What the session now holds is what later publishes compare with; a set that didn't
-        // apply is tried again at the next update.
+        // What the session now holds is what later publishes compare with. A set that didn't
+        // apply, or a card still waiting, is tried again when the next update or asset comes.
         self.mirror.adopt(session.document());
         self.published = Some(session.revision());
-        if applied.is_err() {
-            self.unsettled = true;
-        }
         applied?;
         Ok(out)
     }
 }
 
-fn take(session: &mut Session, sets: Vec<nodecraft_graph::Changeset>) -> Result<(), Error> {
+/// The assets one card names.
+fn assets_of(canvas: CanvasId, node: &Node) -> Result<BTreeSet<Blake3>, Error> {
+    nodecraft_format::assets_in_changes(&Changeset::new(vec![Change::AddNode { canvas, node: node.clone() }]))
+}
+
+/// `target` with each card that names a missing asset as `current` has it, or without it if
+/// `current` has no such card. A frozen canvas waits whole.
+fn waiting_without(current: &Project, mut target: Project, missing: &BTreeSet<Blake3>) -> Result<Project, Error> {
+    let mut holds = Vec::new();
+    for (canvas_id, canvas) in target.canvases() {
+        let now = current.canvases().get(canvas_id);
+        for node in canvas.nodes().values() {
+            if now.and_then(|now| now.nodes().get(&node.id)) == Some(node) || assets_of(*canvas_id, node)?.is_disjoint(missing) {
+                continue;
+            }
+            if canvas.kind() == CanvasKind::Technique {
+                holds.push(match now {
+                    Some(now) => vec![Change::RemoveCanvas { id: *canvas_id }, Change::AddCanvas { canvas: now.clone() }],
+                    None => vec![Change::RemoveCanvas { id: *canvas_id }],
+                });
+                break;
+            }
+            let remove = Change::RemoveNode { canvas: *canvas_id, id: node.id };
+            holds.push(match now.and_then(|now| now.nodes().get(&node.id)) {
+                Some(now) => vec![Change::SetNode { canvas: *canvas_id, node: now.clone() }],
+                None => vec![remove],
+            });
+        }
+    }
+    for hold in holds {
+        // The card as it was may not fit the wires it now has: then it waits out of the canvas.
+        let fallback = match hold.first() {
+            Some(Change::SetNode { canvas, node }) => Some(Change::RemoveNode { canvas: *canvas, id: node.id }),
+            _ => None,
+        };
+        if Changeset::new(hold).apply(&mut target).is_err() {
+            match fallback {
+                Some(fallback) => {
+                    Changeset::new(vec![fallback]).apply(&mut target)?;
+                }
+                None => return Err(Error::new(ErrorKind::Conflict, "a shared technique can't wait for its assets")),
+            }
+        }
+    }
+    Ok(target)
+}
+
+fn take(session: &mut Session, sets: Vec<Changeset>) -> Result<(), Error> {
     for set in sets {
         session.apply_remote(set)?;
     }

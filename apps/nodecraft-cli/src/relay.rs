@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::io::ErrorKind as IoKind;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,8 +26,13 @@ const HELLO_WITHIN: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(20);
 /// How long a peer may take to accept a frame before the relay gives up on it.
 const WRITE_WITHIN: Duration = Duration::from_secs(30);
-/// The most frames waiting for one peer; a peer that falls this far behind is dropped.
-const MAX_WAITING: usize = 32;
+/// The most bytes waiting for one peer: one frame of the largest size and then some. A peer
+/// that falls further behind is dropped, whatever the number of frames.
+const MAX_WAITING_BYTES: usize = MAX_FRAME_BYTES + (32 << 20);
+/// The largest message before the hello: a hello is small.
+const MAX_HELLO_BYTES: usize = 4096;
+/// The most every room together may take in; past it, frames that add more are refused.
+const MAX_RELAY_BYTES: usize = 2 << 30;
 
 enum Push {
     Frame(Vec<u8>),
@@ -35,10 +40,17 @@ enum Push {
     Close(Vec<u8>),
 }
 
+/// Where one peer's frames go, and how many bytes wait there.
+struct Inbox {
+    room: RoomId,
+    sender: Sender<Push>,
+    waiting: Arc<AtomicUsize>,
+}
+
 #[derive(Default)]
 struct Rooms {
     rooms: BTreeMap<RoomId, Room>,
-    peers: BTreeMap<Peer, (RoomId, SyncSender<Push>)>,
+    peers: BTreeMap<Peer, Inbox>,
 }
 
 impl Rooms {
@@ -50,21 +62,28 @@ impl Rooms {
                 Out::Send(peer, frame) => (peer, frame, false),
                 Out::Close(peer, frame) => (peer, frame, true),
             };
-            let (Some((_, sender)), Ok(bytes)) = (self.peers.get(&peer), frame.encode()) else { continue };
-            match sender.try_send(if close { Push::Close(bytes) } else { Push::Frame(bytes) }) {
+            let (Some(inbox), Ok(bytes)) = (self.peers.get(&peer), frame.encode()) else { continue };
+            let size = bytes.len();
+            if inbox.waiting.load(Ordering::SeqCst).saturating_add(size) > MAX_WAITING_BYTES {
                 // Its connection hangs up when it sees its sender gone.
-                Err(TrySendError::Full(_)) => behind.push(peer),
-                // A connection that went away leaves on its own.
-                Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+                behind.push(peer);
+                continue;
             }
+            inbox.waiting.fetch_add(size, Ordering::SeqCst);
+            // A connection that went away leaves on its own.
+            let _ = inbox.sender.send(if close { Push::Close(bytes) } else { Push::Frame(bytes) });
         }
         for peer in behind {
             self.leave(peer);
         }
     }
 
+    fn held(&self) -> usize {
+        self.rooms.values().map(Room::held).fold(0, usize::saturating_add)
+    }
+
     fn leave(&mut self, peer: Peer) {
-        if let Some((room, _)) = self.peers.remove(&peer)
+        if let Some(Inbox { room, .. }) = self.peers.remove(&peer)
             && let Some(state) = self.rooms.get_mut(&room)
         {
             state.leave(peer);
@@ -122,8 +141,8 @@ pub fn start(listen: SocketAddr) -> Result<Relay, Error> {
     Ok(Relay { addr, accepting })
 }
 
-fn config() -> WebSocketConfig {
-    WebSocketConfig::default().max_message_size(Some(MAX_FRAME_BYTES)).max_frame_size(Some(MAX_FRAME_BYTES))
+fn config(largest: usize) -> WebSocketConfig {
+    WebSocketConfig::default().max_message_size(Some(largest)).max_frame_size(Some(largest))
 }
 
 /// Serves one peer until it leaves, is refused, or the connection fails.
@@ -131,19 +150,21 @@ fn connection(stream: TcpStream, peer: Peer, rooms: &Mutex<Rooms>) {
     if stream.set_read_timeout(Some(HELLO_WITHIN)).is_err() {
         return;
     }
-    let Ok(mut socket) = tungstenite::accept_with_config(stream, Some(config())) else { return };
-    let (sender, inbox) = sync_channel(MAX_WAITING);
-    if !enter(&mut socket, peer, sender, rooms) {
+    let Ok(mut socket) = tungstenite::accept_with_config(stream, Some(config(MAX_HELLO_BYTES))) else { return };
+    let (sender, inbox) = channel();
+    let waiting = Arc::new(AtomicUsize::new(0));
+    if !enter(&mut socket, peer, sender, Arc::clone(&waiting), rooms) {
         return;
     }
+    socket.set_config(|c| *c = config(MAX_FRAME_BYTES));
     if socket.get_ref().set_read_timeout(Some(POLL)).is_err() || socket.get_ref().set_write_timeout(Some(WRITE_WITHIN)).is_err() {
         return;
     }
-    serve(&mut socket, peer, &inbox, rooms);
+    serve(&mut socket, peer, &inbox, &waiting, rooms);
 }
 
 /// Reads the hello and joins its room; `false` if the peer doesn't get in.
-fn enter(socket: &mut WebSocket<TcpStream>, peer: Peer, sender: SyncSender<Push>, rooms: &Mutex<Rooms>) -> bool {
+fn enter(socket: &mut WebSocket<TcpStream>, peer: Peer, sender: Sender<Push>, waiting: Arc<AtomicUsize>, rooms: &Mutex<Rooms>) -> bool {
     let started = Instant::now();
     let hello = loop {
         match socket.read() {
@@ -163,7 +184,7 @@ fn enter(socket: &mut WebSocket<TcpStream>, peer: Peer, sender: SyncSender<Push>
         drop(rooms);
         return refuse(socket, "the relay has no room for another project");
     }
-    rooms.peers.insert(peer, (room.clone(), sender));
+    rooms.peers.insert(peer, Inbox { room: room.clone(), sender, waiting });
     let outs = rooms.rooms.entry(room).or_default().join(peer);
     rooms.deliver(outs);
     true
@@ -178,7 +199,7 @@ fn refuse(socket: &mut WebSocket<TcpStream>, message: &str) -> bool {
     false
 }
 
-fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, rooms: &Mutex<Rooms>) {
+fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, waiting: &AtomicUsize, rooms: &Mutex<Rooms>) {
     loop {
         loop {
             let push = match inbox.try_recv() {
@@ -190,10 +211,12 @@ fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, 
                 Push::Frame(bytes) => (bytes, false),
                 Push::Close(bytes) => (bytes, true),
             };
+            let size = bytes.len();
             // A peer that takes longer than WRITE_WITHIN to accept a frame is dropped.
             if socket.send(Message::binary(bytes)).is_err() {
                 return;
             }
+            waiting.fetch_sub(size.min(waiting.load(Ordering::SeqCst)), Ordering::SeqCst);
             if close {
                 let _ = socket.close(None);
                 let _ = socket.flush();
@@ -203,9 +226,12 @@ fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, 
         match socket.read() {
             Ok(Message::Binary(bytes)) => {
                 let mut rooms = lock(rooms);
-                let Some((room, _)) = rooms.peers.get(&peer) else { return };
-                let room = room.clone();
+                let Some(room) = rooms.peers.get(&peer).map(|inbox| inbox.room.clone()) else { return };
                 let outs = match Frame::decode(&bytes) {
+                    // What would add to what the relay holds waits until there is room for it.
+                    Ok(Frame::Update(_) | Frame::Step2(_) | Frame::AssetPut { .. }) if rooms.held() > MAX_RELAY_BYTES => {
+                        vec![Out::Close(peer, Frame::Refused("the relay is full".into()))]
+                    }
                     Ok(frame) => rooms.rooms.get_mut(&room).map(|state| state.handle(peer, frame)).unwrap_or_default(),
                     Err(_) => vec![Out::Close(peer, Frame::Refused("a frame the relay can't read".into()))],
                 };
