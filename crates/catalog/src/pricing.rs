@@ -94,6 +94,9 @@ pub enum Pricing {
     /// provider's cut (the mode's [`nodecraft_types::VideoEdit::uses_ms`]). The price is the one
     /// listed in `prices` for the value of the choice setting `param` (a resolution, say).
     PerSourceSecond { param: String, prices: BTreeMap<String, Price> },
+    /// [`Self::PerUnit`] counted from parameter `count`, at the price listed in `prices` for the
+    /// value of the choice setting `param` (#742: a second of video, priced by its resolution).
+    PerUnitByChoice { unit: Unit, count: String, param: String, prices: BTreeMap<String, Price> },
 }
 
 impl Pricing {
@@ -102,7 +105,7 @@ impl Pricing {
             Self::Free => None,
             Self::ByUsage { currency } => Some(*currency),
             Self::PerCall { price } | Self::PerUnit { price, .. } => Some(price.0.currency),
-            Self::PerSourceSecond { prices, .. } => prices.values().next().map(|price| price.0.currency),
+            Self::PerSourceSecond { prices, .. } | Self::PerUnitByChoice { prices, .. } => prices.values().next().map(|price| price.0.currency),
         }
     }
 
@@ -126,12 +129,13 @@ impl Pricing {
         match self {
             Self::PerSourceSecond { param, prices } => {
                 let Some(ms) = source_ms else { return Ok(None) };
-                let price = match get(param) {
-                    Some(Value::Text(choice)) => prices.get(choice.as_str()).ok_or_else(|| invalid("this setting has no listed price"))?,
-                    _ => return Err(invalid("the price depends on a setting that has no value")),
-                };
+                let price = chosen(&get, param, prices)?;
                 // Started seconds, and never less than one.
                 price.0.checked_mul_ratio(ms.div_ceil(1000).max(1), 1, Rounding::Up).map(Some)
+            }
+            Self::PerUnitByChoice { unit, count, param, prices } => {
+                let price = *chosen(&get, param, prices)?;
+                Self::PerUnit { unit: *unit, price, count: Some(count.clone()), default_count: None }.quote_source(get, None, fallback)
             }
             Self::Free => Ok(Some(Money::zero(fallback))),
             Self::ByUsage { .. } => Ok(None),
@@ -157,6 +161,14 @@ impl Pricing {
                 }
             }
         }
+    }
+}
+
+/// The price listed for the value of choice setting `param`.
+fn chosen<'p, 'a>(get: &impl Fn(&str) -> Option<&'a Value>, param: &str, prices: &'p BTreeMap<String, Price>) -> Result<&'p Price, Error> {
+    match get(param) {
+        Some(Value::Text(choice)) => prices.get(choice.as_str()).ok_or_else(|| invalid("this setting has no listed price")),
+        _ => Err(invalid("the price depends on a setting that has no value")),
     }
 }
 
@@ -290,6 +302,25 @@ mod tests {
         assert!(per_second.quote(&params, Currency::USD).is_err());
         params.insert("duration".into(), Value::Text("long".into()));
         assert!(per_second.quote(&params, Currency::USD).is_err());
+    }
+
+    #[test]
+    fn a_count_is_priced_by_the_chosen_setting() {
+        let prices = [("720p", "0.10 USD"), ("1080p", "0.12 USD")].map(|(k, v)| (k.to_owned(), v.parse::<Price>().unwrap())).into();
+        let pricing = Pricing::PerUnitByChoice { unit: Unit::Second, count: "duration".into(), param: "resolution".into(), prices };
+        let mut params = ParamValues::new();
+        params.insert("duration".into(), Value::Unsigned(Unsigned(8)));
+        assert!(pricing.quote(&params, Currency::USD).is_err(), "no resolution chosen");
+        params.insert("resolution".into(), Value::Text("1080p".into()));
+        assert_eq!(pricing.quote(&params, Currency::USD).unwrap(), Some(usd(960_000)));
+        params.insert("resolution".into(), Value::Text("720p".into()));
+        assert_eq!(pricing.quote(&params, Currency::USD).unwrap(), Some(usd(800_000)));
+        params.insert("resolution".into(), Value::Text("4k".into()));
+        assert!(pricing.quote(&params, Currency::USD).is_err(), "an unlisted choice");
+        params.insert("resolution".into(), Value::Text("720p".into()));
+        params.remove("duration");
+        assert!(pricing.quote(&params, Currency::USD).is_err(), "no count");
+        assert_eq!(pricing.currency(), Some(Currency::USD));
     }
 
     #[test]

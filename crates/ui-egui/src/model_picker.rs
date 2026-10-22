@@ -270,23 +270,27 @@ fn price_label(model: &ModelDescriptor) -> String {
         Pricing::Free => "Free".into(),
         Pricing::ByUsage { currency } => format!("Usage based ({})", String::from(*currency)),
         Pricing::PerCall { price } => format!("{} / call", amount(price.0)),
-        Pricing::PerUnit { unit, price, .. } => format!(
-            "{} / {}",
-            amount(price.0),
-            match unit {
-                Unit::Image => "image",
-                Unit::Second => "second",
-                Unit::Megapixel => "megapixel",
-                Unit::ThousandTokens => "1,000 tokens",
-                Unit::ThousandCharacters => "1,000 characters",
-                Unit::ThousandSteps => "1,000 training steps",
-            }
-        ),
+        Pricing::PerUnit { unit, price, .. } => format!("{} / {}", amount(price.0), unit_label(*unit)),
+        Pricing::PerUnitByChoice { unit, prices, .. } => match prices.values().map(|price| price.0).min_by_key(|money| money.micros) {
+            Some(cheapest) if prices.len() > 1 => format!("From {} / {}", amount(cheapest), unit_label(*unit)),
+            Some(price) => format!("{} / {}", amount(price), unit_label(*unit)),
+            None => format!("Priced per {}", unit_label(*unit)),
+        },
         Pricing::PerSourceSecond { prices, .. } => match prices.values().map(|price| price.0).min_by_key(|money| money.micros) {
             Some(cheapest) if prices.len() > 1 => format!("From {} / second of source", amount(cheapest)),
             Some(price) => format!("{} / second of source", amount(price)),
             None => "Priced per second of source".into(),
         },
+    }
+}
+fn unit_label(unit: Unit) -> &'static str {
+    match unit {
+        Unit::Image => "image",
+        Unit::Second => "second",
+        Unit::Megapixel => "megapixel",
+        Unit::ThousandTokens => "1,000 tokens",
+        Unit::ThousandCharacters => "1,000 characters",
+        Unit::ThousandSteps => "1,000 training steps",
     }
 }
 fn modality(modality: Modality) -> &'static str {
