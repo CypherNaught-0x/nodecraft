@@ -134,6 +134,24 @@ contracts, not a sandbox for unrelated side effects in arbitrary Rust code. Dire
 Result APIs and the usage log format are unchanged. No message text, HTTP status or connection
 heuristic establishes nonbilling.
 
+## Provider quotes
+
+A catalog model priced `by_usage` has no price before it runs. When its provider can say what a job
+would cost, `Provider::quote` answers with no idempotency key and spends nothing; the default
+answer is "unsupported". `run.estimate` (same params as `run.quote`) asks the run host to build
+each by-usage job exactly as the run would send it and quote it on the same provider instance; the
+answers arrive as `RunNotice::Estimated`, carrying the request id the command returned, and are
+kept by the session for that provider routing for ten minutes. Asking sends the job's inputs, so an
+image is uploaded to the provider before anyone accepts the run; nothing is charged.
+`run.quote` and `run.start` then price a by-usage step at the dearest of its jobs' quotes, when
+every one of its jobs was quoted, list it in `quoted`, and check budgets against it. A job whose
+quote failed, timed out (60 s) or wasn't asked (its inputs are made earlier in the same run) keeps
+the step unknown before execution. New quotes change the quote token, so a run quoted before
+them must be quoted again. The desktop confirmation asks for estimates by itself when part of the
+price is unknown (also when a budget refuses that unknown part), says the inputs are sent while it
+asks, then re-prices. Mock fixtures cover this (`MockProvider::with_quote`); nothing
+here calls a real provider in tests.
+
 ## Live tests
 
 Live smoke tests are opt-in and never run in CI. Each costs a few tokens:
@@ -643,8 +661,9 @@ is sent, and a provider message that echoes either part is withheld.
 **Cost.** Higgsfield bills in credits whose price depends on the account's plan, so the catalog
 prices these models as unknown before execution rather than baking in a plan's rate.
 `Higgsfield::estimate` asks Higgsfield's estimate endpoint about the exact body a submit would
-send (credits and USD, rounded up to the micro). The run engine doesn't call it yet: quoting runs
-with it and checking budgets against it is a follow-up.
+send (credits and USD, rounded up to the micro). It is the adapter's `Provider::quote`, so a run's
+confirmation asks it first (see *Provider quotes* below). An image an estimate uploads is kept,
+by content, for the next submit that sends it, so quoting a run doesn't upload twice.
 
 **Genjutsu edits (#179).** Each mode declares its source video edit in the catalog (`edit`: the
 operation, the source role, the shortest source, how much of a longer one is used, the smallest

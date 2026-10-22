@@ -134,6 +134,21 @@ pub(super) struct Tick {
     pub abandoned: bool,
     /// Something to tell the person: a run that couldn't start or a provider that can't run.
     pub notice: Option<String>,
+    /// Providers answered `run.estimate` requests (#663), or they couldn't ask them.
+    pub estimated: Vec<Estimated>,
+}
+
+/// How the `run.estimate` that returned `request` ended.
+pub(super) enum Estimated {
+    /// The providers answered; `unquoted` jobs had no price.
+    Answered {
+        request: u64,
+        unquoted: usize,
+    },
+    Failed {
+        request: u64,
+        reason: String,
+    },
 }
 
 pub(super) struct Runs {
@@ -197,6 +212,7 @@ impl Runs {
         };
         let host = RunHost::new(runtime, budget);
         host.register(services)?;
+        host.register_estimates(services)?;
         host.register_ownership(services)?;
         host.register_resolution(services)?;
         Ok(Self {
@@ -420,6 +436,8 @@ impl Runs {
                 }
                 RunNotice::Refused { reason } => notices.push(format!("The run didn't start: {reason}")),
                 RunNotice::Unsaved { reason } => notices.push(format!("Runs can't be kept for a restart: {reason}")),
+                RunNotice::Estimated { request, unquoted, .. } => tick.estimated.push(Estimated::Answered { request, unquoted }),
+                RunNotice::NotEstimated { request, reason } => tick.estimated.push(Estimated::Failed { request, reason }),
                 RunNotice::Finished { .. } => {}
             }
         }
@@ -513,7 +531,7 @@ impl Runs {
 
     /// Whether anything is in progress, so the next frame comes without input.
     pub(super) fn is_busy(&self) -> bool {
-        self.host.is_busy() || !self.asked.is_empty()
+        self.host.is_busy() || self.host.is_estimating() || !self.asked.is_empty()
     }
 
     pub(super) fn is_running(&self, canvas: CanvasId, node: NodeId) -> bool {

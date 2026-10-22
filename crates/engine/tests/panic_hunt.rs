@@ -434,6 +434,7 @@ fn template(id: &str) -> (Session, Value) {
         }
         "canvas.paste" => json!({"canvas":canvas(),"nodes":[node(3)],"edges":[]}),
         "run.quote" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]}),
+        "run.estimate" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]}),
         "run.start" => {
             let mut request = json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]});
             let quote = session.dispatch("run.quote", &request).unwrap();
@@ -672,6 +673,7 @@ fn typed_template_panic_hunt() {
                             | "canvas.search_previous"
                             | "canvas.search_close"
                             | "run.quote"
+                            | "run.estimate"
                             | "run.start"
                             | "usage.export_csv"
                             | "perf.start"

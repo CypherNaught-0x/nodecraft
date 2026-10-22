@@ -140,6 +140,7 @@ impl MockProvider {
             models: Arc::new(model_map),
             scripts: Arc::new(scripts),
             streams: Arc::default(),
+            quotes: Arc::default(),
             state: Arc::new(Mutex::new(State { scripted: progress, ..State::default() })),
         })
     }

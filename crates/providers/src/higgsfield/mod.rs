@@ -39,7 +39,7 @@ const SOUL_PAGE: usize = 50;
 const SOUL_PAGES: usize = 20;
 const API: &str = "https://api.higgsfield.ai";
 const MIB: usize = 1024 * 1024;
-/// Bodies kept for exact replay; the oldest goes first.
+/// Bodies kept for exact replay, and uploads kept from estimates; the oldest goes first.
 const STAGED: usize = 32;
 
 /// Lower-only payload limits for one job.
@@ -169,6 +169,20 @@ struct Staged {
     body: Arc<[u8]>,
 }
 
+/// A file an estimate uploaded, kept for the submit that follows it.
+struct Uploaded {
+    mime: &'static str,
+    bytes: ContentHash,
+    url: String,
+}
+
+/// Whether an upload is for an estimate, which keeps it, or a submit, which takes it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Use {
+    Estimate,
+    Submit,
+}
+
 /// Fixed-origin queue adapter. Constructing it reads no credential and sends nothing.
 pub struct Higgsfield {
     /// The key ID and secret joined by a colon, as Higgsfield issues them.
@@ -176,10 +190,14 @@ pub struct Higgsfield {
     http: Arc<dyn Http>,
     limits: Limits,
     staged: Mutex<VecDeque<Staged>>,
+    /// Uploads made for estimates (#663). The job a person runs after its estimate sends the
+    /// same files again, but its seeds are drawn and its body built only then; the files are
+    /// what can be reused, each by one submit.
+    uploaded: Mutex<VecDeque<Uploaded>>,
 }
 impl Higgsfield {
     pub fn new(key: Secret, http: Arc<dyn Http>) -> Self {
-        Self { key, http, limits: Limits::HARD, staged: Mutex::new(VecDeque::new()) }
+        Self { key, http, limits: Limits::HARD, staged: Mutex::new(VecDeque::new()), uploaded: Mutex::new(VecDeque::new()) }
     }
     pub fn with_limits(key: Secret, http: Arc<dyn Http>, limits: Limits) -> Result<Self, ProviderError> {
         Ok(Self { limits: limits.validate()?, ..Self::new(key, http) })
@@ -226,17 +244,7 @@ impl Higgsfield {
         if let Some(id) = &prepared.reference {
             self.ready(id).await?;
         }
-        let video = match &prepared.video {
-            Some(video) => Some(self.upload(video.mime, video.bytes).await?),
-            None => None,
-        };
-        let mut urls = Vec::new();
-        urls.try_reserve_exact(prepared.images.len()).map_err(|_| malformed("Higgsfield bounded allocation failed"))?;
-        for image in &prepared.images {
-            urls.push(self.upload(image.mime, image.bytes).await?);
-        }
-        let body: Arc<[u8]> =
-            serde_json::to_vec(&prepared.body(video.as_deref(), &urls)?).map_err(|_| malformed("Higgsfield request couldn't be encoded"))?.into();
+        let body = self.body(prepared, Use::Submit).await?;
         let mut staged = self.lock();
         // Another submit under this key may have staged first; keep the body it may have sent.
         if let Some(existing) = staged.iter().find(|s| s.key == job.idempotency_key && s.job == fingerprint) {
@@ -248,6 +256,51 @@ impl Higgsfield {
         }
         staged.push_back(Staged { key: job.idempotency_key.clone(), job: fingerprint, body: Arc::clone(&body) });
         Ok(body)
+    }
+    /// The body for `prepared`, its source video and images uploaded, or reused from an estimate.
+    async fn body(&self, prepared: &request::Prepared<'_>, using: Use) -> Result<Arc<[u8]>, ProviderError> {
+        let video = match &prepared.video {
+            Some(video) => Some(self.file(video.mime, video.bytes, using).await?),
+            None => None,
+        };
+        let mut urls = Vec::new();
+        urls.try_reserve_exact(prepared.images.len()).map_err(|_| malformed("Higgsfield bounded allocation failed"))?;
+        for image in &prepared.images {
+            urls.push(self.file(image.mime, image.bytes, using).await?);
+        }
+        Ok(serde_json::to_vec(&prepared.body(video.as_deref(), &urls)?).map_err(|_| malformed("Higgsfield request couldn't be encoded"))?.into())
+    }
+    fn uploads(&self) -> std::sync::MutexGuard<'_, VecDeque<Uploaded>> {
+        self.uploaded.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    /// The URL of `bytes` on Higgsfield's storage: one an estimate uploaded, else a new upload.
+    /// An estimate keeps what it uploads for later estimates and the next submit; a submit takes
+    /// it, so an upload is reused by one submit only and never long after it was made.
+    async fn file(&self, mime: &'static str, bytes: &[u8], using: Use) -> Result<String, ProviderError> {
+        let hash = ContentHash::of(bytes);
+        {
+            let mut uploads = self.uploads();
+            if let Some(at) = uploads.iter().position(|u| u.mime == mime && u.bytes == hash) {
+                let url = match using {
+                    Use::Estimate => uploads.get(at).map(|u| u.url.clone()),
+                    Use::Submit => uploads.remove(at).map(|u| u.url),
+                };
+                if let Some(url) = url {
+                    return Ok(url);
+                }
+            }
+        }
+        let url = self.upload(mime, bytes).await?;
+        if using == Use::Estimate {
+            let mut uploads = self.uploads();
+            if !uploads.iter().any(|u| u.mime == mime && u.bytes == hash) {
+                if uploads.len() >= STAGED {
+                    uploads.pop_front();
+                }
+                uploads.push_back(Uploaded { mime, bytes: hash, url: url.clone() });
+            }
+        }
+        Ok(url)
     }
     /// Uploads one image or video through a presigned grant; the bytes go to storage without the key.
     async fn upload(&self, mime: &'static str, bytes: &[u8]) -> Result<String, ProviderError> {
@@ -285,11 +338,11 @@ impl Higgsfield {
         let id = response::receipt(&reply.body)?;
         Ok(Submission::Queued(JobHandle { remote_id: id, data: serde_json::json!({"v": 1, "model": prepared.model, "count": prepared.count}) }))
     }
-    /// What Higgsfield says this job would cost this account. Free: it stages the job's images,
-    /// and a submit of the same job afterwards sends exactly the body that was quoted.
+    /// What Higgsfield says this job would cost this account. Free, and it uses no idempotency
+    /// key: it uploads the job's files, and the next submit sending the same files reuses them.
     pub async fn estimate(&self, job: &ProviderJob) -> Result<Estimate, ProviderError> {
         let prepared = request::prepare(job, self.limits)?;
-        let body = self.stage(job, &prepared).await?;
+        let body = self.body(&prepared, Use::Estimate).await?;
         let mut quote = HttpRequest { method: HttpMethod::Post, body: body.to_vec(), ..HttpRequest::get(format!("{API}/estimate/{}", prepared.model)) }
             .header("Content-Type", "application/json")
             .timeout_ms(30_000);
@@ -435,6 +488,10 @@ impl Provider for Higgsfield {
     }
     fn submit<'a>(&'a self, j: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         Box::pin(self.create(j, None))
+    }
+    /// The plan's price in US dollars, from [`Higgsfield::estimate`].
+    fn quote<'a>(&'a self, j: &'a ProviderJob) -> BoxFuture<'a, Result<nodecraft_types::Money, ProviderError>> {
+        Box::pin(async move { self.estimate(j).await.map(|estimate| estimate.usd) })
     }
     fn submit_with_delivery<'a>(&'a self, j: &'a ProviderJob, context: &'a crate::SubmitContext) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         // This constructor is pure; create marks the paid request before it sends it.

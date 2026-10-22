@@ -155,6 +155,14 @@ pub trait Provider: MaybeSendSync {
         self.submit(job)
     }
 
+    /// What this job would cost, asked of the provider before it is submitted (#663), for models
+    /// the catalog prices `by_usage`. Must be free: it sends nothing billable and never uses the
+    /// job's idempotency key, which callers leave empty. Unsupported unless the provider can say.
+    fn quote<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Money, ProviderError>> {
+        let _ = job;
+        Box::pin(async { Err(ProviderError::new(crate::ErrorKind::UnsupportedInput, "this provider can't quote a job before it runs")) })
+    }
+
     /// Reports how a submitted job is doing.
     fn poll<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>>;
 

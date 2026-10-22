@@ -57,6 +57,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+mod estimates;
 mod held;
 mod partial;
 mod resume;
@@ -144,6 +145,11 @@ pub enum RunNotice {
     /// The run journal couldn't be read or saved, so what is running may not be followed again
     /// after a restart. Raised once until a save succeeds again.
     Unsaved { reason: String },
+    /// Providers answered the `run.estimate` that returned `request` (#663): `quoted` jobs have a
+    /// price, `unquoted` ones stay priced only while they run. Quote the run again to see it.
+    Estimated { request: u64, canvas: CanvasId, quoted: usize, unquoted: usize },
+    /// The `run.estimate` that returned `request` couldn't ask anything, and why.
+    NotEstimated { request: u64, reason: String },
 }
 
 /// What the driver and the runner report, waiting for `pump`. Bounded by the run's jobs, which
@@ -245,6 +251,8 @@ pub struct RunHost {
     results: Arc<Mutex<held::Held>>,
     /// ffmpeg and ffprobe for timeline renders (#109), from the settings.
     video_tools: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    /// `run.estimate` requests (#663).
+    estimates: estimates::Estimates,
 }
 
 /// The journal's store and the submitted jobs as last saved, for the write-ahead: a runner saves
@@ -285,6 +293,7 @@ impl RunHost {
             kept_handles: Arc::default(),
             results: Arc::default(),
             video_tools: None,
+            estimates: estimates::Estimates::default(),
         }
     }
 
@@ -497,6 +506,12 @@ impl RunHost {
         held::register(&self.results, services)
     }
 
+    /// Registers the `run.estimate` service (#663); call once, before the session is built, on a
+    /// host that pumps while no run is going (the next [`Self::pump`] asks the providers).
+    pub fn register_estimates(&self, services: &mut Services) -> Result<(), Error> {
+        self.estimates.register(services)
+    }
+
     /// The paid results waiting for a decision (#369), oldest first.
     pub fn held_results(&self) -> Vec<HeldView> {
         lock(&self.results).views()
@@ -551,6 +566,11 @@ impl RunHost {
     /// Whether any run is waiting or running.
     pub fn is_busy(&self) -> bool {
         !self.runs.is_empty() || !self.resumes.live.is_empty() || !lock(&self.inbox).waiting.is_empty()
+    }
+
+    /// Whether a `run.estimate` is waiting or being answered.
+    pub fn is_estimating(&self) -> bool {
+        self.estimates.is_busy()
     }
 
     /// The nodes with work queued or running, for "running" badges.
@@ -648,6 +668,7 @@ impl RunHost {
         }
         keep_recent(&mut self.recent, self.resumes.jobs.ended.drain(..));
         act_on_held(session, &self.results, &mut notices);
+        self.estimates.pump(session, &self.runtime, &mut notices);
         if settled {
             lock(&self.journal).reconciled = false;
             refresh(session, &self.budget);

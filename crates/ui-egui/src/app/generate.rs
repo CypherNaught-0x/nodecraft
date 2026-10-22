@@ -47,6 +47,11 @@ pub(super) struct RunConfirm {
     /// Explicit consent to the unknown part of an incomplete price.
     partial: bool,
     error: Option<String>,
+    /// The `run.estimate` request asking its providers to price its by-usage jobs (#663), until
+    /// they answer.
+    estimating: Option<u64>,
+    /// What the providers couldn't price, once they answered.
+    estimate_note: Option<String>,
 }
 
 #[cfg(test)]
@@ -59,6 +64,11 @@ impl RunConfirm {
     /// Whether it warns that unsaved edits are not part of the run.
     pub(super) fn drafts(&self) -> bool {
         self.drafts
+    }
+
+    /// Whether it waits for its providers' prices.
+    pub(super) fn estimating(&self) -> bool {
+        self.estimating.is_some()
     }
 }
 
@@ -77,6 +87,10 @@ pub(super) struct Quote {
     listed: bool,
     /// Some batch is priced for every item but may run only those its partial result lacks.
     resumable: bool,
+    /// Steps priced by their provider before running (#663).
+    quoted: usize,
+    /// The planner found nothing in the way; a budget may still refuse the price.
+    planned: bool,
 }
 
 fn line(text: &str) -> String {
@@ -109,7 +123,9 @@ impl Quote {
             unpriced_jobs = unpriced_jobs.checked_add(step.get("jobs").and_then(Json::as_u64).unwrap_or(1))?;
         }
         let resumable = value.get("resumable").and_then(Json::as_array).is_some_and(|nodes| !nodes.is_empty());
-        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed, resumable })
+        let quoted = value.get("quoted").and_then(Json::as_array).map_or(0, Vec::len);
+        let planned = value.get("blocked").and_then(Json::as_array).is_none_or(Vec::is_empty);
+        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed, resumable, quoted, planned })
     }
 
     /// Whether the quote can be accepted as shown, given the consent collected so far.
@@ -171,8 +187,16 @@ impl NodeCraftApp {
                 return Ok(());
             }
         }
-        let value = self.session.dispatch("run.quote", &json!({"canvas": self.canvas, "mode": kind.mode(), "nodes": nodes}))?;
+        let request = json!({"canvas": self.canvas, "mode": kind.mode(), "nodes": nodes});
+        let value = self.session.dispatch("run.quote", &request)?;
         let quote = Quote::read(&value).ok_or_else(|| Error::new(ErrorKind::Internal, "the run's price could not be read; nothing was started"))?;
+        // Jobs priced only while they run may have a price their provider can give now (#663),
+        // which may also be what a budget needs to allow them; a host that can't ask refuses the
+        // command.
+        let estimating = (quote.planned && quote.unpriced_jobs > 0)
+            .then(|| self.session.dispatch("run.estimate", &request).ok())
+            .flatten()
+            .and_then(|answer| answer.get("request").and_then(Json::as_u64));
         let drafts = nodes.iter().any(|id| self.editors.get(id).is_some_and(EditorState::has_uncommitted) || self.sheet_draft_pending(*id));
         self.run_confirm = Some(RunConfirm {
             session: self.session.view_identity(),
@@ -184,8 +208,46 @@ impl NodeCraftApp {
             drafts,
             partial: false,
             error: None,
+            estimating,
+            estimate_note: None,
         });
         Ok(())
+    }
+
+    /// Prices the open confirmation again once its providers answered a `run.estimate`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn estimated(&mut self, estimated: super::runs::Estimated) {
+        let request = match &estimated {
+            super::runs::Estimated::Answered { request, .. } | super::runs::Estimated::Failed { request, .. } => *request,
+        };
+        // An answer to another confirmation's request is late; it priced nothing shown here.
+        let Some(confirm) = self.run_confirm.as_mut().filter(|confirm| confirm.estimating == Some(request)) else {
+            return;
+        };
+        confirm.estimating = None;
+        let unquoted = match estimated {
+            super::runs::Estimated::Answered { unquoted, .. } => unquoted,
+            super::runs::Estimated::Failed { reason, .. } => {
+                confirm.estimate_note = Some(format!("The provider couldn't give a price before running: {}", line(&reason)));
+                return;
+            }
+        };
+        if unquoted > 0 {
+            confirm.estimate_note = Some(format!("The provider couldn't price {unquoted} job(s) before they run."));
+        }
+        // A canvas edited since is quoted again by hand, from the stale notice.
+        if confirm.revision != self.session.revision() || confirm.error.is_some() {
+            return;
+        }
+        let request = json!({"canvas": confirm.canvas, "mode": confirm.kind.mode(), "nodes": confirm.nodes});
+        match self.session.dispatch("run.quote", &request).ok().as_ref().and_then(Quote::read) {
+            Some(quote) => {
+                confirm.quote = quote;
+                // Consent was to the price shown before.
+                confirm.partial = false;
+            }
+            None => confirm.estimate_note = Some("The run couldn't be priced again; quote it again to see the providers' prices.".into()),
+        }
     }
 
     /// Pumps the runs once a frame, and quotes a card whose provider just became ready.
@@ -209,6 +271,9 @@ impl NodeCraftApp {
         }
         if let Some(notice) = tick.notice {
             self.notice = Some(notice);
+        }
+        for estimated in tick.estimated {
+            self.estimated(estimated);
         }
         // Quoted last: if it can't be, that is the newest thing to say.
         if let Some((nodes, kind)) = tick.ready
@@ -240,6 +305,14 @@ impl NodeCraftApp {
                 for reason in &quote.reasons {
                     ui.label(reason);
                 }
+                if confirm.estimating.is_some() {
+                    ui.label(
+                        "Asking the provider for a price, which sends it this run's inputs (nothing is charged). The run is checked again when it answers.",
+                    );
+                }
+                if let Some(note) = &confirm.estimate_note {
+                    ui.label(note);
+                }
             } else {
                 ui.label(egui::RichText::new(quote.price()).color(t.text).strong());
                 if !quote.complete {
@@ -248,6 +321,15 @@ impl NodeCraftApp {
                     }
                     ui.label("Part of the price is unknown or estimated. The run stops at the amount shown above.");
                     ui.checkbox(&mut confirm.partial, "Accept the unknown part of the price");
+                }
+                if confirm.estimating.is_some() {
+                    ui.label("Asking the provider for a price, which sends it this run's inputs (nothing is charged)…");
+                }
+                if quote.quoted > 0 {
+                    ui.label(format!("{} step(s) are priced by their provider's quote.", quote.quoted));
+                }
+                if let Some(note) = &confirm.estimate_note {
+                    ui.label(note);
                 }
                 if quote.resumable {
                     ui.label("A batch is priced for every item. Items it finished before aren't charged again if its inputs come out the same.");

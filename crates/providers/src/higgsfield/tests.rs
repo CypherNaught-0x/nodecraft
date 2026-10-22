@@ -180,6 +180,25 @@ fn an_estimate_quotes_the_body_a_later_submit_sends() {
     assert_eq!(r[2].url, "https://api.higgsfield.ai/estimate/kling-video/v2.5-turbo/pro/image-to-video");
     assert_eq!(header(&r[2], "Idempotency-Key"), None);
     assert_eq!(r[2].body, r[3].body);
+    // The trait quote uses no key; the run draws its seeds and keys later, so only its files
+    // can be reused, and each by one submit.
+    let t = Transport::new(vec![grant(), empty(200), ok(json!({"credits": "1", "usd": "0.5"})), ok(json!({"credits": "1", "usd": "0.5"}))]);
+    let p = adapter(&t);
+    let unkeyed = ProviderJob { idempotency_key: String::new(), ..kling() };
+    assert_eq!(block_on(Provider::quote(&p, &unkeyed)).unwrap(), nodecraft_types::Money::new(nodecraft_types::Currency::USD, 500_000));
+    block_on(p.estimate(&unkeyed)).unwrap();
+    assert_eq!(t.requests().len(), 4, "a second estimate reuses the upload");
+    t.push(vec![receipt(), grant(), empty(200), receipt()]);
+    let mut run = ProviderJob { idempotency_key: "nodecraft:run:1".into(), ..kling() };
+    run.params.insert("cfg_scale".into(), json!(0.5));
+    block_on(p.submit(&run)).unwrap();
+    let r = t.requests();
+    assert_eq!(r.len(), 5, "the submit sends the uploaded file without uploading it again");
+    assert_eq!(header(&r[4], "Idempotency-Key"), Some("nodecraft:run:1"));
+    assert_eq!(body(&r[4])["image_url"], body(&r[3])["image_url"]);
+    assert_eq!(body(&r[4])["cfg_scale"], 0.5);
+    block_on(p.submit(&ProviderJob { idempotency_key: "nodecraft:run:2".into(), ..kling() })).unwrap();
+    assert_eq!(t.requests().len(), 8, "the next submit uploads afresh");
     for bad in [
         json!({"credits": "1", "usd": "-1"}),
         json!({"credits": "1", "usd": 1.5}),
