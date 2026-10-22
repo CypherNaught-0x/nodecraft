@@ -103,7 +103,7 @@ fn canvas_frame_times() {
                 h.state_mut().view.zoom_at(origin, Pos2::new(800.0, 500.0), factor);
             });
             eprintln!("ppp {ppp} {count:>5} nodes  zoom sweep 0.1-1.0: {stats}");
-            // The frame after an edit (every cached schema is checked against the new revision).
+            // The frame after a move (every cached schema is checked against the new revision).
             settle(&mut h, 0.1);
             let canvas = h.state().canvas;
             let stats = frames(&mut h, 60, |h, frame| {
@@ -111,7 +111,7 @@ fn canvas_frame_times() {
                 let pos = json!({"x": (frame % 50) as f32 * 400.0, "y": 10.0 * (frame % 3) as f32});
                 h.state_mut().session.dispatch("node.move", &json!({"canvas": canvas, "id": id, "pos": pos})).unwrap();
             });
-            eprintln!("ppp {ppp} {count:>5} nodes  frame after an edit at 0.1: {stats}");
+            eprintln!("ppp {ppp} {count:>5} nodes  frame after a move at 0.1: {stats}");
         }
     }
 }

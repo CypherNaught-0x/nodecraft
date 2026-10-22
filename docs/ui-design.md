@@ -141,18 +141,18 @@ message. Asset controls display/remove existing references; OS file drop and des
   nothing skips it, and #556 adds it to that command: `node.param_set` on the text source at the
   head of a row of the same generated graphs, at the same 10% zoom and in the same span (the egui
   pass with AccessKit plus tessellation; the edit itself is untimed, dispatched just before the
-  frame it is measured in), with a move loop from the same process printed beside it. Five runs on
-  an Apple M3 Pro, 12 CPUs, 2026-10-21, at load average 12-15. The least-contended of them, at 1
-  pixel per point: 2.27 ms after a move and 4.95 ms after a parameter edit at 200 nodes, 7.97 and
+  frame it is measured in), with a move loop from the same process printed beside it. These are
+  load-condition numbers, not quiet-machine measurements: five runs on an Apple M3 Pro, 12 CPUs,
+  2026-10-21, at load average 12-15. The least-contended of them, at 1 pixel per point: 2.27 ms after a move and 4.95 ms after a parameter edit at 200 nodes, 7.97 and
   22.93 ms at 1,000; the median of the five is the same 2.27 against 5.14, and 9.31 against 27.03
   ms. At 2 pixels that same run reads 2.18 against 4.97 and 8.02 against 22.30 ms. The moves took
-  no live look at all and the edits one per frame, which is the difference the pair is measuring,
-  and the edit an app cannot skip costs a little over twice the one it can, at both sizes. That
-  move half also lands on the #549 line above, 2.3 and 7.8 ms, within 0.2 ms, which is what makes
-  the two worth reading together; #556 quotes #203's frame after an edit at 1.82 and 6.21 ms and
-  the layout-only case now reads 2.27 and 7.97, so whether that has really slipped is a question
-  for a quieter machine than this one. The spread matters as much as the figures: runs taken
-  earlier the same day, while other builds held the load average at 40-55, came out up to 3× worse
+  no live look at all and the edits one per frame, which is the difference the pair is measuring:
+  the edit costs about 2× a move at 200 nodes and about 3× at 1,000. The gap grows with node count
+  because the edit runs the O(nodes) `live_actions::pending` path that a move skips. The move half
+  also lands on the #549 line above, 2.3 and 7.8 ms, within 0.2 ms, which is what makes the two
+  worth reading together. #203's frame after an edit was 1.82 and 6.21 ms; these loaded runs
+  cannot establish a comparable change from that quiet-machine baseline. A quiet re-measure is
+  tracked in #743. The spread matters as much as the figures: runs taken earlier the same day, while other builds held the load average at 40-55, came out up to 3× worse
   (a 1,000-node pan read 9.4 ms in one and 27.7 ms in the other). Pass `--test-threads=1` when
   rerunning, or the ignored cases share the machine with each other on top of everything else.
 - Grid dots keep a fixed screen size. When zooming out would put them closer than 12 points, the
