@@ -202,6 +202,27 @@ fn the_overlay_shows_on_a_media_card_and_h_toggles_it_both_ways() {
 }
 
 #[test]
+fn scoped_command_toggles_the_actual_image_overlay_without_document_edits() {
+    let mut h = image();
+    let ctx = h.ctx.clone();
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    assert_eq!(overlay(&h), [true, true, true]);
+    assert!(h.state_mut().navigation_enabled(&ctx, "canvas.prompt_overlays_toggle", &json!({})).is_ok());
+    let response = h.state_mut().dispatch_navigation(&ctx, "canvas.prompt_overlays_toggle", &json!({})).unwrap();
+    assert_eq!(response["prompt_overlays_visible"], false);
+    h.run();
+    assert_eq!(overlay(&h), [false, false, false]);
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert!(h.state_mut().dispatch_navigation(&ctx, "canvas.prompt_overlays_toggle", &json!({"unexpected":true})).is_err());
+    assert!(!h.state().prompt_overlays, "invalid params leave the view untouched");
+    h.state_mut().dispatch_navigation(&ctx, "canvas.prompt_overlays_toggle", &json!({})).unwrap();
+    h.run();
+    assert_eq!(overlay(&h), [true, true, true]);
+}
+
+#[test]
 fn hiding_the_overlay_leaves_the_document_revision_and_history_untouched() {
     let mut h = image();
     let document = h.state().session.document().clone();

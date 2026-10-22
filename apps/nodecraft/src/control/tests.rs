@@ -44,7 +44,7 @@ fn authenticated_live_control_navigation_changes_view_without_document_edits() {
     let history = (app.session.can_undo(), app.session.can_redo());
     let mut connection = connection();
     let entries = list(&mut app, &ctx, &mut connection);
-    for id in ["canvas.fit_all", "canvas.minimap_toggle"] {
+    for id in ["canvas.fit_all", "canvas.minimap_toggle", "canvas.prompt_overlays_toggle"] {
         assert_eq!(entries["commands"].as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["ready"], true);
     }
     let sentinel = NavigationContext { canvas: app.canvas, viewport_available: false, blocked: true, fit_all: false, fit_selection: false };
@@ -68,6 +68,10 @@ fn authenticated_live_control_navigation_changes_view_without_document_edits() {
     let response = run(&mut app, &ctx, &mut connection, "canvas.minimap_toggle", json!({})).unwrap();
     assert_eq!(app.navigation.visible, !visible);
     assert_eq!(response["result"]["minimap_visible"], !visible);
+    let response = run(&mut app, &ctx, &mut connection, "canvas.prompt_overlays_toggle", json!({})).unwrap();
+    assert_eq!(response["result"]["prompt_overlays_visible"], false);
+    let response = run(&mut app, &ctx, &mut connection, "canvas.prompt_overlays_toggle", json!({})).unwrap();
+    assert_eq!(response["result"]["prompt_overlays_visible"], true);
     assert_eq!(app.session.document(), &document);
     assert_eq!(app.session.revision(), revision);
     assert_eq!(app.session.events_since(0).unwrap(), events);
@@ -142,9 +146,13 @@ fn graph_commands_headless_refusal_and_screenshot_pending_keep_their_paths() {
     run(&mut app, &ctx, &mut connection, "edit.undo", json!({})).unwrap();
     assert_eq!(app.session.document(), &before);
     assert!(app.session.can_redo());
-    for (id, params) in
-        [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":0,"y":0}))]
-    {
+    for (id, params) in [
+        ("canvas.fit_all", json!({})),
+        ("canvas.fit_selection", json!({})),
+        ("canvas.minimap_toggle", json!({})),
+        ("canvas.prompt_overlays_toggle", json!({})),
+        ("canvas.pan_to", json!({"x":0,"y":0})),
+    ] {
         let headless = request(&mut connection, "command.run", json!({"id":id,"params":params}));
         assert_eq!(control::answer(&mut app.session, &headless).unwrap().unwrap_err().kind, ErrorKind::Unsupported);
     }
@@ -186,7 +194,7 @@ fn active_minimap_drag_refuses_external_navigation_until_release() {
     let selection = h.state().selection.clone();
     let view = h.state().view;
     let entries = list(h.state_mut(), &ctx, &mut connection);
-    for id in ["canvas.fit_all", "canvas.minimap_toggle"] {
+    for id in ["canvas.fit_all", "canvas.minimap_toggle", "canvas.prompt_overlays_toggle"] {
         assert_eq!(entries["commands"].as_array().unwrap().iter().find(|entry| entry["id"] == id).unwrap()["ready"], false);
     }
     // Both external availability and dispatch must reject the internal minimap-pan exemption.

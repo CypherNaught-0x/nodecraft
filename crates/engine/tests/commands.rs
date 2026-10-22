@@ -200,7 +200,7 @@ fn panicking_handlers_and_atomic_graph_failures_preserve_document_history_and_ev
 #[test]
 fn registration_rejects_invalid_or_duplicate_stable_ids() {
     let mut registry = Registry::builtins().unwrap();
-    let navigation = ["canvas.fit_all", "canvas.fit_selection", "canvas.minimap_toggle", "canvas.pan_to"];
+    let navigation = ["canvas.fit_all", "canvas.fit_selection", "canvas.minimap_toggle", "canvas.prompt_overlays_toggle", "canvas.pan_to"];
     assert_eq!(
         nodecraft_engine::navigation_cmds::specs().into_iter().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(),
         navigation.into_iter().collect()
@@ -276,6 +276,7 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "canvas.fit_all",
         "canvas.fit_selection",
         "canvas.minimap_toggle",
+        "canvas.prompt_overlays_toggle",
         "canvas.pan_to",
         "node.create",
         "node.create_connected",

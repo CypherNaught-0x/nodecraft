@@ -1354,9 +1354,8 @@ impl NodeCraftApp {
                     overlays_offered && consume_canvas_letter(i, egui::Key::H),
                 )
             });
-            if overlays {
-                self.prompt_overlays = !self.prompt_overlays;
-                ui.ctx().request_repaint();
+            if overlays && let Err(error) = self.dispatch_navigation(ui.ctx(), "canvas.prompt_overlays_toggle", &json!({})) {
+                self.notice = Some(error.message);
             }
             if delete && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                 // Drop ids an undo or canvas switch removed, so they don't fail the delete.

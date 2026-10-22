@@ -162,7 +162,7 @@ A longer line is skipped with an error reply instead of being buffered. Messages
 JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.
 
 Navigation commands (`canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle`,
-`canvas.pan_to`) are discoverable but require a scoped live canvas host. The standalone stdio
+`canvas.prompt_overlays_toggle`, `canvas.pan_to`) are discoverable but require a scoped live canvas host. The standalone stdio
 session reports them unavailable and returns Unsupported when run; they never open a window
 or change the document.
 

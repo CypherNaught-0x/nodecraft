@@ -244,8 +244,8 @@ or discussion-pin gesture, or act through a popup or active text editor. A cance
 gesture keeps ownership until release. Admission refused before a same-frame cancellation stays
 refused until a fresh press.
 
-The new `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and `canvas.pan_to`
-commands use the engine service path. Live hosts use `NodeCraftApp::dispatch_navigation(ctx, id,
+The `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle`,
+`canvas.prompt_overlays_toggle` and `canvas.pan_to` commands use the engine service path. Live hosts use `NodeCraftApp::dispatch_navigation(ctx, id,
 params)` (and `navigation_enabled`) to compute current geometry, selection and focus, temporarily
 install the capability, dispatch, restore prior resources and apply the intent immediately. A raw
 headless Session has no live capability and returns Unsupported. Existing services/resources are

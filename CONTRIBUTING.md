@@ -155,7 +155,10 @@ node --test scripts/claim/*.test.js                     # if you touched the cla
    registered in the command list. Fill in `id`, `label`, the default `shortcut`, a params doc
    (what agents read through `commands`), an `enabled` predicate, and `run`. `run` returns a
    JSON result and records exactly **one** undo step (coalesce drags and typing).
-4. **Tests** in the module: behaviour, undo/redo, disabled state, bad params.
+4. **Tests** in the module: behaviour, undo/redo, disabled state, bad params. For a
+   session-local view command, expose a scoped live host (as `canvas.minimap_toggle` and
+   `canvas.prompt_overlays_toggle` do), document headless availability for control/MCP and
+   verify that no document revision or undo entry is created.
 
 ### Adding a node kind
 

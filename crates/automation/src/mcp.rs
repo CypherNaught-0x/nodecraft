@@ -101,6 +101,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "canvas.fit_all",
     "canvas.fit_selection",
     "canvas.minimap_toggle",
+    "canvas.prompt_overlays_toggle",
     "canvas.pan_to",
     "canvas.search_open",
     "canvas.search_query",
