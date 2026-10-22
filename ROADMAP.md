@@ -20,7 +20,7 @@ an agent can actually do today.
 | 4 | **Actions** — image/text actions, GPU path, live recompute, custom WGSL | 🟡 library done, no action nodes | 5/12 |
 | 5 | **Batch & Techniques** — batch, Technique Builder, app mode, library, CLI `run`, release | 🟡 batch planning engine (#92), app mode (#95), installing updates (#540), result export (#557), CLI `run` (#97) | 2/16 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 mask editor (#102), Layer Editor (#101), Elements (#104) | 3/6 |
-| 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105), sound on cards (#106), video generation (#559), Timeline (#109) | 4/15 |
+| 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105), sound on cards (#106), video generation (#559), audio generation (#672), Timeline (#109) | 4/15 |
 | 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22), PDF node (#113), Meshy 3D generation (#23) | 5/7 |
 | 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, agent sidebar (#114), HTTP serve (#117) with signed webhooks (#632) | 2/6 |
 | 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | 🟡 decks (#122), CRDT sync and the relay (#119) | 2/6 |
@@ -116,7 +116,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   sound, extract frames, reverse, grade, key, watermark, split and extract sound.
   Video generation (#559) has text, frame, reference and speech-to-video modes declared per
   model; fal's Wan 2.2 maps text, first/last-frame and speech to video (#607), and no adapter
-  maps reference-to-video yet.
+  maps reference-to-video yet. A Generate audio card (#672) runs the catalog's text-to-audio and
+  audio-to-audio models, such as fal's Kokoro speech, and plays its result.
   The Timeline (#109) renders clips with fades and cross-fades on a main track, with picture
   tracks over it and sound tracks mixed under it (#576), and captions over the picture (#574);
   each picture clip can be placed, sized, cropped, turned and faded in the frame, clips can play
@@ -134,7 +135,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   Gemini are in progress; Comfy Cloud, Google Veo and TTS, Seedance, Kling,
   and 24 of the 25 `future` names have no work started; Higgsfield's adapter is written, #177).
   ElevenLabs (#20) has speech (v3, Multilingual v2, Flash v2.5), sound effects, music and voice
-  changer models; there is no Generate audio card yet to run them from the canvas. 3D generation has a Generate 3D card
+  changer models, run from the canvas on a Generate audio card (#672). 3D generation has a Generate 3D card
   with Tripo text, image and multiview models and fal's Trellis (#22), and Meshy text, image,
   multi-image, retexture and remesh models (#23).
 

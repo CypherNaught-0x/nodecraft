@@ -10,7 +10,7 @@ use nodecraft_engine::{
 };
 use nodecraft_exec::cost::Budgets;
 use nodecraft_graph::{Canvas, Change, Edge, Endpoint, Node, Position, Project};
-use nodecraft_nodes::generation::{KIND, TEXT_KIND};
+use nodecraft_nodes::generation::{AUDIO_KIND, KIND, TEXT_KIND};
 use nodecraft_types::{CanvasId, EdgeId, ErrorKind, NodeId, ProjectId, Value};
 use serde_json::{Value as Json, json};
 
@@ -186,6 +186,16 @@ fn refused(s: &mut Session, req: &Json) -> nodecraft_types::Error {
     let err = s.dispatch("node.prompt_assist", req).unwrap_err();
     assert_eq!(s.document(), &before, "a refusal changes nothing");
     err
+}
+
+#[test]
+fn an_audio_card_is_not_rewritten() {
+    let mut catalog = catalog(true, false);
+    catalog.merge(Catalog::from_toml(&model("fixture.speech", "audio", false)).unwrap()).unwrap();
+    let mut s = session_with(catalog, "a fox");
+    add(&mut s, AUDIO_KIND, WRITER, &[("model", "fixture.speech"), ("prompt", "Hello from a paper boat")]);
+    let err = refused(&mut s, &json!({"canvas":C,"node":WRITER,"id":ASSIST,"edge":WIRE}));
+    assert!(err.message.contains("is what it says"), "{err}");
 }
 
 #[test]
