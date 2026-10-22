@@ -6,8 +6,8 @@
 //! explicitly acknowledge terminal results with `plugins.forget`. Synchronous hosts retain the
 //! direct result contract. Nothing here runs a package or opens a dialog.
 //!
-//! Projects don't yet record which package digests they use (#172 part 3), so uninstall and
-//! prune keep only what installed packages lock.
+//! Uninstall and prune keep every digest a card of the open project was made with
+//! ([`crate::plugin_runtime::PluginLock`]), as well as what installed packages lock.
 use crate::commands::{CommandSpec, Context, Effect, Services, params};
 use nodecraft_plugin::PackageDigest;
 use nodecraft_plugin::id::{HostId, PackageId};
@@ -151,9 +151,24 @@ fn list(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
     Ok(service(json!({"op": "list"})))
 }
 
-fn prune(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
+fn prune(c: &Context<'_>, p: &Value) -> Result<Effect, Error> {
     let _: Empty = params(p)?;
-    Ok(service(json!({"op": "prune"})))
+    Ok(service(json!({"op": "prune", "referenced": referenced_json(c)})))
+}
+
+/// The digests the open project's plugin cards were made with.
+fn referenced_json(c: &Context<'_>) -> Vec<String> {
+    crate::plugin_runtime::referenced(c.document).iter().map(|d| d.to_string()).collect()
+}
+
+/// Most referenced digests a request may name.
+const MAX_REFERENCED: usize = 4096;
+
+fn referenced_of(request: &Value) -> Result<BTreeSet<PackageDigest>, Error> {
+    let bad = || Error::new(ErrorKind::InvalidInput, "invalid referenced package digests");
+    let Some(list) = request.get("referenced") else { return Ok(BTreeSet::new()) };
+    let list = list.as_array().filter(|l| l.len() <= MAX_REFERENCED).ok_or_else(bad)?;
+    list.iter().map(|d| d.as_str().and_then(|d| PackageDigest::parse(d).ok()).ok_or_else(bad)).collect()
 }
 
 fn file_op(op: &'static str) -> impl Fn(&Context<'_>, &Value) -> Result<Effect, Error> {
@@ -185,8 +200,12 @@ fn disable(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
     package_op("disable", p)
 }
 
-fn uninstall(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
-    package_op("uninstall", p)
+fn uninstall(c: &Context<'_>, p: &Value) -> Result<Effect, Error> {
+    let mut effect = package_op("uninstall", p)?;
+    if let Effect::Service { request: Value::Object(request), .. } = &mut effect {
+        request.insert("referenced".into(), json!(referenced_json(c)));
+    }
+    Ok(effect)
 }
 
 fn grant(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
@@ -401,7 +420,7 @@ fn package_id(request: &Value) -> Result<PackageId, Error> {
 pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request: &Value) -> Result<Value, Error> {
     // Another window or the CLI may have changed the store since the last request.
     store.refresh()?;
-    let referenced = BTreeSet::new();
+    let referenced = referenced_of(request)?;
     match request.get("op").and_then(Value::as_str) {
         Some("list") => {
             // Grants that can't be read grant nothing; the list still shows the packages.

@@ -112,6 +112,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "field.move",
     "field.remove",
     "node.field_set",
+    "node.migrate",
     "comment.create",
     "comment.edit",
     "comment.reply",

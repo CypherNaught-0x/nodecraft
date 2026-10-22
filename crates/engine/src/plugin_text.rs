@@ -1,6 +1,7 @@
 //! Text action packages (#173): each registration's descriptor is a text action definition the
 //! host compiles and evaluates itself. Compiled when the package is enabled, so a broken
 //! definition is refused before anything is published.
+use crate::plugin_runtime::PluginLock;
 use nodecraft_actions::expr::{CompiledTextAction, InputKind, TextActionDefinition};
 use nodecraft_plugin::id::RegisteredId;
 use nodecraft_plugin::manifest::{RegistrationKind, Runtime};
@@ -12,6 +13,8 @@ use nodecraft_types::{Error, ErrorKind};
 pub struct PluginTextAction {
     pub id: RegisteredId,
     pub action: CompiledTextAction,
+    /// What its cards record of the package.
+    pub lock: PluginLock,
 }
 
 /// Compiles every registration of a text action package; any that fails refuses them all. A
@@ -42,8 +45,14 @@ pub fn compile(package: &Package) -> Result<Vec<PluginTextAction>, Error> {
         if inputs.is_empty() {
             return Err(refuse("an action needs at least one input to run yet".into()));
         }
-        crate::plugin_runtime::card(id.as_str(), &action).map_err(|e| refuse(e.message))?;
-        out.push(PluginTextAction { id, action });
+        let lock = PluginLock {
+            package: package.manifest.package_id.clone(),
+            version: package.manifest.version.to_string(),
+            digest: package.digest,
+            label: action.definition().label.clone(),
+        };
+        crate::plugin_runtime::card(id.as_str(), &action, lock.clone()).map_err(|e| refuse(e.message))?;
+        out.push(PluginTextAction { id, action, lock });
     }
     Ok(out)
 }

@@ -362,6 +362,7 @@ mod ownership_panel;
 mod paste_image;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perf_run;
+mod plugin_cards;
 mod queue_panel;
 mod reader;
 #[cfg(not(target_arch = "wasm32"))]
@@ -2120,6 +2121,10 @@ impl NodeCraftApp {
                     None => continue,
                 },
                 Intent::Model => continue,
+                Intent::Migrate => {
+                    self.migrate_card(id);
+                    continue;
+                }
                 Intent::Video(intent) => {
                     self.videos.act(ui.ctx(), id, intent);
                     continue;

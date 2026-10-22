@@ -362,3 +362,20 @@ fn a_plugin_card_that_ran_before_its_plugin_was_published_runs_once_it_is() {
     assert!(!text.is_empty() && text == text.to_uppercase(), "{text}");
     assert!(h.state().session.revision() > revision, "recorded");
 }
+
+#[test]
+fn a_card_whose_plugin_is_missing_says_what_it_needs() {
+    use nodecraft_engine::plugin_runtime::PluginSnapshot;
+    let store = shout_store();
+    let mut app = app();
+    let canvas = app.canvas;
+    let shout = NodeId::from_bytes([81; 16]);
+    app.session.set_plugins(PluginSnapshot::of(&store)).unwrap();
+    app.session.dispatch("node.create", &json!({"canvas": canvas, "id": shout, "kind": "plugin.io.example.text.warm", "pos": {"x": 420, "y": 300}})).unwrap();
+    // As in a project opened where the plugin isn't installed.
+    app.session.set_plugins(PluginSnapshot::default()).unwrap();
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run();
+    h.get_by_label("Node Shout");
+    h.get_by_label_contains("This card needs io.example.text 1.0.0");
+}

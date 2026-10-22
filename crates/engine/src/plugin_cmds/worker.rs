@@ -325,8 +325,13 @@ fn bounded_request(request: &Value) -> Result<Value, Error> {
     let invalid = || Error::new(ErrorKind::InvalidInput, "invalid plugin worker request");
     let object = request.as_object().ok_or_else(invalid)?;
     let op = object.get("op").and_then(Value::as_str).ok_or_else(invalid)?;
+    // The digests a project references: a bounded list of digests, checked here.
+    if matches!(op, "prune" | "uninstall") {
+        super::referenced_of(request).map_err(|_| invalid())?;
+    }
     let fields: &[&str] = match op {
-        "list" | "prune" => &["op"],
+        "list" => &["op"],
+        "prune" => &["op", "referenced"],
         "import" | "update" => {
             let location = object.get("location").and_then(Value::as_str).ok_or_else(invalid)?;
             if location.is_empty() || location.len() > 4096 || object.get("dry_run").is_some_and(|v| !v.is_boolean()) {
@@ -347,6 +352,8 @@ fn bounded_request(request: &Value) -> Result<Value, Error> {
             if op == "rollback" {
                 PackageDigest::parse(object.get("digest").and_then(Value::as_str).ok_or_else(invalid)?).map_err(|_| invalid())?;
                 &["op", "package_id", "digest"]
+            } else if op == "uninstall" {
+                &["op", "package_id", "referenced"]
             } else {
                 &["op", "package_id"]
             }
@@ -356,7 +363,8 @@ fn bounded_request(request: &Value) -> Result<Value, Error> {
     if object.len() > fields.len() || object.keys().any(|key| !fields.contains(&key.as_str())) {
         return Err(invalid());
     }
-    // Flat, known string/bool fields; no copied array, nested object, or unbounded string.
+    // Flat, known string/bool fields and a bounded list of digests; no nested object or
+    // unbounded string.
     Ok(request.clone())
 }
 

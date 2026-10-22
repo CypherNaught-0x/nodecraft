@@ -63,6 +63,11 @@ from the prompt or kind label in the app; it does not indicate missing node data
 to rename a node (empty restores automatic naming), and `node.param_set` to edit a schema
 parameter (null removes its override and restores the default).
 
+`node.migrate` brings a card made with an older version of its kind (a plugin card after its
+package was updated) to the kind's current ports and settings in one undo step. Pass
+`dry_run: true` first to read its warnings, which name every input, output and setting it drops;
+connections to dropped ports are removed in the same edit.
+
 A generation card's typed `prompt` can mention another card on the same canvas with the token
 `@[Title](node id)`, for example `Retell @[Story](0a1b…-uuid) for children`. The title is for
 people (the app shows the token as `@Title`); the id is what counts, so retitling the mentioned

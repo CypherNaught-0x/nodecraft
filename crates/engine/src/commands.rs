@@ -254,6 +254,7 @@ impl Registry {
             .chain(crate::tag_cmds::specs())
             .chain(crate::tag_filter_cmds::specs())
             .chain(crate::skill_cmds::specs())
+            .chain(crate::migrate_cmds::specs())
         {
             registry.register(spec)?;
         }
