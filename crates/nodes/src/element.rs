@@ -29,7 +29,7 @@ pub const MAX_NAME: usize = 40;
 /// Most distinct names one prompt mentions; later ones stay plain text.
 pub const MAX_MENTIONS: usize = 64;
 /// Longest guidelines, in bytes.
-const MAX_GUIDELINES: usize = 4096;
+pub const MAX_GUIDELINES: usize = 4096;
 
 /// The categories, as stored and as shown.
 pub const CATEGORIES: [(&str, &str); 9] = [

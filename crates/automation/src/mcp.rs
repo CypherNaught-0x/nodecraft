@@ -194,6 +194,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "element.create",
     "element.sheet",
     "element.list",
+    "element.place",
+    "element.update",
+    "library.elements",
     // Styles only list, add and wire cards; styled generation runs (and is quoted) through run.start.
     "style.list",
     "style.use",
@@ -223,6 +226,9 @@ pub const HUMAN_ONLY: &[&str] = &[
     // The library is shared by every project and outside undo, so only a person changes it.
     "library.add",
     "library.remove",
+    "element.save",
+    "library.remove_element",
+    "library.rename_element",
     // What untrusted skill text comes in, and which skills are offered to the agent, is the
     // person's call (#168).
     "skill.import",

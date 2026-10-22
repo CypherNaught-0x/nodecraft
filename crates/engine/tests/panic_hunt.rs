@@ -337,6 +337,18 @@ fn template(id: &str) -> (Session, Value) {
     if id.starts_with("library.") {
         nodecraft_engine::library::install(&mut session, Box::new(nodecraft_engine::library::MemoryLibrary::default())).unwrap();
     }
+    if id.starts_with("element.") || id.ends_with("_element") || id == "library.elements" {
+        // An Elements library holding "hero": one image, kept by its hash.
+        use nodecraft_engine::element_library::{ElementStore, MemoryElements};
+        let store = MemoryElements::default();
+        let pixels = [10, 80, 160, 255].repeat(4);
+        let png = nodecraft_media::encode_png(2, 2, &pixels, &nodecraft_media::Limits::default()).unwrap();
+        let hash = nodecraft_types::Blake3::from_bytes(*blake3::hash(&png).as_bytes());
+        store.put_media(&hash, &png).unwrap();
+        let image = json!({"hash": hash, "mime": "image/png"});
+        store.save(&serde_json::to_vec(&json!({"version": 1, "elements": [{"name": "hero", "category": "character", "images": [image]}]})).unwrap()).unwrap();
+        nodecraft_engine::element_library::install(&mut session, std::rc::Rc::new(store));
+    }
     let skill = nodecraft_types::SkillId::from_bytes([0x69; 16]);
     if id.starts_with("skill.") {
         nodecraft_engine::skills::install(&mut session, std::rc::Rc::new(nodecraft_engine::skills::MemorySkills::default())).unwrap();
@@ -599,6 +611,12 @@ fn template(id: &str) -> (Session, Value) {
         "element.sheet" => json!({"canvas":canvas(),"element":node_id(6),"id":node_id(7),
             "edges":[nodecraft_types::EdgeId::from_bytes([0x77; 16]),nodecraft_types::EdgeId::from_bytes([0x78; 16])],"pos":{"x":1,"y":2}}),
         "element.list" => json!({"canvas":canvas()}),
+        "element.save" => json!({"canvas":canvas(),"id":node_id(6),"replace":true,"shared":true}),
+        "element.place" => json!({"canvas":canvas(),"name":"hero","id":node_id(7),"pos":{"x":1,"y":2},"as":"hero2"}),
+        "element.update" => json!({"canvas":canvas(),"id":node_id(6),"seed":node_id(7)}),
+        "library.elements" => json!({}),
+        "library.remove_element" => json!({"name":"hero"}),
+        "library.rename_element" => json!({"name":"hero","to":"villain"}),
         "style.list" => json!({"canvas":canvas(),"for":node_id(5)}),
         "style.card" => {
             json!({"canvas":canvas(),"style":node_id(6),"id":node_id(7),"edge":nodecraft_types::EdgeId::from_bytes([0x79; 16]),"pos":{"x":1,"y":2}})

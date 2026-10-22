@@ -35,12 +35,18 @@ pub struct RunImpact {
 impl Impact {
     pub(crate) fn of(effect: &Effect) -> Result<Self, Error> {
         Ok(match effect {
-            Effect::None { .. } => Self::Read,
-            Effect::Edit { .. } | Effect::Undo | Effect::Redo => Self::Edit,
+            Effect::None { .. } | Effect::Elements { request: crate::element_library::Request::List } => Self::Read,
+            Effect::Edit { .. } | Effect::Undo | Effect::Redo | Effect::Place { .. } => Self::Edit,
             Effect::PreparedRun { prepared } => {
                 Self::Run(RunImpact { ceiling: prepared.ceiling()?, partial: prepared.partial(), unpriced_jobs: prepared.unpriced_jobs() })
             }
-            Effect::Open { .. } | Effect::CancelFile | Effect::Save { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::Perf { .. } => Self::Host,
+            Effect::Open { .. }
+            | Effect::CancelFile
+            | Effect::Save { .. }
+            | Effect::Service { .. }
+            | Effect::Export { .. }
+            | Effect::Perf { .. }
+            | Effect::Elements { .. } => Self::Host,
         })
     }
 }

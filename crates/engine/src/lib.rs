@@ -23,6 +23,8 @@ pub mod describe_cmds;
 pub mod document_cmds;
 pub mod edge_cmds;
 pub mod element_cmds;
+pub mod element_library;
+pub mod element_library_cmds;
 mod execution_identity;
 pub mod export;
 pub mod export_cmds;
