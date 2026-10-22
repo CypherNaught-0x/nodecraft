@@ -15,9 +15,10 @@ pub const PRO: &str = "gemini-3-pro-image";
 const MIB: usize = 1024 * 1024;
 const MAX_REFERENCE_IMAGES: usize = 14;
 const MAX_INPUT_ITEMS: usize = 1 + MAX_REFERENCE_IMAGES;
-// Largest selected documented 4K shape: 4800 × 3584 (image guide, checked 2026-10-18).
-const MAX_DOCUMENTED_4K_PIXELS: u64 = 4800 * 3584;
-const DEFAULT_AGGREGATE_PIXELS: u64 = 2 * MAX_DOCUMENTED_4K_PIXELS;
+// The largest selected documented 4K shape is 17,203,200 pixels. Leave modest response
+// geometry headroom while keeping the request-side documented tuple checks exact (#421).
+const MAX_IMAGE_PIXELS: u64 = 18_000_000;
+const DEFAULT_AGGREGATE_PIXELS: u64 = 2 * MAX_IMAGE_PIXELS;
 // Local service/body-transfer allowance, not a measured SLA or RunLimits deadline.
 const REQUEST_TIMEOUT_MS: u64 = 300_000;
 const ASPECTS: &[&str] = &["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
@@ -58,7 +59,7 @@ impl Limits {
         total_input_bytes: 48 * MIB,
         request_bytes: 64 * MIB,
         response_bytes: 65 * MIB,
-        output_bytes: 8 * MIB,
+        output_bytes: 16 * MIB,
         total_output_bytes: 48 * MIB,
         encoded_bytes: 64 * MIB,
         text_bytes: 64 * 1024,
@@ -71,7 +72,7 @@ impl Limits {
         strings: 4096,
         width: 8192,
         height: 8192,
-        pixels: MAX_DOCUMENTED_4K_PIXELS,
+        pixels: MAX_IMAGE_PIXELS,
         total_pixels: DEFAULT_AGGREGATE_PIXELS,
         codec_bytes: 256 * MIB as u64,
     };

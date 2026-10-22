@@ -344,7 +344,6 @@ fn local_empty_prompt_refusal_has_zero_transport_and_zero_usage() {
     assert_eq!(outputs.load(Ordering::SeqCst), 0);
     assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
     let charges = b.log.lock().unwrap().entries().map(|e| (e.cost, e.status)).collect::<Vec<_>>();
-    println!("local refusal requests={} charges={charges:?}", t.requests.load(Ordering::SeqCst));
     assert!(charges.is_empty(), "a purely local refusal must release its reservation");
 }
 
