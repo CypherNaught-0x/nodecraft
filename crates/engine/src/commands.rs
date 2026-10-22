@@ -166,6 +166,10 @@ impl Context<'_> {
 }
 
 pub enum Effect {
+    /// Read project PDF media only at dispatch, then stage one ordinary document edit.
+    DocumentExtract {
+        request: Box<crate::document_cmds::ExtractionRequest>,
+    },
     Open {
         location: nodecraft_format::StorageLocation,
         discard_dirty: bool,

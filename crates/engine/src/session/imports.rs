@@ -28,6 +28,17 @@ fn invalid(message: &'static str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
 }
 impl Session {
+    /// Stage an internally produced Edit against this exact unpublished import receipt.
+    pub(super) fn prepare_imported_edit(&self, effect: Effect, batch: PreparedImports) -> Result<super::Prepared, Error> {
+        if !batch.source.matches(self) {
+            return Err(Error::new(ErrorKind::Conflict, "prepared imports no longer match this Session"));
+        }
+        if !matches!(effect, Effect::Edit { .. }) {
+            return Err(invalid("an imported edit requires a graph Edit effect"));
+        }
+        self.prepare_with_assets(effect, &batch.assets, true)
+    }
+
     pub fn prepare_imports(&self, sources: &[AssetRange], cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<PreparedImports, Error> {
         guard(|| self.prepare_imports_inner(sources, cancel, metrics))
     }

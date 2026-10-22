@@ -270,6 +270,18 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
+    if matches!(id, "document.extract_page" | "document.extract_text") {
+        let bytes = nodecraft_media::pdf_fixture::pdf(&["BT /F1 12 Tf 20 150 Td (Public extraction corpus) Tj ET"]);
+        nodecraft_engine::import::import_files(
+            &mut session,
+            canvas(),
+            nodecraft_graph::Position::default(),
+            0.0,
+            &[nodecraft_engine::import::Incoming { name: "public.pdf", bytes: &bytes }],
+            &[node_id(5)],
+        )
+        .unwrap();
+    }
     if id.starts_with("canvas.search_") {
         session.swap_resource(Some(nodecraft_engine::search_cmds::SearchContext {
             canvas: canvas(),
@@ -675,6 +687,8 @@ fn template(id: &str) -> (Session, Value) {
         }
         "style.use" => json!({"canvas":canvas(),"style":node_id(6),"target":node_id(5),"edge":nodecraft_types::EdgeId::from_bytes([0x79; 16])}),
         "document.use_pages" => json!({"canvas":canvas(),"node":node_id(5),"first":2,"last":3}),
+        "document.extract_page" => json!({"canvas":canvas(),"node":node_id(5),"page":1,"id":node_id(7),"at":{"x":400,"y":20}}),
+        "document.extract_text" => json!({"canvas":canvas(),"node":node_id(5),"page":1,"region":[0.0,0.0,1.0,1.0],"id":node_id(7),"at":{"x":400,"y":20}}),
         "mesh.capture" => json!({"canvas":canvas(),"from":{"node":node_id(5),"port":"out"},"shot":"views","id":node_id(7),
             "edge":nodecraft_types::EdgeId::from_bytes([0x77; 16]),"pos":{"x":1,"y":2},"yaw":200.0,"pitch":95.0,"zoom":3.33,"style":"wireframe"}),
         _ => panic!("missing valid template for {id}"),

@@ -209,6 +209,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "mesh.capture",
     // A page range is an ordinary, undoable parameter edit.
     "document.use_pages",
+    // Project-owned media only; bounded extractions publish one undoable changeset, no dialog.
+    "document.extract_page",
+    "document.extract_text",
     // Layers only change the node's stored layers; nothing runs.
     "layers.list",
     "node.layers_set",

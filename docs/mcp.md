@@ -100,6 +100,16 @@ output, and the card runs first if it is stale, as if it were wired in. A mentio
 is gone, makes no single text, or is made from the mentioning card blocks the run with a message
 saying which. A wire into `prompt` replaces the typed prompt, so its mentions are then ignored.
 
+PDF extractions use `command_run` with `document.extract_page` or `document.extract_text`.
+Both take `{canvas, node, page, id?, at?: {x, y}}` for a PDF source already in the project;
+`page` starts at 1. The text command also accepts `region: [left, top, right, bottom]`, finite
+fractions from 0 to 1 with positive width and height. Each returns `{id}` and adds one independent
+PDF or Text source as one undoable edit, without a dialog or changing the original. Omitted IDs
+are generated at dispatch; omitted positions are near the source in document coordinates.
+Extractions require edit permission. Text is capped at 960 KiB at a character boundary; a scan
+has no text because extraction does not perform OCR. Availability checks metadata without
+opening the PDF, so corrupt content and empty text can still be refused when dispatched.
+
 A command that fails comes back as a tool result with `isError: true` and a message the model can
 act on. Protocol mistakes (an unknown tool, malformed arguments) are JSON-RPC errors.
 
