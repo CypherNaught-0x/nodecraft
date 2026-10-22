@@ -2167,13 +2167,6 @@ impl NodeCraftApp {
         #[cfg(target_arch = "wasm32")]
         self.web_file_button(ui, t);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
-        // A key answered at once (the browser's) was saved or deleted: adapters read keys again.
-        if !changes.is_empty()
-            && let Some(runs) = &mut self.runs
-            && let Err(error) = runs.forget_adapters(&mut self.session)
-        {
-            self.notice = Some(error.message);
-        }
         self.save_accounts(changes);
         self.queue_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2351,9 +2344,16 @@ impl NodeCraftApp {
     }
 
     /// Keeps the remembered account names in settings in step with the keychain.
+    /// Records keys saved or deleted, from the keychain's answers or the browser's at once (from
+    /// any view's panel); adapters read their keys again.
     fn save_accounts(&mut self, changes: Vec<crate::keys::AccountChange>) {
         if changes.is_empty() {
             return;
+        }
+        if let Some(runs) = &mut self.runs
+            && let Err(error) = runs.forget_adapters(&mut self.session)
+        {
+            self.notice = Some(error.message);
         }
         let apply = |keys: &mut nodecraft_engine::settings::KeySettings| {
             for change in &changes {
@@ -2772,14 +2772,6 @@ impl eframe::App for NodeCraftApp {
             // Nothing else asks the keychain yet; answers to other requests are logged, not lost.
             for outcome in others {
                 log::info!("keychain answered request {} for {}", outcome.id, outcome.account);
-            }
-            if !changes.is_empty()
-                && let Some(runs) = &mut self.runs
-            {
-                // A key was saved or deleted: adapters read their keys again.
-                if let Err(error) = runs.forget_adapters(&mut self.session) {
-                    self.notice = Some(error.message);
-                }
             }
             self.save_accounts(changes);
             if self.keys.is_waiting() {

@@ -3,8 +3,8 @@
 - **One run host.** The browser runs cards through the same `RunHost`, quotes, budgets and
   idempotency keys as the desktop, so cost-first and no-double-charge hold in both. Only the
   runtime differs: `wasm-bindgen-futures` for tasks, `setTimeout` for sleeps and
-  `performance.now()` for the clock. `std::time` panics in the browser, so nothing on this path
-  uses it.
+  `performance.now()` for the clock. `Instant::now` and `SystemTime::now` panic in the browser, so
+  nothing on this path calls them.
 - **Adapters are built inline.** The desktop builds adapters on a thread because the keychain
   may prompt. The browser's key store answers at once, so it builds them inline, but they are
   still handed over on the next tick so both share one flow. The `Maker` enum keeps both, and
