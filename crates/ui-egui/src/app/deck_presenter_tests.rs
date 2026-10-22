@@ -96,6 +96,58 @@ fn presenting_a_selection_makes_a_deck_and_the_keys_move_through_it() {
 }
 
 #[test]
+fn the_presenter_follows_the_deck_as_it_shrinks_and_grows() {
+    let mut h = with_cards();
+    h.state_mut().present_selection();
+    h.run();
+    let deck = decks(&h)[0];
+    h.key_press(egui::Key::End);
+    h.run();
+    assert_eq!(index(&h), 1);
+    let canvas = h.state().canvas;
+    let last = h.state_mut().session.dispatch("deck.list", &json!({"canvas": canvas, "id": deck})).unwrap()["slides"][1]["id"].clone();
+    h.state_mut().session.dispatch("deck.slide_remove", &json!({"canvas": canvas, "id": deck, "slide": last})).unwrap();
+    h.run();
+    assert_eq!(index(&h), 0, "the shown slide went, so the last one left shows");
+    assert!(h.query_by_label_contains("1 / 1").is_some());
+    h.key_press(egui::Key::ArrowRight);
+    h.run();
+    assert_eq!(index(&h), 0);
+    h.state_mut().session.dispatch("deck.slide_add", &json!({"canvas": canvas, "id": deck, "slide": {"name": "Closing"}})).unwrap();
+    h.run();
+    assert!(h.query_by_label_contains("1 / 2").is_some());
+    h.key_press(egui::Key::ArrowRight);
+    h.run();
+    assert_eq!(index(&h), 1);
+    assert!(h.query_by_label("2 / 2 · Closing").is_some());
+}
+
+#[test]
+fn a_field_whose_cards_are_all_selected_presents_as_one_slide() {
+    let mut h = with_cards();
+    let canvas = h.state().canvas;
+    let field = nodecraft_types::FieldId::from_bytes([63; 16]);
+    let mut project = h.state().session.document().clone();
+    let mut rect = nodecraft_graph::Field::new(field, "Board");
+    rect.rect = nodecraft_graph::FieldRect { pos: nodecraft_graph::Position { x: -400.0, y: -200.0 }, width: 900.0, height: 500.0 };
+    nodecraft_graph::Change::PutField { canvas, field: rect }.apply(&mut project).unwrap();
+    for id in [IMAGE, TEXT] {
+        let mut node = project.canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().clone();
+        node.field = Some(field);
+        nodecraft_graph::Change::SetNode { canvas, node }.apply(&mut project).unwrap();
+    }
+    h.state_mut().session = nodecraft_engine::Session::new(project).unwrap();
+    h.run();
+    h.state_mut().present_selection();
+    h.run();
+    let deck = decks(&h)[0];
+    let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&deck).unwrap().clone();
+    let slides = nodecraft_engine::deck_cmds::stored(&node).unwrap().slides;
+    assert_eq!(slides.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Board"]);
+    assert!(h.query_by_label("1 / 1 · Board").is_some());
+}
+
+#[test]
 #[ignore = "manual public-safe capture; DECK122_RENDER_DIR"]
 fn deck122_visual() {
     let dir = std::path::PathBuf::from(std::env::var_os("DECK122_RENDER_DIR").unwrap());

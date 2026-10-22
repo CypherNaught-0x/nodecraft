@@ -230,3 +230,31 @@ fn only_a_deck_card_has_slides() {
     let gone = s.dispatch("deck.list", &json!({"canvas": CANVAS, "id": DECK})).unwrap_err();
     assert_eq!(gone.kind, ErrorKind::NotFound);
 }
+
+#[test]
+fn a_locked_layer_keeps_its_place_until_unlocked() {
+    let mut s = session();
+    create(&mut s, &[IMG], &[]);
+    let p = |set: Json| on(json!({"slide": "slide-1", "layer": format!("src-{IMG}"), "set": set}));
+    s.dispatch("deck.layer_update", &p(json!({"locked": true}))).unwrap();
+    for set in [json!({"x": 10}), json!({"width": 5}), json!({"rotation": 90}), json!({"flip_x": true})] {
+        assert_eq!(s.dispatch("deck.layer_update", &p(set)).unwrap_err().kind, ErrorKind::InvalidInput);
+    }
+    s.dispatch("deck.layer_update", &p(json!({"name": "Hero"}))).unwrap();
+    s.dispatch("deck.layer_update", &p(json!({"locked": false, "x": 10}))).unwrap();
+    assert_eq!(list(&mut s)["slides"][0]["layers"][0]["x"], json!(10.0));
+}
+
+#[test]
+fn a_listed_deck_sets_back_as_it_is_and_new_slides_get_free_ids() {
+    let mut s = session();
+    create(&mut s, &[IMG, TXT], &[]);
+    let listed = list(&mut s);
+    // A listed slide carries sources and unsupported; passing it back unchanged is fine.
+    assert_eq!(s.dispatch("deck.set", &on(json!({"slides": listed["slides"]}))).unwrap(), json!({"changed": false}));
+    // A slide without an id never takes one that another slide names.
+    let slides = json!([{"id": "slide-1"}, {}, {"id": "slide-2"}, {}]);
+    s.dispatch("deck.set", &on(json!({"slides": slides}))).unwrap();
+    let ids: Vec<String> = stored_deck(&s).slides.iter().map(|s| s.id.clone()).collect();
+    assert_eq!(ids, ["slide-1", "slide-3", "slide-2", "slide-4"]);
+}

@@ -180,7 +180,7 @@ fn with_result(effect: Effect, result: Json) -> Effect {
 }
 
 /// The fields a locked layer keeps.
-const GEOMETRY: [&str; 7] = ["x", "y", "width", "height", "rotation", "flip_x", "flip_y"];
+pub(crate) const GEOMETRY: [&str; 7] = ["x", "y", "width", "height", "rotation", "flip_x", "flip_y"];
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

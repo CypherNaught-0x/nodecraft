@@ -12,7 +12,7 @@ use nodecraft_nodes::deck::{CONFIG, ID};
 use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, FieldId, NodeId, ParamValues, Value};
 use serde::Deserialize;
 use serde_json::{Map, Value as Json, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Longest text a source layer shows, in bytes.
 const MAX_SOURCE_TEXT: usize = layers::MAX_TEXT_BYTES / 2;
@@ -224,17 +224,36 @@ struct SlideInput {
     name: String,
     #[serde(default)]
     layers: Vec<Json>,
+    /// What deck.list adds about a slide; ignored, so a listed slide can be passed back as it is.
+    #[serde(default, rename = "sources")]
+    _sources: Json,
+    #[serde(default, rename = "unsupported")]
+    _unsupported: Json,
 }
 
-fn items(deck: &Deck, layers: Vec<Json>) -> Result<Vec<Item>, Error> {
+/// The unsupported layers a deck holds, by layer id, so matching an incoming layer compares it
+/// only with the few that share its id.
+type Held<'a> = HashMap<&'a str, Vec<&'a Json>>;
+
+fn held(deck: &Deck) -> Held<'_> {
+    let mut held: Held<'_> = HashMap::new();
+    for item in deck.slides.iter().flat_map(|s| &s.layers) {
+        if let Item::Unsupported(raw) = item {
+            held.entry(raw.get("id").and_then(Json::as_str).unwrap_or_default()).or_default().push(raw);
+        }
+    }
+    held
+}
+
+fn items(held: &Held<'_>, layers: Vec<Json>) -> Result<Vec<Item>, Error> {
     if layers.len() > layers::MAX_LAYERS {
         return Err(invalid("a slide holds at most 64 layers"));
     }
-    let held = || deck.slides.iter().flat_map(|s| &s.layers).filter_map(|i| if let Item::Unsupported(raw) = i { Some(raw) } else { None });
     layers
         .into_iter()
         .map(|raw| {
-            if held().any(|kept| *kept == raw) {
+            let id = raw.get("id").and_then(Json::as_str).unwrap_or_default();
+            if held.get(id).is_some_and(|kept| kept.iter().any(|kept| **kept == raw)) {
                 return Ok(Item::Unsupported(raw));
             }
             let layer: Layer = serde_json::from_value(raw).map_err(|_| invalid("a layer isn't valid: a field is unknown or has the wrong type or value"))?;
@@ -244,9 +263,9 @@ fn items(deck: &Deck, layers: Vec<Json>) -> Result<Vec<Item>, Error> {
         .collect()
 }
 
-fn slide_of(deck: &Deck, input: SlideInput, fallback: String) -> Result<Slide, Error> {
+fn slide_of(held: &Held<'_>, input: SlideInput, fallback: String) -> Result<Slide, Error> {
     let mut slide = Slide::new(input.id.unwrap_or(fallback), input.name);
-    slide.layers = items(deck, input.layers)?;
+    slide.layers = items(held, input.layers)?;
     slide.check().map_err(unusable)?;
     Ok(slide)
 }
@@ -269,10 +288,21 @@ fn set(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     if p.slides.len() > deck::MAX_SLIDES {
         return Err(invalid("a deck holds at most 256 slides"));
     }
+    let mut taken: HashSet<String> = p.slides.iter().filter_map(|s| s.id.clone()).collect();
+    let mut next = 0usize;
+    let mut fallback = || loop {
+        next = next.saturating_add(1);
+        let id = format!("slide-{next}");
+        if taken.insert(id.clone()) || next == usize::MAX {
+            break id;
+        }
+    };
+    let held = held(&deck);
     let mut slides = Vec::with_capacity(p.slides.len());
-    for (n, input) in p.slides.into_iter().enumerate() {
+    for input in p.slides {
         let kept = input.id.as_ref().and_then(|id| deck.index_of(id)).and_then(|at| deck.slides.get(at)).map(|s| s.extra.clone());
-        let mut slide = slide_of(&deck, input, format!("slide-{}", n.saturating_add(1)))?;
+        let id = input.id.clone().unwrap_or_else(&mut fallback);
+        let mut slide = slide_of(&held, input, id)?;
         slide.extra = kept.unwrap_or_default();
         slides.push(slide);
     }
@@ -300,7 +330,7 @@ fn slide_add(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     if deck.slides.len() >= deck::MAX_SLIDES {
         return Err(invalid("a deck holds at most 256 slides"));
     }
-    let slide = slide_of(&deck, p.slide, deck.fresh_id())?;
+    let slide = slide_of(&held(&deck), p.slide, deck.fresh_id())?;
     if deck.index_of(&slide.id).is_some() {
         return Err(Error::new(ErrorKind::Conflict, "a slide with that id already exists"));
     }
@@ -328,7 +358,7 @@ fn slide_update(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let mut deck = stored(node)?;
     writable(c, &deck, p.expected_revision)?;
     let at = deck.index_of(&p.slide).ok_or_else(|| not_found("slide"))?;
-    let layers = p.layers.map(|layers| items(&deck, layers)).transpose()?;
+    let layers = p.layers.map(|layers| items(&held(&deck), layers)).transpose()?;
     let slide = deck.slides.get_mut(at).ok_or_else(|| not_found("slide"))?;
     if let Some(name) = p.name {
         slide.name = name;
@@ -408,6 +438,11 @@ fn layer_update(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     };
     if p.set.contains_key("id") {
         return Err(invalid("a layer's id doesn't change"));
+    }
+    // As layers.update: unlocking in the same change frees the geometry.
+    let unlocking = p.set.get("locked") == Some(&Json::Bool(false));
+    if current.locked && !unlocking && crate::layer_cmds::GEOMETRY.iter().any(|f| p.set.contains_key(*f)) {
+        return Err(invalid("the layer is locked: unlock it to move or resize it"));
     }
     let mut merged = serde_json::to_value(current).map_err(|_| invalid("the layer can't be read"))?;
     let Json::Object(fields) = &mut merged else { return Err(invalid("the layer can't be read")) };

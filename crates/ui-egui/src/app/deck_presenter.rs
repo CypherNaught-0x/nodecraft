@@ -10,7 +10,7 @@ use crate::ids;
 use egui::{Pos2, Rect, Sense, Vec2};
 use nodecraft_actions::deck::{self, Shown, Slide};
 use nodecraft_actions::layers::{self, Content, Fonts, Frame};
-use nodecraft_types::{AssetRef, CanvasId, NodeId};
+use nodecraft_types::{AssetRef, CanvasId, FieldId, NodeId};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use std::collections::HashMap;
@@ -36,12 +36,15 @@ impl Presenter {
 
 /// A deck as `deck.list` returns it.
 struct Listing {
+    /// False for a deck from a newer NodeCraft, which lists with no slides.
+    writable: bool,
     frame: Frame,
     slides: Vec<(Slide, Vec<Source>)>,
 }
 
 #[derive(Deserialize)]
 struct Listed {
+    writable: bool,
     width: u32,
     height: u32,
     background: String,
@@ -75,7 +78,7 @@ fn listing(value: Json) -> Option<Listing> {
             Some((serde_json::from_value::<Slide>(raw).ok()?, sources))
         })
         .collect();
-    Some(Listing { frame: Frame { width: listed.width, height: listed.height, background }, slides })
+    Some(Listing { writable: listed.writable, frame: Frame { width: listed.width, height: listed.height, background }, slides })
 }
 
 /// Where a key moves the presenter: to a slide, or out.
@@ -106,11 +109,14 @@ fn step(ctx: &egui::Context, index: usize, count: usize) -> Option<Step> {
 
 impl NodeCraftApp {
     pub(super) fn open_presenter(&mut self, node: NodeId) {
+        // A notice from the canvas isn't about the deck.
+        self.notice = None;
         self.selection.only(node);
         self.presenter = Some(Presenter::new(self.canvas, node));
     }
 
-    /// Makes a Deck card from the selected cards, right of them, and presents it.
+    /// Makes a Deck card from the selected cards, right of them, and presents it. A field whose
+    /// cards are all selected becomes one slide, its cards where they sit.
     pub(super) fn present_selection(&mut self) {
         let document = self.session.document();
         let Some(canvas) = document.canvases().get(&self.canvas) else { return };
@@ -120,11 +126,20 @@ impl NodeCraftApp {
             return;
         };
         let nodes: Vec<NodeId> = picked.iter().map(|n| n.id).collect();
+        let fields: Vec<FieldId> = canvas
+            .fields()
+            .keys()
+            .copied()
+            .filter(|field| {
+                let mut members = canvas.nodes().values().filter(|n| n.field == Some(*field)).peekable();
+                members.peek().is_some() && members.all(|n| self.selection.contains(n.id))
+            })
+            .collect();
         let Some(id) = ids::node_id(document, ("deck", self.session.revision())) else {
             self.notice = Some("Couldn't allocate a node id; try again.".into());
             return;
         };
-        let params = json!({"canvas": self.canvas, "id": id, "pos": {"x": right + GAP, "y": top}, "title": "Deck", "nodes": nodes});
+        let params = json!({"canvas": self.canvas, "id": id, "pos": {"x": right + GAP, "y": top}, "title": "Deck", "nodes": nodes, "fields": fields});
         if self.layer_dispatch("deck.create", &params) {
             self.open_presenter(id);
         }
@@ -230,7 +245,7 @@ impl NodeCraftApp {
             ui.set_min_size((content.size() - Vec2::splat(gap * 2.0)).max(Vec2::splat(1.0)));
             let response = ui.allocate_rect(slide_rect, Sense::click());
             let painter = ui.painter_at(slide_rect);
-            painter.rect_filled(slide_rect, 0.0, background);
+            painter.rect_filled(slide_rect, egui::CornerRadius::ZERO, background);
             for layer in drawn.iter().flat_map(|d| &d.layers) {
                 draw_layer(&painter, stage, layer, art.get(&layer.id), &t);
             }
@@ -238,7 +253,7 @@ impl NodeCraftApp {
                 painter.text(
                     slide_rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    "This deck has no slides yet.",
+                    if listing.writable { "This deck has no slides yet." } else { "This deck was made by a newer NodeCraft and can't be shown here." },
                     egui::FontId::proportional(t.control_gap * 4.0),
                     t.text_muted,
                 );
