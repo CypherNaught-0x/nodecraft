@@ -174,6 +174,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   each picture clip can be placed, sized, cropped, turned and faded in the frame, clips can play
   faster or slower, and the render has a quality (#577). Its filter graph is staged in a script
   and input paths stay short, keeping full timelines within Windows' command limit (#642).
+  Export for another editor carries its captions as FCPXML titles and a SubRip companion,
+  with style and placement differences listed in the report (#649).
 - **Live sharing works from the desktop app and the browser.** Sessions are shared through `nodecraft-cli relay`
   (#119), with every edit merged and images passed along. Share links let someone view, comment
   on or edit a shared project, with signed discussions and expiry and revocation (`share.link_*`,

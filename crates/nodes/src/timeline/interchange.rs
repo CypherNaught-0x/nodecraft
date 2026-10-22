@@ -66,6 +66,9 @@ pub struct Loss {
     /// The clip it concerns, when it concerns one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clip: Option<String>,
+    /// The caption it concerns, when it concerns one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
     /// What NodeCraft does that the document doesn't, in a few words.
     pub feature: &'static str,
     /// What the other editor gets instead.
@@ -76,6 +79,8 @@ pub struct Loss {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Interchange {
     pub xml: String,
+    /// UTF-8 SubRip companion, when at least one caption shows in the sequence.
+    pub srt: Option<String>,
     pub losses: Vec<Loss>,
     /// Indexes into the sequence's sources, each once, in the order the document lists them.
     pub used: Vec<usize>,
@@ -183,9 +188,9 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
     let mut losses = Vec::new();
     for clip in &listed.clips {
         if !clip.enabled {
-            losses.push(Loss { clip: Some(clip.id.clone()), feature: "disabled clip", detail: "left out, as a render leaves it out".into() });
+            losses.push(Loss { clip: Some(clip.id.clone()), caption: None, feature: "disabled clip", detail: "left out, as a render leaves it out".into() });
         } else if !Timeline::is_wired(clip, sequence.wires) {
-            losses.push(Loss { clip: Some(clip.id.clone()), feature: "unconnected clip", detail: "left out: its media isn't wired in".into() });
+            losses.push(Loss { clip: Some(clip.id.clone()), caption: None, feature: "unconnected clip", detail: "left out: its media isn't wired in".into() });
         }
     }
     let mut used: Vec<usize> = Vec::new();
@@ -232,12 +237,13 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
         if !(in_exact && out_exact && at_exact && transition_exact) {
             losses.push(Loss {
                 clip: Some(clip.id.clone()),
+                caption: None,
                 feature: "sub-frame timing",
                 detail: format!("trims, start and transition rounded to whole frames at {fps} fps"),
             });
         }
         if clip.fade_in_us != 0 || clip.fade_out_us != 0 {
-            losses.push(Loss { clip: Some(clip.id.clone()), feature: "fade", detail: "not written: add the fades in the other editor".into() });
+            losses.push(Loss { clip: Some(clip.id.clone()), caption: None, feature: "fade", detail: "not written: add the fades in the other editor".into() });
         }
         let audible = source.kind == MediaKind::Audio || (source.kind == MediaKind::Video && source.sound);
         let volume = if audible { decibels(clip.volume, clip.muted) } else { None };
@@ -286,7 +292,12 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
         spine.push(Spined { clip: None, offset: main_end, start: main_end, duration: total.saturating_sub(main_end), dissolve: None });
     }
     if sequence.background != [0, 0, 0] {
-        losses.push(Loss { clip: None, feature: "background colour", detail: "not written: the other editor shows black behind the picture".into() });
+        losses.push(Loss {
+            clip: None,
+            caption: None,
+            feature: "background colour",
+            detail: "not written: the other editor shows black behind the picture".into(),
+        });
     }
 
     // Each connected clip, under the main-track item it starts over.
@@ -300,12 +311,29 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
             list.push((placed, lane, local));
         }
     }
+    let captions = captions::prepare(timeline, fps, total, &mut losses)?;
+    let mut titles: Vec<Vec<(&captions::Placed<'_>, i32, u64)>> = (0..spine.len()).map(|_| Vec::new()).collect();
+    let picture_lanes = listed.tracks.iter().filter(|track| track.kind == TrackKind::Video).count();
+    for (n, caption) in captions.iter().enumerate() {
+        let lane = picture_lanes.saturating_add(n).saturating_add(1);
+        let lane = i32::try_from(lane).map_err(|_| invalid("too many caption lanes".into()))?;
+        let parent =
+            spine.iter().position(|s| s.offset <= caption.from && caption.from < s.offset.saturating_add(s.duration)).unwrap_or(spine.len().saturating_sub(1));
+        let item = spine.get(parent).ok_or_else(|| invalid("a caption has nothing to connect to".into()))?;
+        let local = item.start.saturating_add(caption.from.saturating_sub(item.offset));
+        if let Some(list) = titles.get_mut(parent) {
+            list.push((caption, lane, local));
+        }
+    }
 
     let mut xml = String::new();
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE fcpxml>\n");
     let _ = writeln!(xml, "<fcpxml version=\"{VERSION}\">");
     xml.push_str("  <resources>\n");
     let _ = writeln!(xml, "    <format id=\"r1\" frameDuration=\"1/{fps}s\" width=\"{}\" height=\"{}\"/>", sequence.width, sequence.height);
+    if !captions.is_empty() {
+        captions::resource(&mut xml);
+    }
     for (n, index) in used.iter().enumerate() {
         let source = sequence.sources.get(*index).ok_or_else(|| invalid("a clip's media isn't listed".into()))?;
         let (video, audio) = match source.kind {
@@ -319,6 +347,7 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
             (_, None) => {
                 losses.push(Loss {
                     clip: None,
+                    caption: None,
                     feature: "unknown media length",
                     detail: format!("{} is written as long as the furthest clip plays it; the other editor may find more", source.name),
                 });
@@ -343,7 +372,7 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
         time(total, fps)
     );
     let ref_of = |source: usize| used.iter().position(|u| *u == source).map(asset_id).unwrap_or_default();
-    for (item, children) in spine.iter().zip(&connected) {
+    for ((item, children), titles) in spine.iter().zip(&connected).zip(&titles) {
         let indent = "            ";
         match &item.clip {
             None => {
@@ -369,7 +398,7 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
             }
         }
         let volume = item.clip.as_ref().and_then(|p| p.volume);
-        if children.is_empty() && volume.is_none() {
+        if children.is_empty() && titles.is_empty() && volume.is_none() {
             xml.push_str("/>\n");
         } else {
             xml.push_str(">\n");
@@ -394,6 +423,9 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
                     }
                 }
             }
+            for (caption, lane, local) in titles {
+                captions::title(&mut xml, caption, *lane, *local, sequence)?;
+            }
             let _ = writeln!(xml, "{indent}</{}>", item.clip.as_ref().map_or("gap", |p| element(p.kind)));
         }
         if let Some((offset, duration)) = item.dissolve {
@@ -401,7 +433,8 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
         }
     }
     xml.push_str("          </spine>\n        </sequence>\n      </project>\n    </event>\n  </library>\n</fcpxml>\n");
-    Ok(Interchange { xml, losses, used, frames: total })
+    let srt = (!captions.is_empty()).then(|| captions::srt(&captions, fps));
+    Ok(Interchange { xml, srt, losses, used, frames: total })
 }
 
 fn asset_id(n: usize) -> String {
@@ -434,5 +467,6 @@ pub fn kind_of(input: Input) -> MediaKind {
     }
 }
 
+mod captions;
 #[cfg(test)]
 mod tests;

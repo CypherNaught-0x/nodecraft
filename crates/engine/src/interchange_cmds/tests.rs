@@ -140,3 +140,45 @@ fn file_names_keep_letters_and_lose_the_rest() {
     assert_eq!(extension("image/svg+xml"), "svg");
     assert_eq!(extension("video/x-very-long-name"), "bin");
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn captioned_archive_contains_titles_srt_and_every_caption_loss_in_the_report() {
+    let mut s = session();
+    s.dispatch(
+        "timeline.caption_add",
+        &json!({
+            "canvas": CANVAS, "id": EDITOR, "caption": "intro", "text": "Füchse\nSecond line",
+            "start_us": 1_000_000, "end_us": 2_500_000, "font": "Requested font", "color": "#aabbcc", "stroke_width": 2,
+            "align": "right", "position": "top",
+        }),
+    )
+    .unwrap();
+    let before = s.document().clone();
+    let preview = s.dispatch("timeline.interchange", &on()).unwrap();
+    assert_eq!(s.document(), &before, "preview writes no graph changes");
+    assert_eq!(preview["subtitles"]["file"], json!("Rough-cut.srt"));
+    assert_eq!(preview["subtitles"]["format"], json!("srt"));
+    let text = preview["subtitles"]["text"].as_str().unwrap();
+    assert_eq!(text, "1\n00:00:01,000 --> 00:00:02,500\nFüchse\nSecond line\n\n");
+    assert!(preview["xml"].as_str().unwrap().contains("<title ref=\"rCaptionTitle\""));
+    let report = preview["report"].as_str().unwrap();
+    assert!(report.contains("Subtitles: Rough-cut.srt"));
+    assert!(report.contains("caption intro: caption style") && report.contains("Requested font") && report.contains("#aabbcc") && report.contains("2 px"));
+    assert!(report.contains("caption intro: caption placement") && report.contains("SRT carries no position"));
+    assert!(preview["losses"].as_array().unwrap().iter().all(|loss| loss["caption"] == "intro"));
+    let path = std::env::temp_dir().join(format!("nodecraft-caption-interchange-{}.zip", std::process::id()));
+    s.dispatch("timeline.export_interchange", &json!({"canvas": CANVAS, "id": EDITOR, "path": path, "overwrite": true})).unwrap();
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+    let mut actual = String::new();
+    zip.by_name("Rough-cut.srt").unwrap().read_to_string(&mut actual).unwrap();
+    assert_eq!(actual, text);
+    actual.clear();
+    zip.by_name("report.txt").unwrap().read_to_string(&mut actual).unwrap();
+    assert_eq!(actual, report);
+    actual.clear();
+    zip.by_name("Rough-cut.fcpxml").unwrap().read_to_string(&mut actual).unwrap();
+    assert_eq!(actual, preview["xml"].as_str().unwrap());
+    drop(zip);
+    std::fs::remove_file(path).unwrap();
+}

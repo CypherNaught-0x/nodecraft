@@ -6,6 +6,7 @@ It writes one ZIP archive:
 
 ```text
 <timeline name>.fcpxml     the cut, FCPXML 1.10
+<timeline name>.srt        caption text and timing, when at least one caption shows
 report.txt                 what the document leaves out or changes, for a person to read
 media/01-<source>.<ext>    each source the clips play, once
 media/02-<source>.<ext>
@@ -75,10 +76,19 @@ already report the `format` and `version` they wrote.
 | Background colour | **not written** unless black, reported | Editors show black behind a picture that doesn't fill the frame. |
 | Fit inside the frame | not written | Editors fit a clip of another size by default, as the render does. |
 | Disabled or unconnected clips | left out, reported | |
-| Captions, transforms, effects | none exist on a Timeline yet | They must be added to this table, translated or reported, when they do. |
+| Captions | connected `<title>` elements plus a UTF-8 SRT companion | Text and line breaks, frame-rounded start and length. Captions are clipped to the exported sequence and never lengthen it. Disabled and out-of-range captions are left out and reported. |
+| Caption alignment and position | text alignment and frame anchors in FCPXML; absent from SRT | Distinct lanes above picture tracks preserve overlapping titles. The destination's Basic Title template can change exact margins and text metrics; every caption reports this. |
+| Caption font, size, colour and outline | destination Basic Title appearance; absent from SRT | The requested font, pixel size, fill and outline are listed in the report, so style is never silently lost. No Motion template or font is included. |
+| Clip placement, speed and effects | not yet translated by this writer | Separate from caption interchange. |
 
 The report lists each loss, naming the clip it concerns. The document never claims more than it
 holds, and the export never presents itself as a lossless round trip.
+
+Caption losses name the caption id. SubRip times are rounded to the nearest millisecond and
+sorted by start time. Empty caption lines contain a zero-width space so they cannot end a cue;
+literal HTML punctuation is escaped. These changes are reported. SRT has no portable style,
+box or position information. It accompanies the current FCPXML export and can be imported
+separately; there is no EDL export mode yet.
 
 ## Safety and limits
 
