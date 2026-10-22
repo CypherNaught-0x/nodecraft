@@ -284,10 +284,16 @@ In the browser (#118), Open, Save and Save As use the File System Access pickers
 browser has them (Chromium-based browsers), and save back to the picked file. Elsewhere, Open
 uses a file field and every save is a download. The session's storage holds only the picked
 file's bytes for one `file.open`, and the saved bytes until the browser writes them. Locations
-are `<n>/<file name>` keys that are unique per pick. The browser keeps no recovery journal yet,
-so leaving the page with unsaved work, or with a save the browser failed to write, asks first.
-Projects over 64 MiB are refused before they are read. `app/web_files/tests.rs` drives the flow
-through a fake browser port.
+are `<n>/<file name>` keys that are unique per pick. Leaving the page with unsaved work, or with
+a save the browser failed to write, asks first. Projects over 64 MiB are refused before they are
+read. `app/web_files/tests.rs` drives the flow through a fake browser port.
+
+Unsaved work is also kept for recovery (#717). Each tab writes the session's recovery checkpoint
+and journal to its own slot in the site's IndexedDB, and holds a Web Lock on that slot while it is
+open. On load, the newest slot no open tab holds is offered back, as the desktop offers its
+recovery file. A full quota is said once, and frames then wait for the next checkpoint
+(`app/web_journal.rs`). `app/web_journal/tests.rs` drives reloads, other tabs, quota failures and
+damaged slots over a fake shelf.
 
 Runs work in the browser too (#118), through the same run host as the desktop. Its tasks run on
 the page's queue, its sleeps are `setTimeout`s and its clock is `performance.now()`

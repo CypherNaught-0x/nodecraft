@@ -9,7 +9,6 @@
   - Every change still goes through `file.open`, `file.save` and `file.save_as`, so undo, the saved state and the command surfaces don't change.
   - The browser's file handles stay in the port under numeric ids, so the flow and the session hold no browser objects.
 - **Locations are keys that are unique per pick** (`<n>/<file name>`). Two files with the same name never share a destination, and no path is involved.
-- **There is no recovery journal in the browser yet.**
-  - `checkpoint` and `append` do nothing. The page instead asks before it is left while there are unsaved changes, a write in flight, or a save the browser failed to write.
-  - Recovering from site storage (IndexedDB) is left to a follow-up.
+- **The page asks before it is left** while there are unsaved changes, a write in flight, or a save the browser failed to write.
+  - At first there was no recovery journal in the browser, and `checkpoint` and `append` did nothing. Recovery from site storage came later (see `2026-10-22-browser-recovery.md`, #717); the guard stays, since recovery is a safety net, not a save.
 - **The 64 MiB archive limit applies before reading.** The browser's reported size is checked before reading and the byte count again after.
