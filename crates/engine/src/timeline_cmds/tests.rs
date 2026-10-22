@@ -45,6 +45,76 @@ fn with(mut base: Json, extra: Json) -> Json {
     base
 }
 
+fn many_wired(count: u8) -> Session {
+    let mut s = session();
+    for n in 3..=count {
+        let from = NodeId::from_bytes([n.saturating_add(10); 16]);
+        s.dispatch("node.create", &json!({"canvas": CANVAS, "id": from, "kind": "source.video", "pos": {"x": 0, "y": 0}})).unwrap();
+        let edge = json!({"id": EdgeId::from_bytes([n.saturating_add(10); 16]), "from": {"node": from, "port": "out"}, "to": {"node": EDITOR, "port": timeline::INPUT}, "order": n});
+        s.dispatch("edge.connect", &json!({"canvas": CANVAS, "edge": edge})).unwrap();
+    }
+    s
+}
+
+#[test]
+fn forty_wired_takes_edit_without_rendering_more_than_thirty_two() {
+    let mut s = many_wired(40);
+    let clips = ids(&mut s);
+    assert_eq!(clips.len(), 40);
+    // Even an initially over-limit document can be made runnable a disable at a time.
+    for clip in clips.iter().skip(MAX_CLIPS) {
+        s.dispatch("timeline.update", &with(on(clip), json!({"set": {"enabled": false}}))).unwrap();
+    }
+    assert_eq!(list(&mut s).iter().filter(|clip| clip["enabled"] == true).count(), MAX_CLIPS);
+    let disabled = clips.get(32).unwrap();
+    s.dispatch("timeline.update", &with(on(disabled), json!({"set": {"in_us": 100_000}}))).unwrap();
+    s.dispatch("timeline.move", &with(on(disabled), json!({"index": 39}))).unwrap();
+    s.dispatch("timeline.move", &with(on(disabled), json!({"index": 0}))).unwrap();
+    let enabled = clips.first().unwrap();
+    s.dispatch("timeline.update", &with(on(enabled), json!({"set": {"out_us": 1_000_000}}))).unwrap();
+    assert_eq!(list(&mut s).iter().find(|clip| clip["id"] == disabled.as_str()).unwrap()["in_us"], json!(100_000));
+
+    // An error creates no revision or changeset and does not discard the redo step.
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    let before = (s.document().clone(), s.revision());
+    assert!(s.can_redo());
+    let error = s.dispatch("timeline.update", &with(on(disabled), json!({"set": {"enabled": true}}))).unwrap_err();
+    assert_eq!(error.message, "a timeline renders at most 32 clips: disable another first");
+    assert_eq!((s.document(), s.revision()), (&before.0, before.1));
+    assert!(s.can_redo());
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert_eq!(list(&mut s).iter().find(|clip| clip["id"] == enabled.as_str()).unwrap()["out_us"], json!(1_000_000));
+    let revision = s.revision();
+    let split = s.dispatch("timeline.split", &with(on(enabled), json!({"at_us": 500_000}))).unwrap_err();
+    assert_eq!(split.message, "a timeline renders at most 32 clips: disable another first");
+    assert_eq!(s.revision(), revision);
+
+    // Disabled clips remain editable even when the enabled count is exactly 32.
+    s.dispatch("timeline.update", &with(on(disabled), json!({"set": {"out_us": 2_000_000}}))).unwrap();
+    assert_eq!(list(&mut s).iter().find(|clip| clip["id"] == disabled.as_str()).unwrap()["out_us"], json!(2_000_000));
+    s.dispatch("timeline.update", &with(on(enabled), json!({"set": {"enabled": false}}))).unwrap();
+    s.dispatch("timeline.update", &with(on(disabled), json!({"set": {"enabled": true}}))).unwrap();
+}
+
+#[test]
+fn structural_clip_bound_reports_oversized_wires_instead_of_losing_them() {
+    let mut s = many_wired(40);
+    let stored_clips: Vec<Json> = (0..=MAX_STRUCTURAL_CLIPS).map(|n| json!({"id": format!("extra{n}"), "origin": "absent", "enabled": false})).collect();
+    assert!(s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": stored_clips})).is_err());
+    assert_eq!(ids(&mut s).len(), 40);
+
+    // A previously saved spec can still be read. Its new wires must be reported,
+    // never truncated and silently written over by an edit.
+    let mut s = many_wired(32);
+    let saved: Vec<Json> = (0..100).map(|n| json!({"id": format!("old{n}"), "origin": "absent", "enabled": false})).collect();
+    s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": saved})).unwrap();
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), 100);
+    assert_eq!(s.dispatch("timeline.list", &json!({"canvas": CANVAS, "id": EDITOR})).unwrap()["clips"].as_array().unwrap().len(), 132);
+    let err = s.dispatch("timeline.update", &with(on("old0"), json!({"set": {"in_us": 100_000}}))).unwrap_err();
+    assert_eq!(err.message, "a timeline stores at most 128 clips: disconnect or remove some");
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), 100);
+}
+
 #[test]
 fn each_wired_video_is_listed_as_a_whole_clip_until_it_is_stored() {
     let mut s = session();
@@ -152,10 +222,18 @@ fn set_replaces_the_clips_and_refuses_bad_ones() {
     assert_eq!(wired, [("intro", true), ("gone", false), (a.as_str(), true)]);
     assert_eq!(s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": clips})).unwrap(), json!({"changed": false}));
     let twice = json!([{"id": "x", "origin": "n"}, {"id": "x", "origin": "m"}]);
-    let many: Vec<Json> = (0..=MAX_CLIPS).map(|i| json!({"id": format!("c{i}"), "origin": "n"})).collect();
-    for bad in [twice, json!(many), json!([{"id": "x", "origin": "n", "volume": 5000}])] {
+    let many: Vec<Json> = (0..=MAX_CLIPS).map(|i| json!({"id": format!("c{i}"), "origin": A.to_string()})).collect();
+    assert_eq!(
+        s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": many})).unwrap_err().message,
+        "a timeline renders at most 32 clips: disable another first"
+    );
+    for bad in [twice, json!([{"id": "x", "origin": "n", "volume": 5000}])] {
         assert!(s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": bad})).is_err());
     }
+    // Stored but disconnected takes do not consume a render slot.
+    let offline: Vec<Json> = (0..40).map(|i| json!({"id": format!("offline{i}"), "origin": "absent"})).collect();
+    s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": offline})).unwrap();
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), 40);
     assert!(s.dispatch("timeline.list", &json!({"canvas": CANVAS, "id": A})).is_err(), "only a Timeline has clips");
 }
 

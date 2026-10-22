@@ -44,8 +44,10 @@ pub const DEFAULT_WIDTH: u64 = 1280;
 pub const DEFAULT_HEIGHT: u64 = 720;
 /// The frame rates offered, frames per second.
 pub const RATES: [&str; 5] = ["24", "25", "30", "50", "60"];
-/// Most clips on a timeline, and most stored bytes.
+/// Most clips a run renders; disabled clips may remain available for editing.
 pub const MAX_CLIPS: usize = 32;
+/// Four times the render bound keeps 40+ wired takes editable while bounding the stored spec.
+pub const MAX_STRUCTURAL_CLIPS: usize = 4 * MAX_CLIPS;
 pub const MAX_ENCODED_BYTES: usize = 128 * 1024;
 /// Longest time anywhere on a timeline: an hour, in microseconds.
 pub const MAX_US: u64 = 3_600_000_000;
@@ -437,8 +439,8 @@ impl Timeline {
     }
 
     pub fn check(&self) -> Result<(), Error> {
-        if self.clips.len() > MAX_CLIPS {
-            return Err(bad("a timeline has at most 32 clips"));
+        if self.clips.len() > MAX_STRUCTURAL_CLIPS {
+            return Err(bad("a timeline stores at most 128 clips: disconnect or remove some"));
         }
         if self.tracks.len() > MAX_TRACKS {
             return Err(bad("a timeline has at most 8 tracks besides the main one"));
