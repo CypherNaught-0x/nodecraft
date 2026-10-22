@@ -272,7 +272,7 @@ impl NodeCraftApp {
         let pointer = ui.input(|i| i.pointer.interact_pos());
         let typing = self.text_focused || canvas::text_input_focused(ui.ctx());
         let sense = if blocked || typing { Sense::hover() } else { Sense::click_and_drag() };
-        // Shift-drag on a header draws a marquee, as it does everywhere else on the canvas.
+        // Shift-drag on a header or a resize corner draws a marquee, as it does everywhere else.
         let header_sense = if sense.senses_drag() && ui.input(|i| i.modifiers.shift) { Sense::click() } else { sense };
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let membership = self.membership();
@@ -367,7 +367,7 @@ impl NodeCraftApp {
             if !field.collapsed {
                 let side = (t.field_header_height * 0.5 * zoom).min(screen.width()).min(screen.height() - header.height()).max(0.0);
                 let handle = Rect::from_min_size(screen.max - Vec2::splat(side), Vec2::splat(side));
-                let corner = ui.interact(handle, ui.id().with(("field_resize", field.id)), sense);
+                let corner = ui.interact(handle, ui.id().with(("field_resize", field.id)), header_sense);
                 corner.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !blocked, format!("Resize field {name}")));
                 painter.line_segment([handle.left_bottom(), handle.right_top()], egui::Stroke::new(t.handle_stroke, color));
                 if corner.hovered() || corner.dragged() {
