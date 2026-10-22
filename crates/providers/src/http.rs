@@ -358,6 +358,10 @@ mod reqwest_impl {
             "the request timed out"
         } else if e.is_body() || e.is_decode() {
             "the connection dropped while reading the reply"
+        } else if cfg!(target_arch = "wasm32") {
+            // The browser reports a refused cross-origin request (CORS) the same as any other
+            // failure, and refusing it is what most providers do to a web page (#118).
+            "the browser couldn't reach the provider; it may not accept requests from web pages"
         } else {
             "the request failed"
         };

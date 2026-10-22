@@ -165,10 +165,7 @@ impl NodeCraftApp {
                 thumbnails.insert(asset.hash, preview);
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
         let status = self.runs.as_ref().and_then(|runs| super::queue_panel::card_status(runs, app.canvas, app.node, &t));
-        #[cfg(target_arch = "wasm32")]
-        let status: Option<(String, egui::Color32, Option<String>)> = None;
         #[cfg(not(target_arch = "wasm32"))]
         let loading = app.loading.as_ref().map(|loading| loading.port().to_owned());
         #[cfg(target_arch = "wasm32")]

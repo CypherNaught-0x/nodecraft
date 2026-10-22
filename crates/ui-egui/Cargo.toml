@@ -34,6 +34,8 @@ log = { workspace = true }
 getrandom.workspace = true
 # The run host's runtime types and budgets (#409).
 nodecraft-exec = { workspace = true }
+# Runs (#409): provider adapters over reqwest, on desktop and in the browser (#118).
+nodecraft-providers = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Native async sheets/portals stay at the UI layer and on its main thread (#407).
@@ -41,8 +43,7 @@ rfd = "=0.17.2"
 # Copied images (#319): egui-winit only hands the app clipboard text. Pinned to the version
 # egui-winit already links, with the same features, so no second copy is built.
 arboard = { version = "=3.7.0", default-features = false, features = ["image-data"] }
-# Runs (#409): provider adapters over reqwest, driven on a tokio runtime the app owns.
-nodecraft-providers = { workspace = true }
+# Runs (#409): driven on a tokio runtime the app owns.
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 # Video playback on cards (#105), through installed ffmpeg/ffprobe the settings name.
 nodecraft-media = { workspace = true, features = ["video"] }
@@ -55,6 +56,7 @@ tungstenite = { workspace = true }
 # Browser drops (#319): a dropped file's size before reading it, and the read on the browser's queue.
 # Provider keys in the origin's `localStorage` (#118). Project files (#118): the file pickers,
 # reached through `js-sys` reflection since `web-sys` gates them, a file field and a download.
+# Runs (#118): spawned on the page's queue, timed by `setTimeout` and `performance.now()`.
 wasm-bindgen-futures = "0.4.79"
 js-sys = "0.3.106"
 web-sys = { version = "0.3.106", features = [
@@ -70,6 +72,7 @@ web-sys = { version = "0.3.106", features = [
     "HtmlAnchorElement",
     "HtmlElement",
     "HtmlInputElement",
+    "Performance",
     "Storage",
     "Url",
     "Window",

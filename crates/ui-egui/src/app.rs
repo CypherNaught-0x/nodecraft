@@ -362,12 +362,10 @@ mod ownership_panel;
 mod paste_image;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perf_run;
-#[cfg(not(target_arch = "wasm32"))]
 mod queue_panel;
 mod reader;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
-#[cfg(not(target_arch = "wasm32"))]
 mod runs;
 mod search;
 #[cfg(not(target_arch = "wasm32"))]
@@ -521,7 +519,6 @@ pub struct NodeCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     key_results: Option<nodecraft_engine::secrets::KeyResults>,
     /// The runs `run.start` hands over, and the providers they use (#409).
-    #[cfg(not(target_arch = "wasm32"))]
     runs: Option<runs::Runs>,
     /// Fetches the option lists `options.refresh` asks for (#529).
     #[cfg(not(target_arch = "wasm32"))]
@@ -533,7 +530,6 @@ pub struct NodeCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     sharing: Option<sharing::Sharing>,
     /// The queue panel is open (#82).
-    #[cfg(not(target_arch = "wasm32"))]
     queue_open: bool,
     /// The quarantined-charge review, when open (#362).
     #[cfg(not(target_arch = "wasm32"))]
@@ -615,7 +611,7 @@ impl NodeCraftApp {
             }
         };
         // Without them the app still opens; Generate says why it can't run.
-        let mut runs = match runs::Runs::new(&mut services) {
+        let mut runs = match runs::Runs::new(&mut services, std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore)) {
             Ok(runs) => Some(runs),
             Err(e) => {
                 log::warn!("runs unavailable: {}", e.message);
@@ -773,7 +769,16 @@ impl NodeCraftApp {
             log::warn!("API keys unavailable: {e}");
             Vec::new()
         });
-        let app = Self::with_web_files(services, web_files::WebFiles::browser())?;
+        // Runs call providers straight from the page (#118), with the keys kept here. Without
+        // them the app still opens; Generate says why it can't run.
+        let runs = runs::Runs::new(&mut services, std::sync::Arc::clone(&store) as std::sync::Arc<dyn SecretStore>)
+            .inspect_err(|e| log::warn!("runs unavailable: {}", e.message))
+            .ok();
+        let mut app = Self::with_web_files(services, web_files::WebFiles::browser())?;
+        if let Some(runs) = &runs {
+            runs.install(&mut app.session);
+        }
+        app.runs = runs;
         // The browser keeps no recovery journal: leaving with unsaved work asks first.
         web_files::guard_unload(Rc::clone(&app.web_files.unsaved));
         Ok((app, accounts))
@@ -996,7 +1001,6 @@ impl NodeCraftApp {
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             key_results: None,
-            #[cfg(not(target_arch = "wasm32"))]
             runs: None,
             #[cfg(not(target_arch = "wasm32"))]
             option_fetch: None,
@@ -1004,7 +1008,6 @@ impl NodeCraftApp {
             updates: None,
             #[cfg(not(target_arch = "wasm32"))]
             sharing: None,
-            #[cfg(not(target_arch = "wasm32"))]
             queue_open: false,
             #[cfg(not(target_arch = "wasm32"))]
             ownership: None,
@@ -1542,10 +1545,7 @@ impl NodeCraftApp {
                         elements: &element_names,
                         mentions: mention_cards,
                         mention_blocked: mention_blocked.get(&node.id).map(String::as_str),
-                        #[cfg(not(target_arch = "wasm32"))]
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
-                        #[cfg(target_arch = "wasm32")]
-                        partial: None,
                         video,
                         mesh,
                     },
@@ -1566,7 +1566,6 @@ impl NodeCraftApp {
                         ui.interact(self.view.rect_to_screen(viewport.min, marker), ui.id().with(("tag_marker", node.id)), Sense::hover())
                             .on_hover_text(format!("Tag: {}", crate::tags::label(&tag.title)));
                     }
-                    #[cfg(not(target_arch = "wasm32"))]
                     if let Some(runs) = &self.runs
                         && let Some((label, color, why)) = queue_panel::card_status(runs, self.canvas, node.id, t)
                     {
@@ -1580,10 +1579,7 @@ impl NodeCraftApp {
                     }
                     // A card being refreshed keeps its stale result until the run records, but
                     // offers no second refresh meanwhile.
-                    #[cfg(not(target_arch = "wasm32"))]
                     let running = self.runs.as_ref().is_some_and(|runs| runs.is_running(self.canvas, node.id));
-                    #[cfg(target_arch = "wasm32")]
-                    let running = false;
                     // A mask whose image drifted shows that instead: refreshing it would paint the
                     // old strokes onto the new image.
                     if let Some(drift) = self.mask_badges.as_ref().and_then(|badges| badges.masks.get(&node.id).copied()) {
@@ -2171,8 +2167,14 @@ impl NodeCraftApp {
         #[cfg(target_arch = "wasm32")]
         self.web_file_button(ui, t);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
+        // A key answered at once (the browser's) was saved or deleted: adapters read keys again.
+        if !changes.is_empty()
+            && let Some(runs) = &mut self.runs
+            && let Err(error) = runs.forget_adapters(&mut self.session)
+        {
+            self.notice = Some(error.message);
+        }
         self.save_accounts(changes);
-        #[cfg(not(target_arch = "wasm32"))]
         self.queue_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
         self.share_panel(ui.ctx(), t);
@@ -2326,7 +2328,6 @@ impl NodeCraftApp {
                         {
                             self.open_app_mode(node);
                         }
-                        #[cfg(not(target_arch = "wasm32"))]
                         if let Some(label) = self.queue_label()
                             && ui
                                 .add(egui::Button::new(egui::RichText::new(label).color(t.text_muted)).frame(false))
@@ -2798,7 +2799,6 @@ impl eframe::App for NodeCraftApp {
                 ctx.request_repaint_after(deadline.saturating_duration_since(std::time::Instant::now()));
             }
         }
-        #[cfg(not(target_arch = "wasm32"))]
         self.tick_runs(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_option_fetch(ctx);
