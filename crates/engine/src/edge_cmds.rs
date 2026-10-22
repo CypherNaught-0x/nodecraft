@@ -86,6 +86,10 @@ fn delete(context: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         }
         changes.extend(fields.into_iter().map(|id| Change::RemoveField { canvas: p.canvas, id }));
     }
+    // Unassigning surviving members is one more change.
+    if changes.len() > MAX_CHANGES {
+        return Err(invalid("delete exceeds the operation limit"));
+    }
     Ok(edit(changes, Value::Null))
 }
 
@@ -293,6 +297,24 @@ mod tests {
         assert!(canvas.nodes().values().all(|n| n.field.is_none()));
         s.dispatch("edit.undo", &json!({})).unwrap();
         assert_eq!(s.document(), &before);
+        // A field deleted with all its members needs no unassigning.
+        let params = json!({"canvas": C, "nodes": [id(3)], "fields": [b]});
+        s.dispatch("canvas.delete", &params).unwrap();
+        let canvas = s.document().canvases().get(&C).unwrap();
+        assert_eq!(canvas.fields().keys().copied().collect::<Vec<_>>(), vec![a]);
+        assert!(!canvas.nodes().contains_key(&id(3)));
+        s.dispatch("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.document(), &before);
+        // One unassign change over the limit refuses the delete with its own error.
+        let many: Vec<_> = (0..nodecraft_graph::MAX_CHANGES - 1)
+            .map(|n| {
+                let mut bytes = [0xEE; 16];
+                bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
+                EdgeId::from_bytes(bytes)
+            })
+            .collect();
+        let full = json!({"canvas": C, "edges": many, "nodes": [id(2)], "fields": [a]});
+        assert_eq!(s.dispatch("canvas.delete", &full).unwrap_err().message, "delete exceeds the operation limit");
         // A missing field refuses the whole delete.
         let missing = json!({"canvas": C, "nodes": [id(1)], "fields": [nodecraft_types::FieldId::from_bytes([99; 16])]});
         assert!(s.enabled("canvas.delete", &missing).is_err());
