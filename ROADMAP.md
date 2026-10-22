@@ -90,9 +90,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   or installs the run host, so `run.start` reports *unsupported* (#409, #362). Five adapters (LLM
   endpoints, OpenAI Images, Replicate, ComfyUI and Seedream) have tested library integrations,
   with catalog definitions available to engine callers.
-- **Actions are partly live.** The 13 image and 4 text operations are node kinds (#410) and
-  recompute on a worker after each edit, joining that edit's undo step (#433). Reduced-resolution
-  previews while a slider drags, and recompute in the browser build, are still open (#88).
+- **Actions are live.** The 13 image and 4 text operations are node kinds (#410) and
+  recompute on a worker after each edit, joining that edit's undo step (#433). While a slider
+  drags, cards show a preview made from scaled-down images, and the full-size render follows on
+  release (#88). The browser build, which has no worker threads, runs each round in the frame.
 - **The in-canvas agent works in the desktop app.** Cmd+/ opens the agent sidebar (#114): ask in
   words, with the selection and @-mentioned nodes as context. `crates/agent` runs the model's tool
   calls over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any

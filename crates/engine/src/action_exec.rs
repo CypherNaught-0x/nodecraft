@@ -28,12 +28,22 @@ pub struct LocalActions {
     videos: Mutex<BTreeMap<Blake3, Arc<[u8]>>>,
     /// ffmpeg and ffprobe, from the settings; renders refuse to run without them.
     video: Option<(PathBuf, PathBuf)>,
+    /// For a drag preview (#88): input images larger than this, in pixels on their longer edge,
+    /// are scaled down to it before an action works on them.
+    preview_edge: Option<u32>,
 }
 
 impl LocalActions {
     /// Actions reading `assets` (a cheap clone of the session's store: buffers are shared).
     pub fn new(assets: AssetStore) -> Self {
-        Self { assets, staged: Mutex::new(AssetStore::default()), videos: Mutex::default(), video: None }
+        Self { assets, staged: Mutex::new(AssetStore::default()), videos: Mutex::default(), video: None, preview_edge: None }
+    }
+
+    /// Works on input images scaled down to at most `edge` pixels on their longer edge: a quick,
+    /// rough result for a drag preview (#88), never recorded.
+    pub fn with_preview_edge(mut self, edge: u32) -> Self {
+        self.preview_edge = Some(edge.max(1));
+        self
     }
 
     /// Renders timelines with these tools (`[media]` in the settings; see
@@ -239,6 +249,10 @@ impl LocalActions {
             return Err(format!("the input image is larger than {} megapixels", actions.pixels / 1_000_000));
         }
         let (_, decoded) = nodecraft_media::decode_image(bytes, &limits).map_err(|e| format!("the input image can't be read: {e}"))?;
+        if let Some(edge) = self.preview_edge.filter(|edge| decoded.width().max(decoded.height()) > *edge) {
+            let small = nodecraft_media::thumbnail(&decoded, edge).map_err(|e| format!("the input image can't be read: {e}"))?;
+            return Raster::new(small.width(), small.height(), small.into_rgba(), actions).map_err(|e| format!("the image can't be processed: {e}"));
+        }
         let rgba = decoded.into_rgba8();
         Raster::new(rgba.width(), rgba.height(), rgba.into_raw(), actions).map_err(|e| format!("the image can't be processed: {e}"))
     }

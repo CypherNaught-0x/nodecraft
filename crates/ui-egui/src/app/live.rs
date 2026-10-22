@@ -1,10 +1,15 @@
 //! Live recompute in the app (#88): after an edit, stale action nodes on the shown canvas are
-//! recomputed on a worker thread and their results recorded into the edit's undo step
-//! (`engine::live_actions`). At most one recompute runs at a time; while a slider drags, each
-//! finished round that's already out of date is dropped and the next one starts from the
-//! current document, so the card follows the drag at the speed the work allows.
+//! recomputed on a worker thread (in the frame, in the browser) and their results recorded into
+//! the edit's undo step (`engine::live_actions`). At most one recompute runs at a time; a round
+//! that finishes already out of date is dropped and the next one starts from the current
+//! document, so cards follow edits at the speed the work allows.
+//!
+//! A slider being dragged isn't in the document yet. While it drags, the same worker computes a
+//! preview from its value on scaled-down images, and the cards it changes show that preview's
+//! results; nothing is recorded. Releasing the slider records the value, and the full-size round
+//! that follows replaces the preview.
 use super::NodeCraftApp;
-use nodecraft_engine::live_actions::{self, LiveOutcome};
+use nodecraft_engine::live_actions::{self, Draft, LiveJob, LiveOutcome, LivePreview};
 use nodecraft_types::{CanvasId, Error, NodeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -20,6 +25,7 @@ const CLOSE_WAIT: Duration = Duration::from_secs(10);
 pub(super) struct Live {
     running: Option<Receiver<Result<LiveOutcome, Error>>>,
     /// The worker computing `running`, waited for when the app closes (#594).
+    #[cfg(not(target_arch = "wasm32"))]
     worker: Option<std::thread::JoinHandle<()>>,
     /// The canvas and revision last looked at.
     checked: Option<(CanvasId, u64)>,
@@ -30,6 +36,38 @@ pub(super) struct Live {
     /// The canvas as it was when there was nothing to recompute: moving its nodes changes the
     /// revision but not that (#549).
     settled: Option<live_actions::Settled>,
+    /// The drag preview the cards show, until the full-size round lands or the drag ends.
+    preview: Option<LivePreview>,
+    /// The draft last previewed, on which canvas and revision: not previewed again until it moves.
+    previewed: Option<(CanvasId, u64, Draft)>,
+    /// The preview images each card last showed in full, kept while the next ones decode.
+    held: BTreeMap<NodeId, Vec<Vec<crate::preview::Preview>>>,
+}
+
+impl Live {
+    /// The preview result shown for `node` on `canvas` instead of its own, while a slider drags
+    /// (#88), with the store holding its images.
+    pub(super) fn preview(&self, canvas: CanvasId, node: NodeId) -> Option<(&nodecraft_graph::Generation, &nodecraft_format::AssetStore)> {
+        let preview = self.preview.as_ref().filter(|preview| preview.canvas == canvas)?;
+        Some((preview.results.get(&node)?, &preview.staged))
+    }
+
+    /// `rows`, the preview images `node` shows, once they are all ready; until then the last
+    /// ones that were, so a drag doesn't blank the card at every step.
+    pub(super) fn steady(&mut self, node: NodeId, rows: Vec<Vec<crate::preview::Preview>>) -> Vec<Vec<crate::preview::Preview>> {
+        if rows.iter().flatten().all(|image| matches!(image, crate::preview::Preview::Ready { .. })) {
+            self.held.insert(node, rows.clone());
+            return rows;
+        }
+        self.held.get(&node).cloned().unwrap_or(rows)
+    }
+
+    /// Stops showing a preview: the cards show their own results again.
+    fn drop_preview(&mut self) {
+        self.preview = None;
+        self.previewed = None;
+        self.held.clear();
+    }
 }
 
 impl NodeCraftApp {
@@ -38,6 +76,15 @@ impl NodeCraftApp {
     pub(super) fn live_recompute(&mut self, ctx: &egui::Context) {
         if let Some(receiver) = &self.live.running {
             match receiver.try_recv() {
+                Ok(Ok(outcome)) if outcome.is_preview() => {
+                    self.live.running = None;
+                    // One made for a document since changed, or a drag since ended, is dropped:
+                    // the round that follows shows the truth.
+                    let dragging = self.dragging(ctx).is_some();
+                    if let Some(preview) = outcome.into_preview().filter(|p| dragging && p.base == self.session.revision()) {
+                        self.live.preview = Some(preview);
+                    }
+                }
                 Ok(Ok(outcome)) => {
                     self.live.running = None;
                     self.live.settled = None;
@@ -54,6 +101,52 @@ impl NodeCraftApp {
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => self.live.running = None,
             }
+        }
+        self.live_round(ctx);
+        let dragging = self.dragging(ctx);
+        // A preview shows until the rounds after the drag have settled (its value recorded and
+        // everything it feeds recomputed), or the drag ended with nothing to run.
+        if dragging.is_none() && self.live.running.is_none() {
+            self.live.drop_preview();
+        }
+        if self.live.preview.as_ref().is_some_and(|preview| preview.canvas != self.canvas) {
+            self.live.drop_preview();
+        }
+        if self.live.running.is_some() {
+            return;
+        }
+        let Some(draft) = dragging else { return };
+        let at = (self.canvas, self.session.revision(), draft);
+        if self.live.previewed.as_ref() == Some(&at) {
+            return;
+        }
+        let job = live_actions::preview(&self.session, self.canvas, &at.2);
+        self.live.previewed = Some(at);
+        match job {
+            Ok(Some(job)) => self.live_spawn(ctx, job),
+            Ok(None) => {}
+            Err(error) => log::debug!("no drag preview: {}", error.message),
+        }
+    }
+
+    /// The slider dragged on the shown canvas, as a draft, if one is. A draft left behind by a
+    /// slider released where it wasn't drawn (scrolled away, zoomed out) isn't a drag.
+    fn dragging(&self, ctx: &egui::Context) -> Option<Draft> {
+        if !ctx.input(|input| input.pointer.any_down()) {
+            return None;
+        }
+        let canvas = self.session.document().canvases().get(&self.canvas)?;
+        self.editors.iter().filter(|(id, _)| canvas.nodes().contains_key(id)).find_map(|(id, editor)| {
+            let (name, value) = editor.dragging()?;
+            let value = nodecraft_types::Number::new(value).ok()?;
+            Some(Draft { node: *id, name: name.to_owned(), value: nodecraft_types::Value::Number(value) })
+        })
+    }
+
+    /// Starts the round the document needs, if it changed since the last one.
+    fn live_round(&mut self, ctx: &egui::Context) {
+        if self.live.running.is_some() {
+            return;
         }
         let now = (self.canvas, self.session.revision());
         if self.live.checked == Some(now) {
@@ -75,6 +168,11 @@ impl NodeCraftApp {
                 return;
             }
         };
+        self.live_spawn(ctx, job);
+    }
+
+    /// Computes `job` on a worker thread (in this frame in the browser, which has none).
+    fn live_spawn(&mut self, ctx: &egui::Context, job: LiveJob) {
         let kinds = match &self.live.kinds {
             Some(kinds) => Arc::clone(kinds),
             None => match nodecraft_nodes::Registry::builtins() {
@@ -86,17 +184,28 @@ impl NodeCraftApp {
             },
         };
         let (send, receive) = channel();
-        let repaint = ctx.clone();
-        let started = std::thread::Builder::new().name("nodecraft-live".into()).spawn(move || {
+        // The browser has no worker threads: there the round runs in this frame. A drag's
+        // previews are small; a full-size render holds the frame once, as a click's work would.
+        #[cfg(target_arch = "wasm32")]
+        {
             let _ = send.send(live_actions::compute(job, &kinds));
-            repaint.request_repaint();
-        });
-        match started {
-            Ok(worker) => {
-                self.live.running = Some(receive);
-                self.live.worker = Some(worker);
+            self.live.running = Some(receive);
+            ctx.request_repaint();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let repaint = ctx.clone();
+            let started = std::thread::Builder::new().name("nodecraft-live".into()).spawn(move || {
+                let _ = send.send(live_actions::compute(job, &kinds));
+                repaint.request_repaint();
+            });
+            match started {
+                Ok(worker) => {
+                    self.live.running = Some(receive);
+                    self.live.worker = Some(worker);
+                }
+                Err(_) => log::warn!("live recompute: no worker thread"),
             }
-            Err(_) => log::warn!("live recompute: no worker thread"),
         }
     }
 

@@ -117,6 +117,7 @@ enum Entry {
 }
 
 /// What a card can show for its image right now.
+#[derive(Clone, Copy)]
 pub enum Preview {
     Ready { texture: egui::TextureId, size: [u32; 2], source_size: [u32; 2] },
     Pending,

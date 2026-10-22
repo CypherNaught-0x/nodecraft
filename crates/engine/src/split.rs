@@ -7,7 +7,7 @@
 //! store. One Session-bound candidate publishes all tiles atomically; refusal never prunes
 //! unrelated staged assets. Input materialization is private, explicit and decoder-cap bounded.
 use crate::Session;
-use nodecraft_graph::Node;
+use nodecraft_graph::{Generation, Node};
 use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, NodeId, Value};
 
 /// Most rows, and most columns, a split makes.
@@ -47,6 +47,11 @@ pub fn image_rows(node: &Node) -> (Vec<Vec<&AssetRef>>, usize) {
     let Some(result) = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)) else {
         return (Vec::new(), 0);
     };
+    result_rows(result)
+}
+
+/// The images `result` shows, in rows, as [`image_rows`] gives them for a node's active result.
+pub fn result_rows(result: &Generation) -> (Vec<Vec<&AssetRef>>, usize) {
     let fanned = !result.items.is_empty();
     for value in &result.outputs {
         let rows: Vec<&[Value]> = match value {

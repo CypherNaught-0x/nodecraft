@@ -13,10 +13,14 @@ fn png(width: u32, height: u32) -> Vec<u8> {
 }
 
 fn session() -> Session {
+    session_sized(16, 12)
+}
+
+fn session_sized(width: u32, height: u32) -> Session {
     let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([2; 16]), "P").unwrap();
     nodecraft_graph::Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(CANVAS, "C") }.apply(&mut project).unwrap();
     let mut s = Session::new(project).unwrap();
-    let hash = s.import_asset(&png(16, 12)).unwrap();
+    let hash = s.import_asset(&png(width, height)).unwrap();
     let asset = AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() };
     s.dispatch("node.create", &json!({"canvas": CANVAS, "id": SOURCE, "kind": "source.image", "pos": {"x": 0, "y": 0}})).unwrap();
     s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": SOURCE, "name": "asset", "value": Value::Media(asset)})).unwrap();
@@ -457,4 +461,72 @@ fn a_video_action_renders_only_when_asked() {
     assert!(result(&s).is_some());
     assert!(pending(&s, CANVAS, &BTreeMap::new()).unwrap().is_none());
     assert!(s.document().canvases().get(&CANVAS).unwrap().nodes().get(&trim).unwrap().active.is_none());
+}
+
+fn draft(sigma: f64) -> Draft {
+    Draft { node: BLUR, name: "sigma".into(), value: Value::Number(nodecraft_types::Number::new(sigma).unwrap()) }
+}
+
+#[test]
+fn a_dragged_value_previews_small_and_records_nothing() {
+    let mut s = session_sized(1200, 800);
+    connect(&mut s);
+    assert!(settle(&mut s));
+    let (recorded, before, revision) = (result(&s), sigma(&s), s.revision());
+    let job = preview(&s, CANVAS, &draft(6.0)).unwrap().expect("the dragged blur previews");
+    assert!(job.is_preview());
+    let outcome = compute(job, &Registry::builtins().unwrap()).unwrap();
+    assert!(outcome.is_preview() && outcome.failed.is_empty(), "{:?}", outcome.failed);
+    let shown = outcome.into_preview().unwrap();
+    assert_eq!((shown.canvas, shown.base), (CANVAS, revision));
+    let Some(Value::Media(asset)) = shown.results.get(&BLUR).and_then(|g| g.outputs.first()) else { panic!("the preview has an image") };
+    assert_eq!((asset.meta.width, asset.meta.height), (Some(512), Some(341)), "scaled down to the preview edge");
+    assert!(shown.staged.get(&asset.hash).is_some(), "its image is staged with it");
+    assert!(s.assets().get(&asset.hash).is_none(), "and not in the project");
+    assert_eq!((result(&s), sigma(&s), s.revision()), (recorded, before, revision), "the document is untouched");
+}
+
+#[test]
+fn a_preview_outcome_is_never_applied() {
+    let mut s = session();
+    connect(&mut s);
+    let job = preview(&s, CANVAS, &draft(4.0)).unwrap().unwrap();
+    let outcome = compute(job, &Registry::builtins().unwrap()).unwrap();
+    let revision = s.revision();
+    assert!(!apply(&mut s, outcome).unwrap());
+    assert_eq!((s.revision(), result(&s)), (revision, None), "nothing recorded");
+    // The full round still runs from the document.
+    assert!(settle(&mut s));
+}
+
+#[test]
+fn a_preview_covers_what_the_dragged_node_feeds_and_nothing_else() {
+    let mut s = session();
+    connect(&mut s);
+    let (after, beside) = (NodeId::from_bytes([13; 16]), NodeId::from_bytes([14; 16]));
+    for (id, x) in [(after, 800), (beside, 1200)] {
+        s.dispatch("node.create", &json!({"canvas": CANVAS, "id": id, "kind": "image.blur", "pos": {"x": x, "y": 0}})).unwrap();
+    }
+    for (edge, to) in [([15; 16], after), ([16; 16], beside)] {
+        let from = if to == after { BLUR } else { SOURCE };
+        s.dispatch(
+            "edge.connect",
+            &json!({"canvas": CANVAS, "edge": {"id": nodecraft_types::EdgeId::from_bytes(edge), "from": {"node": from, "port": "out"}, "to": {"node": to, "port": "image"}, "order": 0}}),
+        )
+        .unwrap();
+    }
+    let outcome = compute(preview(&s, CANVAS, &draft(3.0)).unwrap().unwrap(), &Registry::builtins().unwrap()).unwrap();
+    let shown = outcome.into_preview().unwrap();
+    assert_eq!(shown.results.keys().copied().collect::<Vec<_>>(), vec![BLUR, after], "the dragged blur and the one it feeds");
+}
+
+#[test]
+fn a_draft_the_edit_would_refuse_is_refused() {
+    let s = session();
+    let unknown = Draft { node: BLUR, name: "radius".into(), value: Value::Number(nodecraft_types::Number::new(1.0).unwrap()) };
+    assert_eq!(preview(&s, CANVAS, &unknown).err().map(|e| e.kind), Some(ErrorKind::InvalidInput));
+    let wrong = Draft { node: BLUR, name: "sigma".into(), value: Value::Text("soft".into()) };
+    assert!(preview(&s, CANVAS, &wrong).is_err());
+    let missing = Draft { node: NodeId::from_bytes([99; 16]), ..draft(1.0) };
+    assert_eq!(preview(&s, CANVAS, &missing).err().map(|e| e.kind), Some(ErrorKind::NotFound));
 }

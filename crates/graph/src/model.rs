@@ -525,6 +525,14 @@ impl Project {
         Ok(project)
     }
 
+    /// A copy holding only the canvases `keep` admits, and no skills: for work on part of the
+    /// project (a drag preview, #88) that shouldn't copy the rest. It may not validate as a
+    /// whole: staging a change on it checks the copy, not the project.
+    pub fn subset(&self, keep: impl Fn(&Canvas) -> bool) -> Project {
+        let canvases = self.canvases.iter().filter(|(_, canvas)| keep(canvas)).map(|(id, canvas)| (*id, canvas.clone())).collect();
+        Self { id: self.id, title: self.title.clone(), canvases, skills: BTreeMap::new() }
+    }
+
     pub fn id(&self) -> ProjectId {
         self.id
     }
