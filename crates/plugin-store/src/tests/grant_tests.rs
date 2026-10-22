@@ -297,3 +297,31 @@ fn granting_checks_the_signature_again() {
     assert!(st.grant(&id("io.example.text"), &trust).is_err());
     assert!(st.grants().unwrap().grants.is_empty());
 }
+
+/// A provider operations package (#174): it requires network and a secret.
+fn provider_package() -> Vec<u8> {
+    let manifest = manifest(&Spec { regs: vec![("acme", None)], ..spec("io.example.acme") })
+        .replace(r#"{"kind":"data"}"#, r#"{"kind":"provider_operations","schema":1}"#)
+        .replace(r#""kind":"catalog""#, r#""kind":"provider""#)
+        .replace(r#""required":[]"#, r#""required":["network","secret"]"#);
+    let files = [("manifest.json", manifest.as_bytes()), ("LICENSE", LICENSE), ("d/acme.json", b"{}".as_slice())];
+    archive::build(&files, None).unwrap()
+}
+
+#[test]
+fn a_package_that_requires_a_capability_is_never_granted_nothing() {
+    let mut st = store();
+    st.import(&provider_package(), &TrustStore::default(), false).unwrap();
+    let pkg = id("io.example.acme");
+    let refused = st.grant(&pkg, &TrustStore::default()).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Unsupported);
+    assert!(refused.message.contains("network"), "{}", refused.message);
+    assert!(st.grants().unwrap().grants.is_empty());
+    // A grant of nothing written by an older build doesn't enable it either.
+    let digest = st.index().active[&pkg].0;
+    let mut old = grants::Grants::default();
+    old.grant(&pkg, &digest).unwrap();
+    let mut st = Store::open(MemoryBackend { grants: Some(grants::encode(&old).unwrap().into_bytes()), ..reopened_backend(&st) }).unwrap();
+    assert_eq!(st.enable_with(&pkg, &none(), &BTreeSet::new()).unwrap_err().kind, ErrorKind::Unsupported);
+    assert_eq!(st.index().active[&pkg].1, State::Disabled);
+}

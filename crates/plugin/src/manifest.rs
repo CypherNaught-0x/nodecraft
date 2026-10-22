@@ -77,6 +77,9 @@ pub struct ContractVersion {
 /// The text action definition schema a `text_actions` package's descriptors use.
 pub const TEXT_ACTIONS_SCHEMA: u32 = 1;
 
+/// The provider operation template schema a `provider_operations` package's descriptors use.
+pub const PROVIDER_OPERATIONS_SCHEMA: u32 = 1;
+
 /// What runs a package's registrations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Runtime {
@@ -85,6 +88,10 @@ pub enum Runtime {
     /// Text actions written as definitions (#173): pure expressions over text the host evaluates
     /// itself, so nothing foreign executes. Still runs only once the user grants it.
     TextActions { schema: u32 },
+    /// Provider operations (#174): each descriptor is a declarative request template the host's
+    /// provider broker sends itself, with the host's credentials, transport, quote and budget.
+    /// Nothing foreign executes; it reaches the network only under a grant of its capabilities.
+    ProviderOperations { schema: u32 },
     /// A sandboxed module (a later phase; the contract fixes its shape now).
     RustWasm { module: InventoryPath },
 }
@@ -287,6 +294,26 @@ impl Manifest {
                 return Err(WireError::new(Code::Incompatible, "a text_actions package registers only actions").at(&format!("/registrations/{i}/kind")));
             }
         }
+        if let Runtime::ProviderOperations { .. } = runtime {
+            if !capabilities.required.contains(&Capability::Network) {
+                return Err(WireError::new(Code::Incompatible, "provider operations reach a provider, so they require network").at("/capabilities/required"));
+            }
+            let brokered = |c: &Capability| matches!(c, Capability::Network | Capability::Secret);
+            if !capabilities.required.iter().all(brokered) {
+                return Err(WireError::new(Code::Incompatible, "provider operations require only network and secret").at("/capabilities/required"));
+            }
+            if !capabilities.optional.iter().all(|c| match c {
+                Optional::Known(c) => brokered(c),
+                Optional::Unknown(_) => true,
+            }) {
+                return Err(WireError::new(Code::Incompatible, "provider operations may ask only for network and secret").at("/capabilities/optional"));
+            }
+            if let Some(i) = registrations.iter().position(|r| r.kind != RegistrationKind::Provider) {
+                return Err(
+                    WireError::new(Code::Incompatible, "a provider_operations package registers only providers").at(&format!("/registrations/{i}/kind"))
+                );
+            }
+        }
         Ok(Self {
             package_id,
             version,
@@ -333,8 +360,12 @@ fn runtime(value: Json) -> Result<Runtime> {
             TEXT_ACTIONS_SCHEMA => Runtime::TextActions { schema: TEXT_ACTIONS_SCHEMA },
             _ => return Err(WireError::new(Code::UnsupportedFeature, "text_actions schema is 1").at("/runtime/schema")),
         },
+        "provider_operations" => match f.u32("schema")? {
+            PROVIDER_OPERATIONS_SCHEMA => Runtime::ProviderOperations { schema: PROVIDER_OPERATIONS_SCHEMA },
+            _ => return Err(WireError::new(Code::UnsupportedFeature, "provider_operations schema is 1").at("/runtime/schema")),
+        },
         "rust_wasm" => Runtime::RustWasm { module: located(InventoryPath::parse(&f.string("module")?), "/runtime/module")? },
-        _ => return Err(WireError::new(Code::UnsupportedFeature, "runtime kind is data, text_actions or rust_wasm").at("/runtime/kind")),
+        _ => return Err(WireError::new(Code::UnsupportedFeature, "runtime kind is data, text_actions, provider_operations or rust_wasm").at("/runtime/kind")),
     };
     f.finish()?;
     Ok(runtime)

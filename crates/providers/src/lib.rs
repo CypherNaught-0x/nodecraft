@@ -16,6 +16,7 @@
 //! `CancelToken` as a [`CancelSignal`] and the app's runtime as a [`Clock`]. A failed run that
 //! carries a handle ([`RunFailure::handle`]) must be resumed, never resubmitted.
 
+pub mod broker;
 #[cfg(feature = "comfy-cloud")]
 pub mod comfy_cloud;
 #[cfg(feature = "comfyui")]
