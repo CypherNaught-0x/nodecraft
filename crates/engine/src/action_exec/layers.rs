@@ -1,5 +1,5 @@
 //! The Layer Editor's executor (#101): decodes the connected images, matches each stored layer
-//! to its image, and composites them into one PNG.
+//! to its image, and composites them into one PNG with the fonts the node holds (#548).
 use super::{LocalActions, flag, whole, word};
 use nodecraft_actions::image::ImageLimits;
 use nodecraft_actions::layers::{self, Frame, Layers};
@@ -26,6 +26,33 @@ pub(crate) fn sources(params: &ParamValues) -> Vec<String> {
 }
 
 impl LocalActions {
+    /// The bytes of each font the node holds, by name; a font that can't be read is left out.
+    fn fonts(&self, params: &ParamValues) -> Vec<(String, Vec<u8>)> {
+        let Some(Value::List(fonts)) = params.get(nodecraft_nodes::layers::FONTS_PARAM) else { return Vec::new() };
+        fonts
+            .iter()
+            .take(layers::MAX_FONTS)
+            .filter_map(|font| {
+                let Value::List(pair) = font else { return None };
+                let (Some(Value::Text(name)), Some(media @ Value::Media(asset))) = (pair.first(), pair.get(1)) else { return None };
+                // A font larger than any font may be is left out before any of it is read.
+                if self.stored_len(asset)? > layers::MAX_FONT_BYTES as u64 {
+                    return None;
+                }
+                let bytes = self.media_bytes(Some(media), "font").ok()?;
+                (bytes.len() <= layers::MAX_FONT_BYTES).then(|| (name.clone(), bytes))
+            })
+            .collect()
+    }
+
+    /// How large an asset is, without reading it; None when it isn't in this project.
+    fn stored_len(&self, asset: &nodecraft_types::AssetRef) -> Option<u64> {
+        if let Some(resident) = self.assets.get(&asset.hash) {
+            return u64::try_from(resident.len()).ok();
+        }
+        self.assets.preview_read(asset).ok().map(|read| read.byte_len())
+    }
+
     pub(super) fn layers(&self, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
         let json = match params.get(nodecraft_nodes::layers::SPEC_PARAM) {
             None => nodecraft_nodes::layers::EMPTY,
@@ -54,7 +81,13 @@ impl LocalActions {
                 None
             });
         }
-        let out = layers::composite(frame, &resolved, &images, 1.0, limits).map_err(|e| format!("image.layers failed: {e}"))?;
+        let bytes = self.fonts(params);
+        let mut fonts = layers::Fonts::default();
+        for (name, bytes) in &bytes {
+            // A font that can't be read draws as Lato, as a missing one does.
+            let _ = fonts.add(name, bytes);
+        }
+        let out = layers::composite(frame, &resolved, &images, &fonts, 1.0, limits).map_err(|e| format!("image.layers failed: {e}"))?;
         self.stage(&out)
     }
 }

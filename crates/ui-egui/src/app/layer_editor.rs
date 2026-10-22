@@ -2,13 +2,14 @@
 //! are moved, resized, rotated, aligned and restyled. It changes the document only through
 //! commands: each finished drag is one `node.layers_set`, each field one `layers.update`, so
 //! every gesture is one undo step. Image layers draw from the card previews; each text and shape
-//! layer is rendered by the same code a run uses into its own texture, and placed on screen with
-//! the layer's transform.
+//! layer is rendered by the same code a run uses, with the fonts the node holds, into its own
+//! texture, and placed on screen with the layer's transform.
 use super::NodeCraftApp;
+use super::layer_fonts::{self, FontFiles, HeldFont};
 use crate::theme::Tokens;
 use egui::{Color32, Pos2, Rect, Sense, Vec2};
 use nodecraft_actions::image::ImageLimits;
-use nodecraft_actions::layers::{self, Align, Content, Layer, ShapeKind};
+use nodecraft_actions::layers::{self, Align, Content, Fonts, Layer, ShapeKind, same_name};
 use nodecraft_types::{AssetRef, CanvasId, NodeId, Value};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -29,7 +30,7 @@ pub(super) struct LayerEditor {
     /// `layers.list` as of a document revision.
     listing: Option<(u64, Listing)>,
     /// Each text and shape layer's rendering, by layer id.
-    textures: HashMap<String, Rendered>,
+    pub(super) textures: HashMap<String, Rendered>,
     /// A field being typed or dragged, applied when it lets go: (field key, text).
     draft: Option<(String, String)>,
     /// A field had focus last frame: egui drops it on Escape before the frame runs, so this is
@@ -39,6 +40,13 @@ pub(super) struct LayerEditor {
     /// renders at this scale.
     pub(super) scale: f64,
     pub(super) origin: Pos2,
+    /// The bytes of each font the node holds.
+    pub(super) font_files: FontFiles,
+    /// "Add font file…" was pressed, for this text layer if one was shown.
+    add_font: Option<Option<String>>,
+    /// A font file being chosen or read.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) picking: Option<layer_fonts::Picking>,
 }
 
 impl LayerEditor {
@@ -54,6 +62,10 @@ impl LayerEditor {
             typing: false,
             scale: 1.0,
             origin: Pos2::ZERO,
+            font_files: FontFiles::default(),
+            add_font: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            picking: None,
         }
     }
 }
@@ -64,6 +76,8 @@ struct Listing {
     height: u32,
     layers: Vec<Layer>,
     inputs: Vec<Input>,
+    #[serde(default)]
+    fonts: Vec<HeldFont>,
 }
 
 #[derive(Deserialize)]
@@ -72,8 +86,8 @@ struct Input {
     image: Option<AssetRef>,
 }
 
-struct Rendered {
-    key: u64,
+pub(super) struct Rendered {
+    pub(super) key: u64,
     /// None when the layer can't be drawn at this size.
     texture: Option<egui::TextureHandle>,
     /// Layer pixels of room around the box, as `render_layer` returns it.
@@ -285,19 +299,20 @@ fn render_scale(scale: f64) -> f64 {
     ((scale.log2() * 4.0).round() / 4.0).exp2().clamp(1.0 / 64.0, 8.0)
 }
 
-fn render_key(layer: &Layer, scale: f64) -> u64 {
+fn render_key(layer: &Layer, scale: f64, fonts: u64) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     serde_json::to_string(&layer.content).unwrap_or_default().hash(&mut hasher);
+    fonts.hash(&mut hasher);
     for v in [layer.width, layer.height, scale] {
         v.to_bits().hash(&mut hasher);
     }
     hasher.finish()
 }
 
-fn render(ctx: &egui::Context, layer: &Layer, scale: f64) -> Rendered {
-    let key = render_key(layer, scale);
-    match layers::render_layer(layer, scale, ImageLimits::default()) {
+fn render(ctx: &egui::Context, layer: &Layer, scale: f64, fonts: &Fonts<'_>, fonts_key: u64) -> Rendered {
+    let key = render_key(layer, scale, fonts_key);
+    match layers::render_layer(layer, fonts, scale, ImageLimits::default()) {
         Ok((raster, pad)) => {
             let size = [raster.width() as usize, raster.height() as usize];
             let image = egui::ColorImage::from_rgba_unmultiplied(size, raster.pixels());
@@ -501,6 +516,9 @@ impl NodeCraftApp {
         // What each layer shows: previews for images, a rendering for text and shapes.
         let dragged: Vec<String> = editor.drag.iter().flat_map(|d| d.now.iter().map(|l| l.id.clone())).collect();
         let scale = render_scale(editor.scale * f64::from(ctx.pixels_per_point()));
+        editor.font_files.load(self.session.assets(), &listing.fonts);
+        let fonts = editor.font_files.fonts(&listing.fonts);
+        let fonts_key = layer_fonts::key(&listing.fonts);
         let mut art = HashMap::new();
         for layer in &listing.layers {
             let shown = match &layer.content {
@@ -517,11 +535,11 @@ impl NodeCraftApp {
                 }
                 Content::Image { fit, .. } => Art::Image { texture: None, fit: *fit },
                 Content::Text { .. } | Content::Shape { .. } => {
-                    let key = render_key(layer, scale);
+                    let key = render_key(layer, scale, fonts_key);
                     let stale = editor.textures.get(&layer.id).is_none_or(|r| r.key != key);
                     // Mid-drag, the old rendering stretches; it renders again on release.
                     if stale && !(dragged.contains(&layer.id) && editor.textures.contains_key(&layer.id)) {
-                        editor.textures.insert(layer.id.clone(), render(&ctx, layer, scale));
+                        editor.textures.insert(layer.id.clone(), render(&ctx, layer, scale, &fonts, fonts_key));
                     }
                     let rendered = editor.textures.get(&layer.id);
                     Art::Vector { texture: rendered.and_then(|r| r.texture.as_ref().map(|t| t.id())), pad: rendered.map_or(0.0, |r| r.pad) }
@@ -529,6 +547,7 @@ impl NodeCraftApp {
             };
             art.insert(layer.id.clone(), shown);
         }
+        drop(fonts);
         editor.textures.retain(|id, _| listing.layers.iter().any(|l| &l.id == id));
         editor.selected.retain(|id| listing.layers.iter().any(|l| &l.id == id));
 
@@ -581,6 +600,7 @@ impl NodeCraftApp {
         });
         close |= keys(ui, &mut editor, &listing, &mut commands);
         editor.typing = crate::canvas::text_input_focused(&ctx);
+        self.layer_font_pick(&mut editor, &ctx, &mut commands);
         editor.listing = Some((revision, listing));
         for (command, params) in commands {
             if !self.layer_dispatch(command, &params) {
@@ -592,6 +612,106 @@ impl NodeCraftApp {
         }
         true
     }
+}
+
+impl NodeCraftApp {
+    /// Starts a font pick that was asked for and moves one along; a font read is added to the
+    /// node, then set on the text layer it was picked for.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn layer_font_pick(&mut self, editor: &mut LayerEditor, ctx: &egui::Context, commands: &mut Commands) {
+        use layer_fonts::{Picking, Polled};
+        if let Some(layer) = editor.add_font.take()
+            && editor.picking.is_none()
+        {
+            editor.picking = Some(Picking::start(layer));
+        }
+        let Some(picking) = editor.picking.take() else {
+            return;
+        };
+        match picking.poll(ctx) {
+            Polled::Waiting(picking) => editor.picking = Some(picking),
+            Polled::Cancelled => {}
+            Polled::Failed(message) => self.notice = Some(message),
+            Polled::Read(layer, bytes) => match nodecraft_engine::layer_cmds::fonts::import(&mut self.session, editor.canvas, editor.node, &bytes) {
+                Ok(name) => {
+                    self.notice = None;
+                    if let Some(layer) = layer {
+                        commands.push(update(editor, &layer, json!({"content": {"font": name}})));
+                    }
+                }
+                Err(error) => self.notice = Some(error.message),
+            },
+        }
+    }
+
+    /// The browser has no font picker yet; fonts are added through `layers.font_add`.
+    #[cfg(target_arch = "wasm32")]
+    fn layer_font_pick(&mut self, editor: &mut LayerEditor, _: &egui::Context, _: &mut Commands) {
+        editor.add_font = None;
+    }
+}
+
+/// Whether the font picker is offered here.
+const PICKS_FONTS: bool = cfg!(not(target_arch = "wasm32"));
+
+/// Why `font` draws as Lato, when it does: the node doesn't hold it, or its file can't be read.
+fn font_fallback(files: &FontFiles, listing: &Listing, font: &str) -> Option<String> {
+    if files.readable(&listing.fonts, font) {
+        None
+    } else if listing.fonts.iter().any(|f| same_name(&f.name, font)) {
+        Some(format!("{font}'s file can't be read, so it draws as Lato. Add the font file again to use it."))
+    } else {
+        Some(format!("{font} isn't in this project, so it draws as Lato. Add the font file to use it."))
+    }
+}
+
+/// A choice of Lato and the node's fonts for a text layer; the name chosen, when it changed.
+fn font_choice(ui: &mut egui::Ui, key: &str, font: &str, listing: &Listing) -> Option<String> {
+    let mut chosen = None;
+    let label = ui.label("Font");
+    let names = std::iter::once("Lato").chain(listing.fonts.iter().map(|f| f.name.as_str()));
+    let shown = egui::ComboBox::from_id_salt(key).selected_text(font).width(ui.available_width()).show_ui(ui, |ui| {
+        for name in names {
+            if ui.selectable_label(same_name(name, font), name).clicked() && !same_name(name, font) {
+                chosen = Some(name.to_owned());
+            }
+        }
+    });
+    shown.response.labelled_by(label.id);
+    chosen
+}
+
+/// The fonts the node holds, each with a way to remove it, and the way to add one.
+fn fonts_panel(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, t: &Tokens, commands: &mut Commands) {
+    ui.separator();
+    ui.label(egui::RichText::new("Fonts").color(t.text_muted));
+    ui.horizontal(|ui| {
+        ui.label("Lato");
+        ui.label(egui::RichText::new("built in").color(t.text_muted).small());
+    });
+    for font in &listing.fonts {
+        ui.horizontal(|ui| {
+            ui.label(&font.name);
+            if !editor.font_files.readable(&listing.fonts, &font.name) {
+                ui.label(egui::RichText::new("can't be read; draws as Lato").color(t.stale).small());
+            }
+            let remove = ui.small_button("Remove").on_hover_text("Text in this font draws as Lato until it is added again");
+            remove.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Remove {}", font.name)));
+            if remove.clicked() {
+                commands.push(("layers.font_remove", json!({"canvas": editor.canvas, "id": editor.node, "name": font.name})));
+            }
+        });
+    }
+    if PICKS_FONTS && ui.button("Add font file…").clicked() {
+        editor.add_font = Some(None);
+    }
+    ui.label(
+        egui::RichText::new(
+            "A .ttf or .otf file, up to 16 MiB; at most 16 per card, and one of a name the card holds replaces it. It is saved with the project.",
+        )
+        .color(t.text_muted)
+        .small(),
+    );
 }
 
 struct FrameParams {
@@ -783,6 +903,7 @@ fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, fr
     let [layer] = chosen.as_slice() else {
         if chosen.is_empty() {
             frame_properties(ui, editor, frame, t, commands);
+            fonts_panel(ui, editor, listing, t, commands);
         } else {
             ui.label(egui::RichText::new(format!("{} layers selected", chosen.len())).color(t.text_muted));
         }
@@ -840,10 +961,15 @@ fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, fr
             if let Some(v) = text_field(ui, draft, &key("text"), "Text", text, true) {
                 set.push(json!({"content": {"text": v}}));
             }
-            if let Some(v) = text_field(ui, draft, &key("font"), "Font", font, false) {
+            if let Some(v) = font_choice(ui, &key("font"), font, listing) {
                 set.push(json!({"content": {"font": v}}));
             }
-            ui.label(egui::RichText::new("Lato draws any font NodeCraft doesn't have.").color(t.text_muted).small());
+            if let Some(why) = font_fallback(&editor.font_files, listing, font) {
+                ui.label(egui::RichText::new(why).color(t.stale).small());
+            }
+            if PICKS_FONTS && ui.button("Add font file…").clicked() {
+                editor.add_font = Some(Some(id.clone()));
+            }
             egui::Grid::new("layer_text").num_columns(2).show(ui, |ui| {
                 for (field, label, value, range, speed) in [
                     ("size", "Size", *size, layers::MIN_TEXT_SIZE..=layers::MAX_TEXT_SIZE, 0.5),

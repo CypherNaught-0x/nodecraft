@@ -127,7 +127,8 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let layers = listed(c, p.canvas, node)?;
     let layers = serde_json::to_value(&layers.layers).map_err(|_| invalid("the layers can't be listed"))?;
     let inputs: Vec<Json> = inputs(c, p.canvas, p.id)?.into_iter().map(|(origin, image)| json!({"origin": origin, "image": image})).collect();
-    Ok(Effect::None { result: json!({"width": frame.width, "height": frame.height, "layers": layers, "inputs": inputs}) })
+    let fonts = fonts::listed(node);
+    Ok(Effect::None { result: json!({"width": frame.width, "height": frame.height, "layers": layers, "inputs": inputs, "fonts": fonts}) })
 }
 
 #[derive(Deserialize)]
@@ -459,7 +460,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: list_schema,
-            params_doc: "{canvas, id: Layer Editor NodeId} -> {width, height, layers, inputs}; the node's frame size and every layer, bottom first: the stored ones and an automatic one for each wired image no stored layer names (content kind \"source\", fitted to the frame). x and y are the layer's centre in frame pixels; rotation is in degrees, clockwise. inputs lists each wired image in input order as {origin, image}: the node it comes from and the image it shows now (null until that node has a result); a source layer shows the nth input from its origin.",
+            params_doc: "{canvas, id: Layer Editor NodeId} -> {width, height, layers, inputs, fonts}; the node's frame size and every layer, bottom first: the stored ones and an automatic one for each wired image no stored layer names (content kind \"source\", fitted to the frame). x and y are the layer's centre in frame pixels; rotation is in degrees, clockwise. inputs lists each wired image in input order as {origin, image}: the node it comes from and the image it shows now (null until that node has a result); a source layer shows the nth input from its origin. fonts lists the fonts the node holds as {name, font}, in the order added (see layers.font_add).",
             enabled: always,
             run: list,
         },
@@ -524,7 +525,11 @@ pub fn specs() -> Vec<CommandSpec> {
             run: align,
         },
     ]
+    .into_iter()
+    .chain(fonts::specs())
+    .collect()
 }
 
+pub mod fonts;
 #[cfg(test)]
 mod tests;

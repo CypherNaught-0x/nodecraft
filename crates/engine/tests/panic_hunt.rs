@@ -526,6 +526,8 @@ fn template(id: &str) -> (Session, Value) {
         "layers.remove" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1"}),
         "layers.reorder" => json!({"canvas":canvas(),"id":node_id(9),"layer":"t1","index":0}),
         "layers.align" => json!({"canvas":canvas(),"id":node_id(9),"layers":["t1"],"to":"center"}),
+        "layers.font_add" => json!({"canvas":canvas(),"id":node_id(9),"font":{"hash":"00".repeat(32),"mime":"font/ttf"}}),
+        "layers.font_remove" => json!({"canvas":canvas(),"id":node_id(9),"name":"Lato"}),
         "timeline.list" => json!({"canvas":canvas(),"id":node_id(9)}),
         "timeline.interchange" => json!({"canvas":canvas(),"id":node_id(9)}),
         "timeline.export_interchange" => json!({"canvas":canvas(),"id":node_id(9),"path":"/nodecraft-panic-hunt/cut.zip"}),
@@ -624,7 +626,10 @@ fn typed_template_panic_hunt() {
             let events = session.events_since(0).unwrap();
             let history = (session.can_undo(), session.can_redo());
             let result = session.dispatch(id, &params);
-            if (id.starts_with("layers.") || id == "node.layers_set") && params == valid {
+            // The font commands need a font file the template's project doesn't hold; their own
+            // tests cover a valid add and remove.
+            let needs_font = matches!(id, "layers.font_add" | "layers.font_remove");
+            if (id.starts_with("layers.") || id == "node.layers_set") && params == valid && !needs_font {
                 assert!(result.is_ok(), "the valid {id} template reaches the layer code: {result:?}");
             }
             // The interchange commands need media the template's Timeline doesn't have; their

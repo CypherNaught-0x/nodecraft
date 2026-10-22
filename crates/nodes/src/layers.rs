@@ -3,10 +3,11 @@
 //! node's `config["nodecraft.layers"]` as JSON (`{"layers": [...]}`, bottom first; the format is
 //! `nodecraft-actions::layers`). The host checks them where they are set (`layers.*` commands)
 //! and again before it draws; this kind only carries them, with the node each connected image
-//! came from, so a layer stays with its image when wires are reordered.
+//! came from, so a layer stays with its image when wires are reordered, and the fonts its text
+//! layers can name (`config["nodecraft.layers.fonts"]`, #548).
 use crate::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx, descriptor::invalid};
 use nodecraft_graph::{Node, Port};
-use nodecraft_types::{Error, Modality, ParamControl, ParamSchema, ParamSpec, PortType, Unsigned, Value};
+use nodecraft_types::{AssetRef, Error, Modality, ParamControl, ParamSchema, ParamSpec, PortType, Unsigned, Value};
 
 /// The kind's id.
 pub const ID: &str = "image.layers";
@@ -16,6 +17,11 @@ pub const CONFIG: &str = "nodecraft.layers";
 pub const SPEC_PARAM: &str = "nodecraft.layers";
 /// The parameter the planned job carries each input's origin node in (not a control).
 pub const SOURCES_PARAM: &str = "nodecraft.layers.sources";
+/// The config key holding the fonts imported for its text layers (#548): a list of
+/// `[name, font asset]` pairs.
+pub const FONTS_CONFIG: &str = "nodecraft.layers.fonts";
+/// The parameter the planned job carries those fonts in (not a control), as stored.
+pub const FONTS_PARAM: &str = "nodecraft.layers.fonts";
 /// No layers, as stored.
 pub const EMPTY: &str = r#"{"layers":[]}"#;
 /// The input port.
@@ -32,6 +38,23 @@ pub fn stored(node: &Node) -> Result<&str, Error> {
         Some(Value::Text(json)) => Ok(json),
         Some(_) => Err(invalid("the node's layers can't be read")),
     }
+}
+
+/// The fonts `node` holds, as stored: each its name and file (none when it has none). An entry
+/// that can't be read is left out, so a damaged list never locks the card: the next font change
+/// stores only the readable ones.
+pub fn fonts(node: &Node) -> Vec<(&str, &AssetRef)> {
+    let Some(Value::List(pairs)) = node.config.get(FONTS_CONFIG) else { return Vec::new() };
+    pairs
+        .iter()
+        .filter_map(|pair| match pair {
+            Value::List(pair) => match pair.as_slice() {
+                [Value::Text(name), Value::Media(asset)] => Some((name.as_str(), asset)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 fn edge(name: &str, label: &str) -> ParamSpec {
@@ -97,6 +120,12 @@ impl NodeKind for LayersKind {
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
         let mut params = self.validate_instance(ctx.node, true)?.into_visible_values();
         params.insert(SPEC_PARAM.into(), Value::Text(stored(ctx.node)?.into()));
+        // The readable fonts only; a run draws text naming any other as Lato.
+        let held = fonts(ctx.node);
+        if !held.is_empty() {
+            let pairs = held.into_iter().map(|(name, font)| Value::List(vec![Value::Text(name.into()), Value::Media(font.clone())])).collect();
+            params.insert(FONTS_PARAM.into(), Value::List(pairs));
+        }
         let mut inputs = Vec::new();
         let mut sources = Vec::new();
         for input in ctx.inputs.iter().filter(|i| i.port == INPUT) {

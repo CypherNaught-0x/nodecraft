@@ -1,20 +1,12 @@
 //! Text layers: shaped with `harfrust`, outlined with `skrifa`, laid out in the layer's own box.
 //! Lines break only at newlines; each line is aligned within the box's width, and the first
 //! line's top sits at the box's top.
-use super::{Align, Content, Layer, bad};
+use super::{Align, Content, Layer, bad, fonts::Fonts};
 use crate::image::ImageError;
 use skrifa::MetadataProvider;
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlinePen};
 use vello_cpu::kurbo::BezPath;
-
-/// The bundled font's name, and the fallback for any font that isn't available.
-pub const BUILTIN_FONT: &str = "lato";
-static LATO: &[u8] = include_bytes!("../../../../assets/fonts/Lato-Regular.ttf");
-
-fn font_bytes(_name: &str) -> &'static [u8] {
-    LATO
-}
 
 struct Pen<'a> {
     path: &'a mut BezPath,
@@ -85,8 +77,8 @@ struct Laid {
     line_height: f64,
 }
 
-fn lay_out(style: &Style<'_>) -> Result<(skrifa::FontRef<'static>, Laid), ImageError> {
-    let font = skrifa::FontRef::from_index(font_bytes(style.font), 0).map_err(|_| bad("font"))?;
+fn lay_out<'f>(style: &Style<'_>, fonts: &Fonts<'f>) -> Result<(skrifa::FontRef<'f>, Laid), ImageError> {
+    let font = fonts.resolve(style.font)?;
     let size = style.size as f32;
     let metrics = font.metrics(Size::new(size), LocationRef::default());
     let units = f64::from(metrics.units_per_em.max(1));
@@ -115,18 +107,19 @@ fn lay_out(style: &Style<'_>) -> Result<(skrifa::FontRef<'static>, Laid), ImageE
     Ok((font, Laid { lines, ascent, line_height }))
 }
 
-/// The box a text layer's text needs: its widest line, and its lines' height.
-pub fn text_size(layer: &Layer) -> Result<(f64, f64), ImageError> {
-    let (_, laid) = lay_out(&style(layer)?)?;
+/// The box a text layer's text needs, drawn with its font from `fonts`: its widest line, and its
+/// lines' height.
+pub fn text_size(layer: &Layer, fonts: &Fonts<'_>) -> Result<(f64, f64), ImageError> {
+    let (_, laid) = lay_out(&style(layer)?, fonts)?;
     let width = laid.lines.iter().map(|l| l.width).fold(0.0, f64::max);
     let count = laid.lines.len().max(1) as f64;
     Ok((width.ceil().max(1.0), (laid.line_height * count).ceil().max(1.0)))
 }
 
 /// A text layer's glyph outlines, in its own box.
-pub(super) fn outline(layer: &Layer) -> Result<BezPath, ImageError> {
+pub(super) fn outline(layer: &Layer, fonts: &Fonts<'_>) -> Result<BezPath, ImageError> {
     let style = style(layer)?;
-    let (font, laid) = lay_out(&style)?;
+    let (font, laid) = lay_out(&style, fonts)?;
     let outlines = font.outline_glyphs();
     let settings = || DrawSettings::unhinted(Size::new(style.size as f32), LocationRef::default());
     let mut path = BezPath::new();

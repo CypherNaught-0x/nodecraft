@@ -6,7 +6,8 @@
 //! mirrored by `flip_x`/`flip_y`. Only visible layers are drawn.
 //!
 //! Text is shaped with `harfrust` and drawn from `skrifa` outlines. The bundled font is Lato
-//! (OFL-1.1, `assets/fonts`); a layer naming a font that isn't available falls back to it.
+//! (OFL-1.1, `assets/fonts`); a project's own fonts come in as [`Fonts`] (#548), and a layer
+//! naming a font that isn't available falls back to Lato.
 use crate::image::{ImageError, ImageLimits, Raster};
 use serde::{Deserialize, Serialize};
 use vello_cpu::kurbo::{Affine, BezPath, Ellipse, Rect, Shape as _, Stroke};
@@ -14,8 +15,10 @@ use vello_cpu::peniko::{Extend, ImageQuality, ImageSampler};
 use vello_cpu::{Level, Pixmap, RenderContext, RenderSettings, Resources, color};
 
 pub mod caption;
+mod fonts;
 mod text;
-pub use text::{BUILTIN_FONT, text_size};
+pub use fonts::{BUILTIN_FONT, FontInfo, Fonts, MAX_FONT_BYTES, MAX_FONTS, font_info, same_name};
+pub use text::text_size;
 
 /// Most layers one node holds.
 pub const MAX_LAYERS: usize = 64;
@@ -444,7 +447,8 @@ impl Frame {
 /// `images` are the planned image inputs, which `Content::Image` layers index; `None` is one the
 /// caller didn't decode because no visible layer shows it (`Layers::shown`). A visible layer
 /// whose image is missing is an error, since resolving drops unbound ones.
-pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], scale: f64, limits: ImageLimits) -> Result<Raster, ImageError> {
+/// Text draws with its font from `fonts`, or Lato.
+pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], fonts: &Fonts<'_>, scale: f64, limits: ImageLimits) -> Result<Raster, ImageError> {
     limits.validate()?;
     layers.check()?;
     let (w, h) = frame.output_size(scale, limits)?;
@@ -520,7 +524,7 @@ pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], scale
                 });
                 ctx.fill_rect(&Rect::new(0.0, 0.0, iw, ih));
             }
-            Content::Text { .. } | Content::Shape { .. } => draw_vector(&mut ctx, layer, at, layer.opacity)?,
+            Content::Text { .. } | Content::Shape { .. } => draw_vector(&mut ctx, layer, fonts, at, layer.opacity)?,
             Content::Source { .. } => return Err(bad("unresolved source layer")),
         }
     }
@@ -535,10 +539,10 @@ pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], scale
 }
 
 /// Draws a text or shape layer's content, mapped by `at`, at `opacity`.
-fn draw_vector(ctx: &mut RenderContext, layer: &Layer, at: Affine, opacity: f64) -> Result<(), ImageError> {
+fn draw_vector(ctx: &mut RenderContext, layer: &Layer, fonts: &Fonts<'_>, at: Affine, opacity: f64) -> Result<(), ImageError> {
     match &layer.content {
         Content::Text { color: c, .. } => {
-            let path = text::outline(layer)?;
+            let path = text::outline(layer, fonts)?;
             ctx.set_transform(at);
             ctx.set_paint(paint(parse_color(c)?, opacity));
             ctx.fill_path(&path);
@@ -578,14 +582,14 @@ pub const MAX_LAYER_RENDER_EDGE: u32 = 4096;
 /// `scale`, with `pad` layer pixels of room on every side for outlines and glyphs that reach
 /// past the box. Returns the raster and `pad`. For previews, which place it with the layer's
 /// transform and opacity; a run draws through [`composite`].
-pub fn render_layer(layer: &Layer, scale: f64, limits: ImageLimits) -> Result<(Raster, f64), ImageError> {
+pub fn render_layer(layer: &Layer, fonts: &Fonts<'_>, scale: f64, limits: ImageLimits) -> Result<(Raster, f64), ImageError> {
     limits.validate()?;
     layer.check()?;
     within(scale, 1.0 / 64.0, 8.0, "scale")?;
     let pad = match &layer.content {
         // Text can run past its box, and the output draws it there, so the preview pads to hold it.
         Content::Text { size, .. } => {
-            let (tw, th) = text::text_size(layer)?;
+            let (tw, th) = text::text_size(layer, fonts)?;
             size + (tw - layer.width).max(th - layer.height).max(0.0)
         }
         Content::Shape { stroke_width, .. } => stroke_width / 2.0 + 1.0,
@@ -606,7 +610,7 @@ pub fn render_layer(layer: &Layer, scale: f64, limits: ImageLimits) -> Result<(R
     }
     let (Ok(pw), Ok(ph)) = (u16::try_from(w), u16::try_from(h)) else { return Err(ImageError::Dimensions) };
     let mut ctx = RenderContext::new_with(pw, ph, RenderSettings { level: Level::baseline(), num_threads: 0 });
-    draw_vector(&mut ctx, layer, Affine::scale(scale) * Affine::translate((pad, pad)), 1.0)?;
+    draw_vector(&mut ctx, layer, fonts, Affine::scale(scale) * Affine::translate((pad, pad)), 1.0)?;
     ctx.flush();
     let mut target = Pixmap::new(pw, ph);
     ctx.render(&mut target, &mut Resources::new());
