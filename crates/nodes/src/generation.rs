@@ -28,6 +28,8 @@ pub const VIDEO_KIND: &str = "generation.video";
 pub const STYLE_KIND: &str = "generation.style";
 /// An audio generation card: a prompt or a recording in, one sound out (#672).
 pub const AUDIO_KIND: &str = "generation.audio";
+/// All catalog-backed generation kinds, including kinds without models in the current catalog.
+pub const KINDS: [&str; 6] = [KIND, TEXT_KIND, MESH_KIND, VIDEO_KIND, STYLE_KIND, AUDIO_KIND];
 pub const MODEL: &str = "model";
 pub const PROMPT: &str = "prompt";
 /// Longest typed prompt a generation card holds, in bytes.
@@ -36,7 +38,7 @@ const MAX_PROMPTS: usize = 1024;
 
 /// Whether `kind` is one of the catalog-backed generation kinds.
 pub fn is_generation(kind: &str) -> bool {
-    kind == KIND || kind == TEXT_KIND || kind == MESH_KIND || kind == VIDEO_KIND || kind == STYLE_KIND || kind == AUDIO_KIND
+    KINDS.contains(&kind)
 }
 /// The generation kind whose cards make `output`, if there is one.
 pub fn kind_for(output: Modality) -> Option<&'static str> {
