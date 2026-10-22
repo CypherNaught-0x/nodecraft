@@ -191,11 +191,15 @@ struct Staged {
 }
 
 /// A file an estimate uploaded, kept for the submit that follows it.
+#[derive(Clone)]
 struct Uploaded {
     mime: &'static str,
     bytes: ContentHash,
     url: String,
     uploaded_at_ms: u64,
+}
+fn fresh(uploaded: &Uploaded, now: u64) -> bool {
+    now.checked_sub(uploaded.uploaded_at_ms).is_some_and(|age| age < UPLOAD_TTL_MS)
 }
 
 /// Whether an upload is for an estimate, which keeps it, or a submit, which takes it.
@@ -275,6 +279,8 @@ impl Higgsfield {
     async fn stage(&self, job: &ProviderJob, prepared: &request::Prepared<'_>) -> Result<Arc<[u8]>, ProviderError> {
         let fingerprint = request::fingerprint(job);
         if let Some(staged) = self.lock().iter().find(|s| s.key == job.idempotency_key && s.job == fingerprint) {
+            // An ambiguous paid submit must replay precisely its original body and key, even if
+            // its upload links have expired. New links under the same key could bill twice.
             return Ok(Arc::clone(&staged.body));
         }
         // A Soul ID is checked once, when the body is first staged; a replay sends the body
@@ -297,52 +303,88 @@ impl Higgsfield {
     }
     /// The body for `prepared`, its source video and images uploaded, or reused from an estimate.
     async fn body(&self, prepared: &request::Prepared<'_>, using: Use) -> Result<Arc<[u8]>, ProviderError> {
-        let video = match &prepared.video {
+        let mut video = match &prepared.video {
             Some(video) => Some(self.file(video.mime, video.bytes, using).await?),
             None => None,
         };
-        let mut urls = Vec::new();
-        urls.try_reserve_exact(prepared.images.len()).map_err(|_| malformed("Higgsfield bounded allocation failed"))?;
+        let mut images = Vec::new();
+        images.try_reserve_exact(prepared.images.len()).map_err(|_| malformed("Higgsfield bounded allocation failed"))?;
         for image in &prepared.images {
-            urls.push(self.file(image.mime, image.bytes, using).await?);
+            images.push(self.file(image.mime, image.bytes, using).await?);
         }
-        Ok(serde_json::to_vec(&prepared.body(video.as_deref(), &urls)?).map_err(|_| malformed("Higgsfield request couldn't be encoded"))?.into())
+        // An earlier URL can expire while later inputs upload. Check the entire assembled set
+        // immediately before building a new estimate/first-submit body, not just at cache lookup.
+        // Bound refreshes: a clock that moves faster than uploads must refuse rather than send
+        // an expired link (and must not loop forever).
+        for _ in 0..2 {
+            let now = self.clock.now_ms();
+            if video.as_ref().is_some_and(|u| !fresh(u, now))
+                && let Some(source) = &prepared.video
+            {
+                self.forget(source.mime, source.bytes);
+                video = Some(self.file(source.mime, source.bytes, using).await?);
+            }
+            for (source, resolved) in prepared.images.iter().zip(images.iter_mut()) {
+                if !fresh(resolved, now) {
+                    self.forget(source.mime, source.bytes);
+                    *resolved = self.file(source.mime, source.bytes, using).await?;
+                }
+            }
+            let dispatch_time = self.clock.now_ms();
+            if video.as_ref().is_none_or(|u| fresh(u, dispatch_time)) && images.iter().all(|u| fresh(u, dispatch_time)) {
+                let mut urls = Vec::new();
+                urls.try_reserve_exact(images.len()).map_err(|_| malformed("Higgsfield bounded allocation failed"))?;
+                urls.extend(images.iter().map(|u| u.url.clone()));
+                let body = serde_json::to_vec(&prepared.body(video.as_ref().map(|u| u.url.as_str()), &urls)?)
+                    .map_err(|_| malformed("Higgsfield request couldn't be encoded"))?;
+                let now = self.clock.now_ms();
+                if video.as_ref().is_none_or(|u| fresh(u, now)) && images.iter().all(|u| fresh(u, now)) {
+                    return Ok(body.into());
+                }
+            }
+        }
+        Err(invalid("Higgsfield uploads expired while preparing the request; nothing was billed, try again"))
     }
     fn uploads(&self) -> std::sync::MutexGuard<'_, VecDeque<Uploaded>> {
         self.uploaded.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+    fn forget(&self, mime: &'static str, bytes: &[u8]) {
+        let hash = ContentHash::of(bytes);
+        self.uploads().retain(|u| u.mime != mime || u.bytes != hash);
+    }
     /// The URL of `bytes` on Higgsfield's storage: one an estimate uploaded, else a new upload.
     /// An estimate keeps what it uploads for later estimates and the next submit; a submit takes
     /// it, so an upload is reused by one submit only within the short retention window.
-    async fn file(&self, mime: &'static str, bytes: &[u8], using: Use) -> Result<String, ProviderError> {
+    async fn file(&self, mime: &'static str, bytes: &[u8], using: Use) -> Result<Uploaded, ProviderError> {
         let hash = ContentHash::of(bytes);
         {
             let now = self.clock.now_ms();
             let mut uploads = self.uploads();
-            uploads.retain(|u| now.checked_sub(u.uploaded_at_ms).is_some_and(|age| age < UPLOAD_TTL_MS));
+            uploads.retain(|u| fresh(u, now));
             if let Some(at) = uploads.iter().position(|u| u.mime == mime && u.bytes == hash) {
-                let url = match using {
-                    Use::Estimate => uploads.get(at).map(|u| u.url.clone()),
-                    Use::Submit => uploads.remove(at).map(|u| u.url),
+                let uploaded = match using {
+                    Use::Estimate => uploads.get(at).cloned(),
+                    Use::Submit => uploads.remove(at),
                 };
-                if let Some(url) = url {
-                    return Ok(url);
+                if let Some(uploaded) = uploaded {
+                    return Ok(uploaded);
                 }
             }
         }
         let url = self.upload(mime, bytes).await?;
+        let now = self.clock.now_ms();
+        let uploaded = Uploaded { mime, bytes: hash, url, uploaded_at_ms: now };
         if using == Use::Estimate {
-            let now = self.clock.now_ms();
             let mut uploads = self.uploads();
-            uploads.retain(|u| now.checked_sub(u.uploaded_at_ms).is_some_and(|age| age < UPLOAD_TTL_MS));
+            uploads.retain(|u| fresh(u, now));
             if !uploads.iter().any(|u| u.mime == mime && u.bytes == hash) {
                 if uploads.len() >= STAGED {
                     uploads.pop_front();
                 }
-                uploads.push_back(Uploaded { mime, bytes: hash, url: url.clone(), uploaded_at_ms: now });
+                uploads.push_back(uploaded.clone());
             }
         }
-        Ok(url)
+        Ok(uploaded)
     }
     /// Uploads one image or video through a presigned grant; the bytes go to storage without the key.
     async fn upload(&self, mime: &'static str, bytes: &[u8]) -> Result<String, ProviderError> {

@@ -17,10 +17,11 @@ fn key() -> Secret {
 struct Transport {
     requests: Mutex<Vec<HttpRequest>>,
     replies: Mutex<std::collections::VecDeque<Result<HttpResponse, ProviderError>>>,
+    on_put: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 impl Transport {
     fn new(replies: Vec<Result<HttpResponse, ProviderError>>) -> Arc<Self> {
-        Arc::new(Self { requests: Mutex::new(vec![]), replies: Mutex::new(replies.into()) })
+        Arc::new(Self { requests: Mutex::new(vec![]), replies: Mutex::new(replies.into()), on_put: Mutex::new(None) })
     }
     fn requests(&self) -> Vec<HttpRequest> {
         self.requests.lock().unwrap().clone()
@@ -34,7 +35,11 @@ impl Http for Transport {
         panic!("legacy send must not run")
     }
     fn send_no_redirect(&self, r: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        let is_put = r.method == HttpMethod::Put;
         self.requests.lock().unwrap().push(r);
+        if is_put && let Some(on_put) = self.on_put.lock().unwrap().as_ref() {
+            on_put();
+        }
         let reply = self.replies.lock().unwrap().pop_front().expect("fixture reply");
         Box::pin(async { reply })
     }
@@ -214,18 +219,19 @@ fn receipt_free_estimate(v: Value) -> Result<HttpResponse, ProviderError> {
     ok(v)
 }
 
+use std::sync::atomic::{AtomicU64, Ordering};
+struct FixtureClock(AtomicU64);
+impl Clock for FixtureClock {
+    fn sleep(&self, _: u64) -> BoxFuture<'static, ()> {
+        Box::pin(async {})
+    }
+    fn now_ms(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
 #[test]
 fn estimate_upload_expires_on_the_adapter_clock() {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    struct FixtureClock(AtomicU64);
-    impl Clock for FixtureClock {
-        fn sleep(&self, _: u64) -> BoxFuture<'static, ()> {
-            Box::pin(async {})
-        }
-        fn now_ms(&self) -> u64 {
-            self.0.load(Ordering::Relaxed)
-        }
-    }
     let clock = Arc::new(FixtureClock(AtomicU64::new(100)));
     let t = Transport::new(vec![grant(), empty(200), ok(json!({"credits": "1", "usd": "0.5"})), ok(json!({"credits": "1", "usd": "0.5"}))]);
     let p = Higgsfield::with_clock(key(), t.clone(), clock.clone());
@@ -234,6 +240,12 @@ fn estimate_upload_expires_on_the_adapter_clock() {
     clock.0.store(100 + UPLOAD_TTL_MS - 1, Ordering::Relaxed);
     block_on(p.estimate(&job)).unwrap();
     assert_eq!(t.requests().len(), 4, "fresh link is reused without a second upload");
+    p.uploads().push_back(Uploaded {
+        mime: "image/png",
+        bytes: ContentHash::of(b"unrelated"),
+        url: "https://upload.cdn.example.com/inputs/unrelated.png".into(),
+        uploaded_at_ms: 100,
+    });
     clock.0.store(100 + UPLOAD_TTL_MS, Ordering::Relaxed);
     t.push(vec![image_grant(2), empty(200), receipt()]);
     block_on(p.submit(&job)).unwrap();
@@ -242,6 +254,77 @@ fn estimate_upload_expires_on_the_adapter_clock() {
     assert_eq!(body(&requests[3])["image_url"], PUBLIC);
     assert_eq!(body(&requests[6])["image_url"], "https://upload.cdn.example.com/inputs/ref2.png");
     assert_eq!(header(&requests[5], "Authorization"), None);
+    assert!(p.uploads().is_empty(), "expired unrelated cache entries are purged too");
+}
+
+#[test]
+fn assembled_submit_refreshes_a_url_that_expired_while_another_input_uploaded() {
+    let clock = Arc::new(FixtureClock(AtomicU64::new(100)));
+    let t = Transport::new(vec![image_grant(1), empty(200), video_grant(), empty(200), receipt()]);
+    let p = Higgsfield::with_clock(key(), t.clone(), clock.clone());
+    p.uploads().push_back(Uploaded {
+        mime: "video/mp4",
+        bytes: ContentHash::of(&mp4()),
+        url: "https://upload.cdn.example.com/inputs/old-source.mp4".into(),
+        uploaded_at_ms: 100,
+    });
+    *t.on_put.lock().unwrap() = Some(Box::new(move || clock.0.store(100 + UPLOAD_TTL_MS, Ordering::Relaxed)));
+    let job = genjutsu(OBJECT_SWAP, json!({}), vec![source(), image()]);
+    block_on(p.submit(&job)).unwrap();
+    let requests = t.requests();
+    assert_eq!(requests.len(), 5, "new input uploads, expired source reuploads, then paid submit");
+    assert_eq!(body(&requests[4])["video_url"], "https://upload.cdn.example.com/inputs/source.mp4");
+    assert_eq!(body(&requests[4])["image_urls"][0], "https://upload.cdn.example.com/inputs/ref1.png");
+    assert!(!String::from_utf8_lossy(&requests[4].body).contains("old-source"));
+}
+
+#[test]
+fn assembled_estimate_refreshes_expired_cached_input_before_quoting() {
+    let clock = Arc::new(FixtureClock(AtomicU64::new(100)));
+    let t = Transport::new(vec![image_grant(1), empty(200), video_grant(), empty(200), ok(json!({"credits": "1", "usd": "0.5"}))]);
+    let p = Higgsfield::with_clock(key(), t.clone(), clock.clone());
+    p.uploads().push_back(Uploaded {
+        mime: "video/mp4",
+        bytes: ContentHash::of(&mp4()),
+        url: "https://upload.cdn.example.com/inputs/old-source.mp4".into(),
+        uploaded_at_ms: 100,
+    });
+    *t.on_put.lock().unwrap() = Some(Box::new(move || clock.0.store(100 + UPLOAD_TTL_MS, Ordering::Relaxed)));
+    block_on(p.estimate(&genjutsu(OBJECT_SWAP, json!({}), vec![source(), image()]))).unwrap();
+    let requests = t.requests();
+    assert_eq!(requests.len(), 5);
+    assert!(requests[4].url.contains("/estimate/"));
+    assert_eq!(body(&requests[4])["video_url"], "https://upload.cdn.example.com/inputs/source.mp4");
+}
+
+#[test]
+fn upload_cache_evicts_the_oldest_at_thirty_two_entries() {
+    let t = Transport::new((0..=STAGED).flat_map(|_| [grant(), empty(200)]).collect());
+    let p = adapter(&t);
+    for n in 0..=STAGED {
+        let bytes = [u8::try_from(n).unwrap()];
+        block_on(p.file("image/png", &bytes, Use::Estimate)).unwrap();
+    }
+    let uploads = p.uploads();
+    assert_eq!(uploads.len(), STAGED);
+    assert!(!uploads.iter().any(|u| u.bytes == ContentHash::of(&[0])));
+    assert!(uploads.iter().any(|u| u.bytes == ContentHash::of(&[1])));
+    assert!(uploads.iter().any(|u| u.bytes == ContentHash::of(&[u8::try_from(STAGED).unwrap()])));
+}
+
+#[test]
+fn expired_link_in_ambiguous_retry_keeps_the_original_body_and_key() {
+    let clock = Arc::new(FixtureClock(AtomicU64::new(100)));
+    let t = Transport::new(vec![image_grant(1), empty(200), Err(ProviderError::new(ErrorKind::Network, "reset")), receipt()]);
+    let p = Higgsfield::with_clock(key(), t.clone(), clock.clone());
+    let job = kling();
+    assert_eq!(block_on(p.submit(&job)).unwrap_err().kind, ErrorKind::Network);
+    clock.0.store(100 + UPLOAD_TTL_MS, Ordering::Relaxed);
+    block_on(p.submit(&job)).unwrap();
+    let requests = t.requests();
+    assert_eq!(requests.len(), 4, "retry may not upload a different body under the paid key");
+    assert_eq!(requests[2].body, requests[3].body);
+    assert_eq!(header(&requests[2], "Idempotency-Key"), header(&requests[3], "Idempotency-Key"));
 }
 
 #[test]
