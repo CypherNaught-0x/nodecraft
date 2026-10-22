@@ -38,6 +38,11 @@ pub fn compile(package: &Package) -> Result<Vec<PluginTextAction>, Error> {
         if action.definition().outputs.len() != 1 {
             return Err(refuse("only actions with one output can run yet".into()));
         }
+        // A card runs once its inputs are connected; one with none would never run.
+        if inputs.is_empty() {
+            return Err(refuse("an action needs at least one input to run yet".into()));
+        }
+        crate::plugin_runtime::card(id.as_str(), &action).map_err(|e| refuse(e.message))?;
         out.push(PluginTextAction { id, action });
     }
     Ok(out)

@@ -292,12 +292,23 @@ impl Session {
         if self.plugins.same(&next) {
             return Ok(());
         }
+        let prefix = nodecraft_plugin::id::PLUGIN_PREFIX;
         let next = self.plugins.succeed(next);
-        let kinds = self.kinds.with_replaced(nodecraft_plugin::id::PLUGIN_PREFIX, next.kinds());
-        // The revocations stand even if the kinds can't be published: nothing granted is lost.
-        self.plugins = Arc::new(next);
-        self.kinds = Arc::new(kinds?);
-        Ok(())
+        match self.kinds.with_replaced(prefix, next.kinds()) {
+            Ok(kinds) => {
+                self.plugins = Arc::new(next);
+                self.kinds = Arc::new(kinds);
+                Ok(())
+            }
+            Err(error) => {
+                // Cards and actions must agree: if the cards can't be published, nothing runs
+                // until the next snapshot, which is tried afresh since it differs from none.
+                let none = next.succeed(crate::plugin_runtime::PluginSnapshot::default());
+                self.kinds = Arc::new(self.kinds.with_replaced(prefix, Vec::new())?);
+                self.plugins = Arc::new(none);
+                Err(error)
+            }
+        }
     }
     #[cfg(test)]
     pub(crate) fn exhaust_execution_generation(&mut self) {

@@ -297,3 +297,68 @@ fn drag88_visual() {
     settle(&mut h, |app| previewed(app).is_none());
     shoot(&mut h, "3-released.png");
 }
+
+/// A store holding one granted, enabled text action package whose `warm` action shouts its input.
+fn shout_store() -> nodecraft_plugin_store::Store<nodecraft_plugin_store::MemoryBackend> {
+    use nodecraft_plugin::json::{self, Json};
+    let s = |t: &str| Json::Str(t.to_owned());
+    let obj = |f: Vec<(&str, Json)>| Json::Object(f.into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
+    let manifest = json::canonical(&obj(vec![
+        ("manifest_version", Json::Int(1)),
+        ("package_id", s("io.example.text")),
+        ("version", s("1.0.0")),
+        ("host_protocol", obj(vec![("major", Json::Int(1)), ("min_minor", Json::Int(0)), ("max_minor", Json::Int(0))])),
+        ("descriptor_contract", obj(vec![("major", Json::Int(1)), ("minor", Json::Int(0))])),
+        ("license", s("MIT")),
+        ("runtime", obj(vec![("kind", s("text_actions")), ("schema", Json::Int(1))])),
+        ("dependencies", Json::Array(vec![])),
+        ("capabilities", obj(vec![("required", Json::Array(vec![])), ("optional", Json::Array(vec![]))])),
+        ("registrations", Json::Array(vec![obj(vec![("id", s("warm")), ("kind", s("action")), ("descriptor", s("d/warm.json"))])])),
+    ]))
+    .unwrap();
+    let definition = r#"{"id":"user.shout","inputs":[{"kind":"text","name":"words"}],"label":"Shout","outputs":[{"expr":"upper(words)","kind":"text","name":"out"}],"schema":1,"version":1}"#;
+    let bytes =
+        nodecraft_plugin_store::archive::build(&[("manifest.json", manifest.as_bytes()), ("LICENSE", b"MIT\n"), ("d/warm.json", definition.as_bytes())], None)
+            .unwrap();
+    let mut store = nodecraft_plugin_store::Store::open(nodecraft_plugin_store::MemoryBackend::default()).unwrap();
+    let trust = nodecraft_plugin::signature::TrustStore::default();
+    let id = nodecraft_plugin::id::PackageId::parse("io.example.text").unwrap();
+    store.import(&bytes, &trust, false).unwrap();
+    store.grant(&id, &trust).unwrap();
+    store.enable(&id, &trust, &Default::default(), &Default::default()).unwrap();
+    store
+}
+
+#[test]
+fn a_plugin_card_that_ran_before_its_plugin_was_published_runs_once_it_is() {
+    use nodecraft_engine::plugin_runtime::PluginSnapshot;
+    let store = shout_store();
+    let mut app = app();
+    let canvas = app.canvas;
+    let source = *app.session.document().canvases().get(&canvas).unwrap().nodes().keys().next().unwrap();
+    let shout = NodeId::from_bytes([81; 16]);
+    app.session.set_plugins(PluginSnapshot::of(&store)).unwrap();
+    app.session.dispatch("node.create", &json!({"canvas": canvas, "id": shout, "kind": "plugin.io.example.text.warm", "pos": {"x": 420, "y": 300}})).unwrap();
+    let edge = json!({"id": nodecraft_types::EdgeId::from_bytes([82; 16]), "from": {"node": source, "port": "out"}, "to": {"node": shout, "port": "words"}, "order": 0});
+    app.session.dispatch("edge.connect", &json!({"canvas": canvas, "edge": edge})).unwrap();
+    // As when a project opens before the plugin worker has published anything.
+    app.session.set_plugins(PluginSnapshot::default()).unwrap();
+    let shouted = |app: &NodeCraftApp| {
+        let node = app.session.document().canvases().get(&app.canvas)?.nodes().get(&shout)?;
+        node.history.iter().find(|g| Some(g.id) == node.active)?.outputs.first().cloned()
+    };
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    settle(&mut h, |app| app.live.checked.is_some() && output(app).is_some());
+    assert_eq!(shouted(h.state()), None, "nothing ran it");
+    // The worker publishes; the window swaps it in, at the same revision.
+    let revision = h.state().session.revision();
+    h.state_mut().session.set_plugins(PluginSnapshot::of(&store)).unwrap();
+    h.state_mut().plugins_changed();
+    settle(&mut h, |app| shouted(app).is_some());
+    let text = match shouted(h.state()) {
+        Some(Value::Text(text)) => text,
+        other => panic!("{other:?}"),
+    };
+    assert!(!text.is_empty() && text == text.to_uppercase(), "{text}");
+    assert!(h.state().session.revision() > revision, "recorded");
+}

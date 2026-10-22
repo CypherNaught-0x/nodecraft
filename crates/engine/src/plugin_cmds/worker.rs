@@ -277,9 +277,9 @@ impl PluginWorker {
         }
     }
     /// Asks the worker to read the store again and publish what may run; one already asked for
-    /// is enough. Never performs package I/O here.
-    pub fn refresh(&self) {
-        let _ = self.jobs.try_send(Job { id: String::new(), request: Value::Null });
+    /// is enough; whether it was asked (the queue may be full). Never performs package I/O here.
+    pub fn refresh(&self) -> bool {
+        self.jobs.try_send(Job { id: String::new(), request: Value::Null }).is_ok()
     }
 
     /// A count that changes whenever what the store may run does.

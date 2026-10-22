@@ -842,8 +842,10 @@ impl NodeCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn tick_plugins(&mut self, ctx: &egui::Context) {
         let Some((worker, seen)) = &mut self.plugins else { return };
-        if seen.is_none() {
-            worker.refresh();
+        // Until the first refresh is queued, ask again each frame.
+        if seen.is_none() && !worker.refresh() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            return;
         }
         let changes = worker.changes();
         if *seen == Some(changes) {
@@ -851,8 +853,12 @@ impl NodeCraftApp {
         }
         let (changes, plugins) = worker.plugins();
         *seen = Some(changes);
+        let before = Arc::clone(self.session.plugins());
         if let Err(error) = self.session.set_plugins(plugins) {
             log::warn!("plugin actions unavailable: {}", error.message);
+        }
+        if !Arc::ptr_eq(&before, self.session.plugins()) {
+            self.plugins_changed();
         }
         ctx.request_repaint();
     }

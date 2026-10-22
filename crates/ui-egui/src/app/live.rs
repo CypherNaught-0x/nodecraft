@@ -69,6 +69,18 @@ impl Live {
 }
 
 impl NodeCraftApp {
+    /// The granted plugins changed (#173): the canvas is looked at again, and plugin cards that
+    /// failed are retried, since their input hash doesn't cover the package that ran them.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn plugins_changed(&mut self) {
+        self.live.checked = None;
+        self.live.settled = None;
+        let document = self.session.document();
+        let plugin =
+            |node: &NodeId| document.canvases().values().any(|c| c.nodes().get(node).is_some_and(|n| nodecraft_engine::plugin_runtime::is_plugin(&n.kind)));
+        self.live.failed.retain(|node, _| !plugin(node));
+    }
+
     /// Every frame: records a finished recompute, and starts the next one if the document
     /// changed. Repaints while work is running so its result shows as soon as it lands.
     pub(super) fn live_recompute(&mut self, ctx: &egui::Context) {

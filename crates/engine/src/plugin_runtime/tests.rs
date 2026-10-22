@@ -164,3 +164,24 @@ fn a_list_input_before_the_last_is_refused_when_enabled() {
     let error = crate::plugin_text::compile(&store.load(&id()).unwrap()).unwrap_err();
     assert!(error.message.contains("last input"), "{}", error.message);
 }
+
+#[test]
+fn every_compiled_definition_makes_a_card_that_runs() {
+    let compiled = |definition: &str| {
+        let mut store = Store::open(MemoryBackend::default()).unwrap();
+        store.import(&package("1.0.0", definition), &TrustStore::default(), false).unwrap();
+        crate::plugin_text::compile(&store.load(&id()).unwrap())
+    };
+    let pad = |label: &str, default: &str| {
+        format!(
+            r#"{{"id":"user.pad","inputs":[{{"kind":"text","name":"words"}}],"label":"{label}","outputs":[{{"expr":"words + pad","kind":"text","name":"out"}}],"params":[{{"default":"{default}","kind":"text","name":"pad"}}],"schema":1,"version":1}}"#
+        )
+    };
+    // A long text default is its definition's to bound, not the card's: it registers.
+    let s = session(PluginSnapshot::of(&granted(&pad("Pad", &"x".repeat(4000)))));
+    assert!(s.kinds().get(KIND).is_ok(), "the card registered");
+    // An action with no inputs could never run on a card.
+    let none = r#"{"id":"user.none","inputs":[],"label":"None","outputs":[{"expr":"\"hi\"","kind":"text","name":"out"}],"schema":1,"version":1}"#;
+    let error = compiled(none).unwrap_err();
+    assert!(error.message.contains("at least one input"), "{}", error.message);
+}

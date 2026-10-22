@@ -43,18 +43,6 @@ impl PluginAction {
         self.revoked.store(true, Ordering::Release);
     }
 
-    /// Its node kind: one port per input (a text list takes many), one output, and a parameter
-    /// per definition parameter.
-    fn kind(&self, id: &str) -> Result<Box<dyn NodeKind>, Error> {
-        let definition = self.action.definition();
-        let text = |name: &str, many: bool| Port { name: name.into(), port_type: PortType { modality: Modality::Text, many } };
-        let inputs = definition.inputs.iter().map(|p| text(&p.name, p.kind == InputKind::TextList)).collect();
-        let output = definition.outputs.first().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "a plugin action has no output"))?;
-        let output = text(&output.name, output.kind == OutputKind::TextList);
-        let params = definition.params.iter().map(param).collect::<Result<_, _>>()?;
-        Ok(Box::new(nodecraft_nodes::action::plugin_kind(id.to_owned(), definition.label.clone(), inputs, output, params)?))
-    }
-
     /// Runs the action on a planned job's inputs and parameters.
     fn run(&self, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
         if self.is_revoked() {
@@ -98,6 +86,23 @@ impl PluginAction {
     }
 }
 
+/// The card kind of a plugin action registered as `id`: one port per input (a text list takes
+/// many), one output, and a parameter per definition parameter. Checked as the registry checks
+/// it, so a kind that is made always registers.
+pub(crate) fn card(id: &str, action: &CompiledTextAction) -> Result<Box<dyn NodeKind>, Error> {
+    let definition = action.definition();
+    let text = |name: &str, many: bool| Port { name: name.into(), port_type: PortType { modality: Modality::Text, many } };
+    let inputs = definition.inputs.iter().map(|p| text(&p.name, p.kind == InputKind::TextList)).collect();
+    let output = definition.outputs.first().ok_or_else(|| Error::new(ErrorKind::InvalidInput, "a plugin action has no output"))?;
+    let output = text(&output.name, output.kind == OutputKind::TextList);
+    let params = definition.params.iter().map(param).collect::<Result<_, _>>()?;
+    let kind = nodecraft_nodes::action::plugin_kind(id.to_owned(), definition.label.clone(), inputs, output, params)?;
+    let descriptor = kind.descriptor();
+    descriptor.validate()?;
+    kind.contract(descriptor).validate(descriptor)?;
+    Ok(Box::new(kind))
+}
+
 fn revoked() -> String {
     "this plugin's grant was revoked; its result was dropped".into()
 }
@@ -105,7 +110,9 @@ fn revoked() -> String {
 fn param(def: &expr::ParamDef) -> Result<ParamSpec, Error> {
     let wrong = || Error::new(ErrorKind::InvalidInput, "a plugin action's parameter default doesn't fit its kind");
     let (control, default) = match def.kind {
-        ParamKind::Text => (ParamControl::Text { multiline: false, max_bytes: 8192 }, Value::Text(def.default.as_str().ok_or_else(wrong)?.to_owned())),
+        ParamKind::Text => {
+            (ParamControl::Text { multiline: false, max_bytes: expr::MAX_SOURCE_BYTES }, Value::Text(def.default.as_str().ok_or_else(wrong)?.to_owned()))
+        }
         ParamKind::Int => (ParamControl::Integer { min: None, max: None, step: Unsigned(1) }, Value::Integer(Integer(def.default.as_i64().ok_or_else(wrong)?))),
         ParamKind::Bool => (ParamControl::Toggle, Value::Bool(def.default.as_bool().ok_or_else(wrong)?)),
     };
@@ -181,7 +188,7 @@ impl PluginSnapshot {
 
     /// The node kinds of its actions; a definition that makes no kind is left out.
     pub fn kinds(&self) -> Vec<Box<dyn NodeKind>> {
-        self.actions.iter().filter_map(|(id, action)| action.kind(id).ok()).collect()
+        self.actions.iter().filter_map(|(id, action)| card(id, &action.action).ok()).collect()
     }
 
     /// `next`, keeping this snapshot's actions that kept their grants (running jobs hold them);
