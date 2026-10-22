@@ -64,4 +64,6 @@ nodecraft-catalog.workspace = true
 nodecraft-format.workspace = true
 nodecraft-media = { workspace = true, features = ["fixtures"] }
 egui_kittest = { workspace = true, features = ["wgpu"] }
+# The staged-update tests hash their payloads like the signed feed does (#567).
+blake3.workspace = true
 tempfile.workspace = true

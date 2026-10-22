@@ -12,9 +12,19 @@
 //!   the MSI (whose `MajorUpgrade` replaces the old version), then starts NodeCraft again.
 //!
 //! Every new process is started with `--wait-for <pid>`, so it opens the project only after this
-//! one has closed it. What happened is written to `last-update.json` in the updates folder, and
-//! the next start says so. Leftovers (the renamed old bundle, a half-staged update, the helper)
-//! are removed at the next start; only names this module makes are ever removed.
+//! one has closed it, and with `--control` when this one had it. What happened is written to
+//! `last-update.json` in the updates folder, and the next start says so.
+//!
+//! A staged update can wait days for the restart, in a folder the person can write to, so it is
+//! checked again just before it is used (#567): the bundle's code signature, or the AppImage's or
+//! MSI's BLAKE3 against the signed feed's (the Windows helper checks the MSI once more, holding
+//! it open so nothing can change it, before `msiexec` runs it).
+//!
+//! Leftovers (the renamed old bundle, a half-staged update, the helper) are removed at the next
+//! start, only when no other copy of NodeCraft is running: each running copy holds a shared lock
+//! on `instances.lock` in the updates folder ([`Instance`]), since another copy's staged update
+//! or the old bundle it still runs from look the same. Only names this module makes are ever
+//! removed.
 use nodecraft_engine::build_info::VERSION;
 use nodecraft_engine::update_install::Downloaded;
 use nodecraft_types::{Error, ErrorKind};
@@ -30,6 +40,8 @@ const MAX_UNPACKED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const WAIT_FOR_EXIT: Duration = Duration::from_secs(60);
 /// The record of the last update, in the updates folder.
 const LAST_UPDATE: &str = "last-update.json";
+/// Held shared by every running copy, in the updates folder.
+const INSTANCES: &str = "instances.lock";
 
 const BUNDLE_UPDATE_PREFIX: &str = ".NodeCraft-update-";
 const BUNDLE_OLD_PREFIX: &str = ".NodeCraft-old-";
@@ -134,6 +146,13 @@ pub(crate) struct Staged {
     pub(crate) kind: Kind,
     /// The new bundle, AppImage or MSI.
     pub(crate) path: PathBuf,
+    /// The signed feed's BLAKE3 of the payload; the AppImage and MSI are checked against it.
+    pub(crate) blake3: String,
+    /// The payload's size, which a check reads no further than.
+    pub(crate) size: u64,
+    /// The bundle's code directory hash when it was staged and verified; a bundle re-signed
+    /// since (even validly, ad hoc) has another.
+    pub(crate) cdhash: Option<String>,
 }
 
 /// What to start once this process has closed the project.
@@ -141,10 +160,11 @@ pub(crate) struct Staged {
 pub(crate) enum Relaunch {
     Bundle(PathBuf),
     Exec(PathBuf),
-    /// The helper copy, the MSI and the executable it starts afterwards.
+    /// The helper copy, the MSI, its BLAKE3 and the executable it starts afterwards.
     Helper {
         helper: PathBuf,
         msi: PathBuf,
+        blake3: String,
         exe: PathBuf,
     },
 }
@@ -159,6 +179,7 @@ fn io(what: &str, path: &Path, e: &std::io::Error) -> Error {
 /// updates folder, for the MSI.
 pub(crate) fn stage(kind: &Kind, downloaded: &Downloaded, updates: &Path) -> Result<Staged, Error> {
     let version = &downloaded.version;
+    let mut cdhash_staged = None;
     let path = match kind {
         Kind::MacBundle { bundle, verify } => {
             let parent = bundle.parent().ok_or_else(|| Error::new(ErrorKind::Unsupported, "the app has no folder to update in"))?;
@@ -168,9 +189,13 @@ pub(crate) fn stage(kind: &Kind, downloaded: &Downloaded, updates: &Path) -> Res
                 remove_ours(&staged);
                 return Err(error);
             }
-            if *verify && let Err(error) = verify_signature(&staged) {
-                remove_ours(&staged);
-                return Err(error);
+            let cdhash = if *verify { verify_signature(&staged).and_then(|()| code_directory_hash(&staged)).map(Some) } else { Ok(None) };
+            match cdhash {
+                Ok(found) => cdhash_staged = found,
+                Err(error) => {
+                    remove_ours(&staged);
+                    return Err(error);
+                }
             }
             staged
         }
@@ -193,7 +218,8 @@ pub(crate) fn stage(kind: &Kind, downloaded: &Downloaded, updates: &Path) -> Res
             staged
         }
     };
-    Ok(Staged { version: version.clone(), kind: kind.clone(), path })
+    let size = u64::try_from(downloaded.bytes.len()).unwrap_or(u64::MAX);
+    Ok(Staged { version: version.clone(), kind: kind.clone(), path, blake3: downloaded.blake3.clone(), size, cdhash: cdhash_staged })
 }
 
 fn appimage_staging(file: &Path, version: &str) -> Result<PathBuf, Error> {
@@ -296,6 +322,26 @@ fn verify_signature(bundle: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// The bundle's code directory hash, as `codesign -d` reports it.
+fn code_directory_hash(bundle: &Path) -> Result<String, Error> {
+    let out = std::process::Command::new("/usr/bin/codesign")
+        .args(["-d", "--verbose=4"])
+        .arg(bundle)
+        .output()
+        .map_err(|e| Error::new(ErrorKind::Unsupported, format!("the update's signature couldn't be checked: {e}")))?;
+    // codesign writes the details to stderr.
+    let details = String::from_utf8_lossy(&out.stderr);
+    let found = details
+        .lines()
+        .find_map(|line| line.strip_prefix("CDHash="))
+        .map(str::trim)
+        .filter(|hash| !hash.is_empty() && hash.bytes().all(|b| b.is_ascii_hexdigit()));
+    match found {
+        Some(hash) if out.status.success() => Ok(hash.to_ascii_lowercase()),
+        _ => Err(Error::new(ErrorKind::InvalidInput, "the update's app bundle has a broken code signature; nothing was installed")),
+    }
+}
+
 /// Removes `path` when it is a file or folder this module made.
 fn remove_ours(path: &Path) {
     let ours = path.file_name().map(|n| n.to_string_lossy().into_owned()).is_some_and(|name| {
@@ -316,11 +362,38 @@ fn remove_ours(path: &Path) {
     }
 }
 
-/// Swaps the staged update in. `updates` holds the Windows helper. On an error nothing has
-/// changed: the running copy is where it was.
+/// Refuses a staged file that is no longer the one the feed signed; a changed one is removed.
+fn check_staged(path: &Path, blake3: &str, size: u64) -> Result<(), Error> {
+    let checked = std::fs::File::open(path)
+        .map_err(|e| io("checking", path, &e))
+        .and_then(|mut file| nodecraft_engine::update_install::verify_staged(&mut file, blake3, size));
+    if checked.is_err() {
+        remove_ours(path);
+    }
+    checked
+}
+
+/// Swaps the staged update in, once it is checked again. `updates` holds the Windows helper. On
+/// an error nothing has changed: the running copy is where it was.
 pub(crate) fn apply(staged: &Staged, updates: &Path) -> Result<Relaunch, Error> {
     let relaunch = match &staged.kind {
-        Kind::MacBundle { bundle, .. } => {
+        Kind::MacBundle { bundle, verify } => {
+            if *verify {
+                let same = verify_signature(&staged.path).and_then(|()| code_directory_hash(&staged.path)).and_then(|now| {
+                    if staged.cdhash.as_deref() == Some(now.as_str()) {
+                        Ok(())
+                    } else {
+                        Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "the staged update changed after it was checked; nothing was installed, so install the update again",
+                        ))
+                    }
+                });
+                if let Err(error) = same {
+                    remove_ours(&staged.path);
+                    return Err(error);
+                }
+            }
             let parent = bundle.parent().ok_or_else(|| Error::new(ErrorKind::Unsupported, "the app has no folder"))?;
             let old = parent.join(format!("{BUNDLE_OLD_PREFIX}{VERSION}.app"));
             remove_ours(&old);
@@ -338,22 +411,32 @@ pub(crate) fn apply(staged: &Staged, updates: &Path) -> Result<Relaunch, Error> 
             Relaunch::Bundle(bundle.clone())
         }
         Kind::AppImage { file } => {
+            check_staged(&staged.path, &staged.blake3, staged.size)?;
             std::fs::rename(&staged.path, file).map_err(|e| io("replacing", file, &e))?;
             Relaunch::Exec(file.clone())
         }
         Kind::WindowsMsi { exe } => {
+            check_staged(&staged.path, &staged.blake3, staged.size)?;
             let helper = updates.join(HELPER);
             remove_ours(&helper);
             std::fs::copy(exe, &helper).map_err(|e| io("copying", exe, &e))?;
-            Relaunch::Helper { helper, msi: staged.path.clone(), exe: exe.clone() }
+            Relaunch::Helper { helper, msi: staged.path.clone(), blake3: staged.blake3.clone(), exe: exe.clone() }
         }
     };
     Ok(relaunch)
 }
 
-/// Starts the new copy (or the Windows helper); it waits for this process to exit.
-pub(crate) fn relaunch(relaunch: &Relaunch, project: Option<&Path>) -> Result<(), Error> {
-    let pid = std::process::id().to_string();
+/// Starts the new copy (or the Windows helper); it waits for this process to exit. `control`:
+/// this copy was started with `--control`, so the new one is too.
+pub(crate) fn relaunch(relaunch: &Relaunch, project: Option<&Path>, control: bool) -> Result<(), Error> {
+    command(relaunch, project, control, &std::process::id().to_string())
+        .spawn()
+        .map(drop)
+        .map_err(|e| Error::new(ErrorKind::Internal, format!("NodeCraft couldn't start again after updating: {e}; open it yourself")))
+}
+
+/// The command [`relaunch`] starts, for this process's `pid`.
+fn command(relaunch: &Relaunch, project: Option<&Path>, control: bool, pid: &str) -> std::process::Command {
     let mut command = match relaunch {
         Relaunch::Bundle(bundle) => {
             let mut command = std::process::Command::new("/usr/bin/open");
@@ -361,17 +444,25 @@ pub(crate) fn relaunch(relaunch: &Relaunch, project: Option<&Path>) -> Result<()
             command
         }
         Relaunch::Exec(file) => std::process::Command::new(file),
-        Relaunch::Helper { helper, msi, exe } => {
+        Relaunch::Helper { helper, msi, blake3, exe } => {
             let mut command = std::process::Command::new(helper);
-            command.arg("--finish-update").arg(msi).arg(exe);
+            command.arg("--finish-update").arg(msi).arg(blake3).arg(exe);
             command
         }
     };
-    command.args(["--wait-for", &pid]);
+    command.args(["--wait-for", pid]);
+    if control {
+        command.arg("--control");
+    }
     if let Some(project) = project {
         command.arg(project);
     }
-    command.spawn().map(drop).map_err(|e| Error::new(ErrorKind::Internal, format!("NodeCraft couldn't start again after updating: {e}; open it yourself")))
+    command
+}
+
+/// Whether this process was started with `--control`, which a relaunch keeps.
+pub(crate) fn started_with_control() -> bool {
+    std::env::args_os().skip(1).any(|arg| arg == "--control")
 }
 
 /// What the last update did, for the next start to tell.
@@ -394,10 +485,68 @@ pub(crate) fn write_last(updates: &Path, last: &LastUpdate) {
     }
 }
 
-/// Reads and removes the last update's record, and removes what that update left behind.
-/// Returns what to tell the person.
-pub(crate) fn after_start(updates: &Path, kind: Option<&Kind>) -> Option<String> {
-    if let Some(kind) = kind {
+/// This process's [`Instance`], held until it exits.
+static RUNNING: std::sync::OnceLock<Instance> = std::sync::OnceLock::new();
+
+/// Holds this process's instance locks for as long as it runs, whatever else fails at startup;
+/// whether no other copy was running when it started.
+pub(crate) fn hold_instance(updates: &Path) -> bool {
+    RUNNING.get_or_init(|| Instance::hold(updates)).alone
+}
+
+/// This copy's hold on [`INSTANCES`], and on macOS a shared lock on its own executable, which a
+/// renamed old bundle keeps: another user's copy can be running from it.
+pub(crate) struct Instance {
+    _held: Option<std::fs::File>,
+    _exe: Option<std::fs::File>,
+    /// No other copy was running when this one started.
+    pub(crate) alone: bool,
+}
+
+impl Instance {
+    /// Takes the lock alone when no other copy holds it, then holds it shared like every copy.
+    /// Without a lock file (an unwritable folder) this copy never counts as alone.
+    pub(crate) fn hold(updates: &Path) -> Self {
+        let exe = if cfg!(target_os = "macos") {
+            std::env::current_exe().ok().and_then(|exe| std::fs::File::open(exe).ok()).filter(|exe| exe.lock_shared().is_ok())
+        } else {
+            None
+        };
+        let (held, alone) = Self::hold_folder(updates);
+        Self { _held: held, _exe: exe, alone }
+    }
+
+    fn hold_folder(updates: &Path) -> (Option<std::fs::File>, bool) {
+        let opened =
+            std::fs::create_dir_all(updates).and_then(|()| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(updates.join(INSTANCES)));
+        let file = match opened {
+            Ok(file) => file,
+            Err(e) => {
+                log::info!("update leftovers are kept: no instance lock ({e})");
+                return (None, false);
+            }
+        };
+        let alone = match file.try_lock() {
+            Ok(()) => file.unlock().is_ok(),
+            Err(std::fs::TryLockError::WouldBlock) => false,
+            Err(std::fs::TryLockError::Error(e)) => {
+                log::info!("update leftovers are kept: the instance lock failed ({e})");
+                false
+            }
+        };
+        // Another copy starting now may clean first; it finds nothing of this one's yet.
+        if let Err(e) = file.lock_shared() {
+            log::info!("the instance lock isn't held ({e})");
+            return (None, alone);
+        }
+        (Some(file), alone)
+    }
+}
+
+/// Reads and removes the last update's record, and, when no other copy runs (`alone`), removes
+/// what earlier updates left behind. Returns what to tell the person.
+pub(crate) fn after_start(updates: &Path, kind: Option<&Kind>, alone: bool) -> Option<String> {
+    if let Some(kind) = kind.filter(|_| alone) {
         clean(kind, updates);
     }
     let path = updates.join(LAST_UPDATE);
@@ -426,10 +575,26 @@ fn clean(kind: &Kind, updates: &Path) {
     };
     let Some(entries) = dir.and_then(|dir| std::fs::read_dir(dir).ok()) else { return };
     for entry in entries.flatten().take(10_000) {
-        if is_leftover(kind, &entry.file_name().to_string_lossy()) {
+        if is_leftover(kind, &entry.file_name().to_string_lossy()) && !running_from(&entry.path()) {
             remove_ours(&entry.path());
         }
     }
+}
+
+/// Whether a copy, perhaps another user's, runs from the bundle at `path`: it holds a shared
+/// lock on its executable ([`Instance`]).
+fn running_from(path: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(path.join("Contents").join("MacOS")) else { return false };
+    entries.flatten().take(64).any(|entry| {
+        std::fs::File::open(entry.path()).is_ok_and(|exe| match exe.try_lock() {
+            Ok(()) => {
+                let _ = exe.unlock();
+                false
+            }
+            Err(std::fs::TryLockError::WouldBlock) => true,
+            Err(std::fs::TryLockError::Error(_)) => false,
+        })
+    })
 }
 
 /// Whether `name`, beside this copy (or in the updates folder on Windows), is an earlier update's.
@@ -462,29 +627,57 @@ fn alive(pid: &str) -> bool {
     std::process::Command::new("kill").args(["-0", pid]).stderr(std::process::Stdio::null()).status().is_ok_and(|status| status.success())
 }
 
-/// `--finish-update <msi> <exe> --wait-for <pid> [project]` (Windows): run by a copy of the app
-/// from the updates folder, so the MSI can replace the installed executable.
-pub fn finish_update(msi: &Path, exe: &Path, pid: &str, project: Option<&Path>) {
+/// The staged MSI, open so that nothing else can change it until it is closed, once it is
+/// checked against the signed feed's `blake3`.
+fn hold_checked(msi: &Path, blake3: &str) -> Result<std::fs::File, String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    // Others may read it (msiexec does) but not write, rename or delete it while it is held.
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::share_mode(&mut options, 0x0000_0001); // FILE_SHARE_READ
+    let mut file = options.open(msi).map_err(|e| format!("the installer couldn't be opened: {e}"))?;
+    nodecraft_engine::update_install::verify_staged(&mut file, blake3, nodecraft_engine::update_install::MAX_PAYLOAD_BYTES).map_err(|error| error.message)?;
+    Ok(file)
+}
+
+/// `--finish-update <msi> <blake3> <exe> --wait-for <pid> [--control] [project]` (Windows): run by
+/// a copy of the app from the updates folder, so the MSI can replace the installed executable.
+/// The MSI is run only while it is still the one the feed signed.
+pub fn finish_update(msi: &Path, blake3: &str, exe: &Path, pid: &str, project: Option<&Path>, control: bool) {
     wait_for_exit(pid);
     let to = msi.file_stem().map(|stem| stem.to_string_lossy().trim_start_matches("nodecraft-").to_owned()).unwrap_or_default();
+    let held = hold_checked(msi, blake3);
     // /passive shows progress and asks for elevation; it never restarts Windows by itself.
-    let error = match system("msiexec").arg("/i").arg(msi).args(["/passive", "/norestart"]).status() {
+    let ran = held.as_ref().map_err(String::clone).map(|_| system("msiexec").arg("/i").arg(msi).args(["/passive", "/norestart"]).status());
+    drop(held);
+    let error = match ran {
+        Err(why) => Some(why),
+        Ok(ran) => installer_error(ran),
+    };
+    if let Some(updates) = msi.parent().filter(|_| error.is_some()) {
+        write_last(updates, &LastUpdate { from: VERSION.into(), to, error });
+    }
+    let mut command = std::process::Command::new(exe);
+    if control {
+        command.arg("--control");
+    }
+    if let Some(project) = project {
+        command.arg(project);
+    }
+    if let Err(e) = command.spawn() {
+        log::error!("NodeCraft couldn't start after updating: {e}");
+    }
+}
+
+/// Why `msiexec` didn't install, from how it exited.
+fn installer_error(ran: std::io::Result<std::process::ExitStatus>) -> Option<String> {
+    match ran {
         Ok(status) if status.success() => None,
         // 1602: the person cancelled; 3010: installed, a restart of Windows finishes it.
         Ok(status) if status.code() == Some(3010) => None,
         Ok(status) if status.code() == Some(1602) => Some("the installer was cancelled".to_owned()),
         Ok(status) => Some(format!("the installer stopped with code {}", status.code().map_or_else(|| "unknown".into(), |code| code.to_string()))),
         Err(e) => Some(format!("the installer couldn't start: {e}")),
-    };
-    if let Some(updates) = msi.parent().filter(|_| error.is_some()) {
-        write_last(updates, &LastUpdate { from: VERSION.into(), to, error });
-    }
-    let mut command = std::process::Command::new(exe);
-    if let Some(project) = project {
-        command.arg(project);
-    }
-    if let Err(e) = command.spawn() {
-        log::error!("NodeCraft couldn't start after updating: {e}");
     }
 }
 

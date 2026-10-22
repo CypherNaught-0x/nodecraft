@@ -29,11 +29,15 @@ fn release(version: &str) -> Release {
 }
 
 fn feed_for(version: &str, payload: &[u8]) -> Vec<u8> {
+    feed_marked(version, payload, false)
+}
+
+fn feed_marked(version: &str, payload: &[u8], prerelease: bool) -> Vec<u8> {
     let targets = BTreeMap::from([(
         "test-target".to_owned(),
         Payload { file: "nodecraft-test.bin".into(), size: payload.len() as u64, blake3: blake3::hash(payload).to_hex().to_string() },
     )]);
-    serde_json::to_vec(&Feed { format: FEED_FORMAT, version: version.into(), targets }).unwrap()
+    serde_json::to_vec(&Feed { format: FEED_FORMAT, version: version.into(), prerelease, targets }).unwrap()
 }
 
 /// Serves files by url, enforcing the request's size cap as the real client does.
@@ -42,7 +46,11 @@ struct Files(HashMap<String, Vec<u8>>, Mutex<Vec<HttpRequest>>);
 
 impl Files {
     fn release(version: &str, payload: &[u8], key: &SigningKey) -> Self {
-        let feed = feed_for(version, payload);
+        Self::marked(version, payload, key, false)
+    }
+
+    fn marked(version: &str, payload: &[u8], key: &SigningKey, prerelease: bool) -> Self {
+        let feed = feed_marked(version, payload, prerelease);
         let at = |file: &str| format!("https://feed.test/v{version}/{file}");
         let mut files = Self::default();
         files.0.insert(at(SIGNATURE_FILE), sign(key, &feed));
@@ -76,7 +84,8 @@ fn fetch(files: &Files, version: &str, keys: &[VerifyingKey]) -> Result<Download
 fn a_signed_update_downloads_and_verifies() {
     let files = Files::release("0.2.0", b"new app", &signing());
     let downloaded = fetch(&files, "0.2.0", &keys()).unwrap();
-    assert_eq!(downloaded, Downloaded { version: "0.2.0".into(), file: "nodecraft-test.bin".into(), bytes: b"new app".to_vec() });
+    let blake3 = blake3::hash(b"new app").to_hex().to_string();
+    assert_eq!(downloaded, Downloaded { version: "0.2.0".into(), file: "nodecraft-test.bin".into(), blake3, bytes: b"new app".to_vec() });
     let sent = files.1.lock().unwrap();
     let urls: Vec<&str> = sent.iter().map(|request| request.url.as_str()).collect();
     assert_eq!(
@@ -143,6 +152,37 @@ fn a_feed_signed_for_another_release_or_an_older_one_is_refused() {
 }
 
 #[test]
+fn a_prerelease_offered_as_a_stable_release_is_refused() {
+    let files = Files::marked("0.2.0", b"new app", &signing(), true);
+    let refused = fetch(&files, "0.2.0", &keys()).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::InvalidInput);
+    assert!(refused.message.contains("its signed feed says it is a prerelease"), "{}", refused.message);
+    // The payload is never fetched.
+    assert_eq!(files.1.lock().unwrap().len(), 2);
+    // Offered as the prerelease it is, it installs.
+    let offered = Release { prerelease: true, ..release("0.2.0") };
+    futures::executor::block_on(download(&files, "https://feed.test/", &offered, "0.1.0", "test-target", &keys())).unwrap();
+    // A feed without the field is one this build can't read.
+    let body = br#"{"format":1,"version":"0.2.0","targets":{}}"#;
+    assert!(verify_feed(body, &sign(&signing(), body), &keys(), "0.2.0").is_err());
+}
+
+#[test]
+fn a_staged_update_is_checked_again_before_it_is_used() {
+    let hash = blake3::hash(b"new app").to_hex().to_string();
+    verify_staged(&mut &b"new app"[..], &hash, 7).unwrap();
+    verify_staged(&mut &b"new app"[..], &hash.to_uppercase(), MAX_PAYLOAD_BYTES).unwrap();
+    for changed in [&b"evil ap"[..], b"new ap", b"new app!", b""] {
+        let refused = verify_staged(&mut &changed[..], &hash, 7).unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::InvalidInput);
+        assert!(refused.message.contains("changed after it was checked"), "{}", refused.message);
+    }
+    // A staged file that grew is refused once it is past the signed size, without reading it all.
+    let mut endless = std::io::repeat(0);
+    assert!(verify_staged(&mut endless, &hash, 7).is_err());
+}
+
+#[test]
 fn a_build_without_a_key_or_a_platform_payload_cant_install() {
     let files = Files::release("0.2.0", b"new app", &signing());
     let refused = fetch(&files, "0.2.0", &[]).unwrap_err();
@@ -157,26 +197,38 @@ fn hostile_feeds_are_refused_not_panicked_on() {
     let good = Payload { file: "nodecraft.bin".into(), size: 3, blake3: "a".repeat(64) };
     let names = ["", ".hidden", "../app", "a/b", "a\\b", "c:app", "app\u{0}", &"a".repeat(200), "naïve"];
     for file in names {
-        let feed = Feed { format: 1, version: "0.2.0".into(), targets: BTreeMap::from([("t".into(), Payload { file: file.into(), ..good.clone() })]) };
+        let feed = Feed {
+            format: 1,
+            version: "0.2.0".into(),
+            prerelease: false,
+            targets: BTreeMap::from([("t".into(), Payload { file: file.into(), ..good.clone() })]),
+        };
         assert_eq!(payload(&feed, "t").unwrap_err().kind, ErrorKind::InvalidInput, "{file:?}");
     }
     for size in [0, MAX_PAYLOAD_BYTES + 1, u64::MAX] {
-        let feed = Feed { format: 1, version: "0.2.0".into(), targets: BTreeMap::from([("t".into(), Payload { size, ..good.clone() })]) };
+        let feed = Feed { format: 1, version: "0.2.0".into(), prerelease: false, targets: BTreeMap::from([("t".into(), Payload { size, ..good.clone() })]) };
         assert!(payload(&feed, "t").is_err(), "{size}");
     }
     for hash in ["", "zz", &"a".repeat(63), &"é".repeat(32)] {
-        let feed = Feed { format: 1, version: "0.2.0".into(), targets: BTreeMap::from([("t".into(), Payload { blake3: hash.into(), ..good.clone() })]) };
+        let feed = Feed {
+            format: 1,
+            version: "0.2.0".into(),
+            prerelease: false,
+            targets: BTreeMap::from([("t".into(), Payload { blake3: hash.into(), ..good.clone() })]),
+        };
         assert!(payload(&feed, "t").is_err(), "{hash:?}");
     }
     // Signed, but not a feed this build reads.
-    for body in
-        [b"not json".to_vec(), br#"{"format":2,"version":"0.2.0","targets":{}}"#.to_vec(), br#"{"format":1,"version":"0.2.0","targets":{},"extra":1}"#.to_vec()]
-    {
+    for body in [
+        b"not json".to_vec(),
+        br#"{"format":2,"version":"0.2.0","prerelease":false,"targets":{}}"#.to_vec(),
+        br#"{"format":1,"version":"0.2.0","prerelease":false,"targets":{},"extra":1}"#.to_vec(),
+    ] {
         let refused = verify_feed(&body, &sign(&signing(), &body), &keys(), "0.2.0").unwrap_err();
         assert_eq!(refused.kind, ErrorKind::InvalidInput);
     }
     let many: BTreeMap<String, Payload> = (0..=MAX_TARGETS).map(|n| (format!("t{n}"), good.clone())).collect();
-    let body = serde_json::to_vec(&Feed { format: 1, version: "0.2.0".into(), targets: many }).unwrap();
+    let body = serde_json::to_vec(&Feed { format: 1, version: "0.2.0".into(), prerelease: false, targets: many }).unwrap();
     assert!(verify_feed(&body, &sign(&signing(), &body), &keys(), "0.2.0").is_err());
     // A signature over the bare feed, without the prefix, isn't a feed signature.
     let body = feed_for("0.2.0", b"x");

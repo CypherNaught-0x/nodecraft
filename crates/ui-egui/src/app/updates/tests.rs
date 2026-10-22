@@ -194,7 +194,16 @@ fn installing_after(payload: Result<Vec<u8>, Error>, gate: Option<std::sync::mps
             gate.recv().unwrap();
         }
         let bytes = payload.clone()?;
-        install::stage(&kind, &update_install::Downloaded { version: available.version.clone(), file: "payload".into(), bytes }, &staging)
+        install::stage(
+            &kind,
+            &update_install::Downloaded {
+                version: available.version.clone(),
+                file: "payload".into(),
+                blake3: blake3::hash(&bytes).to_hex().to_string(),
+                bytes,
+            },
+            &staging,
+        )
     });
     let handlers = h.state_mut().updates.as_mut().unwrap().with_installer(job, updates).unwrap();
     let (mut install, mut apply) = (handlers.install, handlers.apply);
