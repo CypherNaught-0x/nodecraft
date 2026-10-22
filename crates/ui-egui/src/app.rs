@@ -332,6 +332,7 @@ pub(crate) mod admission;
 
 mod app_mode;
 mod comments;
+mod deck_presenter;
 mod drop;
 mod elements;
 mod export;
@@ -484,6 +485,7 @@ pub struct NodeCraftApp {
     /// The mask editor (#102), while open.
     mask_editor: Option<mask_editor::MaskEditor>,
     layer_editor: Option<layer_editor::LayerEditor>,
+    presenter: Option<deck_presenter::Presenter>,
     timeline_editor: Option<timeline_editor::TimelineEditor>,
     /// App mode's form (#95), while it is open.
     app_mode: Option<app_mode::AppMode>,
@@ -900,6 +902,7 @@ impl NodeCraftApp {
             reader: None,
             mask_editor: None,
             layer_editor: None,
+            presenter: None,
             timeline_editor: None,
             app_mode: None,
             exports: Default::default(),
@@ -1038,6 +1041,7 @@ impl NodeCraftApp {
         model_blocks |= self.run_overlay(ui);
         model_blocks |= self.mask_overlay(ui);
         model_blocks |= self.layer_overlay(ui);
+        model_blocks |= self.deck_overlay(ui);
         model_blocks |= self.timeline_overlay(ui);
         if self.on_sheet() {
             self.sheet_frame(ui, viewport, model_blocks || file_owns_input || file_menu_owns_input);
@@ -1299,6 +1303,7 @@ impl NodeCraftApp {
         let mut split_request = None;
         let mut mask_request = None;
         let mut layers_request = None;
+        let mut present_request = None;
         let mut reader_request = None;
         let mut timeline_request = None;
         let mut element_request = false;
@@ -1312,6 +1317,7 @@ impl NodeCraftApp {
         let mut split_after = None;
         let mut mask_after = None;
         let mut layers_after = None;
+        let mut present_after = None;
         let mut reader_after = None;
         let mut timeline_after = None;
         let mut element_after = false;
@@ -1597,6 +1603,15 @@ impl NodeCraftApp {
                                 layers_request = Some(node.id);
                                 ui.close();
                             }
+                            if node.kind == nodecraft_nodes::deck::ID {
+                                if ui.button("Present").on_hover_text("Show the slides full-window; Esc leaves").clicked() {
+                                    present_request = Some(Some(node.id));
+                                    ui.close();
+                                }
+                            } else if ui.button("Present selection").on_hover_text("Make a deck with a slide per selected card, and show it").clicked() {
+                                present_request = Some(None);
+                                ui.close();
+                            }
                             if node.kind == nodecraft_nodes::timeline::ID && ui.button("Edit timeline…").clicked() {
                                 timeline_request = Some(node.id);
                                 ui.close();
@@ -1790,6 +1805,7 @@ impl NodeCraftApp {
             split_after = split_request;
             mask_after = mask_request;
             layers_after = layers_request;
+            present_after = present_request;
             reader_after = reader_request;
             timeline_after = timeline_request;
             element_after = element_request;
@@ -1846,6 +1862,11 @@ impl NodeCraftApp {
         }
         if let Some(node) = layers_after {
             self.open_layer_editor(node);
+        }
+        match present_after {
+            Some(Some(node)) => self.open_presenter(node),
+            Some(None) => self.present_selection(),
+            None => {}
         }
         if let Some(node) = timeline_after {
             self.open_timeline_editor(node);
@@ -2671,6 +2692,8 @@ impl eframe::App for NodeCraftApp {
 mod action_tests;
 #[cfg(test)]
 mod app_mode_tests;
+#[cfg(test)]
+mod deck_presenter_tests;
 #[cfg(test)]
 mod elements_tests;
 #[cfg(test)]

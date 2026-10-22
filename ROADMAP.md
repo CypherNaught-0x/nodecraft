@@ -23,7 +23,7 @@ an agent can actually do today.
 | 7 | **Video & audio** — nodes, playback, Timeline, FFmpeg, audio/video providers | 🟡 sidecar, playback on cards (#105), video generation (#559), Timeline (#109) | 4/15 |
 | 8 | **3D & documents** — 3D viewer, capture, GLB/OBJ, PDF, 3D providers | 🟡 3D node and viewer (#111), 3D photo and view sheet (#112), Tripo 3D generation (#22), PDF node (#113), Meshy 3D generation (#23) | 5/7 |
 | 9 | **Agent & automation** — MCP, control channel, agent sidebar, serve | 🟡 surfaces done, agent sidebar (#114), HTTP serve (#117) with signed webhooks (#632) | 2/6 |
-| 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | ⬜ not started | 0/6 |
+| 10 | **Share & collaborate** — browser polish, CRDT sync, presence, decks | 🟡 decks (#122) | 1/6 |
 | — | **Future providers** — the 25 further adapters tracked as `future` | 🟡 Higgsfield SOUL 2 and Kling image to video (#177) | 1/26 |
 
 ## What works today
@@ -50,6 +50,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
   writes a GLB or OBJ copy (#111). Typing `@` in a generation prompt mentions another card,
   whose text goes into the prompt where it is mentioned and which runs first, like a wire (#505).
+  Present selection makes a Deck card with a slide per card and presents it full-window; slides
+  are layer stacks whose source layers show what their card shows now, and `deck.*` commands
+  list and edit them with revision checks (#122).
   The viewer's Photo and Views buttons add a 3D photo or a
   4/8/16-view sheet card that draws the model from the current view as an image (#112). PDFs become PDF cards showing the
   first page and page count; PDF to images draws a page range as images and PDF to text reads

@@ -225,6 +225,7 @@ impl Registry {
             .chain(crate::mesh_cmds::specs())
             .chain(crate::document_cmds::specs())
             .chain(crate::layer_cmds::specs())
+            .chain(crate::deck_cmds::specs())
             .chain(crate::timeline_cmds::specs())
             .chain(crate::interchange_cmds::specs())
             .chain(crate::timeline_captions::specs())
