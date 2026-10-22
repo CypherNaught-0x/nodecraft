@@ -687,10 +687,12 @@ fn wired_pdfs_are_quoted_at_their_counted_pages() {
 fn known_character_inputs_are_priced_at_admission_and_allow_an_exact_budget() {
     let (canvas, kinds) = fixture();
     let mut model = catalog(2).get("selected").unwrap().clone();
+    model.provider = "elevenlabs".into();
     model.pricing = Pricing::PerUnit { unit: Unit::ThousandCharacters, price: Price(Money::new(Currency::USD, 80_000)), count: None, default_count: None };
     let catalog = Catalog::from_models(vec![model]).unwrap();
     let mut work = job(id(1), Default::default());
-    if let JobSpec::Generate { inputs, .. } = &mut work {
+    if let JobSpec::Generate { provider, inputs, .. } = &mut work {
+        *provider = "elevenlabs".into();
         inputs.push(nodecraft_nodes::GenerateInput { role: "prompt".into(), value: Value::Text("雪é🙂".into()) });
     }
     let quote = quote(&plan(Some(vec![work])), &canvas, &kinds, &catalog).unwrap();

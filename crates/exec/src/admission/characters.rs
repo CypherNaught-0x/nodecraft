@@ -11,11 +11,15 @@ pub(super) fn quote(model: &ModelDescriptor, step: &Step, bytes: &mut usize) -> 
     let Pricing::PerUnit { unit: Unit::ThousandCharacters, price, count: None, default_count: None } = &model.pricing else {
         return Ok(None);
     };
+    // Count only adapters whose billed request shape is modelled here. Other providers
+    // may add separators, instructions or wrappers that are absent from these inputs.
+    if model.provider != "elevenlabs" {
+        return Ok(None);
+    }
     let Some(jobs) = &step.jobs else { return Ok(None) };
     if jobs.len() > crate::run::MAX_STEP_JOBS {
         return Err(cap());
     }
-    let speech = model.provider == "elevenlabs";
     let mut largest = None;
     for job in jobs {
         let JobSpec::Generate { provider, model: remote, inputs, .. } = job else { return Ok(None) };
@@ -28,15 +32,15 @@ pub(super) fn quote(model: &ModelDescriptor, step: &Step, bytes: &mut usize) -> 
         let mut characters = 0u64;
         let mut texts = 0usize;
         for input in inputs {
-            if speech && input.role != "prompt" {
+            if input.role != "prompt" {
                 continue;
             }
-            let Some((count, leaves)) = text(&input.value, speech) else { return Ok(None) };
+            let Some((count, leaves)) = text(&input.value) else { return Ok(None) };
             characters = characters.checked_add(count).ok_or_else(cap)?;
             texts = texts.checked_add(leaves).ok_or_else(cap)?;
         }
         // ElevenLabs sends one trimmed prompt; do not quote a different request shape.
-        if texts == 0 || (speech && texts != 1) {
+        if texts != 1 {
             return Ok(None);
         }
         largest = Some(largest.unwrap_or(0).max(characters));
@@ -45,12 +49,12 @@ pub(super) fn quote(model: &ModelDescriptor, step: &Step, bytes: &mut usize) -> 
 }
 
 /// Called only after measure::job admitted the immutable input tree's recursion bounds.
-fn text(value: &Value, trim: bool) -> Option<(u64, usize)> {
+fn text(value: &Value) -> Option<(u64, usize)> {
     match value {
-        Value::Text(text) => Some((u64::try_from(if trim { text.trim() } else { text }.chars().count()).ok()?, 1)),
+        Value::Text(text) => Some((u64::try_from(text.trim().chars().count()).ok()?, 1)),
         Value::Media(_) => Some((0, 0)),
         Value::List(items) => items.iter().try_fold((0u64, 0usize), |(count, leaves), value| {
-            let (n, more) = text(value, trim)?;
+            let (n, more) = text(value)?;
             Some((count.checked_add(n)?, leaves.checked_add(more)?))
         }),
         // Other scalars are stringified by provider conversion. Leave these unknown rather

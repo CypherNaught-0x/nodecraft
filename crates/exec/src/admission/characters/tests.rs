@@ -69,33 +69,37 @@ fn speech_counts_the_trimmed_unicode_text_the_adapter_sends() {
 }
 
 #[test]
-fn generic_text_keeps_whitespace_and_flattens_text_inputs() {
+fn unmodelled_adapters_stay_unknown_and_speech_refuses_multiple_prompts() {
     let values = [Value::List(vec![Value::Text(" 雪 ".into()), Value::List(vec![Value::Text("é🙂".into())])])];
-    assert_eq!(price(&model("mock"), &step("mock", &values)).unwrap().unwrap().micros, 400);
+    let mut unmodelled = step("mock", &values);
+    if let Some(JobSpec::Generate { params, .. }) = unmodelled.jobs.as_mut().and_then(|jobs| jobs.first_mut()) {
+        params.insert("instructions".into(), Value::Text("Additional billed instructions".into()));
+    }
+    assert!(price(&model("mock"), &unmodelled).unwrap().is_none());
     assert!(price(&model("elevenlabs"), &step("elevenlabs", &values)).unwrap().is_none(), "speech refuses multiple prompt values");
 }
 
 #[test]
 fn a_fanned_step_uses_the_dearest_known_job() {
-    let step = step("mock", &[Value::Text("a".into()), Value::Text("雪é🙂".into())]);
-    assert_eq!(price(&model("mock"), &step).unwrap().unwrap().micros, 240);
+    let step = step("elevenlabs", &[Value::Text("a".into()), Value::Text("雪é🙂".into())]);
+    assert_eq!(price(&model("elevenlabs"), &step).unwrap().unwrap().micros, 240);
 }
 
 #[test]
 fn deferred_unmatched_and_nontext_work_stays_unknown() {
-    let model = model("mock");
-    let mut deferred = step("mock", &[Value::Text("known only later".into())]);
+    let model = model("elevenlabs");
+    let mut deferred = step("elevenlabs", &[Value::Text("known only later".into())]);
     deferred.jobs = None;
     assert!(price(&model, &deferred).unwrap().is_none());
     assert!(price(&model, &step("other", &[Value::Text("x".into())])).unwrap().is_none());
-    assert!(price(&model, &step("mock", &[Value::Bool(true)])).unwrap().is_none());
-    assert!(price(&model, &step("mock", &[])).unwrap().is_none());
+    assert!(price(&model, &step("elevenlabs", &[Value::Bool(true)])).unwrap().is_none());
+    assert!(price(&model, &step("elevenlabs", &[])).unwrap().is_none());
 }
 
 #[test]
 fn other_pricing_rules_and_explicit_counts_are_not_reinterpreted() {
-    let mut model = model("mock");
-    let step = step("mock", &[Value::Text("hello".into())]);
+    let mut model = model("elevenlabs");
+    let step = step("elevenlabs", &[Value::Text("hello".into())]);
     for pricing in [
         Pricing::Free,
         Pricing::ByUsage { currency: Currency::USD },
@@ -110,12 +114,12 @@ fn other_pricing_rules_and_explicit_counts_are_not_reinterpreted() {
 
 #[test]
 fn quote_work_and_nested_input_depth_are_bounded() {
-    let model = model("mock");
-    let work = step("mock", &[Value::Text("hello".into())]);
+    let model = model("elevenlabs");
+    let work = step("elevenlabs", &[Value::Text("hello".into())]);
     assert!(quote(&model, &work, &mut 0).is_err());
     let mut nested = Value::Text("x".into());
     for _ in 0..=nodecraft_graph::MAX_VALUE_DEPTH {
         nested = Value::List(vec![nested]);
     }
-    assert!(price(&model, &step("mock", &[nested])).is_err());
+    assert!(price(&model, &step("elevenlabs", &[nested])).is_err());
 }

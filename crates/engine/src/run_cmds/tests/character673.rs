@@ -1,12 +1,55 @@
 use super::*;
 
+struct Speech(Gen);
+impl NodeKind for Speech {
+    fn descriptor(&self) -> &NodeDescriptor {
+        self.0.descriptor()
+    }
+    fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
+        self.0.mode(inputs)
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        let mut jobs = self.0.plan(ctx)?;
+        for job in &mut jobs {
+            if let JobSpec::Generate { provider, instance, .. } = job {
+                *provider = "elevenlabs".into();
+                *instance = ctx.targets.get(ctx.node.id, "elevenlabs").and_then(|target| target.instance());
+            }
+        }
+        Ok(jobs)
+    }
+}
+
 fn character_session(limit: u64) -> (Session, Started) {
-    let (mut session, started) = session(Budgets { per_call: Some(usd(limit)), ..Default::default() }, true);
-    let catalog = CATALOG.replace(
-        "pricing = { type = \"per_unit\", unit = \"image\", price = \"0.04 USD\", count = \"num_images\" }",
-        "pricing = { type = \"per_unit\", unit = \"thousand_characters\", price = \"0.04 USD\" }",
-    );
-    let _ = session.swap_resource(Some(RunCatalog::new(Catalog::from_toml(&catalog).unwrap()).unwrap()));
+    use nodecraft_providers::mock::{MockModel, MockOutput, MockProvider};
+    let catalog = CATALOG
+        .replace(
+            "pricing = { type = \"per_unit\", unit = \"image\", price = \"0.04 USD\", count = \"num_images\" }",
+            "pricing = { type = \"per_unit\", unit = \"thousand_characters\", price = \"0.04 USD\" }",
+        )
+        .replace("provider = \"test\"", "provider = \"elevenlabs\"");
+    let mut resources = Resources::default();
+    resources.insert(RunCatalog::new(Catalog::from_toml(&catalog).unwrap()).unwrap());
+    resources.insert(BudgetState { budgets: Budgets { per_call: Some(usd(limit)), ..Default::default() }, spent: Spent::default() });
+    resources.insert(UsageSnapshot(Arc::new(UsageLog::default())));
+    let started: Started = Arc::default();
+    let log = Arc::clone(&started);
+    let mut services = Services::default();
+    services
+        .register_run_host(move |request| {
+            log.lock().unwrap().push(request);
+            Ok(json!({"run":"accepted"}))
+        })
+        .unwrap();
+    let descriptor = kinds().get("test.gen").unwrap().descriptor().clone();
+    let mut kinds = nodecraft_nodes::Registry::builtins().unwrap();
+    kinds.register(Box::new(Speech(Gen(descriptor)))).unwrap();
+    let mut session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
+    let mut routing = crate::provider_routing::ProviderRouting::new();
+    let provider = MockProvider::new("elevenlabs", [("img-v1".to_owned(), MockModel::new(MockOutput::Text))]);
+    let binding = routing.bind_default(Arc::new(provider)).unwrap();
+    routing.select(id(2), "elevenlabs", binding.target()).unwrap();
+    session.set_provider_routing(routing).unwrap();
     (session, started)
 }
 
