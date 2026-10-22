@@ -1,6 +1,6 @@
 //! Roles a share link gives a session (#121): what each may do to the document and its
 //! discussions, and the share.link_* commands.
-mod common;
+use crate::common;
 use std::cell::RefCell;
 use std::rc::Rc;
 

@@ -24,6 +24,22 @@ cargo nextest run --workspace        # optional, parallel across test binaries
 node --test scripts/claim/*.test.js  # the claim bot
 ```
 
+### One integration test binary per crate
+
+Each `tests/*.rs` file is normally its own binary, and each binary statically links the crate and
+everything under it: engine's 67 files were 67 links of 40–170 MB each. Crates with more than one
+integration test file therefore set `autotests = false` and build them as one binary,
+`tests/it.rs`, which pulls each file in as a module with `#[path]`. The files stay where they are,
+so a test in `tests/share.rs` is now `share::<test>` in the binary `nodecraft-engine::it`
+rather than `<test>` in `nodecraft-engine::share`; run one file's tests with
+`cargo nextest run -p nodecraft-engine -E 'binary(it) & test(/^share::/)'` or
+`cargo test -p nodecraft-engine --test it share::`.
+
+A test stays its own `[[test]]` when it must: one that docs or scripts run with `--test <name>`
+(`panic_hunt`, `catalog_files`, the live provider tests that `docs/providers.md` names) or one that re-runs its own executable
+by test name. Add a new file to `tests/it.rs`; `cargo xtask layers` and xtask's tests fail when a
+`tests/*.rs` file is in neither, since Cargo would otherwise never build it.
+
 UI behaviour is tested headless with `egui_kittest` (see `crates/ui-egui/src/app.rs`): the tests
 drive pointer and key events through the real canvas and check the resulting view and card state.
 

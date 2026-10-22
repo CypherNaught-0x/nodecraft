@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-graph"
 version.workspace = true
 edition.workspace = true
@@ -18,3 +19,8 @@ serde_json.workspace = true
 [dev-dependencies]
 nodecraft-media.workspace = true
 proptest.workspace = true
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"

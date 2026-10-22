@@ -227,8 +227,14 @@ that drive real pointer and key events through the canvas.
 
 ## Parallel agents on one machine
 
-- Use your own target dir (`CARGO_TARGET_DIR=target/agent-<name>`) so builds don't wait on
-  Cargo's lock, and delete it when you are done (each is several GB).
+- Work in your own git worktree and build in its own `target/` (Cargo's default), so builds don't
+  wait on another agent's lock and `git worktree remove` takes the build with it. Never point two
+  checkouts at one target dir: Cargo names a workspace crate's artifacts the same in every
+  checkout and judges freshness by file times, so one checkout can link another's stale code.
+  Agents sharing the primary checkout use `CARGO_TARGET_DIR=target/agent-<name>` instead and
+  delete it when they are done.
+- A new integration test file in a crate with `tests/it.rs` gets a `#[path]` line there (or its own
+  `[[test]]` if it must run alone); `cargo xtask layers` fails on one that is in neither.
 - Edit only the files your task owns. Shared registries (the command list in `crates/engine`,
   the node registry in `crates/nodes`, `xtask/src/layers.rs`) get small, surgical edits; re-read
   them right before editing. Put new commands, node kinds and providers in **new modules**.

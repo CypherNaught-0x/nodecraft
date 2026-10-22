@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use common::*;
 use nodecraft_engine::Session;
 use nodecraft_types::{ErrorKind, TagId};
