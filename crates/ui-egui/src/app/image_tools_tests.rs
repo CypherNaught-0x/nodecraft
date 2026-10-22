@@ -28,12 +28,22 @@ fn open_tools(h: &mut Harness<'static, NodeCraftApp>, id: NodeId) {
         let descriptor = app.session.kinds().get(&node.kind).ok().map(|k| k.descriptor());
         app.view.rect_to_screen(app.viewport.min, card::world_rect(node, descriptor, app.theme.tokens())).min + Vec2::splat(6.0)
     };
-    h.hover_at(pos);
-    for pressed in [true, false] {
-        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
+    // The card's image loads in the background and can repaint it between the press and the
+    // release, so a click that didn't open the menu is tried again (#740 on a slow CI runner).
+    for _ in 0..5 {
+        h.hover_at(pos);
+        h.run();
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
+            h.run();
+        }
+        h.run();
+        if h.query_by_label_contains("Image tools").is_some() {
+            break;
+        }
+        h.key_press(egui::Key::Escape);
         h.run();
     }
-    h.run();
     h.get_by_label_contains("Image tools").hover();
     h.run();
     h.run();
@@ -119,4 +129,56 @@ fn tools103_visual() {
         h.run_steps(4);
         h.render().unwrap().save(dir.join(name)).unwrap();
     }
+}
+
+/// A generation card whose run made `count` 8×6 images.
+fn generated(count: usize) -> (Harness<'static, NodeCraftApp>, NodeId) {
+    let canvas = CanvasId::from_bytes([43; 16]);
+    let card = NodeId::from_bytes([44; 16]);
+    let png = nodecraft_media::encode_png(8, 6, &[90; 8 * 6 * 4], &Default::default()).unwrap();
+    let mut project = Project::new(ProjectId::from_bytes([47; 16]), "Generated").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+    let mut session = Session::new(project).unwrap();
+    let image =
+        Value::Media(nodecraft_types::AssetRef { hash: session.import_asset(&png).unwrap(), mime: "image/png".parse().unwrap(), meta: Default::default() });
+    let mut node = nodecraft_graph::Node::new(card, "generation.image");
+    node.pos = nodecraft_graph::Position { x: 200.0, y: -110.0 };
+    node.outputs =
+        vec![nodecraft_graph::Port { name: "out".into(), port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Image, many: true } }];
+    let made = nodecraft_types::GenerationId::from_bytes([45; 16]);
+    node.history.push(nodecraft_graph::Generation::new(made, vec![Value::List(vec![image; count])]));
+    node.active = Some(made);
+    let mut project = session.document().clone();
+    Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+    let mut session = Session::new(project).unwrap();
+    session.import_asset(&png).unwrap();
+    let app = NodeCraftApp::from_session(session, canvas).unwrap();
+    let mut h = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .with_size(Vec2::new(1000.0, 700.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run();
+    (h, card)
+}
+
+fn enabled(h: &Harness<'static, NodeCraftApp>, label: &str) -> bool {
+    !h.get_by_label_contains(label).accesskit_node().is_disabled()
+}
+
+#[test]
+fn a_generated_image_can_be_split_into_a_grid_and_fed_to_a_model_tool() {
+    let (mut h, card) = generated(1);
+    open_tools(&mut h, card);
+    assert!(enabled(&h, "Split into grid"), "a generated image splits, as before the menu");
+    assert!(enabled(&h, "Upscale") && enabled(&h, "Open in 3D"), "one image feeds a model tool");
+    assert!(!enabled(&h, "Color grade") && !enabled(&h, "Inpaint"), "these take a single image, not a list");
+}
+
+#[test]
+fn a_card_that_made_several_images_greys_the_model_tools() {
+    let (mut h, card) = generated(2);
+    open_tools(&mut h, card);
+    assert!(enabled(&h, "Split into grid"), "splits the first image");
+    assert!(!enabled(&h, "Upscale") && !enabled(&h, "Open in 3D"));
 }

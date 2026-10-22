@@ -73,10 +73,11 @@ fn single_image_tools_are_unavailable_on_a_card_that_makes_several() {
     s.dispatch("node.create", &json!({"canvas": CANVAS, "id": CARD, "kind": KIND, "pos": {"x": 0, "y": 400}})).unwrap();
     let out = node(&s, CARD).outputs.iter().find(|p| p.port_type.modality == Modality::Image && p.port_type.many).unwrap().name.clone();
     let tools = listed(&mut s, CARD, &out);
-    for id in ["inpaint", "expand", "grade", "split_grid", "element"] {
+    for id in ["inpaint", "expand", "grade", "element"] {
         assert_eq!(entry(&tools, id)["available"], false, "{id}");
     }
-    assert_eq!(entry(&tools, "upscale")["available"], true, "a model tool takes a list one by one");
+    assert_eq!(entry(&tools, "upscale")["available"], true, "a card that hasn't made several images can feed a model tool");
+    assert_eq!(entry(&tools, "split_grid")["available"], true, "Split into grid takes the first image a card shows");
     let err = s.dispatch("image.tool", &use_tool("grade", CARD, &out)).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Unsupported);
 }
@@ -187,4 +188,102 @@ fn a_mode_qualifies_when_the_image_is_all_it_needs() {
     assert_eq!(image_role(&mode(vec![role("image", Modality::Image, 1, 1), role("prompt", Modality::Text, 1, 1)])), None, "a required prompt is not");
     assert_eq!(image_role(&mode(vec![role("images", Modality::Image, 4, 12)])), None, "nor several images");
     assert_eq!(image_role(&mode(vec![role("prompt", Modality::Text, 0, 1)])), None, "nor no image");
+}
+
+/// Models for the two tools the builtin catalog can't do yet.
+const TOOLS: &str = r#"
+[[model]]
+id = "test.cutout"
+provider = "test"
+provider_model = "cutout-v1"
+label = "Cutout"
+description = "Removes backgrounds."
+latency_s = 5
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "remove-background"
+output = "image"
+inputs = [{ role = "image", modality = "image", min = 1, max = 1 }]
+
+[[model]]
+id = "test.layers"
+provider = "test"
+provider_model = "layers-v1"
+label = "Layers"
+description = "Splits an image into layers."
+latency_s = 5
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "image-to-layers"
+output = "image"
+inputs = [{ role = "source", modality = "image", min = 1, max = 1 }, { role = "prompt", modality = "text", min = 0, max = 1 }]
+"#;
+
+fn session_with_tools() -> Session {
+    let mut catalog = nodecraft_catalog::Catalog::builtin().unwrap();
+    catalog.merge(nodecraft_catalog::Catalog::from_toml(TOOLS).unwrap()).unwrap();
+    let generation = GenerationCatalog::new(crate::run_cmds::RunCatalog::new(catalog).unwrap()).unwrap();
+    let mut project = nodecraft_graph::Project::new(ProjectId::from_bytes([2; 16]), "P").unwrap();
+    Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(CANVAS, "C") }.apply(&mut project).unwrap();
+    let mut s = Session::with_registries(project, crate::commands::Registry::builtins().unwrap(), generation.registry().unwrap()).unwrap();
+    generation.install(&mut s);
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": IMAGE, "kind": "source.image", "pos": {"x": 0, "y": 0}})).unwrap();
+    s
+}
+
+#[test]
+fn split_into_layers_adds_the_card_and_a_layer_editor_fed_by_it_as_one_step() {
+    let mut s = session_with_tools();
+    let tools = listed(&mut s, IMAGE, "out");
+    assert_eq!(entry(&tools, "split_layers")["models"], json!(["test.layers"]));
+    let mut p = use_tool("split_layers", IMAGE, "out");
+    p["edges"] = json!([edge(1), edge(2)]);
+    p["editor"] = json!(EDITOR);
+    assert_eq!(s.dispatch("image.tool", &p).unwrap(), json!({"id": NEW, "editor": EDITOR, "model": "test.layers"}));
+    assert_eq!(node(&s, NEW).params.get(MODEL), Some(&Value::Text("test.layers".into())));
+    let editor = node(&s, EDITOR);
+    assert_eq!(editor.kind, layers::ID);
+    assert_eq!(editor.pos, beside(Position { x: 400.0, y: 0.0 }, 1.0));
+    let out = node(&s, NEW).outputs.first().unwrap().name.clone();
+    let mut got = wires(&s);
+    got.sort();
+    let mut want = vec![(IMAGE, "out".to_owned(), NEW, "source".to_owned()), (NEW, out, EDITOR, "layers".to_owned())];
+    want.sort();
+    assert_eq!(got, want);
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document().canvases().get(&CANVAS).unwrap().nodes().len(), 1, "one undo step");
+    assert!(wires(&s).is_empty());
+}
+
+#[test]
+fn remove_background_adds_a_card_with_the_cutout_model() {
+    let mut s = session_with_tools();
+    assert_eq!(s.dispatch("image.tool", &use_tool("remove_background", IMAGE, "out")).unwrap(), json!({"id": NEW, "model": "test.cutout"}));
+    assert_eq!(node(&s, NEW).kind, KIND);
+    assert_eq!(wires(&s), [(IMAGE, "out".to_owned(), NEW, "image".to_owned())]);
+}
+
+#[test]
+fn model_tools_are_unavailable_once_a_card_made_several_images() {
+    let s = session();
+    let catalog = s.generation_catalog().unwrap();
+    let mut card = node(&s, IMAGE);
+    let asset = nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([9; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
+    let port = Port { name: "out".into(), port_type: nodecraft_types::PortType { modality: Modality::Image, many: true } };
+    card.kind = KIND.into();
+    let made = |card: &mut Node, n: usize| {
+        let id = nodecraft_types::GenerationId::from_bytes([n as u8; 16]);
+        card.history = vec![nodecraft_graph::Generation::new(id, vec![Value::List(vec![Value::Media(asset.clone()); n])])];
+        card.active = Some(id);
+    };
+    made(&mut card, 1);
+    assert_eq!(unavailable(Some(catalog), Tool::Upscale, &card, &port), None);
+    assert_eq!(unavailable(Some(catalog), Tool::SplitGrid, &card, &port), None);
+    made(&mut card, 2);
+    assert!(unavailable(Some(catalog), Tool::Upscale, &card, &port).unwrap().contains("several images"));
+    assert!(unavailable(Some(catalog), Tool::To3d, &card, &port).is_some());
+    assert_eq!(unavailable(Some(catalog), Tool::SplitGrid, &card, &port), None);
+    assert!(unavailable(Some(catalog), Tool::Grade, &card, &port).is_some());
 }

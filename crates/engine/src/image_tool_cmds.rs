@@ -130,16 +130,26 @@ fn image_output<'a>(canvas: &'a Canvas, from: &Endpoint) -> Result<(&'a Node, &'
     Ok((node, port))
 }
 
-/// Why `tool` can't be used on `port` now, if it can't.
-fn unavailable(catalog: Option<&GenerationCatalog>, tool: Tool, port: &Port) -> Option<String> {
+/// Why `tool` can't be used on `node`'s output `port` now, if it can't.
+fn unavailable(catalog: Option<&GenerationCatalog>, tool: Tool, node: &Node, port: &Port) -> Option<String> {
     let single = !port.port_type.many;
+    // A model card's image input takes the whole list (one list per batch item), so a card
+    // whose run made several images can't feed one; one that made a single image (the usual
+    // case) can. The shown rows are enough to tell.
+    let several = !single && crate::split::image_rows(node).0.iter().any(|row| row.len() > 1);
     match tool {
-        // These take one image, so a card that makes several can't feed them.
-        Tool::Inpaint | Tool::Expand | Tool::Grade | Tool::SplitGrid if !single => Some("works on one image: use it on a single image".into()),
-        Tool::Inpaint if catalog.is_none_or(|catalog| inpaint_models(catalog).is_empty()) => Some("no model that edits with a mask is available".into()),
+        // These take one image, so a list can't feed them. Split into grid works on the first
+        // image a card shows (`split::image_of`), so it isn't gated here.
+        Tool::Inpaint | Tool::Expand | Tool::Grade if !single => Some("works on one image: use it on a single image".into()),
+        Tool::Inpaint | Tool::Expand if catalog.is_none_or(|catalog| inpaint_models(catalog).is_empty()) => {
+            Some("no model that edits with a mask is available".into())
+        }
         Tool::Element if !single => Some("works on single images".into()),
         Tool::RemoveBackground | Tool::Upscale | Tool::SplitLayers | Tool::To3d if catalog.is_none_or(|catalog| tool_models(catalog, tool).is_empty()) => {
             Some(format!("no model that can {} is available", verb(tool)))
+        }
+        Tool::RemoveBackground | Tool::Upscale | Tool::SplitLayers | Tool::To3d if several => {
+            Some("this card made several images: split them out and use it on one".into())
         }
         _ => None,
     }
@@ -157,7 +167,7 @@ pub struct Entry {
 
 /// The menu for the image output `from` on `canvas`, in menu order.
 pub fn menu(canvas: &Canvas, catalog: Option<&GenerationCatalog>, from: &Endpoint) -> Result<Vec<Entry>, Error> {
-    let (_, port) = image_output(canvas, from)?;
+    let (node, port) = image_output(canvas, from)?;
     Ok(Tool::ALL
         .iter()
         .map(|&tool| {
@@ -166,7 +176,7 @@ pub fn menu(canvas: &Canvas, catalog: Option<&GenerationCatalog>, from: &Endpoin
                 (_, Some(catalog)) => tool_models(catalog, tool).into_iter().map(|(id, _)| id).collect(),
                 (_, None) => Vec::new(),
             };
-            Entry { tool, reason: unavailable(catalog, tool, port), models }
+            Entry { tool, reason: unavailable(catalog, tool, node, port), models }
         })
         .collect())
 }
@@ -191,7 +201,7 @@ struct ToolsParams {
 fn tools(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: ToolsParams = params(value)?;
     let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
-    let entries: Vec<Json> = menu(canvas, c.resources.get::<GenerationCatalog>(), &p.from)?
+    let entries: Vec<Json> = menu(canvas, GenerationCatalog::current(c.resources).ok(), &p.from)?
         .into_iter()
         .map(|e| {
             let tool = e.tool;
@@ -234,8 +244,8 @@ fn tool(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         }));
     }
     let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
-    let (_, port) = image_output(canvas, &p.from)?;
-    if let Some(reason) = unavailable(c.resources.get::<GenerationCatalog>(), p.tool, port) {
+    let (node, port) = image_output(canvas, &p.from)?;
+    if let Some(reason) = unavailable(GenerationCatalog::current(c.resources).ok(), p.tool, node, port) {
         return Err(Error::new(ErrorKind::Unsupported, reason));
     }
     let wanted_edges = if p.tool == Tool::SplitLayers { 2 } else { 1 };

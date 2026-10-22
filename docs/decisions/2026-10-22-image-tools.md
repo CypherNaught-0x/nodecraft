@@ -16,6 +16,10 @@
   that needs nothing but the one image; an optional prompt is fine. The first such model is the
   default. The builtin catalog has no background removal or layer split yet, so those two show
   greyed until a provider adds one.
-- **Single-image tools need a single image.** Inpaint, Expand, Color grade, Split into grid and
-  Make Element are greyed on a card that makes several images; the model tools fan out over a
-  list like any card fed by a batch.
+- **Single-image tools need a single image.** Inpaint, Expand, Color grade and Make Element are
+  greyed on an output that is a list (a generation card's). Split into grid takes the first
+  image a card shows (`split::image_of`), as before. A model card's image input collects a whole
+  list rather than fanning out over it, so the model tools are greyed once the card's run made
+  more than one image (in any one batch item); a card that made one image feeds them.
+- **Inpaint and Expand need a mask model.** Both open the mask editor, which makes an inpaint
+  card, so both are greyed when no catalog model edits with a mask.

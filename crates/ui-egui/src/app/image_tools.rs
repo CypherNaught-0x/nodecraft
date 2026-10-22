@@ -39,7 +39,9 @@ pub(super) fn button(ui: &mut egui::Ui, entry: &Entry, node: &Node, from: &Endpo
     let painted = matches!(tool, Tool::Inpaint | Tool::Expand);
     let why = match &entry.reason {
         Some(reason) => Some(sentence(reason)),
-        None if painted && !(has_image && mask_editor::image_output(node).is_some()) => Some("Run or load the image first".to_owned()),
+        None if (painted && mask_editor::image_output(node).is_none()) || ((painted || tool == Tool::Element) && !has_image) => {
+            Some("Run or load the image first".to_owned())
+        }
         None => None,
     };
     let mut widget = egui::Button::new(tool.label());
@@ -99,14 +101,16 @@ impl NodeCraftApp {
         let Some(source) = document.canvases().get(&self.canvas).and_then(|c| c.nodes().get(&from.node)) else { return };
         let revision = self.session.revision();
         let seed = ("image-tool", tool.id(), from.node, revision);
-        let (Some(id), Some(editor), Some(first), Some(second)) =
-            (ids::node_id(document, (seed, 0)), ids::node_id(document, (seed, 1)), ids::edge_id(document, (seed, 0)), ids::edge_id(document, (seed, 1)))
-        else {
+        let (Some(id), Some(first)) = (ids::node_id(document, (seed, 0)), ids::edge_id(document, (seed, 0))) else {
             self.notice = Some("Couldn't allocate node ids; try again.".into());
             return;
         };
         let mut params = json!({"canvas": self.canvas, "tool": tool.id(), "from": from, "id": id, "edges": [first], "pos": mask_cmds::beside(source.pos, 1.0)});
         if tool == Tool::SplitLayers {
+            let (Some(editor), Some(second)) = (ids::node_id(document, (seed, 1)), ids::edge_id(document, (seed, 1))) else {
+                self.notice = Some("Couldn't allocate node ids; try again.".into());
+                return;
+            };
             params["edges"] = json!([first, second]);
             params["editor"] = json!(editor);
         }
