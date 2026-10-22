@@ -423,6 +423,11 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             record.width = m.width.checked_mul(2).ok_or_else(|| invalid("fal width overflow"))?;
             record.height = m.height.checked_mul(2).ok_or_else(|| invalid("fal height overflow"))?;
         } else if model == Model::RemoveBackground {
+            // The service receives the original bytes; its treatment of EXIF is unverified.
+            // Refuse before payment rather than risk rejecting a charged result's dimensions.
+            if nodecraft_media::image_requires_orientation(bytes, &l.image(true)).map_err(|_| invalid("fal input image orientation refused"))? {
+                return Err(invalid("Bria needs an upright image: apply its EXIF rotation or reflection and save it before removing the background"));
+            }
             record.width = m.width;
             record.height = m.height;
         }

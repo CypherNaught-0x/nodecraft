@@ -133,6 +133,42 @@ fn wrong_envelopes_types_origins_and_actual_geometry_never_publish_a_cutout() {
 }
 
 #[test]
+fn exif_rotations_and_reflections_refuse_before_codecs_encoding_or_payment() {
+    let mut plain = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut plain).encode(&[120; 4 * 2 * 3], 4, 2, image::ExtendedColorType::Rgb8).unwrap();
+    for orientation in 0..=8 {
+        // Original procedural JPEG plus a minimal big-endian TIFF orientation tag.
+        let mut exif = b"Exif\0\0MM\0*\0\0\0\x08\0\x01".to_vec();
+        exif.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, orientation, 0, 0, 0, 0, 0, 0]);
+        let mut tagged = plain[..2].to_vec();
+        tagged.extend_from_slice(&[0xff, 0xe1]);
+        tagged.extend_from_slice(&u16::try_from(exif.len() + 2).unwrap().to_be_bytes());
+        tagged.extend_from_slice(&exif);
+        tagged.extend_from_slice(&plain[2..]);
+        if orientation == 0 {
+            tagged = plain.clone();
+        }
+        let meta = nodecraft_media::probe_image(&tagged, &Limits::HARD.image(true)).unwrap();
+        assert_eq!((meta.width, meta.height), if orientation >= 5 { (2, 4) } else { (4, 2) });
+        let mut job = job(BRIA_REMOVE);
+        job.inputs = vec![crate::JobInput::Media { role: "image".into(), mime: "image/jpeg".into(), bytes: tagged.into() }];
+        reset();
+        let transport = Transport::new(vec![accepted()]);
+        let result = block_on(Fal::new(key(), transport.clone()).submit(&job));
+        if orientation <= 1 {
+            let Submission::Queued(handle) = result.unwrap() else { panic!("upright JPEG is admitted") };
+            assert_eq!((handle.data["width"].as_u64(), handle.data["height"].as_u64()), (Some(4), Some(2)));
+            assert_eq!(transport.requests.lock().unwrap().len(), 1);
+        } else {
+            let error = result.unwrap_err();
+            assert!(error.message.contains("apply its EXIF rotation or reflection"));
+            assert!(transport.requests.lock().unwrap().is_empty());
+            assert_eq!(stages(), [0, 0, 0], "orientation {orientation} is refused before expensive or paid work");
+        }
+    }
+}
+
+#[test]
 fn cancel_and_hostile_restored_handles_use_only_the_allowlisted_bria_root() {
     let transport = Transport::new(vec![HttpResponse { status: 202, ..reply(json!({"status":"CANCELLATION_REQUESTED"})) }]);
     assert!(block_on(Fal::new(key(), transport.clone()).cancel(&handle(BRIA_REMOVE))).is_ok());

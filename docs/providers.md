@@ -484,7 +484,8 @@ counts as undeclared and is still sniffed as MP4 (#607). Kokoro selects af_heart
 Trellis selects resolution 512 and one inline image, returning GLB2. ESRGAN selects scale2,
 RealESRGAN_x4plus, face=false and PNG. Advanced/unknown parameters and extra roles refuse
 before HTTP. Image-to-3D/upscale input contracts are direct-adapter capabilities; their engine
-fixtures use an explicitly test-only immutable asset resolver. No shipping resolver is implied.
+fixtures use an explicitly test-only immutable asset resolver. Those older fixtures do not prove
+shipping input resolution; the separate Bria fixture exercises the shipping resolver.
 
 Bria background removal (#749) exposes `fal.bria-rmbg` with mode `remove-background`,
 one required `image` input and one PNG output. Its image-only estimate is 0.018 USD per call,
@@ -494,6 +495,10 @@ contains only `image_url` and `sync_mode=false`. Prompts are refused: the provid
 guided removal separately at 0.03 USD. The existing 1 MiB / 1024 px input limit applies,
 and the expected output geometry is checked against configured limits before paid dispatch.
 The result must be one complete PNG with the input dimensions; transparent pixels are retained.
+Inputs requiring an EXIF rotation or reflection are refused before codecs, encoding or paid
+dispatch: apply the orientation and save the upright image first. The service's EXIF policy is
+unverified. The first opt-in live check must confirm that this endpoint preserves input dimensions
+without resizing or padding; the exact-size rule is a conservative offline contract.
 Offline fixtures cover the catalog-generated card, the 0.018 USD quote and explicit consent,
 the real adapter behind RunHost, stored input resolution and importing the distinct PNG result.
 No live availability or invoice is claimed. The dedicated Image Tool menu is tracked separately

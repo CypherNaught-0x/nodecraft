@@ -14,6 +14,8 @@ this keeps the dated per-call estimate tied to the admitted request. Preserve th
 1 MiB / 1024 px input limits and existing 16 MiB output cap. Record the probed input dimensions in the resumable
 handle and refuse an output geometry the configured limits cannot admit before submission.
 Accept only a singular, complete PNG with those dimensions, retaining its alpha channel.
+Refuse images requiring an EXIF rotation or reflection before codecs, encoding or HTTP;
+forwarding their original bytes would otherwise depend on the service's unverified EXIF policy.
 
 Queue operation URLs use the explicit `fal-ai/bria` owner/application root, as required by the
 [queue contract](https://fal.ai/docs/documentation/model-apis/inference/queue); the create URL
@@ -26,5 +28,6 @@ resume, cancellation, alpha preservation and hostile restored handles. An offlin
 generated card → quote/consent → shipping RunHost → real Fal adapter fixture proves that one
 stored image reaches the wire and its distinct transparent output reaches generation history,
 without a paid request. Live alias availability, live receipts and actual billing remain
-unverified. The dedicated Image Tool menu (#740) is independent and has not landed; no optional
+unverified. The first opt-in live check must confirm exact input-size preservation without padding
+or resizing. The dedicated Image Tool menu (#740) is independent and has not landed; no optional
 image-to-layers mode or menu implementation is included here.

@@ -22,7 +22,8 @@ mod thumb;
 pub use error::MediaError;
 pub use hash::ContentHash;
 pub use image_io::{
-    ColorModel, ColorTag, ImageMeta, Limits, MAX_IMAGE_PROBE_BYTES, decode_image, encode_png, is_undecoded_image, probe_image, probe_image_reader,
+    ColorModel, ColorTag, ImageMeta, Limits, MAX_IMAGE_PROBE_BYTES, decode_image, encode_png, image_requires_orientation, is_undecoded_image, probe_image,
+    probe_image_reader,
 };
 pub use mesh::{Bounds, Mesh, MeshFormat, MeshInfo, MeshLimits, decode_mesh, decode_mesh_as, encode_glb, encode_obj, probe_mesh};
 pub use movie::{MovieInfo, probe_movie};
