@@ -79,7 +79,7 @@ selected border more visible than the resting one, in both themes.
 | Drag from a connected input | pick up its (last) noodle: drop it on another input to reroute (`edge.rewire`), or on empty canvas to disconnect |
 | Escape while dragging a noodle | drop it without changing anything |
 | Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses |
-| Delete or Backspace outside text fields | delete the selected nodes and noodles in one undo step (`canvas.delete`) |
+| Delete or Backspace outside text fields | delete the selected nodes, noodles and field in one undo step (`canvas.delete`; a deleted field's cards stay) |
 | `T` / `I` / `V` / `A` / `R` (no modifier, outside text fields) | quick-add a Text / Image / Video / Audio / Router node centred under the pointer and select it (`node.create`, one undo step; a quick-added router carries text, since `node.create` sets no config). Keys come from each kind's `quick_add`, so new kinds bring their own |
 | Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, ↑↓ to move, ↵ to choose, Escape or a click elsewhere to close. A kind is created where you double-clicked |
 | ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; a copied image (desktop) pastes as an Image node at the pointer, read off the UI thread, encoded as PNG and held to 16384×16384 pixels and 16 MiB, one undo step (#319) |

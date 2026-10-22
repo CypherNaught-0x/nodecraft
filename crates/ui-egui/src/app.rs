@@ -18,7 +18,7 @@ use nodecraft_engine::{
     settings::{CanvasSettings, NodeCraftSettings, Theme},
 };
 use nodecraft_graph::{Canvas, Change, Endpoint, Node, Project};
-use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, Modality, NodeId, PortType, ProjectId, Value};
+use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, FieldId, Modality, NodeId, PortType, ProjectId, Value};
 use serde_json::json;
 use std::{
     borrow::Cow,
@@ -2403,24 +2403,21 @@ impl NodeCraftApp {
             store.update(|settings| apply(&mut settings.keys));
         }
     }
-    /// Delete the selection (nodes and noodles) in one undo step.
+    /// Delete the selection (nodes, noodles and the selected field) in one undo step, skipping
+    /// ids an undo already removed. A deleted field's cards stay.
     fn dispatch_delete(&mut self) {
-        let (nodes, edges) = (self.selection.nodes().clone(), self.selection.edges().clone());
-        self.dispatch_delete_of(&nodes, &edges);
-    }
-
-    /// Delete these nodes and noodles in one undo step, skipping ids an undo already removed.
-    fn dispatch_delete_of(&mut self, nodes: &std::collections::BTreeSet<NodeId>, edges: &std::collections::BTreeSet<EdgeId>) {
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return };
-        let nodes: Vec<NodeId> = nodes.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect();
-        let edges: Vec<EdgeId> = edges.iter().copied().filter(|id| canvas.edges().contains_key(id)).collect();
-        if nodes.is_empty() && edges.is_empty() {
+        let nodes: Vec<NodeId> = self.selection.nodes().iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect();
+        let edges: Vec<EdgeId> = self.selection.edges().iter().copied().filter(|id| canvas.edges().contains_key(id)).collect();
+        let fields: Vec<FieldId> = self.fields.selected.into_iter().filter(|id| canvas.fields().contains_key(id)).collect();
+        if nodes.is_empty() && edges.is_empty() && fields.is_empty() {
             return;
         }
-        match self.session.dispatch("canvas.delete", &json!({"canvas": self.canvas, "nodes": nodes, "edges": edges})) {
+        match self.session.dispatch("canvas.delete", &json!({"canvas": self.canvas, "nodes": nodes, "edges": edges, "fields": fields})) {
             Ok(_) => {
                 self.notice = None;
                 self.selection.clear();
+                self.fields.selected = None;
             }
             Err(error) => self.notice = Some(error.message),
         }

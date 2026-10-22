@@ -306,3 +306,37 @@ fn a_wire_inside_a_collapsed_field_is_hidden_and_stand_ins_follow_a_drag() {
     let moved: Vec<_> = fields::stand_ins(canvas(&h), &hidden, t, 1.0, Some((id, Vec2::new(30.0, 10.0)))).collect();
     assert_eq!(moved[0].1, still[0].1.translate(Vec2::new(30.0, 10.0)));
 }
+
+#[test]
+fn delete_removes_a_selected_field_keeping_its_cards_in_one_undo_step() {
+    let mut h = harness();
+    h.run();
+    let before = h.state().session.document().clone();
+    let id = field_around_card(&mut h);
+    let node = member(&h);
+    let grouped = h.state().session.document().clone();
+    let title = canvas(&h).fields().get(&id).unwrap().title.clone();
+    let at = header(&h, &title).center();
+    press(&mut h, at, egui::PointerButton::Primary, true);
+    press(&mut h, at, egui::PointerButton::Primary, false);
+    assert_eq!(h.state().fields.selected, Some(id));
+    assert!(h.state().selection.is_empty());
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert!(canvas(&h).fields().is_empty());
+    assert_eq!(canvas(&h).nodes().get(&node).map(|n| n.field), Some(None), "the card stays, out of the field");
+    assert_eq!(h.state().fields.selected, None);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &grouped);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    // Backspace deletes a selected field too.
+    h.key_press_modifiers(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
+    h.run();
+    h.state_mut().fields.selected = Some(id);
+    h.key_press(egui::Key::Backspace);
+    h.run();
+    assert!(canvas(&h).fields().is_empty());
+}
