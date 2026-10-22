@@ -2413,8 +2413,10 @@ impl NodeCraftApp {
     /// overlays' `H` (#321) cannot drift apart. Each term is a reader of state only: nothing here
     /// consumes an event, so a refused letter stays unconsumed for whoever does own it.
     ///
-    /// - A gesture in flight (a card drag, a marquee, a wire, an input reorder, a comment drag, or
-    ///   a comment gesture just cancelled) owns the canvas for the rest of the gesture.
+    /// - A gesture in flight (a card drag, a marquee, a wire, an input reorder, a comment drag, a
+    ///   field drag, or a comment gesture just cancelled) owns the canvas for the rest of the
+    ///   gesture. The field drag belongs here (#703): a field moves its members, and a kind key
+    ///   landing mid-drag would drop a card into the zone still in motion.
     /// - `minimap_held`: held minimap input owns canvas keys through release (#361). Quick-add
     ///   passes this frame's frozen admission; `H` runs earlier in the frame, where only a *held*
     ///   minimap gesture exists yet and a fresh press has not been admitted or refused.
@@ -2434,6 +2436,7 @@ impl NodeCraftApp {
             || self.reordering.is_some()
             || self.comments.drag.is_some()
             || self.comments.gesture_cancelled
+            || self.fields.drag.is_some()
             || minimap_held
             || model_blocks
             || bulk_blocks
