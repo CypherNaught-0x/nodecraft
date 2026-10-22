@@ -2891,6 +2891,22 @@ impl eframe::App for NodeCraftApp {
         self.show(ui);
     }
     fn on_exit(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let deadline = std::time::Instant::now() + nodecraft_engine::action_exec::CAPTURE_CLOSE_WAIT;
+            self.live.cancel();
+            if let Some(runs) = &mut self.runs {
+                runs.shut_down();
+            }
+            let captures = nodecraft_engine::action_exec::shutdown_captures(deadline.saturating_duration_since(std::time::Instant::now()));
+            if captures.remaining > 0 {
+                log::warn!("3D capture close deadline expired with {} captures still running", captures.remaining);
+            }
+            if captures.panicked > 0 {
+                log::warn!("{} 3D capture workers panicked", captures.panicked);
+            }
+            self.live.stop(deadline);
+        }
         self.audios.stop();
         #[cfg(not(target_arch = "wasm32"))]
         self.close_storage();

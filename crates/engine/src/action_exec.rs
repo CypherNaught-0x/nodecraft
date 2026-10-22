@@ -18,6 +18,7 @@ use nodecraft_types::{AssetRef, Blake3, MediaMeta, ParamValues, Value};
 use serde_json::{Map, Value as Json, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// Actions run against a snapshot of the project's assets.
@@ -31,12 +32,24 @@ pub struct LocalActions {
     /// For a drag preview (#88): input images larger than this, in pixels on their longer edge,
     /// are scaled down to it before an action works on them.
     preview_edge: Option<u32>,
+    /// Closing the owning live round or run stops later GPU views and queued captures.
+    capture_cancel: Arc<AtomicBool>,
 }
 
 impl LocalActions {
     /// Actions reading `assets` (a cheap clone of the session's store: buffers are shared).
     pub fn new(assets: AssetStore) -> Self {
-        Self { assets, staged: Mutex::new(AssetStore::default()), videos: Mutex::default(), video: None, preview_edge: None }
+        Self { assets, staged: Mutex::new(AssetStore::default()), videos: Mutex::default(), video: None, preview_edge: None, capture_cancel: Arc::default() }
+    }
+
+    pub(crate) fn with_capture_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
+        self.capture_cancel = cancel;
+        self
+    }
+
+    /// Stops this owner's queued 3D captures and its current capture between views.
+    pub fn cancel_captures(&self) {
+        self.capture_cancel.store(true, Ordering::Release);
     }
 
     /// Works on input images scaled down to at most `edge` pixels on their longer edge: a quick,
@@ -323,6 +336,8 @@ impl LocalActions {
 }
 
 mod capture_state;
+#[cfg(not(target_arch = "wasm32"))]
+pub use capture_state::{CLOSE_WAIT as CAPTURE_CLOSE_WAIT, Shutdown as CaptureShutdown, shutdown as shutdown_captures};
 mod document;
 pub(crate) mod layers;
 mod mesh;
@@ -379,7 +394,9 @@ impl LocalActions {
 
 impl ActionExecutor for LocalActions {
     fn long_running(&self, action: &str) -> bool {
-        action == nodecraft_nodes::timeline::ID
+        action == nodecraft_nodes::mesh::PHOTO
+            || action == nodecraft_nodes::mesh::VIEWS
+            || action == nodecraft_nodes::timeline::ID
             || nodecraft_nodes::video_edit::IDS.contains(&action)
             || nodecraft_nodes::video_frames::IDS.contains(&action)
             || nodecraft_nodes::video_look::IDS.contains(&action)
@@ -387,6 +404,9 @@ impl ActionExecutor for LocalActions {
     }
 
     fn execute_cancellable(&self, action: &str, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
+        if action == nodecraft_nodes::mesh::PHOTO || action == nodecraft_nodes::mesh::VIEWS {
+            return self.capture_mesh(action, params, inputs, &|| cancelled() || self.capture_cancel.load(Ordering::Acquire));
+        }
         if action == nodecraft_nodes::timeline::ID {
             return self.timeline(params, inputs, cancelled);
         }
@@ -431,7 +451,7 @@ impl ActionExecutor for LocalActions {
             return self.convert_mesh(params, inputs);
         }
         if action == nodecraft_nodes::mesh::PHOTO || action == nodecraft_nodes::mesh::VIEWS {
-            return self.capture_mesh(action, params, inputs);
+            return self.capture_mesh(action, params, inputs, &|| self.capture_cancel.load(Ordering::Acquire));
         }
         if action == nodecraft_nodes::document::PAGES {
             return self.document_pages(params, inputs);

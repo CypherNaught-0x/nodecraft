@@ -25,6 +25,21 @@ use nodecraft_nodes::{Category, JobSpec, Registry, technique};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Cancels one live round, including a 3D capture between views; other rounds are unaffected.
+#[derive(Clone, Default)]
+pub struct LiveCancel(Arc<AtomicBool>);
+
+impl LiveCancel {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
 
 /// Live work for one revision of one canvas.
 pub struct LiveJob {
@@ -45,9 +60,15 @@ pub struct LiveJob {
     /// The kinds it was planned with, and the granted plugins' actions (#173).
     kinds: Arc<Registry>,
     plugins: Option<Arc<PluginSnapshot>>,
+    cancel: LiveCancel,
 }
 
 impl LiveJob {
+    /// Take this before starting a worker, so closing also cancels a round not started yet.
+    pub fn cancel_handle(&self) -> LiveCancel {
+        self.cancel.clone()
+    }
+
     /// Whether this is a drag preview, shown but never recorded.
     pub fn is_preview(&self) -> bool {
         self.preview.is_some()
@@ -236,6 +257,7 @@ fn plan(
             preview: None,
             kinds: session.kinds_shared(),
             plugins: None,
+            cancel: LiveCancel::default(),
         }));
     }
     // A canvas that can't be inlined has no technique node wanted, and plans as it is.
@@ -271,6 +293,7 @@ fn plan(
         preview: None,
         kinds: session.kinds_shared(),
         plugins,
+        cancel: LiveCancel::default(),
     }))
 }
 
@@ -329,6 +352,10 @@ fn local_step(step: &Step, live: &Canvas, kinds: &Registry) -> bool {
 
 /// Runs `job` (any thread): sources emit their values, actions run on [`LocalActions`].
 pub fn compute(job: LiveJob) -> Result<LiveOutcome, Error> {
+    let check_cancel = || {
+        if job.cancel.is_cancelled() { Err(Error::new(ErrorKind::Conflict, "live recompute was cancelled")) } else { Ok(()) }
+    };
+    check_cancel()?;
     let kinds = &*job.kinds;
     let Some(plan) = &job.plan else {
         return Ok(LiveOutcome {
@@ -344,10 +371,13 @@ pub fn compute(job: LiveJob) -> Result<LiveOutcome, Error> {
     };
     let options = RunOptions { id: job.id, first_job: 1, limits: Default::default(), retry: RetryPolicy::NEVER };
     let (mut run, first) = Run::start(plan, job.canvas, &job.live, kinds, options)?;
-    let local = Arc::new(match job.preview {
-        Some(edge) => LocalActions::new(job.assets).with_preview_edge(edge),
-        None => LocalActions::new(job.assets),
-    });
+    let local = Arc::new(
+        (match job.preview {
+            Some(edge) => LocalActions::new(job.assets).with_preview_edge(edge),
+            None => LocalActions::new(job.assets),
+        })
+        .with_capture_cancel(Arc::clone(&job.cancel.0)),
+    );
     let actions = Routed { local: local.clone(), plugins: job.plugins.clone() };
     let mut ran = Vec::new();
     let mut queue: VecDeque<_> = first.jobs.into_iter().collect();
@@ -355,6 +385,7 @@ pub fn compute(job: LiveJob) -> Result<LiveOutcome, Error> {
     let mut failed: Vec<(NodeId, String)> = first.failed.into_iter().map(|f| (f.node, f.reason)).collect();
     let hash = |id: &NodeId| nodecraft_exec::staleness::input_hash(&job.live, kinds, *id).ok();
     while let Some(scheduled) = queue.pop_front() {
+        check_cancel()?;
         let progress = match run.work(scheduled.id).cloned() {
             Some(JobSpec::Source { output, value, .. }) => run.job_done(kinds, scheduled.id, vec![(output, value)]),
             Some(JobSpec::Action { action, params, inputs, output, .. }) => {

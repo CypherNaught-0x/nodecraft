@@ -528,3 +528,14 @@ fn a_draft_the_edit_would_refuse_is_refused() {
     let missing = Draft { node: NodeId::from_bytes([99; 16]), ..draft(1.0) };
     assert_eq!(preview(&s, CANVAS, &missing).err().map(|e| e.kind), Some(ErrorKind::NotFound));
 }
+
+#[test]
+fn closing_a_round_before_its_worker_starts_cancels_only_that_round() {
+    let mut session = session();
+    connect(&mut session);
+    let cancelled = pending(&session, CANVAS, &BTreeMap::new()).unwrap().unwrap();
+    let other = pending(&session, CANVAS, &BTreeMap::new()).unwrap().unwrap();
+    cancelled.cancel_handle().cancel();
+    assert!(compute(cancelled).err().unwrap().message.contains("cancelled"));
+    assert!(compute(other).is_ok());
+}

@@ -416,7 +416,10 @@ fn a_3d_photo_is_an_image_of_its_size_and_repeats_exactly() {
     let mut params = defaults(&kinds, nodecraft_nodes::mesh::PHOTO);
     params.insert("width".into(), Value::Unsigned(nodecraft_types::Unsigned(64)));
     params.insert("height".into(), Value::Unsigned(nodecraft_types::Unsigned(48)));
-    let Some(photo) = capture(&actions, nodecraft_nodes::mesh::PHOTO, &params, &model) else { return };
+    let Some(photo) = capture(&actions, nodecraft_nodes::mesh::PHOTO, &params, &model) else {
+        eprintln!("NODECRAFT_CAPTURE_EVIDENCE: skipped (no GPU)");
+        return;
+    };
     assert_eq!((photo.mime.essence(), photo.meta.width, photo.meta.height), ("image/png", Some(64), Some(48)));
     assert_eq!(capture(&actions, nodecraft_nodes::mesh::PHOTO, &params, &model).unwrap().hash, photo.hash, "the same settings draw the same image");
     params.insert("yaw".into(), Value::Number(nodecraft_types::Number::new(120.0).unwrap()));
@@ -430,6 +433,57 @@ fn a_3d_photo_is_an_image_of_its_size_and_repeats_exactly() {
     assert!(actions.execute(nodecraft_nodes::mesh::PHOTO, &params, &[Value::Text("x".into())]).unwrap_err().contains("connect a 3D model"));
     params.insert("style".into(), Value::Text("clay".into()));
     assert!(actions.execute(nodecraft_nodes::mesh::PHOTO, &params, std::slice::from_ref(&model)).unwrap_err().contains("clay"));
+    eprintln!("NODECRAFT_CAPTURE_EVIDENCE: rendered three photos");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn real_capture_processes_exit_cleanly_repeatedly() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let executable = std::env::current_exe().unwrap();
+    let mut rendered = 0;
+    let mut skipped = 0;
+    for _ in 0..3 {
+        let mut child = Command::new(&executable)
+            .args(["--exact", "action_exec::tests::a_3d_photo_is_an_image_of_its_size_and_repeats_exactly", "--nocapture"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(180);
+        let completed = loop {
+            if child.try_wait().unwrap().is_some() {
+                break true;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let output = child.wait_with_output().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            completed && output.status.success(),
+            "capture subprocess did not exit successfully: {}\n{}\n{stderr}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout)
+        );
+        if stderr.contains("NODECRAFT_CAPTURE_EVIDENCE: rendered three photos") {
+            rendered += 1;
+        } else {
+            assert!(stderr.contains("NODECRAFT_CAPTURE_EVIDENCE: skipped (no GPU)"), "capture evidence missing: {stderr}");
+            skipped += 1;
+        }
+    }
+    let evidence = format!("3D capture process-exit evidence: {rendered} rendered processes ({} photos), {skipped} no-GPU skips\n", rendered * 3);
+    // Bypass local libtest capture; nextest captures its process, so also publish a CI summary.
+    std::io::Write::write_all(&mut std::io::stderr(), evidence.as_bytes()).unwrap();
+    if let Some(path) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        let mut summary = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+        std::io::Write::write_all(&mut summary, evidence.as_bytes()).unwrap();
+    }
 }
 
 #[test]
@@ -629,4 +683,18 @@ fn a_text_layer_draws_with_the_font_its_node_holds() {
     let missing = Value::Media(AssetRef { hash: nodecraft_types::Blake3::from_bytes([7; 32]), mime: "font/ttf".parse().unwrap(), meta: MediaMeta::default() });
     params.insert(nodecraft_nodes::layers::FONTS_PARAM.into(), Value::List(vec![Value::List(vec![Value::Text("Display".into()), missing])]));
     assert_eq!(ink(&params), fallback);
+}
+
+#[test]
+fn explicit_capture_jobs_and_live_actions_observe_cancellation_before_gpu_work() {
+    let actions = LocalActions::new(AssetStore::default());
+    let params = ParamValues::default();
+    for action in [nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS] {
+        assert!(actions.long_running(action));
+        assert!(actions.execute_cancellable(action, &params, &[], &|| true).unwrap_err().contains("cancelled"));
+    }
+    actions.cancel_captures();
+    for action in [nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS] {
+        assert!(actions.execute(action, &params, &[]).unwrap_err().contains("cancelled"));
+    }
 }

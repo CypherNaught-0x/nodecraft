@@ -55,7 +55,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   list and edit them with revision checks (#122). Edit slides opens a slide sorter beside the
   Layer Editor's stage, to arrange each slide's text, shapes and sources (#694).
   The viewer's Photo and Views buttons add a 3D photo or a
-  4/8/16-view sheet card that draws the model from the current view as an image (#112). PDFs become PDF cards showing the
+  4/8/16-view sheet card that draws the model from the current view as an image (#112). Each capture
+  owns its device, and closing cancels and drains captures from live recompute and explicit runs
+  within a documented 45-second capture budget (#603). PDFs become PDF cards showing the
   first page and page count; PDF to images draws a page range as images and PDF to text reads
   the text the pages draw (#113). A PDF reader pages through a PDF, sets a node's page range, and extracts a page or
   its text into new nodes (#590). Scanned pages are recognised by a vision-capable text model: PDF to
