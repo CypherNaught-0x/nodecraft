@@ -3692,11 +3692,11 @@ fn bulk71_real_owned_model_conditional_fields_refuse_then_edit_all_atomically() 
 /// so both branches are testable without mutating the process environment, which would race every
 /// other test in this binary. `Ok(None)` means it was never asked for: the caller prints why it
 /// skipped and returns. `Err` means it was asked for and cannot run, which stays a real failure.
-fn perf281_render_root(raw: Option<String>) -> Result<Option<std::path::PathBuf>, String> {
+fn perf281_render_root(raw: Option<std::ffi::OsString>) -> Result<Option<std::path::PathBuf>, String> {
     let Some(raw) = raw else {
         return Ok(None);
     };
-    if raw.trim().is_empty() {
+    if raw.is_empty() || raw.to_string_lossy().trim().is_empty() {
         return Err("NODECRAFT_PERF281_RENDER_ROOT is set but empty; name a writable directory to capture into".into());
     }
     let root = std::path::PathBuf::from(&raw);
@@ -3709,8 +3709,11 @@ fn perf281_render_root(raw: Option<String>) -> Result<Option<std::path::PathBuf>
         Err(error) => return Err(format!("cannot inspect NODECRAFT_PERF281_RENDER_ROOT {}: {error}", root.display())),
     }
     // A write probe is the only honest writability check: read-only bits lie about root, ACLs and Windows.
-    let probe = root.join("perf281-write-probe");
-    if let Err(error) = std::fs::write(&probe, b"") {
+    // create_new ensures this probe can never truncate or overwrite an existing user file.
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
+    let probe = root.join(format!("perf281-write-probe-{}-{nonce}", std::process::id()));
+    let probe_result = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe);
+    if let Err(error) = probe_result {
         return Err(format!("NODECRAFT_PERF281_RENDER_ROOT {} is not writable: {error}", root.display()));
     }
     if let Err(error) = std::fs::remove_file(&probe) {
@@ -3720,9 +3723,9 @@ fn perf281_render_root(raw: Option<String>) -> Result<Option<std::path::PathBuf>
 }
 
 #[test]
-#[ignore = "manual public-scene capture; set NODECRAFT_PERF281_RENDER_ROOT to a writable directory to run it"]
+#[ignore = "opt-in public-scene capture; --ignored runs it, and it skips itself when the variable is unset"]
 fn perf281_visual_current() {
-    match perf281_render_root(std::env::var("NODECRAFT_PERF281_RENDER_ROOT").ok()) {
+    match perf281_render_root(std::env::var_os("NODECRAFT_PERF281_RENDER_ROOT")) {
         Ok(None) => println!("skipping perf281_visual_current: NODECRAFT_PERF281_RENDER_ROOT is unset, so no render capture was asked for"),
         Err(reason) => panic!("{reason}"),
         Ok(Some(root)) => {
@@ -3740,6 +3743,21 @@ fn perf281_render_root_skips_when_unset() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn perf281_render_root_rejects_non_unicode_path() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let mut raw = manifest.into_os_string().into_vec();
+    raw.extend_from_slice(&[b'/', 0xff]);
+    let raw = std::ffi::OsString::from_vec(raw);
+    match perf281_render_root(Some(raw)) {
+        Err(reason) => assert!(!reason.is_empty(), "a non-Unicode path must report why capture cannot proceed"),
+        Ok(outcome) => panic!("a non-Unicode NODECRAFT_PERF281_RENDER_ROOT must fail, got {outcome:?}"),
+    }
+}
+
 #[test]
 fn perf281_render_root_fails_loudly_on_an_unusable_root() {
     // Three roots no platform can use: nothing named, a path whose parent is an existing regular
@@ -3748,7 +3766,7 @@ fn perf281_render_root_fails_loudly_on_an_unusable_root() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
     let would_be = manifest.join("renders").display().to_string();
     for raw in ["", &would_be, &manifest.display().to_string()] {
-        match perf281_render_root(Some(raw.to_string())) {
+        match perf281_render_root(Some(raw.into())) {
             Err(reason) => assert!(!reason.is_empty(), "the failure for {raw:?} must say why it cannot capture"),
             Ok(outcome) => panic!("an unusable NODECRAFT_PERF281_RENDER_ROOT {raw:?} must fail, got {outcome:?}"),
         }
