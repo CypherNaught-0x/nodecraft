@@ -1,6 +1,7 @@
 //! NodeCraft in the browser (#99): the egui shell on eframe's `WebRunner`, drawn into the
-//! `<canvas>` of `index.html`. Built with trunk (`packaging/web/package.sh`); a preview, so the
-//! window has no project files, keychain or local runs yet (the shell says so where it matters).
+//! `<canvas>` of `index.html`. Built with trunk (`packaging/web/package.sh`). Provider keys are
+//! kept in the site's browser storage (#118); project files and runs are not available yet (the
+//! shell says so where it matters).
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 

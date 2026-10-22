@@ -564,8 +564,16 @@ impl NodeCraftApp {
     }
 
     pub fn new(ctx: &egui::Context) -> Result<Self, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
         let mut app = Self::headless()?;
+        #[cfg(target_arch = "wasm32")]
+        let (mut app, accounts) = Self::browser()?;
         app.apply_settings(ctx, &NodeCraftSettings::default());
+        // No settings file remembers the accounts in the browser: list the ones with a stored key.
+        #[cfg(target_arch = "wasm32")]
+        for account in &accounts {
+            app.key_accounts.remember(account);
+        }
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         Ok(app)
     }
@@ -737,10 +745,31 @@ impl NodeCraftApp {
     /// [`Self::headless`] keeping its technique library (#96) in `store`, and the person's skills
     /// (#168) in memory.
     pub fn headless_with_library(store: Box<dyn nodecraft_engine::library::LibraryStore>) -> Result<Self, Error> {
-        let mut app = Self::with_services(nodecraft_engine::commands::Services::default())?;
+        Self::in_memory(nodecraft_engine::commands::Services::default(), store)
+    }
+
+    /// The app on `services`, with its technique library in `store` and skills in memory.
+    fn in_memory(services: nodecraft_engine::commands::Services, store: Box<dyn nodecraft_engine::library::LibraryStore>) -> Result<Self, Error> {
+        let mut app = Self::with_services(services)?;
         nodecraft_engine::library::install(&mut app.session, store)?;
         nodecraft_engine::skills::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::skills::MemorySkills::default()))?;
         Ok(app)
+    }
+
+    /// The browser build (#118): provider keys kept in this origin's browser storage, answered at
+    /// once (no keychain prompt can block). Also returns the accounts that already have a key.
+    #[cfg(target_arch = "wasm32")]
+    fn browser() -> Result<(Self, Vec<nodecraft_engine::secrets::Account>), Error> {
+        use nodecraft_engine::secrets::{OriginStore, SecretStore, register_key_service};
+        let store = std::sync::Arc::new(OriginStore::new(crate::web_storage::LocalStorage));
+        let mut services = nodecraft_engine::commands::Services::default();
+        register_key_service(&mut services, std::sync::Arc::clone(&store) as std::sync::Arc<dyn SecretStore>)?;
+        let accounts = store.accounts().unwrap_or_else(|e| {
+            log::warn!("API keys unavailable: {e}");
+            Vec::new()
+        });
+        let app = Self::in_memory(services, Box::new(nodecraft_engine::library::MemoryLibrary::default()))?;
+        Ok((app, accounts))
     }
 
     /// The in-canvas agent's settings (#114), or the defaults without a settings file.

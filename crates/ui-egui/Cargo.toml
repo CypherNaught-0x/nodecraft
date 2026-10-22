@@ -53,8 +53,9 @@ ed25519-dalek = { workspace = true }
 tungstenite = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Browser drops (#319): a dropped file's size before reading it, and the read on the browser's queue.
+# Provider keys in the origin's `localStorage` (#118).
 wasm-bindgen-futures = "0.4.79"
-web-sys = { version = "0.3.106", features = ["Blob", "File"] }
+web-sys = { version = "0.3.106", features = ["Blob", "File", "Storage", "Window"] }
 
 # Only for the O_NONBLOCK open flag, so a dropped FIFO can't block the drop worker (#335).
 [target.'cfg(unix)'.dependencies]
