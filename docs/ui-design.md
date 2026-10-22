@@ -270,7 +270,9 @@ is consumed before canvas selection Escape, including egui's early focus-loss tr
 scans progress on rendered frames, and queued framing waits for completion and input availability.
 Scoped capabilities restore prior resources on errors/success and preserve unrelated services.
 Raw headless Session calls are Unsupported. Search creates no document revisions, undo entries or
-events. Search width 420, expanded height 128 and collapsed width 130 points are theme tokens.
+events, with one exception: stepping to a card inside a collapsed field expands that field first, as
+one `field.update` undo step (which, like any edit, clears redo). If the field can't be expanded,
+its header is selected and framed and a notice says the match is inside. Search width 420, expanded height 128 and collapsed width 130 points are theme tokens.
 
 ### Format selection
 

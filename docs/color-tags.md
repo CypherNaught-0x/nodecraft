@@ -28,7 +28,7 @@ All command objects and nested definition DTOs reject unknown fields. Persisted 
 | `canvas.tag_filter_set` | `{tags:[TagId],untagged:bool}`; at most 10,000 raw IDs, stable dedup, OR matching; empty plus false clears. |
 | `canvas.tag_filter_next` / `canvas.tag_filter_previous` | `{}`; step after the current generation completes; no match is unavailable. |
 
-Persistent commands work headlessly with an explicit canvas and nodes. View commands require a scoped live host and fresh viewport/focus context; raw headless Session returns Unsupported and never opens a dialog. View commands do not change the document, revision or undo history. Results contain compact counts/state rather than copied nodes. Invalid requests preserve document/history and do not echo arbitrary titles or JSON.
+Persistent commands work headlessly with an explicit canvas and nodes. View commands require a scoped live host and fresh viewport/focus context; raw headless Session returns Unsupported and never opens a dialog. View commands do not change the document, revision or undo history, except that stepping to a card inside a collapsed field expands it as one `field.update` undo step. Results contain compact counts/state rather than copied nodes. Invalid requests preserve document/history and do not echo arbitrary titles or JSON.
 
 ## Bounds and implementation
 

@@ -122,23 +122,43 @@ impl NodeCraftApp {
             let field = canvas.nodes().get(&id)?.field?;
             canvas.fields().get(&field).filter(|field| field.collapsed).map(|field| field.id)
         });
+        // If it can't be expanded, the field's header is selected and framed instead.
+        let mut unexpanded = None;
         if let Some(field) = collapsed {
-            if let Err(error) = self.session.dispatch("field.update", &json!({"canvas": self.canvas, "field": field, "collapsed": false})) {
-                self.notice = Some(format!("{source} is in a collapsed field that could not be expanded: {}", error.message));
+            match self.session.dispatch("field.update", &json!({"canvas": self.canvas, "field": field, "collapsed": false})) {
+                Ok(_) => self.fields_sync(),
+                Err(error) => unexpanded = Some((field, format!("{source} is in a collapsed field that could not be expanded: {}", error.message))),
+            }
+        }
+        let t = self.theme.tokens();
+        let bounds = if let Some((field, _)) = &unexpanded {
+            let header = self
+                .session
+                .document()
+                .canvases()
+                .get(&self.canvas)
+                .and_then(|canvas| canvas.fields().get(field))
+                .map(|f| super::fields::world_rect(f, t, self.view.zoom));
+            self.selection.clear();
+            self.fields.selected = Some(*field);
+            match header {
+                Some(header) => header,
+                None => {
+                    self.notice = unexpanded.map(|(_, notice)| notice);
+                    ctx.request_repaint();
+                    return;
+                }
+            }
+        } else {
+            self.selection.only(id);
+            self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
+            let Some(body) = self.navigation.geometry.rects.get(&id).copied() else {
+                self.notice = Some(format!("{source} selected; its instance geometry is unavailable."));
                 ctx.request_repaint();
                 return;
-            }
-            self.fields_sync();
-        }
-        self.selection.only(id);
-        self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
-        let Some(body) = self.navigation.geometry.rects.get(&id).copied() else {
-            self.notice = Some(format!("{source} selected; its instance geometry is unavailable."));
-            ctx.request_repaint();
-            return;
+            };
+            crate::navigation::decorated(body, t)
         };
-        let t = self.theme.tokens();
-        let bounds = crate::navigation::decorated(body, t);
         let padding = t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius;
         let mut regions = vec![self.navigation.usable(self.viewport, t)];
         // At most three overlays and four cuts each: bounded64 candidate rectangles.
@@ -171,7 +191,7 @@ impl NodeCraftApp {
         let score =
             |region: Rect| ((region.width() - 2.0 * padding) / bounds.width().max(1.0)).min((region.height() - 2.0 * padding) / bounds.height().max(1.0));
         let Some(usable) = regions.into_iter().filter(|region| score(*region) > 0.0).max_by(|a, b| score(*a).total_cmp(&score(*b))) else {
-            self.notice = Some(format!("{source} selected; the canvas is too small to frame it."));
+            self.notice = Some(unexpanded.map_or_else(|| format!("{source} selected; the canvas is too small to frame it."), |(_, notice)| notice));
             ctx.request_repaint();
             return;
         };
@@ -203,6 +223,9 @@ impl NodeCraftApp {
             }
         } else {
             self.notice = Some(format!("{source} selected; the canvas is too small to frame it."));
+        }
+        if let Some((_, notice)) = unexpanded {
+            self.notice = Some(notice);
         }
         ctx.request_repaint();
     }
