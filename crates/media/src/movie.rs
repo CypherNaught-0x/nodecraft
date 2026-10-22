@@ -1,6 +1,7 @@
 //! The length and frame size of an MP4 or QuickTime movie, read from its headers without decoding
 //! anything (#179): the movie header (`mvhd`) gives the length, the first video track's header
 //! (`tkhd`) the frame size. A field the file doesn't state, or states as unknown, is `None`.
+//! Matroska and WebM files are read by `matroska` (#608).
 use crate::MediaError;
 
 /// Boxes read before the file is given up on, so a hostile file of tiny boxes can't spin.
@@ -102,8 +103,11 @@ fn is_video(trak: &[u8], seen: &mut usize) -> Result<bool, MediaError> {
     Ok(false)
 }
 
-/// Reads an MP4 or QuickTime movie's length and frame size from its headers.
+/// Reads an MP4, QuickTime, Matroska or WebM movie's length and frame size from its headers.
 pub fn probe_movie(bytes: &[u8]) -> Result<MovieInfo, MediaError> {
+    if bytes.starts_with(b"\x1A\x45\xDF\xA3") {
+        return crate::matroska::probe_matroska(bytes);
+    }
     let mut seen = 0;
     // Stop at `moov`: a long fragmented file has thousands of boxes after it, and trailing bytes
     // that aren't boxes don't make its headers unreadable.

@@ -49,7 +49,9 @@ default = { type = "unsigned", value = "1" }
   - `sound`: the result's soundtrack, `input`, `generated` or `silent`.
 
   The picker shows this per mode. A track's length is only checked when it's known; unknown
-  lengths go to the provider.
+  lengths go to the provider. Imported and generated sounds have theirs read from the headers
+  (#608): WAV, FLAC, Ogg Vorbis and Opus, MP3 (Xing/VBRI or constant bitrate), ADTS AAC and
+  MP4 audio. A file whose headers don't say, or are damaged, has an unknown length.
 - **Source video edits (#179).** `edit = { operation = "object_swap", role = "source",
   min_ms = 4000, uses_ms = 30000, min_pixels = 409600, formats = ["video/mp4"],
   sound = "unknown" }` says a mode edits

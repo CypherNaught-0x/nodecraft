@@ -1,6 +1,6 @@
 use super::*;
 use nodecraft_nodes::GenerateInput;
-use nodecraft_types::{Integer, NodeId, Number};
+use nodecraft_types::{Integer, MediaMeta, NodeId, Number};
 
 fn routes() -> Vec<GenerateOutput> {
     vec![
@@ -633,6 +633,18 @@ fn the_style_type_and_family_rule_agree_across_crates() {
         };
         assert_eq!(nodecraft_types::style_family(family), style.validate().is_ok(), "{family}");
     }
+}
+
+#[test]
+fn a_generated_sound_records_its_length() {
+    // Half a second of 8 kHz, 8-bit mono WAV.
+    let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x40\x1f\0\0\x01\0\x08\0data\xa0\x0f\0\0".to_vec();
+    wav.resize(wav.len() + 4000, 0x80);
+    let routes = [GenerateOutput { port: "out".into(), modality: Modality::Audio, style_family: None }];
+    let done = Completed::new(vec![Output::Bytes { mime: "audio/wav".into(), bytes: Arc::from(wav) }]);
+    let got = produced(&routes, &done).unwrap();
+    let [(_, Value::Media(asset))] = got.outputs.as_slice() else { panic!("one sound: {:?}", got.outputs) };
+    assert_eq!(asset.meta, MediaMeta { duration_ms: Some(500), sample_rate: Some(8000), channels: Some(1), ..MediaMeta::default() });
 }
 
 fn params(values: Vec<(&str, Value)>) -> JobSpec {
