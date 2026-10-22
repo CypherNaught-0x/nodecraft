@@ -39,7 +39,7 @@ impl Port for Fake {
 
 fn app() -> (NodeCraftApp, Rc<RefCell<Script>>) {
     let script = Rc::new(RefCell::new(Script::default()));
-    let app = NodeCraftApp::with_web_files(nodecraft_engine::commands::Services::default(), WebFiles::new(Box::new(Fake(Rc::clone(&script))))).unwrap();
+    let app = NodeCraftApp::with_web_files(nodecraft_engine::commands::Services::default(), WebFiles::new(Box::new(Fake(Rc::clone(&script)))), None).unwrap();
     (app, script)
 }
 

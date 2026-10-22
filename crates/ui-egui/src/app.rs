@@ -384,6 +384,8 @@ mod timeline_editor;
 pub(crate) mod updates;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod web_files;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod web_journal;
 
 pub struct NodeCraftApp {
     pub theme: ThemeKind,
@@ -412,6 +414,9 @@ pub struct NodeCraftApp {
     /// Project files in the browser (#118).
     #[cfg(any(test, target_arch = "wasm32"))]
     web_files: web_files::WebFiles,
+    /// Unsaved work kept in the browser for recovery (#717); none when nothing can be kept.
+    #[cfg(any(test, target_arch = "wasm32"))]
+    web_recovery: Option<web_journal::WebRecovery>,
     pub viewport: Rect,
     pub notice: Option<String>,
     stale_snapshot: Option<stale::StaleSnapshot>,
@@ -774,12 +779,13 @@ impl NodeCraftApp {
         let runs = runs::Runs::new(&mut services, std::sync::Arc::clone(&store) as std::sync::Arc<dyn SecretStore>)
             .inspect_err(|e| log::warn!("runs unavailable: {}", e.message))
             .ok();
-        let mut app = Self::with_web_files(services, web_files::WebFiles::browser())?;
+        let recovery = web_journal::WebRecovery::new(Box::<web_journal::IndexedDb>::default(), web_journal::fresh_slot());
+        let mut app = Self::with_web_files(services, web_files::WebFiles::browser(), Some(recovery))?;
         if let Some(runs) = &runs {
             runs.install(&mut app.session);
         }
         app.runs = runs;
-        // The browser keeps no recovery journal: leaving with unsaved work asks first.
+        // Recovery is a safety net, not a save: leaving with unsaved work still asks first.
         web_files::guard_unload(Rc::clone(&app.web_files.unsaved));
         Ok((app, accounts))
     }
@@ -932,6 +938,8 @@ impl NodeCraftApp {
             files: Default::default(),
             #[cfg(any(test, target_arch = "wasm32"))]
             web_files: web_files::WebFiles::detached(),
+            #[cfg(any(test, target_arch = "wasm32"))]
+            web_recovery: None,
             viewport: Rect::NOTHING,
             notice: None,
             stale_snapshot: None,
@@ -1066,7 +1074,7 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         let recovery_owns_input = self.recovery.is_some();
         #[cfg(target_arch = "wasm32")]
-        let recovery_owns_input = false;
+        let recovery_owns_input = self.web_recovery_owns_input();
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.poll_save(ui.ctx());
@@ -1078,9 +1086,15 @@ impl NodeCraftApp {
                 self.live_recompute(ui.ctx());
             }
         }
-        // The browser has no recovery question to wait for.
         #[cfg(target_arch = "wasm32")]
-        self.live_recompute(ui.ctx());
+        {
+            self.web_recovery_frame(ui.ctx());
+            // Not while the load's recovery question is pending: its answer may replace the
+            // document.
+            if !self.web_recovery_owns_input() {
+                self.live_recompute(ui.ctx());
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let file_owns_input = self.file_dialog_frame(ui.ctx());
         #[cfg(target_arch = "wasm32")]

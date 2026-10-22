@@ -4,9 +4,11 @@
 //! download. Every change still goes through `file.open` / `file.save` / `file.save_as`.
 //!
 //! A location is `<n>/<file name>`, unique per pick; the [`Port`] keeps the browser's file
-//! handles under ids, so nothing here holds a browser object. The browser keeps no recovery
-//! journal yet, so leaving the page with unsaved work asks first.
+//! handles under ids, so nothing here holds a browser object. The session's recovery checkpoint
+//! and journal go to the site's storage (see `web_journal`); leaving the page with unsaved work
+//! still asks first, since recovery is a safety net, not a save.
 use super::NodeCraftApp;
+use super::web_journal::{Journal, WebRecovery};
 use crate::card::EditorState;
 use nodecraft_format::{AssetStore, MAX_ARCHIVE_BYTES, ProjectStorage, Snapshot, StorageLocation};
 use nodecraft_types::{Error, ErrorKind};
@@ -51,7 +53,7 @@ pub(super) trait Port {
 }
 
 /// No browser: every pick says so.
-struct Detached;
+pub(super) struct Detached;
 
 impl Port for Detached {
     fn open(&mut self, _max: u64) -> PickFuture<Option<Picked>> {
@@ -76,8 +78,15 @@ struct Staged {
     written: Option<(String, Vec<u8>)>,
 }
 
-/// The session's storage in the browser (see the module docs).
-pub(super) struct HostStorage(Rc<RefCell<Staged>>);
+/// The session's storage in the browser (see the module docs), and the journal its recovery
+/// writes go to, when the browser keeps one.
+pub(super) struct HostStorage(Rc<RefCell<Staged>>, Option<Rc<RefCell<Journal>>>);
+
+impl HostStorage {
+    fn journal(&self) -> Result<Option<std::cell::RefMut<'_, Journal>>, Error> {
+        self.1.as_ref().map(|journal| journal.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "recovery is busy"))).transpose()
+    }
+}
 
 fn key(location: &StorageLocation) -> Result<&str, Error> {
     match location {
@@ -110,12 +119,21 @@ impl ProjectStorage for HostStorage {
         self.0.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "project files are busy"))?.written = Some((key.to_owned(), bytes));
         Ok(())
     }
-    // No recovery journal in the browser yet: the page asks before unsaved work is left.
-    fn checkpoint(&mut self, _recovery: &[u8]) -> Result<(), Error> {
-        Ok(())
+    // Without a journal the page still asks before unsaved work is left.
+    fn checkpoint(&mut self, recovery: &[u8]) -> Result<(), Error> {
+        self.journal()?.map_or(Ok(()), |mut journal| journal.checkpoint(recovery))
     }
-    fn append(&mut self, _frame: &[u8]) -> Result<(), Error> {
-        Ok(())
+    fn append(&mut self, frame: &[u8]) -> Result<(), Error> {
+        self.journal()?.map_or(Ok(()), |mut journal| journal.append(frame))
+    }
+    fn discard(&mut self) -> Result<(), Error> {
+        match self.journal()? {
+            Some(mut journal) => {
+                journal.discard();
+                Ok(())
+            }
+            None => Err(Error::new(ErrorKind::Unsupported, "recovery discard is not supported by this host")),
+        }
     }
 }
 
@@ -149,7 +167,7 @@ impl WebFiles {
     pub(super) fn new(port: Box<dyn Port>) -> (Self, HostStorage) {
         let staged = Rc::new(RefCell::new(Staged::default()));
         let files = Self { port, staged: Rc::clone(&staged), phase: None, targets: BTreeMap::new(), picks: 0, unwritten: false, unsaved: Rc::default() };
-        (files, HostStorage(staged))
+        (files, HostStorage(staged, None))
     }
 
     /// Files with no browser behind them, until the host gives one.
@@ -198,14 +216,20 @@ impl Wake for Repaint {
     }
 }
 
-fn poll<T>(future: &mut PickFuture<T>, ctx: &egui::Context) -> Poll<Result<T, String>> {
+pub(super) fn poll<T>(future: &mut PickFuture<T>, ctx: &egui::Context) -> Poll<Result<T, String>> {
     let waker = Waker::from(Arc::new(Repaint(ctx.clone())));
     future.as_mut().poll(&mut Context::from_waker(&waker))
 }
 
 impl NodeCraftApp {
-    /// The browser app on `services`, its project files over `files` (see the module docs).
-    pub(super) fn with_web_files(services: nodecraft_engine::commands::Services, (files, storage): (WebFiles, HostStorage)) -> Result<Self, Error> {
+    /// The browser app on `services`, its project files over `files` (see the module docs), and
+    /// unsaved work kept through `recovery` when the browser can keep it.
+    pub(super) fn with_web_files(
+        services: nodecraft_engine::commands::Services,
+        (files, mut storage): (WebFiles, HostStorage),
+        recovery: Option<WebRecovery>,
+    ) -> Result<Self, Error> {
+        storage.1 = recovery.as_ref().map(WebRecovery::journal);
         let kinds = nodecraft_engine::generation_catalog::default_registry()?.0;
         let (project, canvas) = Self::starter_document(&kinds)?;
         let snapshot = Snapshot { project, assets: AssetStore::default(), epoch: 0 };
@@ -214,6 +238,7 @@ impl NodeCraftApp {
         nodecraft_engine::library::install(&mut app.session, Box::new(nodecraft_engine::library::MemoryLibrary::default()))?;
         nodecraft_engine::skills::install(&mut app.session, Rc::new(nodecraft_engine::skills::MemorySkills::default()))?;
         app.web_files = files;
+        app.web_recovery = recovery;
         Ok(app)
     }
 
@@ -299,10 +324,10 @@ impl NodeCraftApp {
 
     /// Whether leaving or opening another project would lose work: edits since the last save
     /// (not the untouched starter project), a write under way, or a save the browser didn't write.
-    fn web_unsaved(&self) -> bool {
+    pub(super) fn web_unsaved(&self) -> bool {
         let status = self.session.file_status();
         let edited = status.dirty && (status.location.is_some() || self.session.can_undo());
-        edited || self.web_files.unwritten || matches!(self.web_files.phase, Some(Phase::Writing { .. }))
+        edited || self.web_recovered_unsaved() || self.web_files.unwritten || matches!(self.web_files.phase, Some(Phase::Writing { .. }))
     }
 
     /// The browser's File menu: open, save and save as.

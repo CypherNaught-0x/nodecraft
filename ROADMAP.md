@@ -105,8 +105,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   storage for the site, and projects open and save through the browser's file pickers or as
   downloads (#118). Cards run in the browser too, calling the cloud providers that accept
   requests from web pages directly with those keys (#118). ComfyUI and LiteLLM endpoints and
-  option lists are desktop only for now (#721), and so are video and the recovery journal:
-  leaving with unsaved work asks first. Files dropped in a browser are read asynchronously and added as nodes (#319);
+  option lists are desktop only for now (#721), and so is video. Unsaved work is kept in the
+  site's storage and offered back after a crash or a closed tab (#717); leaving with unsaved work
+  still asks first. Files dropped in a browser are read asynchronously and added as nodes (#319);
   pasting a copied image works in the desktop app only.
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
   and ffprobe set under `[media]` in settings; it neither finds them on `PATH` nor bundles them

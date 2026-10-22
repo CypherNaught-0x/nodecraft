@@ -56,6 +56,7 @@ tungstenite = { workspace = true }
 # Browser drops (#319): a dropped file's size before reading it, and the read on the browser's queue.
 # Provider keys in the origin's `localStorage` (#118). Project files (#118): the file pickers,
 # reached through `js-sys` reflection since `web-sys` gates them, a file field and a download.
+# Recovery (#717): IndexedDB for unsaved work, Web Locks (reflected too) to tell tabs apart.
 # Runs (#118): spawned on the page's queue, timed by `setTimeout` and `performance.now()`.
 wasm-bindgen-futures = "0.4.79"
 js-sys = "0.3.106"
@@ -64,6 +65,8 @@ web-sys = { version = "0.3.106", features = [
     "Blob",
     "BlobPropertyBag",
     "Document",
+    "DomException",
+    "DomStringList",
     "Element",
     "Event",
     "EventTarget",
@@ -72,6 +75,15 @@ web-sys = { version = "0.3.106", features = [
     "HtmlAnchorElement",
     "HtmlElement",
     "HtmlInputElement",
+    "IdbDatabase",
+    "IdbFactory",
+    "IdbKeyRange",
+    "IdbObjectStore",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "Navigator",
     "Performance",
     "Storage",
     "Url",
