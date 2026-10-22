@@ -31,11 +31,11 @@ use maintenance::{Scanned, Written};
 
 /// Slots looked at in one load, newest first.
 const MAX_SCAN: usize = 8;
-/// Recovery payload budget across tabs. Live tabs and the offered copy keep their locks even
+/// Recovery payload budget across tabs. Live tabs and offered/deferred copies keep their locks even
 /// when their combined work exceeds it; only abandoned copies may be pruned.
 const MAX_RECOVERY_BYTES: usize = 2 * MAX_JOURNAL_BYTES;
-/// Refresh independently of this tab's growth: other tabs may grow and then close.
-const INVENTORY_SECS: f64 = 15.0;
+/// Refresh independently of this tab's growth, without repeatedly cloning all idle payloads.
+const INVENTORY_SECS: f64 = 300.0;
 /// Seconds after a failed write before the slot is written again whole.
 const RETRY_SECS: f64 = 15.0;
 
@@ -118,7 +118,8 @@ pub(super) trait Shelf {
     fn read(&mut self, slot: &str) -> PickFuture<Stored>;
     /// Applies `writes` in order, all or none.
     fn write(&mut self, writes: Vec<Write>) -> PickFuture<()>;
-    /// Takes `slot` for this tab for as long as the page lives; false if another tab has it.
+    /// Acquires a new claim; false if any tab, including this shelf, already holds it.
+    /// A true result grants authority to release this newly acquired claim.
     fn claim(&mut self, slot: &str) -> PickFuture<bool>;
     /// Releases a claim this shelf owns. Inventory must not reserve abandoned copies forever.
     fn release(&mut self, slot: &str);
@@ -333,10 +334,14 @@ enum Choice {
 /// Recovery in the browser: the scan at load, the question, and the writes on their way.
 pub(super) struct WebRecovery {
     shelf: Rc<RefCell<Box<dyn Shelf>>>,
-    slot: String,
     journal: Rc<RefCell<Journal>>,
     scan: Option<PickFuture<Scanned>>,
     offer: Option<Offer>,
+    /// This tab's own and initially offered slots stay reserved even after Later or a failed
+    /// Recover dismisses the question. At most two slots, held until this shelf drops.
+    reserved: Vec<String>,
+    /// The last cleanup suffix, so refreshing its count preserves other user guidance.
+    prune_notice: Option<String>,
     writing: Option<PickFuture<Written>>,
     inventory: Option<Inventory>,
     inventory_at: f64,
@@ -362,10 +367,11 @@ impl WebRecovery {
         let scan: PickFuture<Scanned> = Box::pin(maintenance::scan(Rc::clone(&shelf), slot.clone(), budget));
         Self {
             shelf,
-            slot: slot.clone(),
-            journal: Rc::new(RefCell::new(Journal::new(slot))),
+            journal: Rc::new(RefCell::new(Journal::new(slot.clone()))),
             scan: Some(scan),
             offer: None,
+            reserved: vec![slot],
+            prune_notice: None,
             writing: None,
             inventory: None,
             inventory_at: 0.0,
@@ -386,6 +392,16 @@ impl WebRecovery {
     /// may replace it.
     pub(super) fn owns_input(&self) -> bool {
         self.scan.is_some() || self.offer.is_some()
+    }
+
+    fn note_pruned(&mut self, notice: &mut Option<String>, count: usize) {
+        let next = maintenance::notice(count);
+        let previous = self.prune_notice.replace(next.clone());
+        let current = notice.take().unwrap_or_default();
+        let suffix = previous.as_ref().map(|previous| format!("\n{previous}"));
+        let retained =
+            if previous.as_ref() == Some(&current) { "" } else { suffix.as_ref().and_then(|suffix| current.strip_suffix(suffix.as_str())).unwrap_or(&current) };
+        *notice = Some(if retained.is_empty() { next } else { format!("{retained}\n{next}") });
     }
 }
 
@@ -410,11 +426,14 @@ impl NodeCraftApp {
             match poll(&mut scan, ctx) {
                 Poll::Pending => recovery.scan = Some(scan),
                 Poll::Ready(Ok(scanned)) => {
+                    if let Some(offer) = &scanned.offer {
+                        recovery.reserved.push(offer.slot.clone());
+                    }
                     recovery.offer = scanned.offer;
                     recovery.inventory = Some(scanned.inventory);
                     recovery.inventory_at = now + INVENTORY_SECS;
                     if scanned.pruned > 0 {
-                        self.notice = Some(maintenance::notice(scanned.pruned));
+                        recovery.note_pruned(&mut self.notice, scanned.pruned);
                     }
                 }
                 Poll::Ready(Err(why)) => {
@@ -445,12 +464,13 @@ impl NodeCraftApp {
             let writes = recovery.journal.try_borrow_mut().map(|mut journal| journal.take()).unwrap_or_default();
             if !writes.is_empty() || refresh {
                 recovery.removing = writes.iter().filter_map(|write| if let Write::Remove { slot } = write { Some(slot.clone()) } else { None }).collect();
-                let mut protected = vec![recovery.slot.clone()];
-                if let Some(offer) = &recovery.offer {
-                    protected.push(offer.slot.clone());
-                }
-                recovery.writing =
-                    Some(Box::pin(maintenance::write(Rc::clone(&recovery.shelf), writes, recovery.inventory.take(), protected, recovery.budget)));
+                recovery.writing = Some(Box::pin(maintenance::write(
+                    Rc::clone(&recovery.shelf),
+                    writes,
+                    recovery.inventory.take(),
+                    recovery.reserved.clone(),
+                    recovery.budget,
+                )));
             }
             if enabled {
                 // A host-supplied non-finite clock must not reach Duration's panicking cast.
@@ -465,7 +485,7 @@ impl NodeCraftApp {
                 Poll::Ready(Ok(written)) => {
                     recovery.inventory = Some(written.inventory);
                     if written.pruned > 0 {
-                        self.notice = Some(maintenance::notice(written.pruned));
+                        recovery.note_pruned(&mut self.notice, written.pruned);
                     }
                     recovery.removing.clear();
                     recovery.told = false;

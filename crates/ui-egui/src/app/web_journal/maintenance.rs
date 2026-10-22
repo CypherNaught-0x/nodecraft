@@ -42,6 +42,10 @@ impl Claims {
     fn release(&mut self, slot: &str) {
         if let Ok(mut shelf) = self.shelf.try_borrow_mut() {
             shelf.release(slot);
+        } else {
+            // Keep it in our list so Drop can retry once this borrow has ended.
+            log::warn!("recovery: storage was borrowed while releasing a temporary claim");
+            return;
         }
         self.keep(slot);
     }
@@ -53,6 +57,8 @@ impl Drop for Claims {
             for slot in &self.slots {
                 shelf.release(slot);
             }
+        } else if !self.slots.is_empty() {
+            log::warn!("recovery: {} temporary claims remain held until the page exits because storage was borrowed", self.slots.len());
         }
     }
 }

@@ -14,7 +14,7 @@ use wasm_bindgen_futures::JsFuture;
 const DATABASE: &str = "nodecraft-recovery";
 const STORE: &str = "journal";
 const LOCK_PREFIX: &str = "nodecraft.journal.";
-/// Keys looked at when listing slots; more is not a store NodeCraft filled.
+/// Keys inspected in one complete inventory; larger stores refuse partial cleanup.
 const MAX_KEYS: u32 = 1 << 20;
 
 /// A name for this tab's slot: when it opened, then a random part, so later tabs sort after it.
@@ -280,7 +280,7 @@ impl Shelf for IndexedDb {
 
     fn claim(&mut self, slot: &str) -> PickFuture<bool> {
         if self.held.borrow().contains_key(slot) {
-            return Box::pin(std::future::ready(Ok(true)));
+            return Box::pin(std::future::ready(Ok(false)));
         }
         let name = format!("{LOCK_PREFIX}{slot}");
         let slot = slot.to_owned();

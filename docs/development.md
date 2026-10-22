@@ -296,11 +296,11 @@ recovery file. A full quota is said once, and frames then wait for the next chec
 damaged slots over a fake shelf.
 
 Recovery payloads share a 256 MiB retention budget across tabs (#726). Cleanup removes the oldest
-unlocked copies first and reports how many were removed. Open tabs and the copy currently being
-offered are protected, even if their combined work exceeds the budget. Clean checkpoint-only
+unlocked copies first and reports how many were removed. Open tabs and a copy offered or kept
+by this page are protected, even if their combined work exceeds the budget. Clean checkpoint-only
 slots and orphan frames outside the eight-slot offer window are also cleaned up at load.
 Pruning and new journal writes commit together; failed batches keep the previous copies. An
-independent 15-second inventory refresh catches other tabs growing and closing, even while idle.
+independent five-minute inventory refresh catches other tabs growing and closing, even while idle.
 See [the budget decision](decisions/2026-10-22-browser-recovery-budget.md) for inventory bounds
 and the behavior of concurrently growing tabs.
 

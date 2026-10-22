@@ -85,8 +85,11 @@ impl Shelf for FakeShelf {
         if disk.no_locks {
             return ready(Err("this browser can't tell its tabs apart (no Web Locks)".into()));
         }
-        let holder = *disk.locks.entry(slot.to_owned()).or_insert(self.tab);
-        ready(Ok(holder == self.tab))
+        if disk.locks.contains_key(slot) {
+            return ready(Ok(false));
+        }
+        disk.locks.insert(slot.to_owned(), self.tab);
+        ready(Ok(true))
     }
     fn release(&mut self, slot: &str) {
         let mut disk = self.disk.borrow_mut();
@@ -528,6 +531,75 @@ fn failed_budget_pruning_keeps_copies_and_releases_temporary_claims() {
 }
 
 #[test]
+fn deferred_or_failed_recovery_stays_reserved_when_pruning_cannot_reach_the_budget() {
+    for failed_recover in [false, true] {
+        let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+        crashed_tab(&disk, &ctx);
+        let stored = disk.borrow().slots[&slot(1)].clone();
+        let mut kept = stored.clone();
+        if !failed_recover {
+            kept.checkpoint = Some(b"damaged checkpoint kept by the user".to_vec());
+        }
+        disk.borrow_mut().slots.insert(slot(2), kept);
+        let mut app = tab(&disk, 20);
+        frame(&mut app, &ctx);
+        assert_eq!(offer(&app).unwrap().slot, slot(2));
+        assert_eq!(offer(&app).unwrap().found.is_ok(), failed_recover, "the Later case exercises the corrupt-record Keep choice");
+        if failed_recover {
+            add_text(&mut app, 3);
+            app.decide_web_recovery(Choice::Recover);
+            assert!(app.notice.as_deref().unwrap().contains("offered again next time"));
+        } else {
+            app.decide_web_recovery(Choice::Later);
+            add_text(&mut app, 3);
+        }
+        app.web_recovery.as_mut().unwrap().budget = 0;
+        frame(&mut app, &ctx);
+        {
+            let disk = disk.borrow();
+            assert!(!disk.slots.contains_key(&slot(1)), "the older abandoned copy was pruned");
+            assert!(disk.slots.contains_key(&slot(2)), "pruning must stop before the deferred copy even above budget");
+            assert_eq!(disk.locks.get(&slot(2)), Some(&20), "temporary cleanup must not release a long-term reservation");
+        }
+        drop(app);
+        assert!(!disk.borrow().locks.contains_key(&slot(2)), "only page exit releases the deferred reservation");
+    }
+}
+
+#[test]
+fn pruning_never_borrows_an_existing_claim_as_temporary_deletion_authority() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    crashed_tab(&disk, &ctx);
+    disk.borrow_mut().locks.insert(slot(1), 20);
+    let shelf: Rc<RefCell<Box<dyn Shelf>>> = Rc::new(RefCell::new(Box::new(FakeShelf { disk: Rc::clone(&disk), tab: 20 })));
+    let mut writing: PickFuture<Written> = Box::pin(maintenance::write(Rc::clone(&shelf), Vec::new(), None, Vec::new(), 0));
+    let Poll::Ready(written) = poll(&mut writing, &ctx) else { panic!("the fake shelf never waits") };
+    assert_eq!(written.unwrap().pruned, 0, "an existing claim never becomes temporary deletion authority");
+    assert!(disk.borrow().slots.contains_key(&slot(1)));
+    assert_eq!(disk.borrow().locks.get(&slot(1)), Some(&20));
+}
+
+#[test]
+fn cleanup_preserves_recovery_guidance_and_replaces_its_previous_count() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    crashed_tab(&disk, &ctx);
+    let stored = disk.borrow().slots[&slot(1)].clone();
+    disk.borrow_mut().slots.insert(slot(2), stored.clone());
+    let mut app = tab(&disk, 20);
+    frame(&mut app, &ctx);
+    app.decide_web_recovery(Choice::Recover);
+    app.web_recovery.as_mut().unwrap().budget = 0;
+    frame(&mut app, &ctx);
+    assert!(app.notice.as_deref().unwrap().contains("Save it to a file to keep it."));
+    assert!(app.notice.as_deref().unwrap().contains("Removed 1 old recovery copy"));
+    disk.borrow_mut().slots.insert(slot(0), stored);
+    frame_at(&mut app, &ctx, INVENTORY_SECS);
+    let notice = app.notice.as_deref().unwrap();
+    assert!(notice.contains("Save it to a file to keep it."));
+    assert_eq!(notice.matches("Removed 1 old recovery copy").count(), 1, "periodic cleanup replaces its suffix instead of growing the notice");
+}
+
+#[test]
 fn periodic_inventory_catches_another_tabs_growth_and_close_without_own_writes() {
     let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
     let mut first = tab(&disk, 1);
@@ -568,6 +640,8 @@ fn a_scan_cleanup_failure_does_not_claim_other_tabs_recovery_copies() {
 #[test]
 #[ignore = "manual public-safe #726 evidence; requires NODECRAFT_REVIEW_EVIDENCE"]
 fn render_browser_recovery_budget_evidence() {
+    use egui_kittest::kittest::Queryable;
+
     let folder = std::path::PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
     std::fs::create_dir_all(&folder).unwrap();
     for pruning in [false, true] {
@@ -592,4 +666,36 @@ fn render_browser_recovery_budget_evidence() {
         h.run();
         h.render().unwrap().save(folder.join(if pruning { "after-budget-cleanup.png" } else { "before-budget-cleanup.png" })).unwrap();
     }
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    // Keep the evidence on a real starter-project node; the crash-test helper deliberately
+    // adds an unknown kind to exercise lossless recovery, which distracts from this notice.
+    let mut previous = tab(&disk, 1);
+    frame(&mut previous, &ctx);
+    let (&id, node) = previous.session.document().canvases().get(&previous.canvas).unwrap().nodes().iter().next().unwrap();
+    let pos = serde_json::json!({"x": node.pos.x + 24.0, "y": node.pos.y + 24.0});
+    previous.session.dispatch("node.move", &serde_json::json!({"canvas": previous.canvas, "id": id, "pos": pos})).unwrap();
+    frame(&mut previous, &ctx);
+    drop(previous);
+    let stored = disk.borrow().slots[&slot(1)].clone();
+    disk.borrow_mut().slots.insert(slot(2), stored);
+    let mut app = tab(&disk, 20);
+    frame(&mut app, &ctx);
+    app.decide_web_recovery(Choice::Recover);
+    app.web_recovery.as_mut().unwrap().budget = 0;
+    frame_at(&mut app, &ctx, INVENTORY_SECS);
+    let notice = app.notice.as_deref().unwrap();
+    assert!(notice.contains("Save it to a file") && notice.contains("Removed 1 old recovery copy"));
+    let mut h = egui_kittest::Harness::builder().wgpu().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            app.web_recovery_frame(ui.ctx());
+            app.show(ui);
+        },
+        app,
+    );
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run();
+    // Capture a fresh frame after maintenance and the anchored notice layout have settled.
+    h.step();
+    h.get_by_label_contains("Removed 1 old recovery copy");
+    h.render().unwrap().save(folder.join("recovered-budget-guidance-final.png")).unwrap();
 }
