@@ -278,7 +278,16 @@ discard uncommitted card-field drafts before file actions.
 Recent projects are kept in local settings (16 entries); missing files report an error and can be
 removed individually or cleared. File picks and recents still pass native storage admission; there
 is no small-file buffering path in the UI. Programmatic file commands always require locations
-and never open dialogs. The browser preview does not yet provide project storage or file pickers.
+and never open dialogs.
+
+In the browser (#118), Open, Save and Save As use the File System Access pickers where the
+browser has them (Chromium-based browsers), and save back to the picked file. Elsewhere, Open
+uses a file field and every save is a download. The session's storage holds only the picked
+file's bytes for one `file.open`, and the saved bytes until the browser writes them. Locations
+are `<n>/<file name>` keys that are unique per pick. The browser keeps no recovery journal yet,
+so leaving the page with unsaved work, or with a save the browser failed to write, asks first.
+Projects over 64 MiB are refused before they are read. `app/web_files/tests.rs` drives the flow
+through a fake browser port.
 
 Kittests inject picker futures and exercise actual native temporary-file persistence. They verify
 UI routing and lifecycle/refusal behavior; they do not prove OS dialog operation on every platform.
