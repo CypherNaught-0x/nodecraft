@@ -94,7 +94,12 @@ fn scene(make: Make) -> Harness<'static, NodeCraftApp> {
 
 /// The scene, with `edit` applied to the project before the session opens it.
 fn scene_with(make: Make, edit: impl FnOnce(&mut Project, &nodecraft_nodes::Registry)) -> Harness<'static, NodeCraftApp> {
-    let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_IMAGE).unwrap();
+    scene_in(MOCK_IMAGE, "mock-square", make, edit)
+}
+
+/// The card on `model`, from the `catalog` given.
+fn scene_in(catalog: &str, model: &str, make: Make, edit: impl FnOnce(&mut Project, &nodecraft_nodes::Registry)) -> Harness<'static, NodeCraftApp> {
+    let catalog = nodecraft_catalog::Catalog::from_toml(catalog).unwrap();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([93; 16]), "Runs").unwrap();
@@ -105,7 +110,7 @@ fn scene_with(make: Make, edit: impl FnOnce(&mut Project, &nodecraft_nodes::Regi
         .instantiate_instance(
             N,
             Default::default(),
-            &[("model".into(), Value::Text("mock-square".into())), ("prompt".into(), Value::Text("A red square".into()))].into(),
+            &[("model".into(), Value::Text(model.into())), ("prompt".into(), Value::Text("A red square".into()))].into(),
         )
         .unwrap();
     node.pos = nodecraft_graph::Position { x: 150.0, y: 120.0 };
@@ -236,6 +241,61 @@ fn a_budget_refusing_an_unknown_price_is_checked_again_with_the_providers_quote(
     h.run();
     let label = h.get_by_label_contains("Generate for").accesskit_node().label().unwrap_or_default();
     assert!(label.ends_with("for 0.3 USD"), "the quoted price is within the cap: {label}");
+}
+
+/// A stand-in for Higgsfield's Soul ID trainer, by its catalog id, and a model that picks from
+/// the account's Soul IDs, so the lists can be refreshed.
+const SOUL_TRAINING: &str = r#"
+[[model]]
+id = "higgsfield.soul-id-trainer"
+provider = "mock"
+provider_model = "mock-image"
+label = "Mock Soul ID trainer"
+description = "Public deterministic test fixture"
+quality = 1
+latency_s = 0
+pricing = { type = "per_call", price = "0.04 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.params.params]]
+name = "custom_reference_id"
+label = "Soul ID"
+control = { type = "text", multiline = false, max_bytes = 64 }
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "higgsfield.soul-id-trainer"
+owner = "model"
+[[model.parameter_contract.rules]]
+param = "custom_reference_id"
+options = { id = "higgsfield.soul_ids" }
+[[model.parameter_contract.schema.params]]
+name = "custom_reference_id"
+label = "Soul ID"
+control = { type = "text", multiline = false, max_bytes = 64 }
+"#;
+
+#[test]
+fn a_recorded_soul_id_training_fetches_the_option_lists_again() {
+    let mut h = scene_in(SOUL_TRAINING, "higgsfield.soul-id-trainer", making(image(MockModel::new(MockOutput::Image))), |_, _| {});
+    let asked = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let seen = asked.clone();
+    h.state_mut()
+        .session
+        .register_host_service(nodecraft_engine::option_fetch::OPTION_SERVICE, move |request| {
+            seen.lock().unwrap().push(request.clone());
+            Ok(serde_json::json!({"pending": 1}))
+        })
+        .unwrap();
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    accept(&mut h);
+    assert!(asked.lock().unwrap().is_empty(), "nothing is fetched before the training ends");
+    frames_until(&mut h, |app| idle(app) && !node(app).history.is_empty());
+    let asked = asked.lock().unwrap();
+    assert_eq!(asked.len(), 1, "one fetch for the recorded training: {asked:?}");
+    assert!(asked[0]["sources"].as_array().unwrap().iter().any(|source| source == "higgsfield.soul_ids"), "{asked:?}");
 }
 
 #[test]

@@ -28,7 +28,7 @@ pub(super) struct Prepared<'a> {
     pub video: Option<Image<'a>>,
     pub images: Vec<Image<'a>>,
 }
-fn mime(m: &str) -> Option<&'static str> {
+pub(super) fn mime(m: &str) -> Option<&'static str> {
     match m {
         "image/png" => Some("image/png"),
         "image/jpeg" => Some("image/jpeg"),

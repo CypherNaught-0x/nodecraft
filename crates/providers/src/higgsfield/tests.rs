@@ -735,3 +735,6 @@ fn the_soul_id_list_keeps_ready_soul_2_identities_across_pages() {
     assert!(block_on(adapter(&t).soul_ids()).unwrap_err().message.contains("more Soul IDs"));
     assert_eq!(t.requests().len(), 21);
 }
+
+#[path = "training_tests.rs"]
+mod training_tests;

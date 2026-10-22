@@ -16,7 +16,7 @@ pub(super) fn detail(body: &[u8]) -> Option<String> {
     }
 }
 /// Higgsfield's message, cleaned and shortened, unless it echoes the key.
-fn said(text: &str, leaks: impl Fn(&str) -> bool) -> String {
+pub(super) fn said(text: &str, leaks: impl Fn(&str) -> bool) -> String {
     if leaks(text) {
         return "(message withheld)".into();
     }

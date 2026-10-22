@@ -1,7 +1,8 @@
 //! Higgsfield (#177): SOUL 2 text to image, Kling 2.5 Turbo Pro image to video and the Genjutsu
 //! source video edits (#179: motion transfer, object swap, restyle) on Higgsfield's queue API.
 //! SOUL 2 can draw a Soul ID (#180), an identity trained on the account: the adapter lists the
-//! account's ready ones, and confirms the one a request names is ready before paying. Inputs stage through Higgsfield's presigned uploads, which are free; the generation
+//! account's ready ones, and confirms the one a request names is ready before paying. It also
+//! trains new ones from wired images (#680, [`training`]), never sending one training twice. Inputs stage through Higgsfield's presigned uploads, which are free; the generation
 //! submit is the paid step. It carries the job's idempotency key, and the exact body sent under a
 //! key is kept for this process, so a retry after a lost reply replays it byte for byte and gets
 //! the original request back instead of paying for a second one. Higgsfield keeps results for at
@@ -10,6 +11,7 @@ mod request;
 mod response;
 #[cfg(test)]
 mod tests;
+mod training;
 use crate::secrets::Secret;
 use crate::{
     BoxFuture, Completed, ErrorKind, Http, HttpMethod, HttpRequest, HttpResponse, JobHandle, JobProgress, Output, Provider, ProviderError, ProviderJob,
@@ -29,6 +31,11 @@ pub const MOTION_TRANSFER: &str = "higgsfield/genjutsu/motion-transfer/v1.0";
 pub const OBJECT_SWAP: &str = "higgsfield/genjutsu/object-swap/v1.0";
 /// Genjutsu restyle: the source video redrawn in one of Higgsfield's preset styles.
 pub const RESTYLE: &str = "higgsfield/genjutsu/restyle/v1.0";
+/// Soul ID training for SOUL 2 (#680): `POST /v1/custom-references`. Not a queue model; the id
+/// names the trainer in handles and style descriptors.
+pub const SOUL_TRAINER: &str = "higgsfield/soul-id/v2";
+/// The style family a trained Soul ID is for, as the trainer's catalog entry names it.
+pub const SOUL_FAMILY: &str = "soul-2";
 /// The restyle presets Higgsfield lists, as the `preset_id` option list.
 pub const RESTYLE_PRESETS: &str = "higgsfield.restyle_presets";
 /// The account's ready SOUL 2 Soul IDs, as the `custom_reference_id` option list.
@@ -194,10 +201,20 @@ pub struct Higgsfield {
     /// same files again, but its seeds are drawn and its body built only then; the files are
     /// what can be reused, each by one submit.
     uploaded: Mutex<VecDeque<Uploaded>>,
+    /// Keys of the Soul ID trainings this process has sent, newest last: one whose reply was
+    /// lost is looked for, never sent again.
+    posted: Mutex<VecDeque<String>>,
 }
 impl Higgsfield {
     pub fn new(key: Secret, http: Arc<dyn Http>) -> Self {
-        Self { key, http, limits: Limits::HARD, staged: Mutex::new(VecDeque::new()), uploaded: Mutex::new(VecDeque::new()) }
+        Self {
+            key,
+            http,
+            limits: Limits::HARD,
+            staged: Mutex::new(VecDeque::new()),
+            uploaded: Mutex::new(VecDeque::new()),
+            posted: Mutex::new(VecDeque::new()),
+        }
     }
     pub fn with_limits(key: Secret, http: Arc<dyn Http>, limits: Limits) -> Result<Self, ProviderError> {
         Ok(Self { limits: limits.validate()?, ..Self::new(key, http) })
@@ -321,6 +338,9 @@ impl Higgsfield {
         Ok(grant.public_url)
     }
     async fn create(&self, job: &ProviderJob, context: Option<&crate::SubmitContext>) -> Result<Submission, ProviderError> {
+        if job.model == SOUL_TRAINER {
+            return self.train(job, context).await;
+        }
         let prepared = request::prepare(job, self.limits)?;
         let key = request::idempotency_key(&job.idempotency_key);
         let body = self.stage(job, &prepared).await?;
@@ -341,6 +361,9 @@ impl Higgsfield {
     /// What Higgsfield says this job would cost this account. Free, and it uses no idempotency
     /// key: it uploads the job's files, and the next submit sending the same files reuses them.
     pub async fn estimate(&self, job: &ProviderJob) -> Result<Estimate, ProviderError> {
+        if job.model == SOUL_TRAINER {
+            return Err(invalid("Higgsfield gives no estimate for Soul ID training; the catalog prices it"));
+        }
         let prepared = request::prepare(job, self.limits)?;
         let body = self.body(&prepared, Use::Estimate).await?;
         let mut quote = HttpRequest { method: HttpMethod::Post, body: body.to_vec(), ..HttpRequest::get(format!("{API}/estimate/{}", prepared.model)) }
@@ -393,7 +416,7 @@ impl Higgsfield {
             out.skipped = out.skipped.saturating_add(skipped);
             for soul in ready {
                 if seen.insert(soul.id.clone()) {
-                    out.ids.push(soul);
+                    out.ids.push(SoulId { name: training::shown(&soul.name).to_owned(), ..soul });
                 }
             }
         }
@@ -413,6 +436,7 @@ impl Higgsfield {
             Some(MOTION_TRANSFER) => MOTION_TRANSFER,
             Some(OBJECT_SWAP) => OBJECT_SWAP,
             Some(RESTYLE) => RESTYLE,
+            Some(SOUL_TRAINER) => SOUL_TRAINER,
             _ => return Err(invalid("Higgsfield handle record refused")),
         };
         let count = handle.data.get("count").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 4) && (model == SOUL || *n == 1));
@@ -423,6 +447,9 @@ impl Higgsfield {
     }
     async fn progress(&self, handle: &JobHandle) -> Result<JobProgress, ProviderError> {
         let (model, count) = Self::handle(handle)?;
+        if model == SOUL_TRAINER {
+            return self.training(&handle.remote_id).await;
+        }
         let status = HttpRequest::get(format!("{API}/requests/{}/status", handle.remote_id)).timeout_ms(30_000);
         let reply = self.send(status, false, None).await?;
         match response::status(&reply.body, &handle.remote_id, model, count, |s| self.leaks(s))? {
@@ -464,7 +491,9 @@ impl Higgsfield {
         Ok((mime, Arc::from(reply.body)))
     }
     async fn stop(&self, handle: &JobHandle) -> Result<(), ProviderError> {
-        Self::handle(handle)?;
+        if Self::handle(handle)?.0 == SOUL_TRAINER {
+            return Err(invalid("Higgsfield can't stop a Soul ID's training once it is sent; it runs to the end and is billed"));
+        }
         let cancel = HttpRequest { method: HttpMethod::Post, ..HttpRequest::get(format!("{API}/requests/{}/cancel", handle.remote_id)) }.timeout_ms(30_000);
         let reply = self.http.send_no_redirect(self.auth(cancel)?).await.map_err(|e| transport(e, false))?;
         // Higgsfield answers 400 with its reason once a request has left the queue; a 400 that
