@@ -152,14 +152,18 @@ baseline and pre-commit `cargo xtask ci` runs and do not wait for GitHub CI befo
 `git diff --check` and any relevant documentation validators (for example, `cargo xtask decisions`
 for decision records). The review policy below still applies.
 
-For all other changes, before every commit:
+For all other changes, the full gate must pass before you open a pull request or push to one:
 
 ```sh
-cargo xtask ci        # fmt --check, clippy -D warnings, tests, layers, wasm
+cargo xtask ci           # fmt --check, clippy -D warnings, every test, doctests, layers, wasm
+cargo xtask ci --quick   # while iterating: only the packages you changed and their dependents
 ```
 
-While iterating, `cargo test -p <crate>` and `cargo clippy -p <crate> --all-targets -- -D warnings`
-are enough. Also run, when they apply:
+`--quick` leaves out the tests listed as slow in `.config/nextest.toml`, the doctests and the wasm
+check, so it is not a substitute for the full gate. Both need
+[cargo-nextest](https://nexte.st) to be fast (`cargo install cargo-nextest --locked`; `--quick`
+requires it). Prefer `--quick` over `cargo test -p <crate>`: it builds with the same features as the
+full gate, where `-p` rebuilds dependencies under a different feature set. Also run, when they apply:
 
 ```sh
 cargo test -p nodecraft-engine --test panic_hunt -- --ignored   # added or changed commands
@@ -233,6 +237,9 @@ that drive real pointer and key events through the canvas.
   checkout and judges freshness by file times, so one checkout can link another's stale code.
   Agents sharing the primary checkout use `CARGO_TARGET_DIR=target/agent-<name>` instead and
   delete it when they are done.
+- Build with `cargo xtask ci` and `cargo xtask ci --quick` rather than `cargo test -p <crate>` or
+  `cargo clippy -p <crate>`: every new feature combination keeps another copy of every binary it
+  links.
 - A new integration test file in a crate with `tests/it.rs` gets a `#[path]` line there (or its own
   `[[test]]` if it must run alone); `cargo xtask layers` fails on one that is in neither.
 - Edit only the files your task owns. Shared registries (the command list in `crates/engine`,

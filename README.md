@@ -206,6 +206,7 @@ See [`docs/plan.md`](docs/plan.md) for the feature catalogue, architecture and r
 ```sh
 cargo run -p nodecraft          # the desktop app
 cargo xtask ci                  # fmt, clippy, tests, layers, decisions, wasm
+cargo xtask ci --quick          # the same for changed packages only, without slow tests or wasm
 ```
 
 [`docs/development.md`](docs/development.md) has the details; [`AGENTS.md`](AGENTS.md) is the
