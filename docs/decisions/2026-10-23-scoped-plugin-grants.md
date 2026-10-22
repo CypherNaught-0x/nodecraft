@@ -13,7 +13,7 @@ a new origin, or a request that was quietly narrowed, would make the consent dia
 Repeating the digest closes the race where the package changes between showing and granting.
 Network without its origins is all of the internet, so the two are only granted together.
 
-**Compatibility.** `grants.json` stays version 1 while every grant is plain, so builds from before
+**Compatibility.** `grants.json` stays version 1 while every live grant is plain (revoked grants keep no rights), so builds from before
 #174 keep reading stores with only text action grants; scoped grants write version 2, which those
 builds refuse as newer rather than misreading.
 

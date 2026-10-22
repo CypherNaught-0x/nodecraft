@@ -359,7 +359,7 @@ fn bounded_request(request: &Value) -> Result<Value, Error> {
                     return Err(invalid());
                 }
                 for key in ["capabilities", "origins"] {
-                    super::short_list(request, key, 260).map_err(|_| invalid())?;
+                    super::short_list(request, key, nodecraft_plugin_store::grants::MAX_ORIGIN_BYTES).map_err(|_| invalid())?;
                 }
                 &["op", "package_id", "digest", "capabilities", "origins"]
             } else {

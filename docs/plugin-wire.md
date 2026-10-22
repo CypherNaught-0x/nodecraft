@@ -134,13 +134,13 @@ would cover: the manifest's required and known optional capabilities and every A
 origin its provider templates name (at most 8). A package that asks for anything is granted only
 when the request names the digest it was shown, every required capability, any chosen optional
 ones and, with `network`, exactly the origins shown; a mismatch is refused, never narrowed or
-widened. This build grants only `network` and `secret`, and only to provider operations packages.
+widened, and a capability or origin named twice is refused. Origins are at most 256 bytes. This build grants only `network` and `secret`, and only to provider operations packages.
 A grant for other rights replaces the live one, revoking it and bumping the epoch, so a job
 started under the old rights can't commit. An update shows its `rights_delta` and, like a
 rollback or uninstall, drops the grant; a person grants the new version again.
 
-`grants.json` is version 1 while every grant covers nothing, so older builds keep reading it; a
-grant with rights writes version 2 with `capabilities` and `origins` on each grant. A build refuses
+`grants.json` is version 1 while every live grant covers nothing (a revoked grant is kept without
+its rights), so older builds keep reading it; a live grant with rights writes version 2 with `capabilities` and `origins` on each grant. A build refuses
 a version it doesn't know, an unknown or repeated capability, and origins without `network`.
 
 ## Frames and messages

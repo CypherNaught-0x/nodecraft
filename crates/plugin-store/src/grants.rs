@@ -48,6 +48,9 @@ impl Rights {
     }
 }
 
+/// Longest origin a grant holds: what the grants file reads back as one string.
+pub const MAX_ORIGIN_BYTES: usize = 256;
+
 /// `https://` and a lowercase DNS name: the form the broker's templates name. The broker checks
 /// a template's origins in full; this keeps a damaged file from naming anything else.
 pub fn origin(text: &str) -> bool {
@@ -59,7 +62,7 @@ pub fn origin(text: &str) -> bool {
             && !l.ends_with('-')
             && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
     });
-    host.len() <= 253 && host.contains('.') && labels_ok
+    text.len() <= MAX_ORIGIN_BYTES && host.contains('.') && labels_ok
 }
 
 /// One execution grant.
@@ -136,12 +139,18 @@ const GRANTS_LIMITS: Limits = Limits { bytes: 1024 * 1024, depth: 4, string_byte
 
 pub(crate) fn encode(grants: &Grants) -> Result<String, Error> {
     let s = |t: String| Json::Str(t);
-    let plain = grants.grants.iter().all(|g| g.rights.is_empty());
+    // A revoked grant runs nothing, so it is written without its rights: once no live grant has
+    // any, the file is plain again and older builds read it.
+    fn rights(g: &Grant) -> &Rights {
+        static NONE: Rights = Rights { capabilities: BTreeSet::new(), origins: BTreeSet::new() };
+        if g.revoked { &NONE } else { &g.rights }
+    }
+    let plain = grants.grants.iter().all(|g| rights(g).is_empty());
     let list = grants
         .grants
         .iter()
         .map(|g| {
-            let capabilities = g.rights.capabilities.iter().map(|c| s(c.as_str().to_owned())).collect();
+            let capabilities = rights(g).capabilities.iter().map(|c| s(c.as_str().to_owned())).collect();
             let mut m = BTreeMap::from([
                 ("capabilities".to_owned(), Json::Array(capabilities)),
                 ("digest".to_owned(), s(g.digest.to_string())),
@@ -152,7 +161,7 @@ pub(crate) fn encode(grants: &Grants) -> Result<String, Error> {
                 ("scope".to_owned(), s("local".to_owned())),
             ]);
             if !plain {
-                m.insert("origins".to_owned(), Json::Array(g.rights.origins.iter().cloned().map(s).collect()));
+                m.insert("origins".to_owned(), Json::Array(rights(g).origins.iter().cloned().map(s).collect()));
             }
             Json::Object(m)
         })
@@ -162,7 +171,12 @@ pub(crate) fn encode(grants: &Grants) -> Result<String, Error> {
         ("grants_version".to_owned(), Json::Int(if plain { PLAIN_VERSION } else { GRANTS_VERSION })),
         ("next_epoch".to_owned(), s(grants.next_epoch.to_string())),
     ]));
-    json::canonical(&root).map_err(archive::wire)
+    let text = json::canonical(&root).map_err(archive::wire)?;
+    // Never write what `decode` would refuse: that would lose every grant on the next read.
+    if text.len() > GRANTS_LIMITS.bytes {
+        return Err(Error::new(ErrorKind::Unsupported, "the plugin store holds more grants than it can keep; revoke some first"));
+    }
+    Ok(text)
 }
 
 fn damaged() -> Error {

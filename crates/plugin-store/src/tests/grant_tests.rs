@@ -407,3 +407,24 @@ fn plain_grants_stay_readable_by_older_builds_and_damaged_rights_are_refused() {
         assert_eq!(grants::decode(bad.as_bytes()).unwrap_err().kind, ErrorKind::InvalidInput, "{to}");
     }
 }
+
+#[test]
+fn every_grant_written_reads_back_and_revoked_ones_keep_no_rights() {
+    let digest = PackageDigest::parse(&format!("blake3:{}", "a".repeat(64))).unwrap();
+    let pkg = id("io.example.acme");
+    // The longest origin a grant takes is one the file reads back; a longer DNS name is refused.
+    let label = "a".repeat(61);
+    let longest = format!("https://{label}.{label}.{label}.{}.example", "b".repeat(256 - 8 - 3 * 62 - 8));
+    assert_eq!(longest.len(), grants::MAX_ORIGIN_BYTES);
+    assert!(grants::origin(&longest));
+    assert!(!grants::origin(&format!("{longest}x")));
+    let mut g = grants::Grants::default();
+    g.grant(&pkg, &digest, &provider_rights(&[&longest])).unwrap();
+    assert_eq!(grants::decode(grants::encode(&g).unwrap().as_bytes()).unwrap(), g);
+    // Once the scoped grant is replaced by a plain one, the file is plain again.
+    g.grant(&pkg, &digest, &grants::Rights::default()).unwrap();
+    let text = grants::encode(&g).unwrap();
+    assert!(text.contains(r#""grants_version":1"#), "{text}");
+    let back = grants::decode(text.as_bytes()).unwrap();
+    assert!(back.grants.iter().filter(|g| g.revoked).all(|g| g.rights.is_empty()));
+}

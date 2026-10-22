@@ -101,7 +101,7 @@ fn grant_schema() -> Value {
             "package_id": package_schema(),
             "digest": {"type": "string", "pattern": "^blake3:[0-9a-f]{64}$", "description": "The digest plugins.rights showed; required when the package asks for capabilities"},
             "capabilities": {"type": "array", "maxItems": MAX_GRANT_ITEMS, "uniqueItems": true, "items": {"type": "string", "maxLength": 32}, "description": "Every required capability, plus any optional ones granted"},
-            "origins": {"type": "array", "maxItems": MAX_GRANT_ITEMS, "uniqueItems": true, "items": {"type": "string", "maxLength": 260}, "description": "With network: exactly the origins plugins.rights showed"},
+            "origins": {"type": "array", "maxItems": MAX_GRANT_ITEMS, "uniqueItems": true, "items": {"type": "string", "maxLength": 256}, "description": "With network: exactly the origins plugins.rights showed"},
         }),
     )
 }
@@ -245,7 +245,7 @@ fn uninstall(c: &Context<'_>, p: &Value) -> Result<Effect, Error> {
 
 fn grant(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
     short_list(p, "capabilities", 32)?;
-    short_list(p, "origins", 260)?;
+    short_list(p, "origins", nodecraft_plugin_store::grants::MAX_ORIGIN_BYTES)?;
     if p.get("digest").is_some_and(|d| !d.is_null() && d.as_str().is_none_or(|d| d.len() > 80)) {
         return Err(Error::new(ErrorKind::InvalidInput, "invalid grant digest"));
     }
@@ -479,21 +479,25 @@ fn requested_rights(package: &nodecraft_plugin_store::Package, request: &Value) 
         Some(d) => Some(PackageDigest::parse(d).map_err(|e| invalid(&e.to_string()))?),
         None => None,
     };
-    let strings = |key: &str| -> Option<Vec<&str>> { request.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()) };
-    let asks = crate::plugin_rights::asks(package)?;
-    let chosen: BTreeSet<nodecraft_plugin::manifest::Capability> = strings("capabilities")
-        .unwrap_or_default()
-        .into_iter()
+    let strings =
+        |key: &str| -> Vec<&str> { request.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default() };
+    let (named, named_origins) = (strings("capabilities"), strings("origins"));
+    let chosen: BTreeSet<nodecraft_plugin::manifest::Capability> = named
+        .iter()
         .map(|c| nodecraft_plugin::manifest::Capability::parse(c).ok_or_else(|| invalid("a grant names a capability this build doesn't know")))
         .collect::<Result<_, _>>()?;
-    if asks.required.is_empty() && chosen.is_empty() {
+    let origins: BTreeSet<String> = named_origins.iter().map(|o| (*o).to_owned()).collect();
+    if chosen.len() != named.len() || origins.len() != named_origins.len() {
+        return Err(invalid("a grant names a capability or origin twice"));
+    }
+    let asks = crate::plugin_rights::asks(package)?;
+    if asks.required.is_empty() && asks.optional.is_empty() && chosen.is_empty() && origins.is_empty() {
         return Ok((digest, nodecraft_plugin_store::Rights::default()));
     }
     if digest.is_none() {
         return Err(invalid("this package asks for capabilities: grant the digest plugins.rights showed"));
     }
     let rights = asks.rights(chosen)?;
-    let origins: BTreeSet<String> = strings("origins").unwrap_or_default().into_iter().map(str::to_owned).collect();
     if origins != rights.origins {
         return Err(invalid("the origins don't match what this package reaches now; read plugins.rights again"));
     }
@@ -554,8 +558,8 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
             let mut out = report_json(&report, dry_run);
             if let Some(o) = out.as_object_mut() {
                 o.insert("rights".into(), crate::plugin_rights::asks_json(&incoming));
-                if let Some(before) = &before {
-                    let (old, new) = (crate::plugin_rights::asks(before).unwrap_or_default(), crate::plugin_rights::asks(&incoming).unwrap_or_default());
+                // A delta against a version whose asks can't be read would claim everything is new.
+                if let Some((Ok(old), Ok(new))) = before.as_ref().map(|b| (crate::plugin_rights::asks(b), crate::plugin_rights::asks(&incoming))) {
                     o.insert("rights_delta".into(), crate::plugin_rights::delta(&old, &new));
                 }
             }
