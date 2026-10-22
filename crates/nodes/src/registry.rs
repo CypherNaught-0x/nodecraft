@@ -1,6 +1,6 @@
 use crate::{NodeDescriptor, NodeKind};
 use nodecraft_types::{Error, ErrorKind, PortType};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 fn shortcut_key(key: &str) -> String {
@@ -11,6 +11,7 @@ fn shortcut_key(key: &str) -> String {
 #[derive(Clone, Default)]
 pub struct Registry {
     kinds: BTreeMap<String, Arc<dyn NodeKind>>,
+    public_errors: BTreeSet<String>,
 }
 
 impl Registry {
@@ -51,7 +52,23 @@ impl Registry {
         registry.register(Box::new(crate::layers::kind()))?;
         registry.register(Box::new(crate::timeline::kind()))?;
         registry.register(Box::new(crate::element::kind()))?;
+        registry.public_errors.extend(registry.kinds.keys().cloned());
         Ok(registry)
+    }
+
+    /// Register the built-in, data-defined generation implementation. Accepting the concrete
+    /// type keeps arbitrary native callbacks from claiming public-safe validation messages.
+    pub fn register_generation(&mut self, kind: crate::generation::GenerationKind) -> Result<(), Error> {
+        let id = kind.descriptor().id.clone();
+        self.register(Box::new(kind))?;
+        self.public_errors.insert(id);
+        Ok(())
+    }
+
+    /// Whether validation text comes from an implementation this crate owns. Generic
+    /// register/with_replaced callbacks remain private, even under a built-in kind's id.
+    pub fn has_public_errors(&self, id: &str) -> bool {
+        self.public_errors.contains(id)
     }
 
     pub fn register(&mut self, kind: Box<dyn NodeKind>) -> Result<(), Error> {
@@ -73,7 +90,10 @@ impl Registry {
     /// A copy whose kinds under `prefix` are exactly `kinds`; refused whole if any kind is
     /// invalid, outside `prefix`, or clashes with another.
     pub fn with_replaced(&self, prefix: &str, kinds: Vec<Box<dyn NodeKind>>) -> Result<Self, Error> {
-        let mut next = Self { kinds: self.kinds.iter().filter(|(id, _)| !id.starts_with(prefix)).map(|(id, k)| (id.clone(), Arc::clone(k))).collect() };
+        let mut next = Self {
+            kinds: self.kinds.iter().filter(|(id, _)| !id.starts_with(prefix)).map(|(id, k)| (id.clone(), Arc::clone(k))).collect(),
+            public_errors: self.public_errors.iter().filter(|id| !id.starts_with(prefix)).cloned().collect(),
+        };
         for kind in kinds {
             if !kind.descriptor().id.starts_with(prefix) {
                 return Err(Error::new(ErrorKind::InvalidInput, "a plugin node kind must be named under its prefix"));

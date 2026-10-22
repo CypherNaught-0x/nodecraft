@@ -1,5 +1,7 @@
 //! Generate from a card (#83): every run is quoted and confirmed before `run.start`, which
 //! reaches a fake run host routed to the mock provider. Nothing here calls a real provider.
+mod reasons655;
+
 use super::*;
 use egui::accesskit::Role;
 use egui_kittest::{

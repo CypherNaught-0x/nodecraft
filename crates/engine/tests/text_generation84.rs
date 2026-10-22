@@ -314,8 +314,14 @@ fn a_blocked_mention_is_refused_before_any_provider_work() {
     f.session.dispatch("node.param_set", &json!({"canvas":C,"id":WRITER,"name":"prompt","value":{"type":"text","value":prompt}})).unwrap();
     let q = f.session.dispatch("run.quote", &request()).unwrap();
     assert_eq!(q["allowed"], false, "{q}");
-    // The quote keeps fixed reason codes; the card shows why.
-    assert_eq!(q["blocked"], json!([format!("node {WRITER} [node_validation]: check node parameters, connections and installed kind")]), "{q}");
+    // The quote keeps the stable reason code and explains how to repair this built-in prompt.
+    assert_eq!(
+        q["blocked"],
+        json!([format!(
+            "node {WRITER} [node_validation]: its prompt mentions @Gone, which is no longer on this canvas; remove the mention or mention another card"
+        )]),
+        "{q}"
+    );
     assert!(f.captured.lock().unwrap().is_empty() && f.mock.requests().is_empty());
 }
 

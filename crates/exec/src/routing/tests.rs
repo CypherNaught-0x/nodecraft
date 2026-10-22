@@ -130,7 +130,7 @@ fn a_single_input_fed_several_values_through_a_router_is_blocked() {
     let p = project(vec![text(1, "a"), text(2, "b"), router(10), relay(3, "test.single", None), wire(50, 1, 10, 0), wire(51, 2, 10, 1), wire(52, 10, 3, 0)]);
     let canvas = p.canvases().get(&C).unwrap();
     let Planned::Blocked(blockers) = plan(canvas, &kinds(), &RunMode::Selected, &ids(&[3]), &BTreeSet::new()).unwrap() else { panic!() };
-    assert!(blockers.iter().any(|b| matches!(&b.reason, Reason::Invalid(m) if m.contains("through a router"))), "{blockers:?}");
+    assert!(blockers.iter().any(|b| matches!(&b.reason, Reason::PublicInvalid(m) if m.contains("through a router"))), "{blockers:?}");
 }
 
 /// A router node with an explicit id.
@@ -168,7 +168,7 @@ fn a_lattice_of_empty_routers_resolves_in_linear_time() {
     // The consumer is wired, but only to routers with nothing behind them: blocked, not run as
     // if unconnected.
     let Planned::Blocked(blockers) = plan(canvas, &kinds(), &RunMode::Selected, &ids(&[20]), &BTreeSet::new()).unwrap() else { panic!() };
-    assert!(blockers.iter().any(|b| matches!(&b.reason, Reason::Invalid(m) if m.contains("router with no inputs"))), "{blockers:?}");
+    assert!(blockers.iter().any(|b| matches!(&b.reason, Reason::PublicInvalid(m) if m.contains("router with no inputs"))), "{blockers:?}");
     assert!(start.elapsed() < std::time::Duration::from_secs(2));
 }
 
@@ -214,11 +214,11 @@ fn router_fan_out_is_capped_and_a_list_cannot_reach_a_single_input() {
     ]);
     let canvas = p.canvases().get(&C).unwrap();
     let Planned::Blocked(blockers) = plan(canvas, &kinds, &RunMode::Selected, &ids(&[3]), &BTreeSet::new()).unwrap() else { panic!() };
-    assert!(blockers.iter().any(|b| matches!(&b.reason, Reason::Invalid(m) if m.contains("a list reaches it"))), "{blockers:?}");
+    assert!(blockers.iter().any(|b| matches!(&b.reason, Reason::PublicInvalid(m) if m.contains("a list reaches it"))), "{blockers:?}");
     // When the list-producing upstream is itself scheduled, the deferred Step input must be
     // rejected before any jobs can run, just like an already materialized list result.
     let Planned::Blocked(blockers) = plan(canvas, &kinds, &RunMode::Selected, &ids(&[5, 3]), &BTreeSet::new()).unwrap() else { panic!() };
-    assert!(blockers.iter().any(|b| b.node == id(3) && matches!(&b.reason, Reason::Invalid(m) if m.contains("a list reaches it"))));
+    assert!(blockers.iter().any(|b| b.node == id(3) && matches!(&b.reason, Reason::PublicInvalid(m) if m.contains("a list reaches it"))));
 }
 
 #[test]
@@ -387,11 +387,9 @@ fn invalid_router_instances_block_consumers_and_never_produce_hashes() {
         assert_eq!(resolved.wired.len(), canvas.edges().values().map(|e| (e.to.node, e.to.port.as_str())).collect::<BTreeSet<_>>().len());
         for consumer in [20, 21] {
             let Planned::Blocked(blockers) = plan(canvas, &kinds, &RunMode::Selected, &ids(&[consumer]), &BTreeSet::new()).unwrap() else { panic!() };
-            assert!(
-                blockers
-                    .iter()
-                    .any(|b| b.upstream == Some(id(10)) && b.port.as_deref() == Some("in") && matches!(&b.reason, Reason::Invalid(m) if m.contains("router")))
-            );
+            assert!(blockers.iter().any(|b| b.upstream == Some(id(10))
+                && b.port.as_deref() == Some("in")
+                && matches!(&b.reason, Reason::PublicInvalid(m) if m.contains("router"))));
             assert!(crate::staleness::input_hash(canvas, &kinds, id(consumer)).is_err());
         }
         assert!(matches!(plan(canvas, &kinds, &RunMode::Selected, &ids(&[22]), &BTreeSet::new()).unwrap(), Planned::Ready(_)));
@@ -407,7 +405,7 @@ fn absent_router_kind_is_not_a_passthrough_and_router_only_upstream_stays_empty(
     let mut registry = Registry::default();
     registry.register(Box::new(Relay(kinds().get("test.list").unwrap().descriptor().clone()))).unwrap();
     let Planned::Blocked(blockers) = plan(canvas, &registry, &RunMode::Selected, &ids(&[20]), &BTreeSet::new()).unwrap() else { panic!() };
-    assert!(blockers.iter().any(|b| b.upstream == Some(id(10)) && matches!(&b.reason, Reason::Invalid(m) if m.contains("not installed"))));
+    assert!(blockers.iter().any(|b| b.upstream == Some(id(10)) && matches!(&b.reason, Reason::PublicInvalid(m) if m.contains("not installed"))));
     assert!(crate::staleness::input_hash(canvas, &registry, id(20)).is_err());
     assert!(plan(canvas, &kinds(), &RunMode::WithUpstream, &ids(&[10]), &BTreeSet::new()).is_err());
 }
@@ -448,7 +446,7 @@ fn invalid_router_tails_survive_feed_truncation_at_routers_and_consumers() {
         assert!(blockers.iter().any(|b| b.node == id(20)
             && b.port.as_deref() == Some("in")
             && b.upstream == Some(id(11))
-            && matches!(&b.reason, Reason::Invalid(message) if message.contains("router"))));
+            && matches!(&b.reason, Reason::PublicInvalid(message) if message.contains("router"))));
         assert!(crate::staleness::input_hash(canvas, &kinds, id(20)).is_err());
     }
 }

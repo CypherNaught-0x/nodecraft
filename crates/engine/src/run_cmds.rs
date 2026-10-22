@@ -271,8 +271,8 @@ fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -
     Ok(hash.finalize().to_hex().to_string())
 }
 
-// Fixed UUID/static reason records only. Bound before each retained format, including
-// separators when reused by run.start. Native hook strings never enter this report.
+// UUID/reason records with bounded built-in validation text. Bound each retained format,
+// including separators when reused by run.start. Native hook strings never enter the report.
 const BLOCKED_BYTES: usize = 16 * 1024;
 /// Oversized-media and reshaped-mask reasons listed in a quote, together: each is at most about
 /// 310 bytes (a role is at most 128), so these fit in [`BLOCKED_BYTES`].
@@ -282,11 +282,11 @@ fn blocked_reasons(blockers: &[nodecraft_exec::planner::Blocker]) -> Vec<String>
     let mut bytes = 0usize;
     let mut out = Vec::new();
     for blocker in blockers.iter().take(if blockers.len() > 100 { 99 } else { 100 }) {
-        let (code, text) = match blocker.reason {
+        let (code, text) = match &blocker.reason {
             Reason::NoResult => ("input_unavailable", "input result is unavailable; run its upstream node first"),
             Reason::UnknownKind => ("unknown_kind", "node kind is not installed; install its definition"),
             Reason::UnsupportedInputs => ("unsupported_inputs", "input types are unsupported; check the node connections"),
-            Reason::Invalid(_) => ("node_validation", "check node parameters, connections and installed kind"),
+            Reason::Invalid(_) | Reason::PublicInvalid(_) => ("node_validation", blocker.reason.validation_message()),
             Reason::NotAnOption => ("not_an_option", "a value is not on the list the host fetched; refresh the list or pick another"),
             Reason::ProviderTarget(TargetReason::MissingSelection) => ("endpoint_missing", "no provider endpoint is selected for this node"),
             Reason::ProviderTarget(TargetReason::Mismatch) => ("endpoint_mismatch", "work does not match the selected provider endpoint"),
@@ -344,8 +344,8 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     let run_plan = match plan_expanded(&expanded, kinds, &mode, &requested, &stale, targets, crate::option_cmds::lookup(resources))? {
         Planned::Ready(run_plan) => run_plan,
         Planned::Blocked(blockers) => {
-            // Admission diagnostics never copy native hook messages, node titles or
-            // unknown model values into a report. One hundred fixed UUID/code records.
+            // Native hook messages stay private. Built-in/planner validation text is bounded
+            // separately; at most one hundred UUID/code records share the report byte cap.
             let reasons = blocked_reasons(&blockers);
             let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": [], "requests": [], "requests_complete": false});
             return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });

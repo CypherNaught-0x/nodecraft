@@ -121,7 +121,7 @@ fn blocked_because(p: &Project, n: u8, stale: &[u8]) -> String {
     let Planned::Blocked(blockers) = planned(p, n, stale).unwrap() else { panic!("planned") };
     let [blocker] = blockers.as_slice() else { panic!("{blockers:?}") };
     assert_eq!(blocker.node, id(n));
-    let Reason::Invalid(message) = &blocker.reason else { panic!("{blocker:?}") };
+    let Reason::PublicInvalid(message) = &blocker.reason else { panic!("{blocker:?}") };
     message.clone()
 }
 

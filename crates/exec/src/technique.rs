@@ -97,7 +97,7 @@ pub fn expand<'a>(canvases: &BTreeMap<CanvasId, Canvas>, canvas: &'a Canvas, kin
     }
     let mut block = |blocked: &mut BTreeSet<NodeId>, owner: NodeId, message: &str| {
         if blocked.insert(owner) {
-            blockers.push(Blocker { node: owner, port: None, upstream: None, reason: Reason::Invalid(message.to_owned()) });
+            blockers.push(Blocker { node: owner, port: None, upstream: None, reason: Reason::PublicInvalid(message.to_owned()) });
         }
     };
     while let Some(Pending { id, owner, depth }) = queue.pop_front() {

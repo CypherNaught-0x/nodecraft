@@ -150,6 +150,8 @@ pub enum Reason {
     UnsupportedInputs,
     /// The kind rejected the node (e.g. a required parameter is empty).
     Invalid(String),
+    /// Validation from the planner or a registered built-in implementation; public-safe.
+    PublicInvalid(String),
     /// A parameter's value is not on the run-time list the host fetched for it (#162). Carries
     /// nothing on purpose: the blocked report a CLI, agent or the shell's notice is built from is
     /// fixed-shape records that never copy a contract, kind or model string. `node.describe` and
@@ -157,6 +159,24 @@ pub enum Reason {
     NotAnOption,
     /// Checked endpoint selection failed.
     ProviderTarget(TargetReason),
+}
+
+impl Reason {
+    /// Bounded public validation text. Arbitrary native callbacks never supply public text.
+    pub fn validation_message(&self) -> &str {
+        let Self::PublicInvalid(message) = self else {
+            return "check node parameters, connections and installed kind";
+        };
+        let mut end = message.len().min(1024);
+        while !message.is_char_boundary(end) {
+            end = end.saturating_sub(1);
+        }
+        message.get(..end).unwrap_or("")
+    }
+}
+
+fn invalid_kind(kinds: &Registry, kind: &str, message: String) -> Reason {
+    if kinds.has_public_errors(kind) { Reason::PublicInvalid(message) } else { Reason::Invalid(message) }
 }
 
 /// A node that blocks the run, with the input and upstream node to highlight where they apply.
@@ -193,8 +213,10 @@ impl Blocker {
             (Reason::NotAnOption, ..) => {
                 format!("Can't run {node}: a parameter is not one of the available options; refresh the list or pick another.")
             }
-            (Reason::Invalid(message), _, Some(up)) if up != self.node => format!("Can't run {node}: {} has a problem: {message}", name(up)),
-            (Reason::Invalid(message), ..) => format!("Can't run {node}: {message}"),
+            (Reason::Invalid(_) | Reason::PublicInvalid(_), _, Some(up)) if up != self.node => {
+                format!("Can't run {node}: {} has a problem: {}", name(up), self.reason.validation_message())
+            }
+            (Reason::Invalid(_) | Reason::PublicInvalid(_), ..) => format!("Can't run {node}: {}", self.reason.validation_message()),
         }
     }
 }
@@ -413,7 +435,11 @@ fn owned(blocker: Blocker, expanded: &Expanded<'_>) -> Blocker {
             return Blocker { node: expanded.owner(blocker.node), port: None, upstream: None, reason: Reason::NotAnOption };
         }
         let message = blocker.message(&expanded.canvas);
-        return Blocker { node: expanded.owner(blocker.node), port: None, upstream: None, reason: Reason::Invalid(format!("inside its technique: {message}")) };
+        let reason = match &blocker.reason {
+            Reason::PublicInvalid(_) => Reason::PublicInvalid(format!("inside its technique: {}", blocker.reason.validation_message())),
+            _ => Reason::Invalid(format!("inside its technique: {message}")),
+        };
+        return Blocker { node: expanded.owner(blocker.node), port: None, upstream: None, reason };
     }
     match blocker.upstream {
         Some(up) if expanded.inner.contains_key(&up) => Blocker { upstream: None, ..blocker },
@@ -602,14 +628,14 @@ impl<'a> Graph<'a> {
         // Required parameters and port drift are checked for every step now, so a downstream
         // problem never surfaces after an upstream paid step has run.
         if let Err(error) = kind.validate_instance(node, true) {
-            blockers.push(blocker(None, None, Reason::Invalid(error.message)));
+            blockers.push(blocker(None, None, invalid_kind(self.kinds, &node.kind, error.message)));
         }
         if self.routing.ambiguous.contains(&id) {
-            let reason = Reason::Invalid("its prompt mentions a name more than one Element has; rename one of them".into());
+            let reason = Reason::PublicInvalid("its prompt mentions a name more than one Element has; rename one of them".into());
             blockers.push(blocker(Some(crate::mentions::PROMPT), None, reason));
         }
         if let Some(reason) = self.routing.mention_problems.get(&id) {
-            blockers.push(blocker(Some(nodecraft_nodes::generation::PROMPT), None, Reason::Invalid(reason.clone())));
+            blockers.push(blocker(Some(nodecraft_nodes::generation::PROMPT), None, Reason::PublicInvalid(reason.clone())));
         }
         // List inputs that run once per item rather than collecting them (#515).
         let fans_out: BTreeSet<String> = match kind.instance_contract(node) {
@@ -623,7 +649,7 @@ impl<'a> Graph<'a> {
                 contract.inputs.into_iter().filter(|input| input.fans_out).map(|input| input.port).collect()
             }
             Err(error) => {
-                blockers.push(blocker(None, None, Reason::Invalid(error.message)));
+                blockers.push(blocker(None, None, invalid_kind(self.kinds, &node.kind, error.message)));
                 BTreeSet::new()
             }
         };
@@ -646,7 +672,7 @@ impl<'a> Graph<'a> {
         for port in node.inputs.iter().chain(&mentions) {
             if let Some(router) = self.routing.invalid.get(&(id, port.name.as_str())) {
                 let reason = self.routing.invalid_routers.get(router).copied().unwrap_or("invalid upstream router");
-                blockers.push(blocker(Some(&port.name), Some(*router), Reason::Invalid(reason.into())));
+                blockers.push(blocker(Some(&port.name), Some(*router), Reason::PublicInvalid(reason.into())));
                 if blockers.len() >= MAX_BLOCKERS {
                     return Err(blockers);
                 }
@@ -657,14 +683,14 @@ impl<'a> Graph<'a> {
                 // Wired, but only to routers with nothing behind them: don't silently run as if
                 // the input were unconnected (another mode could drop it).
                 if self.routing.wired.contains(&(id, port.name.as_str())) {
-                    blockers.push(blocker(Some(&port.name), None, Reason::Invalid(format!("its {} input is fed by a router with no inputs", port.name))));
+                    blockers.push(blocker(Some(&port.name), None, Reason::PublicInvalid(format!("its {} input is fed by a router with no inputs", port.name))));
                 }
                 continue;
             }
             // A list can't reach a single input directly (the graph refuses it); through a
             // router it could.
             let list_into_single = |list: bool| list && !port.port_type.many;
-            let list_through_router = || Reason::Invalid(format!("its {} input takes one value but a list reaches it through a router", port.name));
+            let list_through_router = || Reason::PublicInvalid(format!("its {} input takes one value but a list reaches it through a router", port.name));
             // A list input that collects every item of a batch into one run.
             let collects = port.port_type.many && !fans_out.contains(&port.name);
             let mut from = Vec::with_capacity(feeds.len().min(MAX_LIST_ITEMS));
@@ -682,7 +708,7 @@ impl<'a> Graph<'a> {
                     match items {
                         Ok((values, tags, size)) => {
                             if !self.charge(&mut bytes, &mut state.plan_bytes, *size) {
-                                blockers.push(blocker(Some(&port.name), None, Reason::Invalid(over_budget(bytes).into())));
+                                blockers.push(blocker(Some(&port.name), None, Reason::PublicInvalid(over_budget(bytes).into())));
                                 return Err(blockers);
                             }
                             if collects {
@@ -711,7 +737,7 @@ impl<'a> Graph<'a> {
                             from.extend((0..tags.len()).map(|index| InputSource::Item { node: *up, port: (*up_port).to_owned(), index, list: true }))
                         }
                         Some(_) if list => {
-                            blockers.push(blocker(Some(&port.name), Some(*up), Reason::Invalid(fanned_list(&port.name))));
+                            blockers.push(blocker(Some(&port.name), Some(*up), Reason::PublicInvalid(fanned_list(&port.name))));
                             break;
                         }
                         // A list input collects every item of a fanned step.
@@ -734,7 +760,7 @@ impl<'a> Graph<'a> {
                                 break;
                             }
                             if !self.charge(&mut bytes, &mut state.plan_bytes, size) {
-                                blockers.push(blocker(Some(&port.name), None, Reason::Invalid(over_budget(bytes).into())));
+                                blockers.push(blocker(Some(&port.name), None, Reason::PublicInvalid(over_budget(bytes).into())));
                                 return Err(blockers);
                             }
                             // Within budget: only now copy. A list output into a list input
@@ -745,7 +771,7 @@ impl<'a> Graph<'a> {
                                     from.extend(flatten(lists).cloned().map(InputSource::Value));
                                 }
                                 Value::List(_) if list && !items.is_empty() => {
-                                    blockers.push(blocker(Some(&port.name), Some(*up), Reason::Invalid(fanned_list(&port.name))));
+                                    blockers.push(blocker(Some(&port.name), Some(*up), Reason::PublicInvalid(fanned_list(&port.name))));
                                     break;
                                 }
                                 Value::List(values) if !items.is_empty() && !collects => {
@@ -776,7 +802,7 @@ impl<'a> Graph<'a> {
                 if port.name == mention::PORT && several() {
                     let title = crate::node_mentions::title_of(node, *up);
                     let reason = crate::node_mentions::reason(title, crate::node_mentions::Problem::Several);
-                    blockers.push(blocker(Some(nodecraft_nodes::generation::PROMPT), Some(*up), Reason::Invalid(reason)));
+                    blockers.push(blocker(Some(nodecraft_nodes::generation::PROMPT), Some(*up), Reason::PublicInvalid(reason)));
                     break;
                 }
                 origins.resize(from.len(), *up);
@@ -785,13 +811,17 @@ impl<'a> Graph<'a> {
                     blockers.push(blocker(
                         Some(&port.name),
                         None,
-                        Reason::Invalid(format!("its {} input takes one value but receives several through a router", port.name)),
+                        Reason::PublicInvalid(format!("its {} input takes one value but receives several through a router", port.name)),
                     ));
                     break;
                 }
                 // The same item cap for values and for outputs of other steps in this run.
                 if from.len() > MAX_LIST_ITEMS {
-                    blockers.push(blocker(Some(&port.name), None, Reason::Invalid(format!("its {} input has more than {MAX_LIST_ITEMS} items", port.name))));
+                    blockers.push(blocker(
+                        Some(&port.name),
+                        None,
+                        Reason::PublicInvalid(format!("its {} input has more than {MAX_LIST_ITEMS} items", port.name)),
+                    ));
                     break;
                 }
             }
@@ -805,7 +835,7 @@ impl<'a> Graph<'a> {
                 None
             }
             Err(error) => {
-                blockers.push(blocker(None, None, Reason::Invalid(error.message)));
+                blockers.push(blocker(None, None, invalid_kind(self.kinds, &node.kind, error.message)));
                 None
             }
         };
@@ -828,7 +858,7 @@ impl<'a> Graph<'a> {
                 if let Collected::Fanned(tags, _) = &collected
                     && tags.iter().flatten().any(|key| self.inner.contains_key(&key.batch))
                 {
-                    return Err(vec![blocker(None, Some(collect.node), Reason::Invalid("a batch inside its technique can't fan it out yet".into()))]);
+                    return Err(vec![blocker(None, Some(collect.node), Reason::PublicInvalid("a batch inside its technique can't fan it out yet".into()))]);
                 }
                 let from = match collected {
                     Collected::Plain(from) => from,
@@ -848,10 +878,10 @@ impl<'a> Graph<'a> {
             let Some(values) = known_inputs(inputs) else { return Ok(None) };
             let jobs = kind
                 .plan(&PlanCtx { targets: self.targets, node, inputs: &values })
-                .map_err(|error| vec![blocker(None, None, Reason::Invalid(error.message))])?;
+                .map_err(|error| vec![blocker(None, None, invalid_kind(self.kinds, &node.kind, error.message))])?;
             crate::generation_contract::validate_targets(node, &jobs, self.targets)
                 .map_err(|reason| vec![blocker(None, None, Reason::ProviderTarget(reason))])?;
-            crate::generation_contract::validate_outputs(node, &jobs).map_err(|reason| vec![blocker(None, None, Reason::Invalid(reason.into()))])?;
+            crate::generation_contract::validate_outputs(node, &jobs).map_err(|reason| vec![blocker(None, None, Reason::PublicInvalid(reason.into()))])?;
             Ok(Some(jobs))
         };
         let after = after.into_iter().collect();
@@ -859,7 +889,7 @@ impl<'a> Graph<'a> {
             let jobs = plan_jobs(&inputs)?;
             return Ok(Step { node: id, kind: node.kind.clone(), mode, after, inputs, jobs, fanout: None });
         }
-        let invalid = |message: String| vec![blocker(None, None, Reason::Invalid(message))];
+        let invalid = |message: String| vec![blocker(None, None, Reason::PublicInvalid(message))];
         let relations: Vec<&[ItemTag]> = fanned.iter().map(|f| f.tags.as_slice()).collect();
         let combined = crate::fanout::combine(&relations, &self.pairing).map_err(invalid)?;
         if combined.is_empty() {
@@ -939,13 +969,13 @@ impl<'a> Graph<'a> {
         }
         let (value, _, items) = self.resolve(collect.node, &collect.port).map_err(|reason| (collect.node, reason))?;
         if !self.charge(bytes, &mut state.plan_bytes, value_bytes(&value)) {
-            return Err((collect.node, Reason::Invalid(over_budget(*bytes).into())));
+            return Err((collect.node, Reason::PublicInvalid(over_budget(*bytes).into())));
         }
         Ok(match value {
             // A result kept per item: each item's value (or list) in turn.
             Value::List(values) if !items.is_empty() => {
                 if port_type.many {
-                    return Err((collect.node, Reason::Invalid("a technique's list output kept per batch item can't be reused; run it again".into())));
+                    return Err((collect.node, Reason::PublicInvalid("a technique's list output kept per batch item can't be reused; run it again".into())));
                 }
                 (Collected::Fanned(items, FannedFrom::Values(values)), port_type)
             }
@@ -966,19 +996,19 @@ impl<'a> Graph<'a> {
     fn batch_items(&self, id: NodeId, run: &BTreeSet<NodeId>) -> Items {
         let node = self.canvas.nodes().get(&id).ok_or(Reason::NoResult)?;
         let kind = self.kinds.get(&node.kind).map_err(|_| Reason::UnknownKind)?;
-        kind.validate_instance(node, true).map_err(|error| Reason::Invalid(error.message))?;
+        kind.validate_instance(node, true).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
         if let Some(router) = self.routing.invalid.keys().find(|(target, _)| *target == id).and_then(|key| self.routing.invalid.get(key)) {
             let reason = self.routing.invalid_routers.get(router).copied().unwrap_or("invalid upstream router");
-            return Err(Reason::Invalid(reason.into()));
+            return Err(Reason::PublicInvalid(reason.into()));
         }
         let mut wired = Vec::new();
         for (_, up, up_port, _) in self.into.get(&id).into_iter().flatten() {
             let upstream = self.canvas.nodes().get(up);
             if upstream.is_some_and(|u| u.kind == batch::ID) {
-                return Err(Reason::Invalid("a batch can't collect another batch yet".into()));
+                return Err(Reason::PublicInvalid("a batch can't collect another batch yet".into()));
             }
             if run.contains(up) && !upstream.is_some_and(|u| self.is_source(u)) {
-                return Err(Reason::Invalid("a batch collects existing results; run the nodes feeding it first".into()));
+                return Err(Reason::PublicInvalid("a batch collects existing results; run the nodes feeding it first".into()));
             }
             let (value, list, items) = self.resolve(*up, up_port)?;
             match value {
@@ -987,10 +1017,10 @@ impl<'a> Graph<'a> {
                 value => wired.push(value),
             }
             if wired.len() > batch::MAX_ITEMS {
-                return Err(Reason::Invalid(format!("a batch holds at most {} items", batch::MAX_ITEMS)));
+                return Err(Reason::PublicInvalid(format!("a batch holds at most {} items", batch::MAX_ITEMS)));
             }
         }
-        let values = batch::items(node, wired).map_err(|error| Reason::Invalid(error.message))?;
+        let values = batch::items(node, wired).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
         let tags = crate::fanout::batch_tags(id, &values);
         let size = values.iter().map(value_bytes).fold(0usize, usize::saturating_add);
         Ok((values, tags, size))
@@ -1006,7 +1036,7 @@ impl<'a> Graph<'a> {
         if let Ok(kind) = self.kinds.get(&node.kind)
             && kind.descriptor().category == Category::Source
         {
-            let jobs = kind.plan(&PlanCtx { targets: self.targets, node, inputs: &[] }).map_err(|error| Reason::Invalid(error.message))?;
+            let jobs = kind.plan(&PlanCtx { targets: self.targets, node, inputs: &[] }).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
             return jobs
                 .into_iter()
                 .find_map(|job| match job {
@@ -1020,7 +1050,7 @@ impl<'a> Graph<'a> {
         if !generation.items.is_empty()
             && (!crate::fanout::consistent(&generation.items) || !matches!(&value, Value::List(values) if values.len() == generation.items.len()))
         {
-            return Err(Reason::Invalid("its result's items don't match its outputs".into()));
+            return Err(Reason::PublicInvalid("its result's items don't match its outputs".into()));
         }
         Ok((value, list, generation.items.clone()))
     }
