@@ -79,7 +79,13 @@ fn slot(n: u32) -> String {
 }
 
 fn frame(app: &mut NodeCraftApp, ctx: &egui::Context) {
-    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.web_recovery_frame(ui.ctx()));
+    frame_at(app, ctx, 0.0);
+}
+
+/// A frame `time` seconds into the page's life.
+fn frame_at(app: &mut NodeCraftApp, ctx: &egui::Context, time: f64) {
+    let input = egui::RawInput { time: Some(time), ..egui::RawInput::default() };
+    let mut output = ctx.run_ui(input, |ui| app.web_recovery_frame(ui.ctx()));
     output.textures_delta.clear();
 }
 
@@ -207,8 +213,8 @@ fn a_failed_write_is_said_once_and_leaves_an_older_consistent_state() {
     add_text(&mut app, 2);
     frame(&mut app, &ctx);
     let notice = app.notice.take().unwrap();
-    assert!(notice.contains("this site's browser storage is full"), "{notice}");
-    // Later frames would follow a gap: they wait for the next checkpoint.
+    assert!(notice.contains("this site's browser storage is full") && notice.contains("keeps trying"), "{notice}");
+    // Later frames would follow a gap: they wait for the slot to be written whole.
     add_text(&mut app, 3);
     frame(&mut app, &ctx);
     assert_eq!(app.notice, None, "said once");
@@ -237,18 +243,93 @@ fn the_cap_is_the_desktop_journal_cap() {
 }
 
 #[test]
-fn a_failure_keeps_a_queued_checkpoint_and_what_follows_it() {
+fn a_failure_drops_what_was_queued_but_keeps_its_removals() {
     let mut journal = Journal::new(slot(1));
-    journal.append(b"lost").unwrap();
-    journal.remove(slot(9));
     journal.checkpoint(b"fresh").unwrap();
     journal.append(b"after").unwrap();
-    journal.failed();
-    let kept = journal.take();
-    assert!(matches!(kept.as_slice(), [Write::Checkpoint { .. }, Write::Frame { seq: 1, .. }]), "{kept:?}");
-    journal.failed();
+    journal.remove(slot(8));
+    journal.failed(vec![slot(9)]);
     journal.append(b"next").unwrap();
-    assert!(journal.take().is_empty(), "with no checkpoint queued, frames wait for the next");
+    assert!(journal.take().is_empty(), "frames would follow a gap");
+    journal.rebuild().unwrap();
+    let writes = journal.take();
+    let [Write::Checkpoint { slot: own, bytes }, Write::Remove { slot: first }, Write::Remove { slot: second }] = writes.as_slice() else {
+        panic!("{writes:?}");
+    };
+    assert_eq!((own, bytes.as_slice()), (&slot(1), b"freshafternext".as_slice()), "the slot again, whole");
+    assert_eq!((first, second), (&slot(8), &slot(9)));
+    journal.rebuild().unwrap();
+    assert!(journal.take().is_empty(), "once written whole, nothing more to rebuild");
+}
+
+#[test]
+fn a_failed_write_is_tried_again_whole_and_then_recovers() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    let edited = {
+        let mut app = tab(&disk, 1);
+        frame(&mut app, &ctx);
+        add_text(&mut app, 1);
+        frame(&mut app, &ctx);
+        disk.borrow_mut().failures.push_back("this site's browser storage is full".into());
+        add_text(&mut app, 2);
+        frame_at(&mut app, &ctx, 1.0);
+        add_text(&mut app, 3);
+        frame_at(&mut app, &ctx, 5.0);
+        assert_eq!(disk.borrow().slots[&slot(1)].frames.len(), 1, "too soon to try again");
+        frame_at(&mut app, &ctx, 1.0 + RETRY_SECS);
+        add_text(&mut app, 4);
+        frame_at(&mut app, &ctx, 2.0 + RETRY_SECS);
+        assert_eq!(disk.borrow().slots[&slot(1)].frames.len(), 1, "written whole, and frames follow it again");
+        app.session.document().clone()
+    };
+    let mut app = tab(&disk, 2);
+    frame(&mut app, &ctx);
+    assert!(!offer(&app).unwrap().found.as_ref().unwrap().damaged);
+    app.decide_web_recovery(Choice::Recover);
+    assert_eq!(app.session.document(), &edited, "every edit, the failed ones included");
+}
+
+#[test]
+fn a_removal_that_failed_is_tried_again() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    let _ = crashed_tab(&disk, &ctx);
+    let mut app = tab(&disk, 2);
+    frame(&mut app, &ctx);
+    disk.borrow_mut().failures.push_back("the browser couldn't write to this site's storage".into());
+    app.decide_web_recovery(Choice::Discard);
+    frame_at(&mut app, &ctx, 1.0);
+    assert!(disk.borrow().slots.contains_key(&slot(1)), "the removal failed");
+    frame_at(&mut app, &ctx, 1.0 + RETRY_SECS);
+    assert!(!disk.borrow().slots.contains_key(&slot(1)), "and was tried again");
+}
+
+#[test]
+fn input_is_recoverys_while_it_asks() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    let _ = crashed_tab(&disk, &ctx);
+    let mut app = tab(&disk, 2);
+    let key = egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    let input = egui::RawInput { events: vec![key, egui::Event::Text("x".into())], ..egui::RawInput::default() };
+    let mut left = None;
+    let mut output = ctx.run_ui(input, |ui| {
+        app.web_recovery_frame(ui.ctx());
+        left = Some(ui.ctx().input(|i| i.events.len()));
+    });
+    output.textures_delta.clear();
+    assert_eq!(left, Some(0), "nothing reaches the canvas behind the question");
+}
+
+#[test]
+fn a_slot_cut_by_the_cap_is_damaged() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    let _ = crashed_tab(&disk, &ctx);
+    if let Some(stored) = disk.borrow_mut().slots.get_mut(&slot(1)) {
+        stored.truncated = true;
+    }
+    let mut app = tab(&disk, 2);
+    frame(&mut app, &ctx);
+    let found = offer(&app).unwrap().found.as_ref().unwrap();
+    assert_eq!((found.changes, found.damaged), (2, true));
 }
 
 #[test]

@@ -170,16 +170,20 @@ impl Shelf for IndexedDb {
             for (key, value) in keys.iter().zip(values.iter()) {
                 let Some(key) = key.as_string() else { continue };
                 let Some(part) = key.strip_prefix(&slot).and_then(|rest| rest.strip_prefix('/')) else { continue };
+                if part == "h" {
+                    stored.held = true;
+                    continue;
+                }
                 let Some(value) = bytes(&value) else { continue };
-                let length = value.length() as usize;
-                total = total.saturating_add(length);
-                // More than a journal holds wasn't written by this build; what fits is replayed.
+                total = total.saturating_add(value.length() as usize);
+                // More than a journal holds wasn't written by this build; what fits is replayed,
+                // and flagged as cut short.
                 if total > MAX_JOURNAL_BYTES {
+                    stored.truncated = true;
                     break;
                 }
                 match part {
                     "c" => stored.checkpoint = Some(value.to_vec()),
-                    "h" => stored.held = true,
                     frame => {
                         if let Some(seq) = frame.strip_prefix("f/").and_then(|seq| seq.parse::<u64>().ok()) {
                             stored.frames.push((seq, value.to_vec()));

@@ -6,9 +6,10 @@
 //!
 //! The session writes synchronously and the shelf asynchronously, so the [`Journal`] queues
 //! writes and the app hands them over a batch at a time. A failed write (usually a full quota)
-//! is said once; frames then wait for the next checkpoint, which replaces the slot, so what is
-//! kept is always a checkpoint and the frames that follow it. Keys never go here: they live in
-//! the origin's key storage.
+//! is said once. The journal keeps its own copy of the slot, so a little later the slot is
+//! written again whole, as one checkpoint, and the frames follow it again. What the shelf holds
+//! is always a checkpoint and the frames that follow it. Keys never go here: they live in the
+//! origin's key storage.
 use super::NodeCraftApp;
 use super::web_files::{PickFuture, poll};
 use crate::theme::Tokens;
@@ -27,6 +28,8 @@ pub(super) use browser::{IndexedDb, fresh_slot};
 
 /// Slots looked at in one load, newest first.
 const MAX_SCAN: usize = 8;
+/// Seconds after a failed write before the slot is written again whole.
+const RETRY_SECS: f64 = 15.0;
 
 /// One write to the shelf.
 #[derive(Debug, PartialEq)]
@@ -66,6 +69,8 @@ pub(super) struct Stored {
     /// In sequence order.
     pub frames: Vec<(u64, Vec<u8>)>,
     pub held: bool,
+    /// The shelf left part of it out (more than a journal holds).
+    pub truncated: bool,
 }
 
 impl Stored {
@@ -73,7 +78,7 @@ impl Stored {
     /// that follow it without a gap. True if frames were left out.
     fn journal(&self) -> Option<(Vec<u8>, bool)> {
         let mut bytes = self.checkpoint.clone()?;
-        let mut cut = false;
+        let mut cut = self.truncated;
         for (want, (seq, frame)) in (1u64..).zip(&self.frames) {
             if *seq != want || bytes.len().saturating_add(frame.len()) > MAX_JOURNAL_BYTES {
                 cut = true;
@@ -103,27 +108,41 @@ fn invalid(message: &str) -> Error {
 /// This tab's slot, as the session writes it; the writes wait here for the shelf.
 pub(super) struct Journal {
     slot: String,
-    /// The slot's size as the session sees it: the checkpoint and frames since.
-    bytes: usize,
+    /// The slot as the session sees it: the checkpoint and the frames since, as the desktop's
+    /// recovery file holds them. Written again whole after a failure.
+    kept: Vec<u8>,
     seq: u64,
+    /// The slot's checkpoint is unsaved work (see [`Write::Hold`]).
+    held: bool,
     pending: Vec<Write>,
-    /// A write failed: frames wait for the next checkpoint.
+    /// Other slots to remove once this slot is written whole: a removal whose batch failed,
+    /// which may be the work this slot now holds.
+    deferred: Vec<String>,
+    /// A write failed: until the slot is written whole again, frames would follow a gap.
     failed: bool,
     /// The browser keeps nothing for this tab.
     off: bool,
 }
 
+fn copy(bytes: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len()).map_err(|_| Error::new(ErrorKind::Internal, "not enough memory to keep unsaved work"))?;
+    copy.extend_from_slice(bytes);
+    Ok(copy)
+}
+
 impl Journal {
     pub(super) fn new(slot: String) -> Self {
-        Self { slot, bytes: 0, seq: 0, pending: Vec::new(), failed: false, off: false }
+        Self { slot, kept: Vec::new(), seq: 0, held: false, pending: Vec::new(), deferred: Vec::new(), failed: false, off: false }
     }
 
     pub(super) fn checkpoint(&mut self, recovery: &[u8]) -> Result<(), Error> {
         if recovery.len() > MAX_JOURNAL_BYTES {
             return Err(invalid("recovery exceeds size limit"));
         }
-        self.bytes = recovery.len();
+        self.kept = copy(recovery)?;
         self.seq = 0;
+        self.held = false;
         self.failed = false;
         if self.off {
             return Ok(());
@@ -131,25 +150,23 @@ impl Journal {
         // Whatever this slot still had waiting is replaced.
         let slot = self.slot.clone();
         self.pending.retain(|write| write.slot() != slot);
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(recovery.len()).map_err(|_| Error::new(ErrorKind::Internal, "not enough memory to keep unsaved work"))?;
-        bytes.extend_from_slice(recovery);
+        let bytes = copy(recovery)?;
         self.pending.push(Write::Checkpoint { slot, bytes });
+        self.release_deferred();
         Ok(())
     }
 
     pub(super) fn append(&mut self, frame: &[u8]) -> Result<(), Error> {
-        if self.bytes.saturating_add(frame.len()) > MAX_JOURNAL_BYTES {
+        if self.kept.len().saturating_add(frame.len()) > MAX_JOURNAL_BYTES {
             return Err(invalid("recovery file is full; save a checkpoint"));
         }
-        self.bytes = self.bytes.saturating_add(frame.len());
+        self.kept.try_reserve(frame.len()).map_err(|_| Error::new(ErrorKind::Internal, "not enough memory to keep unsaved work"))?;
+        self.kept.extend_from_slice(frame);
         self.seq = self.seq.saturating_add(1);
         if self.off || self.failed {
             return Ok(());
         }
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(frame.len()).map_err(|_| Error::new(ErrorKind::Internal, "not enough memory to keep unsaved work"))?;
-        bytes.extend_from_slice(frame);
+        let bytes = copy(frame)?;
         self.pending.push(Write::Frame { slot: self.slot.clone(), seq: self.seq, bytes });
         Ok(())
     }
@@ -158,15 +175,19 @@ impl Journal {
     pub(super) fn discard(&mut self) {
         let slot = self.slot.clone();
         self.pending.retain(|write| write.slot() != slot);
-        self.bytes = 0;
+        self.kept = Vec::new();
         self.seq = 0;
+        self.held = false;
+        self.failed = false;
         if !self.off {
             self.pending.push(Write::Remove { slot });
+            self.release_deferred();
         }
     }
 
     /// The checkpoint just made is unsaved work, kept until the next one.
     fn hold(&mut self) {
+        self.held = true;
         if !self.off {
             self.pending.push(Write::Hold { slot: self.slot.clone() });
         }
@@ -182,22 +203,65 @@ impl Journal {
         std::mem::take(&mut self.pending)
     }
 
-    /// The last batch didn't land. Until this slot's next checkpoint its frames would follow a
-    /// checkpoint the shelf may not have, and removing another slot could lose the only copy
-    /// of its work; both wait. What comes after a checkpoint already queued goes ahead.
-    fn failed(&mut self) {
+    /// Deferred removals go in the batch just queued for this slot, so they land with it.
+    fn release_deferred(&mut self) {
         let own = self.slot.clone();
-        let restart = self.pending.iter().position(|write| matches!(write, Write::Checkpoint { slot, .. } if *slot == own));
-        let keep = self.pending.split_off(restart.unwrap_or(self.pending.len()));
-        self.pending.retain(|write| matches!(write, Write::Checkpoint { .. }));
-        self.pending.extend(keep);
-        self.failed = restart.is_none();
+        let empty = self.kept.is_empty();
+        for slot in std::mem::take(&mut self.deferred) {
+            // This slot's own removal only stands while it holds nothing.
+            if slot != own || empty {
+                self.pending.push(Write::Remove { slot });
+            }
+        }
+    }
+
+    /// A batch didn't land; `removed` are the slots it was removing. What is queued would follow
+    /// it, so it goes too, but for removals: those wait for the slot to be written whole.
+    fn failed(&mut self, removed: Vec<String>) {
+        if self.off {
+            return;
+        }
+        for write in self.pending.drain(..) {
+            if let Write::Remove { slot } = write {
+                self.deferred.push(slot);
+            }
+        }
+        self.deferred.extend(removed);
+        self.deferred.sort();
+        self.deferred.dedup();
+        self.failed = true;
+    }
+
+    fn is_failed(&self) -> bool {
+        self.failed && !self.off
+    }
+
+    /// Writes the slot again whole after a failure: one checkpoint holding everything since, its
+    /// hold, and the removals that waited for it, in one batch.
+    fn rebuild(&mut self) -> Result<(), Error> {
+        if !self.is_failed() {
+            return Ok(());
+        }
+        let slot = self.slot.clone();
+        // The shelf numbers frames from its checkpoint, and this is a new one.
+        self.seq = 0;
+        if !self.kept.is_empty() {
+            self.pending.push(Write::Checkpoint { slot: slot.clone(), bytes: copy(&self.kept)? });
+            if self.held {
+                self.pending.push(Write::Hold { slot });
+            }
+        }
+        self.failed = false;
+        self.release_deferred();
+        Ok(())
     }
 
     /// Nothing can be kept in this browser.
     fn disable(&mut self) {
         self.off = true;
         self.pending.clear();
+        self.deferred.clear();
+        self.kept = Vec::new();
     }
 }
 
@@ -286,6 +350,10 @@ pub(super) struct WebRecovery {
     scan: Option<PickFuture<Option<Offer>>>,
     offer: Option<Offer>,
     writing: Option<PickFuture<()>>,
+    /// The slots the batch being written removes, to try again if it fails.
+    removing: Vec<String>,
+    /// When the slot is next written whole, after a failed write.
+    retry_at: Option<f64>,
     /// A failed write was said; the next is said once one has landed again.
     told: bool,
     /// The recovered document, unsaved work until it is saved.
@@ -297,7 +365,17 @@ impl WebRecovery {
     pub(super) fn new(shelf: Box<dyn Shelf>, slot: String) -> Self {
         let shelf = Rc::new(RefCell::new(shelf));
         let scan: PickFuture<Option<Offer>> = Box::pin(scan(Rc::clone(&shelf), slot.clone()));
-        Self { shelf, journal: Rc::new(RefCell::new(Journal::new(slot))), scan: Some(scan), offer: None, writing: None, told: false, recovered: None }
+        Self {
+            shelf,
+            journal: Rc::new(RefCell::new(Journal::new(slot))),
+            scan: Some(scan),
+            offer: None,
+            writing: None,
+            removing: Vec::new(),
+            retry_at: None,
+            told: false,
+            recovered: None,
+        }
     }
 
     /// The journal the session's storage writes to.
@@ -327,6 +405,8 @@ impl NodeCraftApp {
     /// open. Input stays with it then (see [`WebRecovery::owns_input`]).
     pub(super) fn web_recovery_frame(&mut self, ctx: &egui::Context) {
         let Some(recovery) = &mut self.web_recovery else { return };
+        let owned = recovery.owns_input();
+        let now = ctx.input(|i| i.time);
         if let Some(mut scan) = recovery.scan.take() {
             match poll(&mut scan, ctx) {
                 Poll::Pending => recovery.scan = Some(scan),
@@ -340,11 +420,21 @@ impl NodeCraftApp {
                 }
             }
         }
+        if recovery.writing.is_none()
+            && recovery.retry_at.is_some_and(|at| now >= at)
+            && let Ok(mut journal) = recovery.journal.try_borrow_mut()
+        {
+            recovery.retry_at = None;
+            if let Err(error) = journal.rebuild() {
+                log::warn!("recovery: can't write the slot again: {}", error.message);
+            }
+        }
         if recovery.writing.is_none() {
             let writes = recovery.journal.try_borrow_mut().map(|mut journal| journal.take()).unwrap_or_default();
             if !writes.is_empty()
                 && let Ok(mut shelf) = recovery.shelf.try_borrow_mut()
             {
+                recovery.removing = writes.iter().filter_map(|write| if let Write::Remove { slot } = write { Some(slot.clone()) } else { None }).collect();
                 recovery.writing = Some(shelf.write(writes));
             }
         }
@@ -352,6 +442,7 @@ impl NodeCraftApp {
             match poll(&mut writing, ctx) {
                 Poll::Pending => recovery.writing = Some(writing),
                 Poll::Ready(Ok(())) => {
+                    recovery.removing.clear();
                     recovery.told = false;
                     // More may have come meanwhile.
                     ctx.request_repaint();
@@ -359,11 +450,13 @@ impl NodeCraftApp {
                 Poll::Ready(Err(why)) => {
                     log::warn!("recovery: a write failed: {why}");
                     if let Ok(mut journal) = recovery.journal.try_borrow_mut() {
-                        journal.failed();
+                        journal.failed(std::mem::take(&mut recovery.removing));
                     }
+                    recovery.retry_at = Some(now + RETRY_SECS);
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(RETRY_SECS));
                     if !std::mem::replace(&mut recovery.told, true) {
                         self.notice = Some(format!(
-                            "Unsaved work isn't being kept for recovery: {why}. Save the project to a file to keep it, or free up this site's storage."
+                            "Unsaved work isn't being kept for recovery: {why}. Save the project to a file to keep it, or free up this site's storage; NodeCraft keeps trying."
                         ));
                     }
                 }
@@ -376,6 +469,19 @@ impl NodeCraftApp {
         }
         let t = *self.theme.tokens();
         self.web_recovery_dialog(ctx, &t);
+        if owned {
+            // Keys, text, scrolling and drops while the scan runs or the question is open (this
+            // frame included, if it was just answered) are recovery's: none may edit the document
+            // the answer may replace.
+            ctx.input_mut(|i| {
+                i.events.clear();
+                i.raw.events.clear();
+                i.raw.dropped_files.clear();
+                i.keys_down.clear();
+                i.modifiers = egui::Modifiers::NONE;
+                i.smooth_scroll_delta = egui::Vec2::ZERO;
+            });
+        }
     }
 
     /// Whether the open document is recovered work not saved since.
@@ -439,16 +545,6 @@ impl NodeCraftApp {
             self.decide_web_recovery(choice);
             ctx.request_repaint();
         }
-        // Keys, text, scrolling and drops this frame were the question's; none may edit the
-        // document behind it.
-        ctx.input_mut(|i| {
-            i.events.clear();
-            i.raw.events.clear();
-            i.raw.dropped_files.clear();
-            i.keys_down.clear();
-            i.modifiers = egui::Modifiers::NONE;
-            i.smooth_scroll_delta = egui::Vec2::ZERO;
-        });
     }
 
     fn decide_web_recovery(&mut self, choice: Choice) {
