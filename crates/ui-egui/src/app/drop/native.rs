@@ -176,6 +176,8 @@ struct Shared {
     busy: Arc<AtomicBool>,
     alive: AtomicBool,
     stop: AtomicBool,
+    #[cfg(test)]
+    idle_waiting: AtomicBool,
     backend: Arc<dyn Acquirer>,
     clock: Arc<dyn Clock>,
 }
@@ -250,6 +252,8 @@ impl Service {
             busy: Arc::new(AtomicBool::new(false)),
             alive: AtomicBool::new(true),
             stop: AtomicBool::new(false),
+            #[cfg(test)]
+            idle_waiting: AtomicBool::new(false),
             backend,
             clock,
         });
@@ -334,7 +338,11 @@ fn worker_loop(shared: Arc<Shared>) {
         let job = {
             let mut slot = shared.mailbox.lock().unwrap_or_else(PoisonError::into_inner);
             while slot.is_none() && !shared.stop.load(Ordering::Acquire) {
+                #[cfg(test)]
+                shared.idle_waiting.store(true, Ordering::Release);
                 slot = shared.wake.wait(slot).unwrap_or_else(PoisonError::into_inner);
+                #[cfg(test)]
+                shared.idle_waiting.store(false, Ordering::Release);
             }
             if shared.stop.load(Ordering::Acquire) {
                 return;
@@ -376,7 +384,11 @@ impl TestService {
 #[cfg(test)]
 impl Drop for TestService {
     fn drop(&mut self) {
+        // Publish the predicate under the same mutex used by the condvar wait. Otherwise
+        // a worker can see false, then sleep after this notification and never wake again.
+        let slot = self.service.0.mailbox.lock().unwrap_or_else(PoisonError::into_inner);
         self.service.0.stop.store(true, Ordering::Release);
+        drop(slot);
         self.service.0.wake.notify_one();
         let end = Instant::now() + Duration::from_secs(10);
         while self.service.0.alive.load(Ordering::Acquire) && Instant::now() < end {
