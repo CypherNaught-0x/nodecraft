@@ -332,6 +332,7 @@ pub(crate) mod admission;
 
 mod app_mode;
 mod comments;
+mod deck_editor;
 mod deck_presenter;
 mod drop;
 mod elements;
@@ -486,6 +487,7 @@ pub struct NodeCraftApp {
     mask_editor: Option<mask_editor::MaskEditor>,
     layer_editor: Option<layer_editor::LayerEditor>,
     presenter: Option<deck_presenter::Presenter>,
+    deck_editor: Option<deck_editor::DeckEditor>,
     timeline_editor: Option<timeline_editor::TimelineEditor>,
     /// App mode's form (#95), while it is open.
     app_mode: Option<app_mode::AppMode>,
@@ -903,6 +905,7 @@ impl NodeCraftApp {
             mask_editor: None,
             layer_editor: None,
             presenter: None,
+            deck_editor: None,
             timeline_editor: None,
             app_mode: None,
             exports: Default::default(),
@@ -1041,6 +1044,7 @@ impl NodeCraftApp {
         model_blocks |= self.run_overlay(ui);
         model_blocks |= self.mask_overlay(ui);
         model_blocks |= self.layer_overlay(ui);
+        model_blocks |= self.deck_editor_overlay(ui);
         model_blocks |= self.deck_overlay(ui);
         model_blocks |= self.timeline_overlay(ui);
         if self.on_sheet() {
@@ -1604,6 +1608,10 @@ impl NodeCraftApp {
                                 ui.close();
                             }
                             if node.kind == nodecraft_nodes::deck::ID {
+                                if ui.button("Edit slides…").clicked() {
+                                    layers_request = Some(node.id);
+                                    ui.close();
+                                }
                                 if ui.button("Present").on_hover_text("Show the slides full-window; Esc leaves").clicked() {
                                     present_request = Some(Some(node.id));
                                     ui.close();
@@ -1861,7 +1869,9 @@ impl NodeCraftApp {
             self.open_reader(node);
         }
         if let Some(node) = layers_after {
-            self.open_layer_editor(node);
+            let deck =
+                self.session.document().canvases().get(&self.canvas).and_then(|c| c.nodes().get(&node)).is_some_and(|n| n.kind == nodecraft_nodes::deck::ID);
+            if deck { self.open_deck_editor(node) } else { self.open_layer_editor(node) }
         }
         match present_after {
             Some(Some(node)) => self.open_presenter(node),
@@ -2692,6 +2702,8 @@ impl eframe::App for NodeCraftApp {
 mod action_tests;
 #[cfg(test)]
 mod app_mode_tests;
+#[cfg(test)]
+mod deck_editor_tests;
 #[cfg(test)]
 mod deck_presenter_tests;
 #[cfg(test)]

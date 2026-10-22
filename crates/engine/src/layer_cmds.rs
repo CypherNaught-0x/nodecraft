@@ -269,24 +269,13 @@ fn reorder(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     store(p.canvas, node, layers)
 }
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Edge {
-    Left,
-    Center,
-    Right,
-    Top,
-    Middle,
-    Bottom,
-}
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AlignParams {
     canvas: CanvasId,
     id: NodeId,
     layers: Vec<String>,
-    to: Edge,
+    to: layers::Edge,
 }
 
 fn align(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
@@ -304,35 +293,7 @@ fn align(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             picked.push(at);
         }
     }
-    // One layer aligns to the frame; several to the box around them all.
-    let reference = if picked.len() == 1 {
-        (0.0, 0.0, f64::from(frame.width), f64::from(frame.height))
-    } else {
-        picked
-            .iter()
-            .filter_map(|at| layers.layers.get(*at))
-            .map(Layer::bounds)
-            .fold((f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
-    };
-    let mut skipped = Vec::new();
-    for at in picked {
-        let Some(layer) = layers.layers.get_mut(at) else { continue };
-        if layer.locked {
-            skipped.push(layer.id.clone());
-            continue;
-        }
-        let (left, top, right, bottom) = layer.bounds();
-        let (dx, dy) = match p.to {
-            Edge::Left => (reference.0 - left, 0.0),
-            Edge::Center => ((reference.0 + reference.2 - left - right) / 2.0, 0.0),
-            Edge::Right => (reference.2 - right, 0.0),
-            Edge::Top => (0.0, reference.1 - top),
-            Edge::Middle => (0.0, (reference.1 + reference.3 - top - bottom) / 2.0),
-            Edge::Bottom => (0.0, reference.3 - bottom),
-        };
-        layer.x += dx;
-        layer.y += dy;
-    }
+    let skipped = layers::align(&mut layers.layers, &picked, p.to, (f64::from(frame.width), f64::from(frame.height)));
     let effect = store(p.canvas, node, layers)?;
     let changed = matches!(effect, Effect::Edit { .. });
     Ok(match effect {

@@ -172,6 +172,53 @@ pub fn parse_color(text: &str) -> Result<[u8; 4], ImageError> {
     Ok([byte(0)?, byte(2)?, byte(4)?, if hex.len() == 8 { byte(6)? } else { 255 }])
 }
 
+/// An edge or centre line layers are aligned to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Edge {
+    Left,
+    Center,
+    Right,
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// Aligns the layers at `picked` (indices into `layers`) to `to`: one layer against the
+/// `frame` (width, height), several against the box around them all. Locked layers stay; their
+/// ids are returned.
+pub fn align(layers: &mut [Layer], picked: &[usize], to: Edge, (width, height): (f64, f64)) -> Vec<String> {
+    let reference = if picked.len() == 1 {
+        (0.0, 0.0, width, height)
+    } else {
+        picked
+            .iter()
+            .filter_map(|at| layers.get(*at))
+            .map(Layer::bounds)
+            .fold((f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY), |a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+    };
+    let mut skipped = Vec::new();
+    for at in picked {
+        let Some(layer) = layers.get_mut(*at) else { continue };
+        if layer.locked {
+            skipped.push(layer.id.clone());
+            continue;
+        }
+        let (left, top, right, bottom) = layer.bounds();
+        let (dx, dy) = match to {
+            Edge::Left => (reference.0 - left, 0.0),
+            Edge::Center => ((reference.0 + reference.2 - left - right) / 2.0, 0.0),
+            Edge::Right => (reference.2 - right, 0.0),
+            Edge::Top => (0.0, reference.1 - top),
+            Edge::Middle => (0.0, (reference.1 + reference.3 - top - bottom) / 2.0),
+            Edge::Bottom => (0.0, reference.3 - bottom),
+        };
+        layer.x += dx;
+        layer.y += dy;
+    }
+    skipped
+}
+
 impl Layers {
     /// Parses and checks stored or planned layers. Rejects oversized input before decoding it.
     pub fn parse(json: &str) -> Result<Self, ImageError> {
