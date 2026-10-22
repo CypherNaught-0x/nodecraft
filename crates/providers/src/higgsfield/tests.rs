@@ -215,6 +215,36 @@ fn receipt_free_estimate(v: Value) -> Result<HttpResponse, ProviderError> {
 }
 
 #[test]
+fn estimate_upload_expires_on_the_adapter_clock() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct FixtureClock(AtomicU64);
+    impl Clock for FixtureClock {
+        fn sleep(&self, _: u64) -> BoxFuture<'static, ()> {
+            Box::pin(async {})
+        }
+        fn now_ms(&self) -> u64 {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+    let clock = Arc::new(FixtureClock(AtomicU64::new(100)));
+    let t = Transport::new(vec![grant(), empty(200), ok(json!({"credits": "1", "usd": "0.5"})), ok(json!({"credits": "1", "usd": "0.5"}))]);
+    let p = Higgsfield::with_clock(key(), t.clone(), clock.clone());
+    let job = kling();
+    block_on(p.estimate(&job)).unwrap();
+    clock.0.store(100 + UPLOAD_TTL_MS - 1, Ordering::Relaxed);
+    block_on(p.estimate(&job)).unwrap();
+    assert_eq!(t.requests().len(), 4, "fresh link is reused without a second upload");
+    clock.0.store(100 + UPLOAD_TTL_MS, Ordering::Relaxed);
+    t.push(vec![image_grant(2), empty(200), receipt()]);
+    block_on(p.submit(&job)).unwrap();
+    let requests = t.requests();
+    assert_eq!(requests.len(), 7, "expired link needs a new grant and upload before submit");
+    assert_eq!(body(&requests[3])["image_url"], PUBLIC);
+    assert_eq!(body(&requests[6])["image_url"], "https://upload.cdn.example.com/inputs/ref2.png");
+    assert_eq!(header(&requests[5], "Authorization"), None);
+}
+
+#[test]
 fn refusals_are_typed_and_only_documented_ones_prove_nothing_was_accepted() {
     let refusal = |code: u16, detail: Value| HttpResponse { status: code, headers: vec![], body: serde_json::to_vec(&json!({"detail": detail})).unwrap() };
     let busy = refusal(400, json!("Maximum number of concurrent requests (4) has been reached"));

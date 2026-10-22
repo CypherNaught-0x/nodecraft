@@ -14,7 +14,7 @@ mod tests;
 mod training;
 use crate::secrets::Secret;
 use crate::{
-    BoxFuture, Completed, ErrorKind, Http, HttpMethod, HttpRequest, HttpResponse, JobHandle, JobProgress, Output, Provider, ProviderError, ProviderJob,
+    BoxFuture, Clock, Completed, ErrorKind, Http, HttpMethod, HttpRequest, HttpResponse, JobHandle, JobProgress, Output, Provider, ProviderError, ProviderJob,
     StagedSubmit, Submission,
 };
 use nodecraft_media::ContentHash;
@@ -48,6 +48,20 @@ const API: &str = "https://api.higgsfield.ai";
 const MIB: usize = 1024 * 1024;
 /// Bodies kept for exact replay, and uploads kept from estimates; the oldest goes first.
 const STAGED: usize = 32;
+/// Presigned upload retention is unspecified; reuse an estimate's link for at most five minutes.
+const UPLOAD_TTL_MS: u64 = 5 * 60 * 1_000;
+
+/// Default monotonic clock for callers using the existing two-argument constructor.
+struct UploadClock(std::time::Instant);
+impl Clock for UploadClock {
+    fn sleep(&self, _: u64) -> BoxFuture<'static, ()> {
+        // Only now_ms is used for upload retention; the adapter never schedules a sleep.
+        Box::pin(futures::future::pending())
+    }
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.0.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+}
 
 /// Lower-only payload limits for one job.
 #[derive(Clone, Copy, Debug)]
@@ -181,6 +195,7 @@ struct Uploaded {
     mime: &'static str,
     bytes: ContentHash,
     url: String,
+    uploaded_at_ms: u64,
 }
 
 /// Whether an upload is for an estimate, which keeps it, or a submit, which takes it.
@@ -195,6 +210,7 @@ pub struct Higgsfield {
     /// The key ID and secret joined by a colon, as Higgsfield issues them.
     key: Secret,
     http: Arc<dyn Http>,
+    clock: Arc<dyn Clock>,
     limits: Limits,
     staged: Mutex<VecDeque<Staged>>,
     /// Uploads made for estimates (#663). The job a person runs after its estimate sends the
@@ -207,9 +223,14 @@ pub struct Higgsfield {
 }
 impl Higgsfield {
     pub fn new(key: Secret, http: Arc<dyn Http>) -> Self {
+        Self::with_clock(key, http, Arc::new(UploadClock(std::time::Instant::now())))
+    }
+    /// Inject a monotonic clock, including a deterministic fixture clock for upload expiry.
+    pub fn with_clock(key: Secret, http: Arc<dyn Http>, clock: Arc<dyn Clock>) -> Self {
         Self {
             key,
             http,
+            clock,
             limits: Limits::HARD,
             staged: Mutex::new(VecDeque::new()),
             uploaded: Mutex::new(VecDeque::new()),
@@ -292,11 +313,13 @@ impl Higgsfield {
     }
     /// The URL of `bytes` on Higgsfield's storage: one an estimate uploaded, else a new upload.
     /// An estimate keeps what it uploads for later estimates and the next submit; a submit takes
-    /// it, so an upload is reused by one submit only and never long after it was made.
+    /// it, so an upload is reused by one submit only within the short retention window.
     async fn file(&self, mime: &'static str, bytes: &[u8], using: Use) -> Result<String, ProviderError> {
         let hash = ContentHash::of(bytes);
         {
+            let now = self.clock.now_ms();
             let mut uploads = self.uploads();
+            uploads.retain(|u| now.checked_sub(u.uploaded_at_ms).is_some_and(|age| age < UPLOAD_TTL_MS));
             if let Some(at) = uploads.iter().position(|u| u.mime == mime && u.bytes == hash) {
                 let url = match using {
                     Use::Estimate => uploads.get(at).map(|u| u.url.clone()),
@@ -309,12 +332,14 @@ impl Higgsfield {
         }
         let url = self.upload(mime, bytes).await?;
         if using == Use::Estimate {
+            let now = self.clock.now_ms();
             let mut uploads = self.uploads();
+            uploads.retain(|u| now.checked_sub(u.uploaded_at_ms).is_some_and(|age| age < UPLOAD_TTL_MS));
             if !uploads.iter().any(|u| u.mime == mime && u.bytes == hash) {
                 if uploads.len() >= STAGED {
                     uploads.pop_front();
                 }
-                uploads.push_back(Uploaded { mime, bytes: hash, url: url.clone() });
+                uploads.push_back(Uploaded { mime, bytes: hash, url: url.clone(), uploaded_at_ms: now });
             }
         }
         Ok(url)
