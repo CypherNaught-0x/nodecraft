@@ -1,7 +1,10 @@
 //! Text layers: shaped with `harfrust`, outlined with `skrifa`, laid out in the layer's own box.
 //! Lines break only at newlines; each line is aligned within the box's width, and the first
 //! line's top sits at the box's top.
-use super::{Align, Content, Layer, bad, fonts::Fonts};
+use super::{
+    Align, Content, Layer, bad,
+    fonts::{Fonts, guarded},
+};
 use crate::image::ImageError;
 use skrifa::MetadataProvider;
 use skrifa::instance::{LocationRef, Size};
@@ -110,7 +113,8 @@ fn lay_out<'f>(style: &Style<'_>, fonts: &Fonts<'f>) -> Result<(skrifa::FontRef<
 /// The box a text layer's text needs, drawn with its font from `fonts`: its widest line, and its
 /// lines' height.
 pub fn text_size(layer: &Layer, fonts: &Fonts<'_>) -> Result<(f64, f64), ImageError> {
-    let (_, laid) = lay_out(&style(layer)?, fonts)?;
+    let style = style(layer)?;
+    let (_, laid) = guarded(|| lay_out(&style, fonts))?;
     let width = laid.lines.iter().map(|l| l.width).fold(0.0, f64::max);
     let count = laid.lines.len().max(1) as f64;
     Ok((width.ceil().max(1.0), (laid.line_height * count).ceil().max(1.0)))
@@ -119,7 +123,11 @@ pub fn text_size(layer: &Layer, fonts: &Fonts<'_>) -> Result<(f64, f64), ImageEr
 /// A text layer's glyph outlines, in its own box.
 pub(super) fn outline(layer: &Layer, fonts: &Fonts<'_>) -> Result<BezPath, ImageError> {
     let style = style(layer)?;
-    let (font, laid) = lay_out(&style, fonts)?;
+    guarded(|| draw(layer, &style, fonts))
+}
+
+fn draw(layer: &Layer, style: &Style<'_>, fonts: &Fonts<'_>) -> Result<BezPath, ImageError> {
+    let (font, laid) = lay_out(style, fonts)?;
     let outlines = font.outline_glyphs();
     let settings = || DrawSettings::unhinted(Size::new(style.size as f32), LocationRef::default());
     let mut path = BezPath::new();
