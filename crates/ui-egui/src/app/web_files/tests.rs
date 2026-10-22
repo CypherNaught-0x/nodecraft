@@ -9,12 +9,17 @@ struct Script {
     writes: VecDeque<Result<(), String>>,
     written: Vec<(Option<u64>, String, Vec<u8>)>,
     asked: Vec<String>,
+    /// The next open never answers, as a file field that doesn't report a cancel.
+    hang: bool,
 }
 
 struct Fake(Rc<RefCell<Script>>);
 
 impl Port for Fake {
     fn open(&mut self, _max: u64) -> PickFuture<Option<Picked>> {
+        if std::mem::take(&mut self.0.borrow_mut().hang) {
+            return Box::pin(std::future::pending());
+        }
         let answer = self.0.borrow_mut().opens.pop_front().unwrap_or(Ok(None));
         Box::pin(std::future::ready(answer))
     }
@@ -142,8 +147,7 @@ fn opening_a_picked_project_replaces_the_document_and_saves_go_back_to_it() {
     let (mut app, script) = app();
     script.borrow_mut().opens.push_back(Ok(Some(Picked { name: "forest.ncraft".into(), bytes, target: Some(9) })));
     frame(&mut app, &ctx, |app, ctx| app.web_file("file.open", ctx));
-    // A new window's starter project counts as unsaved.
-    app.web_answer(true);
+    assert!(!app.web_files.busy(), "an untouched starter project isn't asked about");
     assert!(app.notice.is_none(), "{:?}", app.notice);
     assert_eq!(app.session.document(), &saved, "the picked project is open");
     assert!(app.web_files.staged.borrow().incoming.is_none(), "the bytes aren't kept");
@@ -185,7 +189,6 @@ fn a_damaged_or_refused_pick_says_why_and_keeps_the_project() {
     let before = app.session.document().clone();
     script.borrow_mut().opens.push_back(Ok(Some(Picked { name: "junk.ncraft".into(), bytes: b"not a project".to_vec(), target: None })));
     frame(&mut app, &ctx, |app, ctx| app.web_file("file.open", ctx));
-    app.web_answer(true);
     assert!(app.notice.is_some());
     assert_eq!(app.session.document(), &before);
     assert!(app.web_files.staged.borrow().incoming.is_none());
@@ -222,4 +225,65 @@ fn locations_are_unique_and_keep_a_safe_file_name() {
     assert_eq!(file_name(&a), "forest.ncraft");
     assert_eq!(file_name(&files.location("a/b\u{7}.ncraft")), "ab.ncraft");
     assert_eq!(file_name(&files.location(" \n")), "Untitled.ncraft");
+}
+
+#[test]
+fn a_new_tab_can_be_left_without_a_warning() {
+    let ctx = egui::Context::default();
+    let (mut app, _) = app();
+    frame(&mut app, &ctx, |app, ctx| assert!(!app.web_files_frame(ctx)));
+    assert!(!app.web_files.unsaved.get(), "the starter project has nothing to lose");
+    add_text(&mut app, 50);
+    frame(&mut app, &ctx, |app, ctx| assert!(!app.web_files_frame(ctx)));
+    assert!(app.web_files.unsaved.get());
+}
+
+#[test]
+fn opening_after_a_failed_write_asks_first() {
+    let ctx = egui::Context::default();
+    let (mut source, script) = app();
+    let (_, _, bytes) = save_as(&mut source, &script, &ctx, "other.ncraft", None);
+
+    let (mut app, script) = app();
+    add_text(&mut app, 50);
+    script.borrow_mut().writes.push_back(Err("There isn't enough space to write the file.".into()));
+    save_as(&mut app, &script, &ctx, "forest.ncraft", Some(3));
+    assert!(!app.session.file_status().dirty);
+    script.borrow_mut().opens.push_back(Ok(Some(Picked { name: "other.ncraft".into(), bytes, target: None })));
+    frame(&mut app, &ctx, |app, ctx| app.web_file("file.open", ctx));
+    assert!(matches!(app.web_files.phase, Some(Phase::Confirm(_))), "the unwritten save would be lost");
+}
+
+#[test]
+fn a_file_field_that_never_answers_doesnt_block_saving() {
+    let ctx = egui::Context::default();
+    let (mut app, script) = app();
+    add_text(&mut app, 50);
+    script.borrow_mut().hang = true;
+    frame(&mut app, &ctx, |app, ctx| app.web_file("file.open", ctx));
+    assert!(app.web_files.busy());
+    frame(&mut app, &ctx, |app, ctx| assert!(!app.web_files_frame(ctx)));
+    let (target, _, _) = save_as(&mut app, &script, &ctx, "forest.ncraft", Some(4));
+    assert_eq!(target, Some(4), "save replaced the waiting open");
+    assert!(!app.web_files.busy());
+}
+
+#[test]
+fn a_save_made_by_another_caller_still_reaches_the_file() {
+    let ctx = egui::Context::default();
+    let (mut app, script) = app();
+    save_as(&mut app, &script, &ctx, "forest.ncraft", Some(5));
+    add_text(&mut app, 50);
+    // As the agent or a script would, straight through the command.
+    app.session.dispatch("file.save", &json!({})).unwrap();
+    frame(&mut app, &ctx, |app, ctx| {
+        app.web_files_frame(ctx);
+    });
+    frame(&mut app, &ctx, |app, ctx| {
+        app.web_files_frame(ctx);
+    });
+    let script = script.borrow();
+    assert_eq!(script.written.len(), 1, "the earlier write was taken by save_as");
+    assert_eq!(script.written[0].0, Some(5));
+    assert!(!app.web_files.unsaved.get());
 }

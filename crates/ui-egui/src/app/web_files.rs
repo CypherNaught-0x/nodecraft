@@ -163,8 +163,15 @@ impl WebFiles {
         Self::new(Box::<browser::Browser>::default())
     }
 
-    pub(super) fn busy(&self) -> bool {
+    #[cfg(test)]
+    fn busy(&self) -> bool {
         self.phase.is_some()
+    }
+
+    /// Busy with something other than waiting for a pick to open, which any other file action
+    /// replaces: a file field may never say it was cancelled.
+    fn blocking(&self) -> bool {
+        !matches!(self.phase, None | Some(Phase::Opening(_)))
     }
 
     /// A fresh location for a file named `name`.
@@ -212,9 +219,8 @@ impl NodeCraftApp {
 
     /// Open, save or save as in the browser: `file.open`, `file.save` or `file.save_as`.
     pub(super) fn web_file(&mut self, id: &str, ctx: &egui::Context) {
-        // A file field may never say it was cancelled, so another open replaces a waiting one.
-        let replaces = id == "file.open" && matches!(self.web_files.phase, Some(Phase::Opening(_)));
-        if self.web_files.busy() && !replaces {
+        if self.web_files.blocking() {
+            self.notice = Some("Wait for the current save or open to finish.".into());
             return;
         }
         if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
@@ -245,8 +251,9 @@ impl NodeCraftApp {
         match self.web_files.phase.take() {
             Some(Phase::Opening(mut future)) => match poll(&mut future, ctx) {
                 Poll::Pending => self.web_files.phase = Some(Phase::Opening(future)),
-                Poll::Ready(Ok(Some(picked))) if self.session.file_status().dirty => self.web_files.phase = Some(Phase::Confirm(picked)),
-                Poll::Ready(Ok(Some(picked))) => self.web_open(picked, false),
+                Poll::Ready(Ok(Some(picked))) if self.web_unsaved() => self.web_files.phase = Some(Phase::Confirm(picked)),
+                // Nothing here would be lost.
+                Poll::Ready(Ok(Some(picked))) => self.web_open(picked, true),
                 Poll::Ready(Ok(None)) => {}
                 Poll::Ready(Err(error)) => self.notice = Some(error),
             },
@@ -275,12 +282,27 @@ impl NodeCraftApp {
                 }
             },
             Some(Phase::Confirm(picked)) => self.web_files.phase = Some(Phase::Confirm(picked)),
-            None => {}
+            None => {
+                // A save made some other way than the File menu still reaches the file.
+                let left = self.web_files.staged.try_borrow_mut().ok().and_then(|mut staged| staged.written.take());
+                if let Some((saved, bytes)) = left {
+                    self.web_write(&saved, bytes);
+                    ctx.request_repaint();
+                }
+            }
         }
         let asking = self.web_confirm(ctx);
-        let unsaved = self.web_files.unwritten || self.web_files.busy() || self.session.file_status().dirty;
+        let unsaved = self.web_unsaved();
         self.web_files.unsaved.set(unsaved);
         asking
+    }
+
+    /// Whether leaving or opening another project would lose work: edits since the last save
+    /// (not the untouched starter project), a write under way, or a save the browser didn't write.
+    fn web_unsaved(&self) -> bool {
+        let status = self.session.file_status();
+        let edited = status.dirty && (status.location.is_some() || self.session.can_undo());
+        edited || self.web_files.unwritten || matches!(self.web_files.phase, Some(Phase::Writing { .. }))
     }
 
     /// The browser's File menu: open, save and save as.
@@ -292,7 +314,7 @@ impl NodeCraftApp {
             .fixed_pos(ui.max_rect().min + egui::Vec2::new(t.card_padding, t.card_padding * 4.0))
             .show(ui.ctx(), |ui| {
                 egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding * 0.5).show(ui, |ui| {
-                    ui.add_enabled_ui(!self.web_files.busy() && self.model_choice.is_none() && !self.model_frame_owned, |ui| {
+                    ui.add_enabled_ui(!self.web_files.blocking() && self.model_choice.is_none() && !self.model_frame_owned, |ui| {
                         ui.menu_button("File", |ui| {
                             for (id, label) in [("file.open", "Open project…"), ("file.save", "Save project"), ("file.save_as", "Save project as…")] {
                                 if ui.button(label).clicked() {
@@ -398,8 +420,13 @@ impl NodeCraftApp {
             self.notice = Some("The project was saved but nothing was handed to the browser to write; save it again.".into());
             return;
         };
-        let target = self.web_files.targets.get(&saved).copied().flatten();
-        let name = file_name(&saved).to_owned();
+        self.web_write(&saved, bytes);
+    }
+
+    /// Hands a save's bytes to the browser, for the file picked for `saved` or as a download.
+    fn web_write(&mut self, saved: &str, bytes: Vec<u8>) {
+        let target = self.web_files.targets.get(saved).copied().flatten();
+        let name = file_name(saved).to_owned();
         let future = self.web_files.port.write(target, &name, bytes);
         self.web_files.phase = Some(Phase::Writing { future, name, download: target.is_none() });
     }

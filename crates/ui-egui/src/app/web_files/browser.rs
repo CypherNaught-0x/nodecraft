@@ -136,7 +136,12 @@ impl Port for Browser {
             let handles = match call_async(&window, "showOpenFilePicker", &[options]).await {
                 Ok(handles) => handles,
                 Err(error) if error_name(&error) == "AbortError" => return Ok(None),
-                Err(_) => return Err("The browser couldn't open the file picker.".into()),
+                // Refused here (a framed page, say): a file field still works.
+                Err(_) => {
+                    let Some(file) = input_file().await? else { return Ok(None) };
+                    let (name, bytes) = read(file, max).await?;
+                    return Ok(Some(Picked { name, bytes, target: None }));
+                }
             };
             let handle = js_sys::Array::from(&handles).get(0);
             if handle.is_undefined() {
@@ -165,7 +170,8 @@ impl Port for Browser {
             let handle = match call_async(&window, "showSaveFilePicker", &[options]).await {
                 Ok(handle) => handle,
                 Err(error) if error_name(&error) == "AbortError" => return Ok(None),
-                Err(_) => return Err("The browser couldn't open the save picker.".into()),
+                // Refused here (a framed page, say): save as a download instead.
+                Err(_) => return Ok(Some(Named { name: suggested, target: None })),
             };
             let name = js_sys::Reflect::get(&handle, &JsValue::from_str("name")).ok().and_then(|n| n.as_string()).unwrap_or(suggested);
             Ok(Some(Named { name, target: Some(port.keep(handle)) }))
