@@ -346,7 +346,7 @@ fn bounded_request(request: &Value) -> Result<Value, Error> {
             }
             &["op", "grant_id"]
         }
-        "enable" | "disable" | "uninstall" | "rollback" | "grant" => {
+        "enable" | "disable" | "uninstall" | "rollback" | "grant" | "rights" => {
             let package = object.get("package_id").and_then(Value::as_str).ok_or_else(invalid)?;
             PackageId::parse(package).map_err(|_| invalid())?;
             if op == "rollback" {
@@ -354,6 +354,14 @@ fn bounded_request(request: &Value) -> Result<Value, Error> {
                 &["op", "package_id", "digest"]
             } else if op == "uninstall" {
                 &["op", "package_id", "referenced"]
+            } else if op == "grant" {
+                if object.get("digest").is_some_and(|d| d.as_str().is_none_or(|d| PackageDigest::parse(d).is_err())) {
+                    return Err(invalid());
+                }
+                for key in ["capabilities", "origins"] {
+                    super::short_list(request, key, nodecraft_plugin_store::grants::MAX_ORIGIN_BYTES).map_err(|_| invalid())?;
+                }
+                &["op", "package_id", "digest", "capabilities", "origins"]
             } else {
                 &["op", "package_id"]
             }

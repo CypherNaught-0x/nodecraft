@@ -286,3 +286,30 @@ fn referenced_digests_are_bounded_checked_and_only_for_uninstall_and_prune() {
         assert_eq!(bounded_request(&request).unwrap_err().kind, ErrorKind::InvalidInput);
     }
 }
+
+#[test]
+fn grant_and_rights_requests_are_bounded_before_the_worker_takes_them() {
+    let digest = format!("blake3:{}", "0".repeat(64));
+    let pkg = "io.example.acme";
+    let ok = [
+        json!({"op": "rights", "package_id": pkg}),
+        json!({"op": "grant", "package_id": pkg}),
+        json!({"op": "grant", "package_id": pkg, "digest": digest, "capabilities": ["network"], "origins": ["https://api.acme.example"]}),
+    ];
+    for request in ok {
+        assert!(bounded_request(&request).is_ok(), "{request}");
+    }
+    let many: Vec<String> = (0..9).map(|i| format!("https://o{i}.example")).collect();
+    let bad = [
+        json!({"op": "rights", "package_id": pkg, "digest": digest}),
+        json!({"op": "grant", "package_id": pkg, "digest": null}),
+        json!({"op": "grant", "package_id": pkg, "digest": "blake3:00"}),
+        json!({"op": "grant", "package_id": pkg, "origins": many}),
+        json!({"op": "grant", "package_id": pkg, "origins": ["x".repeat(257)]}),
+        json!({"op": "grant", "package_id": pkg, "capabilities": "network"}),
+        json!({"op": "grant", "package_id": pkg, "extra": true}),
+    ];
+    for request in bad {
+        assert_eq!(bounded_request(&request).unwrap_err().kind, ErrorKind::InvalidInput, "{request}");
+    }
+}

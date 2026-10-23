@@ -202,6 +202,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "style.use",
     "style.card",
     "plugins.list",
+    // What a package asks for: read-only, so an agent can explain a grant before a person gives it.
+    "plugins.rights",
     // Retained result reads/acknowledgements never read files or change installed packages.
     "plugins.result",
     "plugins.forget",

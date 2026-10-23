@@ -144,10 +144,13 @@ fn a_text_action_package_runs_only_once_granted() {
     assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["grant"], Value::Null);
     let grant = s.dispatch("plugins.grant", &pkg).unwrap();
     assert_eq!((grant["grant_id"].as_str(), grant["epoch"].as_u64(), grant["package_id"].as_str()), (Some("g1"), Some(1), Some("io.example.text")));
-    assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["grant"], json!({"grant_id": "g1", "epoch": 1}));
+    assert_eq!(
+        s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["grant"],
+        json!({"grant_id": "g1", "epoch": 1, "capabilities": [], "origins": []})
+    );
     let enabled = s.dispatch("plugins.enable", &pkg).unwrap();
     assert_eq!(enabled["registered"], json!(["plugin.io.example.text.warm"]));
-    assert_eq!(enabled["grant"], json!({"grant_id": "g1", "epoch": 1}));
+    assert_eq!(enabled["grant"], json!({"grant_id": "g1", "epoch": 1, "capabilities": [], "origins": []}));
     let revoked = s.dispatch("plugins.revoke", &json!({"grant_id": "g1"})).unwrap();
     assert_eq!(revoked, json!({"grant_id": "g1", "revoked": true, "disabled": true, "dependents": []}));
     assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["state"], "disabled");
@@ -178,4 +181,123 @@ fn a_broken_definition_is_refused_before_it_is_granted() {
     // A data package needs no grant.
     s.dispatch("plugins.import", &json!({"location": package(dir.path(), "io.example.palette", "1.0.0")})).unwrap();
     assert_eq!(s.dispatch("plugins.grant", &json!({"package_id": "io.example.palette"})).unwrap_err().kind, ErrorKind::InvalidInput);
+}
+
+/// A provider operations package (#174) whose one provider's template reaches `cdn`.
+fn provider_package(dir: &std::path::Path, version: &str, cdn: &str) -> String {
+    provider_package_asking(dir, version, cdn, r#""optional":[],"required":["network","secret"]"#)
+}
+
+/// `provider_package` whose manifest asks for `capabilities`.
+fn provider_package_asking(dir: &std::path::Path, version: &str, cdn: &str, capabilities: &str) -> String {
+    let manifest = manifest("io.example.acme", version)
+        .replace(r#"{"kind":"data"}"#, r#"{"kind":"provider_operations","schema":1}"#)
+        .replace(r#""kind":"catalog""#, r#""kind":"provider""#)
+        .replace(r#""optional":[],"required":[]"#, capabilities);
+    assert!(manifest.contains(capabilities), "{manifest}");
+    let template = json!({
+        "schema": 1, "label": "Acme", "origin": "https://api.acme.example", "output_origins": [cdn], "credential": "bearer",
+        "models": [{"id": "acme/v1", "price": {"currency": "USD", "micros": "40000"}}],
+        "submit": {"method": "POST", "path": "/v1/{model}", "body": {"prompt": "{text:prompt}"}, "outputs": [{"at": "/url", "kind": "url", "mime": "image/png"}]},
+        "limits": {"response_bytes": 65536, "timeout_ms": 30000, "concurrency": 1}
+    })
+    .to_string();
+    let bytes = archive::build(&[("manifest.json", manifest.as_bytes()), ("LICENSE", b"MIT\n"), ("d/warm.json", template.as_bytes())], None).unwrap();
+    let path = dir.join(format!("io.example.acme-{version}.ncraft-plugin"));
+    std::fs::write(&path, bytes).unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
+#[test]
+fn a_provider_package_is_granted_exactly_the_rights_it_showed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(BTreeSet::new(), None);
+    let imported = s.dispatch("plugins.import", &json!({"location": provider_package(dir.path(), "1.0.0", "https://cdn.acme.example")})).unwrap();
+    let origins = json!(["https://api.acme.example", "https://cdn.acme.example"]);
+    assert_eq!(imported["rights"], json!({"required": ["network", "secret"], "optional": [], "origins": origins}));
+    let shown = s.dispatch("plugins.rights", &json!({"package_id": "io.example.acme"})).unwrap();
+    assert_eq!((&shown["origins"], &shown["grant"]), (&origins, &Value::Null));
+    let digest = shown["digest"].clone();
+    let both = json!(["network", "secret"]);
+    let grant = |s: &mut Session, p: Value| s.dispatch("plugins.grant", &p);
+    // A bare grant, a stale digest, a missing capability or other origins grant nothing.
+    assert_eq!(grant(&mut s, json!({"package_id": "io.example.acme"})).unwrap_err().kind, ErrorKind::InvalidInput);
+    let stale = format!("blake3:{}", "0".repeat(64));
+    assert_eq!(
+        grant(&mut s, json!({"package_id": "io.example.acme", "digest": stale, "capabilities": both, "origins": origins})).unwrap_err().kind,
+        ErrorKind::Conflict
+    );
+    assert_eq!(
+        grant(&mut s, json!({"package_id": "io.example.acme", "digest": digest, "capabilities": ["network"], "origins": origins})).unwrap_err().kind,
+        ErrorKind::InvalidInput
+    );
+    let fewer = json!(["https://api.acme.example"]);
+    assert_eq!(
+        grant(&mut s, json!({"package_id": "io.example.acme", "digest": digest, "capabilities": both, "origins": fewer})).unwrap_err().kind,
+        ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        grant(&mut s, json!({"package_id": "io.example.acme", "digest": digest, "capabilities": ["network", "secret", "process"], "origins": origins}))
+            .unwrap_err()
+            .kind,
+        ErrorKind::InvalidInput
+    );
+    assert_eq!(s.dispatch("plugins.rights", &json!({"package_id": "io.example.acme"})).unwrap()["grant"], Value::Null);
+    let granted = grant(&mut s, json!({"package_id": "io.example.acme", "digest": digest, "capabilities": both, "origins": origins})).unwrap();
+    assert_eq!((&granted["capabilities"], &granted["origins"]), (&both, &origins));
+    assert_eq!(s.dispatch("plugins.rights", &json!({"package_id": "io.example.acme"})).unwrap()["grant"]["grant_id"], granted["grant_id"]);
+    // An update that reaches a new origin shows it and drops the grant.
+    let updated = s.dispatch("plugins.update", &json!({"location": provider_package(dir.path(), "1.1.0", "https://files.acme.example")})).unwrap();
+    assert_eq!(
+        updated["rights_delta"],
+        json!({"added_capabilities": [], "removed_capabilities": [], "added_origins": ["https://files.acme.example"], "removed_origins": ["https://cdn.acme.example"]})
+    );
+    assert_eq!(s.dispatch("plugins.rights", &json!({"package_id": "io.example.acme"})).unwrap()["grant"], Value::Null);
+}
+
+#[test]
+fn grant_requests_are_bounded_before_they_are_read() {
+    let mut s = session(BTreeSet::new(), None);
+    let many: Vec<String> = (0..9).map(|i| format!("https://o{i}.example")).collect();
+    for bad in [
+        json!({"package_id": "io.example.acme", "origins": many}),
+        json!({"package_id": "io.example.acme", "capabilities": ["x".repeat(33)]}),
+        json!({"package_id": "io.example.acme", "capabilities": [1]}),
+        json!({"package_id": "io.example.acme", "digest": "sha256:00"}),
+        json!({"package_id": "io.example.acme", "digest": 7}),
+        json!({"package_id": "io.example.acme", "extra": true}),
+    ] {
+        assert_eq!(s.dispatch("plugins.grant", &bad).unwrap_err().kind, ErrorKind::InvalidInput, "{bad}");
+    }
+}
+
+#[test]
+fn an_optional_capability_is_granted_only_as_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(BTreeSet::new(), None);
+    let path = provider_package_asking(dir.path(), "1.0.0", "https://cdn.acme.example", r#""optional":["secret"],"required":["network"]"#);
+    s.dispatch("plugins.import", &json!({"location": path})).unwrap();
+    let shown = s.dispatch("plugins.rights", &json!({"package_id": "io.example.acme"})).unwrap();
+    assert_eq!((&shown["required"], &shown["optional"]), (&json!(["network"]), &json!(["secret"])));
+    let digest = shown["digest"].clone();
+    let origins = json!(["https://api.acme.example", "https://cdn.acme.example"]);
+    let grant = |s: &mut Session, p: Value| s.dispatch("plugins.grant", &p);
+    // No digest, a missing required capability, or a name twice is refused, not narrowed.
+    for bad in [
+        json!({"package_id": "io.example.acme", "origins": origins}),
+        json!({"package_id": "io.example.acme", "digest": digest}),
+        json!({"package_id": "io.example.acme", "digest": digest, "capabilities": ["secret"], "origins": origins}),
+        json!({"package_id": "io.example.acme", "digest": digest, "capabilities": ["network", "network"], "origins": origins}),
+        json!({"package_id": "io.example.acme", "digest": digest, "capabilities": ["network"], "origins": [origins[0], origins[0], origins[1]]}),
+    ] {
+        assert_eq!(grant(&mut s, bad.clone()).unwrap_err().kind, ErrorKind::InvalidInput, "{bad}");
+    }
+    let network = grant(&mut s, json!({"package_id": "io.example.acme", "digest": digest, "capabilities": ["network"], "origins": origins})).unwrap();
+    assert_eq!((&network["capabilities"], &network["origins"]), (&json!(["network"]), &origins));
+    // Granting the optional one too replaces the live grant under a new epoch; the same rights again keep it.
+    let both = json!({"package_id": "io.example.acme", "digest": digest, "capabilities": ["network", "secret"], "origins": origins});
+    let more = grant(&mut s, both.clone()).unwrap();
+    assert!(more["epoch"].as_u64() > network["epoch"].as_u64());
+    assert_eq!(grant(&mut s, both).unwrap()["grant_id"], more["grant_id"]);
+    assert_eq!(s.dispatch("plugins.rights", &json!({"package_id": "io.example.acme"})).unwrap()["grant"]["grant_id"], more["grant_id"]);
 }
