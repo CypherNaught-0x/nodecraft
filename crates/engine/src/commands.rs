@@ -242,6 +242,7 @@ impl Registry {
             .chain(crate::describe_cmds::specs())
             .chain(crate::option_cmds::specs())
             .chain(crate::option_fetch::specs())
+            .chain(crate::comfy_workflow_cmds::specs())
             .chain(crate::update_check::specs())
             .chain(crate::update_install::specs())
             .chain(crate::navigation_cmds::specs())

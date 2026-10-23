@@ -142,6 +142,14 @@ catalog's models name (the checkpoints the ComfyUI server in settings has, #529)
 `node.options` for one parameter's list. Only a host with a fetch service runs it: through the
 bridge to the desktop app it works, while the standalone CLI reports it unavailable.
 
+**ComfyUI workflows:** `comfy.workflow.import` places a ComfyUI workflow file (API or UI
+format, passed as text) as one card: its file inputs become ports, its prompts and seeds (or the
+`node.input` names in `params`) become parameters, and its save nodes become results (#9). It
+reads the workflow against the ComfyUI server's node list, so call `comfy.nodes.refresh` first
+(`{pending: id}`) and check `comfy.nodes.status`. As with option lists, only a host with a fetch
+service reads the list: the bridge to the desktop app does, the standalone CLI reports it
+unavailable.
+
 **Updates:** `app.check_updates` asks the desktop app to read NodeCraft's releases from GitHub
 and returns `{pending: id}`; `app.update_status` then reports this build's version and whether a
 newer release is on the update channel in settings (#123), and under `install` where an install
