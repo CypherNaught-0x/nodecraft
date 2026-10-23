@@ -184,6 +184,7 @@ fn untranslated_clip_settings(clip: &Clip, losses: &mut Vec<Loss>) {
     if clip.speed != UNIT {
         losses.push(Loss {
             clip: id(),
+            caption: None,
             feature: "speed",
             detail: "not written: the clip exports at its unretimed media-trim length, and later clips shift by the difference; retime it in the other editor"
                 .into(),
@@ -194,12 +195,18 @@ fn untranslated_clip_settings(clip: &Clip, losses: &mut Vec<Loss>) {
     if !position.is_empty() {
         losses.push(Loss {
             clip: id(),
+            caption: None,
             feature: "position",
             detail: format!("{} not written: the clip exports centred in the frame; reposition it in the other editor", position.join(" and ")),
         });
     }
     if clip.scale != UNIT {
-        losses.push(Loss { clip: id(), feature: "scale", detail: "not written: the clip exports at the editor's default fitted size; resize it there".into() });
+        losses.push(Loss {
+            clip: id(),
+            caption: None,
+            feature: "scale",
+            detail: "not written: the clip exports at the editor's default fitted size; resize it there".into(),
+        });
     }
     let crop: Vec<&str> =
         [(clip.crop_left != 0, "crop_left"), (clip.crop_top != 0, "crop_top"), (clip.crop_right != 0, "crop_right"), (clip.crop_bottom != 0, "crop_bottom")]
@@ -209,15 +216,26 @@ fn untranslated_clip_settings(clip: &Clip, losses: &mut Vec<Loss>) {
     if !crop.is_empty() {
         losses.push(Loss {
             clip: id(),
+            caption: None,
             feature: "crop",
             detail: format!("{} not written: the clip exports uncropped; crop it in the other editor", crop.join(", ")),
         });
     }
     if clip.rotation != 0 {
-        losses.push(Loss { clip: id(), feature: "rotation", detail: "not written: the clip exports upright; rotate it in the other editor".into() });
+        losses.push(Loss {
+            clip: id(),
+            caption: None,
+            feature: "rotation",
+            detail: "not written: the clip exports upright; rotate it in the other editor".into(),
+        });
     }
     if clip.opacity != UNIT {
-        losses.push(Loss { clip: id(), feature: "opacity", detail: "not written: the clip exports fully opaque; set its opacity in the other editor".into() });
+        losses.push(Loss {
+            clip: id(),
+            caption: None,
+            feature: "opacity",
+            detail: "not written: the clip exports fully opaque; set its opacity in the other editor".into(),
+        });
     }
 }
 
