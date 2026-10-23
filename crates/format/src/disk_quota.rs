@@ -91,10 +91,10 @@ impl DiskQuota {
         ))
     }
     /// Serialize the shared staging pool without holding accounting state during I/O.
-    /// A busy operation refuses before creating or materializing a stage; callers may retry.
+    /// A busy operation refuses, as Busy, before creating or materializing a stage; callers may retry.
     pub fn try_stage(&self) -> Result<MutexGuard<'_, ()>, Error> {
         self.1.try_lock().map_err(|e| match e {
-            TryLockError::WouldBlock => error("another storage transfer is using the staging pool; retry after it finishes"),
+            TryLockError::WouldBlock => Error::new(ErrorKind::Busy, "another storage transfer is using the staging pool; retry after it finishes"),
             TryLockError::Poisoned(_) => error("storage staging gate is unavailable"),
         })
     }
@@ -307,7 +307,7 @@ mod tests {
         let quota = small();
         let other = quota.clone();
         let stage = quota.try_stage().unwrap();
-        assert!(other.try_stage().is_err());
+        assert_eq!(other.try_stage().unwrap_err().kind, ErrorKind::Busy);
         let reservation = other.reserve(DiskPool::Staging, 1).unwrap();
         assert_eq!(quota.usage().unwrap().staging, 1);
         drop((stage, reservation));

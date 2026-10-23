@@ -111,6 +111,9 @@ pub struct Collab {
     reported: BTreeSet<Blake3>,
     /// What the others asked for, answered at the next publish.
     wanted: BTreeSet<(Blake3, Stretch)>,
+    /// Asks the storage was too busy to read for (#855): answered again at
+    /// [`Collab::retry_put_off`], so a long seal doesn't leave the asker waiting for good.
+    busy_asks: BTreeSet<(Blake3, Stretch)>,
     /// The owner's share links, when this keeps them ([`Collab::links_request`]).
     links: Links,
     /// Link frames for the next publish.
@@ -163,7 +166,7 @@ impl Out {
     pub fn frames(self, assets: &AssetStore) -> Vec<Frame> {
         match self {
             Self::Frame(frame) => vec![frame],
-            Self::Asset(hash, stretch) => parts::frames(assets, &hash, stretch).unwrap_or_default(),
+            Self::Asset(hash, stretch) => parts::frames(assets, &hash, stretch).ok().flatten().unwrap_or_default(),
         }
     }
 }
@@ -299,6 +302,7 @@ impl Collab {
             unusable: BTreeSet::new(),
             reported: BTreeSet::new(),
             wanted: BTreeSet::new(),
+            busy_asks: BTreeSet::new(),
             links: Links::default(),
             outbox: Vec::new(),
             pending: Vec::new(),
@@ -331,37 +335,45 @@ impl Collab {
         self
     }
 
-    /// Seals the large assets that came into `assets`' storage, a clone of the session's store,
-    /// so taking them is quick: it reads each whole, so it is slow. One the storage is too busy
-    /// or too full for is sealed at a later call ([`Self::seals_pending`]), which the host makes
-    /// after a while rather than at once; one it can't keep is given up.
-    pub fn seal_arrivals(&mut self, assets: &AssetStore) {
+    /// Seals one of the large assets that came into `assets`' storage, a clone of the session's
+    /// store, so taking it is quick: it reads it whole, so it is slow, and the host calls it
+    /// once a turn so a few large assets don't hold up the others' edits (#855). `cancel` stops
+    /// it, leaving the asset to seal later. One the storage is too busy or too full for is
+    /// sealed at a later call ([`Self::seals_pending`]), which the host makes after a while
+    /// rather than at once; one it can't keep is given up. Whether it sealed one.
+    pub fn seal_arrivals(&mut self, assets: &AssetStore, cancel: &TransferCancel) -> bool {
         // One that doesn't seal takes them in with the plan.
         if !self.seals {
-            return;
+            return false;
         }
-        let ranges: Vec<Blake3> = self.arrived.iter().filter(|(_, arrival)| matches!(arrival, Arrival::Range(_))).map(|(hash, _)| *hash).collect();
-        for hash in ranges {
-            let Some(Arrival::Range(range)) = self.arrived.get(&hash) else { continue };
-            match assets.seal(range, &TransferCancel::default(), &StreamMetrics::default()) {
-                Ok(sealed) if sealed.hash() == hash => {
-                    self.arrived.insert(hash, Arrival::Sealed(sealed));
-                    self.seal_tries.remove(&hash);
-                    self.unsettled = true;
-                }
-                Err(error) if seal_waits(error.kind, self.seal_tries.get(&hash).copied().unwrap_or(0)) => {
-                    if error.kind != ErrorKind::Busy {
-                        let tries = self.seal_tries.entry(hash).or_insert(0);
-                        *tries = tries.saturating_add(1);
-                    }
-                }
-                Ok(_) | Err(_) => {
-                    self.arrived.remove(&hash);
-                    self.seal_tries.remove(&hash);
-                    self.unusable.insert(hash);
+        let Some((hash, range)) = self.arrived.iter().find_map(|(hash, arrival)| match arrival {
+            Arrival::Range(range) => Some((*hash, range.clone())),
+            _ => None,
+        }) else {
+            return false;
+        };
+        match assets.seal(&range, cancel, &StreamMetrics::default()) {
+            Ok(sealed) if sealed.hash() == hash => {
+                self.arrived.insert(hash, Arrival::Sealed(sealed));
+                self.seal_tries.remove(&hash);
+                self.unsettled = true;
+                return true;
+            }
+            // Stopped: it waits as it was.
+            Err(error) if TransferCancel::is_cancellation(&error) => {}
+            Err(error) if seal_waits(error.kind, self.seal_tries.get(&hash).copied().unwrap_or(0)) => {
+                if error.kind != ErrorKind::Busy {
+                    let tries = self.seal_tries.entry(hash).or_insert(0);
+                    *tries = tries.saturating_add(1);
                 }
             }
+            Ok(_) | Err(_) => {
+                self.arrived.remove(&hash);
+                self.seal_tries.remove(&hash);
+                self.unusable.insert(hash);
+            }
         }
+        false
     }
 
     /// Whether large assets that came wait for [`Self::seal_arrivals`].
@@ -375,14 +387,20 @@ impl Collab {
         self.asked.len().saturating_add(self.put_off.len()).saturating_add(sealing)
     }
 
-    /// Whether assets the spool couldn't keep wait for [`Self::retry_put_off`].
+    /// Whether assets the spool couldn't keep, or asks the storage was too busy to answer,
+    /// wait for [`Self::retry_put_off`].
     pub fn puts_off(&self) -> bool {
-        !self.put_off.is_empty()
+        !self.put_off.is_empty() || !self.busy_asks.is_empty()
     }
 
     /// Asks again, at the next plan, for the assets the spool had no file for, and for those it
-    /// had no room for once it has; the host calls it after a while. Whether it asks for any.
+    /// had no room for once it has, and answers again the asks the storage was too busy for;
+    /// the host calls it after a while. Whether it asks or answers any.
     pub fn retry_put_off(&mut self) -> bool {
+        let answers = !self.busy_asks.is_empty();
+        for (hash, stretch) in std::mem::take(&mut self.busy_asks) {
+            self.want(hash, stretch);
+        }
         let before = self.put_off.len();
         let budget = self.spool.budget();
         let mut spooled = self.spooled();
@@ -398,7 +416,7 @@ impl Collab {
             None => false,
         });
         if self.put_off.len() == before {
-            return false;
+            return answers;
         }
         self.unsettled = true;
         true
@@ -518,7 +536,8 @@ impl Collab {
     pub fn publish(&mut self, session: &Session) -> Result<Vec<Frame>, Error> {
         let has = |hash: &Blake3| session.assets().contains(hash);
         let view = View { revision: session.revision(), document: session.document(), has: &has };
-        Ok(self.publish_view(&view)?.into_iter().flat_map(|out| out.frames(session.assets())).collect())
+        let out = self.publish_view(&view)?;
+        Ok(self.frames(out, session.assets()))
     }
 
     fn publish_view(&mut self, view: &View<'_>) -> Result<Vec<Out>, Error> {
@@ -662,6 +681,26 @@ impl Collab {
         }
     }
 
+    /// The frames for `out`, with assets' bytes read from `assets` ([`Out::frames`]). An ask
+    /// the storage is too busy to read for is answered after a while ([`Self::retry_put_off`]);
+    /// one for an asset that can't be read is dropped.
+    pub fn frames(&mut self, out: Vec<Out>, assets: &AssetStore) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        for out in out {
+            match out {
+                Out::Frame(frame) => frames.push(frame),
+                Out::Asset(hash, stretch) => match parts::frames(assets, &hash, stretch) {
+                    Ok(answer) => frames.extend(answer.unwrap_or_default()),
+                    Err(error) if error.kind == ErrorKind::Busy && self.busy_asks.len() < MAX_WANTED => {
+                        self.busy_asks.insert((hash, stretch));
+                    }
+                    Err(_) => {}
+                },
+            }
+        }
+        frames
+    }
+
     /// Notes an ask for `stretch` of an asset, answered at the next publish.
     fn want(&mut self, hash: Blake3, stretch: Stretch) {
         if self.wanted.len() < MAX_WANTED {
@@ -779,7 +818,7 @@ impl Collab {
     pub fn settle(&mut self, session: &mut Session) -> Result<Vec<Frame>, Error> {
         let has = |hash: &Blake3| session.assets().contains(hash);
         let (out, plan) = self.plan(&View { revision: session.revision(), document: session.document(), has: &has })?;
-        let mut out: Vec<Frame> = out.into_iter().flat_map(|out| out.frames(session.assets())).collect();
+        let mut out = self.frames(out, session.assets());
         let applied = match plan.take(session)? {
             Taken::Nothing => return Ok(out),
             Taken::Stale => {

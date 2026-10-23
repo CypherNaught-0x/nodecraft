@@ -63,7 +63,9 @@ impl Session {
                     duplicates.push(digest.hash);
                 }
             } else {
-                let hash = if native {
+                // A small asset on a host with private storage goes there through `insert`,
+                // which keeps it in memory meanwhile when that storage is busy (#855).
+                let hash = if native && input.byte_len() > nodecraft_format::MAX_ASSET_BYTES as u64 {
                     assets.import_stream(input, cancel, metrics)?
                 } else {
                     let bytes = input.read_small(nodecraft_format::MAX_ASSET_BYTES, metrics)?;

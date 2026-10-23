@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use nodecraft_engine::collab::{Collab, Plan, View};
 use nodecraft_format::AssetStore;
+use nodecraft_format::asset_source::TransferCancel;
 use nodecraft_graph::Project;
 use nodecraft_sync::{Frame, Person, Presence, Role};
 use nodecraft_types::{Blake3, Error, ErrorKind, ProjectId};
@@ -89,6 +90,8 @@ pub(super) struct Report {
 pub(super) struct Worker {
     asks: Sender<Ask>,
     reports: Receiver<Report>,
+    /// Stops a seal the thread is in the middle of when the window lets go (#855).
+    cancel: TransferCancel,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,17 +112,19 @@ impl Worker {
             let _ = nudge.send(Ask::Wake);
         })?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+        let cancel = TransferCancel::default();
+        let stop = cancel.clone();
         std::thread::Builder::new()
             .name("nodecraft-share-merge".into())
             .spawn(move || match make() {
-                Ok(collab) => run(connection, collab, &inbox, &outbox, &*wake),
+                Ok(collab) => run(Thread { connection, n: None, document: None, cancel: stop }, collab, &inbox, &outbox, &*wake),
                 Err(error) => {
                     let _ = outbox.send(Report { ended: Some(error.message), ..Report::default() });
                     wake();
                 }
             })
             .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start live sharing: {e}")))?;
-        Ok(Self { asks, reports })
+        Ok(Self { asks, reports, cancel })
     }
 
     /// What the thread reported since the last call; an error if it has ended unasked.
@@ -144,6 +149,8 @@ impl Worker {
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for Worker {
     fn drop(&mut self) {
+        // A seal underway stops at once, so the thread sees the Stop.
+        self.cancel.cancel();
         // The thread may have ended already.
         let _ = self.asks.send(Ask::Stop);
     }
@@ -189,7 +196,7 @@ impl Worker {
         }
         if let Some((make, connection)) = inline.start.take() {
             match make() {
-                Ok(collab) => inline.running = Some((Thread { connection, n: None, document: None }, collab)),
+                Ok(collab) => inline.running = Some((Thread { connection, n: None, document: None, cancel: TransferCancel::default() }, collab)),
                 Err(error) => {
                     inline.ended = true;
                     return Ok(vec![Report { ended: Some(error.message), ..Report::default() }]);
@@ -259,8 +266,7 @@ const RETRY: Duration = Duration::from_secs(2);
 
 /// The thread: waits for something to do, does all of it, and reports.
 #[cfg(not(target_arch = "wasm32"))]
-fn run(connection: Connection, mut collab: Collab, inbox: &Receiver<Ask>, outbox: &Sender<Report>, wake: &(dyn Fn() + Send + Sync)) {
-    let mut thread = Thread { connection, n: None, document: None };
+fn run(mut thread: Thread, mut collab: Collab, inbox: &Receiver<Ask>, outbox: &Sender<Report>, wake: &(dyn Fn() + Send + Sync)) {
     // When what waits is tried again; a busy room doesn't put it off.
     let mut retry_at: Option<Instant> = None;
     loop {
@@ -330,6 +336,8 @@ struct Thread {
     n: Option<u64>,
     /// The session's document as of the last turn.
     document: Option<Project>,
+    /// Tripped when the window lets go, stopping a seal underway.
+    cancel: TransferCancel,
 }
 
 impl Thread {
@@ -398,16 +406,18 @@ impl Thread {
                     self.document = Some(document);
                 }
                 let document = self.document.as_ref().ok_or_else(|| Error::new(ErrorKind::Internal, "live sharing was asked to settle no document"))?;
-                // Slow for a large asset, so done here rather than in the window (#842).
-                collab.seal_arrivals(&turn.assets);
+                // Slow for a large asset, so done here rather than in the window (#842), one a
+                // turn (#855).
+                let sealed = collab.seal_arrivals(&turn.assets, &self.cancel);
                 let has = |hash: &Blake3| turn.assets.contains(hash);
                 let (out, plan) = collab.plan(&View { revision: turn.revision, document, has: &has })?;
-                let frames = out.into_iter().flat_map(|out| out.frames(&turn.assets)).collect();
+                let frames = collab.frames(out, &turn.assets);
                 self.send(frames)?;
                 report.plan = Some(plan);
-                // Asks not answered this turn are, the next. Assets the storage was too busy to
-                // seal wait a while instead, so the window isn't asked for turn after turn.
-                report.dirty |= collab.owes_assets();
+                // Asks not answered this turn are, the next, and so is the next asset to seal.
+                // Assets and asks the storage was too busy for wait a while instead, so the
+                // window isn't asked for turn after turn.
+                report.dirty |= collab.owes_assets() || (sealed && collab.seals_pending());
             }
         }
         Ok(())

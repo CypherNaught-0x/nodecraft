@@ -191,11 +191,12 @@ pub enum Stretch {
 }
 
 /// The frames that answer an ask for `stretch` of the asset `hash`: the asset whole when it
-/// fits in one frame and was asked for whole, else its parts. None if `assets` can't read it.
-pub(super) fn frames(assets: &AssetStore, hash: &Blake3, stretch: Stretch) -> Option<Vec<Frame>> {
-    let total = assets.descriptor(hash)?.bytes;
+/// fits in one frame and was asked for whole, else its parts. None if `assets` can't share it;
+/// an error if reading it failed, Busy while its storage is busy (#855).
+pub(super) fn frames(assets: &AssetStore, hash: &Blake3, stretch: Stretch) -> Result<Option<Vec<Frame>>, Error> {
+    let Some(total) = assets.descriptor(hash).map(|asset| asset.bytes) else { return Ok(None) };
     if total > MAX_SHARED_ASSET_BYTES {
-        return None;
+        return Ok(None);
     }
     let cancel = TransferCancel::default();
     let metrics = StreamMetrics::default();
@@ -203,9 +204,9 @@ pub(super) fn frames(assets: &AssetStore, hash: &Blake3, stretch: Stretch) -> Op
         Stretch::Whole if total <= MAX_ASSET_BYTES as u64 => {
             let bytes = match assets.get(hash) {
                 Some(bytes) => bytes.to_vec(),
-                None => assets.verified_content(hash, &cancel, &metrics).ok()?.read_small(MAX_ASSET_BYTES, &metrics).ok()?,
+                None => assets.verified_content(hash, &cancel, &metrics)?.read_small(MAX_ASSET_BYTES, &metrics)?,
             };
-            return Some(vec![Frame::AssetPut { hash: *hash.as_bytes(), bytes }]);
+            return Ok(Some(vec![Frame::AssetPut { hash: *hash.as_bytes(), bytes }]));
         }
         // Every editor is asked; only the first to answer is taken, so each sends only a part.
         Stretch::Whole => (0, PART_BYTES as u64),
@@ -213,19 +214,20 @@ pub(super) fn frames(assets: &AssetStore, hash: &Blake3, stretch: Stretch) -> Op
     };
     let end = offset.saturating_add(len).min(total);
     if offset >= end {
-        return None;
+        return Ok(None);
     }
-    let asset = assets.verified_content(hash, &cancel, &metrics).ok()?;
+    let asset = assets.verified_content(hash, &cancel, &metrics)?;
     let mut reader = asset.reader(metrics);
-    reader.seek(SeekFrom::Start(offset)).ok()?;
+    let unread = |_| Error::new(ErrorKind::Internal, "the asset couldn't be read to share");
+    reader.seek(SeekFrom::Start(offset)).map_err(unread)?;
     let mut out = Vec::new();
     let mut at = offset;
     while at < end {
         let n = usize::try_from(end.saturating_sub(at)).unwrap_or(PART_BYTES).min(PART_BYTES);
         let mut bytes = vec![0; n];
-        reader.read_exact(&mut bytes).ok()?;
+        reader.read_exact(&mut bytes).map_err(unread)?;
         out.push(Frame::AssetPart { hash: *hash.as_bytes(), total, offset: at, bytes });
         at = at.saturating_add(n as u64);
     }
-    Some(out)
+    Ok(Some(out))
 }

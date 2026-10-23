@@ -138,15 +138,16 @@ impl AssetStore {
         }
         let hash = crate::hash(bytes);
         if self.context.supports_large_assets() {
-            {
-                let _operation = self.context.operation()?;
-                self.context.prune_cache()?;
-                if self.assets.contains_key(&hash) {
-                    return Ok(hash);
-                }
+            if self.assets.contains_key(&hash) {
+                return Ok(hash);
             }
             let range = AssetRange::new(Arc::new(MemorySource::new(Arc::from(bytes))), 0, bytes.len() as u64)?;
-            return self.import_stream(&range, &TransferCancel::default(), &StreamMetrics::default());
+            return match self.import_stream(&range, &TransferCancel::default(), &StreamMetrics::default()) {
+                // Storage busy with a long copy, such as a shared asset being sealed (#855):
+                // a small asset waits in memory instead, while there's room.
+                Err(error) if error.kind == ErrorKind::Busy => self.insert_resident(hash, bytes).map_err(|_| error),
+                imported => imported,
+            };
         }
         let _operation = self.context.operation()?;
         self.context.prune_cache()?;
@@ -158,6 +159,21 @@ impl AssetStore {
             .checked_add(bytes.len() as u64)
             .filter(|n| *n <= crate::MAX_TOTAL_ASSET_BYTES as u64)
             .ok_or_else(|| invalid("asset store exceeds 48 MiB resident convenience limit"))?;
+        let identity = self.context.claim(hash, bytes.len() as u64)?;
+        let memory = identity.resident_bytes(bytes)?;
+        self.assets.insert(hash, Arc::new(Entry { identity, memory: Some(memory), _origin: Mutex::new(None), expected_crc: None }));
+        self.bytes = total;
+        Ok(hash)
+    }
+    /// Keeps `bytes`, which hash to `hash`, in memory on a host with private storage, without
+    /// waiting for that storage (#855). Resident bytes stay within the resident convenience
+    /// limit, so a long copy can't make the store grow in memory without bound.
+    fn insert_resident(&mut self, hash: Blake3, bytes: &[u8]) -> Result<Blake3, Error> {
+        let resident = self.assets.values().filter_map(|e| e.memory.as_ref()).fold(0u64, |n, m| n.saturating_add(m.len() as u64));
+        if resident.checked_add(bytes.len() as u64).is_none_or(|n| n > crate::MAX_TOTAL_ASSET_BYTES as u64) {
+            return Err(invalid("too many assets wait in memory for busy storage"));
+        }
+        let total = self.bytes.checked_add(bytes.len() as u64).ok_or_else(|| invalid("asset extent overflow"))?;
         let identity = self.context.claim(hash, bytes.len() as u64)?;
         let memory = identity.resident_bytes(bytes)?;
         self.assets.insert(hash, Arc::new(Entry { identity, memory: Some(memory), _origin: Mutex::new(None), expected_crc: None }));
@@ -305,7 +321,12 @@ impl AssetStore {
         }
         #[cfg(not(target_arch = "wasm32"))]
         if self.context.supports_large_assets() {
-            self.compact_before_output(cancel, metrics)?;
+            // Packing is housekeeping: while a long copy holds the storage (#855) it waits for
+            // the next import rather than holding this one up.
+            match self.compact_before_output(cancel, metrics) {
+                Err(error) if error.kind == ErrorKind::Busy && hashes.is_empty() => {}
+                compacted => compacted?,
+            }
         }
         Ok(())
     }
@@ -630,6 +651,38 @@ mod tests {
     }
     fn input(value: u8) -> AssetRange {
         AssetRange::new(Arc::new(MemorySource::new(Arc::from(vec![value; 4096]))), 0, 4096).unwrap()
+    }
+    #[test]
+    fn a_small_insert_waits_in_memory_while_storage_is_busy_within_the_resident_limit() {
+        let (_dir, workspace, mut store) = setup();
+        let busy = store.clone();
+        // A long copy holds the store's operation lock (#855).
+        let held = busy.context().operation().unwrap();
+        let hash = store.insert(b"a model's result").unwrap();
+        assert_eq!(store.get(&hash), Some(&b"a model's result"[..]));
+        assert_eq!(store.insert(b"a model's result").unwrap(), hash, "the same bytes once");
+        drop(held);
+        // Or the staging pool, held by a copy into another project's store.
+        let stage = workspace.quota().stage_operation().unwrap();
+        let staging = store.insert(b"while staging").unwrap();
+        assert!(store.get(&staging).is_some());
+        drop(stage);
+        let held = busy.context().operation().unwrap();
+        let full = vec![7u8; crate::MAX_ASSET_BYTES - 64];
+        for value in 1..4u8 {
+            let mut bytes = full.clone();
+            bytes[0] = value;
+            store.insert(&bytes).unwrap();
+        }
+        let mut last = full.clone();
+        last[0] = 4;
+        assert_eq!(store.insert(&last).unwrap_err().kind, ErrorKind::Busy, "past the resident limit it waits for storage");
+        drop(held);
+        // Free again: to disk, and what waited reads back whole.
+        let later = store.insert(b"later").unwrap();
+        assert!(store.contains(&later) && store.get(&later).is_none());
+        let waited = store.verified_content(&hash, &TransferCancel::default(), &StreamMetrics::default()).unwrap();
+        assert_eq!(waited.read_small(64, &StreamMetrics::default()).unwrap(), b"a model's result");
     }
     #[test]
     fn failed_private_pack_write_keeps_all_old_bindings_and_quota() {
