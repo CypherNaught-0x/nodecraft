@@ -16,7 +16,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 
 | M | Name | Status | Done |
 |---|---|---|---|
-| 0 | **Skeleton** — workspace, CI, release pipeline, themed canvas | ✅ feature work done | 10/10 |
+| 0 | **Skeleton** — workspace, CI, release pipeline, themed canvas | ✅ done | 10/10 |
 | 1 | **Canvas core** — graph, undo, commands, canvas, `.ncraft` | ✅ done | 36/37 |
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done | 14/14 |
 | 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), variations (#81), cost and budget checks (#201) | 43/46 |
@@ -150,7 +150,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   change or run, auto mode runs edits and runs within the `[agent]` budget. The endpoint (Anthropic,
   OpenAI, OpenRouter, Ollama, LM Studio) and model are set in `[agent]` in the settings file; there
   is no settings screen for them yet, and the browser build has no agent.
-- **The browser build is a bare preview.** `apps/nodecraft-web` runs the canvas in a browser and
+- **The browser build is a preview.** `apps/nodecraft-web` runs the canvas in a browser and
   releases ship it as `nodecraft-web-<v>.zip` (#99). Provider keys are kept in the browser's
   storage for the site, and projects open and save through the browser's file pickers or as
   downloads (#118). Cards run in the browser too, calling the cloud providers that accept
