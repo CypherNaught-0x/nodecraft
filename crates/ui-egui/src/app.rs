@@ -650,24 +650,26 @@ impl NodeCraftApp {
             log::warn!("{}", error.message);
         }
         let settings = store.get().clone();
+        let mut services = nodecraft_engine::commands::Services::default();
+        // Without them the app still opens; Generate says why it can't run.
+        let mut runs = match runs::Runs::new(&mut services, std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore)) {
+            Ok(runs) => Some(runs),
+            Err(e) => {
+                log::warn!("runs unavailable: {}", e.message);
+                None
+            }
+        };
         // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
         // If the thread can't start, the app runs without the keychain (the panel says so).
-        let mut services = nodecraft_engine::commands::Services::default();
-        let results = match nodecraft_engine::secrets::KeyWorker::spawn(std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore)) {
+        // `keys.test` sends its check on the runs' runtime and HTTP client (#237).
+        let key_tests = runs.as_ref().and_then(runs::Runs::key_test_host);
+        let results = match nodecraft_engine::secrets::KeyWorker::spawn_with_tests(std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore), key_tests) {
             Ok((worker, results)) => {
                 nodecraft_engine::secrets::register_key_worker(&mut services, worker)?;
                 Some(results)
             }
             Err(e) => {
                 log::warn!("API keys unavailable: {}", e.message);
-                None
-            }
-        };
-        // Without them the app still opens; Generate says why it can't run.
-        let mut runs = match runs::Runs::new(&mut services, std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore)) {
-            Ok(runs) => Some(runs),
-            Err(e) => {
-                log::warn!("runs unavailable: {}", e.message);
                 None
             }
         };

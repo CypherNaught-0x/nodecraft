@@ -230,6 +230,7 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "keys.set",
         "keys.remove",
         "keys.status",
+        "keys.test",
         "library.add",
         "library.list",
         "library.place",
@@ -443,8 +444,8 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     }
     assert_eq!(
         registry.specs().count(),
-        220,
-        "canvas.auto_format, 9 sheet, 8 technique, 8 tag/filter, 5 field, 10 discussion, 7 graph, 3 node editing, 2 model migration, node.prompt_assist, 3 edge, node.create, node.create_connected, canvas.paste, 3 keys, 4 library, canvas.stale, node.describe, node.options, 2 option fetch, 3 ComfyUI workflow import, comfy.server.use, 2 update check, 2 update install, 4 navigation, 5 search, 4 file, 4 run/usage, run.estimate, 2 usage ownership, 2 charge resolution, 4 held results, 8 history, 4 perf, 14 plugin, 2 cache commands, 2 variation commands, node.shader_set, 2 shader writing, 5 shader library, 6 mask, 2 image tools, 7 layer, 2 layer font, 9 deck, 3 element, 9 Elements library, 3 style, 2 app mode, mesh.capture, document.use_pages, 11 timeline, 2 timeline interchange, 4 share link, canvas.set_private, 4 live sharing, 8 skill and node.migrate"
+        221,
+        "canvas.auto_format, 9 sheet, 8 technique, 8 tag/filter, 5 field, 10 discussion, 7 graph, 3 node editing, 2 model migration, node.prompt_assist, 3 edge, node.create, node.create_connected, canvas.paste, 4 keys, 4 library, canvas.stale, node.describe, node.options, 2 option fetch, 3 ComfyUI workflow import, comfy.server.use, 2 update check, 2 update install, 4 navigation, 5 search, 4 file, 4 run/usage, run.estimate, 2 usage ownership, 2 charge resolution, 4 held results, 8 history, 4 perf, 14 plugin, 2 cache commands, 2 variation commands, node.shader_set, 2 shader writing, 5 shader library, 6 mask, 2 image tools, 7 layer, 2 layer font, 9 deck, 3 element, 9 Elements library, 3 style, 2 app mode, mesh.capture, document.use_pages, 11 timeline, 2 timeline interchange, 4 share link, canvas.set_private, 4 live sharing, 8 skill and node.migrate"
     );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }
@@ -502,6 +503,9 @@ fn keys_commands_go_through_the_host_service_and_never_echo_keys() {
     assert_eq!(set, serde_json::json!({"stored": true, "masked": "…9876"}));
     let status = session.dispatch("keys.status", &serde_json::json!({"account": "anthropic"})).unwrap();
     assert_eq!(status["stored"], true);
+    // A headless host has no async HTTP to send a check on: unsupported at once, never blocking (#237).
+    let test = session.dispatch("keys.test", &serde_json::json!({"account": "anthropic"})).unwrap_err();
+    assert_eq!(test.kind, nodecraft_types::ErrorKind::Unsupported);
     assert!(!session.can_undo(), "keys never enter the document or its history");
     let err = session.dispatch("keys.set", &serde_json::json!({"account": "Bad Name", "key": "sk-leak-me-123456"})).unwrap_err();
     assert!(!err.to_string().contains("sk-leak"), "{err}");

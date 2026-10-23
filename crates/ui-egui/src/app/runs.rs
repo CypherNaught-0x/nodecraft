@@ -267,6 +267,11 @@ pub(super) struct Runs {
     /// Runs the host's tasks; shut down without waiting when the app closes.
     #[cfg(not(target_arch = "wasm32"))]
     tokio: Option<tokio::runtime::Runtime>,
+    /// The runtime and HTTP client runs use, lent to the keychain worker for `keys.test` (#237).
+    #[cfg(not(target_arch = "wasm32"))]
+    runtime: Arc<dyn Runtime>,
+    #[cfg(not(target_arch = "wasm32"))]
+    http: Option<Arc<dyn Http>>,
     /// Why the run journal couldn't be opened, told on the first frame.
     journal_problem: Option<String>,
     /// The plugin providers the provider thread may build brokers for (#174).
@@ -291,6 +296,8 @@ impl Runs {
             Some(Arc::new(nodecraft_providers::comfyui::progress::native::NativeFeeds));
         #[cfg(target_arch = "wasm32")]
         let progress: Option<Arc<dyn nodecraft_providers::comfyui::progress::Feeds>> = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        let key_http = Arc::clone(&http);
         let board = Board::default();
         let plugins = PluginMaker::new(Arc::clone(&board));
         let mut runs = Self::with_maker(
@@ -304,6 +311,10 @@ impl Runs {
             }),
         )?;
         runs.plugins = board;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            runs.http = Some(key_http);
+        }
         Ok(runs)
     }
 
@@ -350,6 +361,8 @@ impl Runs {
         let runtime = Arc::new(Tokio { handle: tokio.handle().clone(), start: Instant::now() });
         #[cfg(target_arch = "wasm32")]
         let runtime = Arc::new(browser::Page::new());
+        #[cfg(not(target_arch = "wasm32"))]
+        let key_runtime: Arc<dyn Runtime> = runtime.clone();
         let mut id = [0u8; 8];
         getrandom::fill(&mut id).map_err(|_| Error::new(ErrorKind::Internal, "session identity entropy is unavailable"))?;
         let budget = JobBudget {
@@ -378,10 +391,22 @@ impl Runs {
             held: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             tokio: Some(tokio),
+            #[cfg(not(target_arch = "wasm32"))]
+            runtime: key_runtime,
+            #[cfg(not(target_arch = "wasm32"))]
+            http: None,
             journal_problem: None,
             plugins: Board::default(),
             plugins_known: false,
         })
+    }
+
+    /// Where the keychain worker sends `keys.test` checks: the runs' own runtime and HTTP client,
+    /// so a check goes out like a run's request does. `None` for a test host without a client.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn key_test_host(&self) -> Option<nodecraft_engine::key_test::KeyTestHost> {
+        let http = self.http.clone()?;
+        Some(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::clone(&self.runtime), http })
     }
 
     /// The caps later quotes and jobs are checked against (#201).

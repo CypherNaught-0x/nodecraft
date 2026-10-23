@@ -163,6 +163,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "comment.resolve",
     "comment.remove",
     "keys.status",
+    // Agent-safe like keys.status, unlike keys.set/remove (which change what is stored and stay
+    // human-only): it reads a key the person stored, costs nothing, sends the key only to its own
+    // provider, and answers only verified, unverifiable or rejected, never the key (#237).
+    "keys.test",
     "run.quote",
     // Free, and refused by a host that can't ask (the CLI's).
     "run.estimate",

@@ -572,7 +572,7 @@ fn template(id: &str) -> (Session, Value) {
         }
         // The keys service isn't registered here: dispatch must fail cleanly, never panic.
         "keys.set" => json!({"account":"openai","key":"sk-test-123456789"}),
-        "keys.remove" | "keys.status" => json!({"account":"openai"}),
+        "keys.remove" | "keys.status" | "keys.test" => json!({"account":"openai"}),
         "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
         "file.save" => Value::Null,
         "file.save_as" => json!({"location":"new.ncraft"}),

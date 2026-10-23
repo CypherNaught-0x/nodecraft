@@ -71,6 +71,28 @@ from the adapters already built. ComfyUI's token is optional: a keychain that ca
 was refused means no token, not no ComfyUI. The app makes `install_salt` once and saves it at once;
 with read-only settings none is made and ComfyUI stays off.
 
+### Testing a key
+
+`keys.test {account}` (the keys panel's **Test** button, #237) checks the stored key with one GET
+that costs nothing. The key is read from the keychain only (never the environment), sent as a
+secret header to the provider's own API with redirects not followed, and never logged or put in an
+error; replies are never quoted. The answer comes from the HTTP status alone:
+
+- `{result: "verified"}`: the provider answered a request that needs a valid key. Checked this way:
+  `openai` (model list), `anthropic` (model list), `gemini` (model list), `replicate` (account),
+  `elevenlabs` (voice list), `tripo` (balance), `meshy` (balance), `higgsfield` (Soul ID list).
+- `{result: "unverifiable", reason}`: `openrouter`'s model list answers without a key, so success
+  only says it is reachable; `ollama` and `lmstudio` take no key; every other account (`fal`,
+  `seedream`, `kling`, `google-cloud`, `comfy-cloud`, `comfyui:*`) has no known free check, so
+  nothing is sent.
+- **Rejected:** a 401 or 403 (or Google's `API_KEY_INVALID`) is an `Authentication` error whose
+  message starts with `rejected:`. Rate limiting is `Busy`; redirects, other statuses, a reply that
+  isn't JSON and network failures are `Network` or `Timeout` errors that claim no verdict; a missing
+  key is `NotFound`.
+
+The check runs on the keychain thread using the runs' runtime and HTTP client, so the window never
+waits. Hosts without one (`nodecraft-cli`, MCP, the browser) answer `Unsupported` at once.
+
 ## Chat conversations and tools
 
 `llm::ChatRequest` is a whole conversation: user messages (text, images, tool results) and
