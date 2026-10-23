@@ -11,8 +11,8 @@
 //!   billed, so it is followed to its end and its result kept ([`JobView::cancel_refused`]).
 //! - **Too late:** it finished, or failed, before the cancel took effect. The result is kept.
 use nodecraft_exec::scheduler::JobId;
-use nodecraft_providers::{ErrorKind as Cause, JobProgress, RunUpdate};
-use nodecraft_types::{CanvasId, Money, NodeId};
+use nodecraft_providers::{ErrorKind as Cause, JobProgress, Output, RunUpdate};
+use nodecraft_types::{Blake3, CanvasId, Money, NodeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -20,6 +20,9 @@ use std::sync::Arc;
 pub const MAX_RECENT: usize = 64;
 /// Longest progress message or failure reason kept, in characters.
 const MAX_TEXT: usize = 240;
+/// Largest preview of a sound kept (#875): as much as the largest speech reply read. A bigger
+/// one is dropped, and the job shows the one before.
+pub const MAX_PREVIEW_BYTES: usize = 32 * 1024 * 1024;
 
 /// A job's identity in the host: its run (numbered in start order) and its id in that run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -82,6 +85,76 @@ pub struct JobView {
     pub partial: Option<Arc<String>>,
     /// The attempt `partial` streamed from; text from an earlier attempt is dropped.
     pub(crate) partial_attempt: u32,
+    /// The latest preview of a sound still arriving (#875), while the job runs. View state, like
+    /// `partial`: never recorded, saved or undone; dropped when the job ends or tries again.
+    pub preview: Option<AudioPreview>,
+    /// What a finished job made (#875), so a card knows the sound it shows is this job's take.
+    pub made: Option<Made>,
+}
+
+/// One attempt of one job (#875): a retry is another take, whose sound starts afresh.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Take {
+    pub job: JobKey,
+    /// 1 for the first attempt.
+    pub attempt: u32,
+}
+
+/// The sound a job has sent so far, as one playable file (#875): ElevenLabs' MP3 while it streams.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AudioPreview {
+    /// The attempt making it: its later previews, and the result it finishes with, continue it.
+    pub take: Take,
+    /// What the bytes sniff as, never what the provider claimed.
+    pub mime: &'static str,
+    /// The bytes' BLAKE3 digest, so a player keys it like an asset.
+    pub hash: Blake3,
+    pub bytes: Arc<[u8]>,
+}
+
+/// The result a job finished with (#875): the attempt that made it and the assets in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Made {
+    pub attempt: u32,
+    /// Its outputs' media, at most [`MAX_MADE`] of them.
+    pub assets: Vec<Blake3>,
+}
+
+/// Most assets of a finished job's result kept in [`Made`].
+pub const MAX_MADE: usize = 64;
+
+/// A preview reported by a job and not yet shown, made off the UI thread by [`Preview::of`].
+#[derive(Clone)]
+pub(crate) struct Preview {
+    mime: &'static str,
+    hash: Blake3,
+    bytes: Arc<[u8]>,
+}
+
+// Up to 32 MiB of sound: say how much, never every byte.
+impl std::fmt::Debug for AudioPreview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AudioPreview").field("take", &self.take).field("mime", &self.mime).field("hash", &self.hash).field("bytes", &self.bytes.len()).finish()
+    }
+}
+
+impl std::fmt::Debug for Preview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Preview").field("mime", &self.mime).field("hash", &self.hash).field("bytes", &self.bytes.len()).finish()
+    }
+}
+
+impl Preview {
+    /// The playable sound in `update`'s `partial`, if it has one: bytes that sniff as audio, at
+    /// most [`MAX_PREVIEW_BYTES`]. Anything else (text, a link, an image) shows nothing.
+    pub(crate) fn of(update: &RunUpdate) -> Option<Self> {
+        let RunUpdate::Progress(JobProgress::Running { partial: Some(Output::Bytes { bytes, .. }), .. }) = update else { return None };
+        if bytes.is_empty() || bytes.len() > MAX_PREVIEW_BYTES {
+            return None;
+        }
+        let mime = nodecraft_media::sniff(bytes).map(|sniffed| sniffed.mime).filter(|mime| mime.starts_with("audio/"))?;
+        Some(Self { mime, hash: Blake3::from_bytes(*blake3::hash(bytes).as_bytes()), bytes: Arc::clone(bytes) })
+    }
 }
 
 impl JobView {
@@ -178,6 +251,8 @@ pub(crate) struct Report {
     /// Text streamed since the last pump, by attempt `text_attempt`.
     text: String,
     text_attempt: u32,
+    /// The latest preview since the last pump, and the attempt it came from.
+    preview: Option<(u32, Preview)>,
 }
 
 enum Latest {
@@ -186,6 +261,16 @@ enum Latest {
 }
 
 impl Reports {
+    /// Notes `preview` from `attempt` of `job`, replacing one not yet shown. A late one from an
+    /// earlier attempt is dropped.
+    pub(crate) fn note_preview(&mut self, job: JobId, attempt: u32, preview: Preview) {
+        let report = self.0.entry(job).or_default();
+        report.sent = true;
+        if report.preview.as_ref().is_none_or(|(had, _)| attempt >= *had) {
+            report.preview = Some((attempt, preview));
+        }
+    }
+
     /// Notes `update` from `attempt` of `job` (1 for the first).
     pub(crate) fn note(&mut self, job: JobId, attempt: u32, update: &RunUpdate) {
         let report = self.0.entry(job).or_default();
@@ -252,6 +337,20 @@ impl RunJobs {
                     append(Arc::make_mut(view.partial.get_or_insert_default()), &text);
                 }
             }
+            // Shown only while the attempt that made it runs: a retry starts afresh. Like text,
+            // a preview of the next attempt may come before its start event, so it waits.
+            let running = match view.state {
+                JobState::Running { attempt, .. } => Some(attempt),
+                _ => None,
+            };
+            match report.preview.take() {
+                Some((attempt, preview)) if running == Some(attempt) => {
+                    let take = Take { job: view.key, attempt };
+                    view.preview = Some(AudioPreview { take, mime: preview.mime, hash: preview.hash, bytes: preview.bytes });
+                }
+                Some((attempt, preview)) if running.is_none_or(|running| attempt > running) => report.preview = Some((attempt, preview)),
+                _ => {}
+            }
             let JobState::Running { waiting, position, fraction, message, reconnecting, .. } = &mut view.state else { continue };
             match &report.latest {
                 Some(Latest::Waiting(at)) => {
@@ -285,11 +384,26 @@ impl RunJobs {
     pub(crate) fn retrying(&mut self, job: JobId, next_attempt: u32, reason: &str) {
         if let Some(view) = self.live.get_mut(&job) {
             view.state = JobState::Retrying { next_attempt, reason: bounded(reason) };
+            view.preview = None;
             // The next attempt answers afresh, unless its text already arrived this pump.
             if view.partial_attempt < next_attempt {
                 view.partial = None;
             }
         }
+    }
+
+    /// Notes the media in the result `outputs` that job `job` is about to finish with (#875).
+    pub(crate) fn made(&mut self, job: JobId, outputs: &[(String, nodecraft_types::Value)]) {
+        let Some(view) = self.live.get_mut(&job) else { return };
+        let attempt = match view.state {
+            JobState::Running { attempt, .. } => attempt,
+            _ => 1,
+        };
+        let mut assets = Vec::new();
+        for (_, value) in outputs {
+            media(value, &mut assets, 0);
+        }
+        view.made = Some(Made { attempt, assets });
     }
 
     /// Ends a job, moving it to `ended`. A job that already ended is left as it was.
@@ -314,7 +428,27 @@ impl RunJobs {
         if view.state == JobState::Done {
             view.partial = None;
         }
+        // A sound is played from its result once it has one; a preview of one that never
+        // finished isn't kept, so the recent jobs hold no audio.
+        view.preview = None;
+        if view.state != JobState::Done {
+            view.made = None;
+        }
         self.ended.push(view);
+    }
+}
+
+/// Adds the media in `value` (and in its lists, `depth` deep so far) to `assets`, up to
+/// [`MAX_MADE`].
+fn media(value: &nodecraft_types::Value, assets: &mut Vec<Blake3>, depth: usize) {
+    match value {
+        nodecraft_types::Value::Media(asset) if assets.len() < MAX_MADE => assets.push(asset.hash),
+        nodecraft_types::Value::List(items) if depth < 2 => {
+            for item in items {
+                media(item, assets, depth.saturating_add(1));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -340,6 +474,7 @@ fn bounded(text: &str) -> String {
 mod tests {
     use super::*;
     use nodecraft_providers::ProviderError;
+    use nodecraft_types::{AssetRef, Value};
 
     fn view(state: JobState) -> JobView {
         JobView {
@@ -356,6 +491,8 @@ mod tests {
             reported_sent: false,
             partial: None,
             partial_attempt: 0,
+            preview: None,
+            made: None,
         }
     }
 
@@ -463,5 +600,74 @@ mod tests {
         reports.note(JobId(1), 1, &RunUpdate::Text("late".into()));
         jobs.absorb_reports(&mut reports);
         assert_eq!(jobs.live[&JobId(1)].partial.as_deref().map(String::as_str), Some("Hello"));
+    }
+
+    fn mp3(len: usize) -> Arc<[u8]> {
+        // An MPEG audio frame header, then filler: enough to sniff as MP3.
+        let mut bytes = vec![0xFF, 0xFB, 0x90, 0x64];
+        bytes.resize(len.max(4), 0);
+        bytes.into()
+    }
+
+    fn preview_update(bytes: Arc<[u8]>, mime: &str) -> RunUpdate {
+        RunUpdate::Progress(JobProgress::Running { fraction: None, message: None, partial: Some(Output::Bytes { mime: mime.into(), bytes }) })
+    }
+
+    #[test]
+    fn only_bounded_audio_makes_a_preview_and_its_mime_is_sniffed() {
+        let sound = mp3(4096);
+        let preview = Preview::of(&preview_update(Arc::clone(&sound), "image/png")).unwrap();
+        assert_eq!(preview.mime, "audio/mpeg", "the bytes decide, not the claim");
+        assert_eq!(preview.hash, Blake3::from_bytes(*blake3::hash(&sound).as_bytes()));
+        assert!(Preview::of(&preview_update(b"\x89PNG\r\n\x1a\nnot a sound at all".as_slice().into(), "audio/mpeg")).is_none());
+        assert!(Preview::of(&preview_update(Arc::from(Vec::new()), "audio/mpeg")).is_none());
+        assert!(Preview::of(&preview_update(mp3(MAX_PREVIEW_BYTES + 1), "audio/mpeg")).is_none(), "capped");
+        assert!(Preview::of(&RunUpdate::Text("hello".into())).is_none());
+        let text = RunUpdate::Progress(JobProgress::Running { fraction: None, message: None, partial: Some(Output::Text("hi".into())) });
+        assert!(Preview::of(&text).is_none());
+    }
+
+    #[test]
+    fn only_the_latest_preview_of_the_running_attempt_is_shown_and_none_after_the_end() {
+        let running = |attempt| JobState::Running { attempt, waiting: false, position: None, fraction: None, message: None, reconnecting: false };
+        let mut jobs = RunJobs::default();
+        jobs.live.insert(JobId(1), view(running(1)));
+        let mut reports = Reports::default();
+        let note = |reports: &mut Reports, attempt, len| reports.note_preview(JobId(1), attempt, Preview::of(&preview_update(mp3(len), "audio/mpeg")).unwrap());
+        note(&mut reports, 1, 100);
+        note(&mut reports, 1, 200);
+        jobs.absorb_reports(&mut reports);
+        let shown = jobs.live[&JobId(1)].preview.clone().unwrap();
+        let key = JobKey { run: 1, job: JobId(1) };
+        assert_eq!((shown.bytes.len(), shown.take, shown.mime), (200, Take { job: key, attempt: 1 }, "audio/mpeg"));
+        let debug = format!("{shown:?}");
+        assert!(debug.contains("bytes: 200") && debug.len() < 400, "says how much, never every byte: {debug}");
+        assert!(jobs.live[&JobId(1)].sent);
+        // A retry drops it; the next attempt's preview may come in the same pump, before its start.
+        note(&mut reports, 2, 300);
+        jobs.retrying(JobId(1), 2, "timeout");
+        jobs.absorb_reports(&mut reports);
+        assert_eq!(jobs.live[&JobId(1)].preview, None, "the next attempt starts afresh");
+        jobs.started(JobId(1), 2);
+        note(&mut reports, 1, 400);
+        jobs.absorb_reports(&mut reports);
+        let shown = jobs.live[&JobId(1)].preview.clone().unwrap();
+        assert_eq!(shown.bytes.len(), 300, "a late one of attempt 1 is dropped");
+        assert_eq!(shown.take, Take { job: key, attempt: 2 }, "the retry is another take: its sound starts afresh");
+        note(&mut reports, 2, 500);
+        let result = AssetRef { hash: Blake3::from_bytes([9; 32]), mime: "audio/mpeg".parse().unwrap(), meta: Default::default() };
+        let text = ("text".to_owned(), Value::Text("words".into()));
+        jobs.made(JobId(1), &[text, ("audio".into(), Value::List(vec![Value::Media(result.clone())]))]);
+        jobs.end(JobId(1), JobState::Done);
+        jobs.absorb_reports(&mut reports);
+        assert_eq!(jobs.ended[0].preview, None, "an ended job holds no sound");
+        assert_eq!(jobs.ended[0].made, Some(Made { attempt: 2, assets: vec![result.hash] }), "it made its result, in its second take");
+        jobs.live.insert(JobId(2), view(running(1)));
+        reports.note_preview(JobId(2), 1, Preview::of(&preview_update(mp3(10), "audio/mpeg")).unwrap());
+        jobs.absorb_reports(&mut reports);
+        jobs.made(JobId(2), &[("audio".into(), Value::Media(result))]);
+        jobs.end(JobId(2), JobState::Cancelled);
+        assert_eq!(jobs.ended[1].preview, None, "nor a cancelled one");
+        assert_eq!(jobs.ended[1].made, None, "which made nothing");
     }
 }

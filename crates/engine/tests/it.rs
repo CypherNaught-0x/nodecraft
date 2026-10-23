@@ -11,6 +11,8 @@ mod asset_imports147;
 mod audio_generation672;
 #[path = "audio_length608.rs"]
 mod audio_length608;
+#[path = "audio_previews875.rs"]
+mod audio_previews875;
 #[path = "background749.rs"]
 mod background749;
 #[path = "background_open.rs"]

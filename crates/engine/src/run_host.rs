@@ -567,6 +567,13 @@ impl RunHost {
         self
     }
 
+    /// Asks providers that can for previews of a sound while it arrives (#875), shown in
+    /// [`JobView::preview`]. Off by default: only a runner that plays them should pay for them.
+    pub fn with_previews(mut self, on: bool) -> Self {
+        self.limits.stream_previews = on;
+        self
+    }
+
     /// Registers the `run.start` service on `services`; call once, before the session is built.
     pub fn register(&self, services: &mut Services) -> Result<(), Error> {
         let inbox = Arc::clone(&self.inbox);
@@ -794,7 +801,12 @@ impl RunHost {
                 lock(&sink).deliveries.insert(job, delivery);
             }),
             Arc::new(move |job, sent: Sent<'_>, update: RunUpdate| {
+                // Hashed here, on the job's thread, not under the lock nor on the UI thread.
+                let preview = crate::run_jobs::Preview::of(&update);
                 let mut mailbox = lock(&reports);
+                if let Some(preview) = preview {
+                    mailbox.reports.note_preview(job, sent.attempt, preview);
+                }
                 if let RunUpdate::Submitted(handle) = &update {
                     mailbox.submitted.push((job, sent.base.to_owned(), sent.generation, handle.clone()));
                 }
@@ -1034,6 +1046,8 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
         reported_sent: false,
         partial: None,
         partial_attempt: 0,
+        preview: None,
+        made: None,
     };
     match work {
         JobSpec::Generate { node, outputs, .. } => {
@@ -1110,6 +1124,9 @@ fn absorb(
             Event::Done { job } => {
                 let outputs = outputs(session, active, job, held);
                 settled |= finish(active, job);
+                if let Ok((made, _)) = &outputs {
+                    active.jobs.made(job, made);
+                }
                 active.jobs.end(job, ended(&outputs));
                 match outputs {
                     Ok((outputs, billed)) => {
@@ -1127,6 +1144,9 @@ fn absorb(
                     let node = active.live.get(&job).copied();
                     let outputs = outputs(session, active, job, held);
                     settled |= finish(active, job);
+                    if let Ok((made, _)) = &outputs {
+                        active.jobs.made(job, made);
+                    }
                     active.jobs.end(job, ended(&outputs));
                     if let Err(reason) = charge {
                         notices.extend(node.map(|node| RunNotice::Unaccounted { canvas: active.canvas, node, reason }));

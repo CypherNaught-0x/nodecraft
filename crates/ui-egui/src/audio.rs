@@ -7,6 +7,13 @@
 //! playing card asks for a couple of seconds of decoded sound at a time, one request in flight,
 //! into a bounded buffer the sound device's callback plays from. One card plays at a time.
 //! Browsers have no video service, so cards say playback needs the desktop app.
+//!
+//! A speech card also plays its job's latest preview while the sound arrives (#875): the MP3 so
+//! far, imported like any sound but never given a waveform, and dropped once a newer one or the
+//! result is ready. When the sound changes from a preview to the next, or to the same job's
+//! result, the card keeps its place and goes on playing from there, the old sound playing on
+//! until the new one is ready.
+use nodecraft_engine::run_jobs::Take;
 use nodecraft_graph::Node;
 use nodecraft_types::{AssetRef, Value};
 use std::sync::Arc;
@@ -74,6 +81,30 @@ pub fn time_at(x: f32, left: f32, width: f32, duration_us: u64) -> u64 {
     (along * duration_us as f64).min(duration_us as f64) as u64
 }
 
+/// What a card's player does when its sound changes (#875).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// The same sound.
+    Same,
+    /// The sound so far grew, or became its job's result: keep the place, and play on if playing.
+    Continue,
+    /// Another sound: start again from the beginning, paused.
+    Restart,
+}
+
+/// How a player showing sound `old` (a preview made by take `old_take`, if one) goes on to sound
+/// `new`, made by take `new_take` (a newer preview of it, or the result it finished with). A
+/// retry is another take: its sound starts again.
+pub fn change(old: nodecraft_types::Blake3, old_take: Option<Take>, new: nodecraft_types::Blake3, new_take: Option<Take>) -> Change {
+    if old == new {
+        Change::Same
+    } else if old_take.is_some() && old_take == new_take {
+        Change::Continue
+    } else {
+        Change::Restart
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::Audios;
 #[cfg(target_arch = "wasm32")]
@@ -81,7 +112,7 @@ pub use web::Audios;
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use super::{AudioIntent, AudioView};
+    use super::{AudioIntent, AudioView, Take};
     use nodecraft_types::NodeId;
 
     /// Browsers have no video service, so no sound decoding, yet.
@@ -100,7 +131,21 @@ mod web {
         ) -> AudioView {
             AudioView::Unavailable("Sound playback needs the desktop app")
         }
+        pub fn view_result(
+            &mut self,
+            _: &egui::Context,
+            _: NodeId,
+            _: &nodecraft_types::AssetRef,
+            _: Option<Take>,
+            _: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
+        ) -> AudioView {
+            AudioView::Unavailable("Sound playback needs the desktop app")
+        }
+        pub fn view_preview(&mut self, _: &egui::Context, _: NodeId, _: &nodecraft_engine::run_jobs::AudioPreview) -> AudioView {
+            AudioView::Unavailable("Sound playback needs the desktop app")
+        }
         pub fn act(&mut self, _: &egui::Context, _: NodeId, _: AudioIntent) {}
+        pub fn let_go(&mut self, _: NodeId) {}
         pub fn retain(&mut self, _: impl Fn(NodeId) -> bool) {}
         pub fn stop(&mut self) {}
     }
@@ -114,8 +159,9 @@ mod playback;
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::playback::Feeder;
-    use super::{AudioIntent, AudioView, BUCKETS, UNCONFIGURED};
+    use super::{AudioIntent, AudioView, BUCKETS, Change, UNCONFIGURED, change};
     use crate::video::{Retry, stale};
+    use nodecraft_engine::run_jobs::{AudioPreview, Take};
     use nodecraft_format::{PreviewAssetRead, PreviewReadError, asset_source::TransferCancel};
     use nodecraft_media::video::{AudioAsset, ServiceConfig, ToolPaths, VideoError, VideoJob, VideoLimits, VideoOpening, VideoService, Waveform};
     use nodecraft_types::{AssetRef, Blake3, NodeId};
@@ -139,6 +185,8 @@ mod native {
     const LATER: std::time::Duration = std::time::Duration::from_secs(1);
     /// A sound that failed is read again once it's been off screen this many frames.
     const OFFSCREEN_FRAMES: u64 = 600;
+    /// A preview no card shows any more is dropped after this many frames (#875).
+    const PREVIEW_FRAMES: u64 = 60;
 
     enum Service {
         Off,
@@ -167,6 +215,8 @@ mod native {
         state: Source,
         bytes: u64,
         used: u64,
+        /// A job's preview (#875): dropped as soon as nothing shows it.
+        preview: bool,
     }
 
     enum Wave {
@@ -188,6 +238,18 @@ mod native {
         seen: u64,
         notice: Option<&'static str>,
         duration_us: Option<u64>,
+        /// The take whose preview this is (#875), so its next preview or result plays on.
+        preview: Option<Take>,
+        /// Play from `position_us` once this sound is ready: it took over from a playing one.
+        resume: bool,
+        /// A preview played to its end while more is on the way: play on when it comes.
+        waiting: bool,
+    }
+
+    impl Player {
+        fn new(hash: Blake3, seen: u64, preview: Option<Take>) -> Self {
+            Self { hash, position_us: 0, seen, notice: None, duration_us: None, preview, resume: false, waiting: false }
+        }
     }
 
     /// The one card playing.
@@ -370,7 +432,12 @@ mod native {
                 }
             }
             let clock = self.clock;
-            self.sources.retain(|_, entry| !matches!(entry.state, Source::Failed(_)) || clock.wrapping_sub(entry.used) <= OFFSCREEN_FRAMES);
+            let shown: std::collections::HashSet<Blake3> = self.players.values().map(|player| player.hash).collect();
+            self.sources.retain(|hash, entry| {
+                let failed = matches!(entry.state, Source::Failed(_)) && clock.wrapping_sub(entry.used) > OFFSCREEN_FRAMES;
+                let unshown = entry.preview && !shown.contains(hash) && clock.wrapping_sub(entry.used) > PREVIEW_FRAMES;
+                !failed && !unshown
+            });
         }
 
         fn poll_waves(&mut self, wake: &mut Wake) {
@@ -412,6 +479,13 @@ mod native {
             if status.playing {
                 wake.soon = true;
             } else {
+                // A preview that ran out by itself waits for more rather than stopping.
+                if let Some(player) = self.players.get_mut(&playback.node)
+                    && player.preview.is_some()
+                    && status.notice.is_none()
+                {
+                    player.waiting = true;
+                }
                 self.playback = None;
                 if let Some(feeder) = &self.feeder {
                     feeder.stop();
@@ -427,34 +501,148 @@ mod native {
             asset: &AssetRef,
             read: impl FnOnce() -> Result<PreviewAssetRead, PreviewReadError>,
         ) -> AudioView {
+            self.view_result(ctx, id, asset, None, read)
+        }
+
+        /// [`Audios::view`] for a result that take `finished` made: a card playing that take's
+        /// preview plays on into it (#875). Pass it only when this sound is what it made.
+        pub fn view_result(
+            &mut self,
+            ctx: &egui::Context,
+            id: NodeId,
+            asset: &AssetRef,
+            finished: Option<Take>,
+            read: impl FnOnce() -> Result<PreviewAssetRead, PreviewReadError>,
+        ) -> AudioView {
             if let Err(view) = self.open(ctx) {
                 return view;
             }
             let hash = asset.hash;
-            let clock = self.clock;
-            let player = self.players.entry(id).or_insert_with(|| Player { hash, position_us: 0, seen: clock, notice: None, duration_us: None });
-            if player.hash != hash {
-                // The card has another sound now (a new result): start again.
-                *player = Player { hash, position_us: 0, seen: clock, notice: None, duration_us: None };
-                if self.playback.as_ref().is_some_and(|p| p.node == id) {
-                    self.playback = None;
-                    if let Some(feeder) = &self.feeder {
-                        feeder.stop();
-                    }
-                }
+            let sound = self.source(ctx, hash, read);
+            // The preview plays on while the result is read and imported.
+            if matches!(sound, Err(AudioView::Pending))
+                && let Some(view) = self.hold(ctx, id, hash, finished)
+            {
+                return view;
             }
-            player.seen = clock;
-            let (paused_at, notice, observed_duration) = (player.position_us, player.notice, player.duration_us);
-            let sound = match self.source(ctx, hash, read) {
+            self.switch(id, hash, finished, false);
+            let sound = match sound {
                 Ok(sound) => sound,
                 Err(view) => return view,
             };
             let peaks = self.wave(hash, &sound);
+            self.show(id, &sound, peaks)
+        }
+
+        /// The latest preview of take `preview.take`'s sound on node `id` (#875): played like a
+        /// sound, without a waveform, and replaced by the next preview once that is ready.
+        pub fn view_preview(&mut self, ctx: &egui::Context, id: NodeId, preview: &AudioPreview) -> AudioView {
+            if let Err(view) = self.open(ctx) {
+                return view;
+            }
+            let hash = preview.hash;
+            let sound = self.preview_source(preview);
+            // One that can't be played yet, or at all, leaves the one before playing.
+            if sound.is_err()
+                && let Some(view) = self.hold(ctx, id, hash, Some(preview.take))
+            {
+                return view;
+            }
+            self.switch(id, hash, Some(preview.take), true);
+            match sound {
+                Ok(sound) => self.show(id, &sound, None),
+                Err(view) => view,
+            }
+        }
+
+        /// What node `id` shows while its next sound `hash` (from `job`) isn't ready: the
+        /// preview it shows now, if `hash` continues it and it's ready.
+        fn hold(&mut self, ctx: &egui::Context, id: NodeId, hash: Blake3, job: Option<Take>) -> Option<AudioView> {
+            let player = self.players.get(&id)?;
+            if change(player.hash, player.preview, hash, job) != Change::Continue {
+                return None;
+            }
+            let old = player.hash;
+            let sound = self.asset(old)?.clone();
+            if let Some(entry) = self.sources.get_mut(&old) {
+                entry.used = self.clock;
+            }
+            ctx.request_repaint_after(POLL);
+            Some(self.show(id, &sound, None))
+        }
+
+        /// Points node `id`'s player at sound `hash`, made by `job` (a preview of it if
+        /// `preview`): from the start, or on from where it was when the sound continues.
+        fn switch(&mut self, id: NodeId, hash: Blake3, job: Option<Take>, preview: bool) {
+            let clock = self.clock;
+            let here = self.playback.as_ref().is_some_and(|p| p.node == id);
+            let status = if here { self.feeder.as_ref().and_then(Feeder::status) } else { None };
+            let job_if_preview = if preview { job } else { None };
+            let player = self.players.entry(id).or_insert_with(|| Player::new(hash, clock, job_if_preview));
+            let old = player.hash;
+            match change(old, player.preview, hash, job) {
+                Change::Same => {}
+                Change::Continue => {
+                    let position_us = status.map_or(player.position_us, |status| status.position_us);
+                    let resume = status.is_some_and(|status| status.playing) || player.waiting || player.resume;
+                    *player = Player { position_us, resume, ..Player::new(hash, clock, job_if_preview) };
+                }
+                // The card has another sound now (a new result): start again.
+                Change::Restart => *player = Player::new(hash, clock, job_if_preview),
+            }
+            player.seen = clock;
+            if old != hash {
+                if here {
+                    self.stop();
+                }
+                self.drop_unshown_preview(old);
+            }
+        }
+
+        /// Lets go of the preview node `id` plays (#875), if it plays one: its job ended, or
+        /// tried again, and the card has no sound of its own to show instead. It stops, and its
+        /// bytes go.
+        pub fn let_go(&mut self, id: NodeId) {
+            let Some(old) = self.players.get(&id).filter(|player| player.preview.is_some()).map(|player| player.hash) else { return };
+            self.players.remove(&id);
+            if self.playback.as_ref().is_some_and(|p| p.node == id) {
+                self.stop();
+            }
+            self.drop_unshown_preview(old);
+        }
+
+        /// A preview nothing shows any more is no use: drops it now.
+        fn drop_unshown_preview(&mut self, hash: Blake3) {
+            let shown = self.players.values().any(|player| player.hash == hash);
+            if !shown && self.sources.get(&hash).is_some_and(|entry| entry.preview) {
+                self.sources.remove(&hash);
+            }
+        }
+
+        /// Node `id`'s view of `sound`, playing on from its place first if it took over.
+        fn show(&mut self, id: NodeId, sound: &AudioAsset, peaks: Option<Arc<[u8]>>) -> AudioView {
+            let Some(player) = self.players.get_mut(&id) else { return AudioView::Pending };
+            let (resume, from) = (std::mem::take(&mut player.resume), player.position_us);
+            let duration = sound.metadata().duration_us;
+            if resume && from < duration {
+                self.play(id, sound.clone(), from, duration);
+            } else if resume && let Some(player) = self.players.get_mut(&id) {
+                if player.preview.is_some() {
+                    // Not past where it was yet: wait for more.
+                    player.waiting = true;
+                } else {
+                    // A result no longer than what played of it has nothing more: it's over.
+                    player.position_us = duration;
+                }
+            }
+            let Some(player) = self.players.get(&id) else { return AudioView::Pending };
+            let (paused_at, notice, observed_duration, waiting) = (player.position_us, player.notice, player.duration_us, player.waiting);
             let status = self.playback.as_ref().filter(|p| p.node == id).and_then(|_| self.feeder.as_ref()?.status());
             let position_us = status.map_or(paused_at, |status| status.position_us);
             let duration_us = status.map_or_else(|| observed_duration.unwrap_or(sound.metadata().duration_us), |status| status.duration_us);
             let notice = status.and_then(|status| status.notice).or(notice);
-            AudioView::Sound { peaks, position_us, duration_us, playing: status.is_some_and(|status| status.playing), notice }
+            let playing = status.is_some_and(|status| status.playing) || waiting;
+            AudioView::Sound { peaks, position_us, duration_us, playing, notice }
         }
 
         /// Starts the service the first time a sound is wanted; what to show while it can't.
@@ -501,8 +689,26 @@ mod native {
                 // Room for it among the imported sounds.
                 let staged = |sources: &HashMap<Blake3, SourceEntry>| sources.values().map(|s| s.bytes).fold(0u64, u64::saturating_add);
                 while staged(&self.sources).saturating_add(bytes) > MAX_STAGED_BYTES && self.evict_source() {}
-                self.sources.insert(hash, SourceEntry { state, bytes, used: clock });
+                self.sources.insert(hash, SourceEntry { state, bytes, used: clock, preview: false });
             }
+            self.imported(hash)
+        }
+
+        /// The imported preview `preview`, or what to show instead; imports it when it's new.
+        fn preview_source(&mut self, preview: &AudioPreview) -> Result<AudioAsset, AudioView> {
+            if !self.sources.contains_key(&preview.hash) {
+                let bytes = u64::try_from(preview.bytes.len()).unwrap_or(u64::MAX);
+                let staged = |sources: &HashMap<Blake3, SourceEntry>| sources.values().map(|s| s.bytes).fold(0u64, u64::saturating_add);
+                while staged(&self.sources).saturating_add(bytes) > MAX_STAGED_BYTES && self.evict_source() {}
+                let state = Source::Read { bytes: Arc::clone(&preview.bytes), retry: None };
+                self.sources.insert(preview.hash, SourceEntry { state, bytes, used: self.clock, preview: true });
+            }
+            self.imported(preview.hash)
+        }
+
+        /// Sound `hash` once imported, else what to show; marks it shown.
+        fn imported(&mut self, hash: Blake3) -> Result<AudioAsset, AudioView> {
+            let clock = self.clock;
             let entry = self.sources.get_mut(&hash).ok_or(AudioView::Pending)?;
             entry.used = clock;
             match &entry.state {
@@ -556,6 +762,16 @@ mod native {
 
         /// Plays, pauses or seeks node `id`'s sound.
         pub fn act(&mut self, ctx: &egui::Context, id: NodeId, intent: AudioIntent) {
+            // A preview waiting for more, or about to play on, shows as playing: pause it.
+            if intent == AudioIntent::Toggle
+                && let Some(player) = self.players.get_mut(&id)
+                && (player.waiting || player.resume)
+            {
+                player.waiting = false;
+                player.resume = false;
+                ctx.request_repaint();
+                return;
+            }
             let Some(hash) = self.players.get(&id).map(|player| player.hash) else { return };
             let Some(asset) = self.asset(hash).cloned() else { return };
             let duration = self.players.get(&id).and_then(|player| player.duration_us).unwrap_or(asset.metadata().duration_us);
@@ -569,13 +785,6 @@ mod native {
                     self.stop();
                 }
                 (AudioIntent::Toggle, None) => {
-                    if let Some(previous) = self.playback.take() {
-                        let status = self.feeder.as_ref().and_then(Feeder::status);
-                        if let (Some(other), Some(status)) = (self.players.get_mut(&previous.node), status) {
-                            other.position_us = status.position_us;
-                            other.duration_us = Some(status.duration_us);
-                        }
-                    }
                     let from = match self.players.get_mut(&id) {
                         Some(player) => {
                             if player.position_us >= duration {
@@ -586,22 +795,7 @@ mod native {
                         }
                         None => return,
                     };
-                    let result = (|| {
-                        let feeder = Feeder::ready(&mut self.feeder)?;
-                        let Service::Ready(service) = &self.service else { return Err("This sound is not ready to play") };
-                        feeder.play(Arc::clone(service), asset, from, duration)
-                    })();
-                    match result {
-                        Ok(()) => self.playback = Some(Playback { node: id }),
-                        Err(why) => {
-                            if let Some(feeder) = &self.feeder {
-                                feeder.stop();
-                            }
-                            if let Some(player) = self.players.get_mut(&id) {
-                                player.notice = Some(why);
-                            }
-                        }
-                    }
+                    self.play(id, asset, from, duration);
                 }
                 (AudioIntent::Seek(us) | AudioIntent::PreviewSeek(us), _) => {
                     let us = us.min(duration);
@@ -629,6 +823,39 @@ mod native {
             ctx.request_repaint();
         }
 
+        /// Plays node `id`'s `asset` from `from`, stopping whichever card played before.
+        fn play(&mut self, id: NodeId, asset: AudioAsset, from: u64, duration: u64) {
+            if let Some(previous) = self.playback.take() {
+                let status = self.feeder.as_ref().and_then(Feeder::status);
+                if let (Some(other), Some(status)) = (self.players.get_mut(&previous.node), status) {
+                    other.position_us = status.position_us;
+                    other.duration_us = Some(status.duration_us);
+                }
+            }
+            let result = (|| {
+                let feeder = Feeder::ready(&mut self.feeder)?;
+                let Service::Ready(service) = &self.service else { return Err("This sound is not ready to play") };
+                feeder.play(Arc::clone(service), asset, from, duration)
+            })();
+            match result {
+                Ok(()) => {
+                    self.playback = Some(Playback { node: id });
+                    if let Some(player) = self.players.get_mut(&id) {
+                        player.waiting = false;
+                    }
+                }
+                Err(why) => {
+                    if let Some(feeder) = &self.feeder {
+                        feeder.stop();
+                    }
+                    if let Some(player) = self.players.get_mut(&id) {
+                        player.notice = Some(why);
+                        player.waiting = false;
+                    }
+                }
+            }
+        }
+
         /// Forgets the players of nodes `keep` says are gone, stopping one that was playing.
         pub fn retain(&mut self, keep: impl Fn(NodeId) -> bool) {
             self.players.retain(|id, _| keep(*id));
@@ -643,6 +870,12 @@ mod native {
             if let Some(feeder) = &self.feeder {
                 feeder.stop();
             }
+        }
+
+        #[cfg(test)]
+        /// Points node `id`'s player at preview `hash` of take `take`, as a shown preview would.
+        pub(crate) fn test_preview_player(&mut self, id: NodeId, hash: Blake3, take: Take) {
+            self.players.insert(id, Player::new(hash, self.clock, Some(take)));
         }
 
         #[cfg(test)]

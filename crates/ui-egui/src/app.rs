@@ -1664,15 +1664,25 @@ impl NodeCraftApp {
                         let assets = self.session.assets();
                         self.videos.view(ui.ctx(), node.id, asset, edge, || assets.preview_read(asset))
                     });
-                // And sounds; which card plays, and where, is view state too (#106).
-                let audio = (self.view.zoom >= card::BODY_MIN_ZOOM)
-                    .then(|| crate::audio::audio_of(node))
-                    .flatten()
-                    .filter(|_| images.0.is_empty() && video.is_none())
-                    .map(|asset| {
+                // And sounds; which card plays, and where, is view state too (#106). A sound
+                // still arriving plays from its job's latest preview, then its result (#875).
+                let shows_audio = self.view.zoom >= card::BODY_MIN_ZOOM && images.0.is_empty() && video.is_none();
+                // A preview whose job ended, or tried again, is let go when the card has no sound
+                // of its own to show instead; one it has replaces it.
+                let sound_so_far = self.runs.as_ref().and_then(|runs| runs.audio_preview(self.canvas, node.id));
+                let result = crate::audio::audio_of(node);
+                let finished = result.and_then(|asset| self.runs.as_ref()?.finished_take(self.canvas, node.id, asset.hash));
+                if sound_so_far.is_none() && (result.is_none() || (!shows_audio && finished.is_none())) {
+                    self.audios.let_go(node.id);
+                }
+                let audio = match (sound_so_far, result) {
+                    (Some(so_far), _) if shows_audio => Some(self.audios.view_preview(ui.ctx(), node.id, so_far)),
+                    (None, Some(asset)) if shows_audio => {
                         let assets = self.session.assets();
-                        self.audios.view(ui.ctx(), node.id, asset, || assets.preview_read(asset))
-                    });
+                        Some(self.audios.view_result(ui.ctx(), node.id, asset, finished, || assets.preview_read(asset)))
+                    }
+                    _ => None,
+                };
                 let mesh = match crate::mesh_view::mesh_of(node) {
                     Some(asset) if self.view.zoom >= card::BODY_MIN_ZOOM => {
                         let assets = self.session.assets();
@@ -3143,6 +3153,9 @@ mod action_tests;
 mod app_mode_tests;
 #[cfg(test)]
 mod audio672_tests;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod audio875_tests;
 #[cfg(test)]
 mod audio_tests;
 #[cfg(test)]

@@ -136,6 +136,8 @@ impl Resumes {
             reported_sent: true,
             partial: None,
             partial_attempt: 0,
+            preview: None,
+            made: None,
         };
         self.jobs.live.insert(id, view);
         self.jobs.started(id, 1);

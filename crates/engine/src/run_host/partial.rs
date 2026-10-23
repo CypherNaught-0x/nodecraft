@@ -62,6 +62,8 @@ mod tests {
             reported_sent: true,
             partial: Some(Arc::new(text.to_owned())),
             partial_attempt: 1,
+            preview: None,
+            made: None,
         }
     }
 

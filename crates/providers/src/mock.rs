@@ -87,6 +87,8 @@ pub struct MockProvider {
     scripts: Arc<scripts::Scripts>,
     /// Pieces a model streams before its answer, when the runner asks for streamed text.
     streams: Arc<BTreeMap<String, Vec<String>>>,
+    /// Previews a model sends before its answer, when the runner asks for previews (#875).
+    previews: Arc<BTreeMap<String, Vec<crate::Output>>>,
     /// What a model quotes before it runs (#663): a price, or the kind of error the quote fails
     /// with. A model without one can't quote.
     quotes: Arc<BTreeMap<String, Result<Money, ErrorKind>>>,
@@ -101,6 +103,7 @@ impl MockProvider {
             models: Arc::new(models.into_iter().collect()),
             scripts: Arc::default(),
             streams: Arc::default(),
+            previews: Arc::default(),
             quotes: Arc::default(),
             state: Arc::default(),
         }
@@ -127,6 +130,14 @@ impl MockProvider {
     #[must_use]
     pub fn with_stream(mut self, model: impl Into<String>, pieces: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Arc::make_mut(&mut self.streams).insert(model.into(), pieces.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Makes `model` send `previews`, one per poll of its submit, when the runner asks for
+    /// previews (#875), as a speech model sends the sound so far. Its answer is unchanged.
+    #[must_use]
+    pub fn with_previews(mut self, model: impl Into<String>, previews: impl IntoIterator<Item = crate::Output>) -> Self {
+        Arc::make_mut(&mut self.previews).insert(model.into(), previews.into_iter().collect());
         self
     }
 
@@ -251,9 +262,14 @@ impl Provider for MockProvider {
     fn submit_with_delivery<'a>(&'a self, job: &'a ProviderJob, context: &'a crate::SubmitContext) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         context.unknown();
         let pieces = if context.wants_text() { self.streams.get(&job.model).cloned().unwrap_or_default() } else { Vec::new() };
+        let previews = if context.wants_previews() { self.previews.get(&job.model).cloned().unwrap_or_default() } else { Vec::new() };
         Box::pin(async move {
             for piece in pieces {
                 context.push_text(&piece);
+                yield_once().await;
+            }
+            for preview in previews {
+                context.push_preview(preview);
                 yield_once().await;
             }
             self.submit(job).await

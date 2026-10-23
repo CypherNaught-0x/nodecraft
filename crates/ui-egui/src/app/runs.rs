@@ -358,7 +358,9 @@ impl Runs {
             session: id.iter().map(|b| format!("{b:02x}")).collect(),
             wall_clock_ms: wall_clock_ms(),
         };
-        let host = RunHost::new(runtime, budget);
+        // The desktop plays a speech card's sound while it arrives (#875); the browser can't
+        // play sound yet, so it doesn't ask for previews.
+        let host = RunHost::new(runtime, budget).with_previews(cfg!(not(target_arch = "wasm32")));
         host.register(services)?;
         host.register_estimates(services)?;
         host.register_ownership(services)?;
@@ -715,6 +717,20 @@ impl Runs {
             _ => None,
         };
         Some(crate::card::generate::Partial { text, stopped })
+    }
+
+    /// The latest preview of the sound card `node`'s newest job is making (#875), while it runs.
+    pub(super) fn audio_preview(&self, canvas: CanvasId, node: NodeId) -> Option<&nodecraft_engine::run_jobs::AudioPreview> {
+        self.jobs.iter().rev().find(|view| view.canvas == canvas && view.node == node)?.preview.as_ref()
+    }
+
+    /// The take of card `node`'s newest job, if it finished with the sound `shown`: that sound
+    /// continues the take's preview (#875). A sound it didn't make (an earlier take, while this
+    /// one's result is held) continues nothing.
+    pub(super) fn finished_take(&self, canvas: CanvasId, node: NodeId, shown: nodecraft_types::Blake3) -> Option<nodecraft_engine::run_jobs::Take> {
+        let view = self.jobs.iter().rev().find(|view| view.canvas == canvas && view.node == node).filter(|view| view.state == JobState::Done)?;
+        let made = view.made.as_ref().filter(|made| made.assets.contains(&shown))?;
+        Some(nodecraft_engine::run_jobs::Take { job: view.key, attempt: made.attempt })
     }
 
     /// Records the partial answer a card's last job left, without changing the answer it shows.
