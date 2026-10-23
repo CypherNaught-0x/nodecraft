@@ -864,3 +864,5 @@ fn variations808_visual() {
     frames_until(&mut h, |app| app.run_confirm.is_some());
     h.render().unwrap().save(dir.join("variations808-quote.png")).unwrap();
 }
+
+mod known_media795;

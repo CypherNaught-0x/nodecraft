@@ -20,6 +20,7 @@ use nodecraft_nodes::{Category, InputValue, JobSpec, ModeId, PlanCtx, Registry, 
 use nodecraft_types::{Error, ErrorKind, FieldId, Modality, NodeId, PortType, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod known;
 mod options;
 
 /// Which nodes a run covers.
@@ -898,7 +899,12 @@ impl<'a> Graph<'a> {
             }
         }
         let plan_jobs = |inputs: &[PlannedInput]| -> Result<Option<Vec<JobSpec>>, Vec<Blocker>> {
-            let Some(values) = known_inputs(inputs) else { return Ok(None) };
+            let Some(values) = known_inputs(inputs) else {
+                let facts = known::facts(inputs);
+                kind.check_known_inputs(&nodecraft_nodes::PreflightCtx { node, inputs: &facts })
+                    .map_err(|error| vec![blocker(None, None, invalid_kind(self.kinds, &node.kind, error.message))])?;
+                return Ok(None);
+            };
             let jobs = kind
                 .plan(&PlanCtx { targets: self.targets, node, inputs: &values })
                 .map_err(|error| vec![blocker(None, None, invalid_kind(self.kinds, &node.kind, error.message))])?;
@@ -983,7 +989,6 @@ impl<'a> Graph<'a> {
                 _ => {
                     jobs = None;
                     counts.clear();
-                    break;
                 }
             }
         }
@@ -1165,6 +1170,11 @@ pub(crate) fn value_bytes(value: &Value) -> usize {
 /// Input values for [`NodeKind::plan`](nodecraft_nodes::NodeKind::plan) when nothing comes from
 /// a step: one per connected port, a [`Value::List`] for list inputs.
 fn known_inputs(inputs: &[PlannedInput]) -> Option<Vec<InputValue>> {
+    // A deferred step uses borrowed facts. Find unknowns before cloning even a large known
+    // Text on an earlier port just to discard it when a later input is still pending.
+    if inputs.iter().any(|input| input.from.iter().any(|source| !matches!(source, InputSource::Value(_)))) {
+        return None;
+    }
     inputs
         .iter()
         .map(|input| {

@@ -34,7 +34,9 @@ pub mod video_look;
 pub mod video_split;
 
 pub use contract::{InputContract, ModeContract, NodeContract, OutputContract, PortCount};
-pub use descriptor::{Category, GenerateInput, GenerateOutput, InputValue, JobSpec, ModeId, NodeDescriptor, NodeKind, NodeMigration, PlanCtx};
+pub use descriptor::{
+    Category, GenerateInput, GenerateOutput, InputFacts, InputValue, JobSpec, ModeId, NodeDescriptor, NodeKind, NodeMigration, PlanCtx, PreflightCtx,
+};
 pub use nodecraft_types::{Choice, ParamControl, ParamSchema, ParamSpec, ParamValues, ResolvedParams, VisibleIf};
 pub use registry::Registry;
 pub use source::SourceKind;

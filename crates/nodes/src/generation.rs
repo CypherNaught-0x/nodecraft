@@ -9,8 +9,8 @@ use crate::{
 };
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{
-    AudioOverrun, AudioUse, ConnectedText, Contract, DocumentUse, Error, ErrorKind, Modality, NodeId, ParamControl, ParamOwner, ParamSchema, ParamSpec,
-    ParamValues, PortType, ResolvedParams, TextPrecedence, Value, VideoEdit, compose_text,
+    AssetRef, AudioOverrun, AudioUse, ConnectedText, Contract, DocumentUse, Error, ErrorKind, Modality, NodeId, ParamControl, ParamOwner, ParamSchema,
+    ParamSpec, ParamValues, PortType, ResolvedParams, TextPrecedence, Value, VideoEdit, compose_text,
 };
 use std::{
     borrow::Cow,
@@ -35,6 +35,8 @@ pub const PROMPT: &str = "prompt";
 /// Longest typed prompt a generation card holds, in bytes.
 pub const MAX_PROMPT_BYTES: usize = 1024 * 1024;
 const MAX_PROMPTS: usize = 1024;
+
+mod known;
 
 /// Whether `kind` is one of the catalog-backed generation kinds.
 pub fn is_generation(kind: &str) -> bool {
@@ -516,6 +518,9 @@ impl NodeKind for GenerationKind {
             })
             .map(|mode| mode.id.clone()))
     }
+    fn check_known_inputs(&self, ctx: &crate::PreflightCtx<'_>) -> Result<(), Error> {
+        self.check_known_media(ctx)
+    }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
         self.validate_instance(ctx.node, true)?;
         let definition = self.definition(ctx.node)?;
@@ -562,16 +567,14 @@ impl NodeKind for GenerationKind {
             return Err(said(ErrorKind::Unsupported, self.output, "this {noun} model requires unsupported input roles"));
         }
         let media = self.media(mode, &inputs)?;
-        styles_fit(&definition.model, &media)?;
-        if let Some(audio) = &mode.audio {
-            audio_fits(audio, &media)?;
-        }
-        if let Some(edit) = &mode.edit {
-            edit_fits(edit, &media)?;
-        }
-        if let Some(document) = &mode.document {
-            document_fits(document, &media)?;
-        }
+        media_fits(
+            &definition.model,
+            mode,
+            media.iter().filter_map(|input| match &input.value {
+                Value::Media(asset) => Some((input.role.as_str(), asset)),
+                _ => None,
+            }),
+        )?;
         let prompt = match mode.inputs.iter().find(|r| r.role == PROMPT && r.modality == Modality::Text) {
             Some(role) => Some(self.prompt(role, ctx, &inputs, &mentioned)?).filter(|prompt| !prompt.is_empty()),
             // A mode without a prompt (image to 3D) takes its media alone; its declared counts
@@ -649,12 +652,26 @@ impl GenerationKind {
     }
 }
 
+/// Shared known-metadata checks for complete plans and deferred-input preflight (#795).
+fn media_fits<'a>(model: &GenerationModel, mode: &GenerationMode, media: impl Iterator<Item = (&'a str, &'a AssetRef)> + Clone) -> Result<(), Error> {
+    styles_fit(model, media.clone())?;
+    if let Some(audio) = &mode.audio {
+        audio_fits(audio, media.clone())?;
+    }
+    if let Some(edit) = &mode.edit {
+        edit_fits(edit, media.clone())?;
+    }
+    if let Some(document) = &mode.document {
+        document_fits(document, media.clone())?;
+    }
+    Ok(())
+}
+
 /// Refuses a wired style trained for another base-model family than the model's (#167), naming
 /// both, before anything is quoted or sent. A style's asset carries its family as a MIME
 /// parameter; the engine checks that against the descriptor's own bytes when it sends one.
-fn styles_fit(model: &GenerationModel, media: &[GenerateInput]) -> Result<(), Error> {
-    for input in media {
-        let Value::Media(asset) = &input.value else { continue };
+fn styles_fit<'a>(model: &GenerationModel, media: impl Iterator<Item = (&'a str, &'a AssetRef)>) -> Result<(), Error> {
+    for (_, asset) in media {
         if asset.mime.essence() != nodecraft_types::STYLE_MIME {
             continue;
         }
@@ -681,12 +698,10 @@ fn styles_fit(model: &GenerationModel, media: &[GenerateInput]) -> Result<(), Er
 
 /// Refuses audio longer than the mode takes when the model can't trim it, before anything is
 /// sent or charged. Audio whose length is unknown goes through; the provider still checks it.
-fn audio_fits(audio: &AudioUse, media: &[GenerateInput]) -> Result<(), Error> {
+fn audio_fits<'a>(audio: &AudioUse, media: impl Iterator<Item = (&'a str, &'a AssetRef)>) -> Result<(), Error> {
     let Some(max) = audio.max_ms.filter(|_| audio.longer == AudioOverrun::Refuse) else { return Ok(()) };
-    for input in media.iter().filter(|input| input.role == audio.role) {
-        if let Value::Media(asset) = &input.value
-            && let Some(ms) = asset.meta.duration_ms.filter(|ms| *ms > max)
-        {
+    for (_, asset) in media.filter(|(role, _)| *role == audio.role) {
+        if let Some(ms) = asset.meta.duration_ms.filter(|ms| *ms > max) {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!(
@@ -703,23 +718,17 @@ fn audio_fits(audio: &AudioUse, media: &[GenerateInput]) -> Result<(), Error> {
 }
 
 /// Refuses PDFs with more pages than the mode reads at once, before anything is sent (#591).
-fn document_fits(document: &DocumentUse, media: &[GenerateInput]) -> Result<(), Error> {
-    // `media` holds one asset per input.
-    let pages = media.iter().filter(|input| input.role == document.role).filter_map(|input| match &input.value {
-        Value::Media(asset) => Some(asset.meta.page_count),
-        _ => None,
-    });
+fn document_fits<'a>(document: &DocumentUse, media: impl Iterator<Item = (&'a str, &'a AssetRef)>) -> Result<(), Error> {
+    let pages = media.filter(|(role, _)| *role == document.role).map(|(_, asset)| asset.meta.page_count);
     document.pages(pages).map(|_| ())
 }
 
 /// Refuses a source video the edit won't take (too short, frames too small), before anything is
 /// sent or charged (#179).
-fn edit_fits(edit: &VideoEdit, media: &[GenerateInput]) -> Result<(), Error> {
-    for input in media.iter().filter(|input| input.role == edit.role) {
-        if let Value::Media(asset) = &input.value {
-            let size = asset.meta.width.zip(asset.meta.height);
-            edit.fits(asset.mime.essence(), asset.meta.duration_ms, size)?;
-        }
+fn edit_fits<'a>(edit: &VideoEdit, media: impl Iterator<Item = (&'a str, &'a AssetRef)>) -> Result<(), Error> {
+    for (_, asset) in media.filter(|(role, _)| *role == edit.role) {
+        let size = asset.meta.width.zip(asset.meta.height);
+        edit.fits(asset.mime.essence(), asset.meta.duration_ms, size)?;
     }
     Ok(())
 }
