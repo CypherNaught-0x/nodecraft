@@ -24,7 +24,8 @@ pub(super) struct ElementLibraryView {
     /// The rename field takes the keyboard when next drawn.
     focus_rename: bool,
     /// The entry whose Remove asks to be confirmed.
-    removing: Option<String>,
+    /// The entry asked to be removed, and whether it is a damaged one.
+    removing: Option<(String, bool)>,
     /// A bundle to import is being chosen.
     importing: Option<Pick>,
     /// A chosen bundle whose Element's name the library has already: replace it, or not.
@@ -87,8 +88,14 @@ enum Action {
         shared: bool,
     },
     Export(String),
-    AskRemove(String),
-    Remove(String),
+    AskRemove {
+        name: String,
+        damaged: bool,
+    },
+    Remove {
+        name: String,
+        damaged: bool,
+    },
     KeepIt,
     Import,
     ImportReplacing(PathBuf),
@@ -103,10 +110,12 @@ impl ElementLibraryView {
 
     /// The entry `node` updates from: the one it was placed from, else the one of its name.
     pub(super) fn source(&self, node: &Node) -> Option<String> {
-        match node.config.get(ENTRY_CONFIG) {
-            Some(Value::Text(entry)) => self.has(entry).then(|| entry.clone()),
-            _ => nodecraft_nodes::element::name(node).filter(|name| self.has(name)).map(str::to_owned),
-        }
+        // As `element.update` picks: its own name first, then the entry it was placed from.
+        let placed_from = match node.config.get(ENTRY_CONFIG) {
+            Some(Value::Text(entry)) => Some(entry.as_str()),
+            _ => None,
+        };
+        nodecraft_nodes::element::name(node).into_iter().chain(placed_from).find(|name| self.has(name)).map(str::to_owned)
     }
 }
 
@@ -249,9 +258,9 @@ impl NodeCraftApp {
                                 let images = if entry.images == 1 { "1 image".to_owned() } else { format!("{} images", entry.images) };
                                 let sheet = if entry.sheet { " + sheet" } else { "" };
                                 ui.label(format!("#{} · {} · {images}{sheet}", sheet_view::line(&entry.name), entry.category));
-                                if view.removing.as_deref() == Some(entry.name.as_str()) {
+                                if view.removing.as_ref().is_some_and(|(name, damaged)| !damaged && *name == entry.name) {
                                     if ui.button("Yes, remove").on_hover_text("Projects that placed it keep their copy").clicked() {
-                                        action = Some(Action::Remove(entry.name.clone()));
+                                        action = Some(Action::Remove { name: entry.name.clone(), damaged: false });
                                     }
                                     if ui.button("Keep").clicked() {
                                         action = Some(Action::KeepIt);
@@ -266,7 +275,11 @@ impl NodeCraftApp {
                                     action = Some(Action::Share { name: entry.name.clone(), shared });
                                 }
                                 ui.menu_button("…", |ui| {
-                                    if ui.button("Rename").on_hover_text("Elements placed from it keep their names and still update from it").clicked() {
+                                    if ui
+                                        .button("Rename")
+                                        .on_hover_text("Elements already on a canvas update from it only if they carry its new name")
+                                        .clicked()
+                                    {
                                         action = Some(Action::StartRename(entry.name.clone()));
                                         ui.close();
                                     }
@@ -279,7 +292,7 @@ impl NodeCraftApp {
                                         ui.close();
                                     }
                                     if ui.button("Remove").on_hover_text("Take it out of the library; projects that placed it keep their copy").clicked() {
-                                        action = Some(Action::AskRemove(entry.name.clone()));
+                                        action = Some(Action::AskRemove { name: entry.name.clone(), damaged: false });
                                         ui.close();
                                     }
                                 });
@@ -302,7 +315,21 @@ impl NodeCraftApp {
                                     .name
                                     .as_deref()
                                     .map_or_else(|| format!("entry {}", damaged.index.saturating_add(1)), |name| format!("#{}", sheet_view::line(name)));
-                                ui.label(egui::RichText::new(format!("{name}: {}", damaged.reason)).color(t.text_muted));
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(format!("{name}: {}", damaged.reason)).color(t.text_muted));
+                                    // One with a name can be taken out here; the rest only in the file.
+                                    let Some(name) = &damaged.name else { return };
+                                    if view.removing.as_ref().is_some_and(|(asked, damaged)| *damaged && asked == name) {
+                                        if ui.button("Yes, remove").on_hover_text("Its images go too unless another entry shows them").clicked() {
+                                            action = Some(Action::Remove { name: name.clone(), damaged: true });
+                                        }
+                                        if ui.button("Keep").clicked() {
+                                            action = Some(Action::KeepIt);
+                                        }
+                                    } else if ui.button("Remove").on_hover_text("Take this entry out of the library file").clicked() {
+                                        action = Some(Action::AskRemove { name: name.clone(), damaged: true });
+                                    }
+                                });
                             }
                         }
                     }
@@ -336,11 +363,18 @@ impl NodeCraftApp {
                     return;
                 }
                 Action::Rename { name, to } => {
-                    view.renaming = None;
                     if name == to {
+                        view.renaming = None;
                         return;
                     }
-                    self.session.dispatch("library.rename_element", &json!({"name": name, "to": to})).map(|_| ())
+                    let renamed = self.session.dispatch("library.rename_element", &json!({"name": name, "to": to})).map(|_| ());
+                    // A refused name stays in the field to correct.
+                    if renamed.is_ok() {
+                        self.element_library.renaming = None;
+                    } else {
+                        self.element_library.focus_rename = true;
+                    }
+                    renamed
                 }
                 Action::Share { name, shared } => self.session.dispatch("library.share_element", &json!({"name": name, "shared": shared})).map(|_| ()),
                 Action::Export(name) => {
@@ -348,8 +382,8 @@ impl NodeCraftApp {
                     self.pick_export(export::Target::File("library.export_element", json!({"name": name})), &file);
                     return;
                 }
-                Action::AskRemove(name) => {
-                    view.removing = Some(name);
+                Action::AskRemove { name, damaged } => {
+                    view.removing = Some((name, damaged));
                     view.renaming = None;
                     return;
                 }
@@ -357,9 +391,9 @@ impl NodeCraftApp {
                     view.removing = None;
                     return;
                 }
-                Action::Remove(name) => {
+                Action::Remove { name, damaged } => {
                     view.removing = None;
-                    self.session.dispatch("library.remove_element", &json!({"name": name})).map(|_| ())
+                    self.session.dispatch("library.remove_element", &json!({"name": name, "damaged": damaged})).map(|_| ())
                 }
                 Action::Import => {
                     view.clashing = None;

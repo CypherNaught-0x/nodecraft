@@ -56,7 +56,7 @@ struct ImportParams {
 fn import(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: ImportParams = params(value)?;
     shelf(c)?;
-    crate::export::check(&p.path)?;
+    crate::export::check(&p.path).map_err(|e| Error::new(e.kind, e.message.replace("the export path", "the bundle's path")))?;
     if p.rename.as_deref().is_some_and(|rename| !valid_name(rename)) {
         return Err(invalid("an Element's name takes 1 to 40 letters, digits, - or _"));
     }

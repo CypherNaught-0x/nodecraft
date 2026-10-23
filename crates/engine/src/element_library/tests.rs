@@ -58,7 +58,7 @@ fn a_damaged_library_is_reported_not_replaced() {
     let shelf = ElementShelf::new(Rc::new(store.clone()));
     assert!(shelf.with(|_| Ok(())).is_err());
     let assets = nodecraft_format::AssetStore::default();
-    assert!(handle(&shelf, &assets, Request::Remove { name: "Hero".into() }).is_err());
+    assert!(handle(&shelf, &assets, Request::Remove { name: "Hero".into(), damaged: false }).is_err());
     assert_eq!(store.load().unwrap().unwrap(), b"not json", "the damaged file is kept for the person to recover");
 }
 
@@ -101,6 +101,7 @@ fn entries_that_cant_be_used_are_set_aside_reported_and_kept() {
     let store = MemoryElements::default();
     store.save(&bytes).unwrap();
     store.put_media(&asset(3).hash, &[3]).unwrap();
+    store.put_media(&asset(9).hash, &[9]).unwrap();
     let shelf = ElementShelf::new(Rc::new(store.clone()));
     let assets = nodecraft_format::AssetStore::default();
     let listed = handle(&shelf, &assets, Request::List).unwrap();
@@ -112,8 +113,18 @@ fn entries_that_cant_be_used_are_set_aside_reported_and_kept() {
     assert_eq!(elements.len(), 5);
     assert_eq!(elements[0]["shared"], true);
     assert_eq!(elements[3], file["elements"][3], "kept as it was");
-    assert_eq!(store.media_kept().unwrap(), vec![asset(3).hash], "a damaged entry's images stay");
-    assert_eq!(handle(&shelf, &assets, Request::Remove { name: "Villain".into() }).unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(store.media_kept().unwrap(), vec![asset(3).hash], "a damaged entry's images stay; an unused one still goes");
+    assert_eq!(handle(&shelf, &assets, Request::Remove { name: "Villain".into(), damaged: false }).unwrap_err().kind, ErrorKind::NotFound);
+
+    // A damaged entry is removed by name, its images with it, and the rest keep their places.
+    handle(&shelf, &assets, Request::Remove { name: "hero".into(), damaged: true }).unwrap();
+    assert_eq!(handle(&shelf, &assets, Request::List).unwrap()["elements"][0]["name"], "Hero", "the usable Hero stays");
+    handle(&shelf, &assets, Request::Remove { name: "Villain".into(), damaged: true }).unwrap();
+    assert!(store.media_kept().unwrap().is_empty());
+    let listed = handle(&shelf, &assets, Request::List).unwrap();
+    let left: Vec<_> = listed["damaged"].as_array().unwrap().iter().map(|d| d["index"].as_u64().unwrap()).collect();
+    assert_eq!(left, [1, 2], "indices are places in the file as written");
+    assert_eq!(handle(&shelf, &assets, Request::Remove { name: "Villain".into(), damaged: true }).unwrap_err().kind, ErrorKind::NotFound);
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -167,9 +178,13 @@ fn hostile_bundles_are_refused() {
     };
     let image = (format!("media/{}", asset(1).hash), vec![1]);
     let good = entry("nodecraft.element", 1);
-    let cases: Vec<(Vec<(&str, Vec<u8>)>, ErrorKind)> = vec![
+    // A newer bundle with fields this build doesn't know says it is newer, not damaged.
+    let newer = serde_json::to_vec(&json!({"format": "nodecraft.element", "version": 2, "voice": "low", "element": {}})).unwrap();
+    type Files<'a> = Vec<(&'a str, Vec<u8>)>;
+    let cases: Vec<(Files, ErrorKind)> = vec![
         (vec![("element.json", good.clone()), (image.0.as_str(), image.1.clone())], ErrorKind::InvalidInput),
         (vec![("element.json", entry("nodecraft.element", 2)), (image.0.as_str(), image.1.clone())], ErrorKind::Unsupported),
+        (vec![("element.json", newer.clone()), (image.0.as_str(), image.1.clone())], ErrorKind::Unsupported),
         (vec![("element.json", entry("other", 1)), (image.0.as_str(), image.1.clone())], ErrorKind::InvalidInput),
         (vec![("element.json", good.clone())], ErrorKind::InvalidInput),
         (vec![("element.json", good.clone()), (image.0.as_str(), image.1.clone()), ("../evil", vec![1])], ErrorKind::InvalidInput),

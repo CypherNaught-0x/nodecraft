@@ -100,13 +100,15 @@ pub fn decode(bytes: &[u8]) -> Result<(Saved, BTreeMap<Blake3, Vec<u8>>), Error>
             if entry.is_some() {
                 return Err(not_bundle());
             }
-            let file: BundleFile = serde_json::from_slice(&data).map_err(|_| invalid("that Element bundle's entry is damaged"))?;
-            if file.format != BUNDLE_FORMAT {
+            // What it is and its version first: a newer bundle may hold fields this build doesn't know.
+            let value: serde_json::Value = serde_json::from_slice(&data).map_err(|_| invalid("that Element bundle's entry is damaged"))?;
+            if value.get("format").and_then(serde_json::Value::as_str) != Some(BUNDLE_FORMAT) {
                 return Err(not_bundle());
             }
-            if file.version != BUNDLE_VERSION {
+            if value.get("version").and_then(serde_json::Value::as_u64) != Some(u64::from(BUNDLE_VERSION)) {
                 return Err(Error::new(ErrorKind::Unsupported, "that Element bundle was written by a newer NodeCraft"));
             }
+            let file: BundleFile = serde_json::from_value(value).map_err(|_| invalid("that Element bundle's entry is damaged"))?;
             entry = Some(file.element);
         } else {
             let hash: Blake3 = name.strip_prefix(MEDIA).and_then(|hash| hash.parse().ok()).ok_or_else(not_bundle)?;

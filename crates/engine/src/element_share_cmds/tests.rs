@@ -134,10 +134,18 @@ fn an_element_placed_under_another_name_updates_from_its_entry() {
     let node = canvas(&second).nodes().get(&PLACED).unwrap().clone();
     assert_eq!((text(&node, NAME), text(&node, GUIDELINES)), ("Sidekick".into(), "blue scarf".into()));
 
-    // Once its entry is gone it says so, rather than updating from another of the same name.
-    first.dispatch("library.rename_element", &json!({"name": "Hero", "to": "Sidekick"})).unwrap();
+    // Once its entry is gone it says so.
+    first.dispatch("library.rename_element", &json!({"name": "Hero", "to": "Villain"})).unwrap();
     second.dispatch("library.elements", &json!({})).unwrap();
     let error = second.dispatch("element.update", &json!({"canvas": CANVAS, "id": PLACED, "seed": SEED})).unwrap_err();
     assert_eq!(error.kind, ErrorKind::NotFound);
     assert!(error.message.contains("Hero"), "{}", error.message);
+
+    // Saved under its own name, it updates from that entry, not the one it was placed from.
+    first.dispatch("library.rename_element", &json!({"name": "Villain", "to": "Hero"})).unwrap();
+    second.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": PLACED, "name": GUIDELINES, "value": {"type": "text", "value": "green scarf"}})).unwrap();
+    second.dispatch("element.save", &json!({"canvas": CANVAS, "id": PLACED})).unwrap();
+    second.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": PLACED, "name": GUIDELINES, "value": {"type": "text", "value": "edited"}})).unwrap();
+    second.dispatch("element.update", &json!({"canvas": CANVAS, "id": PLACED, "seed": NodeId::from_bytes([9; 16])})).unwrap();
+    assert_eq!(text(canvas(&second).nodes().get(&PLACED).unwrap(), GUIDELINES), "green scarf");
 }

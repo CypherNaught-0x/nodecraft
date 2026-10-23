@@ -22,7 +22,8 @@ const SOURCE_DX: f32 = 360.0;
 const SOURCE_DY: f32 = 280.0;
 
 /// The library entry an Element was placed from (#765), kept in its config so it still updates
-/// from that entry once it is renamed on the canvas.
+/// from that entry once it is renamed on the canvas. An entry of the Element's own name wins, so
+/// one saved under a new name updates from what it was saved as.
 pub const ENTRY_CONFIG: &str = "nodecraft.library_entry";
 
 fn not_found(what: &str) -> Error {
@@ -175,21 +176,20 @@ fn update(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: UpdateParams = params(value)?;
     let canvas = canvas(c, p.canvas)?;
     let node = element(canvas, p.id)?;
-    // The entry it was placed from; one saved before that was kept goes by its name.
-    let entry = match node.config.get(ENTRY_CONFIG) {
-        Some(Value::Text(from)) => shelf(c)?.with(|elements| {
-            elements
-                .get(from)
-                .cloned()
-                .ok_or_else(|| Error::new(ErrorKind::NotFound, format!("the library no longer has {from}, the Element this one was placed from")))
-        })?,
-        _ => {
-            let name = text(node, NAME);
-            shelf(c)?.with(|elements| {
-                elements.get(&name).cloned().ok_or_else(|| Error::new(ErrorKind::NotFound, "the library has no Element with this one's name"))
-            })?
-        }
+    // The entry of its own name (what it was last saved as), else the one it was placed from.
+    let name = text(node, NAME);
+    let from = match node.config.get(ENTRY_CONFIG) {
+        Some(Value::Text(from)) => Some(from.clone()),
+        _ => None,
     };
+    let entry = shelf(c)?.with(|elements| {
+        elements.get(&name).or_else(|| from.as_deref().and_then(|from| elements.get(from))).cloned().ok_or_else(|| match &from {
+            Some(from) => {
+                Error::new(ErrorKind::NotFound, format!("the library has neither {from}, the Element this one was placed from, nor one with this one's name"))
+            }
+            None => Error::new(ErrorKind::NotFound, "the library has no Element with this one's name"),
+        })
+    })?;
     let mut changes = Vec::new();
     // What feeds it now goes: an image source that feeds only this Element is removed (with its
     // wires), anything else is just unwired.
@@ -229,12 +229,15 @@ fn list(c: &Context<'_>, _: &Json) -> Result<Effect, Error> {
 #[serde(deny_unknown_fields)]
 struct RemoveParams {
     name: String,
+    /// The damaged entry of that name (`library.elements` lists them) rather than a usable one.
+    #[serde(default)]
+    damaged: bool,
 }
 
 fn remove(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: RemoveParams = params(value)?;
     shelf(c)?;
-    Ok(Effect::Elements { request: Request::Remove { name: p.name } })
+    Ok(Effect::Elements { request: Request::Remove { name: p.name, damaged: p.damaged } })
 }
 
 #[derive(Deserialize)]
@@ -287,7 +290,7 @@ fn list_schema() -> Json {
     schema(&[], json!({}))
 }
 fn remove_schema() -> Json {
-    schema(&["name"], json!({"name": name()}))
+    schema(&["name"], json!({"name": name(), "damaged": {"type": "boolean", "default": false}}))
 }
 fn rename_schema() -> Json {
     schema(&["name", "to"], json!({"name": name(), "to": name()}))
@@ -341,7 +344,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: remove_schema,
-            params_doc: "{name} -> {removed}; removes the entry from the Elements library. Elements placed from it stay in their projects.",
+            params_doc: "{name, damaged?} -> {removed}; removes the entry from the Elements library. Elements placed from it stay in their projects. With damaged: true it removes the damaged entry of that name (see library.elements) instead.",
             enabled: enabled_library,
             run: remove,
         },

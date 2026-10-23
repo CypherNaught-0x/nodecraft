@@ -193,8 +193,22 @@ impl Elements {
     }
 
     /// Every image some entry shows.
+    /// Every image an entry shows, and every hash a damaged entry mentions (it may show those
+    /// once a newer build reads it again).
     fn media(&self) -> BTreeSet<Blake3> {
-        self.entries.values().flat_map(Saved::media).map(|asset| asset.hash).collect()
+        let mut media: BTreeSet<Blake3> = self.entries.values().flat_map(Saved::media).map(|asset| asset.hash).collect();
+        for damaged in &self.damaged {
+            let mut stack = vec![&damaged.raw];
+            while let Some(value) = stack.pop() {
+                match value {
+                    Json::String(text) => media.extend(text.parse::<Blake3>().ok()),
+                    Json::Array(items) => stack.extend(items),
+                    Json::Object(fields) => stack.extend(fields.values()),
+                    _ => {}
+                }
+            }
+        }
+        media
     }
 }
 
@@ -415,8 +429,10 @@ pub enum Request {
         entry: Saved,
         replace: bool,
     },
+    /// The entry of that name; the damaged one of that name when `damaged`.
     Remove {
         name: String,
+        damaged: bool,
     },
     Rename {
         name: String,
@@ -513,9 +529,19 @@ pub fn handle(shelf: &ElementShelf, assets: &nodecraft_format::AssetStore, reque
             elements.entries.insert(key(&entry.name), entry);
             json!({"imported": summary, "replaced": replaced})
         }
-        Request::Remove { name } => {
+        Request::Remove { name, damaged: false } => {
             let removed = elements.entries.remove(&key(&name)).ok_or_else(|| Error::new(ErrorKind::NotFound, "the library has no Element with that name"))?;
             json!({"removed": removed.summary()})
+        }
+        // A damaged entry can be cleared without editing the file.
+        Request::Remove { name, damaged: true } => {
+            let at = elements
+                .damaged
+                .iter()
+                .position(|damaged| damaged.name.as_deref().is_some_and(|n| key(n) == key(&name)))
+                .ok_or_else(|| Error::new(ErrorKind::NotFound, "the library has no damaged entry with that name"))?;
+            let removed = elements.damaged.remove(at);
+            json!({"removed": {"name": removed.name, "damaged": true}})
         }
         Request::Rename { name, to } => {
             if !valid_name(&to) {
@@ -531,13 +557,15 @@ pub fn handle(shelf: &ElementShelf, assets: &nodecraft_format::AssetStore, reque
             json!({"renamed": summary})
         }
     };
-    store.save(&elements.to_bytes()?)?;
+    let bytes = elements.to_bytes()?;
+    store.save(&bytes)?;
+    // Read back, so a damaged entry's index is its place in the file as written.
+    let elements = Elements::from_bytes(&bytes)?;
     shelf.put(Ok(elements.clone()));
-    // Images no entry shows any more go; failing to tidy up loses nothing. A damaged entry may
-    // still show some, so nothing goes while there is one.
+    // Images no entry shows (or a damaged one mentions) any more go; failing to tidy up loses
+    // nothing.
     let shown = elements.media();
-    let kept = if elements.damaged.is_empty() { store.media_kept().unwrap_or_default() } else { Vec::new() };
-    for hash in kept {
+    for hash in store.media_kept().unwrap_or_default() {
         if !shown.contains(&hash) {
             let _ = store.drop_media(&hash);
         }
