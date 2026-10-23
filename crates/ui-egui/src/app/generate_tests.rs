@@ -190,6 +190,31 @@ fn the_submit_arrow_quotes_first_and_starts_only_once_accepted() {
 }
 
 #[test]
+fn a_quote_with_reused_results_explains_free_reuse_and_cached_only_runs() {
+    let (mut h, runs) = scene("mock-square");
+    press(&mut h, Role::Button, "Generate");
+    let mut quote = h.state_mut().session.dispatch("run.quote", &json!({"canvas": C, "mode": "selected", "nodes": [N]})).unwrap();
+    // Supply a reuse-bearing quote to this UI test without changing the mock provider or
+    // teaching the single-card scene an unrelated graph; engine tests cover actual reuse.
+    quote["reused"] = json!([N, NodeId::from_bytes([86; 16])]);
+    h.state_mut().run_confirm.as_mut().unwrap().set_quote(&quote);
+    h.run();
+    assert!(h.query_by_label_contains("2 reused, free").is_some(), "the quote distinguishes free reused results from priced steps");
+    assert!(h.query_by_label_contains("Generate for").is_some(), "a priced mixed run still offers its quoted price");
+
+    quote["steps"] = json!([]);
+    quote["steps_total"] = json!(0);
+    quote["totals"] = json!({});
+    h.state_mut().run_confirm.as_mut().unwrap().set_quote(&quote);
+    h.run();
+    assert!(h.query_by_label_contains("Applies cached results only").is_some(), "no host work is implied when every node reuses");
+    assert!(h.query_by_role_and_label(Role::Button, "Apply cached results").is_some());
+    assert!(runs.lock().unwrap().is_empty(), "quoting never sends work to the host");
+    press(&mut h, Role::Button, "Cancel");
+    assert!(runs.lock().unwrap().is_empty());
+}
+
+#[test]
 fn an_edit_after_the_quote_closes_nothing_silently_and_never_starts_the_old_run() {
     let (mut h, runs) = scene("mock-square");
     press(&mut h, Role::Button, "Generate");
@@ -481,6 +506,14 @@ fn generate83_visual() {
     h.render().unwrap().save(dir.join("generate83-card.png")).unwrap();
     press(&mut h, Role::Button, "Generate");
     h.render().unwrap().save(dir.join("generate83-confirm.png")).unwrap();
+    let mut quote = h.state_mut().session.dispatch("run.quote", &json!({"canvas": C, "mode": "selected", "nodes": [N]})).unwrap();
+    quote["reused"] = json!([N, NodeId::from_bytes([86; 16])]);
+    quote["steps"] = json!([]);
+    quote["steps_total"] = json!(0);
+    quote["totals"] = json!({});
+    h.state_mut().run_confirm.as_mut().unwrap().set_quote(&quote);
+    h.run();
+    h.render().unwrap().save(dir.join("generate811-reused.png")).unwrap();
 }
 
 #[test]
