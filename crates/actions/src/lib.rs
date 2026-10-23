@@ -1,6 +1,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-//! NodeCraft actions: deterministic image, video and text actions (CPU reference).
+//! NodeCraft actions: deterministic image and text actions (CPU reference), plus the layer
+//! compositor, masks, decks and text expressions. Video actions run in the engine over FFmpeg.
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 

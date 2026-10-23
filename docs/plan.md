@@ -734,7 +734,33 @@ follow-up):
 - [x] Exit criterion: the workshop "organise" pattern (§1.3, item 10) works in the desktop app:
   coloured fields, colour tags with a jump-to-tagged filter, routers as cable ties, auto-format
   of a selection, and canvas search.
-- [ ] Close the M2 documentation follow-up (#373), then GitHub can mark its milestone closed.
+- [x] Close the M2 documentation follow-up (#373); the milestone is closed.
+
+M4's feature and exit-criterion checklist (completed issues; #375 closes the documentation
+follow-up). M3 is still open, so its checklist waits for its own close-out (#374):
+
+- [x] CPU image actions with a normative reference (#85) and bounded text actions (#87), run as
+  action node kinds with schema-generated cards, reachable from quick-add and the palette (#410).
+- [x] Live recompute (#88): after an edit, stale action cards recompute on a worker off the UI
+  thread and record into the edit's undo step; a slider drag previews on smaller images, then
+  renders full size on release. Video actions and the Timeline run only when asked.
+- [x] Split into grid: an image cut into tiles as new Image cards, one undo step (#86).
+- [x] GPU path (#89): a wgpu executor for the image actions, checked against the CPU reference
+  within a tolerance. It is a tested library; the app still runs built-in image actions on the
+  CPU.
+- [x] Custom WGSL actions (#90): a shader card with declared sliders, validated before dispatch
+  and run on the GPU; a text model writes or fixes it through an ordinary priced text card, and
+  a versioned shader library keeps it across projects.
+- [x] Custom text actions as a bounded expression language (#165), run through text-action
+  plugin packages.
+- [x] Opt-in result caching (#91): results reused by input hash, on by default for local cards
+  and per card (`node.cache_set`) for model cards; `run.quote` and `run.start` skip what is reused.
+- [x] Plugin store: bounded verification, atomic install/enable/update/rollback/uninstall and the
+  Plugins panel (#172); granted text-action packages run as cards and stop with their grant
+  (#173); a session-only store in the browser (#823); structured property tests over hostile
+  archives and failing operation sequences (#824).
+- [x] Exit criterion: colour grade, blur and crop chains preview live in the desktop app (#88).
+- [ ] Close the M4 documentation follow-up (#375), then GitHub can mark its milestone closed.
 
 ---
 

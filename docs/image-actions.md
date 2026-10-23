@@ -1,9 +1,10 @@
 # Image actions: CPU reference, version 1
 
 `nodecraft_actions::image` supplies pure, fallible SDR image operations and typed parameter data.
-They have stable library action IDs, not yet registered engine commands. Live graph recomputation
-and command/undo integration belong to #88; GPU implementations compare with this reference in
-#89. Shared descriptor generation belongs to #162. This document is the normative action-owned
+They have stable library action IDs. The app runs them as action node kinds (`nodes::action`,
+#410) through `engine::action_exec`, on the CPU (`CpuExecutor`), and recomputes them live after an
+edit (#88). The GPU implementations compare with this reference in #89 but are not used by the app
+yet. Shared descriptor generation belongs to #162. This document is the normative action-owned
 inventory that that contract must express; it is not a second schema implementation.
 
 ## Inputs and entry points
@@ -230,8 +231,9 @@ into the repository; fixture creation needs no downloaded assets or attribution 
 
 `nodecraft_gpu::image::GpuExecutor` executes the same 13 typed request families, including all
 eight blur variants, on wgpu. It accepts the canonical immutable `Raster`/`ImageInputs` and
-returns the same `ImageResult`. This is a usable headless library backend; engine command/live
-recompute integration remains #88. The GPU API does not currently add encoded/decoded/view
+returns the same `ImageResult`. This is a usable headless library backend. The app's action
+cards and live recompute (#88) run the CPU executor instead; nothing in the engine calls
+`GpuExecutor` yet. Custom shader cards (#90) are the app's GPU action path. The GPU API does not currently add encoded/decoded/view
 normalization adapters. Media decoding and SDR normalization remain CPU responsibilities.
 
 `request()` acquires a fresh compatible adapter and matching device/queue together.

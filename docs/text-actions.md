@@ -1,8 +1,9 @@
 # Text actions (CPU library)
 
 `nodecraft_actions::text` exposes pure fallible functions and serde request/result types. Stable
-action IDs are `text.split`, `text.replace`, `text.concat`, `text.template`. These are library IDs
-for future adapters, not registered engine commands. Live nodes and recomputation remain #88.
+action IDs are `text.split`, `text.replace`, `text.concat`, `text.template`. The app registers an
+action node kind under each ID (`nodes::action`, #410), runs it through `engine::action_exec` and
+recomputes it live after an edit (#88).
 Requests are owned parameter data; adapters must bound serialized input before deserialization.
 The borrowed functions check all input strings before copying, compiling or producing output.
 
@@ -11,8 +12,9 @@ The borrowed functions check all input strings before copying, compiling or prod
 This section specifies the action-owned inventory that the shared Rust descriptor contract in
 #162 must express. It is not a second descriptor implementation or a promise that generated
 UI/CLI/MCP forms already exist. The implementation here remains `TextRequest`, typed options,
-`TextResult` and pure functions. Graph/live actions and engine commands remain #88; generated
-text actions remain #165. Wire fixtures are `crates/actions/tests/fixtures/text_requests.json`.
+`TextResult` and pure functions; the node kinds and their live recompute live in `nodes` and
+`engine` (#410, #88). Custom text actions are the bounded expression language of #165
+([text-expressions.md](text-expressions.md)), run from text-action plugin packages (#173). Wire fixtures are `crates/actions/tests/fixtures/text_requests.json`.
 
 Stable action and parameter IDs are namespaced and semantic: `text.split.max_parts`, for
 example, always means an output-cardinality ceiling, never a grouping size. The wire envelope
@@ -130,10 +132,11 @@ has no Rust `Default`. The only serde omission default is split `max_parts`; con
 
 All resolved input values/order, active mode values, booleans, template fields and `max_parts`
 affect the effective execution snapshot/staleness identity. Host limits that can turn success
-into an error must also be recorded by the future execution adapter. Split mode/grouping and
+into an error must also be recorded by the execution adapter (`engine::action_exec`). Split mode/grouping and
 `max_parts` affect collection output shape/admission; no parameter creates paid calls or extra
 jobs in this library. The versioned descriptor transport, cache integration, bulk editing and
-graph mutation/undo are owned by #162/#88 and are not implemented or claimed here.
+graph mutation/undo are owned by the node kinds and the engine (#162, #88, #91), not by this
+library.
 
 ## Semantics
 
