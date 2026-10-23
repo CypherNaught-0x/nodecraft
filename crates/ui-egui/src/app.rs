@@ -2120,6 +2120,8 @@ impl NodeCraftApp {
                     egui::StrokeKind::Inside,
                 );
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            self.draw_people(ui, viewport, t);
         } else {
             self.selection.clear();
         }

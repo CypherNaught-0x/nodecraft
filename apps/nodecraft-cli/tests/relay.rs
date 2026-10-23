@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use nodecraft_engine::Session;
 use nodecraft_engine::collab::{Collab, joining};
 use nodecraft_graph::{Canvas, Change, Changeset, Node, Project};
-use nodecraft_sync::{Frame, LinkKey, Role, RoomId};
+use nodecraft_sync::{Frame, LinkKey, Presence, Role, RoomId};
 use nodecraft_types::{CanvasId, CommentId, NodeId, ProjectId};
 use serde_json::json;
 use tungstenite::stream::MaybeTlsStream;
@@ -158,6 +158,28 @@ fn people_sharing_through_the_relay_end_with_one_project() {
     let mut rest = String::new();
     while relay.stderr.read_line(&mut rest).is_ok_and(|n| n > 0) {}
     assert!(!rest.contains(&room().to_string()), "{rest}");
+}
+
+#[test]
+fn where_each_person_is_reaches_the_others_through_the_relay_until_they_go() {
+    let relay = relay();
+    let mut project = Project::new(ProjectId::from_bytes([1; 16]), "Shared").unwrap();
+    Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(canvas(), "Main") }]).apply(&mut project).unwrap();
+    let session = Session::new(project).unwrap();
+    let sharer = Person::connect(&relay, Collab::share(&session, room()).unwrap(), Some(session));
+    let joiner = Person::connect(&relay, Collab::join(room()), None);
+    let mut people = vec![sharer, joiner];
+    until(&mut people, |p| same(p, 0));
+    let here = Presence { canvas: Some(canvas()), cursor: Some([10.0, 20.0]), selection: Vec::new() };
+    // Said twice at once: the relay holds the second back, but still passes on where it stopped.
+    let first = Presence { cursor: Some([0.0, 0.0]), ..here.clone() };
+    let frames = vec![people[0].collab.set_presence(first).unwrap().unwrap(), people[0].collab.set_presence(here.clone()).unwrap().unwrap()];
+    people[0].send(frames);
+    until(&mut people, |p| p[1].collab.people().any(|person| person.presence == here && person.name == "Owner"));
+    // Once the sharer has gone, the joiner no longer sees them.
+    let sharer = people.remove(0);
+    drop(sharer);
+    until(&mut people, |p| p[0].collab.people().next().is_none());
 }
 
 #[test]

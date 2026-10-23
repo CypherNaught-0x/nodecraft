@@ -69,7 +69,8 @@ impl Net {
 
     /// Person `id`'s connection drops, with whatever was on its way to them.
     fn drop_out(&mut self, id: Peer) -> Person {
-        self.room.leave(id);
+        let gone = self.room.leave(id);
+        self.queue.extend(gone);
         self.queue.retain(|out| !matches!(out, Out::Send(to, _) | Out::Close(to, _) if *to == id));
         let at = self.people.iter().position(|p| p.id == id).unwrap();
         self.people.remove(at)
@@ -94,7 +95,8 @@ impl Net {
                     Ok(replies) => sent.extend(replies.into_iter().map(|reply| (to, reply))),
                     Err(error) => {
                         self.ended.insert(to, error.to_string());
-                        self.room.leave(to);
+                        let gone = self.room.leave(to);
+                        self.queue.extend(gone);
                         self.people.retain(|p| p.id != to);
                     }
                 }
@@ -187,7 +189,7 @@ fn three_people_end_with_one_project_and_its_images() {
     assert!(net.session(1).can_undo());
 
     // Someone who comes later gets all of it, the image too, even with its sharer gone.
-    net.room.leave(1);
+    let _ = net.room.leave(1);
     net.people.retain(|p| p.id != 1);
     net.enter(Person { id: 3, collab: Collab::join(room_id()), session: None });
     let second = net.session(2).document().clone();
@@ -812,4 +814,66 @@ fn many_asks_are_answered_a_few_at_a_time() {
     }
     assert_eq!(answered, 10);
     assert!(a.publish(&session).unwrap().is_empty());
+}
+
+fn here(x: f32) -> Presence {
+    Presence { canvas: Some(canvas()), cursor: Some([x, 0.0]), selection: vec![nid(1)] }
+}
+
+#[test]
+fn each_person_hears_where_the_others_are_until_they_go() {
+    let (session, _) = sharer();
+    let mut net = Net::new();
+    let collab = Collab::share(&session, room_id()).unwrap();
+    net.enter(Person { id: 1, collab, session: Some(session) });
+    net.enter(Person { id: 2, collab: Collab::join(room_id()), session: None });
+    // Saying the same place twice sends nothing; a place off the canvas is refused here.
+    let frame = net.collab(1).set_presence(here(3.0)).unwrap().unwrap();
+    assert!(net.collab(1).set_presence(here(3.0)).unwrap().is_none());
+    assert!(net.collab(1).set_presence(Presence { cursor: Some([f32::INFINITY, 0.0]), ..here(0.0) }).is_err());
+    let out = net.room.handle(1, frame);
+    net.queue.extend(out);
+    net.settle();
+    let seen: Vec<_> = net.collab(2).people().cloned().collect();
+    assert_eq!(seen, vec![nodecraft_sync::Person { peer: 1, name: "Owner".into(), role: Role::Owner, presence: here(3.0) }]);
+    assert_eq!(net.collab(1).people().count(), 0, "nobody else has said where they are");
+    // On a new connection the place is said again, and who was there is forgotten until then.
+    let collab = net.collab(1);
+    collab.hello();
+    assert!(collab.people().next().is_none());
+    let owner = net.people.iter_mut().find(|p| p.id == 1).unwrap();
+    let again = owner.collab.publish(owner.session.as_ref().unwrap()).unwrap();
+    assert!(again.contains(&Frame::Presence(here(3.0))), "{again:?}");
+    // Once person 1 has gone, person 2 no longer sees them.
+    net.drop_out(1);
+    net.settle();
+    assert_eq!(net.collab(2).people().count(), 0);
+}
+
+#[test]
+fn a_place_said_after_a_reconnect_isnt_undone_by_the_one_queued_for_it() {
+    let (session, _) = sharer();
+    let mut collab = Collab::share(&session, room_id()).unwrap();
+    collab.set_presence(here(3.0)).unwrap();
+    collab.hello();
+    let frame = collab.set_presence(here(4.0)).unwrap();
+    assert_eq!(frame, Some(Frame::Presence(here(4.0))));
+    let next = collab.publish(&session).unwrap();
+    assert!(!next.iter().any(|frame| matches!(frame, Frame::Presence(_))), "{next:?}");
+}
+
+#[test]
+fn only_so_many_people_are_kept_and_one_who_goes_makes_room() {
+    let mut collab = Collab::join(room_id());
+    let person = |peer| Frame::Person(Box::new(nodecraft_sync::Person { peer, name: format!("P{peer}"), role: Role::View, presence: here(1.0) }));
+    for peer in 0..super::MAX_PEOPLE as u64 + 10 {
+        collab.receive(person(peer)).unwrap();
+    }
+    assert_eq!(collab.people().count(), super::MAX_PEOPLE);
+    // Those already kept still move.
+    collab.receive(Frame::Person(Box::new(nodecraft_sync::Person { peer: 0, name: "P0".into(), role: Role::View, presence: here(2.0) }))).unwrap();
+    assert_eq!(collab.people().next().map(|p| p.presence.clone()), Some(here(2.0)));
+    collab.receive(Frame::Gone(0)).unwrap();
+    collab.receive(person(1000)).unwrap();
+    assert!(collab.people().any(|p| p.peer == 1000));
 }

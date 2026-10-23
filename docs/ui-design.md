@@ -331,6 +331,16 @@ capability before widgets render; keyboard, scroll, other buttons and popup owne
 
 Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_width`, `tag_panel_width`, `tag_panel_height` and `tag_row_height`. Dark and light colors are deliberately distinct; unknown/missing palette identifiers use `text_muted`. A marker identifies the tag independently of the selected border. Filter matches use the existing accent token, while nonmatches use the quiet panel stroke without fading text. Behavior, command inventory and persistence compatibility are specified in [color-tags.md](color-tags.md).
 
+### Presence
+
+Other people in a shared project (#120) are drawn in `Tokens::presence_colors` (eight per
+palette, picked by their place in the room), above the cards and clipped to the canvas: a pointer
+`presence_pointer` tall, outlined `presence_outline` in `presence_ink`, with a pill holding their name in `presence_ink`, and a `presence_ring`
+outline round each card they have selected. Their initials sit beside the Share chip, each a
+`presence_avatar` circle; hovering one says who and what they may do, and clicking it opens their
+canvas centred on their pointer. Nobody is drawn while the connection is being made again, and
+nothing is said about where you are while a private canvas is open.
+
 ### Fields
 
 Fields (#66) draw on the canvas layer, under the noodles and cards, in their palette colour

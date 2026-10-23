@@ -1,6 +1,6 @@
 use super::*;
 use crate::Mirror;
-use crate::{Grant, Role};
+use crate::{Grant, OWNER_NAME, Person, Presence, Role};
 use nodecraft_graph::{Canvas, Change, Changeset, Project};
 use nodecraft_types::{CanvasId, ProjectId};
 
@@ -88,7 +88,7 @@ fn a_newcomer_is_asked_for_what_someone_still_waits_on() {
     let hash = *blake3::hash(&bytes).as_bytes();
     // Peer 2 asks; peer 1, who had it, leaves without answering.
     room.handle(2, Frame::AssetGet(vec![hash]));
-    room.leave(1);
+    let _ = room.leave(1);
     // Peer 3 comes with it, is asked, and it goes on to peer 2.
     let out = room.join(3);
     assert!(out.contains(&Out::Send(3, Frame::AssetGet(vec![hash]))), "{out:?}");
@@ -372,4 +372,64 @@ fn a_room_measured_close_to_full_measures_again_before_refusing() {
     Changeset::new(vec![Change::AddNode { canvas, node }]).apply(&mut project).unwrap();
     let out = room.handle(1, Frame::Update(sharer.publish(&project).unwrap().unwrap()));
     assert!(out.is_empty(), "{out:?}");
+}
+
+fn here(x: f32) -> Presence {
+    Presence { canvas: Some(CanvasId::from_bytes([2; 16])), cursor: Some([x, 0.0]), selection: Vec::new() }
+}
+
+#[test]
+fn where_each_peer_is_goes_to_the_others_under_the_name_the_relay_knows() {
+    let (mut room, _) = shared();
+    room.join_link(10, [1; 32], 0);
+    // The owner moves: the viewer hears it as "Owner".
+    let owner = Person { peer: 1, name: OWNER_NAME.into(), role: Role::Owner, presence: here(1.0) };
+    assert_eq!(room.handle(1, Frame::Presence(here(1.0))), vec![Out::Send(10, Frame::Person(Box::new(owner.clone())))]);
+    // The same place again sends nothing.
+    assert!(room.handle(1, Frame::Presence(here(1.0))).is_empty());
+    // A viewer may say where it is too, under its link's name.
+    let viewer = Person { peer: 10, name: "Vi".into(), role: Role::View, presence: here(2.0) };
+    assert_eq!(room.handle(10, Frame::Presence(here(2.0))), vec![Out::Send(1, Frame::Person(Box::new(viewer.clone())))]);
+    // A newcomer is told where everyone already is.
+    let out = room.join_link(11, [2; 32], 0);
+    let told = sent(&out, 11);
+    assert!(told.contains(&&Frame::Person(Box::new(owner))) && told.contains(&&Frame::Person(Box::new(viewer))), "{out:?}");
+    // A peer that leaves is gone for the others; one that never said where it was leaves quietly.
+    let mut gone = room.leave(10);
+    gone.sort_by_key(|o| format!("{o:?}"));
+    assert_eq!(gone, vec![Out::Send(1, Frame::Gone(10)), Out::Send(11, Frame::Gone(10))]);
+    assert!(room.leave(11).is_empty());
+}
+
+#[test]
+fn a_bad_presence_or_a_relay_frame_from_a_peer_is_refused() {
+    let (mut room, _) = shared();
+    room.join_link(10, [1; 32], 0);
+    room.handle(10, Frame::Presence(here(2.0)));
+    let nowhere = Presence { cursor: Some([f32::NAN, 0.0]), ..here(0.0) };
+    let out = room.handle(10, Frame::Presence(nowhere));
+    assert_eq!(out, vec![Out::Close(10, Frame::Refused("the presence isn't readable".into())), Out::Send(1, Frame::Gone(10))]);
+    for frame in [Frame::Gone(1), Frame::Person(Box::new(Person { peer: 2, name: "Me".into(), role: Role::Owner, presence: here(0.0) }))] {
+        room.join_link(10, [1; 32], 0);
+        assert!(matches!(room.handle(10, frame)[..], [Out::Close(10, Frame::Refused(_))]));
+    }
+}
+
+#[test]
+fn a_revoked_link_holder_who_was_shown_is_gone_for_the_rest() {
+    let (mut room, _) = shared();
+    room.join_link(10, [1; 32], 0);
+    room.handle(10, Frame::Presence(here(2.0)));
+    let out = room.handle(1, Frame::LinkRevoke([1; 32]));
+    assert_eq!(out, vec![Out::Close(10, Frame::Refused("the share link was revoked".into())), Out::Send(1, Frame::Gone(10))]);
+}
+
+#[test]
+fn a_link_holder_who_was_shown_is_gone_for_the_rest_when_the_link_runs_out() {
+    let (mut room, _) = shared();
+    room.handle(1, Frame::LinkPut { hash: [4; 32], grant: Grant { expires: Some(100), ..grant(Role::View, "Late") } });
+    room.join_link(10, [4; 32], 0);
+    room.handle(10, Frame::Presence(here(2.0)));
+    let out = room.expire(100);
+    assert_eq!(out, vec![Out::Close(10, Frame::Refused("the share link has expired".into())), Out::Send(1, Frame::Gone(10))]);
 }

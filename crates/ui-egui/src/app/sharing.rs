@@ -17,6 +17,8 @@
 //! update says which it is. The browser joins in the tab it was asked in, once that has no
 //! changes of its own to lose.
 //!
+//! Everyone in the room sees where the others are ([`presence`], #120).
+//!
 //! The Share chip beside API keys opens the panel: how the session is doing, the join link
 //! (hidden until asked for), and Stop. The room id never reaches a log, a notice or a command's
 //! result.
@@ -38,6 +40,7 @@ use web_time::Instant;
 mod browser;
 #[cfg(not(target_arch = "wasm32"))]
 mod connection;
+mod presence;
 #[cfg(not(target_arch = "wasm32"))]
 mod spool;
 #[cfg(target_arch = "wasm32")]
@@ -121,6 +124,9 @@ struct Live {
     in_flight: bool,
     /// Something came in that the next turn settles.
     dirty: bool,
+    /// Where this person last said they are, and when.
+    said: Option<nodecraft_sync::Presence>,
+    said_at: Option<Instant>,
 }
 
 /// The owner's share links, kept here so `share.links` is answered at once however busy the
@@ -194,7 +200,19 @@ impl Sharing {
         let worker = Worker::spawn(link.relay().to_owned(), make, move || wake.request_repaint())?;
         *desk = Desk { links: Links::default(), role: status.role, live: true };
         drop(desk);
-        self.live = Some(Live { link, worker, state: State::Connecting, status, joining, lineage: None, sent: None, in_flight: false, dirty: false });
+        self.live = Some(Live {
+            link,
+            worker,
+            state: State::Connecting,
+            status,
+            joining,
+            lineage: None,
+            sent: None,
+            in_flight: false,
+            dirty: false,
+            said: None,
+            said_at: None,
+        });
         if let Ok(mut shared) = self.shared.try_borrow_mut() {
             shared.live = true;
         }
@@ -240,6 +258,12 @@ impl Sharing {
             State::Connected(_) => "live",
         };
         let (received, total) = live.status.asset_progress;
+        let people: Vec<serde_json::Value> = live
+            .status
+            .people
+            .iter()
+            .map(|person| json!({"peer": person.peer, "name": person.name, "role": person.role, "canvas": person.presence.canvas, "cursor": person.presence.cursor, "selected": person.presence.selection.len()}))
+            .collect();
         json!({
             "state": state,
             "role": role,
@@ -247,6 +271,7 @@ impl Sharing {
             "asset_bytes_received": received,
             "asset_bytes_total": total,
             "unusable_assets": live.status.unusable_assets,
+            "people": people,
         })
     }
 }
@@ -494,6 +519,7 @@ impl NodeCraftApp {
         if let Err(why) = self.drive_sharing() {
             self.stop_sharing(Some(format!("Live sharing ended: {why}")));
         }
+        self.say_presence(ctx);
         if let Some(sharing) = &self.sharing {
             let status = sharing.status();
             if let Ok(mut shared) = sharing.shared.try_borrow_mut() {
@@ -607,6 +633,7 @@ impl NodeCraftApp {
 
     /// The chip beside API keys: Share, or how the shared session is doing.
     pub(super) fn share_button(&mut self, ui: &mut egui::Ui, t: &Tokens) {
+        self.people_avatars(ui, t);
         let Some(sharing) = &mut self.sharing else { return };
         let label = sharing.chip();
         let color = if sharing.live.is_some() { t.accent } else { t.text_muted };

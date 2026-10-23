@@ -104,7 +104,8 @@ a person runs them; agents can list links with `share.links` and take one back w
 `share.link_revoke` (#121). `canvas.set_private` is human only too: a canvas made shared again
 reaches everyone in the room, and undo can't take it back. Sharing a project live (`share.start`)
 and opening someone else's (`share.join`) are the person's call too; agents can read how it is
-going with `share.status` and end it with `share.stop` (#698). A new
+going with `share.status`, which also lists who else is in the room and where (#120), and end it
+with `share.stop` (#698). A new
 command stays hidden until it is added to one of the
 lists, and a test fails until then. `canvas.auto_format` is temporarily human-only: it consumes
 the live selection and trusted card geometry, which MCP and the control bridge cannot supply yet.

@@ -715,6 +715,9 @@ first copy of the project whole (`Session::adopt_shared`). See the
 [decision](decisions/2026-10-22-share-worker.md). The browser has no threads: there the
 connection is the page's `WebSocket`, and the same work runs in the frame, a batch at a time
 ([decision](decisions/2026-10-23-browser-live-sharing.md)).
+Each peer also says where it is (`Presence`: canvas, pointer, selection); the relay names it and
+passes that on, and the app draws the others over the canvas. Presence never enters the document
+([decision](decisions/2026-10-23-presence.md)).
 `nodecraft-cli relay [--listen <addr>]` hosts the rooms. Nothing in the library crates touches a
 socket; the host passes frames. See the [decision](decisions/2026-10-22-crdt-sync.md) for the
 entry schema, the protocol and the limits.

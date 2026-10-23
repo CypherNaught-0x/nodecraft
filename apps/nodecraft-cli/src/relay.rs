@@ -39,6 +39,8 @@ const MAX_WAITING_BYTES: usize = MAX_FRAME_BYTES + (32 << 20);
 const MAX_HELLO_BYTES: usize = 4096;
 /// The most every room together may take in; past it, frames that add more are refused.
 const MAX_RELAY_BYTES: usize = 2 << 30;
+/// How often one peer may say where it is; the app says it at most every 50 ms.
+const PRESENCE_EVERY: Duration = Duration::from_millis(25);
 
 enum Push {
     Frame(Vec<u8>),
@@ -118,6 +120,8 @@ impl Rooms {
         }
     }
 
+    /// Takes `peer` out of its room and tells the others it has gone. Each call removes a peer,
+    /// so the leaving that delivering can cause ends.
     fn leave(&mut self, peer: Peer) {
         if let Some(Inbox { room, .. }) = self.peers.remove(&peer)
             && let Some(state) = self.rooms.get_mut(&room)
@@ -292,7 +296,20 @@ fn refuse(socket: &mut WebSocket<TcpStream>, message: &str) -> bool {
 }
 
 fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, waiting: &AtomicUsize, rooms: &Mutex<Rooms>) {
+    // When the peer last said where it is, and the latest it said too soon after: that one is
+    // passed on once PRESENCE_EVERY is up, so the others see where it stopped.
+    let mut moved: Option<Instant> = None;
+    let mut held: Option<Frame> = None;
     loop {
+        if !moved.is_some_and(|at| at.elapsed() < PRESENCE_EVERY)
+            && let Some(frame) = held.take()
+        {
+            moved = Some(Instant::now());
+            let mut rooms = lock(rooms);
+            let Some(room) = rooms.peers.get(&peer).map(|inbox| inbox.room.clone()) else { return };
+            let outs = rooms.rooms.get_mut(&room).map(|state| state.handle(peer, frame)).unwrap_or_default();
+            rooms.deliver(outs);
+        }
         loop {
             let push = match inbox.try_recv() {
                 Ok(push) => push,
@@ -326,6 +343,16 @@ fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, 
                     rooms.settle();
                 }
                 let outs = match frame {
+                    Ok(frame @ Frame::Presence(_)) if moved.is_some_and(|at| at.elapsed() < PRESENCE_EVERY) => {
+                        held = Some(frame);
+                        Vec::new()
+                    }
+                    // A presence replaces the one the room holds for this peer, so it isn't
+                    // weighed against MAX_RELAY_BYTES.
+                    Ok(frame @ Frame::Presence(_)) => {
+                        moved = Some(Instant::now());
+                        rooms.rooms.get_mut(&room).map(|state| state.handle(peer, frame)).unwrap_or_default()
+                    }
                     // What would add to what the relay holds waits until there is room for it.
                     Ok(Frame::Update(_) | Frame::Step2(_) | Frame::AssetPut { .. } | Frame::CommentPut { .. }) if rooms.held() > MAX_RELAY_BYTES => {
                         vec![Out::Close(peer, Frame::Refused("the relay is full".into()))]

@@ -10,6 +10,10 @@
 //! Whoever joins by the room id is its owner. The owner may hand out share links, each with one
 //! role ([`Role`]); the room keeps only each link's hash. A viewer or commenter is never asked
 //! for its document, and anything it sends that would change the project is refused.
+//!
+//! Each peer, whatever its role, may say where it is ([`Presence`], #120); the room keeps the
+//! latest, passes it on to the others with the peer's name, tells a newcomer where everyone
+//! already is, and tells the rest when a peer leaves.
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -23,6 +27,7 @@ use nodecraft_types::{CanvasId, CommentId};
 use crate::discussion;
 use crate::frame::{Frame, MAX_UPDATE_BYTES, PART_BYTES, WINDOW_BYTES};
 use crate::mirror::{comment_in, open_canvas_in, write_comment};
+use crate::presence::{OWNER_NAME, Person, Presence};
 use crate::role::{Grant, Role};
 
 /// One connection, numbered by the relay.
@@ -72,11 +77,13 @@ pub enum Out {
 }
 
 /// Who a peer is in the room: what it may do, and through which link it came in.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Member {
     role: Role,
     link: Option<[u8; 32]>,
     name: Option<String>,
+    /// Where the peer last said it is.
+    presence: Option<Presence>,
 }
 
 pub struct Room {
@@ -135,7 +142,7 @@ impl Room {
     /// Lets `peer` in as the owner, and asks what it has: its answer brings in what it changed
     /// while away.
     pub fn join(&mut self, peer: Peer) -> Vec<Out> {
-        self.enter(peer, Member { role: Role::Owner, link: None, name: None })
+        self.enter(peer, Member { role: Role::Owner, link: None, name: None, presence: None })
     }
 
     /// Lets `peer` in through the link with this hash, if the room has it and it is still good
@@ -146,7 +153,7 @@ impl Room {
         };
         let (role, name) = (grant.role, grant.name.clone());
         let mut out = vec![Out::Send(peer, Frame::Welcome { role, name: Some(name.clone()) })];
-        let entered = self.enter(peer, Member { role, link: Some(link), name: Some(name) });
+        let entered = self.enter(peer, Member { role, link: Some(link), name: Some(name), presence: None });
         if entered.iter().any(|o| matches!(o, Out::Close(..))) {
             return entered;
         }
@@ -162,11 +169,19 @@ impl Room {
             Some(sv) => {
                 let edits = member.role.edits();
                 self.peers.insert(peer, member);
+                // Where everyone already is.
+                let mut out: Vec<Out> = self
+                    .peers
+                    .iter()
+                    .filter(|(other, _)| **other != peer)
+                    .filter_map(|(other, member)| Some(Out::Send(peer, Frame::Person(Box::new(person(*other, member)?)))))
+                    .collect();
                 // Only an editor's document comes in; anyone else asks for the project itself.
                 if !edits {
-                    return Vec::new();
+                    return out;
                 }
-                let mut out = vec![Out::Send(peer, Frame::Step1(sv))];
+                let at = out.len();
+                out.push(Out::Send(peer, Frame::Step1(sv)));
                 // Whoever asked for an asset may be waiting on someone who left, or on nobody
                 // yet: the newcomer may have it.
                 let mut whole = Vec::new();
@@ -180,7 +195,7 @@ impl Room {
                     out.extend(rest.into_iter().map(|frame| Out::Send(peer, frame)));
                 }
                 if !whole.is_empty() {
-                    out.insert(1, Out::Send(peer, Frame::AssetGet(whole)));
+                    out.insert(at + 1, Out::Send(peer, Frame::AssetGet(whole)));
                 }
                 out
             }
@@ -189,9 +204,11 @@ impl Room {
     }
 
     /// Lets `peer` go. Whoever was taking an asset's parts from it is sent the rest by another
-    /// editor who has it, if one answers what this returns.
+    /// editor who has it, if one answers what this returns; if it had said where it was, the
+    /// others are told it has gone.
+    #[must_use]
     pub fn leave(&mut self, peer: Peer) -> Vec<Out> {
-        self.peers.remove(&peer);
+        let shown = self.peers.remove(&peer).is_some_and(|member| member.presence.is_some());
         let mut again = Vec::new();
         for (hash, askers) in &mut self.wanted {
             askers.remove(&peer);
@@ -209,6 +226,9 @@ impl Room {
                     out.push(ask);
                 }
             }
+        }
+        if shown {
+            out.extend(self.others(peer).map(|other| Out::Send(other, Frame::Gone(peer))));
         }
         out
     }
@@ -234,7 +254,7 @@ impl Room {
             again.extend(self.leave(peer));
             out.push(Out::Close(peer, Frame::Refused(why.into())));
         }
-        // Those put out aren't asked for anything.
+        // Those put out aren't asked for anything, nor told who else has gone.
         out.extend(again.into_iter().filter(|o| !matches!(o, Out::Send(peer, _) if !self.peers.contains_key(peer))));
         out
     }
@@ -389,9 +409,25 @@ impl Room {
                     Err(message) => vec![Out::Send(from, Frame::CommentDone { seq, refused: Some(message.into()) })],
                 }
             }
-            Frame::Hello { .. } | Frame::HelloLink { .. } | Frame::Welcome { .. } | Frame::CommentDone { .. } | Frame::Refused(_) => {
-                self.refuse(from, "a frame a peer doesn't send")
+            Frame::Presence(presence) => {
+                if presence.validate().is_err() {
+                    return self.refuse(from, "the presence isn't readable");
+                }
+                let Some(member) = self.peers.get_mut(&from) else { return Vec::new() };
+                if member.presence.as_ref() == Some(&presence) {
+                    return Vec::new();
+                }
+                member.presence = Some(presence);
+                let Some(person) = self.peers.get(&from).and_then(|member| person(from, member)) else { return Vec::new() };
+                self.others(from).map(|peer| Out::Send(peer, Frame::Person(Box::new(person.clone())))).collect()
             }
+            Frame::Hello { .. }
+            | Frame::HelloLink { .. }
+            | Frame::Welcome { .. }
+            | Frame::CommentDone { .. }
+            | Frame::Refused(_)
+            | Frame::Person(_)
+            | Frame::Gone(_) => self.refuse(from, "a frame a peer doesn't send"),
         }
     }
 
@@ -517,6 +553,12 @@ impl Room {
             Err(DAMAGED)
         })
     }
+}
+
+/// `member` as the others see it, once it has said where it is.
+fn person(peer: Peer, member: &Member) -> Option<Person> {
+    let presence = member.presence.clone()?;
+    Some(Person { peer, name: member.name.clone().unwrap_or_else(|| OWNER_NAME.into()), role: member.role, presence })
 }
 
 const DAMAGED: &str = "the room is damaged: share the project again";
