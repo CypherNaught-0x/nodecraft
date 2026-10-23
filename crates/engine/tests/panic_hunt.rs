@@ -357,6 +357,16 @@ fn template(id: &str) -> (Session, Value) {
         store.save(&serde_json::to_vec(&json!({"version": 1, "elements": [{"name": "hero", "category": "character", "images": [image]}]})).unwrap()).unwrap();
         nodecraft_engine::element_library::install(&mut session, std::rc::Rc::new(store));
     }
+    if matches!(id, "shader.save" | "shader.place" | "shader.update" | "library.shaders" | "library.remove_shader") {
+        // A shader library holding "Glow" version 1.
+        use nodecraft_engine::library::LibraryStore;
+        let store = nodecraft_engine::library::MemoryLibrary::default();
+        let glow = json!({"source": "fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color; }", "params": []});
+        store
+            .save(&serde_json::to_vec(&json!({"version": 1, "shaders": [{"name": "Glow", "next": 2, "versions": [{"version": 1, "shader": glow}]}]})).unwrap())
+            .unwrap();
+        nodecraft_engine::shader_library::install(&mut session, Box::new(store)).unwrap();
+    }
     let skill = nodecraft_types::SkillId::from_bytes([0x69; 16]);
     if id.starts_with("skill.") {
         nodecraft_engine::skills::install(&mut session, std::rc::Rc::new(nodecraft_engine::skills::MemorySkills::default())).unwrap();
@@ -638,6 +648,11 @@ fn template(id: &str) -> (Session, Value) {
         "element.place" => json!({"canvas":canvas(),"name":"hero","id":node_id(7),"pos":{"x":1,"y":2},"as":"hero2"}),
         "element.update" => json!({"canvas":canvas(),"id":node_id(6),"seed":node_id(7)}),
         "library.elements" => json!({}),
+        "shader.save" => json!({"canvas":canvas(),"id":node_id(0x5a),"name":"Glow"}),
+        "shader.place" => json!({"canvas":canvas(),"name":"Glow","version":1,"id":node_id(0x5b),"pos":{"x":1,"y":2}}),
+        "shader.update" => json!({"canvas":canvas(),"id":node_id(0x5a),"name":"glow"}),
+        "library.shaders" => json!({}),
+        "library.remove_shader" => json!({"name":"Glow","version":1}),
         "library.remove_element" => json!({"name":"hero"}),
         "library.rename_element" => json!({"name":"hero","to":"villain"}),
         "style.list" => json!({"canvas":canvas(),"for":node_id(5)}),

@@ -742,6 +742,14 @@ impl NodeCraftApp {
             None => std::rc::Rc::new(nodecraft_engine::element_library::MemoryElements::default()),
         };
         nodecraft_engine::element_library::install(&mut app.session, elements);
+        // The shader library (#90), beside it.
+        let shaders: Box<dyn nodecraft_engine::library::LibraryStore> = match store.dir() {
+            Some(dir) => Box::new(nodecraft_engine::shader_library::file_store(dir.join("shaders"))),
+            None => Box::new(nodecraft_engine::library::MemoryLibrary::default()),
+        };
+        if let Err(error) = nodecraft_engine::shader_library::install(&mut app.session, shaders) {
+            log::warn!("shader library unavailable: {}", error.message);
+        }
         // The person's agent skills (#168), beside the library.
         let skills: std::rc::Rc<dyn nodecraft_engine::skills::SkillStore> = match store.dir() {
             Some(dir) => std::rc::Rc::new(nodecraft_engine::skills::FileSkills::new(dir.join("skills"))),
@@ -811,6 +819,7 @@ impl NodeCraftApp {
         let mut app = Self::with_services(services)?;
         nodecraft_engine::library::install(&mut app.session, store)?;
         nodecraft_engine::element_library::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::element_library::MemoryElements::default()));
+        nodecraft_engine::shader_library::install(&mut app.session, Box::new(nodecraft_engine::library::MemoryLibrary::default()))?;
         nodecraft_engine::skills::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::skills::MemorySkills::default()))?;
         Ok(app)
     }

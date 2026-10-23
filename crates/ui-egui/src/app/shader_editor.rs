@@ -2,14 +2,17 @@
 //! parameters are edited, checked as they are typed, and stored with `node.shader_set`. A text
 //! model can write or fix the shader: `shader.write` adds a request card, which is quoted and run
 //! like any other, and once it has an answer `shader.apply` stores it, or says why not, so the
-//! model can be asked to fix that too.
+//! model can be asked to fix that too. A stored shader can be saved to the shader library as the
+//! next version of a name (`shader.save`, then `shader.update` records it on the card), and a card
+//! from the library can be moved to a newer version.
 use super::NodeCraftApp;
 use super::generate::RunKind;
 use crate::ids;
 use crate::theme::Tokens;
 use nodecraft_engine::shader_assist_cmds::{MAX_ERROR_BYTES, MAX_REQUEST_BYTES, answer, parse_reply};
+use nodecraft_engine::shader_library::{MAX_NAME_CHARS, valid_name};
 use nodecraft_gpu::shader::{MAX_PARAMS, MAX_SOURCE, ShaderParam, ShaderSpec, validate};
-use nodecraft_nodes::shader::{StoredParam, StoredShader, stored};
+use nodecraft_nodes::shader::{Pin, StoredParam, StoredShader, pinned, stored};
 use nodecraft_types::{CanvasId, GenerationId, NodeId};
 use serde_json::json;
 
@@ -28,11 +31,20 @@ pub(super) struct ShaderEditor {
     pub(super) refusal: Option<String>,
     /// Why the last store or request failed.
     pub(super) error: Option<String>,
+    /// The name to save the shader to the library as.
+    pub(super) save_as: String,
+    /// The library's shaders and their latest versions, as listed when the editor opened or
+    /// last saved; `None` where there is no shader library.
+    library: Option<Vec<(String, u32)>>,
+    /// What the last save did.
+    pub(super) saved: Option<String>,
 }
 
 impl ShaderEditor {
-    fn new(canvas: CanvasId, node: NodeId, shader: StoredShader) -> Self {
-        let mut editor = Self { canvas, node, draft: shader, check: None, request: String::new(), pending: None, refusal: None, error: None };
+    fn new(canvas: CanvasId, node: NodeId, shader: StoredShader, from: Option<&Pin>, library: Option<Vec<(String, u32)>>) -> Self {
+        let save_as = from.map(|pin| pin.name.clone()).unwrap_or_default();
+        let mut editor =
+            Self { canvas, node, draft: shader, check: None, request: String::new(), pending: None, refusal: None, error: None, save_as, library, saved: None };
         editor.recheck();
         editor
     }
@@ -73,16 +85,41 @@ fn clip(text: &str, limit: usize) -> String {
 enum Action {
     Store,
     Revert,
-    Write { fix: bool },
+    Write {
+        fix: bool,
+    },
+    /// Save the card's shader to the library under the typed name.
+    Save,
+    /// Give the card the latest version of the library shader it came from.
+    Update,
 }
 
 impl NodeCraftApp {
     pub(super) fn open_shader_editor(&mut self, node: NodeId) {
         let Some(card) = self.session.document().canvases().get(&self.canvas).and_then(|c| c.nodes().get(&node)) else { return };
+        let from = pinned(card);
         match stored(card) {
-            Ok(shader) => self.shader_editor = Some(ShaderEditor::new(self.canvas, node, shader)),
+            Ok(shader) => {
+                let library = self.library_shaders();
+                self.shader_editor = Some(ShaderEditor::new(self.canvas, node, shader, from.as_ref(), library));
+            }
             Err(error) => self.notice = Some(error.message),
         }
+    }
+
+    /// The shader library's names and latest versions, read afresh; `None` without a library.
+    pub(super) fn library_shaders(&mut self) -> Option<Vec<(String, u32)>> {
+        let listed = self.session.dispatch("library.shaders", &json!({})).ok()?;
+        let shaders = listed.get("shaders")?.as_array()?;
+        Some(
+            shaders
+                .iter()
+                .filter_map(|shader| {
+                    let latest = u32::try_from(shader.get("latest")?.as_u64()?).ok()?;
+                    Some((shader.get("name")?.as_str()?.to_owned(), latest))
+                })
+                .collect(),
+        )
     }
 
     /// The editor's window, while it is open on a card that still exists.
@@ -96,8 +133,14 @@ impl NodeCraftApp {
         self.shader_answered();
         let busy = self.run_confirm.is_some();
         let Some(editor) = &self.shader_editor else { return };
-        let on_card = self.session.document().canvases().get(&editor.canvas).and_then(|c| c.nodes().get(&editor.node)).and_then(|n| stored(n).ok());
+        let card = self.session.document().canvases().get(&editor.canvas).and_then(|c| c.nodes().get(&editor.node));
+        let on_card = card.and_then(|n| stored(n).ok());
+        let from = card.and_then(pinned);
         let Some(editor) = &mut self.shader_editor else { return };
+        let latest = from.as_ref().and_then(|pin| {
+            let library = editor.library.as_ref()?;
+            library.iter().find(|(name, _)| name.to_lowercase() == pin.name.to_lowercase()).map(|(_, latest)| *latest)
+        });
         let applied = on_card.as_ref() == Some(&editor.draft);
         let mut open = true;
         let mut action = None;
@@ -171,6 +214,41 @@ impl NodeCraftApp {
                         ui.label(egui::RichText::new("Not applied yet").color(t.text_muted));
                     }
                 });
+                if editor.library.is_some() {
+                    ui.separator();
+                    if let Some(pin) = &from {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(format!("From the library: {} v{}", pin.name, pin.version)).color(t.text_muted));
+                            if let Some(latest) = latest.filter(|latest| *latest > pin.version)
+                                && ui
+                                    .add_enabled(applied, egui::Button::new(format!("Update to v{latest}")))
+                                    .on_hover_text("Give the card the library's latest version; one undo step")
+                                    .on_disabled_hover_text("Apply or revert the draft first")
+                                    .clicked()
+                            {
+                                action = Some(Action::Update);
+                            }
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        let label = ui.label("Save as");
+                        ui.add(egui::TextEdit::singleline(&mut editor.save_as).char_limit(MAX_NAME_CHARS).desired_width(t.shader_name_width).hint_text("Name"))
+                            .labelled_by(label.id);
+                        let valid = matches!(editor.check, Some(Ok(())));
+                        let named = valid_name(editor.save_as.trim());
+                        if ui
+                            .add_enabled(applied && valid && named, egui::Button::new("Save to library"))
+                            .on_hover_text("Keep the card's shader as the next version of this name, for every project")
+                            .on_disabled_hover_text("Name a valid, applied shader to save it")
+                            .clicked()
+                        {
+                            action = Some(Action::Save);
+                        }
+                    });
+                    if let Some(saved) = &editor.saved {
+                        ui.label(egui::RichText::new(saved).color(t.text_muted));
+                    }
+                }
                 ui.separator();
                 let label = ui.label("Ask a model");
                 ui.add(
@@ -217,7 +295,49 @@ impl NodeCraftApp {
                 self.open_shader_editor(node);
             }
             Some(Action::Write { fix }) => self.write_shader(fix),
+            Some(Action::Save) => self.save_shader(),
+            Some(Action::Update) => self.update_shader(),
             None => {}
+        }
+    }
+
+    /// Saves the card's shader to the library as the next version of the typed name, and records
+    /// that version on the card.
+    fn save_shader(&mut self) {
+        let Some(editor) = &self.shader_editor else { return };
+        let (canvas, node, name) = (editor.canvas, editor.node, editor.save_as.trim().to_owned());
+        let result = self.session.dispatch("shader.save", &json!({"canvas": canvas, "id": node, "name": name})).and_then(|saved| {
+            let (name, version) = (saved.get("name").cloned().unwrap_or_default(), saved.get("version").cloned().unwrap_or_default());
+            self.session.dispatch("shader.update", &json!({"canvas": canvas, "id": node, "name": name, "version": version}))?;
+            let line = format!("{} v{version}", name.as_str().unwrap_or_default());
+            Ok(if saved.get("saved") == Some(&json!(true)) { format!("Saved as {line}.") } else { format!("{line} is this shader already.") })
+        });
+        let library = self.library_shaders();
+        let Some(editor) = &mut self.shader_editor else { return };
+        editor.library = library;
+        match result {
+            Ok(saved) => {
+                editor.saved = Some(saved);
+                editor.error = None;
+            }
+            Err(error) => {
+                editor.saved = None;
+                editor.error = Some(error.message);
+            }
+        }
+    }
+
+    /// Gives the card the latest version of the library shader it came from, and edits that.
+    fn update_shader(&mut self) {
+        let Some(editor) = &self.shader_editor else { return };
+        let (canvas, node) = (editor.canvas, editor.node);
+        match self.session.dispatch("shader.update", &json!({"canvas": canvas, "id": node})) {
+            Ok(_) => self.open_shader_editor(node),
+            Err(error) => {
+                if let Some(editor) = &mut self.shader_editor {
+                    editor.error = Some(error.message);
+                }
+            }
         }
     }
 

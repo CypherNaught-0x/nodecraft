@@ -44,6 +44,11 @@ type Runs = Arc<Mutex<Vec<PreparedRun>>>;
 
 /// A canvas with one custom shader card, a text model, and a run host that keeps what it's given.
 fn scene() -> (Harness<'static, NodeCraftApp>, Runs) {
+    scene_with(None)
+}
+
+/// [`scene`], with a shader library in `shaders` when given.
+fn scene_with(shaders: Option<&nodecraft_engine::library::MemoryLibrary>) -> (Harness<'static, NodeCraftApp>, Runs) {
     let snapshot = GenerationCatalog::new(RunCatalog::new(nodecraft_catalog::Catalog::from_toml(WRITER).unwrap()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([92; 16]), "Shader editor").unwrap();
@@ -63,6 +68,9 @@ fn scene() -> (Harness<'static, NodeCraftApp>, Runs) {
         .unwrap();
     let mut session = Session::with_registries(project, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
     session.dispatch("node.create", &json!({"canvas": C, "id": SHADER, "kind": nodecraft_nodes::shader::ID, "pos": {"x": 300, "y": 100}})).unwrap();
+    if let Some(store) = shaders {
+        nodecraft_engine::shader_library::install(&mut session, Box::new(store.clone())).unwrap();
+    }
     let app = NodeCraftApp::from_session(session, C).unwrap();
     let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
     h.run();
@@ -79,7 +87,10 @@ fn route(h: &mut Harness<'static, NodeCraftApp>, card: NodeId) {
 
 /// Opens the editor from the card's menu.
 fn opened() -> (Harness<'static, NodeCraftApp>, Runs) {
-    let (mut h, runs) = scene();
+    open(scene())
+}
+
+fn open((mut h, runs): (Harness<'static, NodeCraftApp>, Runs)) -> (Harness<'static, NodeCraftApp>, Runs) {
     for _ in 0..20 {
         if h.query_by_label("Edit shader…").is_none() {
             right_click(&mut h, SHADER);
@@ -302,4 +313,50 @@ fn the_editor_closes_when_its_card_goes() {
     h.state_mut().session.dispatch("node.remove", &json!({"canvas": C, "id": SHADER})).unwrap();
     h.run();
     assert!(h.state().shader_editor.is_none());
+}
+
+const TINT: &str = "fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {\n    return color * 0.5;\n}\n";
+
+fn pin(h: &Harness<'static, NodeCraftApp>, id: NodeId) -> Option<nodecraft_nodes::shader::Pin> {
+    nodecraft_nodes::shader::pinned(h.state().session.document().canvases().get(&C).unwrap().nodes().get(&id).unwrap())
+}
+
+#[test]
+fn a_shader_is_saved_to_the_library_and_its_card_follows_a_newer_version() {
+    let store = nodecraft_engine::library::MemoryLibrary::default();
+    let (mut h, _) = open(scene_with(Some(&store)));
+    type_into(&mut h, "Save as", "Glow");
+    press(&mut h, "Save to library");
+    assert!(h.query_by_label("Saved as Glow v1.").is_some(), "{:?}", h.state().shader_editor.as_ref().and_then(|e| e.error.clone()));
+    assert_eq!(pin(&h, SHADER).map(|pin| pin.version), Some(1));
+    assert!(h.query_by_label("From the library: Glow v1").is_some());
+    // Saving again with no change keeps version 1.
+    press(&mut h, "Save to library");
+    assert!(h.query_by_label("Glow v1 is this shader already.").is_some());
+    // Another card saves version 2.
+    let other = NodeId::from_bytes([96; 16]);
+    let session = &mut h.state_mut().session;
+    session.dispatch("node.create", &json!({"canvas": C, "id": other, "kind": nodecraft_nodes::shader::ID, "pos": {"x": 300, "y": 400}})).unwrap();
+    session.dispatch("node.shader_set", &json!({"canvas": C, "id": other, "source": TINT})).unwrap();
+    session.dispatch("shader.save", &json!({"canvas": C, "id": other, "name": "glow"})).unwrap();
+    // Reopened, the editor offers it, and taking it is one undo step.
+    press(&mut h, "Revert");
+    press(&mut h, "Update to v2");
+    assert_eq!((card_shader(&h).source.as_str(), pin(&h, SHADER).map(|pin| pin.version)), (TINT, Some(2)));
+    assert_eq!(h.state().shader_editor.as_ref().map(|e| e.draft.source.as_str()), Some(TINT));
+    assert!(h.query_by_label("Update to v2").is_none());
+    h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
+    assert_eq!(pin(&h, SHADER).map(|pin| pin.version), Some(1));
+}
+
+#[test]
+fn saving_needs_a_name_and_an_applied_valid_shader() {
+    let store = nodecraft_engine::library::MemoryLibrary::default();
+    let (mut h, _) = open(scene_with(Some(&store)));
+    let disabled = |h: &Harness<'static, NodeCraftApp>| h.get_by_role_and_label(Role::Button, "Save to library").accesskit_node().is_disabled();
+    assert!(disabled(&h), "no name");
+    type_into(&mut h, "Save as", "Glow");
+    assert!(!disabled(&h));
+    type_into(&mut h, "WGSL source", "oops");
+    assert!(disabled(&h), "a draft that isn't applied, or valid");
 }

@@ -214,20 +214,34 @@ impl LibraryStore for MemoryLibrary {
 }
 
 fn busy() -> Error {
-    Error::new(ErrorKind::Busy, "the technique library is busy; try again")
+    Error::new(ErrorKind::Busy, "the library is busy; try again")
 }
 
 /// The library as `techniques.json` in a folder, replaced atomically so a crash or a full disk
-/// keeps the last whole file; `.lock` beside it orders changes between processes.
+/// keeps the last whole file; `.lock` beside it orders changes between processes. Other
+/// libraries (the shader library, #90) keep their own file the same way ([`FileLibrary::file`]).
 #[cfg(not(target_arch = "wasm32"))]
 pub struct FileLibrary {
     dir: std::path::PathBuf,
+    file: &'static str,
+    /// What the library is called in messages.
+    what: &'static str,
+    max_bytes: usize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl FileLibrary {
     pub fn new(dir: std::path::PathBuf) -> Self {
-        Self { dir }
+        Self::file(dir, "techniques.json", "technique library", MAX_LIBRARY_BYTES)
+    }
+
+    /// The library kept as `file` in `dir`, read back up to `max_bytes`.
+    pub fn file(dir: std::path::PathBuf, file: &'static str, what: &'static str, max_bytes: usize) -> Self {
+        Self { dir, file, what, max_bytes }
+    }
+
+    fn failed(&self, what: &str) -> Error {
+        Error::new(ErrorKind::Internal, format!("the {}{what}", self.what))
     }
 }
 
@@ -235,33 +249,32 @@ impl FileLibrary {
 impl LibraryStore for FileLibrary {
     fn load(&self) -> Result<Option<Vec<u8>>, Error> {
         use std::io::Read;
-        let file = match std::fs::File::open(self.dir.join("techniques.json")) {
+        let file = match std::fs::File::open(self.dir.join(self.file)) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err(Error::new(ErrorKind::Internal, "the technique library can't be read")),
+            Err(_) => return Err(self.failed(" can't be read")),
         };
         let mut bytes = Vec::new();
-        let cap = u64::try_from(MAX_LIBRARY_BYTES).unwrap_or(u64::MAX).saturating_add(1);
-        file.take(cap).read_to_end(&mut bytes).map_err(|_| Error::new(ErrorKind::Internal, "the technique library can't be read"))?;
+        let cap = u64::try_from(self.max_bytes).unwrap_or(u64::MAX).saturating_add(1);
+        file.take(cap).read_to_end(&mut bytes).map_err(|_| self.failed(" can't be read"))?;
         Ok(Some(bytes))
     }
     fn save(&self, bytes: &[u8]) -> Result<(), Error> {
-        std::fs::create_dir_all(&self.dir).map_err(|_| Error::new(ErrorKind::Internal, "the technique library's folder can't be made"))?;
-        craft_atomic::atomic_write(&self.dir.join("techniques.json"), bytes)
-            .map_err(|_| Error::new(ErrorKind::Internal, "the technique library couldn't be saved (is the disk full?)"))
+        std::fs::create_dir_all(&self.dir).map_err(|_| self.failed("'s folder can't be made"))?;
+        craft_atomic::atomic_write(&self.dir.join(self.file), bytes).map_err(|_| self.failed(" couldn't be saved (is the disk full?)"))
     }
     fn lock(&self) -> Result<Box<dyn std::any::Any>, Error> {
-        std::fs::create_dir_all(&self.dir).map_err(|_| Error::new(ErrorKind::Internal, "the technique library's folder can't be made"))?;
+        std::fs::create_dir_all(&self.dir).map_err(|_| self.failed("'s folder can't be made"))?;
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(self.dir.join(".lock"))
-            .map_err(|_| Error::new(ErrorKind::Internal, "the technique library's lock can't be opened"))?;
+            .map_err(|_| self.failed("'s lock can't be opened"))?;
         file.try_lock().map_err(|error| match error {
-            std::fs::TryLockError::WouldBlock => busy(),
-            std::fs::TryLockError::Error(_) => Error::new(ErrorKind::Internal, "the technique library's lock failed"),
+            std::fs::TryLockError::WouldBlock => Error::new(ErrorKind::Busy, format!("the {} is busy; try again", self.what)),
+            std::fs::TryLockError::Error(_) => self.failed("'s lock failed"),
         })?;
         Ok(Box::new(file))
     }

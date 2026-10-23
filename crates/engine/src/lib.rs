@@ -87,6 +87,8 @@ pub mod session;
 pub mod settings;
 pub mod shader_assist_cmds;
 pub mod shader_cmds;
+pub mod shader_library;
+pub mod shader_library_cmds;
 pub mod sheet_cmds;
 pub mod skill_cmds;
 pub mod skills;
