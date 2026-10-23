@@ -876,6 +876,9 @@ impl NodeCraftApp {
         }
         if !Arc::ptr_eq(&before, self.session.plugins()) {
             self.plugins_changed();
+            if let Some(Err(error)) = self.runs.as_mut().map(|runs| runs.set_plugins(&mut self.session)) {
+                log::warn!("plugin providers unavailable: {}", error.message);
+            }
         }
         ctx.request_repaint();
     }

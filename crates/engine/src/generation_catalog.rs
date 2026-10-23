@@ -197,6 +197,17 @@ impl GenerationCatalog {
     pub fn models(&self, kind: &str) -> impl Iterator<Item = &GenerationModel> {
         self.kind(kind).ok().into_iter().flat_map(GenerationKind::models)
     }
+    /// This catalog with its plugin models (#174) replaced by `models`: every model whose
+    /// provider is a plugin's goes, and `models` join the rest.
+    pub(crate) fn with_plugin_models(&self, models: Vec<nodecraft_catalog::ModelDescriptor>) -> Result<Self, Error> {
+        let prefix = nodecraft_plugin::id::PLUGIN_PREFIX;
+        let base = self.0.catalog.catalog().models().filter(|m| !m.provider.starts_with(prefix)).cloned();
+        Self::new(RunCatalog::new(Catalog::from_models(base.chain(models))?)?)
+    }
+    /// `kinds` with this catalog's generation kinds in place of the ones it has.
+    pub(crate) fn rebind(&self, kinds: &nodecraft_nodes::Registry) -> Result<nodecraft_nodes::Registry, Error> {
+        kinds.with_generation(self.0.kinds.clone())
+    }
     pub fn registry(&self) -> Result<nodecraft_nodes::Registry, Error> {
         let mut kinds = nodecraft_nodes::Registry::builtins()?;
         for kind in &self.0.kinds {

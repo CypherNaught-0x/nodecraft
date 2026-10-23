@@ -109,7 +109,7 @@ its templates. Unknown fields are refused, and so is any template that breaks a 
 | `output_origins` | up to 4 more origins, under the same rule, that output links may point to |
 | `credential` | optional: where the host puts the key, one of `bearer`, `key` (`Authorization: Key`), `x_api_key`, `api_key`, `x_goog_api_key`. A template names no other header |
 | `idempotency` | optional: `idempotency-key` or `x-idempotency-key`, which carries the host's key. Without one, an ambiguous submit is never retried |
-| `models` | 1 to 64 `{id, price}`. An ID is `/`-separated parts of letters, digits, `.`, `_` and `-`. `price` is the publisher's positive per-job price in exact money (`{"currency":"USD","micros":"40000"}`); a zero price is refused. It is a floor the host's quote never goes under, not a price the host trusts |
+| `models` | 1 to 64 `{id, price, label?, output?}`. An ID is `/`-separated parts of letters, digits, `.`, `_` and `-`. `price` is the publisher's positive per-job price in exact money (`{"currency":"USD","micros":"40000"}`); a zero price is refused. It is a floor the host's quote never goes under, not a price the host trusts. `label` is what the model picker shows (1 to 64 bytes, no control characters; the ID when absent). `output` is what the model makes: `image`, `video`, `audio`, `mesh` or `text`. A text model's outputs are all of kind `text` and any other's are all links; `output` defaults to whichever of `text` and `image` the outputs fit |
 | `submit` | `POST`, a `path`, a JSON `body`, and either `handle` (a JSON pointer to the job id) or `outputs` |
 | `poll` | needed for a queued submit, refused for one that finishes in its reply: `GET`, a `path` naming `{job}`, `status` (pointer), `states` (`queued`, `running`, `done`, `failed` status lists; `done` and `failed` required; no value in two), `outputs`, optional `error` (pointer), and `interval_ms` (500 to 60000) |
 | `cancel` | optional, queued jobs only: `POST` or `DELETE`, and a `path` naming `{job}` |
@@ -136,6 +136,21 @@ The quote is the model's template price. On the desktop the transport resolves n
 public unicast addresses (no loopback, private, link-local, carrier-NAT, documentation or
 multicast ones, including IPv4 addresses inside IPv6), refuses a name with any other address among
 its records, and uses no proxy. The browser build refuses to run plugin providers.
+
+### In the catalog
+
+While its package is enabled and its grant covers every origin it names (and the secret
+capability, when it places a credential), each template model joins the model catalog as
+`<registered id>/<model id>`, for example `plugin.io.example.acme.acme/acme/v1`, on the
+Generate card for its `output`. Its one mode, `generate`, takes the body's `{text:ROLE}` roles as
+text inputs: `prompt` is required and typed on the card, any other role is an optional wired
+input. A model whose catalog ID isn't lowercase is left out. Its price is per job, at the
+template's price.
+
+The key is kept in the keychain under `plugin.<package id>:<API host>` (set it with `keys.set`),
+so neither another package nor an update that moves its origin reads it. When the grant is
+withdrawn or replaced, the models leave the catalog at once, and a broker built under the old
+grant refuses to send a paid request.
 
 ## Grants (#174)
 

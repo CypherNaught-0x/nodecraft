@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use nodecraft_types::Money;
+use nodecraft_types::{Modality, Money};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -163,6 +163,10 @@ impl IdempotencyHeader {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateModel {
     pub id: String,
+    /// What a person picks it by; its ID when the template names none.
+    pub label: String,
+    /// What it makes: text when every output is text, an image when the template says nothing.
+    pub output: Modality,
     /// An upper bound per job, in exact money. The host's quote never goes below it.
     pub price: Money,
 }
@@ -290,6 +294,10 @@ struct RawTemplate {
 #[serde(deny_unknown_fields)]
 struct RawModel {
     id: String,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    output: Option<Modality>,
     price: Money,
 }
 
@@ -363,6 +371,25 @@ impl Template {
         check(raw)
     }
 
+    /// The roles of the `{text:ROLE}` placeholders its submit body fills.
+    pub fn text_roles(&self) -> BTreeSet<&str> {
+        fn walk<'a>(value: &'a Value, out: &mut BTreeSet<&'a str>) {
+            match value {
+                Value::String(s) => {
+                    if let Ok(Some(Placeholder::Text(role))) = placeholder(s) {
+                        out.insert(role);
+                    }
+                }
+                Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+                Value::Object(map) => map.values().for_each(|v| walk(v, out)),
+                _ => {}
+            }
+        }
+        let mut out = BTreeSet::new();
+        walk(&self.submit.body, &mut out);
+        out
+    }
+
     pub fn model(&self, id: &str) -> Option<&TemplateModel> {
         self.models.iter().find(|m| m.id == id)
     }
@@ -409,6 +436,13 @@ fn check(raw: RawTemplate) -> Result<Template> {
     if raw.models.is_empty() || raw.models.len() > MAX_MODELS {
         return Err(TemplateError::new("/models", "a template serves 1 to 64 models"));
     }
+    let submit = submit(raw.submit)?;
+    let poll = raw.poll.map(poll).transpose()?;
+    let fields = match &submit.reply {
+        SubmitReply::Finished { outputs } => outputs.as_slice(),
+        SubmitReply::Queued { .. } => poll.as_ref().map_or(&[][..], |p| p.outputs.as_slice()),
+    };
+    let text = fields.iter().all(|f| f.kind == OutputKind::Text);
     let mut models: Vec<TemplateModel> = Vec::with_capacity(raw.models.len());
     for (i, m) in raw.models.into_iter().enumerate() {
         let at = format!("/models/{i}");
@@ -421,10 +455,23 @@ fn check(raw: RawTemplate) -> Result<Template> {
         if m.price.micros == 0 {
             return Err(TemplateError::new(format!("{at}/price"), "a broker model has a positive price per job; it sends a credential to a paid service"));
         }
-        models.push(TemplateModel { id: m.id, price: m.price });
+        let label = match m.label.as_deref().map(str::trim) {
+            None => m.id.clone(),
+            Some(l) if !l.is_empty() && l.len() <= MAX_LABEL && !l.chars().any(char::is_control) => l.to_owned(),
+            Some(_) => return Err(TemplateError::new(format!("{at}/label"), "a label is 1 to 64 bytes, with no control characters")),
+        };
+        let output = match m.output {
+            None if text => Modality::Text,
+            None => Modality::Image,
+            Some(o @ (Modality::Image | Modality::Video | Modality::Audio | Modality::Mesh | Modality::Text)) => o,
+            Some(_) => return Err(TemplateError::new(format!("{at}/output"), "a model makes text, an image, a video, audio or a mesh")),
+        };
+        // Text is read from the reply; a file is downloaded from a link.
+        if (output == Modality::Text) != text {
+            return Err(TemplateError::new(format!("{at}/output"), "a text model has only text outputs, any other only links"));
+        }
+        models.push(TemplateModel { id: m.id, label, output, price: m.price });
     }
-    let submit = submit(raw.submit)?;
-    let poll = raw.poll.map(poll).transpose()?;
     match (&submit.reply, &poll) {
         (SubmitReply::Queued { .. }, None) => return Err(TemplateError::new("/poll", "a queued submit needs a poll operation")),
         (SubmitReply::Finished { .. }, Some(_)) => return Err(TemplateError::new("/poll", "a submit that finishes in its reply has nothing to poll")),

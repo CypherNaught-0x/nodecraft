@@ -60,6 +60,7 @@ pub mod perf;
 pub mod perf_cmds;
 mod persistence;
 pub mod plugin_cmds;
+pub mod plugin_providers;
 pub mod plugin_rights;
 pub mod plugin_runtime;
 pub mod plugin_text;

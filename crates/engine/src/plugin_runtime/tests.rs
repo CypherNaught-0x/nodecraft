@@ -109,7 +109,7 @@ fn a_result_whose_grant_went_while_it_ran_is_dropped() {
     // A job that starts on the revoked action stops at once.
     let routed = Routed {
         local: Arc::new(crate::action_exec::LocalActions::new(Default::default())),
-        plugins: Some(Arc::new(PluginSnapshot { actions: BTreeMap::from([(KIND.to_owned(), ran)]) })),
+        plugins: Some(Arc::new(PluginSnapshot { actions: BTreeMap::from([(KIND.to_owned(), ran)]), providers: BTreeMap::new() })),
     };
     let error = routed.execute(KIND, &ParamValues::new(), &[Value::Text("hi".into())]).unwrap_err();
     assert!(error.contains("revoked"), "{error}");

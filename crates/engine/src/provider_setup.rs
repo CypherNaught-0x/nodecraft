@@ -101,7 +101,7 @@ fn read_key(keys: &dyn SecretStore, account: &Account) -> Result<Option<Secret>,
     keys.get(account).map_err(read_key_error)
 }
 
-fn needs_key(keys: &dyn SecretStore, name: &str) -> Result<Secret, Readiness> {
+pub(crate) fn needs_key(keys: &dyn SecretStore, name: &str) -> Result<Secret, Readiness> {
     let account = Account::new(name).map_err(|_| Readiness::Failed("its keychain account name is invalid".into()))?;
     read_key(keys, &account)?.ok_or(Readiness::NeedsKey { account: name.to_owned() })
 }
