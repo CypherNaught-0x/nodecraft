@@ -19,40 +19,52 @@ impl super::LocalActions {
     {
         read_back(&self.videos, length, read, bytes_of, cancelled)
     }
+
+    /// A split keeps each part provisional until its whole result can be published.
+    pub(in crate::action_exec) fn retain_video_pending<C, R, B>(
+        &self,
+        length: u64,
+        read: R,
+        bytes_of: B,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Provisional<'_>, String>
+    where
+        R: FnMut(u64, usize) -> Result<C, String>,
+        B: for<'a> Fn(&'a C) -> &'a [u8],
+    {
+        read_pending(&self.videos, length, read, bytes_of, cancelled)
+    }
+}
+
+struct Entry {
+    bytes: Arc<[u8]>,
+    published: bool,
+    holds: usize,
 }
 
 pub(super) struct Videos {
-    entries: BTreeMap<Blake3, Arc<[u8]>>,
+    entries: BTreeMap<Blake3, Entry>,
     retained: u64,
     reserved: u64,
     pending: usize,
+    holds: usize,
     byte_limit: u64,
     count_limit: usize,
 }
 
 impl Default for Videos {
     fn default() -> Self {
-        Self { entries: BTreeMap::new(), retained: 0, reserved: 0, pending: 0, byte_limit: MAX_STAGED_BYTES, count_limit: MAX_STAGED_RESULTS }
+        Self { entries: BTreeMap::new(), retained: 0, reserved: 0, pending: 0, holds: 0, byte_limit: MAX_STAGED_BYTES, count_limit: MAX_STAGED_RESULTS }
     }
 }
 
 impl Videos {
     pub fn iter(&self) -> impl Iterator<Item = (&Blake3, &Arc<[u8]>)> {
-        self.entries.iter()
-    }
-
-    pub fn keys(&self) -> impl Iterator<Item = &Blake3> {
-        self.entries.keys()
+        self.entries.iter().filter_map(|(hash, entry)| entry.published.then_some((hash, &entry.bytes)))
     }
 
     pub fn get(&self, hash: &Blake3) -> Option<&Arc<[u8]>> {
-        self.entries.get(hash)
-    }
-
-    pub fn remove(&mut self, hash: &Blake3) -> Option<Arc<[u8]>> {
-        let bytes = self.entries.remove(hash)?;
-        self.retained = self.retained.saturating_sub(bytes.len() as u64);
-        Some(bytes)
+        self.entries.get(hash).filter(|entry| entry.published).map(|entry| &entry.bytes)
     }
 
     #[cfg(test)]
@@ -62,11 +74,63 @@ impl Videos {
 
     fn full(&self) -> String {
         format!(
-            "this run's rendered media reached its staging limit ({} MiB or {} results); render fewer nodes at a time or use a lower render quality",
+            "this run's rendered media reached its staging limit ({} MiB or {} results); render fewer nodes at a time, split into fewer parts or use a lower render quality",
             self.byte_limit / (1024 * 1024),
             self.count_limit,
         )
     }
+}
+
+/// One admitted part, inaccessible to the host or a chain until publication. Dropping its last
+/// unpublished hold releases only that entry; another successful consumer marks it published.
+pub(super) struct Provisional<'a> {
+    videos: &'a Mutex<Videos>,
+    hash: Blake3,
+    length: u64,
+}
+
+impl Provisional<'_> {
+    pub fn hash(&self) -> Blake3 {
+        self.hash
+    }
+
+    pub fn length(&self) -> u64 {
+        self.length
+    }
+}
+
+impl Drop for Provisional<'_> {
+    fn drop(&mut self) {
+        let mut state = self.videos.lock().unwrap_or_else(PoisonError::into_inner);
+        let remove = state.entries.get_mut(&self.hash).is_some_and(|entry| {
+            entry.holds = entry.holds.saturating_sub(1);
+            !entry.published && entry.holds == 0
+        });
+        state.holds = state.holds.saturating_sub(1);
+        if remove && let Some(entry) = state.entries.remove(&self.hash) {
+            state.retained = state.retained.saturating_sub(entry.bytes.len() as u64);
+        }
+    }
+}
+
+/// Publish a complete result under one lock. Validate the whole set before changing visibility;
+/// its opaque, non-Clone receipts keep every entry alive throughout publication.
+pub(super) fn publish(parts: &[Provisional<'_>]) -> Result<(), String> {
+    let Some(first) = parts.first() else { return Ok(()) };
+    if parts.iter().any(|part| !std::ptr::eq(part.videos, first.videos)) {
+        return Err("the rendered parts belong to different runs".into());
+    }
+    let mut state = first.videos.lock().unwrap_or_else(PoisonError::into_inner);
+    if parts.iter().any(|part| !state.entries.contains_key(&part.hash)) {
+        return Err("a rendered part is no longer retained by this run".into());
+    }
+    for part in parts {
+        // The validation above and this mutation share the same lock.
+        if let Some(entry) = state.entries.get_mut(&part.hash) {
+            entry.published = true;
+        }
+    }
+    Ok(())
 }
 
 struct Reservation<'a> {
@@ -80,7 +144,8 @@ impl<'a> Reservation<'a> {
         let mut state = videos.lock().unwrap_or_else(PoisonError::into_inner);
         let total = state.retained.checked_add(state.reserved).and_then(|n| n.checked_add(bytes));
         let count = state.entries.len().checked_add(state.pending);
-        if total.is_none_or(|n| n > state.byte_limit) || count.is_none_or(|n| n >= state.count_limit) {
+        let holds = state.holds.checked_add(state.pending);
+        if total.is_none_or(|n| n > state.byte_limit) || count.is_none_or(|n| n >= state.count_limit) || holds.is_none_or(|n| n >= state.count_limit) {
             return Err(state.full());
         }
         state.reserved = state.reserved.saturating_add(bytes);
@@ -93,19 +158,24 @@ impl<'a> Reservation<'a> {
         state.pending = state.pending.saturating_sub(1);
     }
 
-    fn commit(mut self, hash: Blake3, bytes: Arc<[u8]>) -> Result<(), String> {
+    fn commit(mut self, hash: Blake3, bytes: Arc<[u8]>) -> Result<Provisional<'a>, String> {
         if bytes.len() as u64 != self.bytes {
             return Err("the rendered file changed size while it was read".into());
         }
         let mut state = self.videos.lock().unwrap_or_else(PoisonError::into_inner);
+        let holds = state.holds.checked_add(1).ok_or_else(|| state.full())?;
+        let entry_holds = state.entries.get(&hash).map_or(0, |entry| entry.holds).checked_add(1).ok_or_else(|| state.full())?;
         // A duplicate releases its provisional reservation without replacing shared storage.
-        if !state.entries.contains_key(&hash) {
+        if let Some(entry) = state.entries.get_mut(&hash) {
+            entry.holds = entry_holds;
+        } else {
             state.retained = state.retained.saturating_add(self.bytes);
-            state.entries.insert(hash, bytes);
+            state.entries.insert(hash, Entry { bytes, published: false, holds: entry_holds });
         }
+        state.holds = holds;
         self.refund(&mut state);
         self.active = false;
-        Ok(())
+        Ok(Provisional { videos: self.videos, hash, length: self.bytes })
     }
 }
 
@@ -120,7 +190,23 @@ impl Drop for Reservation<'_> {
 
 /// Read-back admission precedes allocation and any chunk request. The accessor borrows the
 /// service's accounted chunk, so the native adapter adds no intermediate chunk copy.
-pub(super) fn read_back<C, R, B>(videos: &Mutex<Videos>, length: u64, mut read: R, bytes_of: B, cancelled: &dyn Fn() -> bool) -> Result<Blake3, String>
+pub(super) fn read_back<C, R, B>(videos: &Mutex<Videos>, length: u64, read: R, bytes_of: B, cancelled: &dyn Fn() -> bool) -> Result<Blake3, String>
+where
+    R: FnMut(u64, usize) -> Result<C, String>,
+    B: for<'a> Fn(&'a C) -> &'a [u8],
+{
+    let part = read_pending(videos, length, read, bytes_of, cancelled)?;
+    publish(std::slice::from_ref(&part))?;
+    Ok(part.hash())
+}
+
+pub(super) fn read_pending<'videos, C, R, B>(
+    videos: &'videos Mutex<Videos>,
+    length: u64,
+    mut read: R,
+    bytes_of: B,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Provisional<'videos>, String>
 where
     R: FnMut(u64, usize) -> Result<C, String>,
     B: for<'a> Fn(&'a C) -> &'a [u8],
@@ -167,8 +253,7 @@ where
     if cancelled() {
         return Err(CANCELLED.into());
     }
-    reservation.commit(hash, bytes)?;
-    Ok(hash)
+    reservation.commit(hash, bytes)
 }
 
 #[cfg(test)]

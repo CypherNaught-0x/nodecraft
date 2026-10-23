@@ -198,6 +198,30 @@ pub(super) mod native {
         }
     }
 
+    fn compose(service: &VideoService, spec: ComposeSpec, cancelled: &dyn Fn() -> bool) -> Result<RenderedVideo, String> {
+        let started = Instant::now();
+        let job = loop {
+            match service.compose(spec.clone()) {
+                Err(VideoError::Busy) if started.elapsed() < BUSY_WAIT && !cancelled() => std::thread::sleep(POLL.saturating_mul(10)),
+                other => break other.map_err(|error| message(closed(error)))?,
+            }
+        };
+        wait(job, cancelled).map_err(message)
+    }
+
+    fn video_value(hash: Blake3, size: (u32, u32), duration_us: u64, sound: bool) -> Result<Value, String> {
+        let mime = "video/webm".parse().map_err(|_| "video/webm isn't a media type".to_owned())?;
+        let meta = MediaMeta {
+            width: Some(size.0),
+            height: Some(size.1),
+            duration_ms: Some(duration_us / 1000),
+            sample_rate: sound.then_some(48_000),
+            channels: sound.then_some(2),
+            ..MediaMeta::default()
+        };
+        Ok(Value::Media(AssetRef { hash, mime, meta }))
+    }
+
     impl LocalActions {
         /// The bytes of the video (or, for `audio`, the sound) `value` names: one an earlier
         /// action in this run made, or the project's. `unconnected` says what to do without one.
@@ -396,15 +420,30 @@ pub(super) mod native {
             cancelled: &dyn Fn() -> bool,
         ) -> Result<Value, String> {
             let duration_us = spec.duration_us();
-            let started = Instant::now();
-            let job = loop {
-                match service.compose(spec.clone()) {
-                    Err(VideoError::Busy) if started.elapsed() < BUSY_WAIT && !cancelled() => std::thread::sleep(POLL.saturating_mul(10)),
-                    other => break other.map_err(|error| message(closed(error)))?,
-                }
-            };
-            let rendered = wait(job, cancelled).map_err(message)?;
+            let rendered = compose(service, spec, cancelled)?;
             self.keep(service, &rendered, size, duration_us, true, cancelled)
+        }
+
+        /// A Split part stays unpublished until the whole split succeeds. The receipt is
+        /// explicit: concurrent actions on this same executor keep their normal publication.
+        pub(in crate::action_exec) fn render_pending(
+            &self,
+            service: &VideoService,
+            spec: ComposeSpec,
+            size: (u32, u32),
+            cancelled: &dyn Fn() -> bool,
+        ) -> Result<(Value, crate::action_exec::video_staging::Provisional<'_>), String> {
+            let duration_us = spec.duration_us();
+            let rendered = compose(service, spec, cancelled)?;
+            let held = self.retain_video_pending(
+                rendered.bytes(),
+                |offset, length| {
+                    wait(service.read_chunk(rendered.asset(), offset, length).map_err(|error| message(closed(error)))?, cancelled).map_err(message)
+                },
+                VideoChunk::bytes,
+                cancelled,
+            )?;
+            Ok((video_value(held.hash(), size, duration_us, true)?, held))
         }
 
         /// A rendered file `bytes_len` long (at most [`MAX_RENDER_BYTES`]), read back a chunk at a
@@ -440,16 +479,7 @@ pub(super) mod native {
                 return Err(format!("the rendered video is larger than {} MiB; make it shorter or smaller", MAX_RENDER_BYTES / (1024 * 1024)));
             }
             let hash = self.read_back(bytes_len, &|offset, length| service.read_chunk(rendered.asset(), offset, length), cancelled)?;
-            let mime = "video/webm".parse().map_err(|_| "video/webm isn't a media type".to_owned())?;
-            let meta = MediaMeta {
-                width: Some(size.0),
-                height: Some(size.1),
-                duration_ms: Some(duration_us / 1000),
-                sample_rate: sound.then_some(48_000),
-                channels: sound.then_some(2),
-                ..MediaMeta::default()
-            };
-            Ok(Value::Media(AssetRef { hash, mime, meta }))
+            video_value(hash, size, duration_us, sound)
         }
     }
 }

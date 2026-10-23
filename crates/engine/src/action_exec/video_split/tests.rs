@@ -5,6 +5,9 @@ use nodecraft_format::AssetStore;
 use nodecraft_nodes::Registry;
 use nodecraft_types::{AssetRef, MediaMeta, NodeId, Number, Unsigned, Value};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod rollback;
+
 /// `action`'s planned parameters: its defaults with `set` over them.
 fn planned(action: &str, set: &[(&str, Value)]) -> ParamValues {
     let kinds = Registry::builtins().unwrap();
