@@ -67,6 +67,8 @@ pub fn clock(us: u64) -> String {
 pub use native::Videos;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::{Retry, stale};
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod import;
 #[cfg(target_arch = "wasm32")]
 pub use web::Videos;
 
@@ -343,6 +345,18 @@ mod native {
     }
 
     impl Videos {
+        /// Reuses the configured playback service for best-effort import metadata. Never waits.
+        pub(crate) fn probe_import(
+            &mut self,
+            ctx: &egui::Context,
+            bytes: std::sync::Arc<[u8]>,
+        ) -> Option<Result<nodecraft_media::video::VideoJob<VideoAsset>, ()>> {
+            if self.open(ctx).is_err() {
+                return Some(Err(()));
+            }
+            self.service().map(|service| service.import(bytes, ColorPolicy::default()).map_err(|_| ()))
+        }
+
         /// Uses these tools from now on: the service is opened when a video is first shown.
         /// `None` (either unset) leaves videos unplayable, and says how to set them.
         pub fn configure(&mut self, tools: Option<(&std::path::Path, &std::path::Path)>) {

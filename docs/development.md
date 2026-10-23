@@ -36,6 +36,14 @@ ownership, captured placement and one-step undo. Acquisition tests cap reported 
 owned buffer capacity; those counters are not total process RSS or physical device I/O. Windows
 and other platforms still need their native CI; local macOS results do not prove them.
 
+Video import metadata (#572) has an opt-in real-tool contract in
+`app::drop::tests::imported_video_lengths_reach_timeline_before_any_render`. With absolute
+`NODECRAFT_VIDEO_TEST_FFMPEG` and `NODECRAFT_VIDEO_TEST_FFPROBE` paths set, run that test with
+`-- --ignored`. It imports generated MP4/WebM/MOV files through real file-drop acquisition and
+checks `duration_ms` and `timeline.list` clips' `media_us` before rendering (the issue's older
+`video_us` field was generalized to `media_us`). A fragmented MP4 additionally
+proves configured ffprobe fills an unknown header duration while missing tools leave it unknown.
+
 GitHub CI runs `cargo nextest run --workspace --profile ci` and then `cargo test --doc --workspace`
 on Linux, Windows and macOS. The workflow pins nextest and verifies each release archive against
 a checked-in SHA-256 before extracting it. When updating nextest, update the version and all three

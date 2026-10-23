@@ -28,6 +28,36 @@ pub struct Incoming<'a> {
     pub bytes: &'a [u8],
 }
 
+/// Metadata obtained by the native video service for exactly these immutable file bytes.
+/// It cannot be supplied through command JSON or constructed from untrusted metadata alone.
+#[derive(Clone, Debug)]
+pub struct ProbedMovie {
+    hash: nodecraft_types::Blake3,
+    meta: MediaMeta,
+}
+
+impl ProbedMovie {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_video(asset: &nodecraft_media::video::VideoAsset) -> Self {
+        let movie = asset.metadata();
+        let duration_ms = movie.duration_us.div_ceil(1000);
+        Self {
+            hash: nodecraft_types::Blake3::from_bytes(asset.hash().0),
+            meta: MediaMeta { duration_ms: Some(duration_ms), width: Some(movie.width), height: Some(movie.height), ..MediaMeta::default() },
+        }
+    }
+}
+
+fn enrich_movie(hash: nodecraft_types::Blake3, mime: &Mime, meta: &mut MediaMeta, movies: &[ProbedMovie]) {
+    if mime.essence().starts_with("video/")
+        && let Some(movie) = movies.iter().take(MAX_FILES).find(|movie| movie.hash == hash)
+    {
+        meta.duration_ms = meta.duration_ms.or(movie.meta.duration_ms);
+        meta.width = meta.width.or(movie.meta.width);
+        meta.height = meta.height.or(movie.meta.height);
+    }
+}
+
 /// What a drop did: the nodes it added, and why each other file was left out.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Imported {
@@ -169,13 +199,22 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
 /// mode's form, #95). It is recognised from its bytes as a drop is; text and what a source node
 /// can't hold are refused. Until an edit references it, the asset is collected as any other.
 pub fn import_media(session: &mut Session, file: &Incoming<'_>) -> Result<nodecraft_types::AssetRef, Error> {
+    import_media_with_movie(session, file, None)
+}
+
+/// As [`import_media`], optionally filling unknown header fields from a matching native probe.
+pub fn import_media_with_movie(session: &mut Session, file: &Incoming<'_>, movie: Option<&ProbedMovie>) -> Result<nodecraft_types::AssetRef, Error> {
     let refused =
         |why: String| Error::new(nodecraft_types::ErrorKind::InvalidInput, format!("{} can't be used: {why}.", file.name.chars().take(80).collect::<String>()));
     if sniff(file.bytes).is_some_and(|sniffed| sniffed.kind == MediaKind::Text) {
         return Err(refused("it is text, not media".into()));
     }
     match plan(file, 0).map_err(refused)? {
-        Plan::Media { mime, meta, bytes, .. } => Ok(nodecraft_types::AssetRef { hash: session.import_asset(bytes)?, mime, meta }),
+        Plan::Media { mime, mut meta, bytes, .. } => {
+            let hash = session.import_asset(bytes)?;
+            enrich_movie(hash, &mime, &mut meta, movie.map(std::slice::from_ref).unwrap_or_default());
+            Ok(nodecraft_types::AssetRef { hash, mime, meta })
+        }
         Plan::Text(_) => Err(refused("it is text, not media".into())),
     }
 }
@@ -184,7 +223,21 @@ pub fn import_media(session: &mut Session, file: &Incoming<'_>) -> Result<nodecr
 /// files are skipped in input order; a rejected transaction preserves existing staged assets.
 /// At most 32 node/source plans are admitted, but skipped bookkeeping is O(files.len()).
 pub fn import_files(session: &mut Session, canvas: CanvasId, at: Position, step: f32, files: &[Incoming<'_>], ids: &[NodeId]) -> Result<Imported, Error> {
-    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids));
+    import_files_with_movies(session, canvas, at, step, files, ids, &[])
+}
+
+/// As [`import_files`], preserving one atomic edit while filling unknown video header fields.
+/// Callers obtain probes asynchronously before publication; no tool executes in this function.
+pub fn import_files_with_movies(
+    session: &mut Session,
+    canvas: CanvasId,
+    at: Position,
+    step: f32,
+    files: &[Incoming<'_>],
+    ids: &[NodeId],
+    movies: &[ProbedMovie],
+) -> Result<Imported, Error> {
+    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies));
     match result {
         Ok(imported) => Ok(imported),
         Err(mut error) => {

@@ -54,7 +54,15 @@ fn prepare(session: &Session, unique: &[Unique<'_>]) -> Result<PreparedImports, 
     Ok(prepared)
 }
 
-pub(super) fn run(session: &mut Session, canvas: CanvasId, at: Position, step: f32, files: &[Incoming<'_>], ids: &[NodeId]) -> Result<Imported, Error> {
+pub(super) fn run(
+    session: &mut Session,
+    canvas: CanvasId,
+    at: Position,
+    step: f32,
+    files: &[Incoming<'_>],
+    ids: &[NodeId],
+    movies: &[ProbedMovie],
+) -> Result<Imported, Error> {
     // A pending save changes the admission identity the prepared batch is checked against.
     session.settle_for_edit()?;
     if ids.len() < files.len().min(MAX_FILES) {
@@ -133,8 +141,9 @@ pub(super) fn run(session: &mut Session, canvas: CanvasId, at: Position, step: f
     for (id, plan, hash) in plans {
         let (kind, parameter, value) = match plan {
             Plan::Text(text) => ("source.text", "text", Value::Text(text)),
-            Plan::Media { kind, mime, meta, .. } => {
+            Plan::Media { kind, mime, mut meta, .. } => {
                 let hash = hash.ok_or_else(|| invalid("media import has no planned identity"))?;
+                enrich_movie(hash, &mime, &mut meta, movies);
                 (kind, "asset", Value::Media(AssetRef { hash, mime, meta }))
             }
         };

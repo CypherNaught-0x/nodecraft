@@ -25,6 +25,41 @@ fn node(s: &Session, id: NodeId) -> &Node {
 
 const AT: Position = Position { x: 10.0, y: 20.0 };
 
+fn video_bytes(duration: u32) -> Vec<u8> {
+    let boxed = |kind: &[u8; 4], body: &[u8]| [u32::try_from(body.len() + 8).unwrap().to_be_bytes().as_slice(), kind, body].concat();
+    let mut header = vec![0; 100];
+    header[12..16].copy_from_slice(&1000u32.to_be_bytes());
+    header[16..20].copy_from_slice(&duration.to_be_bytes());
+    [boxed(b"ftyp", b"isom\0\0\x02\0isom"), boxed(b"moov", &boxed(b"mvhd", &header))].concat()
+}
+
+#[test]
+fn probed_movie_metadata_is_bound_to_the_input_and_only_fills_unknown_fields() {
+    let bytes = video_bytes(0);
+    let hash = nodecraft_types::Blake3::from_bytes(*blake3::hash(&bytes).as_bytes());
+    let proof = ProbedMovie { hash, meta: MediaMeta { duration_ms: Some(500), width: Some(64), height: Some(48), ..Default::default() } };
+    let mut s = session();
+    let files = [Incoming { name: "Fragmented", bytes: &bytes }, Incoming { name: "Notes", bytes: b"Public notes" }];
+    let before = s.document().clone();
+    import_files_with_movies(&mut s, C, AT, 300.0, &files, &ids(2), std::slice::from_ref(&proof)).unwrap();
+    let Some(Value::Media(asset)) = node(&s, ids(1)[0]).params.get("asset") else { panic!("video") };
+    assert_eq!((asset.meta.duration_ms, asset.meta.width, asset.meta.height), (Some(500), Some(64), Some(48)));
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document(), &before, "probe enrichment stays in the same atomic import undo step");
+
+    let known = video_bytes(1200);
+    let known_hash = nodecraft_types::Blake3::from_bytes(*blake3::hash(&known).as_bytes());
+    let another = ProbedMovie { hash: known_hash, ..proof.clone() };
+    let imported = import_media_with_movie(&mut s, &Incoming { name: "Known", bytes: &known }, Some(&another)).unwrap();
+    assert_eq!(imported.meta.duration_ms, Some(1200), "a native probe cannot overwrite known header facts");
+    let unknown = import_media_with_movie(&mut s, &Incoming { name: "Fragmented", bytes: &bytes }, Some(&another)).unwrap();
+    assert_eq!(unknown.meta.duration_ms, None, "another video's metadata cannot be borrowed");
+    let image = png();
+    let image_proof = ProbedMovie { hash: nodecraft_types::Blake3::from_bytes(*blake3::hash(&image).as_bytes()), ..proof };
+    let imported = import_media_with_movie(&mut s, &Incoming { name: "Image", bytes: &image }, Some(&image_proof)).unwrap();
+    assert_eq!(imported.meta.duration_ms, None, "only video fields are enriched");
+}
+
 #[test]
 fn text_and_images_become_source_nodes_in_a_row_as_one_undo_step() {
     let mut s = session();

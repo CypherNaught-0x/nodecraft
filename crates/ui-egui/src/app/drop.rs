@@ -15,11 +15,14 @@ pub const MAX_DROP_BYTES: usize = MAX_MEDIA_BYTES;
 pub const MAX_DROP_TOTAL_BYTES: usize = MAX_PROJECT_MEDIA_BYTES;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(not(target_arch = "wasm32"))]
+mod probe;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(super) mod web;
 #[cfg(not(target_arch = "wasm32"))]
 struct Pending {
     ticket: native::Ticket,
+    probe: Option<probe::Pending>,
     identity: std::sync::Arc<crate::navigation::SessionIdentity>,
     project: nodecraft_types::ProjectId,
     canvas: nodecraft_types::CanvasId,
@@ -61,7 +64,7 @@ impl NodeCraftApp {
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn import_drop(&mut self, batch: native::Batch, pending: &Pending) {
+    fn import_drop(&mut self, batch: native::Batch, pending: &Pending, movies: &[nodecraft_engine::import::ProbedMovie]) {
         if !pending.current(self) || batch.check().is_err() {
             self.notice = Some("The pending drop no longer belongs to this document; nothing was added.".into());
             return;
@@ -87,7 +90,8 @@ impl NodeCraftApp {
             self.notice = Some("The pending drop expired or changed document; nothing was added.".into());
             return;
         }
-        match nodecraft_engine::import::import_files(&mut self.session, pending.canvas, pending.position, pending.step, &incoming, &new_ids) {
+        match nodecraft_engine::import::import_files_with_movies(&mut self.session, pending.canvas, pending.position, pending.step, &incoming, &new_ids, movies)
+        {
             Ok(imported) => {
                 if !imported.nodes.is_empty() {
                     self.selection.replace(imported.nodes.iter().copied().collect());
@@ -189,10 +193,30 @@ impl NodeCraftApp {
                         Err(e) => self.notice = Some(e.message().into()),
                     }
                 } else {
-                    match pending.ticket.poll() {
-                        native::Poll::Pending => self.drop_acquisition.pending = Some(pending),
-                        native::Poll::Failed(e) => self.notice = Some(e.message().into()),
-                        native::Poll::Ready(batch) => self.import_drop(batch, &pending),
+                    let failed = if pending.probe.is_none() {
+                        match pending.ticket.poll() {
+                            native::Poll::Pending => false,
+                            native::Poll::Failed(e) => {
+                                self.notice = Some(e.message().into());
+                                true
+                            }
+                            native::Poll::Ready(batch) => {
+                                pending.probe = Some(probe::Pending::new(batch));
+                                false
+                            }
+                        }
+                    } else {
+                        false
+                    };
+                    if !failed {
+                        let finished = pending.probe.as_mut().is_some_and(|probe| probe.poll(&mut self.videos, ui.ctx()));
+                        if finished {
+                            if let Some(probe) = pending.probe.take() {
+                                self.import_drop(probe.batch, &pending, &probe.movies);
+                            }
+                        } else {
+                            self.drop_acquisition.pending = Some(pending);
+                        }
                     }
                 }
             }
@@ -259,6 +283,7 @@ impl NodeCraftApp {
             let identity = crate::navigation::Geometry::identity(&mut self.session);
             self.drop_acquisition.pending = Some(Pending {
                 ticket,
+                probe: None,
                 identity,
                 project: self.session.document().id(),
                 canvas: self.canvas,

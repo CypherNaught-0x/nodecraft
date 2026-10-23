@@ -306,13 +306,25 @@ impl NodeCraftApp {
     /// Stores a chosen file as an asset and fills input `port` with it (`app.input_set`), into
     /// slot `slot` or added after the others.
     fn app_fill_file(&mut self, app: &mut AppMode, form: &Form, port: &str, slot: Option<usize>, name: &str, bytes: &[u8]) {
+        self.app_fill_probed_file(app, form, port, slot, &nodecraft_engine::import::Incoming { name, bytes }, None);
+    }
+
+    fn app_fill_probed_file(
+        &mut self,
+        app: &mut AppMode,
+        form: &Form,
+        port: &str,
+        slot: Option<usize>,
+        file: &nodecraft_engine::import::Incoming<'_>,
+        movie: Option<&nodecraft_engine::import::ProbedMovie>,
+    ) {
         let Some(input) = form.inputs.iter().find(|i| i.port == port) else {
             return;
         };
         let filled = if input.feed == "form" { input.values.clone() } else { Vec::new() };
         let many = input.port_type.many;
         let t = *self.theme.tokens();
-        match nodecraft_engine::import::import_media(&mut self.session, &nodecraft_engine::import::Incoming { name, bytes }) {
+        match nodecraft_engine::import::import_media_with_movie(&mut self.session, file, movie) {
             Ok(asset) => {
                 self.app_ask(app, Ask::Fill(port.to_owned(), placed(filled, many, slot, Value::Media(asset)), None), &t);
             }

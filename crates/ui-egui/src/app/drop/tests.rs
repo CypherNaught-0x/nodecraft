@@ -90,6 +90,82 @@ fn dropped_files_become_nodes_at_the_pointer_as_one_undo_step() {
     assert_eq!(h.state().session.document(), &before, "one undo removes the whole drop");
 }
 
+/// Exercises the real acquisition → configured video service → atomic import → timeline path.
+/// No provider calls; the two explicit environment paths opt into installed local tools.
+#[test]
+#[ignore = "runs explicitly configured ffmpeg and ffprobe"]
+fn imported_video_lengths_reach_timeline_before_any_render() {
+    use nodecraft_types::{EdgeId, NodeId, Value};
+    let ffmpeg = PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let ffprobe = PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFPROBE").unwrap());
+    let scratch = Scratch::new("video-lengths572");
+    let (mut h, _worker) = drop_harness();
+    let canvas = h.state().canvas;
+    let timeline = NodeId::from_bytes([57; 16]);
+    h.state_mut()
+        .session
+        .dispatch("node.create", &serde_json::json!({"canvas": canvas, "id": timeline, "kind": "video.timeline", "pos": {"x": 100, "y": 400}}))
+        .unwrap();
+    let mut order = 0u8;
+    for (name, codec, fragmented, configured) in [
+        ("ordinary.mp4", "libx264", false, false),
+        ("ordinary.webm", "libvpx-vp9", false, false),
+        ("ordinary.mov", "libx264", false, false),
+        ("fragmented.mp4", "libx264", true, false),
+        ("fragmented.mp4", "libx264", true, true),
+    ] {
+        let path = scratch.0.join(name);
+        let mut command = std::process::Command::new(&ffmpeg);
+        command.args([
+            "-v",
+            "error",
+            "-nostdin",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=green:s=64x48:r=4",
+            "-t",
+            "0.5",
+            "-an",
+            "-c:v",
+            codec,
+            "-pix_fmt",
+            "yuv420p",
+        ]);
+        if fragmented {
+            command.args(["-movflags", "empty_moov+frag_keyframe+default_base_moof"]);
+        }
+        assert!(command.arg(&path).status().unwrap().success());
+        let bytes = std::fs::read(&path).unwrap();
+        let header = nodecraft_media::probe_movie(&bytes).unwrap();
+        assert_eq!(header.duration_ms, if fragmented { None } else { Some(500) });
+        h.state_mut().videos.configure(configured.then_some((ffmpeg.as_path(), ffprobe.as_path())));
+        let before: std::collections::BTreeSet<_> = nodes(&h).into_iter().map(|node| node.id).collect();
+        drop_at(&mut h, Pos2::new(600.0, 300.0), &[path]);
+        let added = nodes(&h).into_iter().find(|node| !before.contains(&node.id)).unwrap();
+        let Some(Value::Media(asset)) = added.params.get("asset") else { panic!("video source") };
+        let expected = if fragmented && !configured { None } else { Some(500) };
+        assert_eq!(asset.meta.duration_ms, expected, "{name}, configured={configured}");
+        assert_eq!((asset.meta.width, asset.meta.height), (Some(64), Some(48)));
+        order += 1;
+        h.state_mut()
+            .session
+            .dispatch(
+                "edge.connect",
+                &serde_json::json!({"canvas": canvas, "edge": {
+                    "id": EdgeId::from_bytes([order; 16]), "from": {"node": added.id, "port": "out"},
+                    "to": {"node": timeline, "port": "clips"}, "order": order
+                }}),
+            )
+            .unwrap();
+        let listed = h.state_mut().session.dispatch("timeline.list", &serde_json::json!({"canvas": canvas, "id": timeline})).unwrap();
+        let clip = listed["clips"].as_array().unwrap().last().unwrap();
+        assert_eq!(clip["media_us"], serde_json::json!(expected.map(|ms| ms * 1000)), "{listed}");
+        assert!(nodes(&h).iter().all(|node| node.history.is_empty()), "no playback/render generated these facts");
+    }
+}
+
 #[test]
 fn unsupported_and_oversized_files_are_skipped_with_a_notice() {
     let (mut h, _worker) = drop_harness();
