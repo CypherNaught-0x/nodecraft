@@ -273,6 +273,8 @@ impl Thread {
                     report.assets = Some((n, assets));
                 }
                 report.plan = Some(plan);
+                // Asks not answered this turn are, the next.
+                report.dirty |= collab.owes_assets();
             }
         }
         Ok(())

@@ -134,7 +134,8 @@ pub(super) struct Incoming {
 
 impl Incoming {
     pub(super) fn new(total: u64) -> Self {
-        Self { total, received: 0, asked_end: WINDOW_BYTES.min(total), hasher: blake3::Hasher::new() }
+        // Asked for whole, the first part comes; the rest is asked for as it does.
+        Self { total, received: 0, asked_end: (PART_BYTES as u64).min(total), hasher: blake3::Hasher::new() }
     }
 
     /// Counts the next part in.
@@ -154,6 +155,8 @@ impl Incoming {
 
     /// The next stretch to ask for, once less than half a window is on its way.
     pub(super) fn more(&mut self, hash: &Blake3) -> Option<Frame> {
+        // A sender may send past what was asked for; what came needn't be asked for again.
+        self.asked_end = self.asked_end.max(self.received);
         let ahead = self.asked_end.saturating_sub(self.received);
         if ahead > WINDOW_BYTES / 2 || self.asked_end >= self.total {
             return None;
@@ -175,7 +178,7 @@ impl Incoming {
 /// How much of an asset another asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Stretch {
-    /// All of a small one; the first window of a large one.
+    /// All of a small one; the first part of a large one.
     Whole,
     /// `len` bytes from `offset`.
     From { offset: u64, len: u64 },
@@ -198,7 +201,8 @@ pub(super) fn frames(session: &Session, hash: &Blake3, stretch: Stretch) -> Opti
             };
             return Some(vec![Frame::AssetPut { hash: *hash.as_bytes(), bytes }]);
         }
-        Stretch::Whole => (0, WINDOW_BYTES),
+        // Every editor is asked; only the first to answer is taken, so each sends only a part.
+        Stretch::Whole => (0, PART_BYTES as u64),
         Stretch::From { offset, len } => (offset, len.min(WINDOW_BYTES)),
     };
     let end = offset.saturating_add(len).min(total);

@@ -46,6 +46,9 @@ pub use parts::{Arrival, MemorySpool, Spool, Stretch};
 const MAX_ARRIVED_BYTES: usize = 256 << 20;
 /// The most asks for assets kept for the next publish.
 const MAX_WANTED: usize = 4096;
+/// The most asks for assets answered at one publish. A stretch is at most a window, so this
+/// bounds what one publish reads; the rest wait for the next ([`Collab::owes_assets`]).
+const ANSWERED_PER_PUBLISH: usize = 2;
 /// The most discussion changes waiting for the relay before the commenter's next ones wait too.
 const MAX_PENDING: usize = 256;
 /// The most of a relay's reason shown to the person.
@@ -283,6 +286,11 @@ impl Collab {
         self.asked.len()
     }
 
+    /// Whether asks for assets wait to be answered at the next publish.
+    pub fn owes_assets(&self) -> bool {
+        !self.wanted.is_empty()
+    }
+
     /// How far the assets coming in parts have got: the bytes received, of how many.
     pub fn asset_progress(&self) -> (u64, u64) {
         self.incoming.values().fold((0, 0), |(received, total), incoming| (received.saturating_add(incoming.received), total.saturating_add(incoming.total)))
@@ -364,10 +372,15 @@ impl Collab {
         if !role.edits() {
             self.wanted.clear();
         }
-        let wanted = std::mem::take(&mut self.wanted);
         // Only what the room's project uses goes out: not what only a private canvas does.
-        let used = if wanted.is_empty() { BTreeSet::new() } else { assets_in(&*shared(view.document)?)? };
-        out.extend(wanted.into_iter().filter(|(hash, _)| used.contains(hash) && (view.has)(hash)).map(|(hash, stretch)| Out::Asset(hash, stretch)));
+        if !self.wanted.is_empty() {
+            let used = assets_in(&*shared(view.document)?)?;
+            self.wanted.retain(|(hash, _)| used.contains(hash) && (view.has)(hash));
+        }
+        for _ in 0..ANSWERED_PER_PUBLISH {
+            let Some((hash, stretch)) = self.wanted.pop_first() else { break };
+            out.push(Out::Asset(hash, stretch));
+        }
         if role == Role::Comment && !self.sent_pending {
             out.extend(self.pending.iter().map(|(seq, change)| Out::Frame(put(*seq, change))));
             self.sent_pending = true;
@@ -645,7 +658,8 @@ impl Collab {
             }
         }
         missing.retain(|hash| !brought.contains(hash));
-        // One coming in parts that no card waits for any more needn't come.
+        // One coming in parts, or come, that no card waits for any more needn't be kept.
+        self.arrived.retain(|hash, _| missing.contains(hash));
         let unneeded: Vec<Blake3> = self.incoming.keys().filter(|hash| !missing.contains(hash)).copied().collect();
         for hash in unneeded {
             self.incoming.remove(&hash);

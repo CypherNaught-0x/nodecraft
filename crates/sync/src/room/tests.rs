@@ -108,19 +108,54 @@ fn parts_go_in_order_from_one_sender_to_who_asked() {
     let out = room.handle(3, Frame::AssetGet(vec![[3; 32]]));
     assert_eq!(out.len(), 2, "both others are asked: {out:?}");
     // Both send the first part; the asker takes peer 1's, and only peer 1's after that.
-    assert_eq!(room.handle(1, part(10, 0, 4)), vec![Out::Send(3, part(10, 0, 4))]);
-    assert!(room.handle(2, part(10, 0, 4)).is_empty());
-    assert!(room.handle(2, part(10, 4, 4)).is_empty());
+    let (p, total) = (PART_BYTES as u64, PART_BYTES as u64 + 10);
+    assert_eq!(room.handle(1, part(total, 0, PART_BYTES)), vec![Out::Send(3, part(total, 0, PART_BYTES))]);
+    assert!(room.handle(2, part(total, 0, PART_BYTES)).is_empty());
+    assert!(room.handle(2, part(total, p, 10)).is_empty());
     // A part out of order isn't passed on.
-    assert!(room.handle(1, part(10, 8, 2)).is_empty());
-    // The asker asks for more of its sender alone.
-    let ask = Frame::AssetFrom { hash: [3; 32], offset: 4, len: 6 };
+    assert!(room.handle(1, part(total, p + 5, 5)).is_empty());
+    // The asker asks for more of its sender alone, from where it asked to before.
+    let ask = Frame::AssetFrom { hash: [3; 32], offset: p, len: 10 };
     assert_eq!(room.handle(3, ask.clone()), vec![Out::Send(1, ask)]);
-    assert_eq!(room.handle(1, part(10, 4, 4)), vec![Out::Send(3, part(10, 4, 4))]);
-    assert_eq!(room.handle(1, part(10, 8, 2)), vec![Out::Send(3, part(10, 8, 2))]);
+    assert!(room.handle(3, Frame::AssetFrom { hash: [3; 32], offset: 0, len: 10 }).is_empty());
+    assert_eq!(room.handle(1, part(total, p, 10)), vec![Out::Send(3, part(total, p, 10))]);
     // Whole: nobody waits any more, and the room kept none of it.
     assert!(room.wanted.is_empty());
     assert!(room.assets.is_empty());
+}
+
+#[test]
+fn asking_again_for_the_whole_starts_it_over() {
+    let mut room = Room::new();
+    for peer in 1..=3 {
+        room.join(peer);
+    }
+    room.handle(3, Frame::AssetGet(vec![[3; 32]]));
+    room.handle(1, part(100, 0, 40));
+    // The asker let it go, and asks again: the first part is passed on once more, from anyone.
+    assert_eq!(room.handle(3, Frame::AssetGet(vec![[3; 32]])).len(), 2);
+    assert!(room.handle(1, part(100, 40, 60)).is_empty());
+    assert_eq!(room.handle(2, part(100, 0, 40)), vec![Out::Send(3, part(100, 0, 40))]);
+}
+
+#[test]
+fn an_asker_cannot_ask_for_more_than_it_takes() {
+    let mut room = Room::new();
+    room.join(1);
+    room.handle(1, Frame::LinkPut { hash: [9; 32], grant: grant(Role::View, "Ana") });
+    room.join_link(2, [9; 32], 0);
+    let w = WINDOW_BYTES;
+    // A first ask is passed on, capped at a window.
+    assert_eq!(
+        room.handle(2, Frame::AssetFrom { hash: [3; 32], offset: 5 * w, len: 3 * w }),
+        vec![Out::Send(1, Frame::AssetFrom { hash: [3; 32], offset: 5 * w, len: w })]
+    );
+    // Others not following on, or past two windows ahead of what came, are not.
+    for offset in [0, w, 7 * w] {
+        assert!(room.handle(2, Frame::AssetFrom { hash: [3; 32], offset, len: 1 }).is_empty(), "{offset}");
+    }
+    assert_eq!(room.handle(2, Frame::AssetFrom { hash: [3; 32], offset: 6 * w, len: w }).len(), 1);
+    assert!(room.handle(2, Frame::AssetFrom { hash: [3; 32], offset: 7 * w, len: 1 }).is_empty());
 }
 
 #[test]

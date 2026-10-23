@@ -774,9 +774,12 @@ fn a_large_asset_is_sent_a_stretch_at_a_time() {
         nodecraft_format::asset_source::AssetRange::new(std::sync::Arc::new(nodecraft_format::asset_source::MemorySource::new(bytes.clone())), 0, len as u64)
             .unwrap();
     let hash = session.import_asset_from(&range, &Default::default(), &Default::default()).unwrap();
-    // Asked whole: the first window, in parts.
-    let frames = super::Out::Asset(hash, Stretch::Whole).frames(&session);
-    assert_eq!(frames.len(), nodecraft_sync::WINDOW_BYTES as usize / nodecraft_sync::PART_BYTES);
+    // Asked whole: the first part, then as asked, a window at most.
+    let mut frames = super::Out::Asset(hash, Stretch::Whole).frames(&session);
+    assert_eq!(frames.len(), 1);
+    let window = Stretch::From { offset: nodecraft_sync::PART_BYTES as u64, len: 3 * nodecraft_sync::WINDOW_BYTES };
+    frames.extend(super::Out::Asset(hash, window).frames(&session));
+    assert_eq!(frames.len(), 1 + nodecraft_sync::WINDOW_BYTES as usize / nodecraft_sync::PART_BYTES);
     let mut at = 0;
     for frame in &frames {
         let Frame::AssetPart { total, offset, bytes: part, .. } = frame else { panic!("{frame:?}") };
@@ -785,10 +788,28 @@ fn a_large_asset_is_sent_a_stretch_at_a_time() {
         at += part.len() as u64;
     }
     // The rest, as asked; nothing past the end, nor of an asset it doesn't hold.
-    let [Frame::AssetPart { offset, bytes: rest, .. }] = &super::Out::Asset(hash, Stretch::From { offset: at, len: 100 }).frames(&session)[..] else {
+    assert_eq!(at, len as u64);
+    let [Frame::AssetPart { offset, bytes: rest, .. }] = &super::Out::Asset(hash, Stretch::From { offset: at - 3, len: 100 }).frames(&session)[..] else {
         panic!()
     };
-    assert_eq!((*offset, &rest[..]), (at, &bytes[at as usize..]));
+    assert_eq!((*offset, &rest[..]), (at - 3, &bytes[len - 3..]));
     assert!(super::Out::Asset(hash, Stretch::From { offset: len as u64, len: 1 }).frames(&session).is_empty());
     assert!(super::Out::Asset(Blake3::from_bytes([4; 32]), Stretch::Whole).frames(&session).is_empty());
+}
+
+#[test]
+fn many_asks_are_answered_a_few_at_a_time() {
+    let (session, asset) = sharer();
+    let mut a = Collab::share(&session, room_id()).unwrap();
+    for offset in 0..10 {
+        assert!(a.receive(Frame::AssetFrom { hash: *asset.hash.as_bytes(), offset, len: 1 }).unwrap().is_empty());
+    }
+    let mut answered = 0;
+    while a.owes_assets() {
+        let sent = a.publish(&session).unwrap();
+        assert!((1..=2).contains(&sent.len()), "{sent:?}");
+        answered += sent.len();
+    }
+    assert_eq!(answered, 10);
+    assert!(a.publish(&session).unwrap().is_empty());
 }

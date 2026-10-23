@@ -10,15 +10,19 @@ be up to 8 GiB, the largest one a project imports. An asset of 16 MiB or less st
 as `AssetPut`, so a protocol 2 peer's small assets behave as before; the relay refuses an older
 protocol anyway.
 
-**The receiver sets the pace.** Asked for an asset whole (`AssetGet`), a sender with a large
-one sends its first 16 MiB in parts. The receiver asks for the next 8 MiB (`AssetFrom`) whenever
-less than 8 MiB of what it asked for is still on its way. So at most 16 MiB of one asset is in
-flight to one receiver, which keeps under the relay's 32 MiB per-connection queue, and the
-sender reads the asset a stretch at a time from its store rather than holding it in memory.
+**The receiver sets the pace.** Asked for an asset whole (`AssetGet`), every editor with a
+large one sends only its first part, since only the first to arrive is taken. The receiver asks
+that sender for the next 8 MiB (`AssetFrom`) whenever no more than 8 MiB of what it asked for is
+still on its way. So at most 16 MiB of one asset is in flight to one receiver, which keeps under
+the relay's 32 MiB per-connection queue, and the sender reads the asset a stretch at a time from
+its store rather than holding it in memory. A sender answers at most two asks per publish and
+the rest at the next, so a flood of asks can't make it read gigabytes at once.
 
 **The relay keeps no parts.** It passes each part on to the askers whose next byte it is.
 Each asker takes the parts of one sender, the first whose part arrived; copies from other
-senders are dropped. When that sender leaves, the relay asks the remaining editors for the rest
+senders are dropped. An asker's `AssetFrom` is passed on only if it follows on from what it
+asked for before and stays within two windows of what it has, so a viewer can't ask an editor
+for an asset many times over; an `AssetGet` starts that asker's transfer over. When that sender leaves, the relay asks the remaining editors for the rest
 (`AssetFrom` from the asker's next byte), and a newcomer is asked for what nobody is sending.
 Small assets are kept by the room as before; parts are not, since a room's 512 MiB couldn't hold
 many large ones.
@@ -35,5 +39,8 @@ or given up. A finished asset is imported from its file (`Session::import_asset_
 `asset_bytes_total` and `unusable_assets`, and the chip shows the percentage while files are on
 their way.
 
-Known limits: importing a finished large asset runs on the window's thread and takes a few
-seconds per GB; so does a sender's first read of an asset it holds only on disk.
+Known limits (#842): importing a finished large asset runs on the window's thread and takes a
+few seconds per GB; so does a sender's first read of an asset it holds only on disk. An editor
+who sends wrong bytes first makes the asset unusable for that receiver until it reconnects. A
+spool file left by a crash stays in the temporary folder, and a full disk gives an asset up
+rather than waiting for space.

@@ -21,7 +21,7 @@ use nodecraft_graph::Comment;
 use nodecraft_types::{CanvasId, CommentId};
 
 use crate::discussion;
-use crate::frame::{Frame, MAX_UPDATE_BYTES, WINDOW_BYTES};
+use crate::frame::{Frame, MAX_UPDATE_BYTES, PART_BYTES, WINDOW_BYTES};
 use crate::mirror::{comment_in, open_canvas_in, write_comment};
 use crate::role::{Grant, Role};
 
@@ -52,13 +52,14 @@ struct Want {
 }
 
 impl Want {
-    /// Asks for what this asker still waits on, of whoever has it, once its sender has gone.
-    fn again(&self, hash: [u8; 32]) -> Frame {
-        let mut len = self.until.checked_sub(self.next).filter(|len| *len > 0).unwrap_or(WINDOW_BYTES);
-        if let Some(left) = self.total.and_then(|total| total.checked_sub(self.next)) {
+    /// Asks for what this asker still waits on, of whoever has it, once its sender has gone;
+    /// nothing if all it asked for came (its next ask goes to everyone).
+    fn again(&self, hash: [u8; 32]) -> Option<Frame> {
+        let mut len = self.until.saturating_sub(self.next);
+        if let Some(left) = self.total.map(|total| total.saturating_sub(self.next)) {
             len = len.min(left);
         }
-        Frame::AssetFrom { hash, offset: self.next, len: len.max(1) }
+        (len > 0).then_some(Frame::AssetFrom { hash, offset: self.next, len })
     }
 }
 
@@ -163,7 +164,8 @@ impl Room {
                 // yet: the newcomer may have it.
                 let mut whole = Vec::new();
                 for (hash, askers) in &self.wanted {
-                    let mut rest: Vec<Frame> = askers.values().filter(|want| want.source.is_none() && want.next > 0).map(|want| want.again(*hash)).collect();
+                    let mut rest: Vec<Frame> =
+                        askers.values().filter(|want| want.source.is_none() && want.next > 0).filter_map(|want| want.again(*hash)).collect();
                     rest.dedup();
                     if askers.values().any(|want| want.source.is_none() && want.next == 0) {
                         whole.push(*hash);
@@ -188,7 +190,7 @@ impl Room {
             askers.remove(&peer);
             for (asker, want) in askers.iter_mut().filter(|(_, want)| want.source == Some(peer)) {
                 want.source = None;
-                again.push((*asker, want.again(*hash)));
+                again.extend(want.again(*hash).map(|frame| (*asker, frame)));
             }
         }
         self.wanted.retain(|_, askers| !askers.is_empty());
@@ -284,9 +286,9 @@ impl Room {
                     match self.assets.get(&hash) {
                         Some(bytes) => out.push(Out::Send(from, Frame::AssetPut { hash, bytes: bytes.clone() })),
                         None if self.wanted.len() < MAX_WANTED || self.wanted.contains_key(&hash) => {
-                            let want = self.wanted.entry(hash).or_default().entry(from).or_default();
-                            // Asked for whole, one in parts comes a window at a time.
-                            want.until = want.until.max(WINDOW_BYTES);
+                            // Asked for whole, it starts again: one in parts comes first as its
+                            // first part, from whoever sends it first, whatever came before.
+                            self.wanted.entry(hash).or_default().insert(from, Want { until: PART_BYTES as u64, ..Want::default() });
                             missing.push(hash);
                         }
                         None => {}
@@ -298,11 +300,26 @@ impl Room {
                 out
             }
             Frame::AssetFrom { hash, offset, len } => {
-                if self.wanted.len() >= MAX_WANTED && !self.wanted.contains_key(&hash) {
-                    return Vec::new();
+                let len = len.min(WINDOW_BYTES);
+                let end = offset.saturating_add(len);
+                match self.wanted.get_mut(&hash).and_then(|askers| askers.get_mut(&from)) {
+                    // An asker goes on from the end of what it asked for, at most two windows
+                    // ahead of what it has; any other ask, as a flood would be, isn't passed on.
+                    Some(want) => {
+                        if offset != want.until || end.saturating_sub(want.next) > 2 * WINDOW_BYTES {
+                            return Vec::new();
+                        }
+                        want.until = end;
+                    }
+                    // A first ask, on a new connection, starts where it says.
+                    None => {
+                        if self.wanted.len() >= MAX_WANTED && !self.wanted.contains_key(&hash) {
+                            return Vec::new();
+                        }
+                        self.wanted.entry(hash).or_default().insert(from, Want { next: offset, until: end, ..Want::default() });
+                    }
                 }
-                let want = self.wanted.entry(hash).or_default().entry(from).or_insert(Want { next: offset, ..Want::default() });
-                want.until = want.until.max(offset.saturating_add(len));
+                let Some(want) = self.wanted.get(&hash).and_then(|askers| askers.get(&from)) else { return Vec::new() };
                 let ask = Frame::AssetFrom { hash, offset, len };
                 // The rest comes from whoever sends the parts already taken, while they are here.
                 match want.source.filter(|source| self.peers.contains_key(source)) {
