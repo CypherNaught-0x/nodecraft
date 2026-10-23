@@ -207,11 +207,42 @@ fn a_quote_with_reused_results_explains_free_reuse_and_cached_only_runs() {
     quote["totals"] = json!({});
     h.state_mut().run_confirm.as_mut().unwrap().set_quote(&quote);
     h.run();
-    assert!(h.query_by_label_contains("Applies cached results only").is_some(), "no host work is implied when every node reuses");
-    assert!(h.query_by_role_and_label(Role::Button, "Apply cached results").is_some());
+    assert!(h.query_by_label_contains("Uses cached results where needed").is_some(), "no host work is implied when every node reuses");
+    assert!(h.query_by_role_and_label(Role::Button, "Continue without generating").is_some());
     assert!(runs.lock().unwrap().is_empty(), "quoting never sends work to the host");
     press(&mut h, Role::Button, "Cancel");
     assert!(runs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_already_active_cached_result_confirms_without_promising_an_edit_or_running() {
+    let (mut h, runs) = scene("mock-square");
+    h.state_mut().session.dispatch("node.cache_set", &json!({"canvas": C, "id": N, "enabled": true})).unwrap();
+    let hash = {
+        let app = h.state();
+        let canvas = app.session.document().canvases().get(&C).unwrap();
+        nodecraft_exec::staleness::input_hash(canvas, app.session.kinds(), N).unwrap()
+    };
+    let generation = nodecraft_graph::Generation {
+        id: nodecraft_types::GenerationId::from_bytes([87; 16]),
+        outputs: vec![Value::Text("An answer".into())],
+        input_hash: Some(hash),
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    };
+    h.state_mut().session.dispatch("run.record", &json!({"canvas": C, "results": [{"node": N, "generation": generation}]})).unwrap();
+    let revision = h.state().session.revision();
+    let quote = h.state_mut().session.dispatch("run.quote", &json!({"canvas": C, "mode": "selected", "nodes": [N]})).unwrap();
+    assert_eq!((quote["reused"].clone(), quote["steps"].clone()), (json!([N]), json!([])));
+    press(&mut h, Role::Button, "Generate");
+    assert!(h.query_by_label_contains("1 reused, free").is_some());
+    assert!(h.query_by_label_contains("results already active stay in place").is_some(), "the dialog must not promise an edit for a no-op");
+    assert!(h.query_by_label_contains("Applies cached results only").is_none(), "the old wording incorrectly promises a change");
+    press(&mut h, Role::Button, "Continue without generating");
+    assert_eq!(h.state().session.revision(), revision, "the already-active result is a no-op");
+    assert!(h.state().run_confirm.is_none());
+    assert!(runs.lock().unwrap().is_empty(), "no run reaches the host");
 }
 
 #[test]

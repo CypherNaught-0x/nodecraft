@@ -359,7 +359,7 @@ impl NodeCraftApp {
                     ui.label(format!("{} reused, free", quote.reused));
                 }
                 if quote.cached_only {
-                    ui.label("Applies cached results only; no generation runs.");
+                    ui.label("Uses cached results where needed; results already active stay in place. No generation runs.");
                 }
                 if !quote.complete {
                     if quote.unpriced_jobs > 0 {
@@ -406,7 +406,7 @@ impl NodeCraftApp {
                 } else if quote.allowed && !failed {
                     let title = confirm.kind.title();
                     let label = if quote.cached_only {
-                        "Apply cached results".to_owned()
+                        "Continue without generating".to_owned()
                     } else if quote.totals.is_empty() {
                         format!("{title} now")
                     } else {
