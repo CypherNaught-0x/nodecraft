@@ -44,6 +44,8 @@ pub fn register(session: &mut Session) -> String {
     store.update(&bytes("io.example.palette", "1.1.0"), &Default::default(), false).unwrap();
     let update = dir.path().join("update.ncraft-plugin");
     std::fs::write(&update, bytes("io.example.palette", "1.2.0")).unwrap();
+    // The file plugins.reload installs again (1.2.0 in place of the active 1.1.0).
+    store.remember_source(&nodecraft_plugin::id::PackageId::parse("io.example.palette").unwrap(), Some(update.to_str().unwrap())).unwrap();
     let host = PluginHost { trust: None, taken: BTreeSet::new(), bindings: BTreeSet::new() };
     session
         .register_host_service(plugin_cmds::PLUGIN_SERVICE, move |request| {

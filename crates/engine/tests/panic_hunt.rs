@@ -580,7 +580,9 @@ fn template(id: &str) -> (Session, Value) {
         // Real memory store and private package files, never caller-selected filesystem paths.
         "plugins.list" | "plugins.prune" => json!({}),
         "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),
-        "plugins.enable" | "plugins.disable" | "plugins.uninstall" | "plugins.grant" | "plugins.rights" => json!({"package_id":"io.example.palette"}),
+        "plugins.enable" | "plugins.disable" | "plugins.reload" | "plugins.uninstall" | "plugins.grant" | "plugins.rights" => {
+            json!({"package_id":"io.example.palette"})
+        }
         "plugins.revoke" => json!({"grant_id":"g1"}),
         "plugins.rollback" => json!({"package_id":"io.example.palette","digest":plugin_old.unwrap()}),
         "plugins.result" | "plugins.forget" => json!({"pending":pending.unwrap()}),
@@ -891,6 +893,7 @@ fn plugin_templates_reach_the_real_store_and_results_without_document_edits() {
         "plugins.list",
         "plugins.import",
         "plugins.update",
+        "plugins.reload",
         "plugins.enable",
         "plugins.disable",
         "plugins.rollback",
@@ -912,6 +915,11 @@ fn plugin_templates_reach_the_real_store_and_results_without_document_edits() {
         }
         if id == "plugins.enable" {
             assert_eq!(result["registered"], json!(["plugin.io.example.palette.warm"]));
+        }
+        if id == "plugins.reload" {
+            assert_eq!((&result["version"], &result["replaced"].is_string()), (&json!("1.2.0"), &true));
+            let again = session.dispatch(id, &params).unwrap_err();
+            assert_eq!(again.kind, ErrorKind::Conflict, "an unchanged file isn't reloaded: {again:?}");
         }
         if id == "plugins.result" {
             assert_eq!(result["status"], "completed");

@@ -21,6 +21,8 @@ mod background_open;
 mod background_save;
 #[path = "batch_keys517.rs"]
 mod batch_keys517;
+#[path = "browser_plugins866.rs"]
+mod browser_plugins866;
 #[path = "bulk_edits.rs"]
 mod bulk_edits;
 #[path = "comfy_servers864.rs"]

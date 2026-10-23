@@ -293,6 +293,7 @@ pub const HUMAN_ONLY: &[&str] = &[
     "skill.enable",
     "plugins.import",
     "plugins.update",
+    "plugins.reload",
     "plugins.enable",
     "plugins.disable",
     "plugins.rollback",
