@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! The command contract for batch local export (#98): what the palette, CLI, control channel and an
 //! agent in the canvas can ask for, what they are refused, and what never happens — no document
 //! edit, no dialog, no write into a folder the app did not authorize.
@@ -15,6 +14,7 @@ use serde_json::{Value as Json, json};
 const C: CanvasId = CanvasId::from_bytes([0x98; 16]);
 const HERO: &[u8] = b"\x89PNG the active result, not really a PNG";
 const WIDE: &[u8] = b"\x89PNG the second result, also not really";
+#[cfg(unix)]
 const OLDER: &[u8] = b"\x89PNG the older take";
 
 fn id(n: u8) -> NodeId {
@@ -42,6 +42,7 @@ fn ran(n: u8, title: &str, bytes: &[u8]) -> Node {
 }
 
 /// `ran`, plus an older result sitting behind it in history.
+#[cfg(unix)]
 fn ran_twice(n: u8, title: &str, older: &[u8], newer: &[u8]) -> Node {
     let mut node = ran(n, title, newer);
     node.history.insert(0, Generation::new(GenerationId::from_bytes([n ^ 0x55; 16]), vec![media(older)]));
@@ -107,6 +108,7 @@ fn names(result: &Json) -> Vec<String> {
     result["entries"].as_array().expect("entries").iter().filter_map(|entry| entry["file"].as_str().map(str::to_owned)).collect()
 }
 
+#[cfg(unix)]
 fn reasons_of(result: &Json) -> Vec<String> {
     result["entries"].as_array().expect("entries").iter().filter_map(|entry| entry["reason"].as_str().map(str::to_owned)).collect()
 }
@@ -143,6 +145,37 @@ fn a_preview_names_every_file_and_writes_nothing() {
     assert_eq!(preview.get("destination"), None, "a folder path is not echoed back through a result");
 }
 
+#[cfg(not(unix))]
+#[test]
+fn an_unsupported_run_neither_creates_nor_replaces_files() {
+    let dir = tempfile::tempdir().expect("temp");
+    let existing = dir.path().join("hero-out-1.png");
+    let sentinel = dir.path().join("other.png");
+    std::fs::write(&sentinel, b"leave this alone").expect("sentinel");
+    let mut s = session();
+    s.swap_resource(Some(ExportHost::authorize(dir.path()).expect("authorize")));
+    let mut params = request(sources(&[json!({"node": id(1), "port": "out"})]), dir.path());
+    assert_eq!(s.dispatch("export.local_plan", &params).expect("read-only plan")["entries"][0]["state"], "planned");
+    for (policy, contents) in [("skip", None), ("overwrite", Some(b"preserve my original".as_slice()))] {
+        if let Some(contents) = contents {
+            std::fs::write(&existing, contents).expect("existing file");
+        }
+        params["on_collision"] = json!(policy);
+        for error in [s.enabled("export.local_run", &params).unwrap_err(), s.dispatch("export.local_run", &params).unwrap_err()] {
+            assert_eq!(error.kind, ErrorKind::Unsupported);
+            assert!(error.message.contains("descriptor-relative no-follow"), "{error:?}");
+        }
+        if let Some(contents) = contents {
+            assert_eq!(std::fs::read(&existing).expect("unchanged file"), contents);
+        } else {
+            assert!(!existing.exists(), "refused run must not create a file");
+        }
+        assert_eq!(std::fs::read(&sentinel).expect("unchanged sentinel"), b"leave this alone");
+    }
+    assert_eq!(files_in(dir.path()), vec!["hero-out-1.png", "other.png"]);
+}
+
+#[cfg(unix)]
 #[test]
 fn running_writes_the_active_result_of_each_source_and_reports_every_entry() {
     let dir = tempfile::tempdir().expect("temp");
@@ -163,6 +196,7 @@ fn running_writes_the_active_result_of_each_source_and_reports_every_entry() {
     assert_eq!(run["entries"][0]["bytes"], json!(HERO.len()));
 }
 
+#[cfg(unix)]
 #[test]
 fn the_active_generation_is_the_payload_and_history_is_left_in_the_project() {
     let dir = tempfile::tempdir().expect("temp");
@@ -194,6 +228,7 @@ fn the_active_generation_is_the_payload_and_history_is_left_in_the_project() {
     assert_eq!(files_in(dir.path()), vec!["hero-out-1.png".to_owned()], "history is not exported");
 }
 
+#[cfg(unix)]
 #[test]
 fn an_export_changes_no_document_and_no_undo_state() {
     let dir = tempfile::tempdir().expect("temp");
@@ -226,6 +261,7 @@ fn nothing_is_offered_where_no_folder_has_been_authorized() {
     assert_eq!(files_in(dir.path()), Vec::<String>::new());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_folder_outside_the_authorized_one_is_refused_even_when_named_from_inside_it() {
     let inside = tempfile::tempdir().expect("temp");
@@ -254,6 +290,7 @@ fn a_folder_outside_the_authorized_one_is_refused_even_when_named_from_inside_it
     assert_eq!(files_in(inside.path()), vec!["shots".to_owned()], "refused requests must not write files");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_subfolder_of_an_authorized_folder_is_allowed_because_it_is_inside_it() {
     let root = tempfile::tempdir().expect("temp");
@@ -478,10 +515,14 @@ fn a_bad_request_is_refused_before_anything_is_resolved_or_written() {
     ];
     for (what, params, kind) in cases {
         for id in ["export.local_plan", "export.local_run"] {
+            // Non-Unix runs stop at the unsupported secure writer before looking up a canvas;
+            // the read-only plan still validates the bad canvas on every platform.
+            let expected =
+                if !cfg!(unix) && id == "export.local_run" && what == "a source naming someone else's canvas" { ErrorKind::Unsupported } else { kind };
             let error = s.enabled(id, &params).unwrap_err();
-            assert_eq!(error.kind, kind, "{what} via {id} enabled");
+            assert_eq!(error.kind, expected, "{what} via {id} enabled");
             let error = s.dispatch(id, &params).unwrap_err();
-            assert_eq!(error.kind, kind, "{what} via {id}");
+            assert_eq!(error.kind, expected, "{what} via {id}");
             assert!(!error.message.is_empty(), "{what} has no reason to act on");
         }
     }
@@ -510,6 +551,7 @@ fn a_conversion_is_refused_with_the_type_and_the_alternative_not_an_approximatio
     assert_eq!(files_in(dir.path()), Vec::<String>::new(), "the stored bytes are never passed off as a conversion");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_source_that_cannot_be_written_fails_only_its_own_entry() {
     let dir = tempfile::tempdir().expect("temp");
@@ -554,6 +596,7 @@ fn a_source_that_cannot_be_written_fails_only_its_own_entry() {
     assert_eq!(run["entries"][2]["reason"], reasons::NO_RESULT);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_text_result_is_refused_the_way_557_refuses_it() {
     // `history.export` says text does not export to a file and copying is the way out (#557). A
@@ -585,19 +628,25 @@ fn a_list_output_needs_an_item_because_the_batch_uses_the_shared_resolver() {
     let ambiguous = s.dispatch("export.local_plan", &request(sources(&[json!({"node": id(1), "port": "out"})]), dir.path())).expect("preview");
     assert_eq!(ambiguous["entries"][0]["state"], "unavailable");
     assert_eq!(ambiguous["entries"][0]["reason"], "that output is a list: choose an item");
+    let chosen_params = json!({"canvas": C, "sources": [json!({"node": id(1), "port": "out", "item": 1})],
+        "destination": dir.path().display().to_string(), "template": "{title}-{output}-{index}-{item}"});
+    let chosen_plan = s.dispatch("export.local_plan", &chosen_params).expect("chosen item preview");
+    assert_eq!(chosen_plan["entries"][0]["file"], "takes-out-1-1.png");
+    assert!(files_in(dir.path()).is_empty());
 
-    let chosen = s
-        .dispatch(
-            "export.local_run",
-            &json!({"canvas": C, "sources": [json!({"node": id(1), "port": "out", "item": 1})],
-            "destination": dir.path().display().to_string(), "template": "{title}-{output}-{index}-{item}"}),
-        )
-        .expect("run");
-    assert_eq!(chosen["counts"]["written"], 1);
-    assert_eq!(chosen["entries"][0]["file"], "takes-out-1-1.png", "the {{item}} token is filled and the name is unique");
-    assert_eq!(std::fs::read(dir.path().join("takes-out-1-1.png")).expect("read"), WIDE);
+    #[cfg(unix)]
+    let chosen = s.dispatch("export.local_run", &chosen_params).expect("run");
+    #[cfg(unix)]
+    {
+        assert_eq!(chosen["counts"]["written"], 1);
+        assert_eq!(chosen["entries"][0]["file"], "takes-out-1-1.png", "the {{item}} token is filled and the name is unique");
+        assert_eq!(std::fs::read(dir.path().join("takes-out-1-1.png")).expect("read"), WIDE);
+    }
+    #[cfg(not(unix))]
+    assert!(files_in(dir.path()).is_empty(), "a rejected source in a plan writes nothing");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_result_whose_bytes_are_gone_fails_that_entry_and_writes_nothing_for_it() {
     // The store is checked while planning, so a result the project no longer holds is reported
@@ -611,6 +660,7 @@ fn a_result_whose_bytes_are_gone_fails_that_entry_and_writes_nothing_for_it() {
     assert_eq!(files_in(dir.path()), Vec::<String>::new());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_reason_never_repeats_the_folder_a_file_name_or_a_node_title() {
     let dir = tempfile::tempdir().expect("temp");
@@ -634,6 +684,7 @@ fn a_reason_never_repeats_the_folder_a_file_name_or_a_node_title() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn the_collision_policy_is_honoured_and_reported_per_entry() {
     let dir = tempfile::tempdir().expect("temp");
@@ -665,6 +716,7 @@ fn the_collision_policy_is_honoured_and_reported_per_entry() {
     assert_eq!(files_in(dir.path()), vec!["hero-out-1 (2).png".to_owned(), "hero-out-1.png".to_owned()]);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_collision_with_a_file_the_person_wrote_is_reported_not_overwritten() {
     // The other half of #557's "never replace without consent", applied across a batch.
@@ -677,6 +729,7 @@ fn a_collision_with_a_file_the_person_wrote_is_reported_not_overwritten() {
     assert_eq!(std::fs::read(dir.path().join("hero-out-1.png")).expect("read"), b"mine");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_cancel_stops_the_run_and_reports_every_entry_it_never_started() {
     let dir = tempfile::tempdir().expect("temp");
@@ -718,6 +771,7 @@ fn a_hostile_template_is_refused_before_writing_any_file() {
     assert_eq!(files_in(dir.path()), Vec::<String>::new());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_programmatic_call_needs_no_dialog_and_no_host_service() {
     let dir = tempfile::tempdir().expect("temp");
@@ -729,6 +783,7 @@ fn a_programmatic_call_needs_no_dialog_and_no_host_service() {
     assert!(!s.can_undo(), "an export left nothing to undo");
 }
 
+#[cfg(unix)]
 #[test]
 fn batch_and_single_file_export_share_verified_copy_without_sharing_path_publication() {
     // The two commands are different asks and must not interfere: one file the person pointed at,

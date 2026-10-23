@@ -163,7 +163,9 @@ impl ExportHost {
         Err(unsupported(reasons::UNSUPPORTED_TARGET))
     }
 
-    fn destination(&self, destination: &str) -> Result<PathBuf, Error> {
+    fn destination(&self, destination: &str, for_write: bool) -> Result<PathBuf, Error> {
+        #[cfg(unix)]
+        let _ = for_write;
         if destination.is_empty() || destination.len() > MAX_DESTINATION_BYTES {
             return Err(Error::new(ErrorKind::InvalidInput, "the export destination is missing or longer than 4096 bytes"));
         }
@@ -187,7 +189,13 @@ impl ExportHost {
         }
         #[cfg(not(unix))]
         {
-            Err(unsupported("secure folder export requires descriptor-relative no-follow file operations on this platform"))
+            if for_write {
+                Err(unsupported("secure folder export requires descriptor-relative no-follow file operations on this platform"))
+            } else {
+                // A plan reads metadata but never publishes a file. It needs an authorized folder,
+                // not the Unix-only descriptor-relative writer required by the run command.
+                Ok(path.to_path_buf())
+            }
         }
     }
 }
@@ -232,7 +240,7 @@ fn host<'a>(c: &Context<'a>) -> Result<&'a ExportHost, Error> {
 
 /// Validates the request and resolves every source against the document. This may open a
 /// directory descriptor to verify the grant but writes no file; `Session` publishes the plan.
-fn build(c: &Context<'_>, parameters: &Value) -> Result<ExportPlan, Error> {
+fn build(c: &Context<'_>, parameters: &Value, for_write: bool) -> Result<ExportPlan, Error> {
     let request: Request = params(parameters)?;
     if request.sources.is_empty() {
         return Err(Error::new(ErrorKind::InvalidInput, "export needs at least one result to write"));
@@ -253,7 +261,7 @@ fn build(c: &Context<'_>, parameters: &Value) -> Result<ExportPlan, Error> {
         Some(value) => Template::parse(value)?,
         None => Template::default(),
     };
-    let destination = host.destination(&request.destination)?;
+    let destination = host.destination(&request.destination, for_write)?;
     let canvas = c.document.canvases().get(&request.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "no canvas with this id is open in this project"))?;
     let nodes = canvas.nodes();
 
@@ -455,8 +463,8 @@ pub fn specs() -> Vec<CommandSpec> {
             alternate_shortcuts: &[],
             input_schema: request_schema,
             params_doc: PLAN_DOC,
-            enabled: |c, v| build(c, v).map(|_| ()),
-            run: |c, v| build(c, v).map(|plan| Effect::None { result: planned_json(&plan) }),
+            enabled: |c, v| build(c, v, false).map(|_| ()),
+            run: |c, v| build(c, v, false).map(|plan| Effect::None { result: planned_json(&plan) }),
         },
         CommandSpec {
             id: "export.local_run",
@@ -465,8 +473,8 @@ pub fn specs() -> Vec<CommandSpec> {
             alternate_shortcuts: &[],
             input_schema: request_schema,
             params_doc: RUN_DOC,
-            enabled: |c, v| build(c, v).map(|_| ()),
-            run: |c, v| build(c, v).map(|plan| Effect::LocalExport { plan }),
+            enabled: |c, v| build(c, v, true).map(|_| ()),
+            run: |c, v| build(c, v, true).map(|plan| Effect::LocalExport { plan }),
         },
     ]
 }
@@ -589,19 +597,3 @@ fn resolve_name(destination: &secure::Destination<'_>, name: &ExportName, collis
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod unsupported_tests {
-    #![cfg(not(unix))]
-    use super::ExportHost;
-    use nodecraft_types::ErrorKind;
-
-    #[test]
-    fn unsupported_platform_refuses_folder_grant_export() {
-        let root = std::env::temp_dir();
-        let host = ExportHost::authorize(&root).expect("host");
-        let err = host.destination(&root.to_string_lossy()).unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Unsupported);
-        assert!(err.message.contains("descriptor-relative"));
-    }
-}

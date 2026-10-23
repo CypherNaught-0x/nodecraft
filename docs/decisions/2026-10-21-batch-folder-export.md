@@ -8,7 +8,11 @@ streamed through the store's verifying copy. `history.export` is MCP human-only,
 reports unsupported, text results are refused, and messages never repeat the path. A folder grant
 needs stronger path safety than a single user-picked file: `export.local_run` uses a pinned root
 and descriptor-relative no-follow writes, sharing #557's verified asset-copy primitive rather
-than its path-based writer. Non-Unix platforms without those primitives refuse batch export.
+than its path-based writer. On Windows (and other non-Unix platforms), a host-authorized
+`export.local_plan` can validate and preview without writing; `export.local_run` is unavailable
+until an equivalent descriptor-relative no-follow implementation exists and returns actionable
+Unsupported before it can create or replace a file. This is a product limitation, not a test
+exemption.
 
 What follows is what only a *batch* needs.
 

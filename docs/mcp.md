@@ -150,10 +150,13 @@ with `share.stop` (#698). A new
 command stays hidden until it is added to one of the
 lists, and a test fails until then.
 
-`export.local_plan` and `export.local_run` publish a batch of results into a folder outside the
-project and outside undo, so both are human-only (#98). An agent can still see what such a run
-would write with `export.local_plan`, which touches no disk. Until the desktop app injects an
-authorized folder (#746), both report that no host has authorized one.
+`export.local_plan` previews a batch without writing files and is agent-visible; `export.local_run`
+would publish files outside the project and undo, so it is human-only (#98). Both require an
+app-injected authorized folder, which the desktop app does not yet provide (#746). On Windows and
+other non-Unix platforms an authorized host can preview with `export.local_plan`, but
+`export.local_run` returns Unsupported before creating or replacing any file: secure folder writes
+need an equivalent descriptor-relative no-follow implementation. The browser cannot authorize a
+local folder.
 
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
