@@ -39,6 +39,8 @@ impl Resources {
 type RunHandler = Box<dyn FnMut(crate::run_cmds::PreparedRun) -> Result<Value, Error>>;
 
 type ServiceHandler = Box<dyn FnMut(&Value) -> Result<Value, Error>>;
+/// Puts what `history.copy` read on the OS clipboard.
+type ClipboardHandler = Box<dyn FnMut(crate::copy_cmds::Clip) -> Result<(), Error>>;
 
 /// Host services run only after a handler returns a Service effect. The session guards and
 /// bounds requests/results and invokes at most once without automatic retries. External effects
@@ -51,7 +53,7 @@ pub struct Services {
     run_host_idle: Option<Box<dyn Fn() -> bool>>,
     handlers: BTreeMap<&'static str, ServiceHandler>,
     /// The OS clipboard (`history.copy`, #831); a host without one refuses the command.
-    clipboard: Option<Box<dyn FnMut(crate::copy_cmds::Clip) -> Result<(), Error>>>,
+    clipboard: Option<ClipboardHandler>,
 }
 impl Services {
     pub fn register(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
