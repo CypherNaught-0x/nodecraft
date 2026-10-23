@@ -97,7 +97,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   sources probe duration (#608); ComfyUI accepts video and audio workflows (#110). Plugin cards
   keep their package identity, migrate with their package, and survive uninstall (#173). Plugin
   authors pack reproducible packages and lint them with the install verifier
-  (`nodecraft-cli plugin pack|inventory|lint`, [`docs/plugin-authoring.md`](docs/plugin-authoring.md), #175).
+  (`nodecraft-cli plugin pack|inventory|lint`, [`docs/plugin-authoring.md`](docs/plugin-authoring.md), #175),
+  sign them with their own key (`plugin key new|trust`, `pack --sign`), and check them against a
+  corpus of refused packages; a package may depend only on data packages (#866).
 - **Actions** (M4): image action cards (blur, grade, filter, tint, flip, rotate, crop, key,
   replace colour, aspect, overlay, duplicate, resize, expand) and text action cards (split,
   replace, template, concat) come from quick-add and the palette (#85, #87, #410). After an edit

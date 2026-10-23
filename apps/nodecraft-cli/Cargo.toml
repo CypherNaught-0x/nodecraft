@@ -18,6 +18,8 @@ nodecraft-engine = { workspace = true }
 # Plugin authoring (#175): `plugin pack|inventory|lint`, and the package limits it reads within.
 nodecraft-plugin = { workspace = true }
 nodecraft-plugin-store = { workspace = true }
+# Pinned exactly: the OS random source for new plugin signing keys (#866).
+getrandom = "=0.3.4"
 nodecraft-exec = { workspace = true }
 nodecraft-format = { workspace = true }
 nodecraft-graph = { workspace = true }

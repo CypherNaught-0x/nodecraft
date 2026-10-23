@@ -265,9 +265,20 @@ fn revoking_disables_the_packages_depending_on_it() {
     top.deps = vec![("io.example.app", "1.0.0", digest_of(&app))];
     st.import(&package(&top), &TrustStore::default(), false).unwrap();
     let grant = st.grant(&pkg, &TrustStore::default()).unwrap();
-    for p in [&pkg, &id("io.example.app"), &id("io.example.top")] {
-        st.enable_with(p, &none(), &BTreeSet::new()).unwrap();
+    st.enable_with(&pkg, &none(), &BTreeSet::new()).unwrap();
+    // Enabling a package on top of code is refused now; a store an older build wrote may still
+    // hold such a chain, and revoking must still take it down.
+    let mut index = st.index().clone();
+    for p in [id("io.example.app"), id("io.example.top")] {
+        index.active.get_mut(&p).unwrap().1 = State::Enabled;
     }
+    let backend = MemoryBackend {
+        index: Some(crate::store::encode_index(&index).unwrap().into_bytes()),
+        objects: st.backend().objects.clone(),
+        grants: st.backend().grants.clone(),
+        ..MemoryBackend::default()
+    };
+    let mut st = Store::open(backend).unwrap();
     let report = st.revoke(&grant.grant_id).unwrap();
     assert!(report.disabled);
     assert_eq!(report.dependents.len(), 2);
@@ -427,4 +438,20 @@ fn every_grant_written_reads_back_and_revoked_ones_keep_no_rights() {
     assert!(text.contains(r#""grants_version":1"#), "{text}");
     let back = grants::decode(text.as_bytes()).unwrap();
     assert!(back.grants.iter().filter(|g| g.revoked).all(|g| g.rights.is_empty()));
+}
+
+#[test]
+fn a_package_may_depend_only_on_data_packages() {
+    let (mut st, pkg) = installed();
+    st.grant(&pkg, &TrustStore::default()).unwrap();
+    st.enable_with(&pkg, &none(), &BTreeSet::new()).unwrap();
+    let f = text_files("io.example.text", "1.0.0");
+    let text_digest = Inventory::from_files(f.iter().map(|(n, b)| (n.as_str(), b.as_slice()))).unwrap().digest();
+    let mut on_code = spec("io.example.oncode");
+    on_code.deps = vec![("io.example.text", "1.0.0", text_digest)];
+    st.import(&package(&on_code), &TrustStore::default(), false).unwrap();
+    let refused = st.enable_with(&id("io.example.oncode"), &none(), &BTreeSet::new()).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Conflict);
+    assert!(refused.message.contains("dependency_rejected") && refused.message.contains("io.example.text"), "{}", refused.message);
+    assert_eq!(st.index().active[&id("io.example.oncode")].1, State::Disabled);
 }

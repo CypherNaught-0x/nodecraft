@@ -11,10 +11,15 @@
 //! `"status":"revoked"`, so a later import of the same key can't silently trust it again; every
 //! signature by a revoked key is refused, whenever it was made (protocol 1 has no timestamps).
 //! There is no registry, no network lookup and no key rotation chain.
+//!
+//! **Signing** ([`SigningKey`], #866) is for authors' tools: a key file holds one Ed25519 secret
+//! with its key ID. The secret never appears in `Debug` output, errors or anything but the key
+//! file itself.
 use crate::digest::PackageDigest;
 use crate::error::{Code, Result, WireError, err};
 use crate::id::{Token, located};
-use crate::json::{self, Fields, Limits};
+use crate::json::{self, Fields, Json, Limits};
+use ed25519_dalek::Signer;
 use std::collections::BTreeMap;
 
 /// The signature message's domain.
@@ -26,6 +31,8 @@ pub const TRUST_VERSION: u32 = 1;
 pub const MAX_KEYS: usize = 256;
 /// Longest provenance note.
 pub const MAX_PROVENANCE: usize = 256;
+/// Key file format this host reads and writes.
+pub const KEY_VERSION: u32 = 1;
 
 const LIMITS: Limits = Limits { bytes: 128 * 1024, depth: 4, string_bytes: 1024, entries: MAX_KEYS + 1, raw_numbers: false };
 
@@ -58,6 +65,99 @@ impl PackageSignature {
         let signature = located(json::hex::<64>(&f.string("signature")?), "/signature")?;
         f.finish()?;
         Ok(Self { key_id, package_digest, signature })
+    }
+
+    /// The canonical `signature.json`.
+    pub fn encode(&self) -> Result<String> {
+        json::canonical(&object([
+            ("algorithm", Json::Str("ed25519".to_owned())),
+            ("key_id", Json::Str(self.key_id.as_str().to_owned())),
+            ("package_digest", Json::Str(self.package_digest.to_string())),
+            ("signature", Json::Str(json::to_hex(&self.signature))),
+            ("signature_version", Json::Int(SIGNATURE_VERSION.into())),
+        ]))
+    }
+}
+
+fn object<const N: usize>(fields: [(&str, Json); N]) -> Json {
+    Json::Object(fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+}
+
+/// An author's signing key: an Ed25519 secret and the key ID signatures name.
+pub struct SigningKey {
+    key_id: Token,
+    key: ed25519_dalek::SigningKey,
+}
+
+impl std::fmt::Debug for SigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SigningKey").field("key_id", &self.key_id).field("public_key", &json::to_hex(&self.public_key())).finish_non_exhaustive()
+    }
+}
+
+impl SigningKey {
+    /// The key whose 32-byte secret (RFC 8032) is `secret`; callers draw it from the OS's
+    /// random source.
+    pub fn from_secret(key_id: Token, secret: [u8; 32]) -> Self {
+        Self { key_id, key: ed25519_dalek::SigningKey::from_bytes(&secret) }
+    }
+
+    /// Reads a key file. Errors name the field, never its value.
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut f = Fields::new(json::parse(bytes, LIMITS)?, "")?;
+        if f.u32("key_version")? != KEY_VERSION {
+            return Err(WireError::new(Code::BadVersion, "this host reads key version 1").at("/key_version"));
+        }
+        if f.string("algorithm")? != "ed25519" {
+            return Err(WireError::new(Code::UnsupportedFeature, "the only key algorithm is ed25519").at("/algorithm"));
+        }
+        let key_id = located(Token::parse(&f.string("key_id")?), "/key_id")?;
+        let secret = json::hex::<32>(&f.string("secret_key")?)
+            .map_err(|_| WireError::new(Code::BadDigest, "the secret key is 64 lowercase hex digits").at("/secret_key"))?;
+        f.finish()?;
+        let key = Self::from_secret(key_id, secret);
+        if key.key.verifying_key().is_weak() {
+            return Err(WireError::new(Code::BadSignature, "not a usable Ed25519 key").at("/secret_key"));
+        }
+        Ok(key)
+    }
+
+    /// The key file's canonical text. It holds the secret: write it only to the key file.
+    pub fn encode_secret(&self) -> Result<String> {
+        json::canonical(&object([
+            ("algorithm", Json::Str("ed25519".to_owned())),
+            ("key_id", Json::Str(self.key_id.as_str().to_owned())),
+            ("key_version", Json::Int(KEY_VERSION.into())),
+            ("secret_key", Json::Str(json::to_hex(&self.key.to_bytes()))),
+        ]))
+    }
+
+    pub fn key_id(&self) -> &Token {
+        &self.key_id
+    }
+
+    pub fn public_key(&self) -> [u8; 32] {
+        self.key.verifying_key().to_bytes()
+    }
+
+    /// The canonical entry a person adds to the `keys` of their trust file to trust this key.
+    pub fn trust_entry(&self, provenance: &str) -> Result<String> {
+        if provenance.len() > MAX_PROVENANCE || provenance.chars().any(char::is_control) {
+            return err(Code::TooLarge, "provenance is one line of at most 256 bytes");
+        }
+        json::canonical(&object([
+            ("algorithm", Json::Str("ed25519".to_owned())),
+            ("key_id", Json::Str(self.key_id.as_str().to_owned())),
+            ("provenance", Json::Str(provenance.to_owned())),
+            ("public_key", Json::Str(json::to_hex(&self.public_key()))),
+            ("status", Json::Str("trusted".to_owned())),
+        ]))
+    }
+
+    /// Signs the package with `digest`.
+    pub fn sign(&self, digest: &PackageDigest) -> PackageSignature {
+        let signature = self.key.sign(&signed_message(digest)).to_bytes();
+        PackageSignature { key_id: self.key_id.clone(), package_digest: *digest, signature }
     }
 }
 

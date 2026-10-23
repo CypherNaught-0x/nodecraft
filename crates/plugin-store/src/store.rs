@@ -599,9 +599,20 @@ impl<B: StoreBackend> Store<B> {
                     return Err(conflict(format!("its dependencies aren't met ({} isn't installed at the locked version)", dep.package_id)));
                 }
                 Some((_, State::Disabled)) => return Err(conflict(format!("enable {} first", dep.package_id))),
-                // A newer NodeCraft may have enabled it in the shared store.
-                Some((_, State::Enabled)) => compatible(&self.load(&dep.package_id)?.manifest)
-                    .map_err(|e| conflict(format!("its dependency {} can't be used here: {}", dep.package_id, e.message)))?,
+                Some((_, State::Enabled)) => {
+                    let manifest = self.load(&dep.package_id)?.manifest;
+                    // A newer NodeCraft may have enabled it in the shared store.
+                    compatible(&manifest).map_err(|e| conflict(format!("its dependency {} can't be used here: {}", dep.package_id, e.message)))?;
+                    // A package may depend only on data packages (plugin RFC): code it would
+                    // reach through a dependency was never granted for it.
+                    if executable(&manifest.runtime) {
+                        return Err(conflict(format!(
+                            "{} runs code, and a package may depend only on data packages ({})",
+                            dep.package_id,
+                            nodecraft_plugin::Code::DependencyRejected.as_str()
+                        )));
+                    }
+                }
                 None => return Err(conflict(format!("its dependencies aren't met ({} isn't installed)", dep.package_id))),
             }
         }

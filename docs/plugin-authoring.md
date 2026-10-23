@@ -81,6 +81,32 @@ that rewrites line endings gives a different digest: mark package folders `-text
 `lint` also refuses a package that needs a right this NodeCraft can't grant (today only provider
 packages can be granted `network` and `secret`), and warns about an optional one it can't.
 
+`crates/plugin/fixtures/lint/invalid/` holds packages an author might write that pack or lint
+refuses, one folder per mistake, named after the error code it gets. Use them to see what each
+refusal looks like.
+
+## Signing
+
+An unsigned package installs as a local package. To publish one under your own name, make a key
+once and sign each package with it:
+
+```sh
+nodecraft-cli plugin key new ~/keys/author.key --id my-key        # never inside a package folder
+nodecraft-cli plugin key trust ~/keys/author.key --provenance "Ada's releases, https://example.org"
+nodecraft-cli plugin pack examples/plugins/shout --out shout.ncraft-plugin --sign ~/keys/author.key
+```
+
+- **`key new`** writes an Ed25519 key file, readable only by you on macOS and Linux (on Windows it takes its
+  folder's permissions, so keep it in a folder only you can read), and never replaces an existing
+  one. Keep it out of the repository and back it up: a lost key can't sign updates.
+- **`key trust`** prints the entry people add to their `trust.json` to trust your packages. Publish
+  it, with its provenance note, where people can check it is yours.
+- **`pack --sign`** signs the package digest. When the manifest names a `publisher_key_id`, only
+  that key may sign it. `pack` refuses a key file inside the folder it packs.
+
+Lint with `--trust` and a trust file holding your entry to see the package as signed. Error
+messages name a broken field of the key file, never its contents.
+
 ## Installing and trying it
 
 In the app, open **Plugins**, name or **Choose…** the package file, and press **Check**. The panel
@@ -119,8 +145,8 @@ update like any other.
 
 ## Dependencies
 
-A package may depend only on data packages; this NodeCraft doesn't check that rule yet, so keep to
-it yourself. A dependency is locked to an exact `version` and `digest`, there is no version
+A package may depend only on data packages: enabling refuses a package whose dependency runs code
+(`dependency_rejected`). A dependency is locked to an exact `version` and `digest`, there is no version
 resolver, and nothing is fetched. Lint warns about each dependency. The dependent package can't be
 enabled until each dependency is installed, enabled and at the locked version.
 
