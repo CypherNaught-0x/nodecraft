@@ -973,3 +973,23 @@ fn a_schema_only_seed_is_pinned_only_when_it_is_sent() {
     params.insert("seed".into(), Value::Unsigned(Unsigned(7)));
     assert_eq!(model.pinned_seeds(&params, false).unwrap(), vec!["seed".to_owned()]);
 }
+
+#[test]
+fn a_model_cards_dont_offer_is_kept_but_never_picked() {
+    let catalog = catalog();
+    let workflow = catalog.get("comfyui.workflow").unwrap();
+    assert!(!workflow.cards);
+    assert!(catalog.get("comfyui.flux-dev").unwrap().cards, "cards offer models by default");
+    assert!(catalog.models().any(|m| m.id == workflow.id), "it is still priced and admitted");
+    assert!(catalog.card_models().all(|m| m.id != workflow.id));
+    for output in [Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh] {
+        let wiring = Wiring::new(output);
+        assert!(workflow.modes.iter().any(|mode| mode.output == output));
+        assert!(catalog.candidates(&wiring).iter().all(|c| c.model.id != workflow.id));
+        let request = select::Request { wiring, effort: select::Effort::Balanced, budget_per_job: None, providers: None, params: None };
+        let selection = catalog.select(&request);
+        assert!(selection.ranked.iter().all(|c| c.model.id != workflow.id) && selection.rejected.iter().all(|(m, _)| m.id != workflow.id));
+    }
+    let unlisted = PRICED.replace("quality = 5", "quality = 5\ncards = false");
+    assert!(!Catalog::from_toml(&unlisted).unwrap().models().next().unwrap().cards);
+}

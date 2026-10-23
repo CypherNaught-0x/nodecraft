@@ -169,3 +169,33 @@ default = { type = "number", value = 7.0 }
 name = "seed"
 label = "Seed"
 control = { type = "seed" }
+
+# The ComfyUI workflow card's model (#9): it runs the workflow imported onto the card, so it has
+# no settings of its own (the card's parameters come from the workflow) and no card but that one
+# offers it.
+[[model]]
+id = "comfyui.workflow"
+provider = "comfyui"
+provider_model = "workflow"
+label = "ComfyUI workflow"
+description = "Runs an imported ComfyUI workflow on your own ComfyUI server."
+latency_s = 60
+quality = 3
+pricing = { type = "free" }
+cards = false
+
+[[model.modes]]
+id = "image"
+output = "image"
+
+[[model.modes]]
+id = "video"
+output = "video"
+
+[[model.modes]]
+id = "audio"
+output = "audio"
+
+[[model.modes]]
+id = "mesh"
+output = "mesh"

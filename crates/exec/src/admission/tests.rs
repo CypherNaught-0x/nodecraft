@@ -49,6 +49,7 @@ fn catalog(count: u64) -> Catalog {
         latency_s: 0,
         quality: 1,
         style_family: None,
+        cards: true,
     };
     Catalog::from_models(vec![model]).unwrap()
 }
@@ -269,6 +270,7 @@ pub(crate) fn free_catalog(id: &str, provider: &str, remote: &str) -> Catalog {
         latency_s: 0,
         quality: 1,
         style_family: None,
+        cards: true,
     }])
     .unwrap()
 }

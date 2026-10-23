@@ -436,6 +436,10 @@ pub fn show(
                         if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
                             continue;
                         }
+                        // A workflow card's model is fixed: it runs the workflow it holds.
+                        if node.kind == nodecraft_nodes::comfy_workflow::ID && spec.name == nodecraft_nodes::comfy_workflow::MODEL {
+                            continue;
+                        }
                         ui.push_id(&spec.name, |ui| {
                             let label = ui.label(egui::RichText::new(&spec.label).color(t.text_muted));
                             let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };

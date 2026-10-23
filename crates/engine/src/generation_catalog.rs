@@ -74,7 +74,7 @@ impl GenerationCatalog {
         // Four simultaneous schema owners (neutral model, instance layout, model contract,
         // validation/constructor copy) plus fixed per-model/mode/role shells. The existing
         // catalog owner is caller-owned; no deep copy precedes this aggregate reservation.
-        for m in catalog.catalog().models().filter(|m| m.modes.iter().any(|mode| mode.output == output)) {
+        for m in catalog.catalog().card_models().filter(|m| m.modes.iter().any(|mode| mode.output == output)) {
             // Admit validation/index scratch before model.validate allocates its indexes.
             *charge = add(*charge, add(64 * 1024, nodecraft_exec::admission::measure::scratch(&m.params)?)?)?;
             if *charge > LIMIT {
@@ -113,7 +113,7 @@ impl GenerationCatalog {
             }
         }
         let mut models = Vec::new();
-        for m in catalog.catalog().models() {
+        for m in catalog.catalog().card_models() {
             let modes: Vec<_> = m
                 .modes
                 .iter()

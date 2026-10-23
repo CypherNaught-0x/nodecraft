@@ -115,6 +115,11 @@ impl Catalog {
         self.models.values()
     }
 
+    /// The models cards offer: every model but those with `cards = false`.
+    pub fn card_models(&self) -> impl Iterator<Item = &ModelDescriptor> {
+        self.models.values().filter(|model| model.cards)
+    }
+
     pub fn len(&self) -> usize {
         self.models.len()
     }
@@ -123,10 +128,10 @@ impl Catalog {
         self.models.is_empty()
     }
 
-    /// Every model for the picker: compatible ones first, then by provider, quality (best
+    /// Every model for the picker (but those cards don't offer): compatible ones first, then by provider, quality (best
     /// first) and label. Incompatible models carry the reason they're disabled.
     pub fn candidates<'a>(&'a self, wiring: &Wiring) -> Vec<Candidate<'a>> {
-        let mut all: Vec<Candidate<'a>> = self.models.values().map(|model| Candidate { model, fit: wiring.fit(model) }).collect();
+        let mut all: Vec<Candidate<'a>> = self.card_models().map(|model| Candidate { model, fit: wiring.fit(model) }).collect();
         all.sort_by(|a, b| {
             let key = |c: &Candidate<'a>| (c.fit.is_err(), c.model.provider.as_str(), std::cmp::Reverse(c.model.quality), c.model.label.as_str());
             key(a).cmp(&key(b))

@@ -27,6 +27,7 @@ impl Registry {
         registry.register(Box::new(crate::note::kind()))?;
         registry.register(Box::new(crate::deck::kind()))?;
         registry.register(Box::new(crate::technique::kind()))?;
+        registry.register(Box::new(crate::comfy_workflow::kind()))?;
         for kind in crate::action::kinds()? {
             registry.register(Box::new(kind))?;
         }

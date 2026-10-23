@@ -115,6 +115,7 @@ pub fn models(id: &str, provider: &PluginProvider) -> Vec<ModelDescriptor> {
                 latency_s: 30,
                 quality: 3,
                 style_family: None,
+                cards: true,
             };
             (is_id(&model.id) && model.validate().is_ok()).then_some(model)
         })
