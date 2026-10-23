@@ -66,6 +66,17 @@ pub struct Consent {
     pub spend: bool,
 }
 
+/// What runs have spent and may spend. Runners given the same one are held to its budgets
+/// together: `serve` keeps one for its lifetime (#635).
+#[derive(Clone, Default)]
+pub struct Spend {
+    pub log: Arc<Mutex<UsageLog>>,
+    pub budgets: Arc<Mutex<Budgets>>,
+}
+
+/// Once a run's deadline passes and it is cancelled, how long its jobs are given to stop.
+const CANCEL_GRACE: Duration = Duration::from_secs(30);
+
 /// The run host and the runtime its jobs run on.
 pub struct Runner {
     host: RunHost,
@@ -76,15 +87,20 @@ impl Runner {
     /// A runner whose commands are registered in `services`; give them to the session, then
     /// [`Self::install`] it.
     pub fn new(services: &mut Services, session_id: String) -> Result<Self, Error> {
-        Self::with_runs(services, session_id, true)
+        Self::with_runs(services, session_id, true, Spend::default())
+    }
+
+    /// A runner held to `spend`'s budgets, together with every other runner given it.
+    pub fn with_spend(services: &mut Services, session_id: String, spend: &Spend) -> Result<Self, Error> {
+        Self::with_runs(services, session_id, true, spend.clone())
     }
 
     /// A host that can ask prices but cannot submit paid work (standalone MCP and `quote`).
     pub fn estimates_only(services: &mut Services, session_id: String) -> Result<Self, Error> {
-        Self::with_runs(services, session_id, false)
+        Self::with_runs(services, session_id, false, Spend::default())
     }
 
-    fn with_runs(services: &mut Services, session_id: String, runs: bool) -> Result<Self, Error> {
+    fn with_runs(services: &mut Services, session_id: String, runs: bool, spend: Spend) -> Result<Self, Error> {
         let tokio = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("nodecraft-runs")
@@ -93,8 +109,8 @@ impl Runner {
             .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the run threads: {e}")))?;
         let runtime = Arc::new(Tokio { handle: tokio.handle().clone(), start: Instant::now() });
         let budget = JobBudget {
-            log: Arc::new(Mutex::new(UsageLog::default())),
-            budgets: Arc::new(Mutex::new(Budgets::default())),
+            log: spend.log,
+            budgets: spend.budgets,
             session: session_id,
             wall_clock_ms: Arc::new(|| {
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
@@ -176,6 +192,20 @@ impl Runner {
     /// Runs `targets` with their stale upstream (every stale card when empty) once `quote`'s
     /// price is agreed to, and waits until the run ends. Returns each step's outcome.
     pub fn run(&mut self, session: &mut Session, canvas: CanvasId, targets: &[NodeId], quote: &Value, consent: Consent) -> Result<Vec<Value>, Error> {
+        self.run_within(session, canvas, targets, quote, consent, None)
+    }
+
+    /// [`Self::run`], cancelled once `deadline` passes: then its jobs are given
+    /// [`CANCEL_GRACE`] to stop, and it fails as timed out.
+    pub fn run_within(
+        &mut self,
+        session: &mut Session,
+        canvas: CanvasId,
+        targets: &[NodeId],
+        quote: &Value,
+        consent: Consent,
+        deadline: Option<Instant>,
+    ) -> Result<Vec<Value>, Error> {
         let accept = accept(quote, consent)?;
         let params = if targets.is_empty() {
             json!({"canvas": canvas, "mode": "all_stale", "accept": accept})
@@ -187,6 +217,9 @@ impl Runner {
         let mut steps: Vec<Value> =
             started.get("reused").and_then(Value::as_array).into_iter().flatten().map(|node| json!({"node": node, "status": "reused"})).collect();
         let mut finished = false;
+        let mut cancelled: Option<Instant> = None;
+        let timed_out =
+            || Error::new(ErrorKind::Timeout, "the run took longer than it may and was cancelled; jobs a provider had already accepted may still be charged");
         loop {
             for notice in self.host.pump(session) {
                 match notice {
@@ -200,13 +233,24 @@ impl Runner {
                     RunNotice::Failed { node, reason, .. } => steps.push(json!({"node": node, "status": "failed", "reason": reason})),
                     RunNotice::Cancelled { node, .. } => steps.push(json!({"node": node, "status": "cancelled"})),
                     RunNotice::Unaccounted { node, reason, .. } => steps.push(json!({"node": node, "status": "unaccounted", "reason": reason})),
+                    // Cancelling at the deadline refuses a run still waiting to start.
+                    RunNotice::Refused { .. } if cancelled.is_some() => return Err(timed_out()),
                     RunNotice::Refused { reason } => return Err(Error::new(ErrorKind::Conflict, format!("the run didn't start: {reason}"))),
                     // The rest of this batch is still read, so no outcome is lost.
                     RunNotice::Finished { canvas: done } => finished |= done == canvas,
                 }
             }
             if finished || !self.host.is_busy() {
-                return Ok(steps);
+                return if cancelled.is_some() { Err(timed_out()) } else { Ok(steps) };
+            }
+            let now = Instant::now();
+            match (deadline, cancelled) {
+                (Some(deadline), None) if now >= deadline => {
+                    self.host.cancel_all();
+                    cancelled = Some(now);
+                }
+                (_, Some(at)) if now.saturating_duration_since(at) >= CANCEL_GRACE => return Err(timed_out()),
+                _ => {}
             }
             std::thread::sleep(PUMP_EVERY);
         }

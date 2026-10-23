@@ -32,7 +32,7 @@ reqwest = { workspace = true }
 sha2 = { workspace = true }
 url = { workspace = true }
 # Runs (#97): jobs are driven on a tokio runtime, as the app's are.
-tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "sync", "signal"] }
 
 [dev-dependencies]
 nodecraft-catalog = { workspace = true }
