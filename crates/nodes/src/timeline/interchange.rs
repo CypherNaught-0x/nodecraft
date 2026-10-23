@@ -185,7 +185,8 @@ fn untranslated_clip_settings(clip: &Clip, losses: &mut Vec<Loss>) {
         losses.push(Loss {
             clip: id(),
             feature: "speed",
-            detail: "not written: the clip exports at its unretimed media-trim length; retime it in the other editor".into(),
+            detail: "not written: the clip exports at its unretimed media-trim length, and later clips shift by the difference; retime it in the other editor"
+                .into(),
         });
     }
     let position: Vec<&str> =

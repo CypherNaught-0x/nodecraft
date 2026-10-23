@@ -143,7 +143,7 @@ fn archived_reports_name_each_untranslated_clip_field_without_default_noise() {
         (
             "speed",
             json!({"speed": 2000}),
-            vec!["speed: not written: the clip exports at its unretimed media-trim length; retime it in the other editor".into()],
+            vec!["speed: not written: the clip exports at its unretimed media-trim length, and later clips shift by the difference; retime it in the other editor".into()],
         ),
         ("pos_x", json!({"pos_x": 250}), vec!["position: pos_x not written: the clip exports centred in the frame; reposition it in the other editor".into()]),
         ("pos_y", json!({"pos_y": 750}), vec!["position: pos_y not written: the clip exports centred in the frame; reposition it in the other editor".into()]),
@@ -158,7 +158,7 @@ fn archived_reports_name_each_untranslated_clip_field_without_default_noise() {
             "all_features",
             json!({"speed": 2000, "pos_x": 250, "pos_y": 750, "scale": 1500, "crop_left": 100, "crop_top": 100, "crop_right": 100, "crop_bottom": 100, "rotation": 45, "opacity": 700}),
             vec![
-                "speed: not written: the clip exports at its unretimed media-trim length; retime it in the other editor".into(),
+                "speed: not written: the clip exports at its unretimed media-trim length, and later clips shift by the difference; retime it in the other editor".into(),
                 "position: pos_x and pos_y not written: the clip exports centred in the frame; reposition it in the other editor".into(),
                 "scale: not written: the clip exports at the editor's default fitted size; resize it there".into(),
                 "crop: crop_left, crop_top, crop_right, crop_bottom not written: the clip exports uncropped; crop it in the other editor".into(),
@@ -167,8 +167,7 @@ fn archived_reports_name_each_untranslated_clip_field_without_default_noise() {
             ],
         ),
     ];
-    let root = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    let dir = tempfile::tempdir_in(root).unwrap();
+    let dir = tempfile::tempdir().unwrap();
     for (name, settings, expected) in cases {
         let mut s = session();
         if settings != json!({}) {
