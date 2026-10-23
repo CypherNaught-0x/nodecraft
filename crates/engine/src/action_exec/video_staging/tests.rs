@@ -38,6 +38,20 @@ fn stage(videos: &Mutex<Videos>, bytes: &[u8]) -> Result<Blake3, String> {
     )
 }
 
+fn provisional<'a>(videos: &'a Mutex<Videos>, bytes: &[u8]) -> Provisional<'a> {
+    read_pending(
+        videos,
+        bytes.len() as u64,
+        |offset, length| {
+            let start = usize::try_from(offset).unwrap();
+            Ok(bytes.get(start..start + length).unwrap().to_vec())
+        },
+        Vec::as_slice,
+        &|| false,
+    )
+    .unwrap()
+}
+
 #[test]
 fn an_aggregate_refusal_happens_before_reading_and_keeps_prior_outputs() {
     let videos = Mutex::new(Videos::limited(10, 8));
@@ -121,18 +135,22 @@ fn cancellation_including_the_final_chunk_releases_unpublished_bytes() {
 fn duplicates_and_split_rollback_do_not_consume_staging_again() {
     let videos = Mutex::new(Videos::limited(12, 3));
     let prior = stage(&videos, b"old").unwrap();
-    let first = stage(&videos, b"part").unwrap();
-    assert_eq!(stage(&videos, b"part").unwrap(), first);
-    let second = stage(&videos, b"more").unwrap();
+    let first = provisional(&videos, b"part");
+    let duplicate = provisional(&videos, b"part");
+    assert_eq!(duplicate.hash(), first.hash());
+    let second = provisional(&videos, b"more");
     {
-        let mut state = videos.lock().unwrap();
+        let state = videos.lock().unwrap();
         assert_eq!((state.retained, state.reserved, state.pending, state.entries.len()), (11, 0, 0, 3));
-        // Split's error path removes only newly produced parts; the reader's prior source stays.
-        state.remove(&first).unwrap();
-        state.remove(&second).unwrap();
-        assert_eq!(state.retained, 3);
-        assert_eq!(state.keys().copied().collect::<Vec<_>>(), [prior]);
+        assert_eq!(state.holds, 3);
+        assert_eq!(state.iter().map(|(hash, _)| *hash).collect::<Vec<_>>(), [prior]);
     }
+    drop(first);
+    drop(second);
+    assert_eq!(videos.lock().unwrap().retained, 7, "the duplicate still holds its shared part");
+    drop(duplicate);
+    assert_eq!(videos.lock().unwrap().retained, 3);
+    assert_eq!(videos.lock().unwrap().holds, 0);
     stage(&videos, b"replacement").unwrap_err();
     stage(&videos, b"123456789").unwrap();
 }
@@ -140,11 +158,80 @@ fn duplicates_and_split_rollback_do_not_consume_staging_again() {
 #[test]
 fn the_result_count_bounds_tiny_outputs_and_removal_frees_a_slot() {
     let videos = Mutex::new(Videos::limited(100, 2));
-    let first = stage(&videos, b"a").unwrap();
+    let first = provisional(&videos, b"a");
     stage(&videos, b"b").unwrap();
     assert!(stage(&videos, b"c").unwrap_err().contains("staging limit"));
-    videos.lock().unwrap().remove(&first).unwrap();
+    drop(first);
     stage(&videos, b"c").unwrap();
+}
+
+#[test]
+fn a_later_successful_duplicate_keeps_one_copy_after_provisional_rollback() {
+    let videos = Mutex::new(Videos::limited(12, 4));
+    let split = provisional(&videos, b"part");
+    let hash = split.hash();
+    assert!(videos.lock().unwrap().get(&hash).is_none(), "the part is not published yet");
+    let copy = Arc::clone(&videos.lock().unwrap().entries.get(&hash).unwrap().bytes);
+    assert_eq!(stage(&videos, b"part").unwrap(), hash);
+    drop(split);
+    let state = videos.lock().unwrap();
+    assert!(Arc::ptr_eq(state.get(&hash).unwrap(), &copy), "dedup never replaces the accepted storage");
+    assert_eq!((state.retained, state.reserved, state.pending, state.holds, state.entries.len()), (4, 0, 0, 0, 1));
+}
+
+#[test]
+fn another_successful_provisional_batch_survives_its_siblings_rollback() {
+    let videos = Mutex::new(Videos::limited(12, 4));
+    let failed = provisional(&videos, b"part");
+    let successful = provisional(&videos, b"part");
+    let hash = successful.hash();
+    publish(std::slice::from_ref(&successful)).unwrap();
+    drop(successful);
+    drop(failed);
+    let state = videos.lock().unwrap();
+    assert_eq!(state.get(&hash).unwrap().as_ref(), b"part");
+    assert_eq!((state.retained, state.holds, state.entries.len()), (4, 0, 1));
+}
+
+#[test]
+fn provisional_metadata_is_bounded_before_reading_and_refunded_on_drop() {
+    let videos = Mutex::new(Videos::limited(12, 2));
+    let first = provisional(&videos, b"part");
+    let second = provisional(&videos, b"part");
+    let reads = AtomicUsize::new(0);
+    assert!(
+        read_back(
+            &videos,
+            4,
+            |_, _| {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(b"part".to_vec())
+            },
+            Vec::as_slice,
+            &|| false
+        )
+        .unwrap_err()
+        .contains("staging limit")
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    drop(first);
+    let hash = stage(&videos, b"part").unwrap();
+    drop(second);
+    let state = videos.lock().unwrap();
+    assert!(state.get(&hash).is_some());
+    assert_eq!((state.retained, state.reserved, state.pending, state.holds), (4, 0, 0, 0));
+}
+
+#[test]
+fn foreign_batch_publication_changes_neither_owner_and_drop_reclaims_both() {
+    let a = Mutex::new(Videos::limited(8, 2));
+    let b = Mutex::new(Videos::limited(8, 2));
+    let parts = [provisional(&a, b"part"), provisional(&b, b"part")];
+    assert!(publish(&parts).unwrap_err().contains("different runs"));
+    assert_eq!(a.lock().unwrap().iter().count(), 0);
+    assert_eq!(b.lock().unwrap().iter().count(), 0);
+    drop(parts);
+    assert_eq!((a.lock().unwrap().retained, b.lock().unwrap().retained), (0, 0));
 }
 
 #[test]

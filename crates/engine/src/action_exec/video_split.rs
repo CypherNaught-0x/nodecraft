@@ -63,7 +63,9 @@ fn job(action: &str, params: &ParamValues, inputs: usize) -> Result<Job, String>
                 threshold: super::video::thousandths(params, "threshold", 50, 1000)?,
                 min_us: micros(params, "min_length", "shortest part", 0.0, 600.0)?,
             },
-            _ => return Err("a video splits into equal parts, every few seconds or at scene changes".into()),
+            _ => {
+                return Err("a video splits into equal parts, every few seconds or at scene changes".into());
+            }
         }),
         EXTRACT_AUDIO => Job::ExtractAudio,
         _ => return Err(format!("{action} isn't a video action this host runs")),
@@ -172,14 +174,48 @@ impl LocalActions {
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) use native::scenes;
 
+/// The production split loop, independent of its renderer so ordinary CI can interleave sibling
+/// actions deterministically. Until every part succeeds, its receipts own only unpublished parts.
+#[cfg(not(target_arch = "wasm32"))]
+fn render_parts<'a>(
+    spans: &[(u64, u64)],
+    cancelled: &dyn Fn() -> bool,
+    mut render: impl FnMut(u64, u64, u64) -> Result<(nodecraft_types::Value, super::video_staging::Provisional<'a>), String>,
+) -> Result<nodecraft_types::Value, String> {
+    if spans.is_empty() || u64::try_from(spans.len()).map_or(true, |count| count > MAX_PARTS) {
+        return Err(format!("Split needs between 1 and {MAX_PARTS} parts"));
+    }
+    let mut parts = Vec::new();
+    let mut receipts = Vec::new();
+    parts.try_reserve_exact(spans.len()).map_err(|_| "can't retain the split parts; split into fewer parts")?;
+    receipts.try_reserve_exact(spans.len()).map_err(|_| "can't retain the split parts; split into fewer parts")?;
+    let mut staged = 0u64;
+    for (n, &(start, end)) in (1u64..).zip(spans) {
+        if cancelled() {
+            return Err("the render was cancelled".into());
+        }
+        let (part, receipt) = render(n, start, end)?;
+        staged = staged.checked_add(receipt.length()).ok_or("the split parts are too large")?;
+        if staged > MAX_SPLIT_BYTES {
+            return Err(format!("the parts come to more than {} MiB; use a lower quality or split a shorter video", MAX_SPLIT_BYTES / (1024 * 1024)));
+        }
+        receipts.push(receipt);
+        parts.push(part);
+    }
+    if cancelled() {
+        return Err("the render was cancelled".into());
+    }
+    super::video_staging::publish(&receipts)?;
+    Ok(nodecraft_types::Value::List(parts))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use super::super::timeline::native::{closed, message, service, wait};
     use super::super::video::{frame_for, quality};
-    use super::{Job, LocalActions, MAX_SPLIT_BYTES, Split, job, spans};
-    use nodecraft_media::video::{ComposeClip, ComposeSpec, Quality, VideoAsset, VideoError, VideoService};
+    use super::{Job, LocalActions, Split, job, render_parts, spans};
+    use nodecraft_media::video::{ComposeClip, ComposeSpec, VideoAsset, VideoError, VideoService};
     use nodecraft_types::{AssetRef, MediaMeta, ParamValues, Value};
-    use std::sync::PoisonError;
 
     /// The scene changes of `video` past `threshold` thousandths, in microseconds from its start.
     pub(in crate::action_exec) fn scenes(service: &VideoService, video: &VideoAsset, threshold: u16, cancelled: &dyn Fn() -> bool) -> Result<Vec<u64>, String> {
@@ -219,41 +255,7 @@ mod native {
                 _ => Vec::new(),
             };
             let spans = spans(split, m.duration_us, fps, &changes)?;
-            // What was staged before, so a split that fails part way unstages only its own parts.
-            let before: std::collections::BTreeSet<_> = self.videos.lock().unwrap_or_else(PoisonError::into_inner).keys().copied().collect();
-            let mut parts = Vec::new();
-            let result = self.split_parts(&service, &video, &spans, size, fps, quality, &mut parts, cancelled);
-            if result.is_err() {
-                let mut videos = self.videos.lock().unwrap_or_else(PoisonError::into_inner);
-                for part in &parts {
-                    if let Value::Media(asset) = part
-                        && !before.contains(&asset.hash)
-                    {
-                        videos.remove(&asset.hash);
-                    }
-                }
-            }
-            result.map(|()| Value::List(parts))
-        }
-
-        /// Render each of `spans` of `video` into `parts`, stopping at the first that fails.
-        #[allow(clippy::too_many_arguments)]
-        fn split_parts(
-            &self,
-            service: &VideoService,
-            video: &VideoAsset,
-            spans: &[(u64, u64)],
-            size: (u32, u32),
-            fps: (u32, u32),
-            quality: Quality,
-            parts: &mut Vec<Value>,
-            cancelled: &dyn Fn() -> bool,
-        ) -> Result<(), String> {
-            let mut staged = 0u64;
-            for (n, &(start, end)) in (1u64..).zip(spans) {
-                if cancelled() {
-                    return Err(message(VideoError::Cancelled));
-                }
+            render_parts(&spans, cancelled, |n, start, end| {
                 let clip = ComposeClip::new(video.clone(), start, end).map_err(|_| format!("part {n} can't be cut from the video"))?;
                 let spec = ComposeSpec::new(size.0, size.1, fps, [0; 3], vec![clip])
                     .map_err(|error| match error {
@@ -261,17 +263,8 @@ mod native {
                         _ => format!("part {n} is shorter than a frame"),
                     })?
                     .with_quality(quality);
-                let part = self.render(service, spec, size, cancelled)?;
-                if let Value::Media(asset) = &part {
-                    let bytes = self.videos.lock().unwrap_or_else(PoisonError::into_inner).get(&asset.hash).map_or(0, |b| b.len() as u64);
-                    staged = staged.saturating_add(bytes);
-                }
-                parts.push(part);
-                if staged > MAX_SPLIT_BYTES {
-                    return Err(format!("the parts come to more than {} MiB; use a lower quality or split a shorter video", MAX_SPLIT_BYTES / (1024 * 1024)));
-                }
-            }
-            Ok(())
+                self.render_pending(&service, spec, size, cancelled)
+            })
         }
 
         /// `video`'s sound, written out as Ogg on `service` and staged as a sound.
