@@ -2,6 +2,7 @@
 use super::*;
 use nodecraft_engine::navigation_cmds::NavigationContext;
 use serde_json::Value as Json;
+use std::collections::BTreeSet;
 
 const FIT_CLAMP_NOTICE: &str = "Nodes are too spread out to fit at minimum zoom; the view is centered at 10%.";
 
@@ -67,21 +68,30 @@ impl NodeCraftApp {
     /// an invalid unselected node does not matter, but a selected visible node without valid
     /// geometry refuses the fit rather than being left out of it.
     fn fit_selection_bounds(&mut self) -> Option<Rect> {
-        if self.selection.is_empty() {
+        let nodes = self.selection.nodes().clone();
+        self.fit_nodes_bounds(&nodes)
+    }
+    fn fit_nodes_bounds(&mut self, nodes: &BTreeSet<NodeId>) -> Option<Rect> {
+        if nodes.is_empty() {
             return None;
         }
         let membership = self.membership();
         let t = self.theme.tokens();
         let rects = &self.navigation.geometry.rects;
-        let visible: Vec<Rect> =
-            self.selection.nodes().iter().filter(|id| !membership.hidden.contains(*id)).map(|id| rects.get(id).copied()).collect::<Option<_>>()?;
+        let visible: Vec<Rect> = nodes.iter().filter(|id| !membership.hidden.contains(*id)).map(|id| rects.get(id).copied()).collect::<Option<_>>()?;
         let hidden = self.session.document().canvases().get(&self.canvas).into_iter().flat_map(|canvas| {
-            fields::stand_ins(canvas, &membership.hidden, t, 1.0, self.field_shift()).filter(|(id, _)| self.selection.contains(*id)).map(|(_, rect)| rect)
+            fields::stand_ins(canvas, &membership.hidden, t, 1.0, self.field_shift()).filter(|(id, _)| nodes.contains(id)).map(|(_, rect)| rect)
         });
         visible.into_iter().chain(hidden).map(|rect| crate::navigation::decorated(rect, t)).reduce(|a, b| a.union(b))
     }
-    fn navigation_context(&mut self, ctx: &egui::Context, id: &str) -> NavigationContext {
-        let [all, selected, toggle, pan] = self.navigation_contexts(ctx);
+    fn navigation_context(&mut self, ctx: &egui::Context, id: &str, params: &Json) -> NavigationContext {
+        let [all, mut selected, toggle, pan] = self.navigation_contexts(ctx);
+        if id == "canvas.fit_selection"
+            && let Some(nodes) = nodecraft_engine::navigation_cmds::requested_nodes(params)
+        {
+            let wanted: BTreeSet<_> = nodes.iter().copied().collect();
+            selected.fit_selection = wanted.len() == nodes.len() && self.fit_nodes_bounds(&wanted).is_some();
+        }
         match id {
             "canvas.fit_all" => all,
             "canvas.fit_selection" => selected,
@@ -102,7 +112,7 @@ impl NodeCraftApp {
         if !Self::is_navigation_command(id) {
             return Err(Error::new(ErrorKind::InvalidInput, "not a canvas navigation command"));
         }
-        let context = self.navigation_context(ctx, id);
+        let context = self.navigation_context(ctx, id, params);
         self.navigation_enabled_with_context(context, id, params)
     }
     /// Dispatch through the same engine command/service path used by buttons and shortcuts,
@@ -111,7 +121,7 @@ impl NodeCraftApp {
         if !Self::is_navigation_command(id) {
             return Err(Error::new(ErrorKind::InvalidInput, "not a canvas navigation command"));
         }
-        let context = self.navigation_context(ctx, id);
+        let context = self.navigation_context(ctx, id, params);
         {
             let mut slot = self.navigation_mailbox.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "navigation host is busy"))?;
             *slot = None;
@@ -129,7 +139,15 @@ impl NodeCraftApp {
         match intent.get("action").and_then(Json::as_str) {
             Some("fit_all" | "fit_selection") => {
                 let t = self.theme.tokens();
-                let bounds = if id == "canvas.fit_selection" { self.fit_selection_bounds() } else { self.fit_all_bounds() };
+                let bounds = if id == "canvas.fit_selection" {
+                    if let Some(nodes) = nodecraft_engine::navigation_cmds::requested_nodes(&intent) {
+                        self.fit_nodes_bounds(&nodes.into_iter().collect())
+                    } else {
+                        self.fit_selection_bounds()
+                    }
+                } else {
+                    self.fit_all_bounds()
+                };
                 let bounds = bounds.ok_or_else(|| Error::new(ErrorKind::Conflict, "node geometry is unavailable"))?;
                 let viewport = self.navigation.usable(self.viewport, t);
                 let padding = t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius;
@@ -162,7 +180,7 @@ impl NodeCraftApp {
         if !self.navigation.visible || !ctx.input(|i| i.pointer.primary_pressed()) {
             return false;
         }
-        let context = self.navigation_context(ctx, "canvas.pan_to");
+        let context = self.navigation_context(ctx, "canvas.pan_to", &json!({"x":0,"y":0}));
         let pan = self.navigation_enabled_with_context(context, "canvas.pan_to", &json!({"x":0,"y":0})).is_ok() && !self.navigation.geometry.error;
         self.navigation.press_pending(ctx, self.viewport, pan, self.theme.tokens())
     }

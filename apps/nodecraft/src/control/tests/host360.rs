@@ -61,6 +61,30 @@ fn an_agent_formats_named_cards_it_never_selected_in_one_undo_step() {
 }
 
 #[test]
+fn an_agent_frames_named_cards_without_changing_the_persons_selection() {
+    let (mut app, ctx, ids) = three_cards();
+    app.selection.only(ids[0]);
+    let (document, revision, selection) = (app.session.document().clone(), app.session.revision(), app.selection.clone());
+    let mut connection = connection();
+    let result = run(&mut app, &ctx, &mut connection, "canvas.fit_selection", json!({"nodes":[ids[1],ids[2]]})).unwrap();
+    assert!(result["result"]["zoom"].as_f64().is_some(), "{result}");
+    for id in [ids[1], ids[2]] {
+        let rect = *app.navigation.geometry.rects.get(&id).unwrap();
+        let screen = app.view.rect_to_screen(app.viewport.min, rect);
+        assert!(app.viewport.intersects(screen), "named card is framed: {screen:?} outside {:?}", app.viewport);
+    }
+    assert_eq!((app.session.document(), app.session.revision()), (&document, revision));
+    assert_eq!(app.selection, selection, "agent framing cannot select its named cards");
+    for nodes in [json!([ids[1], ids[1]]), json!([ids[1], NodeId::from_bytes([9; 16])]), json!([ids[0]])] {
+        let before = app.view;
+        let error = run(&mut app, &ctx, &mut connection, "canvas.fit_selection", json!({"nodes":nodes})).unwrap_err();
+        assert!(matches!(error.kind, ErrorKind::Conflict | ErrorKind::InvalidInput), "{error:?}");
+        assert_eq!(app.view, before, "invalid nodes cannot move the camera");
+        assert_eq!(app.selection, selection);
+    }
+}
+
+#[test]
 fn a_named_card_that_isnt_on_the_shown_canvas_formats_nothing() {
     let (mut app, ctx, ids) = three_cards();
     let revision = app.session.revision();

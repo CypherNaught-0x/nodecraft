@@ -75,7 +75,10 @@ connecting; this is not a bound on filesystem stalls.
 `command.run` routes `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and
 `canvas.pan_to` through the app's scoped navigation bridge. A drawn viewport is required; active
 editors, popups and gestures keep ownership and refuse navigation. `commands.list` reports fresh
-live availability for parameterless commands. These operations change only the view, without
+live availability for parameterless commands. `canvas.fit_selection` accepts an optional `nodes`
+list (2..=MAX_CHANGES unique IDs on the shown canvas); when supplied it frames those cards,
+including collapsed-field headers for hidden cards, without changing the person's selection.
+Without `nodes` it frames the selection. These operations change only the view, without
 document revisions, undo entries or events. Headless control/MCP sessions remain Unsupported.
 The five `canvas.search_*` commands use the app's existing scoped search host: open the bar,
 set a query, step next/previous, or close it. Queries retain the 1024 UTF-8 byte bound and the
