@@ -76,7 +76,7 @@ fn settings() -> ProviderSettings {
 
 fn fetch(http: Arc<Server>, settings: &ProviderSettings, sources: &[String]) -> Result<option_fetch::Fetched, Error> {
     let keys = MemoryStore::default();
-    let env = HostEnv { keys: &keys, http, settings, now_ms: Arc::new(|| 0) };
+    let env = HostEnv { keys: &keys, http, settings, now_ms: Arc::new(|| 0), progress: None };
     block_on(option_fetch::fetch(&env, sources))
 }
 
@@ -237,7 +237,7 @@ fn restyle_presets_come_from_higgsfield_with_their_names_as_labels_even_without_
     keys.set(&Account::new("higgsfield").unwrap(), &Secret::new("KEY_ID:KEY_SECRET").unwrap()).unwrap();
     let http = Arc::new(Presets(Mutex::default()));
     let settings = ProviderSettings::default();
-    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0) };
+    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
     let sources = ["comfyui.checkpoints".to_owned(), "higgsfield.restyle_presets".to_owned()];
     let fetched = block_on(option_fetch::fetch(&env, &sources));
     let asked = http.0.lock().unwrap();
@@ -283,7 +283,7 @@ fn when_nothing_could_be_fetched_a_provider_that_failed_says_more_than_one_not_s
     let keys = MemoryStore::default();
     keys.set(&Account::new("higgsfield").unwrap(), &Secret::new("KEY_ID:KEY_SECRET").unwrap()).unwrap();
     let settings = ProviderSettings::default();
-    let env = HostEnv { keys: &keys, http: Arc::new(Down), settings: &settings, now_ms: Arc::new(|| 0) };
+    let env = HostEnv { keys: &keys, http: Arc::new(Down), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
     let sources = ["comfyui.checkpoints".to_owned(), "higgsfield.restyle_presets".to_owned()];
     let error = block_on(option_fetch::fetch(&env, &sources)).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Network, "{}", error.message);
@@ -322,7 +322,7 @@ fn soul_ids_are_listed_by_name_for_soul_2_even_when_the_presets_fail() {
     keys.set(&Account::new("higgsfield").unwrap(), &Secret::new("KEY_ID:KEY_SECRET").unwrap()).unwrap();
     let http = Arc::new(Souls(Mutex::default()));
     let settings = ProviderSettings::default();
-    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0) };
+    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
     let sources = ["higgsfield.restyle_presets".to_owned(), "higgsfield.soul_ids".to_owned()];
     let fetched = block_on(option_fetch::fetch(&env, &sources));
     // The presets, then Soul ID pages until an empty one.

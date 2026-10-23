@@ -18,8 +18,9 @@ pub fn keychain_maker(settings: ProviderSettings) -> Result<impl FnMut(&str) -> 
         Arc::new(nodecraft_providers::http::ReqwestHttp::new().map_err(|e| Error::new(ErrorKind::Unsupported, e.message))?);
     let start = std::time::Instant::now();
     let now_ms: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(move || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX));
+    let progress: Arc<dyn nodecraft_providers::comfyui::progress::Feeds> = Arc::new(nodecraft_providers::comfyui::progress::native::NativeFeeds);
     Ok(move |adapter: &str| {
-        let env = HostEnv { keys: &KeyringStore, http: http.clone(), settings: &settings, now_ms: now_ms.clone() };
+        let env = HostEnv { keys: &KeyringStore, http: http.clone(), settings: &settings, now_ms: now_ms.clone(), progress: Some(progress.clone()) };
         provider_setup::make(adapter, &env)
     })
 }

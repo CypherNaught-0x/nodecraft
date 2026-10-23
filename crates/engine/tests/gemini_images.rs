@@ -301,7 +301,7 @@ fn factory_routing_preserves_unknown_price_and_explicit_consent_before_network()
         keys.set(&Account::new("gemini").unwrap(), &Secret::new("fixture-key-not-real").unwrap()).unwrap();
         let http = Arc::new(Transport { script: Script::Pending, requests: AtomicUsize::new(0) });
         let settings = ProviderSettings::default();
-        let env = provider_setup::HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0) };
+        let env = provider_setup::HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
         let setup = provider_setup::build(&nodecraft_catalog::Catalog::builtin().unwrap(), |adapter| provider_setup::make(adapter, &env));
         assert_eq!(setup.readiness("gemini-images"), Some(&provider_setup::Readiness::Ready));
         session.set_provider_routing(setup.routing([(node, "gemini-images")]).unwrap()).unwrap();

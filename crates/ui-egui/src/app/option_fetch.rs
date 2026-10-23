@@ -57,7 +57,7 @@ impl OptionFetcher {
         let start = std::time::Instant::now();
         let now_ms: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(move || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX));
         let (fetcher, mut service) = Self::spawn(Box::new(move |sources, settings| {
-            let env = HostEnv { keys: &KeyringStore, http: http.clone(), settings, now_ms: now_ms.clone() };
+            let env = HostEnv { keys: &KeyringStore, http: http.clone(), settings, now_ms: now_ms.clone(), progress: None };
             runtime.block_on(option_fetch::fetch(&env, sources))
         }))?;
         services.register(OPTION_SERVICE, move |request| service(request))?;
