@@ -289,7 +289,13 @@ fn leftovers_are_kept_while_another_copy_runs() {
     assert_eq!(after_start(dir.path(), Some(&kind), second.alone), None);
     assert!(leftover.exists());
     drop((first, second));
-    let third = Instance::hold(&updates);
+    // As below, a child another test forks may hold the lock until it execs (#827).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut third = Instance::hold(&updates);
+    while !third.alone && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        third = Instance::hold(&updates);
+    }
     assert!(third.alone, "the lock goes with the copies holding it");
     after_start(dir.path(), Some(&kind), third.alone);
     assert!(!leftover.exists());
@@ -315,7 +321,13 @@ fn an_old_bundle_another_copy_runs_from_is_kept() {
     clean(&kind, dir.path());
     assert!(old.is_dir());
     drop(running);
-    clean(&kind, dir.path());
+    // A child another test forks shares the lock until it execs (#827), so this may take a try
+    // or two.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while old.exists() && std::time::Instant::now() < deadline {
+        clean(&kind, dir.path());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     assert_eq!(names(dir.path()), ["NodeCraft.app"]);
 }
 
