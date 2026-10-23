@@ -301,3 +301,51 @@ fn an_optional_capability_is_granted_only_as_named() {
     assert_eq!(grant(&mut s, both).unwrap()["grant_id"], more["grant_id"]);
     assert_eq!(s.dispatch("plugins.rights", &json!({"package_id": "io.example.acme"})).unwrap()["grant"]["grant_id"], more["grant_id"]);
 }
+
+/// The person reads the licence before installing (#172): its text comes with the dry run, cut
+/// at a character boundary when long.
+#[test]
+fn a_dry_run_carries_the_notice_text_cut_at_a_character_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let manifest = manifest("io.example.palette", "1.0.0");
+    let long = "é".repeat(MAX_NOTICE_BYTES);
+    let files = [("manifest.json", manifest.as_bytes()), ("LICENSE", long.as_bytes()), ("NOTICE", b"Made by Example.\n".as_slice()), ("d/warm.json", b"{}")];
+    let path = dir.path().join("p.ncraft-plugin");
+    std::fs::write(&path, archive::build(&files, None).unwrap()).unwrap();
+    let mut s = session(BTreeSet::new(), None);
+    let dry = s.dispatch("plugins.import", &json!({"location": path.to_str().unwrap(), "dry_run": true})).unwrap();
+    let texts = dry["notice_texts"].as_array().unwrap();
+    assert_eq!(texts.len(), 2);
+    let license = texts.iter().find(|t| t["path"] == "LICENSE").unwrap();
+    let text = license["text"].as_str().unwrap();
+    assert!(text.len() <= MAX_NOTICE_BYTES && text.len() > MAX_NOTICE_BYTES - 2, "{}", text.len());
+    assert!(text.chars().all(|c| c == 'é'));
+    assert_eq!(license["truncated"], true);
+    let notice = texts.iter().find(|t| t["path"] == "NOTICE").unwrap();
+    assert_eq!((notice["text"].as_str(), &notice["truncated"]), (Some("Made by Example.\n"), &json!(false)));
+    // A data package runs nothing: its rights say so.
+    s.dispatch("plugins.import", &json!({"location": path.to_str().unwrap()})).unwrap();
+    assert_eq!(s.dispatch("plugins.rights", &json!({"package_id": "io.example.palette"})).unwrap()["runs"], false);
+}
+
+#[test]
+fn an_install_names_the_digest_it_was_shown_and_a_changed_file_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = package(dir.path(), "io.example.palette", "1.0.0");
+    let mut s = session(BTreeSet::new(), None);
+    let shown = s.dispatch("plugins.import", &json!({"location": path, "dry_run": true})).unwrap()["digest"].as_str().unwrap().to_owned();
+    // The file is replaced by another version after the person looked at it.
+    let other = package(dir.path(), "io.example.palette", "2.0.0");
+    std::fs::rename(&other, &path).unwrap();
+    let error = s.dispatch("plugins.import", &json!({"location": path, "digest": shown})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict, "{error:?}");
+    assert!(error.message.contains("changed since it was checked"));
+    assert!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"].as_array().unwrap().is_empty(), "nothing installed");
+    for digest in [json!("blake3:zz"), json!(7), json!("x".repeat(100))] {
+        let error = s.dispatch("plugins.import", &json!({"location": path, "digest": digest})).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{digest}");
+    }
+    // The digest it has now installs.
+    let now = s.dispatch("plugins.import", &json!({"location": path, "dry_run": true})).unwrap()["digest"].clone();
+    s.dispatch("plugins.import", &json!({"location": path, "digest": now})).unwrap();
+}

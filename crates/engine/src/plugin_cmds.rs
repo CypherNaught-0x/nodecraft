@@ -32,6 +32,11 @@ pub mod worker;
 pub use worker::{PluginWorker, register_plugin_worker};
 /// Largest trust file read.
 const MAX_TRUST_BYTES: u64 = 256 * 1024;
+/// Most notice text an import report carries for one licence or notice file, and in all.
+pub const MAX_NOTICE_BYTES: usize = 16 * 1024;
+pub const MAX_NOTICES_BYTES: usize = 64 * 1024;
+/// Most notice files whose text is returned.
+pub const MAX_NOTICES: usize = 64;
 
 fn object(required: &[&str], properties: Value) -> Value {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": required, "properties": properties})
@@ -83,7 +88,8 @@ fn file_schema() -> Value {
     object(
         &["location"],
         json!({"location": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Path of the .ncraft-plugin file (UTF-8)."},
-               "dry_run": {"type": "boolean", "description": "Only verify and report; install nothing."}}),
+               "dry_run": {"type": "boolean", "description": "Only verify and report; install nothing."},
+               "digest": {"type": "string", "pattern": "^blake3:[0-9a-f]{64}$", "description": "The digest a dry run showed; a file that no longer has it is refused."}}),
     )
 }
 
@@ -123,6 +129,8 @@ struct FileParams {
     location: String,
     #[serde(default)]
     dry_run: bool,
+    #[serde(default)]
+    digest: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -208,8 +216,18 @@ pub(crate) fn referenced_of(request: &Value) -> Result<BTreeSet<PackageDigest>, 
 
 fn file_op(op: &'static str) -> impl Fn(&Context<'_>, &Value) -> Result<Effect, Error> {
     move |_, p| {
+        if p.get("digest").is_some_and(|d| !d.is_null() && d.as_str().is_none_or(|d| d.len() > 80)) {
+            return Err(Error::new(ErrorKind::InvalidInput, "invalid package digest"));
+        }
         let p: FileParams = params(p)?;
-        Ok(service(json!({"op": op, "location": p.location, "dry_run": p.dry_run})))
+        let mut request = json!({"op": op, "location": p.location, "dry_run": p.dry_run});
+        if let Some(d) = p.digest {
+            PackageDigest::parse(&d).map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))?;
+            if let Some(o) = request.as_object_mut() {
+                o.insert("digest".into(), json!(d));
+            }
+        }
+        Ok(service(request))
     }
 }
 
@@ -311,14 +329,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.import",
             "Import plugin package",
             file_schema,
-            "{location: string, dry_run?: bool}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run, rights: {required, optional, origins}|{error}, rights_delta (update): {added_capabilities, removed_capabilities, added_origins, removed_origins}}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
+            "{location: string, dry_run?: bool, digest?: string}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only; digest: refuse unless the file still has the digest a dry run showed). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run, rights: {required, optional, origins}|{error}, rights_delta (update): {added_capabilities, removed_capabilities, added_origins, removed_origins}}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
             import,
         ),
         spec(
             "plugins.update",
             "Update plugin package",
             file_schema,
-            "{location: string, dry_run?: bool}; installs a disabled package version, keeping the previous digest for rollback. Direct result: import report with replaced. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{location: string, dry_run?: bool, digest?: string}; installs a disabled package version (digest: as for plugins.import), keeping the previous digest for rollback. Direct result: import report with replaced. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             update,
         ),
         spec(
@@ -465,6 +483,24 @@ fn report_json(r: &ImportReport, dry_run: bool) -> Value {
     })
 }
 
+/// The text of `package`'s licence and notice files, for a person to read before installing:
+/// each cut at a character boundary to [`MAX_NOTICE_BYTES`], and all together to
+/// [`MAX_NOTICES_BYTES`]; `truncated` says where something was left out.
+fn notice_texts(package: &nodecraft_plugin_store::Package) -> Value {
+    let mut left = MAX_NOTICES_BYTES;
+    let texts: Vec<Value> = package
+        .notices()
+        .take(MAX_NOTICES)
+        .filter_map(|path| {
+            let text = String::from_utf8_lossy(package.files.get(path)?);
+            let shown = text.get(..text.floor_char_boundary(MAX_NOTICE_BYTES.min(left))).unwrap_or_default();
+            left = left.saturating_sub(shown.len());
+            Some(json!({"path": path.to_string(), "text": shown, "truncated": shown.len() < text.len()}))
+        })
+        .collect();
+    Value::Array(texts)
+}
+
 fn grant_json(grant: &nodecraft_plugin_store::Grant) -> Value {
     let capabilities: Vec<&str> = grant.rights.capabilities.iter().map(|c| c.as_str()).collect();
     json!({"grant_id": grant.grant_id, "epoch": grant.epoch, "capabilities": capabilities, "origins": grant.rights.origins})
@@ -553,11 +589,18 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
             let bytes = read_capped(std::path::Path::new(location), limit, "package file")?;
             let trust = trust(host)?;
             let incoming = store.inspect(&bytes, &trust)?;
+            // The person agreed to what a dry run showed; a file changed since is another package.
+            if let Some(shown) = request.get("digest").and_then(Value::as_str)
+                && shown != incoming.digest.to_string()
+            {
+                return Err(Error::new(ErrorKind::Conflict, "the package file changed since it was checked; check it again before installing"));
+            }
             let before = (op == "update").then(|| store.load(&incoming.manifest.package_id)).transpose()?;
             let report = if op == "import" { store.import(&bytes, &trust, dry_run)? } else { store.update(&bytes, &trust, dry_run)? };
             let mut out = report_json(&report, dry_run);
             if let Some(o) = out.as_object_mut() {
                 o.insert("rights".into(), crate::plugin_rights::asks_json(&incoming));
+                o.insert("notice_texts".into(), notice_texts(&incoming));
                 // A delta against a version whose asks can't be read would claim everything is new.
                 if let Some((Ok(old), Ok(new))) = before.as_ref().map(|b| (crate::plugin_rights::asks(b), crate::plugin_rights::asks(&incoming))) {
                     o.insert("rights_delta".into(), crate::plugin_rights::delta(&old, &new));
@@ -583,6 +626,8 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
             if let Some(o) = out.as_object_mut() {
                 o.insert("package_id".into(), json!(id.as_str()));
                 o.insert("digest".into(), json!(package.digest.to_string()));
+                // A data package runs nothing, so there is nothing to grant.
+                o.insert("runs".into(), json!(!matches!(package.manifest.runtime, nodecraft_plugin::manifest::Runtime::Data)));
                 o.insert("grant".into(), grants.as_ref().and_then(|g| g.live(&id, &package.digest)).map_or(Value::Null, grant_json));
             }
             Ok(out)

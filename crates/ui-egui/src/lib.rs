@@ -20,6 +20,7 @@ pub mod navigation;
 pub mod noodle;
 pub mod order;
 pub mod palette;
+pub mod plugins;
 pub mod preview;
 pub mod search;
 pub mod selection;
