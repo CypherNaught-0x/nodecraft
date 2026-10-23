@@ -918,16 +918,14 @@ impl Session {
     fn dispatch_inner(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
         let spec = *self.registry.get(id)?;
         let effect = Self::describe(&spec, &self.context(Phase::Dispatch), params)?;
-        let reads = matches!(
-            effect,
-            Effect::None { .. }
-                | Effect::Perf { .. }
-                | Effect::Service { .. }
-                | Effect::Export { .. }
-                | Effect::PreparedRun { .. }
-                | Effect::CancelFile
-                | Effect::Elements { .. }
-        );
+        // A run that reuses cached results (#91) edits the document first.
+        let reads = match &effect {
+            Effect::PreparedRun { prepared } => !prepared.reuses(),
+            effect => matches!(
+                effect,
+                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile | Effect::Elements { .. }
+            ),
+        };
         // A run would start on the project being replaced, so only pure reads, and the Elements
         // library (which never touches the project), go past an open.
         if matches!(self.pending, Some(PendingFile::Open(_)))
@@ -948,10 +946,26 @@ impl Session {
                 validate_json(&result)?;
                 return Ok(result);
             }
-            Effect::PreparedRun { prepared } => {
+            Effect::PreparedRun { mut prepared } => {
                 self.access.runs()?;
+                // The cached results the run reuses go in first, as their own undo step: the run
+                // was planned on the document with them in place, and is bound to it now.
+                // A run waiting in the host is bound to the document as it is: an edit now would
+                // leave it to be refused, so this one waits until those have started.
+                if prepared.reuses() && !self.services.run_host_idle() {
+                    return Err(Error::new(ErrorKind::Busy, "another run is starting; try again in a moment"));
+                }
+                if let Some(changes) = prepared.take_reuse() {
+                    let edit = guard(|| self.prepare(Effect::Edit { changes, result: Value::Null, gesture: None }))?;
+                    self.commit_prepared(edit, spec.id)?;
+                    guard(|| prepared.rebind(&self.context(Phase::Dispatch)))?;
+                }
+                let reused = prepared.take_reused();
                 return guard(|| {
-                    let result = self.services.invoke_run_host(*prepared)?;
+                    let mut result = self.services.invoke_run_host(*prepared)?;
+                    if let (false, Some(object)) = (reused.is_empty(), result.as_object_mut()) {
+                        object.insert("reused".into(), serde_json::json!(reused));
+                    }
                     validate_json(&result)?;
                     Ok(result)
                 });

@@ -558,6 +558,8 @@ impl RunHost {
             inbox.waiting.push_back(prepared);
             Ok(json!({"accepted": true}))
         })?;
+        let inbox = Arc::clone(&self.inbox);
+        services.register_run_host_idle(move || lock(&inbox).waiting.is_empty())?;
         held::register(&self.results, services)
     }
 

@@ -455,8 +455,9 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
         let estimate = options.estimate.then(|| estimates::for_targets(&mut runner, session, canvas, &targets)).transpose()?;
         let quoted = quote::quote(session, canvas, &targets)?;
         let steps = runner.run(session, canvas, &targets, &quoted, run::Consent { spend: options.yes })?;
-        // An unaccounted result was kept on its card, so it is exported too.
-        let kept = |s: &&serde_json::Value| s["status"] == "recorded" || s["status"] == "unaccounted";
+        // An unaccounted result was kept on its card, and a reused one put there, so they are
+        // exported too.
+        let kept = |s: &&serde_json::Value| s["status"] == "recorded" || s["status"] == "unaccounted" || s["status"] == "reused";
         let ran: Vec<NodeId> = steps.iter().filter(kept).filter_map(|s| s["node"].as_str()?.parse().ok()).collect();
         let results = match &out {
             Some(out) => run::export(session, canvas, &ran, out)?,
@@ -471,7 +472,8 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
     match done {
         Ok(report) => {
             let listed = |key: &str| report[key].as_array().into_iter().flatten().cloned().collect::<Vec<_>>();
-            let failed = listed("steps").iter().any(|step| step["status"] != "recorded") || listed("results").iter().any(|r| r["status"] == "failed");
+            let failed = listed("steps").iter().any(|step| step["status"] != "recorded" && step["status"] != "reused")
+                || listed("results").iter().any(|r| r["status"] == "failed");
             let printed = print(options.json, &report, run::report_text);
             if failed { ExitCode::FAILURE } else { printed }
         }

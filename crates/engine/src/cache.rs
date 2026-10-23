@@ -11,6 +11,8 @@
 //!   never makes a result stale.
 //! - **Results only.** A hit changes the document like any result does (one undo step, or the
 //!   edit's own step when live recompute applies it), and costs nothing.
+//! - **Where.** Live recompute reuses before it computes, `run.reuse` when asked, and
+//!   `run.quote`/`run.start` before they price or start a run (see `run_cmds::reuse`).
 use nodecraft_exec::staleness::{CACHE_CONFIG, InputHasher, MAX_QUERY_BYTES};
 use nodecraft_graph::{Canvas, Change, Changeset, Generation, JobSettings, Node, Project};
 use nodecraft_nodes::{Category, Registry};
@@ -69,9 +71,32 @@ pub fn hits(
     canvas_id: CanvasId,
     kinds: &Registry,
     nodes: impl IntoIterator<Item = NodeId>,
-    mut fresh: impl FnMut() -> Result<GenerationId, Error>,
+    fresh: impl FnMut() -> Result<GenerationId, Error>,
 ) -> Result<Vec<Hit>, Error> {
-    let Some(canvas) = project.canvases().get(&canvas_id) else { return Ok(Vec::new()) };
+    Ok(lookup(project, canvas_id, kinds, nodes, fresh)?.hits)
+}
+
+/// What [`lookup`] found.
+pub struct Lookup {
+    /// As [`hits`] returns them.
+    pub hits: Vec<Hit>,
+    /// The nodes asked about, with caching on, whose active result is current once the hits are
+    /// in place: they have nothing to reuse and nothing to redo. Left empty when the look stopped
+    /// at [`MAX_HITS`], before it could tell.
+    pub current: BTreeSet<NodeId>,
+    /// `project` with the hits applied, when there are any.
+    pub project: Option<Project>,
+}
+
+/// [`hits`], with the nodes already current and the project the hits made.
+pub fn lookup(
+    project: &Project,
+    canvas_id: CanvasId,
+    kinds: &Registry,
+    nodes: impl IntoIterator<Item = NodeId>,
+    mut fresh: impl FnMut() -> Result<GenerationId, Error>,
+) -> Result<Lookup, Error> {
+    let Some(canvas) = project.canvases().get(&canvas_id) else { return Ok(Lookup { hits: Vec::new(), current: BTreeSet::new(), project: None }) };
     let mut wanted: BTreeSet<NodeId> = nodes.into_iter().filter(|id| canvas.nodes().get(id).is_some_and(|n| enabled(n, kinds))).collect();
     // The project with this call's hits applied, copied only once there is one. Live recompute
     // gets here only for an edit that changed what a run reads — a settled canvas skips the look
@@ -79,6 +104,7 @@ pub fn hits(
     // usually matches no result to reuse, so the copy stays the exception (#556).
     let mut scratch: Option<Project> = None;
     let mut found: Vec<Hit> = Vec::new();
+    let mut up_to_date = BTreeSet::new();
     while !wanted.is_empty() && found.len() < MAX_HITS {
         let Some(canvas) = scratch.as_ref().unwrap_or(project).canvases().get(&canvas_id) else { break };
         // Every result on the canvas by kind and input hash, once per round.
@@ -97,6 +123,7 @@ pub fn hits(
         let mut hasher = InputHasher::new(canvas, kinds, MAX_QUERY_BYTES)?;
         let mut round = Vec::new();
         let mut done = Vec::new();
+        let mut now_current = BTreeSet::new();
         for id in &wanted {
             let Some(node) = canvas.nodes().get(id) else {
                 done.push(*id);
@@ -106,6 +133,7 @@ pub fn hits(
             let active = node.active.and_then(|a| node.history.iter().find(|g| g.id == a));
             // Current now; a hit upstream in this round may still make it reusable next round.
             if active.is_some_and(|g| g.input_hash == Some(current) && !g.is_partial()) {
+                now_current.insert(*id);
                 continue;
             }
             if let Some(own) = node.history.iter().find(|g| g.input_hash == Some(current) && !g.is_partial()) {
@@ -132,6 +160,8 @@ pub fn hits(
             wanted.remove(&id);
         }
         if round.is_empty() {
+            // Nothing changed this round: what was current in it is current with every hit.
+            up_to_date = now_current;
             break;
         }
         let changeset = Changeset::new(changes(canvas_id, canvas, &round)?);
@@ -142,7 +172,7 @@ pub fn hits(
         found.extend(round);
     }
     found.truncate(MAX_HITS);
-    Ok(found)
+    Ok(Lookup { hits: found, current: up_to_date, project: scratch })
 }
 
 /// The changes applying `hits` on `canvas`.

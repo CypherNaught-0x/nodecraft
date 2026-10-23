@@ -3,7 +3,9 @@
 //!
 //! - `run.quote` (read-only): plans a request and prices it. The response has the steps, each
 //!   step's price or why it has none, totals per currency, the budget blocks, and the steps
-//!   admitted only provisionally (their job counts aren't known yet).
+//!   admitted only provisionally (their job counts aren't known yet). A node with caching on
+//!   whose identical result is already in the project (#91) isn't a step: it is listed in
+//!   `reused` and costs nothing.
 //! - `run.start`: quotes again and refuses when the budgets block the run. The caller must also
 //!   `accept` the price it was shown: amounts covering the current totals, and `partial: true`
 //!   when some step can't be priced. So no caller (UI, CLI, agent) starts a paid run without
@@ -11,7 +13,9 @@
 //!   to the host's `run.start` service, which plans the same request and runs it. The accepted
 //!   amounts and the accepted count of unknown-price jobs stay with the authorized run as its
 //!   cumulative ceiling (see [`crate::run_ceiling`]), so deferred fan-out and retries can't
-//!   reserve more, or admit more unknown-price jobs, than was accepted.
+//!   reserve more, or admit more unknown-price jobs, than was accepted. The cached results the
+//!   quote listed are applied first, as their own undo step; a run that reuses every node it
+//!   planned only applies them and goes to no host.
 //! - `run.record` (host only): records a run's results, one generation per node, as one undo
 //!   step. A result marked `keep` (a partial answer kept by hand) doesn't replace the node's
 //!   active result.
@@ -28,7 +32,7 @@
 use crate::commands::{CommandSpec, Context, Effect, params};
 use nodecraft_catalog::Catalog;
 use nodecraft_exec::cost::{Budgets, Spent, StepQuote, Unpriced, UsageLog, check, format_money};
-use nodecraft_exec::planner::{Planned, RunMode, plan_expanded};
+use nodecraft_exec::planner::{Planned, RunMode, plan_settled};
 use nodecraft_exec::run::{keep_changes, record_changes};
 use nodecraft_graph::{Changeset, Generation};
 use nodecraft_types::{CanvasId, Error, ErrorKind, FieldId, Money, NodeId};
@@ -324,30 +328,58 @@ fn run_canvas(document: &nodecraft_graph::Project, id: nodecraft_types::CanvasId
     Ok(canvas)
 }
 
+/// Plans `p` on `document`, leaving out the `settled` nodes, with the technique expansion it
+/// planned on.
+fn plan_on<'a>(
+    c: &Context<'_>,
+    document: &'a nodecraft_graph::Project,
+    p: &RunParams,
+    settled: &BTreeSet<NodeId>,
+) -> Result<(nodecraft_exec::technique::Expanded<'a>, Planned), Error> {
+    let canvas = run_canvas(document, p.canvas)?;
+    let mode = mode_of(p)?;
+    let requested: BTreeSet<NodeId> = p.nodes.iter().copied().collect();
+    // Only these modes look at staleness; a plain selection shouldn't pay to hash the canvas.
+    let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, c.kinds)? } else { BTreeSet::new() };
+    // Technique nodes run their versions' nodes, inlined for planning, quoting and admission.
+    let expanded = nodecraft_exec::technique::expand(document.canvases(), canvas, c.kinds)?;
+    // Planning consults the option lists the host has fetched, so a value off a known list is
+    // refused here: before a quote, before admission, before an idempotency key exists.
+    let planned = plan_settled(&expanded, c.kinds, &mode, &requested, settled, &stale, c.routing.routing.targets(), crate::option_cmds::lookup(c.resources))?;
+    Ok((expanded, planned))
+}
+
+/// The cached results a planned run reuses (#91), if any.
+fn reusing(c: &Context<'_>, p: &RunParams, planned: &Planned) -> Result<Option<reuse::Reuse>, Error> {
+    match planned {
+        Planned::Ready(plan) => reuse::find(c.document, p.canvas, c.kinds, plan),
+        Planned::Blocked(_) => Ok(None),
+    }
+}
+
 fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error> {
     let document = c.document;
     let kinds = c.kinds;
     let catalog = c.resources.require::<RunCatalog>()?;
     let catalog = catalog.catalog();
     let budget = c.resources.require::<BudgetState>()?;
-    let targets = c.routing.routing.targets();
     let resources = c.resources;
-    let canvas = run_canvas(document, p.canvas)?;
-    let mode = mode_of(p)?;
-    let requested: BTreeSet<NodeId> = p.nodes.iter().copied().collect();
-    // Only these modes look at staleness; a plain selection shouldn't pay to hash the canvas.
-    let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, kinds)? } else { BTreeSet::new() };
-    // Technique nodes run their versions' nodes, inlined for planning, quoting and admission.
-    let expanded = nodecraft_exec::technique::expand(document.canvases(), canvas, kinds)?;
-    // Planning consults the option lists the host has fetched, so a value off a known list is
-    // refused here: before a quote, before admission, before an idempotency key exists.
-    let run_plan = match plan_expanded(&expanded, kinds, &mode, &requested, &stale, targets, crate::option_cmds::lookup(resources))? {
+    let (expanded, planned) = plan_on(c, document, p, &BTreeSet::new())?;
+    // Nodes whose identical result is already in the project don't run: the run is planned again
+    // from the project with those results in place.
+    let reuse = reusing(c, p, &planned)?;
+    let (expanded, planned) = match &reuse {
+        Some(reuse) => plan_on(c, reuse.project(document), p, reuse.settled())?,
+        None => (expanded, planned),
+    };
+    let reused = reuse.as_ref().map(reuse::Reuse::reused).unwrap_or_default();
+    let run_plan = match planned {
         Planned::Ready(run_plan) => run_plan,
         Planned::Blocked(blockers) => {
             // Native hook messages stay private. Built-in/planner validation text is bounded
             // separately; at most one hundred UUID/code records share the report byte cap.
             let reasons = blocked_reasons(&blockers);
-            let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": [], "requests": [], "requests_complete": false});
+            let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": [], "reused": reused, "requests": [], "requests_complete": false});
             return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
         }
     };
@@ -373,7 +405,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
             .chain(refused)
             .take(MAX_RUN_BLOCKS_LISTED)
             .collect();
-        let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": [], "requests": requests_json, "requests_complete": requests_complete});
+        let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": [], "reused": reused, "requests": requests_json, "requests_complete": requests_complete});
         return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
     }
     let scratch_headroom = request_scratch(p)?;
@@ -388,7 +420,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         Err(error) => {
             let reason = admission_reason(&error);
             return Ok(Priced {
-                response: json!({"token":token,"blocked":[reason],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[],"resumable":[],"quoted":[],"requests":requests_json,"requests_complete":requests_complete}),
+                response: json!({"token":token,"blocked":[reason],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[],"resumable":[],"quoted":[],"reused":reused,"requests":requests_json,"requests_complete":requests_complete}),
                 totals: BTreeMap::new(),
                 complete: false,
                 allowed: false,
@@ -422,6 +454,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         "estimated": estimated,
         "resumable": resumable,
         "quoted": quoted,
+        "reused": reused,
         "requests": requests_json,
         "requests_complete": requests_complete,
         "token": token,
@@ -493,8 +526,33 @@ pub struct PreparedRun {
     accept: Accept,
     routing_nonce: Option<[u8; 32]>,
     bindings: Vec<(NodeId, crate::provider_routing::RegisteredProvider)>,
+    /// The cached results the run reuses (#91), to apply before it starts.
+    reuse: Option<Changeset>,
+    /// The nodes that don't run because they reuse a result.
+    reused: Vec<NodeId>,
+    /// The binding the run was prepared under: the accepted quote's, or the one after the reused
+    /// results were applied.
+    bound: String,
 }
 impl PreparedRun {
+    pub(crate) fn reuses(&self) -> bool {
+        self.reuse.is_some()
+    }
+    /// The cached results to apply before the run starts; after applying them, [`Self::rebind`]
+    /// the run to the document they made.
+    pub(crate) fn take_reuse(&mut self) -> Option<Changeset> {
+        self.reuse.take()
+    }
+    /// The nodes that don't run because they reuse a result.
+    pub(crate) fn take_reused(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.reused)
+    }
+    /// Binds the run to `c`, the document right after its reused results were applied: the
+    /// document it was planned on.
+    pub(crate) fn rebind(&mut self, c: &Context<'_>) -> Result<(), Error> {
+        self.bound = binding(c, c.resources.require::<RunCatalog>()?, &self.run, MAX_BINDING_BYTES)?;
+        Ok(())
+    }
     pub fn quote(&self) -> &nodecraft_exec::cost::Quote {
         &self.quote
     }
@@ -562,7 +620,7 @@ pub(crate) fn authorize(
     options: nodecraft_exec::run::RunOptions,
 ) -> Result<(AuthorizedRun, nodecraft_exec::run::Progress), Error> {
     let catalog = c.resources.require::<RunCatalog>()?;
-    if prepared.routing_nonce != c.routing.nonce || binding(c, catalog, &prepared.run, MAX_BINDING_BYTES)? != prepared.accept.token {
+    if prepared.routing_nonce != c.routing.nonce || binding(c, catalog, &prepared.run, MAX_BINDING_BYTES)? != prepared.bound {
         return Err(invalid("the prepared run is stale; quote and prepare again"));
     }
     let canvas = c.document.canvases().get(&prepared.run.canvas).ok_or_else(|| invalid("canvas does not exist"))?;
@@ -601,17 +659,28 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if token != accept.token {
         return Err(invalid("the run changed since quotation; quote again"));
     }
-    let canvas = run_canvas(c.document, run.canvas)?;
-    let expanded = nodecraft_exec::technique::expand(c.document.canvases(), canvas, c.kinds)?;
+    let (expanded, planned) = plan_on(c, c.document, &run, &BTreeSet::new())?;
+    let reuse = reusing(c, &run, &planned)?;
+    let (expanded, planned) = match &reuse {
+        Some(reuse) => plan_on(c, reuse.project(c.document), &run, reuse.settled())?,
+        None => (expanded, planned),
+    };
     // Preflight ALL snapshot ownership before the single snapshot clone.
     nodecraft_exec::admission::measure::canvas(&expanded.canvas)?;
-    let mode = mode_of(&run)?;
-    let requested = run.nodes.iter().copied().collect();
-    let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, c.kinds)? } else { BTreeSet::new() };
-    let plan = match plan_expanded(&expanded, c.kinds, &mode, &requested, &stale, c.routing.routing.targets(), crate::option_cmds::lookup(c.resources))? {
+    let plan = match planned {
         Planned::Ready(plan) => plan,
         Planned::Blocked(blockers) => return Err(invalid(blocked_reasons(&blockers).join("; "))),
     };
+    let reused = reuse.as_ref().map(reuse::Reuse::all).unwrap_or_default();
+    let applied = reuse.as_ref().filter(|reuse| !reuse.changes.is_empty()).map(|reuse| Changeset::new(reuse.changes.clone()));
+    // Every node reuses a result: there is nothing to run, only the results to apply, if any.
+    if plan.steps.is_empty() && !reused.is_empty() {
+        accepted_limits(&accept)?;
+        return Ok(match applied {
+            Some(changes) => Effect::Edit { changes, result: json!({"reused": reused}), gesture: None },
+            None => Effect::None { result: json!({"reused": reused}) },
+        });
+    }
     crate::generation_catalog::validate_plan(c.resources, c.kinds, &expanded.canvas, plan.steps.iter().map(|s| s.node))?;
     if let Some(oversized) = media_size::oversized(&plan, c.assets).first() {
         return Err(invalid(oversized.reason(expanded.owner(oversized.node))));
@@ -645,7 +714,10 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     admitted.reserve_metadata(metadata)?;
     let bindings = capture_bindings(&mut admitted, &c.routing.routing)?;
     accept_quote(c, &quote, &accept)?;
-    Ok(Effect::PreparedRun { prepared: Box::new(PreparedRun { admitted, quote, run, accept, routing_nonce: c.routing.nonce, bindings }) })
+    let bound = accept.token.clone();
+    Ok(Effect::PreparedRun {
+        prepared: Box::new(PreparedRun { admitted, quote, run, accept, routing_nonce: c.routing.nonce, bindings, reuse: applied, reused, bound }),
+    })
 }
 
 fn enabled_start(c: &Context<'_>, value: &Value) -> Result<(), Error> {
@@ -826,7 +898,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: quote_schema,
-            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, requests, requests_complete, blocked?, token}. `nodes` is used by selected and with_upstream. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. `requests` lists, per node whose model calls are already known, its largest call counted against one call's limits (`values`, `inputs`, `bytes`, `media_bytes`, each with its `*_limit`) and why it would be `refused` (`jobs` of `total_jobs` checked; refused first, first 500); a refused call blocks the run. `requests_complete` is false when some known calls were left to runtime admission (at most 4,096 are checked, each node's first before any node's second). Read-only.",
+            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, reused, requests, requests_complete, blocked?, token}. `nodes` is used by selected and with_upstream. `reused` lists nodes with caching on (node.cache_set) whose identical result is already in the project: they aren't steps and cost nothing. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. `requests` lists, per node whose model calls are already known, its largest call counted against one call's limits (`values`, `inputs`, `bytes`, `media_bytes`, each with its `*_limit`) and why it would be `refused` (`jobs` of `total_jobs` checked; refused first, first 500); a refused call blocks the run. `requests_complete` is false when some known calls were left to runtime admission (at most 4,096 are checked, each node's first before any node's second). Read-only.",
             enabled: enabled_quote,
             run: run_quote,
         },
@@ -837,7 +909,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: start_schema,
-            params_doc: "{canvas, mode, nodes?, field?, accept: {token, amounts: {CUR: micros}, partial?: bool, unpriced_jobs?: count}}; starts the run only if it is still exactly what run.quote priced (`token`), the budgets allow it, the accepted amounts cover every currency's total, `partial` is set when part of the price isn't known, and `unpriced_jobs` covers the quote's jobs of unknown price. While it runs, the amounts are a ceiling on what it may reserve per currency and `unpriced_jobs` on how many unknown-price jobs it may admit, including deferred fan-out and retries under new keys.",
+            params_doc: "{canvas, mode, nodes?, field?, accept: {token, amounts: {CUR: micros}, partial?: bool, unpriced_jobs?: count}}; starts the run only if it is still exactly what run.quote priced (`token`), the budgets allow it, the accepted amounts cover every currency's total, `partial` is set when part of the price isn't known, and `unpriced_jobs` covers the quote's jobs of unknown price. While it runs, the amounts are a ceiling on what it may reserve per currency and `unpriced_jobs` on how many unknown-price jobs it may admit, including deferred fan-out and retries under new keys. The cached results the quote listed in `reused` are applied first, as one undo step, and the result adds `reused`; when every planned node reuses, nothing runs and the result is {reused}.",
             enabled: enabled_start,
             run: run_start,
         },
@@ -867,6 +939,7 @@ pub fn specs() -> Vec<CommandSpec> {
 mod estimate;
 mod media_size;
 mod request_size;
+mod reuse;
 pub(crate) use estimate::jobs as estimate_jobs;
 pub use estimate::{EstimateJob, Estimating};
 

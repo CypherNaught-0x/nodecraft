@@ -757,6 +757,7 @@ fn typed_template_panic_hunt() {
                             | "canvas.search_close"
                             | "run.quote"
                             | "run.estimate"
+                            // Applies cached results first (#91); the fixture has none to reuse.
                             | "run.start"
                             | "usage.export_csv"
                             | "perf.start"

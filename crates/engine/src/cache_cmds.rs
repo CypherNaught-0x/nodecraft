@@ -88,7 +88,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: reuse_schema,
-            params_doc: "{canvas, nodes?: [NodeId]}; gives every node with caching on whose inputs match a result already made (its own, or another node's of the same kind) that result, as one undo step. Free: nothing runs. Returns {reused: [NodeId]}.",
+            params_doc: "{canvas, nodes?: [NodeId]}; gives every node with caching on whose inputs match a result already made (its own, or another node's of the same kind) that result, as one undo step. Free: nothing runs. run.quote and run.start do this themselves for the nodes they would run. Returns {reused: [NodeId]}.",
             enabled: always,
             run: reuse,
         },

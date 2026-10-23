@@ -468,6 +468,8 @@ fn a_rerun_upstream_that_comes_out_the_same_sends_only_the_missing_item() {
     let key = partial_behind_the_step(&mut f);
     let fox = f.keeper.sent().first().cloned().unwrap();
     f.keeper.set("an owl", Mode::Answer);
+    // With caching on, the step already holding this result wouldn't run at all (#91).
+    f.session.dispatch("node.cache_set", &json!({"canvas": C, "id": STEP, "enabled": false})).unwrap();
     let q = start_nodes(&mut f, &[STEP, PAINTER]);
     assert_eq!(q["resumable"], json!([PAINTER]), "priced for every item, it may run fewer: {q}");
     drive(&mut f);
