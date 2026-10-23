@@ -40,7 +40,7 @@ mod document;
 #[cfg(feature = "fixtures")]
 pub use document::fixture as pdf_fixture;
 #[cfg(feature = "pdf")]
-pub use document::{Document, DocumentInfo, DocumentLimits, PageImage, PageRegion, Reader, probe_document};
+pub use document::{Document, DocumentInfo, DocumentLimits, PageImage, PageRegion, Reader, images_to_pdf, probe_document};
 
 /// Bounded native FFmpeg service (external tools are never bundled).
 #[cfg(feature = "video")]

@@ -84,7 +84,8 @@ in `mcp::HUMAN_ONLY` are neither: `keys.set` would pass an API key through the a
 and `keys.remove` deletes a key with no undo. `file.open`, `file.save`, `file.save_as` and `file.cancel` are
 temporarily human-only until MCP enforces allowed read/write roots (#116); they remain available
 through the engine and native app. `history.export` writes a result to a file anywhere on the
-machine, so it is human-only for the same reason (#557). `history.copy` puts a result on the person's clipboard, where their next paste
+machine, so it is human-only for the same reason (#557), as are `timeline.export_interchange` and
+`deck.export` (#692). `history.copy` puts a result on the person's clipboard, where their next paste
 takes it from, so it is human-only too (#831). `run.record` writes results the host ran, and
 `usage.reconcile_ownership` records a person's judgement about historical charges against their
 own provider records (#325), as does `usage.resolve_charge` for what a reconciled charge was billed

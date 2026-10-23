@@ -1040,7 +1040,7 @@ impl Session {
             }
             Effect::Export { what, path, overwrite } => {
                 let bytes = guard(|| crate::export::write(&self.assets, &what, &path, overwrite))?;
-                return Ok(serde_json::json!({"bytes": bytes}));
+                return Ok(what.result(bytes));
             }
             Effect::Copy { what } => {
                 let clip = guard(|| crate::copy_cmds::read(&self.assets, what))?;

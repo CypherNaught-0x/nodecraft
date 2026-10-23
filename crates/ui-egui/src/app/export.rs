@@ -3,7 +3,8 @@
 //! frame; the browser build says export needs the desktop app. Saving every item of a result
 //! (#581) asks for a folder instead and never replaces a file already there. A Timeline's
 //! interchange archive (#166) is asked for the same way and written by
-//! `timeline.export_interchange`.
+//! `timeline.export_interchange`, and a Deck's slides (#692) by `deck.export`: a PDF to one file,
+//! PNGs into a folder.
 use super::NodeCraftApp;
 use nodecraft_types::{CanvasId, GenerationId, NodeId};
 use serde_json::json;
@@ -29,8 +30,9 @@ struct Pending {
 enum Target {
     /// The command that writes the file and its params, without the path.
     File(&'static str, serde_json::Value),
-    /// `history.export` params with the suggested file name each is numbered from.
-    Folder(Vec<(serde_json::Value, String)>),
+    /// The command that writes each file, its params without the path, and the suggested file
+    /// name each is numbered from.
+    Folder(&'static str, Vec<(serde_json::Value, String)>),
 }
 
 /// Most numbers tried for one file before a folder export gives up on it.
@@ -91,7 +93,23 @@ impl NodeCraftApp {
     /// result `generation` of node `id` into it, numbered in order past files already there.
     pub(super) fn start_export_all(&mut self, canvas: CanvasId, id: NodeId, generation: GenerationId, targets: Vec<(Option<String>, Option<usize>, String)>) {
         let files = targets.into_iter().map(|(port, item, name)| (export_params(canvas, id, generation, port, item), name)).collect();
-        self.pick_export(Target::Folder(files), "");
+        self.pick_export(Target::Folder("history.export", files), "");
+    }
+
+    /// Asks where to save Deck node `id`'s slides: every slide as one PDF, one slide as a PNG,
+    /// or several as PNGs into a folder, each named `stem` numbered.
+    pub(super) fn start_deck_export(&mut self, canvas: CanvasId, id: NodeId, pdf: bool, slides: Vec<String>, stem: &str) {
+        if pdf {
+            self.pick_export(Target::File("deck.export", json!({"canvas": canvas, "id": id, "format": "pdf"})), &format!("{stem}.pdf"));
+            return;
+        }
+        let name = format!("{stem}.png");
+        if let [slide] = slides.as_slice() {
+            self.pick_export(Target::File("deck.export", json!({"canvas": canvas, "id": id, "format": "png", "slide": slide})), &name);
+            return;
+        }
+        let files = slides.into_iter().map(|slide| (json!({"canvas": canvas, "id": id, "format": "png", "slide": slide}), name.clone())).collect();
+        self.pick_export(Target::Folder("deck.export", files), "");
     }
 
     fn pick_export(&mut self, target: Target, name: &str) {
@@ -99,7 +117,7 @@ impl NodeCraftApp {
             self.notice = Some("Another export is choosing where to save; finish that first.".into());
             return;
         }
-        let folder = matches!(target, Target::Folder(_));
+        let folder = matches!(target, Target::Folder(..));
         let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.export_pick(name, folder))) {
             Ok(Some(future)) => future,
             Ok(None) => {
@@ -119,7 +137,7 @@ impl NodeCraftApp {
         // Built on the UI thread: AppKit finds its window here. The dialog asks before replacing.
         let dialog = rfd::AsyncFileDialog::new();
         if folder {
-            let future = dialog.set_title("Export results to a folder").pick_folder();
+            let future = dialog.set_title("Export to a folder").pick_folder();
             return Some(Box::pin(async move { future.await.map(|folder| folder.path().to_path_buf()) }));
         }
         let future = dialog.set_title("Export result").set_file_name(name).save_file();
@@ -163,16 +181,17 @@ impl NodeCraftApp {
                 // The dialog already asked before replacing a file.
                 params["overwrite"] = json!(true);
                 match self.session.dispatch(command, &params) {
-                    Ok(_) => {
+                    Ok(result) => {
                         let name: String = path.file_name().map(|n| n.to_string_lossy().chars().take(80).collect()).unwrap_or_default();
-                        self.notice = Some(format!("Exported {name}."));
+                        self.notice = Some(format!("Exported {name}.{}", empty_boxes(missing(&result))));
                     }
                     Err(error) => self.notice = Some(error.message),
                 }
             }
-            Target::Folder(files) => {
+            Target::Folder(command, files) => {
                 let total = files.len();
                 let mut written = 0usize;
+                let mut boxes = 0usize;
                 let mut failed = None;
                 // One counter for the whole folder: a name already taken moves on to the next
                 // number, so saving into the same folder again adds files instead of failing.
@@ -184,8 +203,11 @@ impl NodeCraftApp {
                         next = next.saturating_add(1);
                         // A folder pick never agreed to replace anything, so a file there is kept.
                         params["path"] = json!(path.join(&name));
-                        match self.session.dispatch("history.export", &params) {
-                            Ok(_) => outcome = Ok(()),
+                        match self.session.dispatch(command, &params) {
+                            Ok(result) => {
+                                boxes = boxes.saturating_add(missing(&result));
+                                outcome = Ok(());
+                            }
                             Err(error) if error.kind == nodecraft_types::ErrorKind::Conflict => continue,
                             Err(error) => outcome = Err(format!("{name}: {}", error.message)),
                         }
@@ -199,10 +221,24 @@ impl NodeCraftApp {
                     }
                 }
                 self.notice = Some(match failed {
-                    None => format!("Exported {written} files."),
+                    None => format!("Exported {written} files.{}", empty_boxes(boxes)),
                     Some(why) => format!("Exported {written} of {total} files; {why}"),
                 });
             }
         }
+    }
+}
+
+/// How many sources an export drew as empty boxes (`deck.export`'s `missing`).
+fn missing(result: &serde_json::Value) -> usize {
+    result.get("missing").and_then(serde_json::Value::as_array).map_or(0, Vec::len)
+}
+
+/// What a notice adds for sources drawn as empty boxes.
+fn empty_boxes(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => " 1 source had nothing to show and is an empty box.".into(),
+        n => format!(" {n} sources had nothing to show and are empty boxes."),
     }
 }

@@ -1,6 +1,7 @@
-//! Writes one asset's bytes (`history.export`, #557) or a timeline interchange archive
-//! (`timeline.export_interchange`, #166) to a file the caller names: never over an existing file
-//! unless asked, staged so a failed write leaves nothing behind.
+//! Writes one asset's bytes (`history.export`, #557), a timeline interchange archive
+//! (`timeline.export_interchange`, #166) or a deck's slides (`deck.export`, #692) to a file the
+//! caller names: never over an existing file unless asked, staged so a failed write leaves
+//! nothing behind.
 use nodecraft_format::AssetStore;
 use nodecraft_format::interchange::Bundle;
 use nodecraft_types::{AssetRef, Error, ErrorKind};
@@ -13,6 +14,18 @@ pub enum Exported {
     Asset(AssetRef),
     /// An archive of a document and the media it names.
     Bundle(Box<Bundle>),
+    /// A deck's slides drawn as a PNG or a PDF (`deck.export`, #692).
+    Slides(Box<crate::deck_export::SlidesExport>),
+}
+
+impl Exported {
+    /// The command's result once `bytes` are written.
+    pub(crate) fn result(&self, bytes: u64) -> serde_json::Value {
+        match self {
+            Exported::Slides(slides) => slides.result(bytes),
+            Exported::Asset(_) | Exported::Bundle(_) => serde_json::json!({"bytes": bytes}),
+        }
+    }
 }
 
 /// Longest export path, in bytes.
@@ -57,7 +70,13 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
     match what {
         Exported::Asset(asset) => drop(assets.open_verified(asset, &cancel, &StreamMetrics::default())?),
         Exported::Bundle(bundle) => bundle.check()?,
+        Exported::Slides(_) => {}
     }
+    // Slides are drawn before the file appears, so a slide that can't be drawn leaves nothing.
+    let drawn = match what {
+        Exported::Slides(slides) => Some(crate::deck_export::render(assets, slides)?),
+        Exported::Asset(_) | Exported::Bundle(_) => None,
+    };
     let mut copied: Result<u64, Error> = Ok(0);
     let mut failed = None;
     let fill = |file: &mut std::fs::File| {
@@ -67,6 +86,12 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
             Exported::Bundle(bundle) => bundle
                 .write_to(assets, &mut out, &cancel)
                 .and_then(|out| out.stream_position().map_err(|_| Error::new(ErrorKind::Internal, "the archive couldn't be written"))),
+            Exported::Slides(_) => {
+                let bytes = drawn.as_deref().unwrap_or_default();
+                std::io::Write::write_all(&mut out, bytes)
+                    .map(|()| bytes.len() as u64)
+                    .map_err(|_| Error::new(ErrorKind::Internal, "the file couldn't be written"))
+            }
         };
         match &copied {
             Ok(_) => Ok(()),

@@ -287,6 +287,8 @@ impl NodeCraftApp {
         let mut commands: Commands = Vec::new();
         let mut close = false;
         let mut present = false;
+        // Where an export goes: (as one PDF, the slides as PNGs).
+        let mut export: Option<(bool, Vec<String>)> = None;
         let notice = self.notice.clone();
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
@@ -316,6 +318,21 @@ impl NodeCraftApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     close |= ui.button("Done").clicked();
                     present |= ui.add_enabled(count > 0, egui::Button::new("Present")).clicked();
+                    ui.add_enabled_ui(count > 0, |ui| {
+                        ui.menu_button("Export", |ui| {
+                            if ui.button("Slides as PDF…").clicked() {
+                                export = Some((true, Vec::new()));
+                            }
+                            if ui.button("Slides as PNGs…").clicked() {
+                                export = Some((false, deck.slides.iter().map(|e| e.slide.id.clone()).collect()));
+                            }
+                            if let Some(entry) = current
+                                && ui.button("This slide as PNG…").clicked()
+                            {
+                                export = Some((false, vec![entry.slide.id.clone()]));
+                            }
+                        });
+                    });
                     if ui.button("Redo").clicked() {
                         commands.push(("edit.redo", json!({})));
                     }
@@ -377,6 +394,11 @@ impl NodeCraftApp {
         let listed = deck.revision;
         editor.listing = Some((revision, deck));
         self.deck_run(listed, commands);
+        if let Some((pdf, slides)) = export {
+            let stem: String = node.title.chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).take(48).collect();
+            let stem = if stem.trim().is_empty() { "Deck".to_owned() } else { stem.trim().to_owned() };
+            self.start_deck_export(editor.canvas, editor.node, pdf, slides, &stem);
+        }
         if present {
             let at = editor.index;
             self.open_presenter(editor.node);
