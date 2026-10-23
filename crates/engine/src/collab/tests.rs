@@ -730,13 +730,14 @@ fn a_host_that_seals_takes_a_large_asset_once_sealed_without_reading_it_again() 
     assert!(net.person(2).collab.seals_pending());
     assert!(net.session(2).assets().descriptor(&hash).is_none());
     assert!(!net.session(2).document().canvases()[&canvas()].nodes().contains_key(&nid(1)));
-    assert_eq!(net.person(2).collab.waiting_for_assets(), 0);
+    assert_eq!(net.person(2).collab.waiting_for_assets(), 1);
 
     // Sealed on a clone of the store, as the desktop's worker does; then taken in a moment.
     let store = net.session(2).assets().clone();
     net.collab(2).seal_arrivals(&store);
     assert!(!net.person(2).collab.seals_pending());
     net.settle();
+    assert_eq!(net.person(2).collab.waiting_for_assets(), 0);
     let shared = net.session(1).document().clone();
     assert_eq!(net.session(2).document(), &shared);
     assert_eq!(net.session(2).assets().descriptor(&hash).map(|d| d.bytes), Some(len));
@@ -889,6 +890,70 @@ fn an_asset_the_spool_keeps_failing_to_write_is_given_up() {
     assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (1, 0));
     assert!(!b.puts_off());
     assert!(!joined.document().canvases()[&canvas()].nodes().contains_key(&nid(1)));
+}
+
+/// A spool in memory with as much room as the test gives it.
+struct Cramped {
+    inner: MemorySpool,
+    budget: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Spool for Cramped {
+    fn limit(&self) -> u64 {
+        self.inner.limit()
+    }
+
+    fn budget(&self) -> u64 {
+        self.budget.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn begin(&mut self, hash: Blake3, total: u64) -> Result<(), Error> {
+        self.inner.begin(hash, total)
+    }
+
+    fn append(&mut self, hash: &Blake3, bytes: &[u8]) -> Result<(), Error> {
+        self.inner.append(hash, bytes)
+    }
+
+    fn finish(&mut self, hash: &Blake3) -> Result<nodecraft_format::asset_source::AssetRange, Error> {
+        self.inner.finish(hash)
+    }
+
+    fn discard(&mut self, hash: &Blake3) {
+        self.inner.discard(hash);
+    }
+}
+
+#[test]
+fn an_asset_with_no_room_in_the_spool_is_asked_for_again_only_once_it_fits() {
+    let budget = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(10));
+    let (session, mut b, mut joined, hash) = asking_into(Box::new(Cramped { inner: MemorySpool::default(), budget: budget.clone() }));
+    let bytes = b"not really a png";
+    b.receive(part(hash, 16, 0, bytes)).unwrap();
+    assert_eq!((b.waiting_for_assets(), b.unusable_assets()), (1, 0));
+    // However often the host tries, nothing is asked for while there is no room.
+    for _ in 0..3 {
+        assert!(!b.retry_put_off());
+        assert!(b.settle(&mut joined).unwrap().is_empty());
+    }
+    assert!(b.puts_off());
+    budget.store(64, std::sync::atomic::Ordering::Relaxed);
+    assert!(b.retry_put_off());
+    assert_eq!(b.settle(&mut joined).unwrap(), vec![Frame::AssetGet(vec![*hash.as_bytes()])]);
+    b.receive(part(hash, 16, 0, bytes)).unwrap();
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+    assert_eq!(joined.document(), session.document());
+    assert!(!b.puts_off());
+}
+
+#[test]
+fn sealing_waits_out_a_busy_or_full_storage_and_gives_up_on_one_that_cant_keep_it() {
+    assert!(super::seal_waits(ErrorKind::Busy, u32::MAX));
+    // Another transfer, a long save say, holds the storage for minutes: still tried.
+    assert!(super::seal_waits(ErrorKind::Conflict, 60));
+    assert!(!super::seal_waits(ErrorKind::Conflict, super::MAX_SEAL_TRIES));
+    assert!(!super::seal_waits(ErrorKind::InvalidInput, 0));
+    assert!(!super::seal_waits(ErrorKind::Unsupported, 0));
 }
 
 #[test]

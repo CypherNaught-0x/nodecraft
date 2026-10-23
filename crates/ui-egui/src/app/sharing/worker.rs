@@ -372,9 +372,9 @@ impl Thread {
             }
             #[cfg(not(target_arch = "wasm32"))]
             Ask::Retry => {
-                // The next turn seals what waits, and asks again for what was put off.
-                collab.retry_put_off();
-                report.dirty = true;
+                // The next turn seals what waits, and asks again for what was put off and fits.
+                let asks = collab.retry_put_off();
+                report.dirty |= asks || collab.seals_pending();
             }
             Ask::Presence(presence) => {
                 // The window checks it first; one that still doesn't pass just isn't said.

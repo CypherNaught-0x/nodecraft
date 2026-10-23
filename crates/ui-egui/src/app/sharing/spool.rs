@@ -128,8 +128,11 @@ impl Spool for FileSpool {
         let path = self.dir.join(format!("{PREFIX}{}-{n}{SUFFIX}", std::process::id()));
         let file = OpenOptions::new().read(true).write(true).create_new(true).open(&path).map_err(|_| io("can't make a file for an asset coming in"))?;
         let path = Temporary { path, bytes: 0, written: Arc::clone(&self.written) };
-        // Held as long as the file is open, so no other spool's sweep deletes it.
-        file.try_lock().map_err(|_| io("can't lock a file for an asset coming in"))?;
+        // Held as long as the file is open, so no other spool's sweep deletes it. Where files
+        // can't be locked, no sweep can lock it either, so it is safe unlocked.
+        if let Err(std::fs::TryLockError::WouldBlock) = file.try_lock() {
+            return Err(io("can't lock a file for an asset coming in"));
+        }
         self.open.insert(hash, Part { file, path });
         Ok(())
     }

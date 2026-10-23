@@ -49,9 +49,10 @@ pub use parts::{Arrival, MemorySpool, Spool, Stretch};
 
 /// The most assets sent whole kept waiting for the edit that needs them.
 const MAX_ARRIVED_BYTES: usize = 256 << 20;
-/// The most times sealing one asset is tried while the storage is full, before it is given up.
+/// The most times sealing one asset is tried while the storage is full or taken by another
+/// transfer (a long save, say), before it is given up: some ten minutes at the desktop's pace.
 /// One the storage is busy for waits as long as it takes.
-const MAX_SEAL_TRIES: u32 = 16;
+const MAX_SEAL_TRIES: u32 = 300;
 /// The most times one asset coming in parts is tried again after its spool couldn't keep it.
 const MAX_SPOOL_TRIES: u32 = 8;
 /// The most asks for assets kept for the next publish.
@@ -97,6 +98,9 @@ pub struct Collab {
     /// Assets the spool had no room or no file for: asked for again only at
     /// [`Collab::retry_put_off`], so asking doesn't spin.
     put_off: BTreeSet<Blake3>,
+    /// The size of each asset put off for want of room, so it is asked for again only once
+    /// the spool has room for it.
+    room_for: BTreeMap<Blake3, u64>,
     /// How often the spool failed to keep each.
     spool_tries: BTreeMap<Blake3, u32>,
     /// Assets this session can't take: too large for its spool, or not what they were named.
@@ -287,6 +291,7 @@ impl Collab {
             seals: false,
             seal_tries: BTreeMap::new(),
             put_off: BTreeSet::new(),
+            room_for: BTreeMap::new(),
             spool_tries: BTreeMap::new(),
             unusable: BTreeSet::new(),
             wanted: BTreeSet::new(),
@@ -340,11 +345,11 @@ impl Collab {
                     self.seal_tries.remove(&hash);
                     self.unsettled = true;
                 }
-                // Another transfer holds the storage.
-                Err(error) if error.kind == ErrorKind::Busy => {}
-                // It is full for now.
-                Err(error) if error.kind == ErrorKind::Conflict && self.seal_tries.get(&hash).copied().unwrap_or(0) < MAX_SEAL_TRIES => {
-                    *self.seal_tries.entry(hash).or_insert(0) += 1;
+                Err(error) if seal_waits(error.kind, self.seal_tries.get(&hash).copied().unwrap_or(0)) => {
+                    if error.kind != ErrorKind::Busy {
+                        let tries = self.seal_tries.entry(hash).or_insert(0);
+                        *tries = tries.saturating_add(1);
+                    }
                 }
                 Ok(_) | Err(_) => {
                     self.arrived.remove(&hash);
@@ -362,7 +367,8 @@ impl Collab {
 
     /// How many assets this session waits for before it can take in what the others did.
     pub fn waiting_for_assets(&self) -> usize {
-        self.asked.len().saturating_add(self.put_off.len())
+        let sealing = self.arrived.values().filter(|arrival| matches!(arrival, Arrival::Range(_))).count();
+        self.asked.len().saturating_add(self.put_off.len()).saturating_add(sealing)
     }
 
     /// Whether assets the spool couldn't keep wait for [`Self::retry_put_off`].
@@ -370,15 +376,37 @@ impl Collab {
         !self.put_off.is_empty()
     }
 
-    /// Asks again, at the next plan, for the assets the spool had no room or no file for; the
-    /// host calls it after a while, when the spool may have room again. Whether there were any.
+    /// Asks again, at the next plan, for the assets the spool had no file for, and for those it
+    /// had no room for once it has; the host calls it after a while. Whether it asks for any.
     pub fn retry_put_off(&mut self) -> bool {
-        if self.put_off.is_empty() {
+        let before = self.put_off.len();
+        let budget = self.spool.budget();
+        let mut spooled = self.spooled();
+        let room_for = &mut self.room_for;
+        // Asked for only when it fits, so a full disk doesn't bring parts that are thrown away.
+        self.put_off.retain(|hash| match room_for.get(hash) {
+            Some(total) if spooled.saturating_add(*total) > budget => true,
+            Some(total) => {
+                spooled = spooled.saturating_add(*total);
+                room_for.remove(hash);
+                false
+            }
+            None => false,
+        });
+        if self.put_off.len() == before {
             return false;
         }
-        self.put_off.clear();
         self.unsettled = true;
         true
+    }
+
+    /// The bytes the spool holds or is to hold: assets coming in parts, and come and not sealed.
+    fn spooled(&self) -> u64 {
+        self.incoming
+            .values()
+            .map(|incoming| incoming.total)
+            .chain(self.arrived.values().filter(|arrival| matches!(arrival, Arrival::Range(_))).map(Arrival::byte_len))
+            .fold(0u64, u64::saturating_add)
     }
 
     /// Whether asks for assets wait to be answered at the next publish.
@@ -637,12 +665,7 @@ impl Collab {
             if offset != 0 {
                 return Ok(Vec::new());
             }
-            let spooled = self
-                .incoming
-                .values()
-                .map(|incoming| incoming.total)
-                .chain(self.arrived.values().filter(|arrival| matches!(arrival, Arrival::Range(_))).map(Arrival::byte_len))
-                .fold(0u64, u64::saturating_add);
+            let spooled = self.spooled();
             if total > self.spool.limit() {
                 self.give_up(hash);
                 return Ok(Vec::new());
@@ -651,6 +674,7 @@ impl Collab {
             if spooled.saturating_add(total) > self.spool.budget() {
                 self.asked.remove(&hash);
                 self.put_off.insert(hash);
+                self.room_for.insert(hash, total);
                 return Ok(Vec::new());
             }
             if self.spool.begin(hash, total).is_err() {
@@ -816,6 +840,7 @@ impl Collab {
         // One coming in parts, or come, that no card waits for any more needn't be kept.
         self.arrived.retain(|hash, _| missing.contains(hash));
         self.put_off.retain(|hash| missing.contains(hash));
+        self.room_for.retain(|hash, _| missing.contains(hash));
         self.spool_tries.retain(|hash, _| missing.contains(hash));
         self.seal_tries.retain(|hash, _| missing.contains(hash));
         let unneeded: Vec<Blake3> = self.incoming.keys().filter(|hash| !missing.contains(hash)).copied().collect();
@@ -989,6 +1014,17 @@ fn take(session: &mut Session, sets: Vec<Changeset>) -> Result<(), Error> {
 /// The project a joiner opens its session with: empty, with the shared project's id.
 pub fn joining(id: ProjectId) -> Result<Project, Error> {
     Project::new(id, "")
+}
+
+/// Whether sealing an asset that failed with `kind`, `tries` times already for a reason that
+/// may pass, is tried again: always while the storage is busy, for a while while it is full or
+/// another transfer holds it; never when the asset can't be kept.
+fn seal_waits(kind: ErrorKind, tries: u32) -> bool {
+    match kind {
+        ErrorKind::Busy => true,
+        ErrorKind::Conflict => tries < MAX_SEAL_TRIES,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
