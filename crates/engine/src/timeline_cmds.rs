@@ -6,7 +6,9 @@
 //! Editing stores the automatic clips too, so each keeps its place from then on. Nothing here runs.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_graph::{Change, Changeset, Node};
-use nodecraft_nodes::timeline::{self, CONFIG, Caption, Clip, ID, Input, MAX_CAPTIONS, MAX_CLIPS, MAX_TRACKS, Timeline, Track, TrackKind, Wire};
+use nodecraft_nodes::timeline::{
+    self, CONFIG, Caption, Clip, ID, Input, MAX_CAPTIONS, MAX_CLIPS, MAX_STRUCTURAL_CLIPS, MAX_TRACKS, Timeline, Track, TrackKind, Wire,
+};
 use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, NodeId, Value};
 use serde::Deserialize;
 use serde_json::{Map, Value as Json, json};
@@ -22,11 +24,20 @@ pub(crate) fn editor<'a>(c: &'a Context<'_>, canvas: CanvasId, id: NodeId) -> Re
 
 /// The clips a Timeline node stores, checked.
 pub fn stored(node: &Node) -> Result<Timeline, Error> {
-    Timeline::parse(timeline::stored(node)?).map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the node's clips can't be read: {}", e.message)))
+    Timeline::parse(timeline::stored(node)?)
+        .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the node's clips can't be read ({}): replace them with node.timeline_set", e.message)))
 }
 
-/// Most inputs the editor lists from its wires; a run refuses more clips than `MAX_CLIPS` anyway.
-const MAX_INPUTS: usize = 4 * MAX_CLIPS;
+/// The editor must not silently omit wires: doing so would lose clips when an edit stores them.
+const MAX_INPUTS: usize = MAX_STRUCTURAL_CLIPS;
+
+fn enabled_limit() -> Error {
+    Error::new(ErrorKind::InvalidInput, format!("a timeline renders at most {MAX_CLIPS} clips: disable another first"))
+}
+
+fn rendered_count(timeline: &Timeline, wires: &[Wire]) -> usize {
+    timeline.resolve(wires).len()
+}
 
 /// The media type and source kind of what `input` takes.
 fn takes(input: Input) -> (&'static str, &'static str) {
@@ -59,8 +70,7 @@ pub fn inputs(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<Vec<(Wire
             let items = canvas.nodes().get(from).map(|node| shown(node, from_port, input)).unwrap_or_else(|| vec![None]);
             out.extend(items.into_iter().map(|v| (Wire::new(input, from.to_string()), v.cloned())));
             if out.len() > MAX_INPUTS {
-                out.truncate(MAX_INPUTS);
-                return Ok(out);
+                return Err(Error::new(ErrorKind::InvalidInput, format!("a timeline has more than {MAX_INPUTS} wired inputs: disconnect some before editing")));
             }
         }
     }
@@ -81,8 +91,8 @@ fn shown<'a>(node: &'a Node, port: &str, input: Input) -> Vec<Option<&'a AssetRe
         (Value::List(items), fanned) => items
             .iter()
             .flat_map(|item| match item {
-                Value::List(inner) if fanned => inner.iter().collect::<Vec<_>>(),
-                single => vec![single],
+                Value::List(inner) if fanned => inner.as_slice(),
+                single => std::slice::from_ref(single),
             })
             .take(MAX_INPUTS.saturating_add(1))
             .map(|v| media(v, input))
@@ -113,6 +123,13 @@ fn media_length(inputs: &[(Wire, Option<AssetRef>)], clip: &Clip) -> Option<u64>
 }
 
 pub(crate) fn store(canvas: CanvasId, node: &Node, timeline: Timeline) -> Result<Effect, Error> {
+    // The stored clips with the automatic ones for each wire: an edit stores both.
+    if timeline.clips.len() > MAX_STRUCTURAL_CLIPS {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("a timeline stores at most {MAX_STRUCTURAL_CLIPS} clips, one for each wired input included: delete some clips or disconnect some inputs"),
+        ));
+    }
     let json = timeline.encode()?;
     let mut changed = node.clone();
     changed.config.insert(CONFIG.into(), Value::Text(json));
@@ -205,7 +222,17 @@ fn set(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         // An unreadable stored timeline is replaced whole, as before captions: it has none to keep.
         None => stored(node).map(|t| t.captions).unwrap_or_default(),
     };
-    store(p.canvas, node, Timeline { clips: p.clips, tracks: p.tracks, captions })
+    let timeline = Timeline { clips: p.clips, tracks: p.tracks, captions };
+    timeline.check()?;
+    // As with timeline.update, only a set that renders more clips than the node does now is
+    // refused past the limit: disabling clips works, as does going back to automatic clips on a
+    // node that already plays every wire. An unreadable stored timeline counts as none stored.
+    let wires = wires(c, p.canvas, p.id)?;
+    let rendered = rendered_count(&timeline, &wires);
+    if rendered > MAX_CLIPS && rendered > rendered_count(&stored(node).unwrap_or_default(), &wires) {
+        return Err(enabled_limit());
+    }
+    store(p.canvas, node, timeline)
 }
 
 #[derive(Deserialize)]
@@ -245,8 +272,12 @@ fn update(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         }
     }
     let changed: Clip = serde_json::from_value(merged).map_err(|_| invalid("the change isn't valid: a field is unknown or has the wrong type or value"))?;
+    let enabling = !current.enabled && changed.enabled;
     if let Some(slot) = timeline.clips.get_mut(at) {
         *slot = changed;
+    }
+    if enabling && rendered_count(&timeline, &wires(c, p.canvas, p.id)?) > MAX_CLIPS {
+        return Err(enabled_limit());
     }
     store(p.canvas, node, timeline)
 }
@@ -272,6 +303,16 @@ fn remove(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         return Err(invalid("wired media's only clip stays while it is wired in: disable it, or disconnect it"));
     }
     timeline.clips.remove(at);
+    if timeline.clips.len() > MAX_STRUCTURAL_CLIPS {
+        // Too many to store with the automatic clips (stored takes whose wires are gone, plus new
+        // wires): delete it from the stored clips alone, which leaves the automatic ones automatic,
+        // so deleting takes one by one brings the timeline back within the bound. A removable clip
+        // is always a stored one: an automatic clip is its wired media's only clip.
+        let mut kept = stored(node)?;
+        let at = index_of(&kept, &p.clip)?;
+        kept.clips.remove(at);
+        return store(p.canvas, node, kept);
+    }
     store(p.canvas, node, timeline)
 }
 
@@ -403,10 +444,14 @@ fn split(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     };
     let first = Clip { out_us: Some(p.at_us), fade_in_us: first.fade_in_us.min(before), fade_out_us: 0, transition_us: 0, ..first };
     let second_id = second.id.clone();
+    let adds_rendered = second.enabled && Timeline::is_wired(&second, &wires);
     if let Some(slot) = timeline.clips.get_mut(at) {
         *slot = first;
     }
     timeline.clips.insert(at.saturating_add(1), second);
+    if adds_rendered && rendered_count(&timeline, &wires) > MAX_CLIPS {
+        return Err(enabled_limit());
+    }
     let effect = store(p.canvas, node, timeline)?;
     Ok(with_result(effect, json!({"changed": true, "clip": second_id})))
 }
@@ -477,7 +522,7 @@ fn set_schema() -> Json {
     object(
         &["clips"],
         props(json!({
-            "clips": {"type": "array", "maxItems": MAX_CLIPS, "items": clip_schema()},
+            "clips": {"type": "array", "maxItems": MAX_STRUCTURAL_CLIPS, "items": clip_schema()},
             "tracks": {"type": "array", "maxItems": MAX_TRACKS, "items": track},
             "captions": {"type": "array", "maxItems": MAX_CAPTIONS, "items": crate::timeline_captions::caption_schema(), "description": "Absent keeps the node's captions."},
         })),
@@ -501,7 +546,7 @@ fn clip_schema_only() -> Json {
 }
 
 fn move_schema() -> Json {
-    object(&["clip", "index"], props(json!({"clip": clip_id(), "index": {"type": "integer", "minimum": 0, "maximum": MAX_CLIPS}})))
+    object(&["clip", "index"], props(json!({"clip": clip_id(), "index": {"type": "integer", "minimum": 0, "maximum": MAX_STRUCTURAL_CLIPS}})))
 }
 
 fn split_schema() -> Json {
@@ -526,7 +571,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: set_schema,
-            params_doc: "{canvas, id, clips: [clip, …], tracks?: [{kind}, …], captions?: [caption, …]} -> {changed}; replaces a Timeline node's clips (main-track ones in playing order), its tracks beyond the main one and, when given, its captions (see timeline.caption_add), as one undo step. A clip is {id, origin, input?, nth?, track?, at_us?, in_us?, out_us?, fade_in_us?, fade_out_us?, volume?, muted?, transition_us?, enabled?, pos_x?, pos_y?, scale?, crop_left?, crop_top?, crop_right?, crop_bottom?, rotation?, opacity?, speed?} (see timeline.list). Wired media no clip names is added when the node runs: videos and pictures after the main track's clips, sounds on the first audio track.",
+            params_doc: "{canvas, id, clips: [clip, …], tracks?: [{kind}, …], captions?: [caption, …]} -> {changed}; replaces a Timeline node's clips (main-track ones in playing order), its tracks beyond the main one and, when given, its captions (see timeline.caption_add), as one undo step. A clip is {id, origin, input?, nth?, track?, at_us?, in_us?, out_us?, fade_in_us?, fade_out_us?, volume?, muted?, transition_us?, enabled?, pos_x?, pos_y?, scale?, crop_left?, crop_top?, crop_right?, crop_bottom?, rotation?, opacity?, speed?} (see timeline.list). At most 128 clips can be stored; at most 32 enabled wired clips render (disable another before enabling more); a set is refused past 32 only when it renders more clips than the node does now, so disabling clips, or going back to automatic clips (clips: []) on a node that already plays every wire, is accepted. Wired media no clip names is added when the node runs: videos and pictures after the main track's clips, sounds on the first audio track.",
             enabled: always,
             run: set,
         },

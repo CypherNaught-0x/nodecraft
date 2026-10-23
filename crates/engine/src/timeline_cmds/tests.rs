@@ -45,6 +45,179 @@ fn with(mut base: Json, extra: Json) -> Json {
     base
 }
 
+fn many_wired(count: u8) -> Session {
+    let mut s = session();
+    for n in 3..=count {
+        let from = NodeId::from_bytes([n.saturating_add(10); 16]);
+        s.dispatch("node.create", &json!({"canvas": CANVAS, "id": from, "kind": "source.video", "pos": {"x": 0, "y": 0}})).unwrap();
+        let edge = json!({"id": EdgeId::from_bytes([n.saturating_add(10); 16]), "from": {"node": from, "port": "out"}, "to": {"node": EDITOR, "port": timeline::INPUT}, "order": n});
+        s.dispatch("edge.connect", &json!({"canvas": CANVAS, "edge": edge})).unwrap();
+    }
+    s
+}
+
+#[test]
+fn forty_wired_takes_edit_without_rendering_more_than_thirty_two() {
+    let mut s = many_wired(40);
+    let clips = ids(&mut s);
+    assert_eq!(clips.len(), 40);
+    // Even an initially over-limit document can be made runnable a disable at a time.
+    for clip in clips.iter().skip(MAX_CLIPS) {
+        s.dispatch("timeline.update", &with(on(clip), json!({"set": {"enabled": false}}))).unwrap();
+    }
+    assert_eq!(list(&mut s).iter().filter(|clip| clip["enabled"] == true).count(), MAX_CLIPS);
+    let disabled = clips.get(32).unwrap();
+    s.dispatch("timeline.update", &with(on(disabled), json!({"set": {"in_us": 100_000}}))).unwrap();
+    s.dispatch("timeline.move", &with(on(disabled), json!({"index": 39}))).unwrap();
+    s.dispatch("timeline.move", &with(on(disabled), json!({"index": 0}))).unwrap();
+    let enabled = clips.first().unwrap();
+    s.dispatch("timeline.update", &with(on(enabled), json!({"set": {"out_us": 1_000_000}}))).unwrap();
+    assert_eq!(list(&mut s).iter().find(|clip| clip["id"] == disabled.as_str()).unwrap()["in_us"], json!(100_000));
+
+    // An error creates no revision or changeset and does not discard the redo step.
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    let before = (s.document().clone(), s.revision());
+    assert!(s.can_redo());
+    let error = s.dispatch("timeline.update", &with(on(disabled), json!({"set": {"enabled": true}}))).unwrap_err();
+    assert_eq!(error.message, "a timeline renders at most 32 clips: disable another first");
+    assert_eq!((s.document(), s.revision()), (&before.0, before.1));
+    assert!(s.can_redo());
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert_eq!(list(&mut s).iter().find(|clip| clip["id"] == enabled.as_str()).unwrap()["out_us"], json!(1_000_000));
+    let revision = s.revision();
+    let split = s.dispatch("timeline.split", &with(on(enabled), json!({"at_us": 500_000}))).unwrap_err();
+    assert_eq!(split.message, "a timeline renders at most 32 clips: disable another first");
+    assert_eq!(s.revision(), revision);
+
+    // Disabled clips remain editable even when the enabled count is exactly 32.
+    s.dispatch("timeline.update", &with(on(disabled), json!({"set": {"out_us": 2_000_000}}))).unwrap();
+    assert_eq!(list(&mut s).iter().find(|clip| clip["id"] == disabled.as_str()).unwrap()["out_us"], json!(2_000_000));
+    s.dispatch("timeline.update", &with(on(enabled), json!({"set": {"enabled": false}}))).unwrap();
+    s.dispatch("timeline.update", &with(on(disabled), json!({"set": {"enabled": true}}))).unwrap();
+}
+
+#[test]
+fn structural_clip_bound_reports_oversized_wires_instead_of_losing_them() {
+    let mut s = many_wired(40);
+    let stored_clips: Vec<Json> = (0..=MAX_STRUCTURAL_CLIPS).map(|n| json!({"id": format!("extra{n}"), "origin": "absent", "enabled": false})).collect();
+    assert!(s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": stored_clips})).is_err());
+    assert_eq!(ids(&mut s).len(), 40);
+
+    // A previously saved spec can still be read. Its new wires must be reported,
+    // never truncated and silently written over by an edit.
+    let mut s = many_wired(32);
+    let saved: Vec<Json> = (0..100).map(|n| json!({"id": format!("old{n}"), "origin": "absent", "enabled": false})).collect();
+    s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": saved})).unwrap();
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), 100);
+    assert_eq!(s.dispatch("timeline.list", &json!({"canvas": CANVAS, "id": EDITOR})).unwrap()["clips"].as_array().unwrap().len(), 132);
+    let err = s.dispatch("timeline.update", &with(on("old0"), json!({"set": {"in_us": 100_000}}))).unwrap_err();
+    assert_eq!(err.message, "a timeline stores at most 128 clips, one for each wired input included: delete some clips or disconnect some inputs");
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), 100);
+
+    // The advice can be followed: deleting old takes one by one shrinks the stored list (the wired
+    // clips stay automatic) until edits fit again.
+    for n in 0..3 {
+        s.dispatch("timeline.remove", &on(&format!("old{n}"))).unwrap();
+        assert_eq!(stored(&node(&s)).unwrap().clips.len(), 99 - n);
+    }
+    // The fourth removal fits: it stores the 96 old takes with the 32 automatic clips.
+    s.dispatch("timeline.remove", &on("old3")).unwrap();
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), MAX_STRUCTURAL_CLIPS);
+    assert_eq!(ids(&mut s).len(), MAX_STRUCTURAL_CLIPS);
+    s.dispatch("timeline.update", &with(on("old4"), json!({"set": {"in_us": 100_000}}))).unwrap();
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), MAX_STRUCTURAL_CLIPS);
+    assert_eq!(list(&mut s).iter().filter(|clip| clip["wired"] == true).count(), 32);
+}
+
+#[test]
+fn set_is_refused_past_the_render_limit_only_when_it_renders_more_than_now() {
+    let mut s = many_wired(40);
+    let clips = ids(&mut s);
+    // An edit stores all 40 automatic clips, every one enabled.
+    s.dispatch("timeline.update", &with(on(clips.first().unwrap()), json!({"set": {"in_us": 100_000}}))).unwrap();
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), 40);
+    // Going back to automatic clips renders no more than now.
+    s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": []})).unwrap();
+    assert!(stored(&node(&s)).unwrap().clips.is_empty());
+    assert_eq!(ids(&mut s), clips);
+    // All 40 with one disabled renders fewer, as the same change through timeline.update would.
+    let all: Vec<Json> =
+        list(&mut s).iter().enumerate().map(|(i, clip)| json!({"id": clip["id"], "origin": clip["origin"], "nth": clip["nth"], "enabled": i != 0})).collect();
+    s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": all})).unwrap();
+    assert_eq!(list(&mut s).iter().filter(|clip| clip["enabled"] == true).count(), 39);
+    // Enabling more than now past the limit is still refused, and changes nothing.
+    let revision = s.revision();
+    let error = s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": []})).unwrap_err();
+    assert_eq!(error.message, "a timeline renders at most 32 clips: disable another first");
+    assert_eq!(s.revision(), revision);
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), 40);
+}
+
+#[test]
+fn opened_project_with_oversized_stored_timeline_keeps_its_data_and_redo() {
+    // Simulate a project saved before this bound existed: 129 stored clips, with no
+    // automatic clips needed to exceed the limit. The format must not discard it.
+    let mut s = session();
+    let accepted: Vec<Json> = (0..128).map(|n| json!({"id": format!("ok{n}"), "origin": "absent", "enabled": false})).collect();
+    s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": accepted})).unwrap();
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), 128);
+    let clips: Vec<Json> = (0..129).map(|n| json!({"id": format!("old{n}"), "origin": "absent", "enabled": false})).collect();
+    let original = json!({"clips": clips}).to_string();
+    let mut timeline_node = node(&s);
+    timeline_node.config.insert(CONFIG.into(), Value::Text(original.clone()));
+    let mut project = s.document().clone();
+    Change::SetNode { canvas: CANVAS, node: timeline_node }.apply(&mut project).unwrap();
+    let snapshot = nodecraft_format::Snapshot { project, assets: Default::default(), epoch: 0 };
+    let saved = nodecraft_format::encode(&snapshot).unwrap();
+    let opened = nodecraft_format::decode(&saved).unwrap();
+    let mut s = Session::new(opened.project).unwrap();
+    assert_eq!(node(&s).config.get(CONFIG), Some(&Value::Text(original.clone())));
+    let list_error = s.dispatch("timeline.list", &json!({"canvas": CANVAS, "id": EDITOR})).unwrap_err();
+    assert!(list_error.message.contains("a timeline stores at most 128 clips"), "{}", list_error.message);
+    assert!(list_error.message.contains("replace them with node.timeline_set"), "{}", list_error.message);
+
+    // Establish a redo step in the reopened session. A refused edit must not clear it.
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": NodeId::from_bytes([90; 16]), "kind": "source.video", "pos": {"x": 0, "y": 300}})).unwrap();
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert!(s.can_redo());
+    let before = (s.document().clone(), s.revision());
+    let error = s.dispatch("timeline.update", &with(on("old0"), json!({"set": {"in_us": 100_000}}))).unwrap_err();
+    assert!(error.message.contains("a timeline stores at most 128 clips"), "{}", error.message);
+    assert_eq!((s.document(), s.revision()), (&before.0, before.1));
+    assert!(s.can_redo());
+    let saved_again = nodecraft_format::encode(&nodecraft_format::Snapshot { project: s.document().clone(), assets: Default::default(), epoch: 0 }).unwrap();
+    let reopened = nodecraft_format::decode(&saved_again).unwrap();
+    assert_eq!(reopened.project.canvases().get(&CANVAS).unwrap().nodes().get(&EDITOR).unwrap().config.get(CONFIG), Some(&Value::Text(original)));
+    // As the message says, node.timeline_set replaces the unreadable clips.
+    s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": []})).unwrap();
+    assert!(stored(&node(&s)).unwrap().clips.is_empty());
+}
+
+#[test]
+fn enormous_nested_result_stops_before_materializing_the_inner_list() {
+    let mut source = node(&session());
+    source.kind = "image.blur".into();
+    source.outputs.first_mut().unwrap().name = "out".into();
+    let id = nodecraft_types::GenerationId::from_bytes([88; 16]);
+    source.active = Some(id);
+    source.history.push(nodecraft_graph::Generation {
+        id,
+        outputs: vec![Value::List(vec![Value::List(vec![Value::Bool(false); 2_000_000])])],
+        input_hash: None,
+        items: vec![Default::default()],
+        settings: Vec::new(),
+        incomplete: None,
+    });
+    // A 2-million-item inner list previously made a 2-million-reference temporary Vec
+    // before the outer take(129). Measure allocation so the old implementation fails
+    // deterministically instead of depending on a machine's memory or timing.
+    let mut result = Vec::new();
+    let allocation = allocation_counter::measure(|| result = shown(&source, "out", Input::Clips));
+    assert_eq!(result.len(), MAX_INPUTS + 1);
+    assert!(allocation.count_total > 0, "allocation counter must observe the output vector");
+    assert!(allocation.bytes_total <= 32 * 1024, "nested input allocation exceeded its bound: {allocation:?}");
+}
+
 #[test]
 fn each_wired_video_is_listed_as_a_whole_clip_until_it_is_stored() {
     let mut s = session();
@@ -152,10 +325,18 @@ fn set_replaces_the_clips_and_refuses_bad_ones() {
     assert_eq!(wired, [("intro", true), ("gone", false), (a.as_str(), true)]);
     assert_eq!(s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": clips})).unwrap(), json!({"changed": false}));
     let twice = json!([{"id": "x", "origin": "n"}, {"id": "x", "origin": "m"}]);
-    let many: Vec<Json> = (0..=MAX_CLIPS).map(|i| json!({"id": format!("c{i}"), "origin": "n"})).collect();
-    for bad in [twice, json!(many), json!([{"id": "x", "origin": "n", "volume": 5000}])] {
+    let many: Vec<Json> = (0..=MAX_CLIPS).map(|i| json!({"id": format!("c{i}"), "origin": A.to_string()})).collect();
+    assert_eq!(
+        s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": many})).unwrap_err().message,
+        "a timeline renders at most 32 clips: disable another first"
+    );
+    for bad in [twice, json!([{"id": "x", "origin": "n", "volume": 5000}])] {
         assert!(s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": bad})).is_err());
     }
+    // Stored but disconnected takes do not consume a render slot.
+    let offline: Vec<Json> = (0..40).map(|i| json!({"id": format!("offline{i}"), "origin": "absent"})).collect();
+    s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": offline})).unwrap();
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), 40);
     assert!(s.dispatch("timeline.list", &json!({"canvas": CANVAS, "id": A})).is_err(), "only a Timeline has clips");
 }
 

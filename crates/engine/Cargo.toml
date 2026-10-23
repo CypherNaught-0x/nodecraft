@@ -53,6 +53,8 @@ craft-atomic.workspace = true
 nodecraft-media = { workspace = true, features = ["video"] }
 
 [dev-dependencies]
+# Guard against allocations proportional to input-derived nested Timeline results.
+allocation-counter = "=0.8.1"
 nodecraft-media = { workspace = true, features = ["fixtures"] }
 nodecraft-provider-testkit = { workspace = true }
 # Exercise the real image adapter through the runner, not only a policy fixture.
