@@ -6,7 +6,7 @@
 //! finds the room that holds it, and lets the peer in with the link's role.
 use std::collections::BTreeMap;
 use std::io::ErrorKind as IoKind;
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -22,6 +22,10 @@ use tungstenite::{Message, WebSocket};
 const MAX_CONNECTIONS: usize = 256;
 /// The most rooms at once.
 const MAX_ROOMS: usize = 64;
+/// The most connections from one address that haven't said yet which room they want. Past it,
+/// more from there are turned away until some do or give up, so one address that opens many and
+/// says nothing can't take every slot (#701). Behind a proxy every peer has its address.
+const MAX_WAITING_PER_ADDRESS: usize = 16;
 /// How long a new connection has to say which room it wants.
 const HELLO_WITHIN: Duration = Duration::from_secs(10);
 /// How often a connection looks for frames to send while it waits for one to arrive.
@@ -107,6 +111,13 @@ impl Rooms {
         self.rooms.values().map(Room::held).fold(0, usize::saturating_add)
     }
 
+    /// Has every room that took in enough since it last measured measure what it holds.
+    fn settle(&mut self) {
+        for room in self.rooms.values_mut() {
+            room.settle();
+        }
+    }
+
     fn leave(&mut self, peer: Peer) {
         if let Some(Inbox { room, .. }) = self.peers.remove(&peer)
             && let Some(state) = self.rooms.get_mut(&room)
@@ -132,9 +143,43 @@ impl Relay {
     }
 }
 
-fn lock(rooms: &Mutex<Rooms>) -> MutexGuard<'_, Rooms> {
+fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
     // A connection that failed mid-way leaves the rooms as consistent as any frame does.
-    rooms.lock().unwrap_or_else(PoisonError::into_inner)
+    held.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Connections waiting to say which room they want, by address.
+type Waiting = Arc<Mutex<BTreeMap<IpAddr, usize>>>;
+
+/// One connection counted as waiting until it is dropped.
+struct Hello {
+    waiting: Waiting,
+    from: IpAddr,
+}
+
+impl Hello {
+    /// Counts in a connection from `from`, if that address has room for another.
+    fn new(waiting: &Waiting, from: IpAddr) -> Option<Self> {
+        let mut held = lock(waiting);
+        let count = held.entry(from).or_default();
+        if *count >= MAX_WAITING_PER_ADDRESS {
+            return None;
+        }
+        *count = count.saturating_add(1);
+        Some(Self { waiting: Arc::clone(waiting), from })
+    }
+}
+
+impl Drop for Hello {
+    fn drop(&mut self) {
+        let mut held = lock(&self.waiting);
+        if let Some(count) = held.get_mut(&self.from) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                held.remove(&self.from);
+            }
+        }
+    }
 }
 
 pub fn start(listen: SocketAddr) -> Result<Relay, Error> {
@@ -143,18 +188,20 @@ pub fn start(listen: SocketAddr) -> Result<Relay, Error> {
     let rooms = Arc::new(Mutex::new(Rooms::default()));
     let open = Arc::new(AtomicUsize::new(0));
     let next = Arc::new(AtomicU64::new(1));
+    let waiting = Waiting::default();
     let accepting = thread::Builder::new()
         .name("relay".into())
         .spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { continue };
+                let Some(hello) = stream.peer_addr().ok().and_then(|addr| Hello::new(&waiting, addr.ip())) else { continue };
                 if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
                     open.fetch_sub(1, Ordering::SeqCst);
                     continue;
                 }
                 let (rooms, count, peer) = (Arc::clone(&rooms), Arc::clone(&open), next.fetch_add(1, Ordering::SeqCst));
                 let spawned = thread::Builder::new().name("relay peer".into()).spawn(move || {
-                    connection(stream, peer, &rooms);
+                    connection(stream, peer, &rooms, hello);
                     lock(&rooms).leave(peer);
                     count.fetch_sub(1, Ordering::SeqCst);
                 });
@@ -173,7 +220,7 @@ fn config(largest: usize) -> WebSocketConfig {
 }
 
 /// Serves one peer until it leaves, is refused, or the connection fails.
-fn connection(stream: TcpStream, peer: Peer, rooms: &Mutex<Rooms>) {
+fn connection(stream: TcpStream, peer: Peer, rooms: &Mutex<Rooms>, hello: Hello) {
     if stream.set_read_timeout(Some(HELLO_WITHIN)).is_err() {
         return;
     }
@@ -183,6 +230,7 @@ fn connection(stream: TcpStream, peer: Peer, rooms: &Mutex<Rooms>) {
     if !enter(&mut socket, peer, sender, Arc::clone(&waiting), rooms) {
         return;
     }
+    drop(hello);
     socket.set_config(|c| *c = config(MAX_FRAME_BYTES));
     if socket.get_ref().set_read_timeout(Some(POLL)).is_err() || socket.get_ref().set_write_timeout(Some(WRITE_WITHIN)).is_err() {
         return;
@@ -271,7 +319,13 @@ fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, 
             Ok(Message::Binary(bytes)) => {
                 let mut rooms = lock(rooms);
                 let Some(room) = rooms.peers.get(&peer).map(|inbox| inbox.room.clone()) else { return };
-                let outs = match Frame::decode(&bytes) {
+                let frame = Frame::decode(&bytes);
+                let grows = matches!(frame, Ok(Frame::Update(_) | Frame::Step2(_) | Frame::AssetPut { .. } | Frame::CommentPut { .. }));
+                if grows && rooms.held() > MAX_RELAY_BYTES {
+                    // Rooms count what they merged until they measure: measure before refusing.
+                    rooms.settle();
+                }
+                let outs = match frame {
                     // What would add to what the relay holds waits until there is room for it.
                     Ok(Frame::Update(_) | Frame::Step2(_) | Frame::AssetPut { .. } | Frame::CommentPut { .. }) if rooms.held() > MAX_RELAY_BYTES => {
                         vec![Out::Close(peer, Frame::Refused("the relay is full".into()))]

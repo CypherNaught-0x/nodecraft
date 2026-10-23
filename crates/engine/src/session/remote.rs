@@ -61,6 +61,55 @@ mod tests {
     }
 
     #[test]
+    fn an_undo_that_a_peer_took_away_is_dropped_and_the_next_one_still_works() {
+        let mut session = session();
+        let canvas = CanvasId::from_bytes([2; 16]);
+        for n in [3, 4] {
+            session.dispatch("node.add", &json!({"canvas": canvas, "node": Node::new(NodeId::from_bytes([n; 16]), "text")})).unwrap();
+        }
+        // Another person removes the card the last step added.
+        session.apply_remote(Changeset::new(vec![Change::RemoveNode { canvas, id: NodeId::from_bytes([4; 16]) }])).unwrap();
+        let error = session.dispatch("edit.undo", &json!({})).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        assert!(error.to_string().contains("taken off the undo history"), "{error}");
+        let revision = session.revision();
+        // The step below it undoes as usual.
+        session.dispatch("edit.undo", &json!({})).unwrap();
+        assert!(session.revision() > revision);
+        assert!(session.document().canvases()[&canvas].nodes().is_empty());
+        assert!(!session.can_undo());
+    }
+
+    #[test]
+    fn a_redo_that_a_peer_made_needless_is_dropped() {
+        let mut session = session();
+        let canvas = CanvasId::from_bytes([2; 16]);
+        let node = Node::new(NodeId::from_bytes([3; 16]), "text");
+        session.dispatch("node.add", &json!({"canvas": canvas, "node": node})).unwrap();
+        session.dispatch("edit.undo", &json!({})).unwrap();
+        // Another person adds the same card back, so redoing the add can't apply.
+        session.apply_remote(Changeset::new(vec![Change::AddNode { canvas, node }])).unwrap();
+        let error = session.dispatch("edit.redo", &json!({})).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        assert!(error.to_string().contains("taken off the redo history"), "{error}");
+        assert!(session.dispatch("edit.redo", &json!({})).is_err());
+        assert!(session.redo.entries.is_empty());
+    }
+
+    #[test]
+    fn an_undo_that_fails_with_no_peer_edit_since_stays() {
+        let mut session = session();
+        let canvas = CanvasId::from_bytes([2; 16]);
+        session.dispatch("node.add", &json!({"canvas": canvas, "node": Node::new(NodeId::from_bytes([3; 16]), "text")})).unwrap();
+        // A step that can't apply, with nobody else to blame: the history isn't touched.
+        let entry = session.undo.entries.back_mut().unwrap();
+        entry.inverse = Changeset::new(vec![Change::RemoveNode { canvas, id: NodeId::from_bytes([9; 16]) }]);
+        assert!(!entry.shared);
+        assert!(session.dispatch("edit.undo", &json!({})).is_err());
+        assert!(session.can_undo());
+    }
+
+    #[test]
     fn a_remote_edit_that_doesnt_fit_changes_nothing() {
         let mut session = session();
         session.apply_remote(add(1)).unwrap();

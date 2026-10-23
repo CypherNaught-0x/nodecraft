@@ -17,6 +17,8 @@
       position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
       margin: 0; padding: 1rem; pointer-events: none; color: #8a8a93; font: 14px system-ui, sans-serif; text-align: center;
     }
+    /* After a panic the canvas no longer draws: canvas_bg and text cover it. */
+    #nodecraft_status.stopped { background: #080809; color: #e8e8ec; }
   </style>
 </head>
 <body>

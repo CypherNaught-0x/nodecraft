@@ -306,3 +306,70 @@ fn a_commenters_discussion_is_checked_written_and_sent_to_everyone() {
     room.join_link(11, [3; 32], 0);
     assert!(matches!(room.handle(11, put(4, None, Some(thread("Ed"))))[..], [Out::Close(11, _)]));
 }
+
+#[test]
+fn a_long_session_of_replaced_text_doesnt_fill_the_room() {
+    let canvas = CanvasId::from_bytes([2; 16]);
+    let card = nodecraft_types::NodeId::from_bytes([3; 16]);
+    let mut project = project();
+    Changeset::new(vec![Change::AddNode { canvas, node: nodecraft_graph::Node::new(card, "text") }]).apply(&mut project).unwrap();
+    let (mut sharer, update) = Mirror::share(&project).unwrap();
+    let mut room = Room::new();
+    room.limit = 1 << 20;
+    room.join(1);
+    room.join(2);
+    assert!(room.handle(1, Frame::Update(update)).len() == 1);
+    // Twenty times the room's size, each edit replacing the last: all of it is taken.
+    for n in 0..80u32 {
+        let text = format!("{n:08}").repeat(32 << 10);
+        Changeset::new(vec![Change::SetParam { canvas, id: card, name: "prompt".into(), value: Some(nodecraft_types::Value::Text(text)) }])
+            .apply(&mut project)
+            .unwrap();
+        let update = sharer.publish(&project).unwrap().unwrap();
+        let out = room.handle(1, Frame::Update(update));
+        assert!(matches!(out[..], [Out::Send(2, Frame::Update(_))]), "edit {n}: {out:?}");
+    }
+    assert!(room.held() <= room.limit);
+    // Text that stays is still counted: the room fills, and says so.
+    let mut room = Room::new();
+    room.limit = 1 << 20;
+    room.join(1);
+    let everything = sharer.update_for(&Mirror::join().state_vector().unwrap()).unwrap();
+    assert!(room.handle(1, Frame::Step2(everything)).is_empty());
+    let refused = (0..8u8).find_map(|n| {
+        let card = nodecraft_types::NodeId::from_bytes([10 + n; 16]);
+        let mut node = nodecraft_graph::Node::new(card, "text");
+        node.params.insert("prompt".into(), nodecraft_types::Value::Text("x".repeat(256 << 10)));
+        Changeset::new(vec![Change::AddNode { canvas, node }]).apply(&mut project).unwrap();
+        let update = sharer.publish(&project).unwrap().unwrap();
+        room.handle(1, Frame::Update(update)).into_iter().find(|out| matches!(out, Out::Close(1, Frame::Refused(_))))
+    });
+    assert!(matches!(refused, Some(Out::Close(1, Frame::Refused(why))) if why == "the room has grown too large"));
+}
+
+#[test]
+fn a_room_measured_close_to_full_measures_again_before_refusing() {
+    let canvas = CanvasId::from_bytes([2; 16]);
+    let mut project = project();
+    let (mut sharer, update) = Mirror::share(&project).unwrap();
+    let mut room = Room::new();
+    room.limit = 1 << 20;
+    room.join(1);
+    assert!(room.handle(1, Frame::Update(update)).is_empty());
+    // Text that stays, up to nine tenths of the room.
+    let card = nodecraft_types::NodeId::from_bytes([3; 16]);
+    let mut node = nodecraft_graph::Node::new(card, "text");
+    node.params.insert("prompt".into(), nodecraft_types::Value::Text("x".repeat(900 << 10)));
+    Changeset::new(vec![Change::AddNode { canvas, node }]).apply(&mut project).unwrap();
+    let out = room.handle(1, Frame::Update(sharer.publish(&project).unwrap().unwrap()));
+    assert!(out.is_empty(), "{out:?}");
+    // It is taken away, and more comes in than was left: the room measures, and takes it.
+    Changeset::new(vec![Change::RemoveNode { canvas, id: card }]).apply(&mut project).unwrap();
+    assert!(room.handle(1, Frame::Update(sharer.publish(&project).unwrap().unwrap())).is_empty());
+    let card = nodecraft_types::NodeId::from_bytes([4; 16]);
+    let mut node = nodecraft_graph::Node::new(card, "text");
+    node.params.insert("prompt".into(), nodecraft_types::Value::Text("y".repeat(300 << 10)));
+    Changeset::new(vec![Change::AddNode { canvas, node }]).apply(&mut project).unwrap();
+    let out = room.handle(1, Frame::Update(sharer.publish(&project).unwrap().unwrap()));
+    assert!(out.is_empty(), "{out:?}");
+}

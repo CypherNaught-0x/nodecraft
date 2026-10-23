@@ -29,6 +29,25 @@ fn main() {
     });
 }
 
+/// What the page says once the app has panicked. The browser can't unwind a panic, so the
+/// command guard that keeps the desktop's document can't run here (#701); the app stops instead,
+/// and says so rather than leaving a canvas that no longer answers.
+#[cfg(target_arch = "wasm32")]
+const STOPPED: &str = "NodeCraft stopped after an error it couldn't recover from. Reload the page to go on.";
+
+/// Shows [`STOPPED`] after a panic, once the hooks before this one (eframe's) have run.
+#[cfg(target_arch = "wasm32")]
+fn show_panics() {
+    let earlier = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        earlier(info);
+        show_status(Some(STOPPED));
+        if let Some(status) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id(STATUS_ID)) {
+            status.set_class_name("stopped");
+        }
+    }));
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn start() -> Result<(), String> {
     use eframe::wasm_bindgen::JsCast as _;
@@ -38,7 +57,9 @@ async fn start() -> Result<(), String> {
         .ok_or_else(|| format!("the page has no #{CANVAS_ID} canvas"))?
         .dyn_into::<web_sys::HtmlCanvasElement>()
         .map_err(|_| format!("#{CANVAS_ID} is not a canvas"))?;
-    eframe::WebRunner::new()
+    let runner = eframe::WebRunner::new();
+    show_panics();
+    runner
         .start(
             canvas,
             eframe::WebOptions::default(),
@@ -56,7 +77,7 @@ async fn start() -> Result<(), String> {
         .map_err(|e| e.as_string().unwrap_or_else(|| format!("{e:?}")))
 }
 
-/// Shows `message` in the status line, or removes the line once the app draws.
+/// Shows `message` in the status line, or empties it once the app draws; it stays, for a panic.
 #[cfg(target_arch = "wasm32")]
 fn show_status(message: Option<&str>) {
     let Some(status) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id(STATUS_ID)) else {
@@ -64,7 +85,7 @@ fn show_status(message: Option<&str>) {
     };
     match message {
         Some(message) => status.set_text_content(Some(message)),
-        None => status.remove(),
+        None => status.set_text_content(None),
     }
 }
 
