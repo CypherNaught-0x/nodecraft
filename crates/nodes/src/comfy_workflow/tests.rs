@@ -39,7 +39,7 @@ fn exposed(workflow: &ApiWorkflow) -> Exposed {
 
 fn config() -> BTreeMap<String, Value> {
     let workflow = workflow(FOX);
-    propose(&workflow, &exposed(&workflow)).unwrap()
+    propose(&workflow, &exposed(&workflow)).unwrap().config
 }
 
 fn place(config: BTreeMap<String, Value>) -> Result<Node, Error> {
@@ -102,7 +102,7 @@ fn literal_inputs_get_matching_controls() {
     let workflow = workflow(FOX);
     let mut exposed = discover(&workflow, &catalog()).unwrap();
     exposed.inputs.retain(|i| i.node == "3" && i.input != "seed");
-    let node = place(propose(&workflow, &exposed).unwrap()).unwrap();
+    let node = place(propose(&workflow, &exposed).unwrap().config).unwrap();
     let mapping = mapping(&node).unwrap();
     let control = |input: &str| mapping.params.iter().find(|p| p.input == input).map(|p| p.spec.control.clone()).unwrap();
     assert!(matches!(control("steps"), ParamControl::Unsigned { min: Some(Unsigned(1)), max: Some(Unsigned(10000)), .. }));
@@ -221,4 +221,70 @@ fn long_labels_are_cut_at_a_character_boundary() {
     let cut = bounded(&label, 255);
     assert_eq!(cut.len(), 254);
     assert!(cut.chars().all(|c| c == 'é'));
+}
+
+#[test]
+fn an_input_that_cant_be_a_parameter_is_left_out_with_a_warning() {
+    let workflow = workflow(FOX);
+    let mut exposed = discover(&workflow, &catalog()).unwrap();
+    exposed.inputs.retain(|i| i.node == "3" && (i.input == "cfg" || i.input == "steps"));
+    for input in exposed.inputs.iter_mut().filter(|i| i.input == "cfg") {
+        input.kind = ExposedKind::Float { min: Some(5.0), max: Some(1.0), step: Some(0.1) };
+    }
+    let proposal = propose(&workflow, &exposed).unwrap();
+    assert_eq!(proposal.warnings.len(), 1, "{:?}", proposal.warnings);
+    assert!(proposal.warnings.first().unwrap().contains("3.cfg"));
+    let node = place(proposal.config).unwrap();
+    let inputs: Vec<_> = mapping(&node).unwrap().params.iter().map(|p| p.input.clone()).collect();
+    assert_eq!(inputs, ["steps"]);
+}
+
+#[test]
+fn partner_nodes_are_named_on_the_card_and_never_quoted_free() {
+    let workflow = workflow(FOX);
+    let mut exposed = exposed(&workflow);
+    let free = place(propose(&workflow, &exposed).unwrap().config).unwrap();
+    assert_eq!(kind().unpriced(&free), None);
+    exposed.partners = vec![
+        nodecraft_comfy::PartnerNode { node: "3".into(), class_type: "PartnerImage".into() },
+        nodecraft_comfy::PartnerNode { node: "2".into(), class_type: "PartnerImage".into() },
+    ];
+    let proposal = propose(&workflow, &exposed).unwrap();
+    assert!(proposal.warnings.iter().any(|w| w.contains("PartnerImage") && w.contains("comfy.org")), "{:?}", proposal.warnings);
+    let node = place(proposal.config).unwrap();
+    assert_eq!(mapping(&node).unwrap().partners, ["PartnerImage"]);
+    let kind = kind();
+    assert!(kind.unpriced(&node).unwrap().contains("PartnerImage"));
+    let descriptor = kind.resolve_instance(&node).unwrap();
+    let model = descriptor.params.params.iter().find(|p| p.name == MODEL).unwrap();
+    assert!(model.description.as_deref().unwrap().contains("comfy.org credits"));
+}
+
+#[test]
+fn instance_descriptors_are_reused_for_the_same_mapping_and_bounded() {
+    let kind = kind();
+    let node = place(config()).unwrap();
+    let first = kind.resolve_instance(&node).unwrap().into_owned();
+    assert_eq!(kind.cache.lock().unwrap().len(), 1);
+    assert_eq!(kind.resolve_instance(&node).unwrap().into_owned(), first);
+    assert_eq!(kind.cache.lock().unwrap().len(), 1, "the same mapping is parsed once");
+
+    let workflow = workflow(FOX);
+    for n in 0..CACHED + 8 {
+        let mut exposed = exposed(&workflow);
+        for output in &mut exposed.outputs {
+            output.label = format!("Saved {n}");
+        }
+        let other = place(propose(&workflow, &exposed).unwrap().config).unwrap();
+        kind.resolve_instance(&other).unwrap();
+    }
+    assert_eq!(kind.cache.lock().unwrap().len(), CACHED);
+    // A changed mapping is never answered from the cache.
+    let mut edited = node.clone();
+    let mut changed = mapping(&node).unwrap();
+    changed.params.truncate(1);
+    edited.config.insert(MAPPING.into(), Value::Text(serde_json::to_string(&changed).unwrap()));
+    edited.params.retain(|name, _| name == MODEL || changed.params.iter().any(|p| &p.spec.name == name));
+    assert_eq!(kind.resolve_instance(&edited).unwrap().params.params.len(), 2);
+    assert_eq!(kind.resolve_instance(&node).unwrap().into_owned(), first);
 }

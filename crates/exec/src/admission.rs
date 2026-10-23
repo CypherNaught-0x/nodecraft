@@ -354,6 +354,12 @@ fn selection<'a>(
             }
             selected.push(Selection { node: node.id, model: Err(Unpriced::Invalid("generation has no model selected".into())), source: node });
         }
+        if let Some(why) = kind.unpriced(node) {
+            if measure::mul(selected.len() + 1, size_of::<Selection<'_>>() + 512)? > scratch_limit {
+                return Err(cap());
+            }
+            selected.push(Selection { node: node.id, model: Err(Unpriced::Invalid(why)), source: node });
+        }
     }
     Ok(selected)
 }

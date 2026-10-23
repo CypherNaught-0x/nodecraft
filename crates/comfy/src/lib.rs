@@ -27,7 +27,7 @@ mod ws;
 
 pub use error::{ComfyError, NodeError};
 pub use json_bounds::{MAX_JSON_BYTES, MAX_JSON_DEPTH, MAX_JSON_ITEMS};
-pub use mapping::{Exposed, ExposedInput, ExposedKind, ExposedOutput, InputRole, Media, discover};
+pub use mapping::{Exposed, ExposedInput, ExposedKind, ExposedOutput, InputRole, Media, PartnerNode, discover};
 pub use object_info::{InputKind, InputSpec, MAX_OBJECT_INFO_BYTES, NodeCatalog, NodeInfo, OutputSpec};
 pub use progress_bounds::{MAX_OUTPUT_FILES, MAX_OUTPUT_ITEMS, MAX_PROGRESS_NODES, MAX_RETAINED_METADATA_BYTES};
 pub use prompt::{PromptRequest, Queued, parse_prompt_response};

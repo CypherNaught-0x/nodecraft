@@ -339,8 +339,8 @@ fn card(
             exposed.inputs.retain(|input| media(input) || wanted.contains(full_name(input).as_str()));
         }
     }
-    let config = comfy_workflow::propose(&workflow, &exposed)?;
-    let node = kinds.get(comfy_workflow::ID)?.instantiate_instance(id, config, &ParamValues::new())?;
+    let proposal = comfy_workflow::propose(&workflow, &exposed)?;
+    let node = kinds.get(comfy_workflow::ID)?.instantiate_instance(id, proposal.config, &ParamValues::new())?;
     // Seeds aren't re-randomised per run yet (docs/decisions/2026-10-23-comfy-workflow-card.md).
     let modes = conversion.controls.iter().filter(|(_, mode)| mode.as_str() != "fixed").map(|((node, input), mode)| {
         bounded(&format!("{node}.{input} was set to \"{mode}\" in ComfyUI; the card keeps its value fixed until you change it"), 512)
@@ -349,6 +349,7 @@ fn card(
         .warnings
         .iter()
         .map(|w| bounded(w, 512))
+        .chain(proposal.warnings.iter().map(|w| bounded(w, 512)))
         .chain(modes)
         .chain(check.problems.iter().map(|problem| bounded(&format!("{}.{}: {}", problem.node, problem.input, problem.message), 512)))
         .collect();

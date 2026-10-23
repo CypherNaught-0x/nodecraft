@@ -13,7 +13,8 @@ const OBJECT_INFO: &str = r#"{
     "seed": ["INT", {"min": 0, "max": 18446744073709551615, "control_after_generate": true}], "steps": ["INT", {"min": 1, "max": 10000, "default": 20}],
     "cfg": ["FLOAT", {"min": 0.0, "max": 100.0, "step": 0.1}], "sampler_name": [["euler", "dpmpp_2m"]]
   }}, "output": ["LATENT"]},
-  "SaveImage": {"input": {"required": {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true}
+  "SaveImage": {"input": {"required": {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true},
+  "PartnerImage": {"input": {"required": {"prompt": ["STRING", {}], "strength": ["FLOAT", {"min": 1.0, "max": 0.0}]}}, "output": ["IMAGE"], "api_node": true}
 }"#;
 const FOX: &str = r#"{
   "1": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
@@ -50,7 +51,7 @@ fn catalog() -> Arc<NodeCatalog> {
 fn ready() -> Session {
     let mut s = session();
     let report = finish(&mut s, 1, Ok(catalog().into()));
-    assert_eq!(report, Report { id: 1, nodes: Some(4), error: None, server: None });
+    assert_eq!(report, Report { id: 1, nodes: Some(5), error: None, server: None });
     s
 }
 
@@ -156,7 +157,7 @@ fn a_failed_read_keeps_the_nodes_read_before_and_status_reports_it() {
     let status = s.dispatch("comfy.nodes.status", &json!({})).unwrap();
     assert_eq!(status["last"]["id"], 2);
     assert_eq!(status["last"]["error"], "the server didn't answer");
-    assert_eq!(status["nodes"], 4, "the list read before stays in use");
+    assert_eq!(status["nodes"], 5, "the list read before stays in use");
     s.dispatch("comfy.workflow.import", &import_params(FOX)).unwrap();
 }
 
@@ -225,21 +226,21 @@ fn a_check_reads_the_nodes_and_the_servers_health() {
     let mut s = session();
     let report = finish(&mut s, 1, fetch_from(true));
     let health = report.server.clone().unwrap();
-    assert_eq!(report.nodes, Some(4));
+    assert_eq!(report.nodes, Some(5));
     assert_eq!(health.summary(), "ComfyUI 0.3.40 · cuda:0 NVIDIA GeForce RTX 4090 · 18.2 / 24.0 GB free · 1 running, 2 waiting");
     let status = s.dispatch("comfy.nodes.status", &json!({})).unwrap();
     assert_eq!(
         status["last"]["server"],
         json!({"version": "0.3.40", "device": "cuda:0 NVIDIA GeForce RTX 4090 · 18.2 / 24.0 GB free", "running": 1, "pending": 2})
     );
-    assert_eq!(last(&s), (Some(&report), Some(4)));
+    assert_eq!(last(&s), (Some(&report), Some(5)));
 }
 
 #[test]
 fn a_server_without_health_still_has_its_nodes_read() {
     let mut s = session();
     let report = finish(&mut s, 1, fetch_from(false));
-    assert_eq!(report, Report { id: 1, nodes: Some(4), error: None, server: None });
+    assert_eq!(report, Report { id: 1, nodes: Some(5), error: None, server: None });
     s.dispatch("comfy.workflow.import", &import_params(FOX)).unwrap();
 }
 
@@ -295,4 +296,20 @@ fn forgetting_the_server_drops_its_option_lists_only() {
     let lists = session.resource::<OptionLists>().unwrap();
     assert!(lists.get(key("comfyui.checkpoints")).is_none());
     assert!(lists.get(key("fal.voices")).is_some());
+}
+
+#[test]
+fn a_workflow_with_partner_nodes_warns_and_a_bad_input_is_left_out() {
+    let mut s = ready();
+    let workflow = r#"{
+      "1": {"class_type": "PartnerImage", "inputs": {"prompt": "a fox", "strength": 0.5}},
+      "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0], "filename_prefix": "nc"}}
+    }"#;
+    let mut params = import_params(workflow);
+    params["params"] = json!(["1.prompt", "1.strength"]);
+    let result = s.dispatch("comfy.workflow.import", &params).unwrap();
+    let warnings: Vec<&str> = result["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(warnings.iter().any(|w| w.contains("PartnerImage") && w.contains("comfy.org")), "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("1.strength")), "a bad input is left out, not refused: {warnings:?}");
+    assert_eq!(result["params"].as_array().unwrap().len(), 1);
 }
