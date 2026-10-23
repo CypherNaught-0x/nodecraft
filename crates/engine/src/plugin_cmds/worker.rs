@@ -36,6 +36,8 @@ struct State {
 struct Published {
     changes: u64,
     plugins: crate::plugin_runtime::PluginSnapshot,
+    /// Whether the store has been read: until then `plugins` is a placeholder (#174).
+    loaded: bool,
 }
 
 /// Publishes what `store` may run now, if that changed.
@@ -43,9 +45,10 @@ fn publish<B: StoreBackend>(published: &Mutex<Published>, store: &Store<B>) {
     let next = crate::plugin_runtime::PluginSnapshot::of(store);
     // Only snapshots are stored under this lock, so a poisoned one still holds a whole one.
     let mut published = published.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !published.plugins.same(&next) {
+    if !published.loaded || !published.plugins.same(&next) {
         published.changes = published.changes.saturating_add(1);
         published.plugins = next;
+        published.loaded = true;
     }
 }
 
@@ -291,6 +294,12 @@ impl PluginWorker {
     pub fn plugins(&self) -> (u64, crate::plugin_runtime::PluginSnapshot) {
         let published = self.published.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         (published.changes, published.plugins.clone())
+    }
+
+    /// Whether the store has been read once: until then [`Self::plugins`] holds nothing, though
+    /// the store may hold plugins. A store that can't be read is never loaded.
+    pub fn loaded(&self) -> bool {
+        self.published.lock().unwrap_or_else(std::sync::PoisonError::into_inner).loaded
     }
 
     /// Non-consuming. A terminal envelope stays identical until acknowledgement or eviction

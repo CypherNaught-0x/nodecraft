@@ -498,3 +498,35 @@ fn variations_followed_after_a_restart_go_on_cards_but_the_last() {
         assert!(canvas.edges().values().any(|e| e.from.node == SOURCE && e.to.node == card.id), "fed as the writer is");
     }
 }
+
+/// #174: the restored job of a provider that is gone (a plugin whose grant was withdrawn) is
+/// given up: reported, and its charge settled as unresolved since it may have been billed.
+#[test]
+fn a_job_whose_provider_is_gone_is_given_up_and_charged_as_unresolved() {
+    let mock = slow_mock();
+    let journal = MemoryJournal::default();
+    let (mut first, _) = launch(&mock, &journal, None, 50);
+    start(&mut first);
+    pump_until(&mut first, "the job's handle was never saved", |_| journal.saved().is_some_and(|saved| !saved.submitted.is_empty()));
+    first.runtime.kill();
+    let project = first.session.document().clone();
+    drop(first);
+    let (mut second, opened) = launch(&mock, &journal, Some(project), 0);
+    opened.unwrap();
+    second.host.abandon(PROJECT, "elsewhere", "its plugin is no longer enabled or granted");
+    second.host.abandon(ProjectId::from_bytes([9; 16]), "mock", "its plugin is no longer enabled or granted");
+    assert!(second.host.has_waiting(), "another adapter's or project's jobs are kept");
+    second.host.abandon(PROJECT, "mock", "its plugin is no longer enabled or granted");
+    assert!(!second.host.has_waiting());
+    assert!(!second.host.is_busy(), "nothing is followed");
+    let rows: Vec<Charge> = second.budget.log.lock().unwrap().entries().map(|e| e.status).collect();
+    assert_eq!(rows, [Charge::Unresolved]);
+    let notices = second.host.pump(&mut second.session);
+    let failed: Vec<_> =
+        notices.iter().filter_map(|n| if let RunNotice::Failed { node, reason, .. } = n { Some((*node, reason.clone())) } else { None }).collect();
+    assert_eq!(failed, [(WRITER, "it couldn't be followed after a restart: its plugin is no longer enabled or granted".to_owned())]);
+    let saved = journal.saved().unwrap();
+    assert!(saved.submitted.is_empty(), "{saved:?}");
+    assert_eq!(saved.usage.entries().map(|e| e.status).collect::<Vec<_>>(), [Charge::Unresolved]);
+    assert_eq!(mock.requests().len(), 1, "never sent again");
+}

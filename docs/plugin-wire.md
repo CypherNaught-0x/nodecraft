@@ -155,6 +155,12 @@ fetched, since it may already be billed. A package publishes at most 256 models;
 that are left out, and a package the catalog can't hold is left out on its own, without the
 others.
 
+A job still running at the provider when the app quits is followed after the restart like any
+other (#508), by a broker built from the grant then in force. It waits until the plugin store has
+been read. If its plugin isn't enabled and granted by then, the job is given up instead: its card
+says so, and its charge is settled as unresolved, since it may have been billed. A store that
+can't be read leaves the job waiting.
+
 ## Grants (#174)
 
 A grant records the package digest it was given for and its rights: the capabilities granted and,

@@ -414,6 +414,20 @@ impl RunHost {
         }
     }
 
+    /// Gives up on the restored jobs of `project` that ran on `adapter`, which can't be followed
+    /// any more (its plugin's grant is gone, #174): each is reported with `reason` and its charge
+    /// settled as unresolved, since it may have been billed.
+    pub fn abandon(&mut self, project: ProjectId, adapter: &str, reason: &str) {
+        let (gone, waiting): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.parked).into_iter().partition(|entry| entry.project == project && entry.target.adapter() == adapter);
+        self.parked = waiting;
+        for entry in gone {
+            settle_unresolved(&self.budget, &entry);
+            self.held.push(RunNotice::Failed { canvas: entry.canvas, node: entry.node, reason: format!("it couldn't be followed after a restart: {reason}") });
+            self.journal_changed = true;
+        }
+    }
+
     /// Whether restored jobs are waiting for [`Self::resume`].
     pub fn has_waiting(&self) -> bool {
         !self.parked.is_empty()
