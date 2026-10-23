@@ -35,7 +35,7 @@ impl NodeCraftApp {
             || self.comments.gesture_cancelled
             || self.drop_pointer_owned();
         let dragging = ctx.dragged_id().is_some() || self.navigation.drag.is_some();
-        let fit_all = self.navigation.geometry.bounds(None, t).is_some();
+        let fit_all = self.fit_all_bounds().is_some();
         let fit_selection = self.navigation.geometry.bounds(Some(&self.selection), t).is_some();
         std::array::from_fn(|index| NavigationContext {
             canvas: self.canvas,
@@ -44,6 +44,22 @@ impl NodeCraftApp {
             fit_all,
             fit_selection,
         })
+    }
+    /// What Fit all frames: the cards the canvas shows and collapsed field headers, the same
+    /// shapes the minimap draws (#739). None while geometry is unavailable or nothing shows.
+    fn fit_all_bounds(&mut self) -> Option<Rect> {
+        if self.navigation.geometry.error {
+            return None;
+        }
+        // Headers at their least zoomed-out size: sized at the current zoom, a header seen from far
+        // out is taller in world points than the fitted view draws it, so a second Fit all moves.
+        let (membership, collapsed) = self.collapsed_fields(1.0);
+        let t = self.theme.tokens();
+        self.navigation
+            .shapes(None, &membership.hidden, &collapsed)
+            .into_iter()
+            .map(|(_, rect)| crate::navigation::decorated(rect, t))
+            .reduce(|a, b| a.union(b))
     }
     fn navigation_context(&mut self, ctx: &egui::Context, id: &str) -> NavigationContext {
         let [all, selected, toggle, pan] = self.navigation_contexts(ctx);
@@ -93,9 +109,9 @@ impl NodeCraftApp {
         let mut clamped = false;
         match intent.get("action").and_then(Json::as_str) {
             Some("fit_all" | "fit_selection") => {
-                let selection = if id == "canvas.fit_selection" { Some(&self.selection) } else { None };
                 let t = self.theme.tokens();
-                let bounds = self.navigation.geometry.bounds(selection, t).ok_or_else(|| Error::new(ErrorKind::Conflict, "node geometry is unavailable"))?;
+                let bounds = if id == "canvas.fit_selection" { self.navigation.geometry.bounds(Some(&self.selection), t) } else { self.fit_all_bounds() };
+                let bounds = bounds.ok_or_else(|| Error::new(ErrorKind::Conflict, "node geometry is unavailable"))?;
                 let viewport = self.navigation.usable(self.viewport, t);
                 let padding = t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius;
                 clamped = self.view.fit(viewport, bounds, padding).ok_or_else(|| Error::new(ErrorKind::Conflict, "canvas is too small to fit nodes"))?.clamped;
@@ -169,7 +185,7 @@ impl NodeCraftApp {
                 .map(|node| (drag.id, Vec2::new(drag.pos.x - node.pos.x, drag.pos.y - node.pos.y)))
         });
         // The minimap shows a collapsed field as its header, as the canvas does (#707).
-        let (membership, collapsed) = self.minimap_fields();
+        let (membership, collapsed) = self.collapsed_fields(self.view.zoom);
         let (blocked, actions) = self.navigation.show(
             ui,
             crate::navigation::OverlayInput {

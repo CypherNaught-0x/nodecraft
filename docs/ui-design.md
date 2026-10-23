@@ -217,6 +217,8 @@ Fit resolves actual instance geometry for every node, including offscreen nodes,
 unsaved labels and handles. Every instance hook and node payload is checked; identical borrowed descriptors share successful
 validation within a refresh, while owned dynamic descriptors validate individually. Startup/reset
 uses the same geometry path. Only lightweight rectangles survive between document revisions.
+Fit all frames what the map draws: a collapsed field counts as its header, not its hidden
+cards (#739), and with only collapsed fields on the canvas it fits their headers.
 Unknown kinds and failed instance/schema admission use the complete painted placeholder, which
 remains navigable. Invalid payloads or unavailable/nonfinite geometry disable Fit all; Fit selected
 requires valid geometry for every selected node. This navigation fallback does not provide

@@ -479,7 +479,10 @@ fn the_minimap_shows_a_collapsed_field_as_its_header_without_its_cards() {
     let id = field_around_card(&mut h);
     let node = member(&h);
     let shapes = |h: &mut Harness<'static, NodeCraftApp>| {
-        let (membership, collapsed) = h.state_mut().minimap_fields();
+        let (membership, collapsed) = {
+            let zoom = h.state().view.zoom;
+            h.state_mut().collapsed_fields(zoom)
+        };
         h.state().navigation.shapes(None, &membership.hidden, &collapsed)
     };
     let open = shapes(&mut h);
@@ -494,4 +497,47 @@ fn the_minimap_shows_a_collapsed_field_as_its_header_without_its_cards() {
     let header = super::fields::world_rect(&field, h.state().theme.tokens(), h.state().view.zoom);
     assert_eq!(closed.iter().filter(|(shown, _)| shown.is_none()).map(|(_, rect)| *rect).collect::<Vec<_>>(), vec![header]);
     assert!(header.height() < field.rect.height, "only the header, not the whole zone");
+}
+
+#[test]
+fn fit_all_frames_a_collapsed_field_by_its_header_not_its_hidden_cards() {
+    let mut h = harness();
+    h.run();
+    let id = field_around_card(&mut h);
+    h.run();
+    let node = member(&h);
+    let card = *h.state().navigation.geometry.rects.get(&node).unwrap();
+    // A tall zone whose header is far above its only card.
+    let canvas_id = h.state().canvas;
+    let rect = json!({"pos": {"x": card.min.x - 40.0, "y": card.min.y - 3000.0}, "width": card.width() + 80.0, "height": 3000.0 + card.height() + 40.0});
+    h.state_mut().session.dispatch("field.update", &json!({"canvas": canvas_id, "field": id, "rect": rect, "collapsed": true})).unwrap();
+    h.run();
+    let field = canvas(&h).fields().get(&id).unwrap().clone();
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    h.run();
+    let (view, viewport) = (h.state().view, h.state().viewport);
+    let header = view.rect_to_screen(viewport.min, super::fields::world_rect(&field, h.state().theme.tokens(), view.zoom));
+    assert!(viewport.contains_rect(header), "Fit all frames the collapsed header");
+    assert!(!viewport.intersects(view.rect_to_screen(viewport.min, card)), "and not the card hidden far below it");
+}
+
+#[test]
+fn fit_all_from_far_out_frames_a_collapsed_header_the_same_twice() {
+    let mut h = harness();
+    h.run();
+    let id = field_around_card(&mut h);
+    h.run();
+    let canvas_id = h.state().canvas;
+    h.state_mut().session.dispatch("field.update", &json!({"canvas": canvas_id, "field": id, "collapsed": true})).unwrap();
+    h.state_mut().view.zoom = 0.1;
+    h.run();
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    h.run();
+    let first = h.state().view;
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    h.run();
+    let second = h.state().view;
+    assert!((first.zoom - second.zoom).abs() < 1e-4 && (first.pan - second.pan).length() < 0.5, "Fit all is stable: {first:?} then {second:?}");
 }
