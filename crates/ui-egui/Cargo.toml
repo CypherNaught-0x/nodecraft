@@ -56,6 +56,9 @@ zip = { workspace = true, features = ["deflate-flate2-zlib-rs"] }
 ed25519-dalek = { workspace = true }
 # The connection to a live-sharing relay (#698), on its own thread.
 tungstenite = { workspace = true }
+# How much room the temporary folder has for assets coming in to a live-sharing session (#842): std
+# has no safe call for it, so this small crate wraps statvfs/GetDiskFreeSpaceEx. Pinned exactly.
+fs4 = { version = "=1.1.0", default-features = false, features = ["sync"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Browser drops (#319): a dropped file's size before reading it, and the read on the browser's queue.
 # Provider keys in the origin's `localStorage` (#118). Project files (#118): the file pickers,

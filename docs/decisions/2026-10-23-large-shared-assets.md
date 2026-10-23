@@ -39,8 +39,18 @@ or given up. A finished asset is imported from its file (`Session::import_asset_
 `asset_bytes_total` and `unusable_assets`, and the chip shows the percentage while files are on
 their way.
 
-Known limits (#842): importing a finished large asset runs on the window's thread and takes a
-few seconds per GB; so does a sender's first read of an asset it holds only on disk. An editor
-who sends wrong bytes first makes the asset unusable for that receiver until it reconnects. A
-spool file left by a crash stays in the temporary folder, and a full disk gives an asset up
-rather than waiting for space.
+Off the window (#842): the desktop's sharing thread seals a finished large asset into the
+project's private storage on a clone of the session's store (`AssetStore::seal`, under the
+storage's operation lock, so a save or another import meanwhile is told it is busy), and the
+plan only adopts the sealed result (`Session::adopt_sealed_asset`), a map insert. A sender
+reads its parts on that thread too. Each spool file is locked while its spool holds it, and a
+new spool deletes unlocked ones older than a minute, which a crash left behind. A spool that
+can't write (a full disk) puts the asset off and asks again two seconds later, up to eight
+times before giving it up; the spool's budget is also bounded by half the disk's free room
+beyond 1 GiB, since sealing copies the asset again, so an asset over it waits for room instead
+of filling the disk. Free room comes from the `fs4` crate (pinned), as std has no safe call
+for it.
+
+Known limit: an editor who sends wrong bytes first makes the asset unusable for that receiver
+until it reconnects; asking another sender needs a relay frame of its own (a follow-up to
+#842).

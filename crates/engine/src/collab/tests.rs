@@ -574,7 +574,7 @@ fn plan_copy(collab: &mut Collab, session: &Session) -> (Vec<Frame>, Plan) {
     let held: BTreeSet<Blake3> = session.assets().hashes().copied().collect();
     let has = |hash: &Blake3| held.contains(hash);
     let (out, plan) = collab.plan(&View { revision: session.revision(), document: &copy, has: &has }).unwrap();
-    (out.into_iter().flat_map(|out| out.frames(session)).collect(), plan)
+    (out.into_iter().flat_map(|out| out.frames(session.assets())).collect(), plan)
 }
 
 #[test]
@@ -709,12 +709,69 @@ fn an_asset_too_large_for_one_frame_comes_in_parts() {
     assert_eq!((collab.waiting_for_assets(), collab.unusable_assets(), collab.asset_progress()), (0, 0, (0, 0)));
 }
 
+#[test]
+fn a_host_that_seals_takes_a_large_asset_once_sealed_without_reading_it_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = on_disk(empty(), &dir.path().join("sharer"));
+    let bytes: std::sync::Arc<[u8]> = noise(nodecraft_sync::WINDOW_BYTES as usize + 3).into();
+    let len = bytes.len() as u64;
+    let range = nodecraft_format::asset_source::AssetRange::new(std::sync::Arc::new(nodecraft_format::asset_source::MemorySource::new(bytes)), 0, len).unwrap();
+    let hash = session.import_asset_from(&range, &Default::default(), &Default::default()).unwrap();
+    let mut card = Node::new(nid(1), "text");
+    card.params.insert("image".into(), Value::Media(AssetRef { hash, mime: "application/octet-stream".parse().unwrap(), meta: MediaMeta::default() }));
+    session.apply_remote(Changeset::new(vec![Change::AddNode { canvas: canvas(), node: card }])).unwrap();
+
+    let mut net = Net::new();
+    net.disk = Some(dir.path().join("joiners"));
+    net.enter(Person { id: 1, collab: Collab::share(&session, room_id()).unwrap(), session: Some(session) });
+    let joiner = Collab::join(room_id()).with_spool(Box::new(MemorySpool::new(64 << 20))).sealing();
+    net.enter(Person { id: 2, collab: joiner, session: None });
+    // Whole but not sealed: the card waits, and the asset isn't asked for again.
+    assert!(net.person(2).collab.seals_pending());
+    assert!(net.session(2).assets().descriptor(&hash).is_none());
+    assert!(!net.session(2).document().canvases()[&canvas()].nodes().contains_key(&nid(1)));
+    assert_eq!(net.person(2).collab.waiting_for_assets(), 0);
+
+    // Sealed on a clone of the store, as the desktop's worker does; then taken in a moment.
+    let store = net.session(2).assets().clone();
+    net.collab(2).seal_arrivals(&store);
+    assert!(!net.person(2).collab.seals_pending());
+    net.settle();
+    let shared = net.session(1).document().clone();
+    assert_eq!(net.session(2).document(), &shared);
+    assert_eq!(net.session(2).assets().descriptor(&hash).map(|d| d.bytes), Some(len));
+    let held = net.session(2).assets().verified_content(&hash, &Default::default(), &Default::default()).unwrap();
+    assert_eq!(held.byte_len(), len);
+    assert_eq!(net.person(2).collab.unusable_assets(), 0);
+}
+
+#[test]
+fn an_asset_sealed_for_one_projects_storage_isnt_taken_into_another() {
+    let dir = tempfile::tempdir().unwrap();
+    let one = on_disk(empty(), &dir.path().join("one"));
+    let mut other = on_disk(empty(), &dir.path().join("other"));
+    let bytes: std::sync::Arc<[u8]> = noise(1 << 20).into();
+    let range =
+        nodecraft_format::asset_source::AssetRange::new(std::sync::Arc::new(nodecraft_format::asset_source::MemorySource::new(bytes)), 0, 1 << 20).unwrap();
+    let sealed = one.assets().seal(&range, &Default::default(), &Default::default()).unwrap();
+    assert_eq!(other.adopt_sealed_asset(sealed).unwrap_err().kind, ErrorKind::Conflict);
+    assert!(other.assets().is_empty());
+    // A host without private storage can't seal at all.
+    let memory = Session::new(empty()).unwrap();
+    assert_eq!(memory.assets().seal(&range, &Default::default(), &Default::default()).unwrap_err().kind, ErrorKind::Unsupported);
+}
+
 /// `b` has the project but not its image, which it has asked `a`'s session for.
 fn asking() -> (Session, Collab, Session, Blake3) {
+    asking_into(Box::new(MemorySpool::default()))
+}
+
+/// As [`asking`], with `b` keeping parts in `spool`.
+fn asking_into(spool: Box<dyn Spool>) -> (Session, Collab, Session, Blake3) {
     let (mut session, asset) = sharer();
     add(&mut session, 2);
     let mut a = Collab::share(&session, room_id()).unwrap();
-    let mut b = Collab::join(room_id());
+    let mut b = Collab::join(room_id()).with_spool(spool);
     let _ = b.hello();
     let replies = b.receive(Frame::Step1(Mirror::join().state_vector().unwrap())).unwrap();
     let Some(Frame::Step1(b_has)) = replies.into_iter().nth(1) else { panic!("b asks back") };
@@ -766,6 +823,74 @@ fn an_asset_not_as_named_or_too_large_is_given_up_and_its_card_waits() {
     }
 }
 
+/// A spool in memory that can't write the first `fails` parts it is given, as a full disk.
+struct Flaky {
+    inner: MemorySpool,
+    fails: u32,
+}
+
+impl Spool for Flaky {
+    fn limit(&self) -> u64 {
+        self.inner.limit()
+    }
+
+    fn budget(&self) -> u64 {
+        self.inner.budget()
+    }
+
+    fn begin(&mut self, hash: Blake3, total: u64) -> Result<(), Error> {
+        self.inner.begin(hash, total)
+    }
+
+    fn append(&mut self, hash: &Blake3, bytes: &[u8]) -> Result<(), Error> {
+        if self.fails > 0 {
+            self.fails -= 1;
+            return Err(Error::new(ErrorKind::Unsupported, "disk full"));
+        }
+        self.inner.append(hash, bytes)
+    }
+
+    fn finish(&mut self, hash: &Blake3) -> Result<nodecraft_format::asset_source::AssetRange, Error> {
+        self.inner.finish(hash)
+    }
+
+    fn discard(&mut self, hash: &Blake3) {
+        self.inner.discard(hash);
+    }
+}
+
+#[test]
+fn an_asset_the_spool_cant_write_waits_a_while_and_is_asked_for_again() {
+    let (session, mut b, mut joined, hash) = asking_into(Box::new(Flaky { inner: MemorySpool::default(), fails: 1 }));
+    let bytes = b"not really a png";
+    b.receive(part(hash, 16, 0, bytes)).unwrap();
+    // Still waited for, but not asked for again until the host says a while has passed.
+    assert_eq!((b.waiting_for_assets(), b.unusable_assets(), b.asset_progress()), (1, 0, (0, 0)));
+    assert!(b.puts_off());
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+    assert!(b.retry_put_off());
+    assert!(!b.retry_put_off());
+    assert_eq!(b.settle(&mut joined).unwrap(), vec![Frame::AssetGet(vec![*hash.as_bytes()])]);
+    b.receive(part(hash, 16, 0, bytes)).unwrap();
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+    assert_eq!(joined.document(), session.document());
+    assert_eq!((b.waiting_for_assets(), b.unusable_assets()), (0, 0));
+}
+
+#[test]
+fn an_asset_the_spool_keeps_failing_to_write_is_given_up() {
+    let (_, mut b, mut joined, hash) = asking_into(Box::new(Flaky { inner: MemorySpool::default(), fails: u32::MAX }));
+    for _ in 0..=MAX_SPOOL_TRIES {
+        assert_eq!(b.unusable_assets(), 0);
+        b.receive(part(hash, 16, 0, b"not really a png")).unwrap();
+        b.retry_put_off();
+        let _ = b.settle(&mut joined).unwrap();
+    }
+    assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (1, 0));
+    assert!(!b.puts_off());
+    assert!(!joined.document().canvases()[&canvas()].nodes().contains_key(&nid(1)));
+}
+
 #[test]
 fn a_large_asset_is_sent_a_stretch_at_a_time() {
     let dir = tempfile::tempdir().unwrap();
@@ -777,10 +902,10 @@ fn a_large_asset_is_sent_a_stretch_at_a_time() {
             .unwrap();
     let hash = session.import_asset_from(&range, &Default::default(), &Default::default()).unwrap();
     // Asked whole: the first part, then as asked, a window at most.
-    let mut frames = super::Out::Asset(hash, Stretch::Whole).frames(&session);
+    let mut frames = super::Out::Asset(hash, Stretch::Whole).frames(session.assets());
     assert_eq!(frames.len(), 1);
     let window = Stretch::From { offset: nodecraft_sync::PART_BYTES as u64, len: 3 * nodecraft_sync::WINDOW_BYTES };
-    frames.extend(super::Out::Asset(hash, window).frames(&session));
+    frames.extend(super::Out::Asset(hash, window).frames(session.assets()));
     assert_eq!(frames.len(), 1 + nodecraft_sync::WINDOW_BYTES as usize / nodecraft_sync::PART_BYTES);
     let mut at = 0;
     for frame in &frames {
@@ -791,12 +916,13 @@ fn a_large_asset_is_sent_a_stretch_at_a_time() {
     }
     // The rest, as asked; nothing past the end, nor of an asset it doesn't hold.
     assert_eq!(at, len as u64);
-    let [Frame::AssetPart { offset, bytes: rest, .. }] = &super::Out::Asset(hash, Stretch::From { offset: at - 3, len: 100 }).frames(&session)[..] else {
+    let [Frame::AssetPart { offset, bytes: rest, .. }] = &super::Out::Asset(hash, Stretch::From { offset: at - 3, len: 100 }).frames(session.assets())[..]
+    else {
         panic!()
     };
     assert_eq!((*offset, &rest[..]), (at - 3, &bytes[len - 3..]));
-    assert!(super::Out::Asset(hash, Stretch::From { offset: len as u64, len: 1 }).frames(&session).is_empty());
-    assert!(super::Out::Asset(Blake3::from_bytes([4; 32]), Stretch::Whole).frames(&session).is_empty());
+    assert!(super::Out::Asset(hash, Stretch::From { offset: len as u64, len: 1 }).frames(session.assets()).is_empty());
+    assert!(super::Out::Asset(Blake3::from_bytes([4; 32]), Stretch::Whole).frames(session.assets()).is_empty());
 }
 
 #[test]

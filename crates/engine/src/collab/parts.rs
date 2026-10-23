@@ -5,6 +5,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use nodecraft_format::asset_source::{AssetRange, AssetSource, MemorySource, StreamMetrics, TransferCancel};
+use nodecraft_format::{AssetStore, SealedAsset};
 use nodecraft_sync::{Frame, MAX_ASSET_BYTES, MAX_SHARED_ASSET_BYTES, PART_BYTES, WINDOW_BYTES};
 use nodecraft_types::{Blake3, Error, ErrorKind};
 
@@ -100,6 +101,9 @@ pub enum Arrival {
     Bytes(Vec<u8>),
     /// Put together from parts, whose hash was checked as the last arrived.
     Range(AssetRange),
+    /// Put together from parts and sealed into the session's storage away from it
+    /// ([`super::Collab::seal_arrivals`]), so taking it doesn't read it again (#842).
+    Sealed(SealedAsset),
 }
 
 impl Arrival {
@@ -107,14 +111,16 @@ impl Arrival {
         match self {
             Self::Bytes(bytes) => bytes.len() as u64,
             Self::Range(range) => range.byte_len(),
+            Self::Sealed(sealed) => sealed.byte_len(),
         }
     }
 
     /// Imports it into `session`, which checks the bytes are what `hash` names.
-    pub(super) fn import(&self, hash: &Blake3, session: &mut Session) -> Result<(), Error> {
+    pub(super) fn import(self, hash: &Blake3, session: &mut Session) -> Result<(), Error> {
         let made = match self {
-            Self::Bytes(bytes) => session.import_asset(bytes)?,
-            Self::Range(range) => session.import_asset_from(range, &TransferCancel::default(), &StreamMetrics::default())?,
+            Self::Bytes(bytes) => session.import_asset(&bytes)?,
+            Self::Range(range) => session.import_asset_from(&range, &TransferCancel::default(), &StreamMetrics::default())?,
+            Self::Sealed(sealed) => session.adopt_sealed_asset(sealed)?,
         };
         if made != *hash {
             return Err(Error::new(ErrorKind::Internal, "an asset that arrived isn't the one it was checked as"));
@@ -185,9 +191,9 @@ pub enum Stretch {
 }
 
 /// The frames that answer an ask for `stretch` of the asset `hash`: the asset whole when it
-/// fits in one frame and was asked for whole, else its parts. None if the session can't read it.
-pub(super) fn frames(session: &Session, hash: &Blake3, stretch: Stretch) -> Option<Vec<Frame>> {
-    let total = session.assets().descriptor(hash)?.bytes;
+/// fits in one frame and was asked for whole, else its parts. None if `assets` can't read it.
+pub(super) fn frames(assets: &AssetStore, hash: &Blake3, stretch: Stretch) -> Option<Vec<Frame>> {
+    let total = assets.descriptor(hash)?.bytes;
     if total > MAX_SHARED_ASSET_BYTES {
         return None;
     }
@@ -195,9 +201,9 @@ pub(super) fn frames(session: &Session, hash: &Blake3, stretch: Stretch) -> Opti
     let metrics = StreamMetrics::default();
     let (offset, len) = match stretch {
         Stretch::Whole if total <= MAX_ASSET_BYTES as u64 => {
-            let bytes = match session.assets().get(hash) {
+            let bytes = match assets.get(hash) {
                 Some(bytes) => bytes.to_vec(),
-                None => session.assets().verified_content(hash, &cancel, &metrics).ok()?.read_small(MAX_ASSET_BYTES, &metrics).ok()?,
+                None => assets.verified_content(hash, &cancel, &metrics).ok()?.read_small(MAX_ASSET_BYTES, &metrics).ok()?,
             };
             return Some(vec![Frame::AssetPut { hash: *hash.as_bytes(), bytes }]);
         }
@@ -209,7 +215,7 @@ pub(super) fn frames(session: &Session, hash: &Blake3, stretch: Stretch) -> Opti
     if offset >= end {
         return None;
     }
-    let asset = session.assets().verified_content(hash, &cancel, &metrics).ok()?;
+    let asset = assets.verified_content(hash, &cancel, &metrics).ok()?;
     let mut reader = asset.reader(metrics);
     reader.seek(SeekFrom::Start(offset)).ok()?;
     let mut out = Vec::new();

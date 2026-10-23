@@ -13,7 +13,9 @@ use std::{
 };
 
 mod preview_read;
+mod sealed;
 pub use preview_read::{PreviewAssetRead, PreviewReadError};
+pub use sealed::SealedAsset;
 
 struct Entry {
     identity: Arc<AssetIdentity>,
