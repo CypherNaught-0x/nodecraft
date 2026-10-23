@@ -199,7 +199,7 @@ impl GenerationCatalog {
     pub fn registry(&self) -> Result<nodecraft_nodes::Registry, Error> {
         let mut kinds = nodecraft_nodes::Registry::builtins()?;
         for kind in &self.0.kinds {
-            kinds.register(Box::new(kind.clone()))?;
+            kinds.register_generation(kind.clone())?;
         }
         Ok(kinds)
     }

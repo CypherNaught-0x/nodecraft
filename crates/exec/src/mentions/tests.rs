@@ -150,7 +150,7 @@ fn a_shared_name_blocks_the_mentioning_node() {
     Change::AddNode { canvas: C, node: element(6, "HERO") }.apply(&mut p).unwrap();
     let Planned::Blocked(blockers) = planned(&p, 5).unwrap() else { panic!("planned") };
     assert!(
-        matches!(blockers.as_slice(), [b] if b.node == id(5) && matches!(&b.reason, Reason::Invalid(m) if m.contains("more than one Element"))),
+        matches!(blockers.as_slice(), [b] if b.node == id(5) && matches!(&b.reason, Reason::PublicInvalid(m) if m.contains("more than one Element"))),
         "{blockers:?}"
     );
     assert_eq!(mentioned(&p, 5).first().unwrap().resolved, Resolved::Ambiguous);

@@ -297,7 +297,7 @@ fn malformed_requests_are_errors_and_bad_nodes_block() {
     let Planned::Blocked(blockers) = plan_run(canvas, &kinds, &RunMode::Selected, &ids(&[6, 7]), &BTreeSet::new()).unwrap() else { panic!() };
     assert_eq!(blockers.len(), 2);
     assert_eq!(blockers.first().map(|b| &b.reason), Some(&Reason::UnknownKind));
-    assert!(matches!(blockers.get(1).map(|b| &b.reason), Some(Reason::Invalid(_))));
+    assert!(matches!(blockers.get(1).map(|b| &b.reason), Some(Reason::PublicInvalid(_))));
 }
 
 #[test]
@@ -488,7 +488,7 @@ fn repeated_noodles_report_one_blocker_and_fan_in_is_capped() {
     nodecraft_graph::Changeset::new(changes).apply(&mut p).unwrap();
     let canvas = p.canvases().get(&C).unwrap();
     let Planned::Blocked(blockers) = plan_run(canvas, &kinds(), &RunMode::Selected, &ids(&[2]), &BTreeSet::new()).unwrap() else { panic!() };
-    assert!(matches!(blockers.as_slice(), [Blocker { reason: Reason::Invalid(m), .. }] if m.contains("items")));
+    assert!(matches!(blockers.as_slice(), [Blocker { reason: Reason::PublicInvalid(m), .. }] if m.contains("items")));
 
     // A large value wired in many times hits the byte budget long before memory runs out.
     let big = "x".repeat(1024 * 1024);
@@ -498,7 +498,7 @@ fn repeated_noodles_report_one_blocker_and_fan_in_is_capped() {
     nodecraft_graph::Changeset::new(changes).apply(&mut p).unwrap();
     let canvas = p.canvases().get(&C).unwrap();
     let Planned::Blocked(blockers) = plan_run(canvas, &kinds(), &RunMode::Selected, &ids(&[2]), &BTreeSet::new()).unwrap() else { panic!() };
-    assert!(matches!(blockers.as_slice(), [Blocker { reason: Reason::Invalid(m), .. }] if m.contains("too large")));
+    assert!(matches!(blockers.as_slice(), [Blocker { reason: Reason::PublicInvalid(m), .. }] if m.contains("too large")));
 }
 
 #[test]
@@ -583,7 +583,7 @@ fn the_whole_plan_has_a_byte_budget() {
     let canvas = p.canvases().get(&C).unwrap();
     let all: BTreeSet<NodeId> = (2..steps.saturating_add(2)).map(id).collect();
     let Planned::Blocked(blockers) = plan_run(canvas, &kinds(), &RunMode::Selected, &all, &BTreeSet::new()).unwrap() else { panic!() };
-    assert!(matches!(blockers.as_slice(), [Blocker { reason: Reason::Invalid(m), .. }] if m.contains("this run")));
+    assert!(matches!(blockers.as_slice(), [Blocker { reason: Reason::PublicInvalid(m), .. }] if m.contains("this run")));
 }
 
 #[test]
@@ -597,7 +597,7 @@ fn nested_list_fan_out_is_charged_before_it_is_copied() {
     let canvas = p.canvases().get(&C).unwrap();
     let start = std::time::Instant::now();
     let Planned::Blocked(blockers) = plan_run(canvas, &kinds(), &RunMode::Selected, &ids(&[2]), &BTreeSet::new()).unwrap() else { panic!("must be blocked") };
-    assert!(matches!(blockers.as_slice(), [Blocker { reason: Reason::Invalid(m), .. }] if m.contains("too large")), "{blockers:?}");
+    assert!(matches!(blockers.as_slice(), [Blocker { reason: Reason::PublicInvalid(m), .. }] if m.contains("too large")), "{blockers:?}");
     // Refused before materialising the expansion (which would take seconds and ~0.5 GB).
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
 }
@@ -614,7 +614,7 @@ fn fan_in_from_another_step_has_the_same_item_cap() {
     let Planned::Blocked(blockers) = plan_run(canvas, &kinds(), &RunMode::Selected, &ids(&[2, 3]), &BTreeSet::new()).unwrap() else {
         panic!("must be blocked")
     };
-    assert!(blockers.iter().any(|b| b.node == id(3) && matches!(&b.reason, Reason::Invalid(m) if m.contains("items"))), "{blockers:?}");
+    assert!(blockers.iter().any(|b| b.node == id(3) && matches!(&b.reason, Reason::PublicInvalid(m) if m.contains("items"))), "{blockers:?}");
 }
 
 #[test]
@@ -662,7 +662,7 @@ fn plan_of(p: &Project, nodes: &[u8]) -> Planned {
 fn blocked(planned: Planned) -> String {
     match planned {
         Planned::Blocked(blockers) => match blockers.as_slice() {
-            [Blocker { reason: Reason::Invalid(message), .. }] => message.clone(),
+            [Blocker { reason: Reason::Invalid(message) | Reason::PublicInvalid(message), .. }] => message.clone(),
             other => panic!("unexpected blockers: {other:?}"),
         },
         Planned::Ready(plan) => panic!("planned: {plan:?}"),

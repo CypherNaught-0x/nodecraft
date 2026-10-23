@@ -252,7 +252,14 @@ fn a_trained_style_is_quoted_by_steps_kept_as_a_descriptor_and_fed_to_its_family
     f.session.dispatch("node.set_model", &commit).unwrap();
     let q = quote(&mut f, PAINT).unwrap();
     assert_eq!((q["allowed"].clone(), q["blocked"].to_string().contains("node_validation")), (json!(false), true), "{q}");
-    // The quote keeps only fixed reasons; the card's own words name both families.
+    let quoted_reason = q["blocked"].to_string();
+    assert!(quoted_reason.contains("trained for flux-1") && quoted_reason.contains("takes sdxl-1"), "{quoted_reason}");
+    let refused = f
+        .session
+        .dispatch("run.start", &json!({"canvas": C, "mode": "selected", "nodes": [PAINT], "accept": {"token": q["token"], "amounts": {}}}))
+        .unwrap_err();
+    assert!(refused.message.contains("trained for flux-1") && refused.message.contains("takes sdxl-1"), "{refused:?}");
+    // The planner and quote retain the same public diagnosis.
     let canvas = f.session.document().canvases().get(&C).unwrap();
     let planned = nodecraft_exec::planner::plan(canvas, f.session.kinds(), &RunMode::Selected, &[PAINT].into(), &Default::default()).unwrap();
     let Planned::Blocked(blockers) = planned else { panic!("blocked: {planned:?}") };

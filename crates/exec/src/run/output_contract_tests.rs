@@ -127,7 +127,7 @@ fn eager_planner_blocks_a_route_with_the_wrong_port_modality() {
     let (project, kinds) = fixture(vec![vec![route("out", Modality::Image)]], false);
     let result = plan(project.canvases().get(&C).unwrap(), &kinds, &RunMode::Selected, &BTreeSet::from([TARGET]), &BTreeSet::new()).unwrap();
     assert!(
-        matches!(result, Planned::Blocked(ref blockers) if blockers.iter().any(|b| b.node == TARGET && matches!(b.reason, crate::planner::Reason::Invalid(_))))
+        matches!(result, Planned::Blocked(ref blockers) if blockers.iter().any(|b| b.node == TARGET && matches!(b.reason, crate::planner::Reason::PublicInvalid(_))))
     );
 }
 #[test]
