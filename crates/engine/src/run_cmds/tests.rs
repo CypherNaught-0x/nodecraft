@@ -145,6 +145,9 @@ fn session(budgets: Budgets, with_service: bool) -> (Session, Started) {
                 Ok(json!({"run": "accepted"}))
             })
             .unwrap();
+        // Like the run host's inbox: a run handed over and not yet taken is waiting.
+        let log = Arc::clone(&started);
+        services.register_run_host_idle(move || log.lock().unwrap().is_empty()).unwrap();
     }
     let mut session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources).with_services(services);
     let mut routing = crate::provider_routing::ProviderRouting::new();
@@ -1427,4 +1430,200 @@ fn bounded_static_blockers_preserve_action_and_never_echo_native_text() {
     }
     assert!(admission_reason(&Error::new(ErrorKind::Budget, "private-error")).contains("admission_limit"));
     assert!(admission_reason(&Error::new(ErrorKind::InvalidInput, "private-error")).contains("catalog_mismatch"));
+}
+
+// Cached results a run reuses (#91).
+
+fn node_of(s: &Session, n: u8) -> nodecraft_graph::Node {
+    s.document().canvases().get(&C).unwrap().nodes().get(&id(n)).unwrap().clone()
+}
+
+/// Records a result for node `n` made from its inputs as they are now.
+fn record_current(s: &mut Session, n: u8, generation: u8) {
+    let kinds = kinds();
+    let canvas = s.document().canvases().get(&C).unwrap();
+    let hash = nodecraft_exec::staleness::InputHasher::new(canvas, &kinds, nodecraft_exec::staleness::MAX_QUERY_BYTES)
+        .unwrap()
+        .hash(canvas, &kinds, id(n), &BTreeMap::new())
+        .unwrap()
+        .unwrap();
+    let generation = Generation {
+        id: GenerationId::from_bytes([generation; 16]),
+        outputs: vec![V::Text(format!("result {generation}"))],
+        input_hash: Some(hash),
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    };
+    s.dispatch("run.record", &json!({"canvas": C, "results": [{"node": id(n), "generation": generation}]})).unwrap();
+}
+
+fn text(s: &mut Session, value: &str) {
+    s.dispatch("node.param_set", &json!({"canvas": C, "id": id(1), "name": "text", "value": V::Text(value.into())})).unwrap();
+}
+
+fn images(s: &mut Session, n: u8) {
+    s.dispatch("node.param_set", &json!({"canvas": C, "id": id(2), "name": "num_images", "value": {"type": "unsigned", "value": n.to_string()}})).unwrap();
+}
+
+/// Text 1 → write 4 → generator 2: 4 holds a result for the current text in its history, but
+/// another one is active.
+fn chain_with_a_cached_write() -> (Session, Started) {
+    let (mut s, started) = session(Budgets::default(), true);
+    s.dispatch("node.create", &json!({"canvas": C, "id": id(4), "kind": "test.write", "pos": {"x": 0, "y": 0}})).unwrap();
+    s.dispatch("edge.disconnect", &json!({"canvas": C, "id": EdgeId::from_bytes([10; 16])})).unwrap();
+    let wire = |s: &mut Session, e: u8, from: u8, to: u8| {
+        s.dispatch(
+            "edge.connect",
+            &json!({"canvas": C, "edge": {"id": EdgeId::from_bytes([e; 16]), "from": {"node": id(from), "port": "out"}, "to": {"node": id(to), "port": "in"}, "order": 0}}),
+        )
+        .unwrap();
+    };
+    wire(&mut s, 12, 1, 4);
+    wire(&mut s, 13, 4, 2);
+    record_current(&mut s, 4, 40);
+    text(&mut s, "a wolf");
+    record_current(&mut s, 4, 41);
+    text(&mut s, "a fox");
+    (s, started)
+}
+
+#[test]
+fn a_node_whose_result_is_cached_is_neither_quoted_nor_run() {
+    let (mut s, started) = session(Budgets::default(), true);
+    s.dispatch("node.cache_set", &json!({"canvas": C, "id": id(2), "enabled": true})).unwrap();
+    record_current(&mut s, 2, 20);
+    images(&mut s, 4);
+    record_current(&mut s, 2, 21);
+    images(&mut s, 3);
+    let revision = s.revision();
+    let quote = s.dispatch("run.quote", &request(&[2])).unwrap();
+    assert_eq!(quote["reused"], json!([id(2)]));
+    assert_eq!((quote["steps"].clone(), quote["totals"].clone(), quote["allowed"].clone()), (json!([]), json!({}), json!(true)), "nothing to pay for");
+    assert_eq!(s.revision(), revision, "a quote changes nothing");
+    // Starting it only applies the cached result: no run goes to the host.
+    let out = s.dispatch("run.start", &with_accept(&[2], json!({"token": quote["token"]}))).unwrap();
+    assert_eq!(out, json!({"reused": [id(2)]}));
+    assert!(started.lock().unwrap().is_empty());
+    assert_eq!(node_of(&s, 2).active, Some(GenerationId::from_bytes([20; 16])), "the earlier result, selected");
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(node_of(&s, 2).active, Some(GenerationId::from_bytes([21; 16])), "one undo step");
+    // With caching off (the default for a model), the same request is quoted and paid for.
+    s.dispatch("node.cache_set", &json!({"canvas": C, "id": id(2), "enabled": null})).unwrap();
+    let quote = s.dispatch("run.quote", &request(&[2])).unwrap();
+    assert_eq!((quote["reused"].clone(), quote["steps_total"].clone()), (json!([]), json!(1)));
+}
+
+#[test]
+fn a_run_applies_cached_results_first_and_runs_only_the_rest() {
+    let (mut s, started) = chain_with_a_cached_write();
+    let upstream = json!({"canvas": C, "mode": "with_upstream", "nodes": [id(2)]});
+    let quote = s.dispatch("run.quote", &upstream).unwrap();
+    assert_eq!(quote["reused"], json!([id(4)]));
+    let steps: Vec<Value> = quote["steps"].as_array().unwrap().iter().map(|step| step["node"].clone()).collect();
+    assert_eq!(steps, vec![json!(id(2))], "only the generator runs");
+    let revision = s.revision();
+    let mut start = upstream.clone();
+    start["accept"] = json!({"token": quote["token"], "amounts": quote["totals"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v["micros"].clone())).collect::<Map<_, _>>()});
+    let out = s.dispatch("run.start", &start).unwrap();
+    assert_eq!(out, json!({"run": "accepted", "reused": [id(4)]}));
+    assert_eq!(s.revision(), revision + 1, "the reuse is one edit");
+    assert_eq!(node_of(&s, 4).active, Some(GenerationId::from_bytes([40; 16])));
+    // The run was bound to the document with the reused result in place: it authorizes, and
+    // the generator reads the reused text.
+    let prepared = started.lock().unwrap().pop().unwrap();
+    let (run, progress) = s.authorize_prepared_run(prepared, run_options()).unwrap();
+    let (_, job) = crate::generate::provider_job(run.work(progress.jobs[0].id).unwrap(), "fixture").unwrap();
+    assert!(format!("{:?}", job.inputs).contains("result 40"), "{:?}", job.inputs);
+}
+
+#[test]
+fn a_run_bound_after_its_reuse_is_still_refused_after_another_edit() {
+    let (mut s, started) = chain_with_a_cached_write();
+    let upstream = json!({"canvas": C, "mode": "with_upstream", "nodes": [id(2)]});
+    let quote = s.dispatch("run.quote", &upstream).unwrap();
+    let mut start = upstream.clone();
+    start["accept"] = json!({"token": quote["token"], "amounts": {"USD": 1_000_000}});
+    s.dispatch("run.start", &start).unwrap();
+    images(&mut s, 4);
+    let prepared = started.lock().unwrap().pop().unwrap();
+    let error = s.authorize_prepared_run(prepared, run_options()).err().unwrap();
+    assert!(error.message.contains("stale"), "{}", error.message);
+}
+
+#[test]
+fn a_node_fed_by_a_step_that_runs_never_reuses() {
+    let (mut s, _) = chain_with_a_cached_write();
+    // The generator is cached too, but for what the write had before: once the write's text
+    // changes and it runs again, the generator's cached result would be stale.
+    s.dispatch("node.cache_set", &json!({"canvas": C, "id": id(2), "enabled": true})).unwrap();
+    s.dispatch("node.cache_set", &json!({"canvas": C, "id": id(4), "enabled": false})).unwrap();
+    record_current(&mut s, 2, 22);
+    images(&mut s, 4);
+    record_current(&mut s, 2, 23);
+    images(&mut s, 3);
+    // 4 is stale (text changed back to one its active result wasn't made from) and runs.
+    let quote = s.dispatch("run.quote", &json!({"canvas": C, "mode": "with_upstream", "nodes": [id(2)]})).unwrap();
+    assert_eq!(quote["reused"], json!([]));
+    assert_eq!(quote["steps_total"], json!(2));
+}
+
+#[test]
+fn a_cached_node_already_holding_its_result_is_not_run_again() {
+    let (mut s, started) = session(Budgets::default(), true);
+    s.dispatch("node.cache_set", &json!({"canvas": C, "id": id(2), "enabled": true})).unwrap();
+    record_current(&mut s, 2, 25);
+    let quote = s.dispatch("run.quote", &request(&[2])).unwrap();
+    assert_eq!((quote["reused"].clone(), quote["steps"].clone()), (json!([id(2)]), json!([])));
+    let revision = s.revision();
+    let out = s.dispatch("run.start", &with_accept(&[2], json!({"token": quote["token"]}))).unwrap();
+    assert_eq!(out, json!({"reused": [id(2)]}));
+    assert_eq!(s.revision(), revision, "nothing to apply");
+    assert!(started.lock().unwrap().is_empty());
+    // A malformed acceptance is still refused when nothing runs.
+    let bad = s.dispatch("run.start", &with_accept(&[2], json!({"token": quote["token"], "amounts": {"usd": 1}})));
+    assert!(bad.is_err());
+}
+
+#[test]
+fn a_requested_node_made_current_by_a_reused_upstream_result_is_not_run() {
+    let (mut s, started) = chain_with_a_cached_write();
+    let select = |s: &mut Session, g: u8| {
+        s.dispatch("history.select", &json!({"canvas": C, "id": id(4), "generation": GenerationId::from_bytes([g; 16])})).unwrap();
+    };
+    // The generator has a result made from 40, the write's cached result for the current text.
+    select(&mut s, 40);
+    s.dispatch("node.cache_set", &json!({"canvas": C, "id": id(2), "enabled": true})).unwrap();
+    record_current(&mut s, 2, 24);
+    select(&mut s, 41);
+    let upstream = json!({"canvas": C, "mode": "with_upstream", "nodes": [id(2)]});
+    let quote = s.dispatch("run.quote", &upstream).unwrap();
+    assert_eq!((quote["reused"].clone(), quote["steps"].clone()), (json!([id(2), id(4)]), json!([])));
+    let mut start = upstream.clone();
+    start["accept"] = json!({"token": quote["token"]});
+    assert_eq!(s.dispatch("run.start", &start).unwrap(), json!({"reused": [id(2), id(4)]}));
+    assert_eq!((node_of(&s, 4).active, node_of(&s, 2).active), (Some(GenerationId::from_bytes([40; 16])), Some(GenerationId::from_bytes([24; 16]))));
+    assert!(started.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_run_that_reuses_waits_while_another_accepted_run_has_not_started() {
+    let (mut s, started) = chain_with_a_cached_write();
+    // A run with nothing to reuse is accepted and waits in the host.
+    let plain = s.dispatch("run.quote", &request(&[2])).unwrap();
+    assert_eq!(plain["reused"], json!([]));
+    s.dispatch("run.start", &with_accept(&[2], json!({"token": plain["token"], "amounts": {"USD": 1_000_000}}))).unwrap();
+    // One that applies a reused result first would leave the waiting run bound to a document
+    // that is gone: it is refused, and changes nothing.
+    let upstream = json!({"canvas": C, "mode": "with_upstream", "nodes": [id(2)]});
+    let quote = s.dispatch("run.quote", &upstream).unwrap();
+    assert_eq!(quote["reused"], json!([id(4)]));
+    let mut start = upstream.clone();
+    start["accept"] = json!({"token": quote["token"], "amounts": {"USD": 1_000_000}});
+    let revision = s.revision();
+    let error = s.dispatch("run.start", &start).err().unwrap();
+    assert_eq!(error.kind, ErrorKind::Busy);
+    assert_eq!(s.revision(), revision);
+    let waiting = started.lock().unwrap().pop().unwrap();
+    s.authorize_prepared_run(waiting, run_options()).unwrap();
 }

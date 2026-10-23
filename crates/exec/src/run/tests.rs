@@ -11,7 +11,7 @@ const TEXT: PortType = PortType { modality: Modality::Text, many: false };
 const LIST: PortType = PortType { modality: Modality::Text, many: true };
 pub(super) const RUN: [u8; 16] = [0xab; 16];
 
-fn text_of(value: &Value) -> String {
+pub(super) fn text_of(value: &Value) -> String {
     match value {
         Value::Text(t) => t.clone(),
         Value::List(items) => items.iter().map(text_of).collect::<Vec<_>>().join("+"),
@@ -97,7 +97,7 @@ pub(super) fn id(n: u16) -> NodeId {
 }
 
 /// Builds a project from nodes `(n, kind, text)` and wires `(from, from port, to, order)`.
-fn project(nodes: &[(u16, &str, &str)], wires: &[(u16, &str, u16, u32)]) -> Project {
+pub(super) fn project(nodes: &[(u16, &str, &str)], wires: &[(u16, &str, u16, u32)]) -> Project {
     let kinds = kinds();
     let mut project = Project::new(ProjectId::from_bytes([2; 16]), "Run").unwrap();
     Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
@@ -136,7 +136,7 @@ pub(super) fn plan_of(project: &Project, requested: &[u16]) -> RunPlan {
 }
 
 /// Runs every job the run hands out (source jobs emit their value), failing those in `fail`.
-fn drive(run: &mut Run, kinds: &Registry, first: Progress, fail: &BTreeSet<NodeId>) -> (Vec<StepResult>, Vec<StepFailure>, Vec<scheduler::JobSpec>) {
+pub(super) fn drive(run: &mut Run, kinds: &Registry, first: Progress, fail: &BTreeSet<NodeId>) -> (Vec<StepResult>, Vec<StepFailure>, Vec<scheduler::JobSpec>) {
     let (mut finished, mut failed, mut all) = (first.finished, first.failed, Vec::new());
     let mut queue = first.jobs;
     while let Some(job) = queue.pop() {
@@ -151,7 +151,7 @@ fn drive(run: &mut Run, kinds: &Registry, first: Progress, fail: &BTreeSet<NodeI
     (finished, failed, all)
 }
 
-fn output(results: &[StepResult], n: u16) -> String {
+pub(super) fn output(results: &[StepResult], n: u16) -> String {
     results.iter().find(|r| r.node == id(n)).map(|r| r.generation.outputs.iter().map(text_of).collect::<Vec<_>>().join(",")).unwrap_or_default()
 }
 
@@ -893,9 +893,8 @@ impl NodeKind for Calls {
     }
 }
 
-#[test]
-fn model_calls_get_their_provider_lane_and_the_source_runner_refuses_them() {
-    use crate::driver::JobRunner;
+/// Source text 1 wired into node 2, a `test.calls` model call on provider `mock`.
+pub(super) fn calls_project() -> (Registry, Project) {
     let mut kinds = kinds();
     let calls = NodeDescriptor {
         id: "test.calls".into(),
@@ -927,6 +926,29 @@ fn model_calls_get_their_provider_lane_and_the_source_runner_refuses_them() {
     Changeset::new(vec![Change::AddNode { canvas: C, node: text }, Change::AddNode { canvas: C, node }, Change::Connect { canvas: C, edge: wire }])
         .apply(&mut p)
         .unwrap();
+    (kinds, p)
+}
+
+/// `nodes` of `p`, planned on provider `mock` and admitted against a free catalog.
+pub(super) fn admitted_calls(p: &Project, kinds: &Registry, nodes: &[u16]) -> (Run, Progress) {
+    let canvas = p.canvases().get(&C).unwrap();
+    let requested = nodes.iter().map(|n| id(*n)).collect();
+    let mut targets = nodecraft_types::TargetSelection::empty();
+    for n in nodes {
+        targets.insert(id(*n), &nodecraft_types::ProviderTarget::default_instance("mock").unwrap()).unwrap();
+    }
+    let Planned::Ready(plan) = crate::planner::plan_with_targets(canvas, kinds, &RunMode::Selected, &requested, &BTreeSet::new(), &targets).unwrap() else {
+        panic!()
+    };
+    let catalog = crate::admission::tests::free_catalog("m", "mock", "m");
+    let (admitted, _) = crate::admission::admit_default_fixture(plan, C, canvas.clone(), kinds, &catalog, Default::default()).unwrap();
+    Run::start_admitted(admitted, kinds, opts(RUN, 1, RunLimits::default())).unwrap()
+}
+
+#[test]
+fn model_calls_get_their_provider_lane_and_the_source_runner_refuses_them() {
+    use crate::driver::JobRunner;
+    let (kinds, p) = calls_project();
     let canvas = p.canvases().get(&C).unwrap();
     assert!(matches!(crate::planner::plan(canvas, &kinds, &RunMode::Selected, &[id(2)].into_iter().collect(), &BTreeSet::new()).unwrap(), Planned::Blocked(_)));
     let mut targets = nodecraft_types::TargetSelection::empty();

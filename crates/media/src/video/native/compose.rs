@@ -12,6 +12,9 @@ const NEEDS: &[(&str, &str)] = &[
 ];
 /// What layers need on top: stacking pictures, delaying and mixing sound.
 const LAYER_NEEDS: &[(&str, &str)] = &[("filter=overlay", "eof_action"), ("filter=adelay", "all"), ("filter=amix", "normalize")];
+/// Charged to scratch disk as well as the composition's resident graph reservation.
+const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
+const SCRIPT_OPTIONS: [&str; 2] = ["-/filter_complex", "-filter_complex_script"];
 
 impl VideoService {
     /// Stitch the clips of `spec` into one WebM: VP9 picture, Opus stereo sound.
@@ -101,7 +104,75 @@ impl Context {
             }
         }
         let graph = timeline::graph(spec.frame, &spec.parts(), &spec.layer_parts(), &spec.caption_parts())?;
+        // A pin keeps the script alive until the child is reaped. All exits, including a write,
+        // probe, spawn or cancellation error, leave its file to the normal retrying cleanup.
+        let (script, _) = self.compose_script(&graph)?;
+        let script_name = self.compose_name(&script)?;
+        let option = self.compose_script_option(&script_name, cancel, deadline)?;
         let quota = self.config.limits.output;
+        let (pin, path) = self.record(quota.checked_add(64 * 1024 * 1024).ok_or(VideoError::Limit)?)?;
+        let args = self.compose_args(spec, option, &script, &pin)?;
+        self.encode(&args, &path, quota, None, cancel, deadline)?;
+        drop(script);
+        check_deadline(deadline)?;
+        let size = fs::metadata(&path).map_err(|_| VideoError::Io)?.len();
+        if size == 0 || size > quota {
+            return Err(VideoError::Limit);
+        }
+        let metadata = self.probe(&path, false, ColorPolicy::RequireDeclared, true, cancel, deadline)?;
+        let fps = spec.frame.fps;
+        let period = u64::from(fps.1) * 1_000_000 / u64::from(fps.0);
+        let expected = u128::from(spec.duration_us()) * u128::from(fps.0) / (u128::from(fps.1) * 1_000_000);
+        let frames = metadata.frames.ok_or(VideoError::Process)?;
+        if metadata.width != spec.frame.width
+            || metadata.height != spec.frame.height
+            || !metadata.frame_rate.is_some_and(|(n, d)| u128::from(n) * u128::from(fps.1) == u128::from(d) * u128::from(fps.0))
+            || u128::from(frames).abs_diff(expected) > 2
+            || metadata.duration_us.abs_diff(spec.duration_us()) > 2 * period + metadata.timebase.0 * 1_000_000 / metadata.timebase.1 + 1
+            || metadata.audio.is_none()
+        {
+            return Err(VideoError::Process);
+        }
+        let frames = u32::try_from(frames).map_err(|_| VideoError::Limit)?;
+        let asset = self.seal(pin, &path, metadata, size, cancel, deadline)?;
+        Ok(RenderedVideo { asset, frames, bytes: size })
+    }
+
+    fn compose_script(&mut self, graph: &str) -> Result<(Arc<Pin>, PathBuf)> {
+        if graph.len() > MAX_SCRIPT_BYTES {
+            return Err(VideoError::Limit);
+        }
+        let (pin, path) = self.record(u64::try_from(graph.len()).map_err(|_| VideoError::Limit)?)?;
+        // record has already created this file in the private service directory.
+        let mut file = OpenOptions::new().write(true).truncate(true).open(&path).map_err(|_| VideoError::Io)?;
+        file.write_all(graph.as_bytes()).map_err(|_| VideoError::Io)?;
+        Ok((pin, path))
+    }
+
+    fn compose_script_option(&mut self, name: &std::ffi::OsStr, cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<&'static str> {
+        if let Some(option) = self.filter_script_option {
+            return Ok(option);
+        }
+        let tool = self.config.tools.ffmpeg.clone();
+        let option = script_option(|option| {
+            // Loading options happens before -version exits, without opening codecs or inputs.
+            // Probe the parser itself: vendor/nightly version strings need no interpretation.
+            let mut args = process::args(&["-hide_banner", option]);
+            args.push(name.to_owned());
+            args.push("-version".into());
+            self.run(&tool, &args, None, 65536, cancel, deadline).map(|_| ())
+        })?;
+        self.filter_script_option = Some(option);
+        Ok(option)
+    }
+
+    /// Processes already run in the private service directory. Passing only its generated
+    /// basenames prevents a long scratch parent from being repeated for up to 96 inputs.
+    fn compose_name(&self, pin: &Pin) -> Result<std::ffi::OsString> {
+        self.pin_path(pin)?.file_name().map(std::ffi::OsStr::to_owned).ok_or(VideoError::Invalid)
+    }
+
+    fn compose_args(&self, spec: &ComposeSpec, option: &str, script: &Pin, output: &Pin) -> Result<Vec<std::ffi::OsString>> {
         let mut args = process::args(&[
             "-hide_banner",
             "-loglevel",
@@ -132,44 +203,37 @@ impl Context {
                 // One raw frame: nothing to probe, and the graph holds it for the clip's length.
                 Source::Still(still) => args.extend(still_input(still, &rate)),
             }
-            args.push(self.pin_path(clip.source.pin())?.into_os_string());
+            args.push(self.compose_name(clip.source.pin())?);
         }
         // Each caption's picture, one raw frame the graph holds while the caption shows.
-        for (caption, _) in &captions {
+        for (caption, _) in spec.shown_captions() {
             args.extend(still_input(&caption.still, &rate));
-            args.push(self.pin_path(&caption.still.pin)?.into_os_string());
+            args.push(self.compose_name(&caption.still.pin)?);
         }
-        args.extend(process::args(&["-filter_complex", &graph, "-map", "[vout]", "-map", "[aout]", "-sn", "-dn"]));
+        args.push(option.into());
+        args.push(self.compose_name(script)?);
+        args.extend(process::args(&["-map", "[vout]", "-map", "[aout]", "-sn", "-dn"]));
         args.extend(process::args(&encoding(spec.quality)));
         args.extend(process::args(&["-fps_mode", "passthrough", "-c:a", "libopus", "-b:a", "128000", "-ar", "48000", "-ac", "2"]));
         args.extend(process::args(TAGS));
-        args.extend(process::args(&["-fs", &quota.to_string()]));
-        let (pin, path) = self.record(quota.checked_add(64 * 1024 * 1024).ok_or(VideoError::Limit)?)?;
-        args.push(path.as_os_str().to_owned());
-        self.encode(&args, &path, quota, None, cancel, deadline)?;
-        check_deadline(deadline)?;
-        let size = fs::metadata(&path).map_err(|_| VideoError::Io)?.len();
-        if size == 0 || size > quota {
-            return Err(VideoError::Limit);
-        }
-        let metadata = self.probe(&path, false, ColorPolicy::RequireDeclared, true, cancel, deadline)?;
-        let fps = spec.frame.fps;
-        let period = u64::from(fps.1) * 1_000_000 / u64::from(fps.0);
-        let expected = u128::from(spec.duration_us()) * u128::from(fps.0) / (u128::from(fps.1) * 1_000_000);
-        let frames = metadata.frames.ok_or(VideoError::Process)?;
-        if metadata.width != spec.frame.width
-            || metadata.height != spec.frame.height
-            || !metadata.frame_rate.is_some_and(|(n, d)| u128::from(n) * u128::from(fps.1) == u128::from(d) * u128::from(fps.0))
-            || u128::from(frames).abs_diff(expected) > 2
-            || metadata.duration_us.abs_diff(spec.duration_us()) > 2 * period + metadata.timebase.0 * 1_000_000 / metadata.timebase.1 + 1
-            || metadata.audio.is_none()
-        {
-            return Err(VideoError::Process);
-        }
-        let frames = u32::try_from(frames).map_err(|_| VideoError::Limit)?;
-        let asset = self.seal(pin, &path, metadata, size, cancel, deadline)?;
-        Ok(RenderedVideo { asset, frames, bytes: size })
+        args.extend(process::args(&["-fs", &self.config.limits.output.to_string()]));
+        args.push(self.compose_name(output)?);
+        Ok(args)
     }
+}
+
+fn script_option(mut probe: impl FnMut(&'static str) -> Result<()>) -> Result<&'static str> {
+    for option in SCRIPT_OPTIONS {
+        match probe(option) {
+            Ok(()) => return Ok(option),
+            Err(VideoError::Process) => {
+                // The script was just written and pinned. Other process failures are deliberately
+                // indistinguishable from unsupported syntax in this small compatibility probe.
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(VideoError::Unsupported)
 }
 
 /// The VP9 encoding every output uses, at `quality`.
@@ -205,3 +269,6 @@ fn still_input(still: &StillAsset, rate: &str) -> Vec<std::ffi::OsString> {
         "-i",
     ])
 }
+
+#[cfg(test)]
+mod tests;

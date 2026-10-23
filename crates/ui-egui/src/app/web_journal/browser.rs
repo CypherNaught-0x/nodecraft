@@ -3,17 +3,18 @@
 //! Lock per slot, held by its tab until the page goes. Web Locks are reached through `js_sys`
 //! reflection, since `web-sys` only offers them behind an unstable flag.
 
-use super::{PickFuture, Shelf, Stored, Write};
+use super::{Inventory, PickFuture, Shelf, Slot, Stored, Write};
 use eframe::wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
 use nodecraft_format::journal::MAX_JOURNAL_BYTES;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use wasm_bindgen_futures::JsFuture;
 
 const DATABASE: &str = "nodecraft-recovery";
 const STORE: &str = "journal";
 const LOCK_PREFIX: &str = "nodecraft.journal.";
-/// Keys looked at when listing slots; more is not a store NodeCraft filled.
+/// Keys inspected in one complete inventory; larger stores refuse partial cleanup.
 const MAX_KEYS: u32 = 1 << 20;
 
 /// A name for this tab's slot: when it opened, then a random part, so later tabs sort after it.
@@ -32,6 +33,34 @@ fn is_slot(name: &str) -> bool {
 #[derive(Default)]
 pub(crate) struct IndexedDb {
     database: Rc<RefCell<Option<web_sys::IdbDatabase>>>,
+    held: Rc<RefCell<BTreeMap<String, js_sys::Function>>>,
+}
+
+/// A cancelled request must not leave a later-granted temporary lock held for the page's life.
+struct PendingClaim {
+    live: Rc<Cell<bool>>,
+    held: Rc<RefCell<BTreeMap<String, js_sys::Function>>>,
+    slot: String,
+    keep: bool,
+}
+
+impl Drop for PendingClaim {
+    fn drop(&mut self) {
+        self.live.set(false);
+        if !self.keep
+            && let Some(release) = self.held.borrow_mut().remove(&self.slot)
+        {
+            let _ = release.call0(&JsValue::NULL);
+        }
+    }
+}
+
+impl Drop for IndexedDb {
+    fn drop(&mut self) {
+        for (_, release) in std::mem::take(&mut *self.held.borrow_mut()) {
+            let _ = release.call0(&JsValue::NULL);
+        }
+    }
 }
 
 fn unavailable() -> String {
@@ -139,17 +168,42 @@ fn bytes(value: &JsValue) -> Option<&js_sys::Uint8Array> {
 }
 
 impl Shelf for IndexedDb {
-    fn slots(&mut self) -> PickFuture<Vec<String>> {
+    fn slots(&mut self) -> PickFuture<Inventory> {
         let cached = Rc::clone(&self.database);
         Box::pin(async move {
             let database = open(cached).await?;
             let (_, store) = store(&database, web_sys::IdbTransactionMode::Readonly)?;
-            let request = store.get_all_keys_with_key_and_limit(&JsValue::UNDEFINED, MAX_KEYS).map_err(|_| unavailable())?;
-            let keys = js_sys::Array::from(&done(&request).await?);
-            let mut slots: Vec<String> =
-                keys.iter().filter_map(|key| key.as_string()).filter_map(|key| key.split('/').next().map(str::to_owned)).filter(|slot| is_slot(slot)).collect();
-            slots.dedup();
-            Ok(slots)
+            // One value at a time: an origin's inventory must not materialize all journals
+            // together merely to count bytes. Refuse an incomplete inventory at the key cap.
+            let request = store.open_cursor().map_err(|_| unavailable())?;
+            let mut slots = Inventory::new();
+            let mut seen = 0u32;
+            loop {
+                let value = done(&request).await?;
+                if value.is_null() || value.is_undefined() {
+                    return Ok(slots);
+                }
+                if seen >= MAX_KEYS {
+                    return Err("this site's recovery storage has too many records to inspect safely".into());
+                }
+                seen = seen.saturating_add(1);
+                let cursor: web_sys::IdbCursorWithValue = value.dyn_into().map_err(|_| unavailable())?;
+                if let Some(key) = cursor.key().ok().and_then(|key| key.as_string())
+                    && let Some((slot, part)) = key.split_once('/')
+                    && is_slot(slot)
+                {
+                    let entry: &mut Slot = slots.entry(slot.to_owned()).or_default();
+                    let value = cursor.value().map_err(|_| unavailable())?;
+                    let payload_bytes = bytes(&value).map_or(0, |bytes| u64::from(bytes.length()));
+                    entry.bytes = entry.bytes.saturating_add(payload_bytes);
+                    if part == "h" {
+                        entry.hold_bytes = Some(payload_bytes);
+                    }
+                    entry.dirty |= part == "h" || part.starts_with("f/");
+                    entry.checkpoint |= part == "c";
+                }
+                cursor.continue_().map_err(|_| unavailable())?;
+            }
         })
     }
 
@@ -225,8 +279,15 @@ impl Shelf for IndexedDb {
     }
 
     fn claim(&mut self, slot: &str) -> PickFuture<bool> {
+        if self.held.borrow().contains_key(slot) {
+            return Box::pin(std::future::ready(Ok(false)));
+        }
         let name = format!("{LOCK_PREFIX}{slot}");
+        let slot = slot.to_owned();
+        let held = Rc::clone(&self.held);
         Box::pin(async move {
+            let live = Rc::new(Cell::new(true));
+            let mut pending = PendingClaim { live: Rc::clone(&live), held: Rc::clone(&held), slot: slot.clone(), keep: false };
             let missing = || "this browser can't tell its tabs apart (no Web Locks)".to_owned();
             let navigator: JsValue = web_sys::window().ok_or_else(missing)?.navigator().into();
             let locks = js_sys::Reflect::get(&navigator, &JsValue::from_str("locks")).ok().filter(|locks| locks.is_object()).ok_or_else(missing)?;
@@ -234,14 +295,23 @@ impl Shelf for IndexedDb {
                 js_sys::Reflect::get(&locks, &JsValue::from_str("request")).ok().and_then(|f| f.dyn_into().ok()).ok_or_else(missing)?;
             let options = js_sys::Object::new();
             js_sys::Reflect::set(&options, &JsValue::from_str("ifAvailable"), &JsValue::TRUE).map_err(|_| missing())?;
-            // Settles with whether the lock was free; when it was, the callback's promise never
-            // settles, so the lock is this page's until it goes.
+            // A successful claim stays held until release (or page exit). Keep its resolver so
+            // temporary scan/pruning claims cannot reserve abandoned work for this page's life.
             let granted = js_sys::Promise::new(&mut |resolve, _reject| {
                 let refused = resolve.clone();
+                let (live, held, slot) = (Rc::clone(&live), Rc::clone(&held), slot.clone());
                 let callback = Closure::once_into_js(move |lock: JsValue| -> JsValue {
-                    let free = !lock.is_null() && !lock.is_undefined();
+                    let free = live.get() && !lock.is_null() && !lock.is_undefined();
+                    let lifetime: JsValue = if free {
+                        js_sys::Promise::new(&mut |release, _| {
+                            held.borrow_mut().insert(slot.clone(), release);
+                        })
+                        .into()
+                    } else {
+                        JsValue::UNDEFINED
+                    };
                     let _ = resolve.call1(&JsValue::NULL, &JsValue::from_bool(free));
-                    if free { js_sys::Promise::new(&mut |_, _| {}).into() } else { JsValue::UNDEFINED }
+                    lifetime
                 });
                 let args = js_sys::Array::of3(&JsValue::from_str(&name), &options, &callback);
                 if request.apply(&locks, &args).is_err() {
@@ -249,7 +319,14 @@ impl Shelf for IndexedDb {
                 }
             });
             let free = JsFuture::from(granted).await.map_err(|_| missing())?;
-            Ok(free.as_bool() == Some(true))
+            pending.keep = free.as_bool() == Some(true);
+            Ok(pending.keep)
         })
+    }
+
+    fn release(&mut self, slot: &str) {
+        if let Some(release) = self.held.borrow_mut().remove(slot) {
+            let _ = release.call0(&JsValue::NULL);
+        }
     }
 }

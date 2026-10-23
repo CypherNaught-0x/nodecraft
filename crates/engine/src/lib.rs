@@ -102,3 +102,4 @@ pub use session::{DocChanged, PreparedImports, Session};
 
 pub mod provider_routing;
 pub mod provider_setup;
+pub mod variation_cmds;

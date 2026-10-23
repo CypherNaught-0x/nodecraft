@@ -285,7 +285,7 @@ fn a_reply_is_read_only_at_its_fields() {
 #[test]
 fn a_poll_maps_states_and_keeps_outputs_on_its_origins() {
     let t = template();
-    let read = |v: Value| read_poll(&t, v.to_string().as_bytes());
+    let read = |v: Value| read_poll(&t, v.to_string().as_bytes(), "");
     assert_eq!(read(json!({"status": "queued"})).unwrap(), JobProgress::Queued { position: None });
     assert!(matches!(read(json!({"status": "something new"})).unwrap(), JobProgress::Running { .. }));
     let JobProgress::Done(done) =
@@ -380,7 +380,7 @@ fn each_credential_placement_is_a_fixed_header() {
 fn an_output_link_carries_no_user_name() {
     let t = template();
     for link in ["https://u:p@cdn.acme.example/a.png", "https://u@cdn.acme.example/a.png"] {
-        let e = read_poll(&t, json!({"status": "succeeded", "output": {"images": [link]}}).to_string().as_bytes()).unwrap_err();
+        let e = read_poll(&t, json!({"status": "succeeded", "output": {"images": [link]}}).to_string().as_bytes(), "").unwrap_err();
         assert_eq!(e.kind, ErrorKind::Malformed, "{link}");
     }
 }
@@ -391,3 +391,5 @@ fn an_unauthenticated_template_sends_no_credential() {
     let request = authorize(&t, plan_submit(&t, &job()).unwrap(), "sk-test").unwrap();
     assert!(!request.headers.iter().any(|(_, v)| v.contains("sk-test")));
 }
+
+mod adapter;

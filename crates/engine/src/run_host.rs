@@ -558,6 +558,8 @@ impl RunHost {
             inbox.waiting.push_back(prepared);
             Ok(json!({"accepted": true}))
         })?;
+        let inbox = Arc::clone(&self.inbox);
+        services.register_run_host_idle(move || lock(&inbox).waiting.is_empty())?;
         held::register(&self.results, services)
     }
 
@@ -895,7 +897,11 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
         for result in progress.finished {
             let run = &active.run;
             let node = result.node;
-            let awaiting = take_by_step(&mut active.awaiting, |_, a| run.owner(a.step) == node && (a.step == node || !run.is_running(a.step)));
+            // One of several variations (#81) takes only its own jobs' results.
+            let awaiting = match run.variation_jobs(node, result.generation.id) {
+                Some(jobs) => take_by_step(&mut active.awaiting, |job, _| jobs.contains(&job)),
+                None => take_by_step(&mut active.awaiting, |_, a| run.owner(a.step) == node && (a.step == node || !run.is_running(a.step))),
+            };
             let notice = record(session, canvas, result);
             notices.push(match notice {
                 RunNotice::Failed { canvas, node, reason } => {

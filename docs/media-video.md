@@ -54,6 +54,11 @@ refuses missing properties. Finite BT709/601 profiles are supported; explicit HD
 unsupported bit depths, alpha-video and interlacing are rejected. No HDR/ICC fidelity claim.
 Conversions use fixed colorspace filters to sRGB, not just metadata retagging.
 
+VP9 Profile 1 with 8-bit `yuv444p` is supported. RGB `gbrp` is outside this SDR
+YUV contract: a card reports “This video's format isn't supported” instead of staying pending.
+With ffmpeg 9, the `testsrc` → `libvpx-vp9` command in #573 defaults to `gbrp`;
+use an explicit `-pix_fmt yuv444p` or `-pix_fmt yuv420p` when generating a supported fixture.
+
 `ScrubSession` cancels old work and exposes only the latest requested result. A bounded 256-entry LRU cache
 shares immutable pixels; caller-held frames remain globally charged after cache eviction. The
 fallibly preallocated registry and cache container capacities remain charged in the service base
@@ -112,7 +117,11 @@ returns the same verified `RenderedVideo` as a render. It shares the single rend
 - **Verification.** The output is probed for its size, rate, audio, frame count and running time
   (each within two frames) before it is accepted.
 - **Command line.** Every number on it is formatted from validated integers. No project or caller
-  string reaches FFmpeg.
+  string reaches FFmpeg. The generated filter graph is a bounded, disk-charged scratch file,
+  kept until the encoder stops and removed by the service's normal cleanup. The service probes
+  for `-/filter_complex`, with `-filter_complex_script` as the fallback for older tools.
+  Composition inputs, script and output use generated basenames relative to the private working
+  directory, keeping the command below Windows' limit even with a long scratch parent.
 
 ## Video actions
 
@@ -136,6 +145,19 @@ run live: a render takes too long to redo on every edit, so they run when asked
 Every kind has a Quality choice (Draft, Standard, High). Settings are checked before any video is
 imported, so a bad trim or too many stitched videos costs no import. Without `[media]` tools the
 actions say so; in a browser they say they need the desktop app.
+
+### Rendered output staging
+
+One run retains at most **1 GiB of rendered video and extracted sound**, including space
+reserved by unfinished read-backs, and at most 4,096 retained results and unfinished reads.
+Each file is still limited to 256 MiB. Reaching the shared budget refuses the next read-back
+with guidance to render fewer nodes at a time or use a lower quality. Earlier results remain
+readable by chained actions in that run. Failed and cancelled reads release their reservations;
+a failed split returns the budget of its new parts.
+
+This bounds encoded staging payload, not total process memory. Chunk storage, conversion into
+shared buffers, decoded frames, project assets and service scratch files have separate limits.
+Even a duplicate output needs provisional read-back capacity until its hash is known.
 
 ### Frame-based actions
 
@@ -272,10 +294,16 @@ buffer that the device's callback resamples from; it plays silence, rather than 
 decoding falls behind. One card plays at a time: playing another pauses the first where it was.
 Playback stops when its card is deleted, when the sound device goes away (the card says so; play
 again to reopen it) and when the app quits. Without an output device the card says "No sound
-output device found". The browser build says playback needs the desktop app. The next stretch
-is asked for from the app's frames, so a minimized window falls silent once its buffer runs out
-and carries on when it's shown again (#666). Waveforms are made one at a time, leaving the
-service's other worker free for sound.
+output device found". The browser build says playback needs the desktop app. A bounded worker
+opens the output device and requests the next stretch independently of app frames, so playback
+continues when the window is minimized. Seek drags replace one pending target without decoding
+until release; committed seeks wait 75 ms before decoding. If frames stop before a drag release,
+the worker resumes its last target after two seconds without updates. Three seconds without
+device callbacks stops playback with guidance to retry.
+The same worker is reused for later plays and settings changes; a blocked native device call
+never holds an app-frame or request-mailbox lock. Waveforms are made one at a time, leaving the
+service's other worker free for sound. Decoded EOF determines playback length when a container's
+duration hint is inaccurate, within the existing one-hour audio limit; this is view state.
 
 On Linux the desktop app links ALSA (`libasound.so.2`): the deb and rpm packages depend on it,
 the AppImage uses the host's, and the Flatpak gets it from the freedesktop runtime and reaches
@@ -290,14 +318,21 @@ Real integration tests require explicit tool paths and run authored tiny media o
 ```sh
 NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-media --features video actual_ -- --ignored
 NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-ui-egui actual_video -- --ignored
+NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-ui-egui actual_vp9_profiles -- --ignored --nocapture
 NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-ui-egui actual_sound -- --ignored
 cargo test -p nodecraft-ui-egui the_default_sound_device -- --ignored
 ```
 
-The second drives a real clip through a card: play, the end, and a seek. The third does the same
-for a sound (its waveform, seeking, and a second of playing when there is a device); the last
-opens the real default output device.
+`actual_video` drives a real clip through a card: play, the end, and a seek. `actual_vp9_profiles`
+generates and verifies YUV420/Profile 0, YUV444/Profile 1 and RGB/Profile 1 fixtures, then drives
+their imports through real cards to check poster/length/controls or an explicit refusal within
+a deadline. `actual_sound` exercises a sound's waveform, seeking, and a second of playing when
+there is a device; the last command opens the real default output device.
 
 These tests cost no provider budget. Native runtime proof and wasm compilation are distinct;
 Windows/Linux/browser behavior must not be inferred from a macOS run. No binary fixtures are
 redistributed. No speed, full codec support or fully decoded security guarantee is implied.
+
+The engine's ignored `several_timeline_renders_respect_the_shared_staging_quota` test uses the
+same explicit tool variables, deterministic mock-provider captions and tiny actual renders to
+check aggregate admission and cleanup with a small test-only budget.

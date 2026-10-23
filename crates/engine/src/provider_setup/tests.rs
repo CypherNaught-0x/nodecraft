@@ -32,7 +32,7 @@ impl Provider for Named {
 }
 
 fn env<'a>(keys: &'a MemoryStore, http: &Arc<Wire>, settings: &'a ProviderSettings) -> HostEnv<'a> {
-    HostEnv { keys, http: http.clone(), settings, now_ms: Arc::new(|| 0) }
+    HostEnv { keys, http: http.clone(), settings, now_ms: Arc::new(|| 0), progress: None }
 }
 
 const NODE: NodeId = NodeId::from_bytes([9; 16]);
@@ -154,12 +154,12 @@ fn a_locked_keychain_is_reported_not_retried_or_mistaken_for_a_missing_key() {
     let keys = Locked;
     let http: Arc<dyn Http> = Arc::new(Wire::default());
     let settings = ProviderSettings::default();
-    let env = HostEnv { keys: &keys, http, settings: &settings, now_ms: Arc::new(|| 0) };
+    let env = HostEnv { keys: &keys, http, settings: &settings, now_ms: Arc::new(|| 0), progress: None };
     let Err(Readiness::Failed(why)) = make("replicate", &env) else { panic!("refused") };
     assert!(why.contains("unlock the keychain"));
     // ComfyUI's token is optional: a refused keychain means no token, not no ComfyUI.
     let settings = ProviderSettings { comfyui_url: Some("http://127.0.0.1:8188".into()), install_salt: "s".into() };
-    let env = HostEnv { keys: &keys, http: Arc::new(Wire::default()), settings: &settings, now_ms: Arc::new(|| 0) };
+    let env = HostEnv { keys: &keys, http: Arc::new(Wire::default()), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
     assert!(make("comfyui", &env).is_ok());
 }
 

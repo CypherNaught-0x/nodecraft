@@ -30,9 +30,9 @@ building the same thing.
    `git commit --allow-empty -m "claim: #N"`. If no PR shows up in time, the claim lapses and
    the issue is free again.
 4. **Push at least every 14 days.** A claim whose PR has had no pushes for 14 days is released by
-   the daily sweep.
+   the daily sweep. Both deadlines apply to everyone, including the owner and maintainers.
 5. **`/unclaim`** releases an issue early. Only the claimant or a maintainer can release a
-   claim. Issues a maintainer has taken are never released automatically.
+   claim.
 6. A draft PR counts as a claim on its own. If an unclaimed issue already has someone's open
    PR, `/claim` points you at that PR instead. If two PRs race for one issue, the lowest-numbered
    open PR wins. Close the other one, or offer to help on the winning PR.

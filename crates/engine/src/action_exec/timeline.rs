@@ -102,8 +102,6 @@ pub(super) mod native {
     pub(in crate::action_exec) const POLL: Duration = Duration::from_millis(10);
     /// Longest wait for another render to free the service's one render slot.
     pub(in crate::action_exec) const BUSY_WAIT: Duration = Duration::from_secs(3600);
-    /// Bytes read back from the rendered file at once (the service's most).
-    const CHUNK: u64 = 1024 * 1024;
 
     /// The render quality a Timeline node's parameters ask for; a job planned before there was
     /// a choice renders as it did then.
@@ -173,6 +171,16 @@ pub(super) mod native {
             *SERVICE.lock().unwrap_or_else(PoisonError::into_inner) = None;
         }
         error
+    }
+
+    /// The real fixture may share this process-wide slot with another ignored test. Detach
+    /// only this exact service; never clear one another test opened with different tools.
+    #[cfg(test)]
+    pub(in crate::action_exec) fn detach_test_service(service: &Arc<VideoService>) {
+        let mut slot = SERVICE.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.as_ref().is_some_and(|(_, current)| Arc::ptr_eq(current, service)) {
+            *slot = None;
+        }
     }
 
     /// `job`'s result; cancels the job once `cancelled` says so. The service bounds every job by
@@ -400,30 +408,20 @@ pub(super) mod native {
         }
 
         /// A rendered file `bytes_len` long (at most [`MAX_RENDER_BYTES`]), read back a chunk at a
-        /// time with `read` and staged under its hash.
+        /// time with `read` and staged under its hash. The shared run budget is reserved before
+        /// allocating its buffer, including other read-backs still in flight.
         pub(in crate::action_exec) fn read_back(
             &self,
             bytes_len: u64,
             read: &dyn Fn(u64, usize) -> Result<VideoJob<VideoChunk>, VideoError>,
             cancelled: &dyn Fn() -> bool,
         ) -> Result<Blake3, String> {
-            if bytes_len > MAX_RENDER_BYTES {
-                return Err(format!("the rendered file is larger than {} MiB; make it shorter or smaller", MAX_RENDER_BYTES / (1024 * 1024)));
-            }
-            let too_large = |_| "the rendered file is too large".to_owned();
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(usize::try_from(bytes_len).map_err(too_large)?).map_err(|_| "the rendered file is too large")?;
-            while (bytes.len() as u64) < bytes_len {
-                let length = usize::try_from(CHUNK.min(bytes_len.saturating_sub(bytes.len() as u64))).map_err(too_large)?;
-                let chunk = wait(read(bytes.len() as u64, length).map_err(|error| message(closed(error)))?, cancelled).map_err(message)?;
-                if chunk.bytes().is_empty() {
-                    return Err("the rendered file ended early".into());
-                }
-                bytes.extend_from_slice(chunk.bytes());
-            }
-            let hash = Blake3::from_bytes(*blake3::hash(&bytes).as_bytes());
-            self.videos.lock().unwrap_or_else(PoisonError::into_inner).insert(hash, Arc::from(bytes));
-            Ok(hash)
+            self.retain_video(
+                bytes_len,
+                |offset, length| wait(read(offset, length).map_err(|error| message(closed(error)))?, cancelled).map_err(message),
+                VideoChunk::bytes,
+                cancelled,
+            )
         }
 
         /// `rendered` read back from `service` and staged as a `size` WebM `duration_us` long,

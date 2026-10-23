@@ -3446,6 +3446,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tokio",
+ "tungstenite",
  "url",
  "web-time",
  "zip",

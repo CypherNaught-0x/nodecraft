@@ -16,8 +16,9 @@ default = ["http", "llm", "comfyui"]
 http = ["dep:reqwest"]
 # Chat endpoints: OpenAI-compatible (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, LiteLLM) and Anthropic.
 llm = []
-# ComfyUI servers (local or remote) through the `comfy` protocol crate.
-comfyui = []
+# ComfyUI servers (local or remote) through the `comfy` protocol crate, with live progress over
+# its WebSocket on the desktop.
+comfyui = ["dep:tungstenite"]
 # Direct GPT Image generations and edits. Never enabled by a live-test environment variable.
 openai-images = ["dep:base64", "dep:blake3"]
 # Version-pinned predictions, polling, cancellation and bounded authenticated file downloads.
@@ -79,6 +80,9 @@ web-time = { version = "=1.1.0", optional = true }
 reqwest = { workspace = true, optional = true, features = ["native-tls"] }
 [target.'cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))'.dependencies]
 reqwest = { workspace = true, optional = true, features = ["rustls"] }
+# ComfyUI's progress socket (plain ws://; the browser build polls instead).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tungstenite = { workspace = true, optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 reqwest = { workspace = true, optional = true }
 # rsa's rand_core can still reach getrandom 0.2 through feature unification (ed25519 turns on

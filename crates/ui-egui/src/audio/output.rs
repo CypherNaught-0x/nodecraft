@@ -1,7 +1,7 @@
 //! The sound device: a bounded buffer of decoded sound that the device's callback plays from.
 //!
 //! The callback runs on the platform's realtime thread. It only takes the buffer's lock (held
-//! by the UI for a short copy at most), resamples [`PCM_RATE`] stereo to the device's rate and
+//! by the feeder for a short copy at most), resamples [`PCM_RATE`] stereo to the device's rate and
 //! channels, and plays silence when the buffer runs dry; it never panics and never allocates.
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
@@ -9,7 +9,7 @@ use nodecraft_media::video::PCM_RATE;
 use std::collections::VecDeque;
 use std::sync::{
     Arc, Mutex, PoisonError,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 /// Decoded frames buffered at most: 8 s; more is dropped (the player never asks for that much).
@@ -107,6 +107,7 @@ pub(crate) fn fill<T: SizedSample + FromSample<f32>>(data: &mut [T], channels: u
 pub(crate) struct Output {
     ring: Arc<Mutex<Ring>>,
     failed: Arc<AtomicBool>,
+    callbacks: Arc<AtomicU64>,
     _stream: cpal::Stream,
 }
 
@@ -118,17 +119,18 @@ impl Output {
         let config = supported.config();
         let ring = Arc::new(Mutex::new(Ring::new(config.sample_rate)));
         let failed = Arc::new(AtomicBool::new(false));
+        let callbacks = Arc::new(AtomicU64::new(0));
         let stream = match supported.sample_format() {
-            SampleFormat::F32 => build::<f32>(&device, config, &ring, &failed),
-            SampleFormat::I16 => build::<i16>(&device, config, &ring, &failed),
-            SampleFormat::I32 => build::<i32>(&device, config, &ring, &failed),
-            SampleFormat::U16 => build::<u16>(&device, config, &ring, &failed),
-            SampleFormat::U8 => build::<u8>(&device, config, &ring, &failed),
-            SampleFormat::F64 => build::<f64>(&device, config, &ring, &failed),
+            SampleFormat::F32 => build::<f32>(&device, config, &ring, &failed, &callbacks),
+            SampleFormat::I16 => build::<i16>(&device, config, &ring, &failed, &callbacks),
+            SampleFormat::I32 => build::<i32>(&device, config, &ring, &failed, &callbacks),
+            SampleFormat::U16 => build::<u16>(&device, config, &ring, &failed, &callbacks),
+            SampleFormat::U8 => build::<u8>(&device, config, &ring, &failed, &callbacks),
+            SampleFormat::F64 => build::<f64>(&device, config, &ring, &failed, &callbacks),
             _ => Err(CANT_OPEN),
         }?;
         stream.play().map_err(|_| CANT_OPEN)?;
-        Ok(Self { ring, failed, _stream: stream })
+        Ok(Self { ring, failed, callbacks, _stream: stream })
     }
 
     fn ring(&self) -> std::sync::MutexGuard<'_, Ring> {
@@ -160,20 +162,34 @@ impl Output {
     pub(crate) fn failed(&self) -> bool {
         self.failed.load(Ordering::Relaxed)
     }
+
+    pub(crate) fn callbacks(&self) -> u64 {
+        self.callbacks.load(Ordering::Relaxed)
+    }
 }
 
-/// The device's stereo [`PCM_RATE`] config in a common format if it has one, else its default.
+/// Prefer a common sample format at 48 kHz, then at another supported rate, then the default.
 fn config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, &'static str> {
-    let preferred = device.supported_output_configs().ok().and_then(|ranges| {
-        ranges
-            .filter(|r| r.channels() > 0 && matches!(r.sample_format(), SampleFormat::F32 | SampleFormat::I16))
-            .filter_map(|r| r.try_with_sample_rate(PCM_RATE))
-            .min_by_key(|c| (c.channels() != 2, c.sample_format() != SampleFormat::F32))
-    });
+    let preferred = device.supported_output_configs().ok().and_then(preferred);
     match preferred {
         Some(config) => Ok(config),
         None => device.default_output_config().map_err(|_| CANT_OPEN),
     }
+}
+
+fn preferred(ranges: impl Iterator<Item = cpal::SupportedStreamConfigRange>) -> Option<cpal::SupportedStreamConfig> {
+    ranges
+        .filter(|range| range.channels() > 0 && matches!(range.sample_format(), SampleFormat::F32 | SampleFormat::I16))
+        .filter_map(|range| {
+            let (min, max) = (range.min_sample_rate(), range.max_sample_rate());
+            if min == 0 || min > max {
+                return None;
+            }
+            range.try_with_sample_rate(PCM_RATE.clamp(min, max))
+        })
+        .min_by_key(|config| {
+            (config.sample_rate() != PCM_RATE, config.channels() != 2, config.sample_format() != SampleFormat::F32, config.sample_rate().abs_diff(PCM_RATE))
+        })
 }
 
 fn build<T: SizedSample + FromSample<f32> + Send + 'static>(
@@ -181,10 +197,14 @@ fn build<T: SizedSample + FromSample<f32> + Send + 'static>(
     config: cpal::StreamConfig,
     ring: &Arc<Mutex<Ring>>,
     failed: &Arc<AtomicBool>,
+    callbacks: &Arc<AtomicU64>,
 ) -> Result<cpal::Stream, &'static str> {
     let channels = usize::from(config.channels);
-    let (ring, failed) = (Arc::clone(ring), Arc::clone(failed));
-    let data = move |data: &mut [T], _: &cpal::OutputCallbackInfo| fill(data, channels, &ring);
+    let (ring, failed, callbacks) = (Arc::clone(ring), Arc::clone(failed), Arc::clone(callbacks));
+    let data = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+        callbacks.fetch_add(1, Ordering::Relaxed);
+        fill(data, channels, &ring);
+    };
     let error = move |error: cpal::Error| {
         if fatal(error.kind()) {
             failed.store(true, Ordering::Relaxed);
@@ -196,4 +216,20 @@ fn build<T: SizedSample + FromSample<f32> + Send + 'static>(
 /// Whether the stream stops playing after an error of this kind.
 fn fatal(kind: cpal::ErrorKind) -> bool {
     !matches!(kind, cpal::ErrorKind::DeviceChanged | cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn range(rate: u32, format: SampleFormat) -> cpal::SupportedStreamConfigRange {
+        cpal::SupportedStreamConfigRange::new(2, rate, rate, cpal::SupportedBufferSize::Unknown, format)
+    }
+    #[test]
+    fn a_common_format_at_another_rate_precedes_an_uncommon_device_default() {
+        let config = preferred([range(48_000, SampleFormat::I32), range(44_100, SampleFormat::F32)].into_iter()).unwrap();
+        assert_eq!((config.sample_rate(), config.sample_format()), (44_100, SampleFormat::F32));
+        let config = preferred([range(44_100, SampleFormat::F32), range(48_000, SampleFormat::I16)].into_iter()).unwrap();
+        assert_eq!((config.sample_rate(), config.sample_format()), (48_000, SampleFormat::I16));
+        assert!(preferred([range(48_000, SampleFormat::I32)].into_iter()).is_none());
+    }
 }

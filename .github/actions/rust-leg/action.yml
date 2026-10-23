@@ -97,6 +97,31 @@ runs:
       shell: bash
       run: cargo test -p nodecraft-media --features video && cargo clippy -p nodecraft-media --features video --all-targets -- -D warnings
 
+    - name: Windows maximum Timeline render (installed tools)
+      if: inputs.platform == 'windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # CI-only tools, not product payload. Pin the moderated package and retain its checksum checks.
+        # https://community.chocolatey.org/packages/ffmpeg/9.0.2
+        choco install ffmpeg --version=9.0.2 --yes --no-progress --limit-output --require-checksums --execution-timeout=180
+        if ($LASTEXITCODE -ne 0) { throw 'FFmpeg installation failed' }
+        # Use the real executables rather than Chocolatey's forwarding shims.
+        $toolDirectory = Join-Path $env:ChocolateyInstall 'lib/ffmpeg/tools'
+        $candidates = @(Get-ChildItem -LiteralPath $toolDirectory -Filter ffmpeg.exe -Recurse -File)
+        if ($candidates.Count -ne 1) { throw 'Expected exactly one installed ffmpeg executable' }
+        $env:NODECRAFT_VIDEO_TEST_FFMPEG = $candidates[0].FullName
+        $env:NODECRAFT_VIDEO_TEST_FFPROBE = Join-Path $candidates[0].DirectoryName 'ffprobe.exe'
+        if (-not (Test-Path -LiteralPath $env:NODECRAFT_VIDEO_TEST_FFPROBE -PathType Leaf)) { throw 'Installed ffprobe is missing' }
+        & $env:NODECRAFT_VIDEO_TEST_FFMPEG -version
+        if ($LASTEXITCODE -ne 0) { throw 'Installed ffmpeg did not report its version' }
+        cargo test -p nodecraft-media --features video --lib video::native::compose::tests::actual_maximum_clips_layers_and_captions_render_from_a_script -- --exact --ignored --nocapture | Tee-Object -Variable captureOutput
+        if ($LASTEXITCODE -ne 0) { throw 'Windows maximum Timeline render failed' }
+        $marker = 'NODECRAFT_TIMELINE_MAXIMUM_RENDER:'
+        if (-not (($captureOutput -join "`n").Contains($marker))) { throw 'Maximum render evidence missing; zero selected tests must not pass' }
+        $evidence = ($captureOutput | Where-Object { $_.Contains($marker) }) -join "`n"
+        "Windows FFmpeg 9.0.2: $evidence" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
     - name: Video wasm API
       if: steps.plat.outputs.once == 'true'
       shell: bash

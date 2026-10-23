@@ -2,6 +2,7 @@
 //! counter. The arrow, Cmd/Ctrl+Enter in the prompt and Enter on the focused card ask the app to
 //! generate; the app quotes the run and asks before anything is spent.
 use super::*;
+use nodecraft_exec::variations::MAX_VARIATIONS;
 use nodecraft_nodes::{NodeContract, generation::PROMPT};
 
 /// The meaning tag of the parameter counting the images one run makes.
@@ -286,6 +287,7 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
             {
                 counter(ui, node, spec, editable(&spec.name), intents, t);
             }
+            variations(ui, node, intents, t);
             // Only as tall as the button, so the row never stretches to the card's height.
             ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), t.submit_size), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if submit(ui, t).on_hover_text("Generate (Enter on the card, or Cmd/Ctrl+Enter in the prompt). Shows the price first.").clicked() {
@@ -341,6 +343,28 @@ fn counter(ui: &mut egui::Ui, node: &Node, spec: &nodecraft_types::ParamSpec, ed
             }
         }
         ui.label(egui::RichText::new(&spec.label).color(t.text_muted));
+    });
+}
+
+/// How many variations a run makes (#81), each its own request and its own result.
+fn variations(ui: &mut egui::Ui, node: &Node, intents: &mut Vec<Intent>, t: &Tokens) {
+    let current = nodecraft_exec::variations::requested(node);
+    ui.push_id("variations", |ui| {
+        for (text, next, name) in
+            [("-", current.checked_sub(1).filter(|n| *n >= 1), "Fewer"), ("+", current.checked_add(1).filter(|n| *n <= MAX_VARIATIONS), "More")]
+        {
+            let r = ui.add_enabled(next.is_some(), egui::Button::new(text).small());
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, next.is_some(), format!("{name} variations")));
+            if r.clicked()
+                && let Some(next) = next
+            {
+                intents.push(Intent::Variations(u64::try_from(next).unwrap_or(1)));
+            }
+            if text == "-" {
+                ui.label(egui::RichText::new(format!("{current}×")).color(t.text))
+                    .on_hover_text("Variations: each is a request of its own, priced as such, and a result of its own in the history");
+            }
+        }
     });
 }
 

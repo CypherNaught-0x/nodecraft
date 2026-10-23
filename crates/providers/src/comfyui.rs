@@ -8,6 +8,9 @@
 //!   uploaded under a content-hash name with the extension the loader lists, then set to the
 //!   stored name. A file the loader can't read (a sound for an image loader) is refused first.
 //!
+//! A catalog model's job carries no workflow: [`template`] builds it from the model's
+//! `provider_model` and the card's prompt, image and parameters.
+//!
 //! **Submitting once.** The prompt id is derived from a per-install salt and the job's
 //! idempotency key, so different installs (and sessions using fresh run ids) never share ids. A
 //! submit first asks the server whether that prompt is already queued, running or done, so a
@@ -17,11 +20,17 @@
 //!
 //! **Outputs** are the `output`-type files of the finished prompt, downloaded with the server's
 //! auth, capped per file and in total, and sniffed; preview-only workflows fail with a clear
-//! message. Live progress over the WebSocket is not wired yet: polling reports queue position and
-//! completion.
+//! message.
+//!
+//! **Progress.** Polling reports queue position and completion. With [`progress::Feeds`] set
+//! ([`ComfyProvider::with_progress`]), the server's WebSocket is opened before a prompt is queued
+//! and a running prompt also reports how far it is and which node runs ([`progress`]).
 
+use std::hash::BuildHasher;
 use std::sync::{Arc, Mutex, PoisonError};
 
+pub mod progress;
+pub(crate) mod template;
 pub(crate) mod upload;
 
 use serde_json::{Map, Value};
@@ -61,6 +70,7 @@ pub struct ComfyProvider {
     max_total_output_bytes: usize,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
     catalog: Mutex<Option<(u64, Arc<NodeCatalog>)>>,
+    live: Option<progress::Live>,
 }
 
 impl std::fmt::Debug for ComfyProvider {
@@ -122,7 +132,10 @@ impl ComfyProvider {
         if let Some((name, value)) = &auth {
             server = server.with_auth_header(name, value).map_err(comfy_error)?;
         }
-        let client_id = format!("nodecraft-{}", uuid_from(&format!("{install_salt}\u{0}client")));
+        // Random per provider: the server keeps one socket per client id, so two processes (the
+        // app and the CLI) sharing one would take each other's progress.
+        let session = std::collections::hash_map::RandomState::new().hash_one(install_salt);
+        let client_id = format!("nodecraft-{}-{session:016x}", uuid_from(&format!("{install_salt}\u{0}client")));
         Ok(Self {
             server,
             auth_name: auth.map(|(name, _)| name.to_ascii_lowercase()),
@@ -133,6 +146,7 @@ impl ComfyProvider {
             max_total_output_bytes: DEFAULT_MAX_TOTAL_OUTPUT_BYTES,
             now_ms,
             catalog: Mutex::new(None),
+            live: None,
         })
     }
 
@@ -140,6 +154,19 @@ impl ComfyProvider {
         self.max_output_bytes = per_file;
         self.max_total_output_bytes = total;
         self
+    }
+
+    /// Reports a running prompt's progress from the server's WebSocket, opened with `feeds`.
+    pub fn with_progress(mut self, feeds: Arc<dyn progress::Feeds>) -> Self {
+        self.live = Some(progress::Live::new(feeds));
+        self
+    }
+
+    /// Opens the progress socket if there is none. Best effort: a failure only means no fraction.
+    async fn connect_progress(&self) {
+        let Some(live) = &self.live else { return };
+        let Ok(url) = self.server.websocket_url(&self.client_id) else { return };
+        live.connect(url.to_string(), self.server.websocket_headers(), (self.now_ms)()).await;
     }
 
     /// Sends a comfy-crate request. Its headers are sent as given, the auth header as a secret.
@@ -204,6 +231,14 @@ impl ComfyProvider {
         let from_catalog = |e: ComfyError| {
             let stale = matches!(e, ComfyError::MissingNodes(_) | ComfyError::InvalidInput { .. } | ComfyError::InvalidWorkflow(_));
             (comfy_error(e), stale)
+        };
+        // A catalog card names a built-in workflow instead of carrying one.
+        let templated;
+        let job = if template::is_templated(job) {
+            templated = template::expand(job, catalog)?;
+            &templated
+        } else {
+            job
         };
         let raw = job.params.get("workflow").ok_or_else(|| plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job has no ComfyUI workflow")))?;
         let bytes = serde_json::to_vec(raw).map_err(|e| plain(ProviderError::new(ErrorKind::UnsupportedInput, e.to_string())))?;
@@ -432,10 +467,16 @@ impl Provider for ComfyProvider {
                 }
                 Err((e, false)) => return Err(e),
             };
+            // Opened before queueing: the server sends a prompt's progress only to a socket that
+            // is already open.
+            self.connect_progress().await;
             let mut request = PromptRequest::new(workflow, self.client_id.clone());
             request.prompt_id = Some(prompt_id.clone());
             let response = self.send(self.server.prompt(&request).map_err(comfy_error)?, 4 * 1024 * 1024, None).await?;
             let queued = comfy::parse_prompt_response(response.status, &response.body).map_err(comfy_error)?;
+            if let Some(live) = &self.live {
+                live.track(&queued.prompt_id, &request.workflow);
+            }
             // Older servers ignore a client-chosen id: follow the one they assigned.
             Ok(Submission::Queued(handle_for(&queued.prompt_id)))
         })
@@ -443,9 +484,26 @@ impl Provider for ComfyProvider {
 
     fn poll<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
         Box::pin(async move {
-            match self.locate(&handle.remote_id).await? {
+            let id = &handle.remote_id;
+            let known = self.locate(id).await?;
+            let live = self.live.as_ref();
+            if matches!(known, Known::Pending(_) | Known::Running) && live.is_some_and(progress::Live::wanted) {
+                // The socket was lost: open another (with the same client id the server routes by).
+                self.connect_progress().await;
+            }
+            // Read the socket even while queued, so its messages don't pile up.
+            let now = live.and_then(|live| live.progress(id, (self.now_ms)()));
+            if !matches!(known, Known::Pending(_) | Known::Running)
+                && let Some(live) = live
+            {
+                live.forget(id);
+            }
+            match known {
                 Known::Pending(i) => Ok(JobProgress::Queued { position: u32::try_from(i.saturating_add(1)).ok() }),
-                Known::Running => Ok(JobProgress::Running { fraction: None, message: None, partial: None }),
+                Known::Running => {
+                    let (fraction, message) = now.map_or((None, None), |(fraction, node)| (Some(fraction), node));
+                    Ok(JobProgress::Running { fraction, message, partial: None })
+                }
                 Known::Finished(entry) => match finished(&entry) {
                     Ok(files) => Ok(JobProgress::Done(Completed::new(self.download(&files).await?))),
                     Err(e) => Ok(JobProgress::Failed(e)),
@@ -459,6 +517,9 @@ impl Provider for ComfyProvider {
     fn cancel<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
         Box::pin(async move {
             let id = handle.remote_id.clone();
+            if let Some(live) = &self.live {
+                live.forget(&id);
+            }
             if let Known::Pending(_) = self.locate(&id).await? {
                 self.send_ok(self.server.delete_from_queue(std::slice::from_ref(&id)).map_err(comfy_error)?, 64 * 1024).await?;
             }
@@ -495,7 +556,17 @@ mod tests {
       "LoadAudio": {"input": {"required": {"audio": [["a.wav"], {"audio_upload": true}]}}, "output": ["AUDIO"]},
       "LoadVideo": {"input": {"required": {"file": [["a.mp4"], {"video_upload": true}]}}, "output": ["VIDEO"]},
       "SaveAudio": {"input": {"required": {"audio": ["AUDIO", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true},
-      "SaveVideo": {"input": {"required": {"video": ["VIDEO", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true}
+      "SaveVideo": {"input": {"required": {"video": ["VIDEO", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true},
+      "CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [["flux1-dev-fp8.safetensors"]]}}, "output": ["MODEL", "CLIP", "VAE"]},
+      "FluxGuidance": {"input": {"required": {"conditioning": ["CONDITIONING"], "guidance": ["FLOAT", {"default": 3.5}]}}, "output": ["CONDITIONING"]},
+      "ImageScaleToTotalPixels": {"input": {"required": {"image": ["IMAGE"], "upscale_method": [["lanczos"]], "megapixels": ["FLOAT", {}]}}, "output": ["IMAGE"]},
+      "VAEEncode": {"input": {"required": {"pixels": ["IMAGE"], "vae": ["VAE"]}}, "output": ["LATENT"]},
+      "KSampler": {"input": {"required": {
+        "model": ["MODEL"], "positive": ["CONDITIONING"], "negative": ["CONDITIONING"], "latent_image": ["LATENT"],
+        "seed": ["INT", {"min": 0, "max": 18446744073709551615}], "steps": ["INT", {"min": 1, "max": 10000}], "cfg": ["FLOAT", {"min": 0.0, "max": 100.0}],
+        "sampler_name": [["euler"]], "scheduler": [["simple", "normal"]], "denoise": ["FLOAT", {"min": 0.0, "max": 1.0}]
+      }}, "output": ["LATENT"]},
+      "VAEDecode": {"input": {"required": {"samples": ["LATENT"], "vae": ["VAE"]}}, "output": ["IMAGE"]}
     }"#;
     const EMPTY_QUEUE: &str = r#"{"queue_running":[],"queue_pending":[]}"#;
     const SALT: &str = "install-salt";
@@ -513,6 +584,8 @@ mod tests {
         /// `/view` answers by file name, before `view`.
         files: Mutex<Vec<(String, Vec<u8>)>>,
         object_info_calls: AtomicUsize,
+        /// A checkpoint `/object_info` lists from its second fetch on, as if installed meanwhile.
+        installed_later: Mutex<Option<String>>,
     }
 
     impl FakeServer {
@@ -524,6 +597,7 @@ mod tests {
                 view: Mutex::new(b"\x89PNG\r\n\x1a\nimage".to_vec()),
                 files: Mutex::new(vec![]),
                 object_info_calls: AtomicUsize::new(0),
+                installed_later: Mutex::new(None),
             })
         }
         /// Next answer from a script; the last one repeats.
@@ -544,8 +618,13 @@ mod tests {
             let path = request.url.split("8188").nth(1).unwrap_or_default().to_owned();
             let body: Vec<u8> = match path.split('?').next().unwrap_or_default() {
                 "/object_info" => {
-                    self.object_info_calls.fetch_add(1, Ordering::SeqCst);
-                    OBJECT_INFO.into()
+                    let earlier = self.object_info_calls.fetch_add(1, Ordering::SeqCst);
+                    match self.installed_later.lock().unwrap().as_deref() {
+                        Some(name) if earlier > 0 => {
+                            OBJECT_INFO.replace(r#"[["flux1-dev-fp8.safetensors"]]"#, &format!(r#"[["flux1-dev-fp8.safetensors", "{name}"]]"#)).into()
+                        }
+                        _ => OBJECT_INFO.into(),
+                    }
                 }
                 "/queue" if request.method == HttpMethod::Get => Self::next(&self.queue, EMPTY_QUEUE).into_bytes(),
                 "/upload/image" => r#"{"name":"stored.png","subfolder":"in","type":"input"}"#.into(),
@@ -643,6 +722,47 @@ mod tests {
     }
 
     #[test]
+    fn a_catalog_card_runs_its_built_in_workflow() {
+        let server = FakeServer::new();
+        let p = provider(server.clone());
+        let card = ProviderJob {
+            model: "flux-dev".into(),
+            params: serde_json::json!({"steps": 20, "seed": 7}).as_object().cloned().unwrap(),
+            inputs: vec![
+                JobInput::Text { role: "prompt".into(), text: "as a watercolour".into() },
+                JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(PNG_BYTES) },
+            ],
+            idempotency_key: "nodecraft:run-uuid:2".into(),
+        };
+        block_on(p.submit(&card)).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let prompt = seen.iter().find(|r| r.url.ends_with("/prompt")).unwrap();
+        let body: Value = serde_json::from_slice(&prompt.body).unwrap();
+        let workflow = &body["prompt"];
+        assert_eq!(workflow["1"]["inputs"]["ckpt_name"], "flux1-dev-fp8.safetensors");
+        assert_eq!(workflow["2"]["inputs"]["text"], "as a watercolour");
+        assert_eq!(workflow["5"]["inputs"]["image"], "in/stored.png", "the input image is uploaded and set on the loader");
+        assert_eq!(workflow["8"]["inputs"]["steps"], 20);
+        assert_eq!(workflow["10"]["class_type"], "SaveImage");
+        drop(seen);
+
+        let mut sdxl = card.clone();
+        sdxl.model = "sdxl-base".into();
+        let e = block_on(p.submit(&sdxl)).unwrap_err();
+        assert!(e.message.contains("sd_xl_base_1.0.safetensors"), "{e}");
+        assert_eq!(server.object_info_calls.load(Ordering::SeqCst), 2, "a missing checkpoint refetches the catalog once");
+
+        // Installed after the catalog was fetched: the refetch finds it and the run is queued.
+        let server = FakeServer::new();
+        *server.installed_later.lock().unwrap() = Some("sd_xl_base_1.0.safetensors".into());
+        let p = provider(server.clone());
+        block_on(p.catalog()).unwrap();
+        block_on(p.submit(&sdxl)).unwrap();
+        assert_eq!(server.object_info_calls.load(Ordering::SeqCst), 2);
+        assert!(server.paths().iter().any(|path| path == "/prompt"));
+    }
+
+    #[test]
     fn a_retried_submit_does_not_queue_twice_but_a_failed_prompt_runs_again() {
         let server = FakeServer::new();
         let first = prompt_id_for(SALT, "nodecraft:run-uuid:1", 0);
@@ -711,6 +831,63 @@ mod tests {
         let JobProgress::Done(Completed { outputs, .. }) = block_on(p.poll(&handle_for("abc"))).unwrap() else { panic!("not done") };
         assert_eq!(outputs.len(), 1, "previews (temp) are not outputs");
         assert!(matches!(&outputs[0], Output::Bytes { mime, .. } if mime == "image/png"));
+    }
+
+    #[test]
+    fn a_running_prompt_reports_progress_from_the_socket() {
+        use progress::tests::{Scripted, text};
+        let server = FakeServer::new();
+        let messages = Arc::new(Mutex::new(VecDeque::new()));
+        let feeds = Scripted { messages: messages.clone(), opens: Arc::default(), refuse: false };
+        let opens = feeds.opens.clone();
+        let p = provider(server.clone()).with_progress(Arc::new(feeds));
+        let Submission::Queued(handle) = block_on(p.submit(&job())).unwrap() else { panic!("not queued") };
+        assert_eq!(*opens.lock().unwrap(), 1, "the socket is open before the prompt is queued");
+        let id = handle.remote_id.clone();
+
+        FakeServer::set(&server.queue, &[&format!(r#"{{"queue_running":[],"queue_pending":[[0,"{id}"]]}}"#)]);
+        assert_eq!(block_on(p.poll(&handle)).unwrap(), JobProgress::Queued { position: Some(1) });
+        FakeServer::set(&server.queue, &[&format!(r#"{{"queue_running":[[0,"{id}"]],"queue_pending":[]}}"#)]);
+        assert_eq!(block_on(p.poll(&handle)).unwrap(), JobProgress::Running { fraction: None, message: None, partial: None }, "not started yet");
+        messages.lock().unwrap().extend([
+            text(&format!(r#"{{"type":"execution_start","data":{{"prompt_id":"{id}"}}}}"#)),
+            text(&format!(r#"{{"type":"execution_cached","data":{{"prompt_id":"{id}","nodes":["1"]}}}}"#)),
+            text(&format!(r#"{{"type":"executing","data":{{"node":"2","prompt_id":"{id}"}}}}"#)),
+        ]);
+        let JobProgress::Running { fraction: Some(fraction), message, .. } = block_on(p.poll(&handle)).unwrap() else { panic!("no fraction") };
+        assert!((fraction - 1.0 / 3.0).abs() < 1e-6, "{fraction}");
+        assert_eq!(message.as_deref(), Some("CLIPTextEncode"));
+
+        FakeServer::set(&server.queue, &[EMPTY_QUEUE]);
+        FakeServer::set(&server.history, &[&history_ok(&id, r#"[{"filename":"a.png","subfolder":"","type":"output"}]"#)]);
+        assert!(matches!(block_on(p.poll(&handle)).unwrap(), JobProgress::Done(_)));
+        assert!(!p.live.as_ref().unwrap().wanted(), "a finished prompt is no longer tracked");
+        assert_eq!(*opens.lock().unwrap(), 1, "an open socket is reused");
+    }
+
+    #[test]
+    fn without_a_socket_runs_still_finish_by_polling() {
+        let server = FakeServer::new();
+        let feeds = progress::tests::Scripted { messages: Arc::default(), opens: Arc::default(), refuse: true };
+        let opens = feeds.opens.clone();
+        let p = provider(server.clone()).with_progress(Arc::new(feeds));
+        let Submission::Queued(handle) = block_on(p.submit(&job())).unwrap() else { panic!("not queued") };
+        let id = handle.remote_id.clone();
+        FakeServer::set(&server.queue, &[&format!(r#"{{"queue_running":[[0,"{id}"]],"queue_pending":[]}}"#)]);
+        assert!(matches!(block_on(p.poll(&handle)).unwrap(), JobProgress::Running { fraction: None, .. }));
+        assert_eq!(*opens.lock().unwrap(), 1, "a refused socket isn't retried on every poll");
+    }
+
+    #[test]
+    fn a_cancelled_prompt_is_no_longer_tracked() {
+        let server = FakeServer::new();
+        let feeds = progress::tests::Scripted { messages: Arc::default(), opens: Arc::default(), refuse: false };
+        let p = provider(server.clone()).with_progress(Arc::new(feeds));
+        let Submission::Queued(handle) = block_on(p.submit(&job())).unwrap() else { panic!("not queued") };
+        assert!(p.live.as_ref().unwrap().wanted());
+        FakeServer::set(&server.queue, &[EMPTY_QUEUE]);
+        block_on(p.cancel(&handle)).unwrap();
+        assert!(!p.live.as_ref().unwrap().wanted(), "nothing keeps the socket open");
     }
 
     const WAV: &[u8] = include_bytes!("fal/fixtures/tone.wav");
