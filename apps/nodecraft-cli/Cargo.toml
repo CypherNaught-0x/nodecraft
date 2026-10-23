@@ -15,6 +15,9 @@ workspace = true
 [dependencies]
 nodecraft-automation = { workspace = true }
 nodecraft-engine = { workspace = true }
+# Plugin authoring (#175): `plugin pack|inventory|lint`, and the package limits it reads within.
+nodecraft-plugin = { workspace = true }
+nodecraft-plugin-store = { workspace = true }
 nodecraft-exec = { workspace = true }
 nodecraft-format = { workspace = true }
 nodecraft-graph = { workspace = true }
@@ -36,6 +39,7 @@ url = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "sync", "signal"] }
 
 [dev-dependencies]
+blake3 = { workspace = true }
 nodecraft-catalog = { workspace = true }
 nodecraft-provider-testkit = { workspace = true }
 nodecraft-graph = { workspace = true }

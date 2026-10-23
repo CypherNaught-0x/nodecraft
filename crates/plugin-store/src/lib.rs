@@ -8,6 +8,7 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
 pub mod archive;
+pub mod author;
 pub mod backend;
 pub mod grants;
 pub mod layout;
@@ -18,7 +19,7 @@ pub use archive::{ArchiveLimits, Package};
 pub use backend::FolderBackend;
 pub use backend::MemoryBackend;
 pub use grants::{Grant, Grants, Rights};
-pub use store::{EnableReport, Entry, ImportReport, Index, RevokeReport, State, Store, StoreBackend, StoreLock};
+pub use store::{EnableReport, Entry, ImportReport, Index, RevokeReport, State, Store, StoreBackend, StoreLock, grantable_by_this_build};
 
 #[cfg(test)]
 mod tests;

@@ -877,17 +877,10 @@ impl NodeCraftApp {
         dir: std::path::PathBuf,
     ) -> Result<Arc<nodecraft_engine::plugin_cmds::PluginWorker>, Error> {
         use nodecraft_engine::plugin_cmds::{PluginHost, PluginWorker, register_plugin_worker};
-        let host = PluginHost { trust: Some(dir.join("trust.json")), taken: Self::taken_ids()?, bindings: Default::default() };
+        let host = PluginHost { trust: Some(dir.join("trust.json")), taken: nodecraft_engine::plugin_cmds::host_ids()?, bindings: Default::default() };
         let worker = PluginWorker::spawn(move || nodecraft_plugin_store::Store::open(nodecraft_plugin_store::FolderBackend::new(dir.join("store"))?), host)?;
         register_plugin_worker(services, Arc::clone(&worker))?;
         Ok(worker)
-    }
-
-    /// The IDs the app registers, which no package may take.
-    fn taken_ids() -> Result<std::collections::BTreeSet<String>, Error> {
-        let mut taken: std::collections::BTreeSet<String> = nodecraft_engine::commands::Registry::builtins()?.specs().map(|s| s.id.to_owned()).collect();
-        taken.extend(nodecraft_engine::generation_catalog::default_registry()?.0.descriptors().map(|d| d.id.clone()));
-        Ok(taken)
     }
 
     /// The browser's `plugins` service (#823): a store in memory, for this session only, filled
@@ -896,7 +889,7 @@ impl NodeCraftApp {
     fn register_session_plugins(services: &mut nodecraft_engine::commands::Services) -> Result<nodecraft_engine::plugin_cmds::PickedPackage, Error> {
         use nodecraft_engine::plugin_cmds::{PluginHost, register_session_plugins};
         let store = nodecraft_plugin_store::Store::open(nodecraft_plugin_store::MemoryBackend::default())?;
-        register_session_plugins(services, store, PluginHost { trust: None, taken: Self::taken_ids()?, bindings: Default::default() })
+        register_session_plugins(services, store, PluginHost { trust: None, taken: nodecraft_engine::plugin_cmds::host_ids()?, bindings: Default::default() })
     }
 
     /// Hands the session what the plugin store may run whenever that changes (#173); the first

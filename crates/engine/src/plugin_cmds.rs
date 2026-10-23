@@ -26,6 +26,8 @@ pub const PLUGIN_SERVICE: &str = "plugins.store";
 pub const RESULT_SERVICE: &str = "plugins.results";
 /// A worker nonce plus a checked decimal sequence.
 pub const MAX_PENDING_ID: usize = 53;
+mod lint;
+pub use lint::{host_ids, lint};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod worker;
 #[cfg(not(target_arch = "wasm32"))]

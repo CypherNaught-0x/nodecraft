@@ -4,12 +4,14 @@
 //! and `providers` read projects and the engine without changing them; `run` runs a project's
 //! nodes and exports their results, leaving the project file as it was. `serve` offers a
 //! project's techniques as a local HTTP API, and `webhook-secret` keeps the secret its webhooks are
-//! signed with. `relay` passes projects shared live between peers. `batch` and `comfy` arrive with their milestones
+//! signed with. `relay` passes projects shared live between peers. `plugin` packs and lints plugin
+//! packages. `batch` and `comfy` arrive with their milestones
 //! (docs/plan.md §4.8).
 
 mod control;
 mod estimates;
 mod inspect;
+mod plugin;
 mod project;
 mod providers;
 mod quote;
@@ -72,11 +74,19 @@ commands:
   webhook-secret [--delete]
                   keep the secret `serve` signs webhooks with in the keychain, read from stdin
                   (at least 32 characters; `whsec_<base64>` is decoded); --delete removes it
+  plugin pack <folder> --out <file>
+                  build a .ncraft-plugin from a folder: the same files always give the same
+                  bytes and digest. Nothing in the folder runs; dot-files are left out
+  plugin inventory <folder>
+                  print the canonical inventory and digest a package of the folder would have
+  plugin lint <file> [--trust <trust.json>]
+                  check a package as installing, granting and enabling it would; only keys in
+                  the trust file are trusted. Nothing is installed or run
   providers       list the model providers and whether each can run (reads the keychain)
   --version, -V   print the version, commit and build date
   --help, -h      print this help
 
-Add --json to commands, inspect, quote, run and providers for machine-readable output.
+Add --json to commands, inspect, quote, run, plugin and providers for machine-readable output.
 ";
 
 /// 16 random bytes from the standard library's per-process random hasher keys and a counter:
@@ -530,6 +540,13 @@ fn main() -> ExitCode {
         Some("serve") => serve_command(args.get(1..).unwrap_or_default()),
         Some("relay") => relay_command(args.get(1..).unwrap_or_default()),
         Some("webhook-secret") => webhook_secret(args.get(1..).unwrap_or_default()),
+        Some("plugin") => match plugin::command(args.get(1..).unwrap_or_default()) {
+            Ok(out) => {
+                let _ = std::io::stdout().lock().write_all(out.as_bytes());
+                ExitCode::SUCCESS
+            }
+            Err(message) => fail(&message),
+        },
         Some(command @ ("commands" | "inspect" | "quote" | "run" | "providers")) => read_only(command, args.get(1..).unwrap_or_default()),
         Some("--help" | "-h" | "help") | None => {
             print!("{USAGE}");

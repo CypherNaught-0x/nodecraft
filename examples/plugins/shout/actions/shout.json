@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "version": 1,
+  "id": "user.shout",
+  "label": "Shout",
+  "inputs": [{ "name": "words", "kind": "text" }],
+  "outputs": [{ "name": "out", "kind": "text", "expr": "upper(words)" }]
+}

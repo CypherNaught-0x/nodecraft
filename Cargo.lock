@@ -3256,6 +3256,7 @@ dependencies = [
 name = "nodecraft-cli"
 version = "0.2.0-rc.1"
 dependencies = [
+ "blake3",
  "hmac",
  "nodecraft-automation",
  "nodecraft-catalog",
@@ -3264,6 +3265,8 @@ dependencies = [
  "nodecraft-format",
  "nodecraft-graph",
  "nodecraft-nodes",
+ "nodecraft-plugin",
+ "nodecraft-plugin-store",
  "nodecraft-provider-testkit",
  "nodecraft-providers",
  "nodecraft-sync",
