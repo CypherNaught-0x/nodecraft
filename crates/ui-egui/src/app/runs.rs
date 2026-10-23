@@ -382,6 +382,16 @@ impl Runs {
         })
     }
 
+    /// The caps later quotes and jobs are checked against (#201).
+    pub(super) fn set_budgets(&self, session: &mut Session, budgets: Budgets) {
+        self.host.set_budgets(session, budgets);
+    }
+
+    /// What this session and the project have spent so far.
+    pub(super) fn spent(&self) -> nodecraft_exec::cost::Spent {
+        self.host.spent()
+    }
+
     /// The ffmpeg and ffprobe the settings name, for the Timeline's renders (#109).
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn set_video_tools(&mut self, tools: Option<(&std::path::Path, &std::path::Path)>) {

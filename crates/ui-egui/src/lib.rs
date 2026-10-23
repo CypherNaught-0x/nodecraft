@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod budgets;
 mod bulk;
 pub mod canvas;
 pub mod card;

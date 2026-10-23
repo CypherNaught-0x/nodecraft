@@ -178,8 +178,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
 1. **Finish M3 generation**: the chat-style text-card turn UI (#84), generation history and
-   variations (#81), cost and budget checks before a run (#201), and the remaining
-   keychain issue (#80); do not mistake a tested adapter for a working mode in every host.
+   variations (#81), and the remaining keychain issue (#80); do not mistake a tested adapter for a working mode in every host.
 2. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
    then browser option-list parity (#721), verification/closure of HTTP serve's still-open
    tracker (#117), and later milestone gaps.
@@ -244,6 +243,9 @@ The near-term order follows the remaining open issues, not an already-finished w
   work. The M2 close-out (#373) refreshed README, ROADMAP and `docs/plan.md`. M6 gained the
   Elements library (#552) and the Image tools menu (#103); providers gained Veo 3.1 on Google
   Cloud (#742) and Google TTS (#21).
+- **2026-10-23** — spending caps per call, session and project are settings the Budgets panel
+  edits (#201); a run a cap blocks names it and its confirmation opens the panel. No command can
+  raise a cap.
 - **2026-10-23** — rendered videos and extracted sound share a per-run staging budget (#584):
   1 GiB and 4,096 results, including read-backs in flight. Failure and cancellation return their
   reservations; chained actions retain access to earlier completed outputs.

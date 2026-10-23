@@ -331,6 +331,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
 pub(crate) mod admission;
 
 mod app_mode;
+mod budget_caps;
 #[cfg(not(target_arch = "wasm32"))]
 mod comfy_nodes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -537,6 +538,9 @@ pub struct NodeCraftApp {
     /// The plugin packages panel (#172).
     pub plugin_panel: crate::plugins::PluginsPanel,
     pub key_accounts: nodecraft_engine::settings::KeySettings,
+    /// The Budgets panel, and the caps runs are checked against (from settings, #201).
+    pub budgets: crate::budgets::BudgetsPanel,
+    budget_caps: nodecraft_engine::settings::BudgetSettings,
     /// Answers from the keychain thread (the app's `keys.store` service).
     #[cfg(not(target_arch = "wasm32"))]
     key_results: Option<nodecraft_engine::secrets::KeyResults>,
@@ -773,6 +777,7 @@ impl NodeCraftApp {
         };
         self.canvas_prefs = settings.canvas.clone();
         self.key_accounts = settings.keys.clone();
+        self.set_budget_caps(settings.budgets.clone());
         self.set_media_tools(settings.media.tools());
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1121,6 +1126,8 @@ impl NodeCraftApp {
             keys: crate::keys::KeysPanel::default(),
             plugin_panel: crate::plugins::PluginsPanel::default(),
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
+            budgets: crate::budgets::BudgetsPanel::default(),
+            budget_caps: nodecraft_engine::settings::BudgetSettings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             key_results: None,
             runs: None,
@@ -2395,6 +2402,7 @@ impl NodeCraftApp {
         self.plugin_panel.show(ui.ctx(), &mut self.session, t);
         #[cfg(not(target_arch = "wasm32"))]
         self.comfy_server_panel(ui.ctx(), t);
+        self.budgets_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);
         self.share_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2559,6 +2567,17 @@ impl NodeCraftApp {
                             self.queue_open = !self.queue_open;
                         }
                         self.share_button(ui, t);
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new("Budgets").color(t.text_muted)).frame(false))
+                            .on_hover_text("The most runs may spend per call, per session and per project")
+                            .clicked()
+                        {
+                            if self.budgets.open {
+                                self.budgets.open = false;
+                            } else {
+                                self.budgets.open();
+                            }
+                        }
                         if ui
                             .add(egui::Button::new(egui::RichText::new("API keys").color(t.text_muted)).frame(false))
                             .on_hover_text("Add, check and remove provider keys")
