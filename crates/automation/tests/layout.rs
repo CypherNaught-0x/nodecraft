@@ -1,4 +1,5 @@
-//! Layout stays out of MCP until agents can supply a selection and trusted host geometry.
+//! Format selection runs only through the live window, which supplies trusted geometry (#360).
+//! A headless session lists it as not ready, says where it runs, and changes nothing.
 use nodecraft_automation::{blank_session, mcp::McpServer};
 use nodecraft_types::{CanvasId, ProjectId};
 use serde_json::{Value, json};
@@ -7,7 +8,7 @@ fn call(server: &mut McpServer, name: &str, arguments: Value) -> Value {
     serde_json::from_str::<Value>(&reply).unwrap()["result"].clone()
 }
 #[test]
-fn layout_is_hidden_and_refused_without_mutation() {
+fn layout_is_listed_as_live_only_and_refused_headless_without_mutation() {
     let canvas = CanvasId::from_bytes([71; 16]);
     let session = blank_session(ProjectId::from_bytes([73; 16]), canvas).unwrap();
     let before = (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.file_status());
@@ -15,10 +16,14 @@ fn layout_is_hidden_and_refused_without_mutation() {
     let listed = call(&mut server, "command_list", json!({"query":"canvas.auto_format"}));
     assert_eq!(listed["isError"], false);
     let commands = listed["structuredContent"]["commands"].as_array().unwrap();
-    assert!(commands.is_empty());
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0]["ready"], false);
+    assert!(commands[0]["not_ready_because"].as_str().unwrap().contains("nodecraft --control"));
+    assert!(commands[0]["params_schema"]["properties"]["nodes"].is_object());
     for mode in ["grid", "layered"] {
         let result = call(&mut server, "command_run", json!({"id":"canvas.auto_format","params":{"mode":mode}}));
         assert_eq!(result["isError"], true);
+        assert!(result["content"][0]["text"].as_str().unwrap().contains("running app"));
         let session = server.session().unwrap();
         assert_eq!((session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.file_status()), before);
         assert!(!session.can_undo() && !session.can_redo());

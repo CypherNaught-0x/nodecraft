@@ -141,7 +141,7 @@ impl Channel {
 fn answer(app: &mut NodeCraftApp, ctx: &egui::Context, request: &Request) -> Option<Result<serde_json::Value, nodecraft_types::Error>> {
     control::answer_with(&mut LiveCommands { app, ctx }, request)
 }
-/// The window's session as a command host: navigation and search commands reach the view.
+/// The window's session as a command host: commands that act on the view reach it (#360).
 pub(crate) struct LiveCommands<'a> {
     pub(crate) app: &'a mut NodeCraftApp,
     pub(crate) ctx: &'a egui::Context,
@@ -161,35 +161,31 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
         &self.app.session
     }
     fn enabled(&mut self, id: &str, params: &serde_json::Value) -> Result<(), nodecraft_types::Error> {
-        if NodeCraftApp::is_navigation_command(id) {
+        if NodeCraftApp::is_host_command(id) {
             self.navigation_idle()?;
-            self.app.navigation_enabled(self.ctx, id, params)
-        } else if NodeCraftApp::is_search_command(id) {
-            self.navigation_idle()?;
-            self.app.search_enabled(self.ctx, id, params)
+            self.app.host_enabled(self.ctx, id, params)
         } else {
             self.app.session.enabled(id, params)
         }
     }
     fn dispatch(&mut self, id: &str, params: &serde_json::Value) -> Result<serde_json::Value, nodecraft_types::Error> {
-        if NodeCraftApp::is_navigation_command(id) {
+        if NodeCraftApp::is_host_command(id) {
             self.navigation_idle()?;
-            self.app.dispatch_navigation(self.ctx, id, params)
-        } else if NodeCraftApp::is_search_command(id) {
-            self.navigation_idle()?;
-            self.app.dispatch_search(self.ctx, id, params)
+            self.app.dispatch_host(self.ctx, id, params)
         } else {
             self.app.session.dispatch(id, params)
         }
     }
     fn impact(&mut self, id: &str, params: &serde_json::Value) -> Result<nodecraft_engine::impact::Impact, nodecraft_types::Error> {
-        // Navigation and search change only the view, which is not the document.
-        if NodeCraftApp::is_navigation_command(id) || NodeCraftApp::is_search_command(id) {
-            self.enabled(id, params)?;
-            Ok(nodecraft_engine::impact::Impact::Read)
+        if NodeCraftApp::is_host_command(id) {
+            self.navigation_idle()?;
+            self.app.host_impact(self.ctx, id, params)
         } else {
             self.app.session.impact(id, params)
         }
+    }
+    fn live(&self) -> bool {
+        true
     }
 }
 

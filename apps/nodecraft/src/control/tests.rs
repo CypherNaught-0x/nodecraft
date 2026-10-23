@@ -218,6 +218,7 @@ fn active_minimap_drag_refuses_external_navigation_until_release() {
     assert!(restored.blocked && !restored.viewport_available && !restored.fit_all && !restored.fit_selection);
 }
 
+mod host360;
 mod search;
 
 #[test]

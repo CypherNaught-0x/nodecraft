@@ -1,5 +1,5 @@
 //! Comments use the same admitted Session transaction through actual JSON-RPC MCP calls.
-use nodecraft_automation::mcp::{AGENT_COMMANDS, HUMAN_ONLY, McpServer};
+use nodecraft_automation::mcp::{AGENT_COMMANDS, HUMAN_ONLY, LIVE_ONLY, McpServer};
 use nodecraft_engine::Session;
 use nodecraft_format::{MemoryStorage, ProjectStorage, Snapshot, StorageLocation, journal};
 use nodecraft_graph::{Canvas, Change, Project};
@@ -98,8 +98,12 @@ fn discussion_mutations_are_discoverable_undoable_and_recover_through_real_mcp()
     ] {
         let reply = command(&mut server, id, params);
         assert_eq!(reply["isError"], true, "{id}: {reply}");
-        if matches!(id, "comment.open" | "comment.compose" | "canvas.comments_toggle") {
+        // A person composes; the view commands run only through the live window (#360).
+        if id == "comment.compose" {
             assert!(HUMAN_ONLY.contains(&id));
+        } else if !id.starts_with("comment.") || id == "comment.open" {
+            assert!(LIVE_ONLY.contains(&id));
+            assert!(reply["content"][0]["text"].as_str().unwrap().contains("running app"), "{id}: {reply}");
         }
         let session = server.session().unwrap();
         assert_eq!(session.document(), &before);

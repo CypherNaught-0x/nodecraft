@@ -348,6 +348,7 @@ mod fields;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_dialogs;
 mod generate;
+mod host;
 mod image_tools;
 mod layer_editor;
 mod layer_fonts;
