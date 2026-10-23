@@ -261,15 +261,139 @@ fn the_helper_checks_the_msi_again_while_holding_it() {
 fn a_relaunch_keeps_control_and_the_project() {
     let project = Path::new("a.ncraft");
     let args = |command: &std::process::Command| command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
-    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), Some(project), true, "42");
-    assert_eq!(args(&exec), ["--wait-for", "42", "--control", "a.ncraft"]);
-    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), None, false, "42");
-    assert_eq!(args(&exec), ["--wait-for", "42"]);
+    let read = vec![PathBuf::from("/reference materials"), PathBuf::from("/sources")];
+    let write = vec![PathBuf::from("/working files")];
+    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), Some(project), true, &read, &write, "42");
+    assert_eq!(
+        args(&exec),
+        ["--wait-for", "42", "--control", "--root", "/working files", "--read-root", "/reference materials", "--read-root", "/sources", "a.ncraft"]
+    );
+    let bundle = command(&Relaunch::Bundle("NodeCraft.app".into()), Some(project), true, &read, &write, "42");
+    assert_eq!(
+        args(&bundle),
+        [
+            "-n",
+            "NodeCraft.app",
+            "--args",
+            "--wait-for",
+            "42",
+            "--control",
+            "--root",
+            "/working files",
+            "--read-root",
+            "/reference materials",
+            "--read-root",
+            "/sources",
+            "a.ncraft"
+        ]
+    );
+    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), Some(project), false, &read, &write, "42");
+    assert_eq!(args(&exec), ["--wait-for", "42", "a.ncraft"], "no control means no grants");
     let helper = Relaunch::Helper { helper: "helper.exe".into(), msi: "u.msi".into(), blake3: "ab12".into(), exe: "NodeCraft.exe".into() };
     assert_eq!(
-        args(&command(&helper, Some(project), true, "7")),
-        ["--finish-update", "u.msi", "ab12", "NodeCraft.exe", "--wait-for", "7", "--control", "a.ncraft"]
+        args(&command(&helper, Some(project), true, &read, &write, "7")),
+        [
+            "--finish-update",
+            "u.msi",
+            "ab12",
+            "NodeCraft.exe",
+            "--wait-for",
+            "7",
+            "--control",
+            "--root",
+            "/working files",
+            "--read-root",
+            "/reference materials",
+            "--read-root",
+            "/sources",
+            "a.ncraft"
+        ]
     );
+    assert_eq!(
+        args(&installed_command(Path::new("NodeCraft.exe"), Some(project), true, &read, &write)),
+        ["--control", "--root", "/working files", "--read-root", "/reference materials", "--read-root", "/sources", "a.ncraft"]
+    );
+    assert_eq!(args(&installed_command(Path::new("NodeCraft.exe"), None, false, &read, &write)), Vec::<String>::new());
+    assert_eq!(args(&command(&helper, None, false, &read, &write, "7")), ["--finish-update", "u.msi", "ab12", "NodeCraft.exe", "--wait-for", "7"]);
+}
+
+#[test]
+fn windows_second_hop_drops_vanished_grant_but_forwards_valid_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let granted = dir.path().join("granted");
+    let read_only = dir.path().join("reference materials");
+    std::fs::create_dir(&granted).unwrap();
+    std::fs::create_dir(&read_only).unwrap();
+    // Startup and the first hop have already captured these canonical folders.
+    let write = vec![std::fs::canonicalize(&granted).unwrap()];
+    let read = vec![std::fs::canonicalize(&read_only).unwrap()];
+    let args = |command: std::process::Command| command.get_args().map(|arg| arg.to_os_string()).collect::<Vec<_>>();
+    let project = Path::new("open.ncraft");
+    let valid = args(second_hop_command(Path::new("NodeCraft.exe"), Some(project), true, &read, &write));
+    assert_eq!(
+        valid,
+        [
+            std::ffi::OsString::from("--control"),
+            "--root".into(),
+            write[0].as_os_str().into(),
+            "--read-root".into(),
+            read[0].as_os_str().into(),
+            "open.ncraft".into()
+        ]
+    );
+
+    std::fs::remove_dir(&granted).unwrap();
+    assert_eq!(
+        args(second_hop_command(Path::new("NodeCraft.exe"), Some(project), true, &read, &write)),
+        ["open.ncraft"],
+        "a grant removed while the MSI runs must not reach the installed copy"
+    );
+}
+
+#[test]
+fn windows_second_hop_drops_redirected_grant_but_forwards_valid_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let granted = dir.path().join("granted");
+    let substitute = dir.path().join("substitute");
+    std::fs::create_dir(&granted).unwrap();
+    std::fs::create_dir(&substitute).unwrap();
+    let write = vec![std::fs::canonicalize(&granted).unwrap()];
+    let args = |command: std::process::Command| command.get_args().map(|arg| arg.to_os_string()).collect::<Vec<_>>();
+    assert_eq!(
+        args(second_hop_command(Path::new("NodeCraft.exe"), None, true, &[], &write)),
+        [std::ffi::OsString::from("--control"), "--root".into(), write[0].as_os_str().into()],
+        "a still-valid grant must be forwarded unchanged"
+    );
+    std::fs::remove_dir(&granted).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&substitute, &granted).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&substitute, &granted).unwrap();
+    assert_eq!(
+        args(second_hop_command(Path::new("NodeCraft.exe"), None, true, &[], &write)),
+        Vec::<std::ffi::OsString>::new(),
+        "a substituted link must not reach the installed copy, even as the original path"
+    );
+}
+
+#[test]
+fn relaunch_refuses_a_missing_or_redirected_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let granted = dir.path().join("granted");
+    let other = dir.path().join("other");
+    std::fs::create_dir(&granted).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    // macOS tempdirs may live under a symlinked /var; startup stores canonical paths.
+    let granted = std::fs::canonicalize(granted).unwrap();
+    let write = vec![granted.clone()];
+    assert!(check_relaunch_roots(&[], &write).is_ok());
+    std::fs::remove_dir(&granted).unwrap();
+    assert!(check_relaunch_roots(&[], &write).unwrap_err().message.contains("restart NodeCraft manually"));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&other, &granted).unwrap();
+        assert!(check_relaunch_roots(&[], &write).is_err(), "a changed link must not grant its new destination");
+    }
 }
 
 #[test]

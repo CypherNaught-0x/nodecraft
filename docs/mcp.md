@@ -51,8 +51,7 @@ any folders the file commands are refused with `unsupported`, saying how to allo
 `file.save` is refused when the open project lives outside the save folders. `file.open` refuses
 `discard_dirty: true`: an agent can't throw away unsaved work, so it saves first. No dialog
 opens, whatever window has focus. The folders apply to control clients only; the app's own
-menus and shortcuts are unaffected. They aren't yet kept when the app relaunches after an update
-(#887).
+menus and shortcuts are unaffected.
 
 Limits: the check happens when the command arrives. A program that can change the folders
 themselves (swap a folder for a link between the check and the write) isn't guarded against.
