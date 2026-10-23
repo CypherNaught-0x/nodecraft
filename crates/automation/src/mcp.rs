@@ -95,6 +95,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "history.delete",
     "history.clear",
     "history.extract",
+    "export.status",
     "canvas.fit_all",
     "canvas.fit_selection",
     "canvas.minimap_toggle",
@@ -253,6 +254,7 @@ pub const HUMAN_ONLY: &[&str] = &[
     "keys.remove",
     // Writing files on this machine is the person's call, as saving the project is (#557).
     "history.export",
+    "export.cancel",
     "timeline.export_interchange",
     "file.open",
     "file.save",

@@ -108,6 +108,7 @@ pub enum Phase {
 
 pub struct Context<'a> {
     pub(crate) assets: &'a nodecraft_format::AssetStore,
+    pub(crate) exports: &'a crate::export_job::Exports,
     pub(crate) routing: &'a crate::provider_routing::RoutingAuthority,
     pub(crate) execution: &'a crate::execution_identity::ExecutionSource,
     pub document: &'a Project,
@@ -157,6 +158,9 @@ pub enum Effect {
     },
     /// Ask the background save or open to stop (`file.cancel`); never waits for it.
     CancelFile,
+    CancelExport {
+        id: u64,
+    },
     Save {
         location: Option<nodecraft_format::StorageLocation>,
         /// Write on the host's save runner, when it has one, instead of inline.
@@ -185,6 +189,7 @@ pub enum Effect {
         what: crate::export::Exported,
         path: std::path::PathBuf,
         overwrite: bool,
+        background: bool,
     },
     /// Start, stop or clear the session's performance recorder (`perf_cmds`).
     Perf {

@@ -183,6 +183,7 @@ pub struct Session {
     assets: AssetStore,
     persistence: Option<crate::persistence::Persistence>,
     save_runner: Option<Arc<dyn crate::save_runner::SaveRunner>>,
+    exports: crate::export_job::Exports,
     /// A background save or open still running: what to finish once it has.
     pending: Option<PendingFile>,
     /// The outcome of a background save that an edit waited for, until the host polls it.
@@ -243,6 +244,7 @@ impl Session {
             assets: AssetStore::default(),
             persistence: None,
             save_runner: None,
+            exports: Default::default(),
             pending: None,
             settled: None,
             status_revision: 0,
@@ -426,6 +428,14 @@ impl Session {
     /// #367).
     pub fn set_save_runner(&mut self, runner: Arc<dyn crate::save_runner::SaveRunner>) {
         self.save_runner = Some(runner);
+    }
+    /// Installs a host executor for read-only exports; exports never lend project storage or
+    /// make subsequent document edits wait. A rejected job is never run inline.
+    pub fn set_export_runner(&mut self, runner: Arc<dyn crate::save_runner::SaveRunner>) {
+        self.exports.set_runner(runner);
+    }
+    pub fn export_status(&self) -> Option<crate::export_job::ExportStatus> {
+        self.exports.status()
     }
     /// The latest background save's or open's outcome once it has finished, the same value
     /// `file.save` or `file.open` returns inline; `None` while it is still running or when
@@ -745,6 +755,7 @@ impl Session {
     pub(crate) fn context(&self, phase: Phase) -> Context<'_> {
         Context {
             assets: &self.assets,
+            exports: &self.exports,
             routing: &self.routing,
             document: &self.document,
             revision: self.revision,
@@ -772,9 +783,13 @@ impl Session {
             // Handlers describe effects without I/O. Preview custom edits through the same
             // admission boundary as dispatch; services and file I/O are never invoked here.
             match (spec.run)(&context, params)? {
-                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile | Effect::Elements { .. } => {
-                    Ok(())
-                }
+                Effect::None { .. }
+                | Effect::Perf { .. }
+                | Effect::Service { .. }
+                | Effect::Export { .. }
+                | Effect::CancelFile
+                | Effect::CancelExport { .. }
+                | Effect::Elements { .. } => Ok(()),
                 // Dispatch refuses everything else until the open settles.
                 _ if matches!(self.pending, Some(PendingFile::Open(_))) => Err(opening()),
                 effect @ (Effect::Edit { .. } | Effect::Undo | Effect::Redo) => self.prepare(effect).map(|_| ()),
@@ -800,7 +815,13 @@ impl Session {
         if matches!(self.pending, Some(PendingFile::Open(_)))
             && !matches!(
                 effect,
-                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile | Effect::Elements { .. }
+                Effect::None { .. }
+                    | Effect::Perf { .. }
+                    | Effect::Service { .. }
+                    | Effect::Export { .. }
+                    | Effect::CancelFile
+                    | Effect::CancelExport { .. }
+                    | Effect::Elements { .. }
             )
         {
             return Err(opening());
@@ -923,7 +944,13 @@ impl Session {
             Effect::PreparedRun { prepared } => !prepared.reuses(),
             effect => matches!(
                 effect,
-                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile | Effect::Elements { .. }
+                Effect::None { .. }
+                    | Effect::Perf { .. }
+                    | Effect::Service { .. }
+                    | Effect::Export { .. }
+                    | Effect::CancelFile
+                    | Effect::CancelExport { .. }
+                    | Effect::Elements { .. }
             ),
         };
         // A run would start on the project being replaced, so only pure reads, and the Elements
@@ -931,7 +958,13 @@ impl Session {
         if matches!(self.pending, Some(PendingFile::Open(_)))
             && !matches!(
                 effect,
-                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile | Effect::Elements { .. }
+                Effect::None { .. }
+                    | Effect::Perf { .. }
+                    | Effect::Service { .. }
+                    | Effect::Export { .. }
+                    | Effect::CancelFile
+                    | Effect::CancelExport { .. }
+                    | Effect::Elements { .. }
             )
         {
             return Err(opening());
@@ -985,7 +1018,15 @@ impl Session {
                 }
                 return Ok(crate::perf_cmds::applied(action, self.perf.enabled()));
             }
-            Effect::Export { what, path, overwrite } => {
+            Effect::CancelExport { id } => {
+                self.exports.cancel(id)?;
+                return Ok(serde_json::json!({"cancelling":true}));
+            }
+            Effect::Export { what, path, overwrite, background } => {
+                if background {
+                    let id = self.exports.start(&self.assets, what, path, overwrite)?;
+                    return Ok(serde_json::json!({"pending":id}));
+                }
                 let bytes = guard(|| crate::export::write(&self.assets, &what, &path, overwrite))?;
                 return Ok(serde_json::json!({"bytes": bytes}));
             }
@@ -1252,6 +1293,7 @@ impl Session {
             | Effect::Save { .. }
             | Effect::Perf { .. }
             | Effect::CancelFile
+            | Effect::CancelExport { .. }
             | Effect::Elements { .. }
             | Effect::Place { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));
