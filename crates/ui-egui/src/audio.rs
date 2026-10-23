@@ -52,6 +52,10 @@ pub enum AudioIntent {
     Toggle,
     /// Go to this time (microseconds), playing on from there if playing.
     Seek(u64),
+    /// Move the playhead during a drag, without decoding intermediate positions.
+    PreviewSeek(u64),
+    /// Commit the drag's latest playhead position, even if the pointer left the window.
+    FinishSeek,
 }
 
 /// Shown when no tools are set.
@@ -104,14 +108,16 @@ mod web {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod output;
+#[cfg(not(target_arch = "wasm32"))]
+mod playback;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use super::output::{Output, us};
+    use super::playback::Feeder;
     use super::{AudioIntent, AudioView, BUCKETS, UNCONFIGURED};
     use crate::video::{Retry, stale};
     use nodecraft_format::{PreviewAssetRead, PreviewReadError, asset_source::TransferCancel};
-    use nodecraft_media::video::{AudioAsset, PcmChunk, ServiceConfig, ToolPaths, VideoError, VideoJob, VideoLimits, VideoOpening, VideoService, Waveform};
+    use nodecraft_media::video::{AudioAsset, ServiceConfig, ToolPaths, VideoError, VideoJob, VideoLimits, VideoOpening, VideoService, Waveform};
     use nodecraft_types::{AssetRef, Blake3, NodeId};
     use std::{
         collections::HashMap,
@@ -129,12 +135,6 @@ mod native {
     const MAX_STAGED_BYTES: u64 = 512 * 1024 * 1024;
     /// Waveforms kept; the least recently shown go first past this.
     const MAX_WAVES: usize = 64;
-    /// How much sound one request decodes.
-    const CHUNK_US: u64 = 2_000_000;
-    /// How many frames short of [`CHUNK_US`] a chunk may come back and not be the end.
-    const SHORT_FRAMES: u64 = 64;
-    /// Asks for more once less than this is waiting to be played.
-    const LOW_US: u64 = 3_000_000;
     const POLL: std::time::Duration = std::time::Duration::from_millis(30);
     const LATER: std::time::Duration = std::time::Duration::from_secs(1);
     /// A sound that failed is read again once it's been off screen this many frames.
@@ -143,7 +143,7 @@ mod native {
     enum Service {
         Off,
         Opening(VideoOpening),
-        Ready(VideoService),
+        Ready(Arc<VideoService>),
         Failed(&'static str),
     }
 
@@ -187,26 +187,12 @@ mod native {
         position_us: u64,
         seen: u64,
         notice: Option<&'static str>,
+        duration_us: Option<u64>,
     }
 
     /// The one card playing.
     struct Playback {
         node: NodeId,
-        output: Output,
-        /// Where the sound the output plays from starts.
-        start_us: u64,
-        /// Where the next request starts.
-        next_us: u64,
-        job: Option<VideoJob<PcmChunk>>,
-        retry: Option<Retry>,
-        /// Decoding reached the end: once what's buffered has played, it stops.
-        ended: bool,
-    }
-
-    impl Playback {
-        fn position_us(&self, duration_us: u64) -> u64 {
-            self.start_us.saturating_add(us(self.output.played())).min(duration_us)
-        }
     }
 
     #[derive(Default)]
@@ -223,6 +209,7 @@ mod native {
         waves: HashMap<Blake3, WaveEntry>,
         players: HashMap<NodeId, Player>,
         playback: Option<Playback>,
+        feeder: Option<Feeder>,
         clock: u64,
         now: f64,
     }
@@ -236,13 +223,14 @@ mod native {
                 waves: HashMap::new(),
                 players: HashMap::new(),
                 playback: None,
+                feeder: None,
                 clock: 0,
                 now: 0.0,
             }
         }
     }
 
-    fn message(error: VideoError) -> &'static str {
+    pub(super) fn message(error: VideoError) -> &'static str {
         match error {
             VideoError::Unsupported | VideoError::InvalidMetadata => "This sound's format isn't supported",
             VideoError::Limit => "This sound is too large to play here",
@@ -267,7 +255,11 @@ mod native {
         pub fn configure(&mut self, tools: Option<(&std::path::Path, &std::path::Path)>) {
             let tools = tools.map(|(a, b)| (a.to_path_buf(), b.to_path_buf()));
             if tools != self.tools {
-                *self = Self { tools, ..Self::default() };
+                let feeder = self.feeder.take();
+                if let Some(feeder) = &feeder {
+                    feeder.stop();
+                }
+                *self = Self { tools, feeder, ..Self::default() };
             }
         }
 
@@ -278,7 +270,7 @@ mod native {
             }
         }
 
-        /// Takes finished work and keeps the playing card fed; call once per frame.
+        /// Takes finished source/waveform work and reads playback progress; call once per frame.
         pub fn poll(&mut self, ctx: &egui::Context) {
             self.clock = self.clock.wrapping_add(1);
             self.now = ctx.input(|i| i.time);
@@ -286,7 +278,7 @@ mod native {
             if let Service::Opening(opening) = &mut self.service {
                 let failed = match opening.try_result() {
                     Ok(Some(service)) => {
-                        self.service = Service::Ready(service);
+                        self.service = Service::Ready(Arc::new(service));
                         None
                     }
                     Ok(None) => {
@@ -305,6 +297,11 @@ mod native {
             }
             self.poll_sources(&mut wake);
             self.poll_waves(&mut wake);
+            if !ctx.input(|input| input.pointer.any_down())
+                && let Some(feeder) = &self.feeder
+            {
+                feeder.finish_seek();
+            }
             self.poll_playback(&mut wake);
             if wake.soon {
                 ctx.request_repaint_after(POLL);
@@ -405,86 +402,24 @@ mod native {
         }
 
         fn poll_playback(&mut self, wake: &mut Wake) {
-            let Some(mut playback) = self.playback.take() else {
-                return;
-            };
-            let now = self.now;
-            let hash = self.players.get(&playback.node).map(|p| p.hash);
-            let Some((asset, hash)) = hash.and_then(|hash| Some((self.asset(hash)?.clone(), hash))) else {
-                // The card or its sound went away.
-                return;
-            };
-            let duration = asset.metadata().duration_us;
-            let stop = |players: &mut HashMap<NodeId, Player>, playback: &Playback, at: u64, notice: Option<&'static str>| {
-                if let Some(player) = players.get_mut(&playback.node).filter(|p| p.hash == hash) {
-                    player.position_us = at;
-                    player.notice = notice;
-                }
-            };
-            if playback.output.failed() {
-                let at = playback.position_us(duration);
-                stop(&mut self.players, &playback, at, Some("The sound device stopped; press play to try again"));
-                return;
+            let Some(playback) = &self.playback else { return };
+            let Some(status) = self.feeder.as_ref().and_then(Feeder::status) else { return };
+            if let Some(player) = self.players.get_mut(&playback.node) {
+                player.position_us = status.position_us;
+                player.duration_us = Some(status.duration_us);
+                player.notice = status.notice;
             }
-            if let Some(job) = &mut playback.job {
-                match job.try_result() {
-                    Ok(Some(chunk)) => {
-                        playback.job = None;
-                        playback.retry = None;
-                        let frames = u64::try_from(chunk.frames()).unwrap_or(u64::MAX);
-                        // A chunk a few frames short of its length isn't the end: resampling
-                        // rounds. One that comes back empty is.
-                        let full = frames > 0 && us(frames.saturating_add(SHORT_FRAMES)) >= CHUNK_US;
-                        playback.output.push(chunk.samples());
-                        playback.next_us = playback.next_us.saturating_add(us(frames));
-                        if !full || playback.next_us >= duration {
-                            playback.ended = true;
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        playback.job = None;
-                        playback.retry = Retry::after(playback.retry, error, now);
-                        if playback.retry.is_none() {
-                            let at = playback.position_us(duration);
-                            stop(&mut self.players, &playback, at, Some(message(error)));
-                            return;
-                        }
-                    }
+            if status.playing {
+                wake.soon = true;
+            } else {
+                self.playback = None;
+                if let Some(feeder) = &self.feeder {
+                    feeder.stop();
                 }
             }
-            let buffered = us(playback.output.buffered());
-            if playback.ended && buffered == 0 {
-                // Played to the end: it stops there, and plays from the start next time.
-                stop(&mut self.players, &playback, duration, None);
-                return;
-            }
-            if playback.job.is_none() && !playback.ended && buffered < LOW_US && playback.retry.is_none_or(|r| r.due(now)) {
-                let service = match &self.service {
-                    Service::Ready(service) => Some(service),
-                    _ => None,
-                };
-                if let Some(service) = service {
-                    match service.pcm(&asset, playback.next_us, CHUNK_US) {
-                        Ok(job) => playback.job = Some(job),
-                        Err(VideoError::Busy) => {}
-                        Err(error) => {
-                            playback.retry = Retry::after(playback.retry, error, now);
-                            if playback.retry.is_none() {
-                                let at = playback.position_us(duration);
-                                stop(&mut self.players, &playback, at, Some(message(error)));
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-            wake.soon = true;
-            self.playback = Some(playback);
         }
 
-        /// What node `id`'s card shows for `asset`. `read` captures the asset for reading, and
-        /// is only called when the sound is first needed.
+        /// The waveform and latest worker progress; requesting it never opens a device.
         pub fn view(
             &mut self,
             ctx: &egui::Context,
@@ -497,25 +432,29 @@ mod native {
             }
             let hash = asset.hash;
             let clock = self.clock;
-            let player = self.players.entry(id).or_insert_with(|| Player { hash, position_us: 0, seen: clock, notice: None });
+            let player = self.players.entry(id).or_insert_with(|| Player { hash, position_us: 0, seen: clock, notice: None, duration_us: None });
             if player.hash != hash {
                 // The card has another sound now (a new result): start again.
-                *player = Player { hash, position_us: 0, seen: clock, notice: None };
+                *player = Player { hash, position_us: 0, seen: clock, notice: None, duration_us: None };
                 if self.playback.as_ref().is_some_and(|p| p.node == id) {
                     self.playback = None;
+                    if let Some(feeder) = &self.feeder {
+                        feeder.stop();
+                    }
                 }
             }
             player.seen = clock;
-            let (paused_at, notice) = (player.position_us, player.notice);
+            let (paused_at, notice, observed_duration) = (player.position_us, player.notice, player.duration_us);
             let sound = match self.source(ctx, hash, read) {
                 Ok(sound) => sound,
                 Err(view) => return view,
             };
-            let duration_us = sound.metadata().duration_us;
             let peaks = self.wave(hash, &sound);
-            let playing = self.playback.as_ref().filter(|p| p.node == id);
-            let position_us = playing.map_or(paused_at, |p| p.position_us(duration_us));
-            AudioView::Sound { peaks, position_us, duration_us, playing: playing.is_some(), notice }
+            let status = self.playback.as_ref().filter(|p| p.node == id).and_then(|_| self.feeder.as_ref()?.status());
+            let position_us = status.map_or(paused_at, |status| status.position_us);
+            let duration_us = status.map_or_else(|| observed_duration.unwrap_or(sound.metadata().duration_us), |status| status.duration_us);
+            let notice = status.and_then(|status| status.notice).or(notice);
+            AudioView::Sound { peaks, position_us, duration_us, playing: status.is_some_and(|status| status.playing), notice }
         }
 
         /// Starts the service the first time a sound is wanted; what to show while it can't.
@@ -617,56 +556,75 @@ mod native {
 
         /// Plays, pauses or seeks node `id`'s sound.
         pub fn act(&mut self, ctx: &egui::Context, id: NodeId, intent: AudioIntent) {
-            let Some(hash) = self.players.get(&id).map(|p| p.hash) else {
-                return;
-            };
-            let Some(duration) = self.asset(hash).map(|a| a.metadata().duration_us) else {
-                return;
-            };
-            let playing = self.playback.as_ref().filter(|p| p.node == id).map(|p| p.position_us(duration));
-            let Some(player) = self.players.get_mut(&id) else {
-                return;
-            };
+            let Some(hash) = self.players.get(&id).map(|player| player.hash) else { return };
+            let Some(asset) = self.asset(hash).cloned() else { return };
+            let duration = self.players.get(&id).and_then(|player| player.duration_us).unwrap_or(asset.metadata().duration_us);
+            let playing = self.playback.as_ref().filter(|p| p.node == id).and_then(|_| self.feeder.as_ref()?.status()).filter(|status| status.playing);
             match (intent, playing) {
-                (AudioIntent::Toggle, Some(at)) => {
-                    player.position_us = at;
-                    self.playback = None;
+                (AudioIntent::Toggle, Some(status)) => {
+                    if let Some(player) = self.players.get_mut(&id) {
+                        player.position_us = status.position_us;
+                    }
+                    self.stop();
                 }
                 (AudioIntent::Toggle, None) => {
-                    if player.position_us >= duration {
-                        player.position_us = 0;
-                    }
-                    player.notice = None;
-                    let from = player.position_us;
-                    // Opening the device takes a moment; the card playing before stops first.
                     if let Some(previous) = self.playback.take() {
-                        let duration = self.players.get(&previous.node).and_then(|p| self.asset(p.hash)).map_or(0, |a| a.metadata().duration_us);
-                        let at = previous.position_us(duration);
-                        if let Some(other) = self.players.get_mut(&previous.node) {
-                            other.position_us = at;
+                        let status = self.feeder.as_ref().and_then(Feeder::status);
+                        if let (Some(other), Some(status)) = (self.players.get_mut(&previous.node), status) {
+                            other.position_us = status.position_us;
+                            other.duration_us = Some(status.duration_us);
                         }
                     }
-                    match Output::open() {
-                        Ok(output) => {
-                            self.playback = Some(Playback { node: id, output, start_us: from, next_us: from, job: None, retry: None, ended: false });
+                    let from = match self.players.get_mut(&id) {
+                        Some(player) => {
+                            if player.position_us >= duration {
+                                player.position_us = 0;
+                            }
+                            player.notice = None;
+                            player.position_us
                         }
+                        None => return,
+                    };
+                    let result = (|| {
+                        if self.feeder.is_none() {
+                            self.feeder = Some(Feeder::new()?);
+                        }
+                        let Service::Ready(service) = &self.service else { return Err("This sound is not ready to play") };
+                        let Some(feeder) = &self.feeder else { return Err("Can't start sound playback") };
+                        feeder.play(Arc::clone(service), asset, from, duration)
+                    })();
+                    match result {
+                        Ok(()) => self.playback = Some(Playback { node: id }),
                         Err(why) => {
+                            if let Some(feeder) = &self.feeder {
+                                feeder.stop();
+                            }
                             if let Some(player) = self.players.get_mut(&id) {
                                 player.notice = Some(why);
                             }
                         }
                     }
                 }
-                (AudioIntent::Seek(us), _) => {
+                (AudioIntent::Seek(us) | AudioIntent::PreviewSeek(us), _) => {
                     let us = us.min(duration);
-                    player.position_us = us;
-                    if let Some(playback) = self.playback.as_mut().filter(|p| p.node == id) {
-                        playback.output.reset();
-                        playback.job = None;
-                        playback.retry = None;
-                        playback.ended = false;
-                        playback.start_us = us;
-                        playback.next_us = us;
+                    if let Some(player) = self.players.get_mut(&id) {
+                        player.position_us = us;
+                    }
+                    if self.playback.as_ref().is_some_and(|playback| playback.node == id)
+                        && let Some(feeder) = &self.feeder
+                    {
+                        if matches!(intent, AudioIntent::PreviewSeek(_)) {
+                            feeder.scrub(us);
+                        } else {
+                            feeder.seek(us);
+                        }
+                    }
+                }
+                (AudioIntent::FinishSeek, _) => {
+                    if self.playback.as_ref().is_some_and(|playback| playback.node == id)
+                        && let Some(feeder) = &self.feeder
+                    {
+                        feeder.finish_seek();
                     }
                 }
             }
@@ -677,13 +635,16 @@ mod native {
         pub fn retain(&mut self, keep: impl Fn(NodeId) -> bool) {
             self.players.retain(|id, _| keep(*id));
             if self.playback.as_ref().is_some_and(|p| !keep(p.node)) {
-                self.playback = None;
+                self.stop();
             }
         }
 
         /// Stops whatever plays, releasing the sound device.
         pub fn stop(&mut self) {
             self.playback = None;
+            if let Some(feeder) = &self.feeder {
+                feeder.stop();
+            }
         }
 
         #[cfg(test)]

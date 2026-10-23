@@ -51,7 +51,9 @@ impl Context {
     }
 
     fn pcm(&mut self, asset: &AudioAsset, start_us: u64, length_us: u64, frames: usize, cancel: &Arc<AtomicBool>, deadline: Instant) -> Result<PcmChunk> {
-        if start_us >= asset.metadata.duration_us {
+        // A VBR container's reported duration can be an underestimate. Probe decoded EOF,
+        // within the same one-hour bound as accepted sound metadata, instead of truncating it.
+        if start_us >= MAX_AUDIO_DURATION_US {
             return Ok(PcmChunk::new(start_us, Arc::from(Vec::new())));
         }
         self.can_decode(asset, cancel, deadline)?;
