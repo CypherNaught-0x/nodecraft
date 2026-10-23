@@ -561,6 +561,7 @@ fn template(id: &str) -> (Session, Value) {
         "share.stop" | "share.status" => json!({}),
         "node.shader_set" => json!({"canvas":canvas(),"id":node_id(1),"source":"fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color; }"}),
         "node.cache_set" => json!({"canvas":canvas(),"id":node_id(1),"enabled":true}),
+        "node.variations_set" => json!({"canvas":canvas(),"id":node_id(1),"count":3}),
         "node.mask_set" => json!({"canvas":canvas(),"id":node_id(1),"strokes":[{"size":0.1,"hardness":0.5,"points":[[0.5,0.5]]}]}),
         "mask.create" => json!({"canvas":canvas(),"from":{"node":node_id(1),"port":"out"},"expand":node_id(7),"mask":node_id(8),
             "edges":[nodecraft_types::EdgeId::from_bytes([0x77; 16]),nodecraft_types::EdgeId::from_bytes([0x78; 16])],"pos":{"x":1,"y":2}}),

@@ -63,6 +63,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   are layer stacks whose source layers show what their card shows now, and `deck.*` commands
   list and edit them with revision checks (#122). Edit slides opens a slide sorter beside the
   Layer Editor's stage, to arrange each slide's text, shapes and sources (#694).
+  A generation card's `− N× +` counter makes up to 20 variations a run, each its own request
+  (quoted as such) and its own result in the node's history (#81).
   The viewer's Photo and Views buttons add a 3D photo or a
   4/8/16-view sheet card that draws the model from the current view as an image (#112). Each capture
   owns its device, and closing cancels and drains captures from live recompute and explicit runs
@@ -142,7 +144,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   The Timeline (#109) renders clips with fades and cross-fades on a main track, with picture
   tracks over it and sound tracks mixed under it (#576), and captions over the picture (#574);
   each picture clip can be placed, sized, cropped, turned and faded in the frame, clips can play
-  faster or slower, and the render has a quality (#577).
+  faster or slower, and the render has a quality (#577). Its filter graph is staged in a script
+  and input paths stay short, keeping full timelines within Windows' command limit (#642).
 - **Live sharing works from the desktop app.** Sessions are shared through `nodecraft-cli relay`
   (#119), with every edit merged and images passed along. Share links let someone view, comment
   on or edit a shared project, with signed discussions and expiry and revocation (`share.link_*`,
@@ -238,3 +241,6 @@ The near-term order follows the remaining open issues, not an already-finished w
   work. The M2 close-out (#373) refreshed README, ROADMAP and `docs/plan.md`. M6 gained the
   Elements library (#552) and the Image tools menu (#103); providers gained Veo 3.1 on Google
   Cloud (#742) and Google TTS (#21).
+- **2026-10-23** — rendered videos and extracted sound share a per-run staging budget (#584):
+  1 GiB and 4,096 results, including read-backs in flight. Failure and cancellation return their
+  reservations; chained actions retain access to earlier completed outputs.

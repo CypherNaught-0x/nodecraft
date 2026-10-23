@@ -4,6 +4,9 @@
 use crate::provider::{BoxFuture, MaybeSendSync};
 use crate::{ErrorKind, ProviderError};
 
+mod public_only;
+pub use public_only::public_address;
+
 /// The User-Agent every request carries: generic, nothing about the user or machine.
 pub const USER_AGENT: &str = concat!("NodeCraft/", env!("CARGO_PKG_VERSION"));
 
@@ -284,6 +287,9 @@ mod reqwest_impl {
     #[derive(Debug, Clone)]
     pub struct ReqwestHttp {
         client: reqwest::Client,
+        /// Built by [`Self::public_only`]: a URL naming a non-public address is refused too,
+        /// since the resolver never sees an address literal.
+        public_only: bool,
     }
 
     impl ReqwestHttp {
@@ -292,7 +298,22 @@ mod reqwest_impl {
             #[cfg(not(target_arch = "wasm32"))]
             let builder = builder.redirect(reqwest::redirect::Policy::none());
             let client = builder.build().map_err(|e| ProviderError::new(ErrorKind::Network, format!("HTTP client: {e}")))?;
-            Ok(Self { client })
+            Ok(Self { client, public_only: false })
+        }
+
+        /// A transport for requests a package shapes (#174): no redirects, no proxy (a proxy
+        /// would resolve names itself), and names resolved only to public addresses
+        /// ([`public_address`]). Native only; the browser resolves names itself.
+        #[cfg(not(target_arch = "wasm32"))]
+        pub fn public_only() -> Result<Self, ProviderError> {
+            let client = reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .dns_resolver(super::public_only::PublicOnly)
+                .build()
+                .map_err(|e| ProviderError::new(ErrorKind::Network, format!("HTTP client: {e}")))?;
+            Ok(Self { client, public_only: true })
         }
 
         /// Sends the request (following redirects on native) and returns the final response with
@@ -321,6 +342,17 @@ mod reqwest_impl {
         }
 
         async fn send_once(&self, request: &HttpRequest, context: Option<&crate::RequestContext>) -> Result<reqwest::Response, ProviderError> {
+            if self.public_only {
+                let host = url::Url::parse(&request.url).ok().and_then(|u| u.host().map(|h| h.to_owned()));
+                let literal = match host {
+                    Some(url::Host::Ipv4(ip)) => Some(std::net::IpAddr::V4(ip)),
+                    Some(url::Host::Ipv6(ip)) => Some(std::net::IpAddr::V6(ip)),
+                    _ => None,
+                };
+                if literal.is_some_and(|ip| !super::public_address(ip)) {
+                    return Err(ProviderError::new(ErrorKind::Network, "refused to connect to a private or local address"));
+                }
+            }
             let method = match request.method {
                 HttpMethod::Get => reqwest::Method::GET,
                 HttpMethod::Head => reqwest::Method::HEAD,

@@ -75,6 +75,9 @@ pub struct Step {
     pub jobs: Option<Vec<JobSpec>>,
     /// Set when batches fan this step out (#92); `inputs` is then empty.
     pub fanout: Option<Fanout>,
+    /// How many variations it makes (#81): 1, or more for a generation node asked for several.
+    /// Its `jobs` are then one variation's jobs repeated this many times, in variation order.
+    pub variations: usize,
 }
 
 /// A step that runs once per batch item combination (#92).
@@ -905,9 +908,29 @@ impl<'a> Graph<'a> {
             Ok(Some(jobs))
         };
         let after = after.into_iter().collect();
+        // Variations (#81) are for generation nodes on the canvas: a step inlined from a
+        // technique makes its technique node's one result.
+        let variations = match kind.descriptor().category {
+            Category::Generation if !self.inner.contains_key(&id) => crate::variations::requested(node),
+            _ => 1,
+        };
         if fanned.is_empty() {
-            let jobs = plan_jobs(&inputs)?;
-            return Ok(Step { node: id, kind: node.kind.clone(), mode, after, inputs, jobs, fanout: None });
+            // Each variation copies the step's inputs: charge the extra copies before making them.
+            state.plan_bytes = state.plan_bytes.saturating_add(bytes.saturating_mul(variations.saturating_sub(1)));
+            if state.plan_bytes > MAX_PLAN_INPUT_BYTES {
+                return Err(vec![blocker(None, None, Reason::Invalid("the inputs of this run are too large to plan at once".into()))]);
+            }
+            let jobs = plan_jobs(&inputs)?.map(|jobs| crate::variations::repeat(jobs, variations));
+            // A single result's own job count is the run's to refuse (`MAX_STEP_JOBS`), as without variations.
+            if variations > 1 && jobs.as_ref().is_some_and(|jobs| jobs.len() > crate::run::MAX_STEP_JOBS) {
+                let reason = format!("its variations would run more than {} jobs", crate::run::MAX_STEP_JOBS);
+                return Err(vec![blocker(None, None, Reason::Invalid(reason))]);
+            }
+            return Ok(Step { node: id, kind: node.kind.clone(), mode, after, inputs, jobs, fanout: None, variations });
+        }
+        if variations > 1 {
+            let reason = "it makes one result per batch item: set its variations to 1 to run it over a list";
+            return Err(vec![blocker(None, None, Reason::Invalid(reason.into()))]);
         }
         let invalid = |message: String| vec![blocker(None, None, Reason::PublicInvalid(message))];
         let relations: Vec<&[ItemTag]> = fanned.iter().map(|f| f.tags.as_slice()).collect();
@@ -964,7 +987,16 @@ impl<'a> Graph<'a> {
                 }
             }
         }
-        Ok(Step { node: id, kind: node.kind.clone(), mode, after, inputs: Vec::new(), jobs, fanout: Some(Fanout { items, cells, jobs: counts, resume: None }) })
+        Ok(Step {
+            node: id,
+            kind: node.kind.clone(),
+            mode,
+            after,
+            inputs: Vec::new(),
+            jobs,
+            fanout: Some(Fanout { items, cells, jobs: counts, resume: None }),
+            variations: 1,
+        })
     }
 
     /// Where one output of a technique node comes from: the inlined node's step in this run, or

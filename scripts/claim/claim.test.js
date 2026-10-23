@@ -128,12 +128,44 @@ test('a claim with a recent PR is not taken over', async () => {
   assert.equal(find(calls, 'addAssignees'), undefined);
 });
 
-test('a maintainer\'s claim is never taken over', async () => {
-  const { github, calls } = fake({ timeline: [labeled(ago(500 * H))], perms: { carol: 'write' } });
-  await claim.handleComment({ github, context: ctx('/claim', { assignees: ['carol'], labels: ['in progress'] }), now: NOW });
-  assert.equal(find(calls, 'addAssignees'), undefined);
-  assert.equal(find(calls, 'react')[1].content, 'eyes');
-});
+for (const holder of ['nodecraft-owner', 'carol']) {
+  for (const idlePR of [false, true]) {
+    test(`an expired ${holder} claim ${idlePR ? 'with an idle PR' : 'without a PR'} can be taken over`, async () => {
+      const world = {
+        timeline: [labeled(ago(500 * H)), ...(idlePR ? [pr(9, holder)] : [])],
+        pushed: ago(15 * 24 * H),
+        perms: { carol: 'write' },
+      };
+      const { github, calls } = fake(world);
+      await claim.handleComment({
+        github,
+        context: ctx('/claim', { assignees: [holder], labels: ['in progress', 'difficulty:medium'] }),
+        now: NOW,
+      });
+      assert.deepEqual(find(calls, 'removeAssignees')[1].assignees, [holder]);
+      assert.deepEqual(find(calls, 'addAssignees')[1].assignees, ['alice']);
+      assert.deepEqual(names(calls).filter((name) => ['removeLabel', 'addLabels'].includes(name)),
+        ['removeLabel', 'addLabels']);
+
+      // GitHub emits a new labeled event only after removal and re-addition.
+      world.timeline.push(labeled(new Date(NOW).toISOString()));
+      world.issues = [issue(7, ['alice'])];
+      const beforeSweep = calls.length;
+      assert.deepEqual(await claim.sweep({ github, context: { repo }, now: NOW + 24 * H - 1 }), []);
+      assert.equal(calls.length, beforeSweep);
+      assert.deepEqual(await claim.sweep({ github, context: { repo }, now: NOW + 24 * H }), [7]);
+      assert.deepEqual(calls.filter(([name]) => name === 'removeAssignees').at(-1)[1].assignees, ['alice']);
+    });
+  }
+
+  test(`a fresh ${holder} claim is protected and reports its deadline`, async () => {
+    const { github, calls } = fake({ timeline: [labeled(ago(10 * H))], perms: { carol: 'write' } });
+    await claim.handleComment({ github, context: ctx('/claim', { assignees: [holder], labels: ['in progress'] }), now: NOW });
+    assert.equal(find(calls, 'addAssignees'), undefined);
+    assert.equal(find(calls, 'react')[1].content, 'eyes');
+    assert.match(find(calls, 'comment')[1].body, /2026-10-17 02:00 UTC/);
+  });
+}
 
 test('an unclaimed issue with someone else\'s open PR points at the PR', async () => {
   const { github, calls } = fake({ timeline: [pr(42, 'bob')] });
@@ -223,15 +255,41 @@ test('sweep ignores a closed PR', async () => {
   assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW }), [7]);
 });
 
-test('sweep never touches owner- or maintainer-claimed issues', async () => {
+test('sweep releases expired owner, maintainer and mixed-assignee claims', async () => {
   const w = fake({
     issues: [issue(1, ['nodecraft-owner']), issue(2, ['carol']), issue(3, ['bob', 'carol'])],
     timeline: [labeled(ago(900 * H))],
     perms: { carol: 'write' },
   });
-  assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW }), []);
-  assert.equal(w.calls.length, 0);
+  assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW }), [1, 2, 3]);
+  assert.deepEqual(w.calls.filter(([name]) => name === 'removeAssignees').map(([, args]) => args.assignees),
+    [['nodecraft-owner'], ['carol'], ['bob', 'carol']]);
 });
+
+for (const holder of ['nodecraft-owner', 'carol']) {
+  for (const { labelAge, pushAge, expires } of [
+    { labelAge: 24 * H - 1, expires: false },
+    { labelAge: 24 * H, expires: true },
+    { labelAge: 500 * H, pushAge: 14 * 24 * H - 1, expires: false },
+    { labelAge: 500 * H, pushAge: 14 * 24 * H, expires: true },
+  ]) {
+    test(`sweep ${expires ? 'releases' : 'keeps'} ${holder} at ${pushAge === undefined ? `claim age ${labelAge}` : `PR age ${pushAge}`}`, async () => {
+      const { github, calls } = fake({
+        issues: [issue(7, [holder])],
+        timeline: [labeled(ago(labelAge)), ...(pushAge === undefined ? [] : [pr(9, holder)])],
+        pushed: pushAge === undefined ? undefined : ago(pushAge),
+        perms: { carol: 'write' },
+      });
+      assert.deepEqual(await claim.sweep({ github, context: { repo }, now: NOW }), expires ? [7] : []);
+      if (expires) {
+        assert.deepEqual(find(calls, 'removeAssignees')[1].assignees, [holder]);
+        assert.match(find(calls, 'comment')[1].body, pushAge === undefined ? /within 24 h/ : /14 days/);
+      } else {
+        assert.deepEqual(calls, []);
+      }
+    });
+  }
+}
 
 test('sweep is idempotent: a released issue is no longer listed', async () => {
   const world = { issues: [issue(7)], timeline: [labeled(ago(80 * H))] };

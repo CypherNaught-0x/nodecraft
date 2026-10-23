@@ -383,7 +383,7 @@ impl ComposeSpec {
     /// Pictures stack in order over the main track (the last on top); every sound is mixed in.
     /// Layers take no transitions, and the output runs until the last track ends.
     pub fn with_layers(mut self, layers: Vec<(ComposeClip, u64)>) -> Result<Self> {
-        if self.clips.len().saturating_add(layers.len()) > MAX_CLIPS {
+        if self.clips.len().saturating_add(self.layers.len()).saturating_add(layers.len()) > MAX_CLIPS {
             return Err(VideoError::Invalid);
         }
         for (clip, at_us) in layers {
