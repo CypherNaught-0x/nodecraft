@@ -8,13 +8,15 @@ use serde_json::{Value, json};
 const TOKEN: &str = "ya29.fixture-token";
 
 fn png() -> Vec<u8> {
-    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
-    bytes.resize(64, 1);
-    bytes
+    sized_png(2, 2)
+}
+fn sized_png(width: u32, height: u32) -> Vec<u8> {
+    let limits = nodecraft_media::Limits { max_width: width, max_height: height, ..nodecraft_media::Limits::default() };
+    nodecraft_media::encode_png(width, height, &vec![7; width as usize * height as usize * 4], &limits).unwrap()
 }
 fn jpeg() -> Vec<u8> {
-    let mut bytes = b"\xFF\xD8\xFF\xE0".to_vec();
-    bytes.resize(48, 2);
+    let mut bytes = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new(&mut bytes).encode(&[9; 2 * 2 * 3], 2, 2, image::ExtendedColorType::Rgb8).unwrap();
     bytes
 }
 fn b64(bytes: &[u8]) -> String {
@@ -109,8 +111,10 @@ fn a_prompt_and_references_send_the_documented_body_to_the_global_endpoint() {
 fn unset_settings_are_left_to_google_and_sizeless_models_send_none() {
     let (_, r) = sent(&job(FLASH, vec![prompt("a cat")], json!({})));
     assert_eq!(body(&r)["generationConfig"], json!({"responseModalities": ["TEXT", "IMAGE"], "candidateCount": 1}));
-    let (_, r) = sent(&job(FLASH_LITE, vec![prompt("a cat")], json!({"image_size": "1K", "aspect_ratio": "1:8"})));
-    assert_eq!(body(&r)["generationConfig"]["imageConfig"], json!({"aspectRatio": "1:8"}), "Flash-Lite makes 1K only");
+    let (_, r) = sent(&job(FLASH_LITE, vec![prompt("a cat")], json!({"image_size": "1K", "aspect_ratio": "4:5"})));
+    assert_eq!(body(&r)["generationConfig"]["imageConfig"], json!({"aspectRatio": "4:5"}), "Flash-Lite makes 1K only");
+    let (_, r) = sent(&job(FLASH, vec![prompt("a cat")], json!({"aspect_ratio": "1:8"})));
+    assert_eq!(body(&r)["generationConfig"]["imageConfig"], json!({"aspectRatio": "1:8"}), "Flash alone takes the extreme ratios");
     let (_, r) = sent(&job(FLASH_2_5, vec![prompt("a cat"), media("image/png", png())], json!({"aspect_ratio": "21:9"})));
     assert!(r.url.ends_with("/models/gemini-2.5-flash-image:generateContent"));
     assert_eq!(body(&r)["generationConfig"]["imageConfig"], json!({"aspectRatio": "21:9"}));
@@ -150,6 +154,9 @@ fn a_job_outside_a_models_limits_is_refused_before_anything_is_sent() {
         (FLASH, vec![prompt("a")], json!({"image_size": 1})),
         (FLASH_LITE, vec![prompt("a")], json!({"image_size": "2K"})),
         (FLASH_2_5, vec![prompt("a")], json!({"aspect_ratio": "1:8"})),
+        (PRO, vec![prompt("a")], json!({"aspect_ratio": "8:1"})),
+        (NANO_BANANA_2_1, vec![prompt("a")], json!({"aspect_ratio": "1:4"})),
+        (FLASH_LITE, vec![prompt("a")], json!({"aspect_ratio": "4:1"})),
         (FLASH, vec![prompt("a")], json!({"aspect_ratio": "7:3"})),
         (FLASH, vec![prompt("a")], json!({"seed": 4})),
         ("imagen-4.0-generate-001", vec![prompt("a")], json!({})),
@@ -260,6 +267,8 @@ fn a_reply_that_is_not_an_image_or_too_large_is_malformed() {
         let small = GoogleGeminiImages::with_limits(&stored(), t, fixed_clock(NOW), limits).unwrap();
         block_on(small.submit(&job(FLASH, vec![prompt("a")], json!({})))).unwrap_err()
     };
+    let wide = sized(Limits::HARD, with("image/png", b64(&sized_png(20_000, 1))));
+    assert!(wide.kind == ErrorKind::Malformed && wide.message.contains("dimensions"), "{}", wide.message);
     let mut big = png();
     big.resize(900, 0);
     assert_eq!(sized(Limits { output_bytes: 512, ..Limits::HARD }, with("image/png", b64(&big))).kind, ErrorKind::Malformed, "one image too large");

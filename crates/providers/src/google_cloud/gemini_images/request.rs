@@ -5,10 +5,10 @@ use crate::JobInput;
 use base64::Engine as _;
 use serde_json::{Map, Value, json};
 
-/// The aspect ratios the Gemini 3 image models take.
-const ASPECTS: &[&str] = &["1:1", "3:2", "2:3", "3:4", "1:4", "4:1", "4:3", "4:5", "5:4", "1:8", "8:1", "9:16", "16:9", "21:9"];
-/// Gemini 2.5 Flash Image's shorter list.
-const ASPECTS_2_5: &[&str] = &["1:1", "3:2", "2:3", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
+/// The standard aspect ratios every Gemini image model takes.
+const ASPECTS: &[&str] = &["1:1", "3:2", "2:3", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
+/// Gemini 3.1 Flash Image's list, the only one with the extreme ratios.
+const ASPECTS_FLASH: &[&str] = &["1:1", "3:2", "2:3", "3:4", "1:4", "4:1", "4:3", "4:5", "5:4", "1:8", "8:1", "9:16", "16:9", "21:9"];
 
 /// What each model takes: its image sizes (none: it has no size setting) and how many references.
 struct Model {
@@ -19,9 +19,10 @@ struct Model {
 fn model(id: &str) -> Option<Model> {
     Some(match id {
         // Google also lists 512 for Flash, but `imageConfig.imageSize` documents 1K, 2K and 4K.
-        FLASH | NANO_BANANA_2_1 | PRO => Model { sizes: &["1K", "2K", "4K"], aspects: ASPECTS, references: 14 },
+        FLASH => Model { sizes: &["1K", "2K", "4K"], aspects: ASPECTS_FLASH, references: 14 },
+        NANO_BANANA_2_1 | PRO => Model { sizes: &["1K", "2K", "4K"], aspects: ASPECTS, references: 14 },
         FLASH_LITE => Model { sizes: &[], aspects: ASPECTS, references: 14 },
-        FLASH_2_5 => Model { sizes: &[], aspects: ASPECTS_2_5, references: 3 },
+        FLASH_2_5 => Model { sizes: &[], aspects: ASPECTS, references: 3 },
         _ => return None,
     })
 }

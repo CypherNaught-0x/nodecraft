@@ -5,6 +5,11 @@ use crate::{HttpResponse, Output, Usage};
 use base64::Engine as _;
 use serde::Deserialize;
 
+/// Widest or tallest image accepted back.
+const MAX_SIDE: u32 = 16_384;
+/// Most pixels in one image accepted back: a 4K image at any offered ratio is under this.
+const MAX_PIXELS: u64 = 64 * 1024 * 1024;
+
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct Generated {
@@ -182,6 +187,18 @@ pub(super) fn parse(r: &HttpResponse, l: Limits, project: &str, bearer: &str) ->
             Some(m @ ("image/png" | "image/jpeg" | "image/webp")) if m == inline.mime_type => m,
             _ => return Err(malformed("the Gemini reply's image isn't the PNG, JPEG or WebP it says it is")),
         };
+        // The header's size, within what a 4K image at the widest ratio needs, so a reply can't
+        // store an image no later decode opens.
+        let limits = nodecraft_media::Limits {
+            max_input_bytes: u64::try_from(l.output_bytes).unwrap_or(u64::MAX),
+            max_width: MAX_SIDE,
+            max_height: MAX_SIDE,
+            ..nodecraft_media::Limits::default()
+        };
+        let meta = nodecraft_media::probe_image(&bytes, &limits).map_err(|_| malformed("a Gemini image's dimensions exceed the limits"))?;
+        if meta.width == 0 || meta.height == 0 || u64::from(meta.width).saturating_mul(u64::from(meta.height)) > MAX_PIXELS {
+            return Err(malformed("a Gemini image's dimensions exceed the limits"));
+        }
         outputs.push(Output::Bytes { mime: mime.into(), bytes: Arc::from(bytes) });
     }
     if outputs.is_empty() {

@@ -376,7 +376,7 @@ Contract checked 2026-10-22: [Veo 3.1 model](https://cloud.google.com/vertex-ai/
 ## Gemini images on Google Cloud (`google-gemini-images` feature)
 
 `GoogleGeminiImages` runs Google's Gemini image models on Vertex AI (#47), signed in with the same
-`google-cloud` service-account key and tokens as Veo (see below). Imagen 4, the issue's original
+`google-cloud` service-account key and tokens as Veo (see above). Imagen 4, the issue's original
 target, is discontinued on Vertex AI, so this adapter covers the image models that replace it.
 
 - **Models:** `google-gemini-images.3.1-flash` (`gemini-3.1-flash-image`), `3-pro`
@@ -387,15 +387,16 @@ target, is discontinued on Vertex AI, so this adapter covers the image models th
 - **Modes:** text → image, and a prompt with reference images → image (`edit`): up to 14 images,
   3 on 2.5 Flash. Images are PNG, JPEG or WebP, at most 7 MB each and 48 MiB together, sent
   inline; one whose bytes don't match its type is refused before anything is sent.
-- **Options:** aspect ratio (1:1 by default; ten ratios on 2.5 Flash, fourteen on the Gemini 3
-  models) and, on 3.1 Flash, 3 Pro and Nano Banana 2.1, image size 1K (default), 2K or 4K.
+- **Options:** aspect ratio (1:1 by default; the ten standard ratios, plus 1:4, 4:1, 1:8 and 8:1
+  on 3.1 Flash, the only model documented with them) and, on 3.1 Flash, 3 Pro and Nano Banana 2.1, image size 1K (default), 2K or 4K.
   Flash-Lite makes 1K only and 2.5 Flash has one size. 3.1 Flash's 512 size isn't offered:
   Vertex AI's `imageConfig` documents only 1K, 2K and 4K.
 - **Flow:** one `POST …/locations/global/publishers/google/models/{model}:generateContent` with
   `responseModalities` TEXT and IMAGE and `candidateCount` 1. It is the paid step and is never
   replayed after a lost reply; there is nothing to poll or cancel. Images come back inline. Each
   must decode to at most 32 MiB (64 MiB together, 96 MiB for the whole reply) and sniff as the PNG,
-  JPEG or WebP it claims to be; thinking parts are skipped. A reply may hold more than one image,
+  JPEG or WebP it claims to be, with a header of at most 16,384 pixels a side and 64 Mi pixels;
+  thinking parts are skipped. A reply may hold more than one image,
   and every one becomes an output.
 - **Refusals and filters:**
   - a blocked prompt (`promptFeedback.blockReason`) or a reply whose images were removed by a
@@ -420,6 +421,9 @@ target, is discontinued on Vertex AI, so this adapter covers the image models th
   at the input rate, and reply tokens at the image output rate. That covers reference images and
   replies with several images. The reply's few text tokens are charged at the image rate (a little
   over), and thinking tokens, which Google bills at the text rate, aren't charged (a little under).
+  The quote leaves out the prompt and reference images, so an edit run is charged more than it
+  was quoted: with 14 references, about 12% more on 3 Pro or 3.1 Flash. A budget that admits the
+  quote can be passed by that much.
 - **Not verified live:**
   - whether a reply whose images were filtered is billed (it is treated as possibly billed, so it
     is not marked refused)

@@ -17,7 +17,9 @@
   the input rate, reply tokens at the image output rate. This counts reference images and replies
   with several images. It is slightly high for the reply's text tokens and slightly low because
   thinking tokens, billed at the text rate, are left out. Exact per-modality billing would need a
-  usage breakdown the engine doesn't carry.
+  usage breakdown the engine doesn't carry. The quote doesn't count input tokens, so edit runs
+  with many references are charged above it (about 12% with 14 on 3 Pro); quoting a reference
+  allowance is left for when the quote can see the inputs.
 - **Several images per reply.** Gemini may return more than one image in one candidate; every one
   is kept as an output rather than dropped.
 - **Filtered replies count as paid.** A blocked prompt or a reply whose images were filtered is
