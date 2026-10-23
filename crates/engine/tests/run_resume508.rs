@@ -307,7 +307,10 @@ fn quitting_with_a_journal_suspends_the_job_instead_of_cancelling_it() {
     let journal = MemoryJournal::default();
     let (mut f, _) = launch(&mock, &journal, None, 50);
     start(&mut f);
-    pump_until(&mut f, "the job was never submitted", |_| !mock.requests().is_empty());
+    // A provider can see a request before its handle reaches the host. The write-ahead
+    // estimate then survives, but there is no handle to resume until it is journaled.
+    pump_until(&mut f, "the submitted job's handle was never saved", |_| journal.saved().is_some_and(|saved| saved.submitted.len() == 1));
+    assert_eq!(mock.requests().len(), 1, "the saved job reached the provider");
     f.host.shut_down();
     f.runtime.kill();
     assert!(mock.cancelled().is_empty(), "left running at the provider");
