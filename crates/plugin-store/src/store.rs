@@ -20,12 +20,17 @@
 //!   back or uninstalling revokes the package's grants, and revoking one disables the package.
 //! - **Trust is checked when it matters.** A package's signature is checked against the trust
 //!   file at import and again at enable, so a key revoked since import stops it being enabled.
+//! - **Only what this host speaks.** A package's protocol range, descriptor contract and required
+//!   features are negotiated against this build at import and again at enable; a package written
+//!   for a newer NodeCraft is refused, never installed to fail later. IDs in NodeCraft's own
+//!   namespaces need a trusted signature.
 use crate::archive::{self, ArchiveLimits, Package, wire};
 use crate::grants::{self, Grant, Grants, Rights};
 use nodecraft_plugin::id::{HostId, PackageId, RegisteredId};
 use nodecraft_plugin::json::{self, Json, Limits};
 use nodecraft_plugin::lock;
-use nodecraft_plugin::manifest::{Capability, Dependency, Optional, Runtime, Version};
+use nodecraft_plugin::manifest::{Capability, Dependency, Manifest, Optional, Runtime, Version};
+use nodecraft_plugin::negotiate::{HostVersions, negotiate};
 use nodecraft_plugin::signature::{self, Provenance, TrustStore};
 use nodecraft_plugin::{PackageDigest, register};
 use nodecraft_types::{Error, ErrorKind};
@@ -37,6 +42,10 @@ pub const INDEX_VERSION: i64 = 1;
 pub const MAX_OBJECTS: usize = 256;
 /// Most bytes of package archives kept.
 pub const MAX_STORE_BYTES: u64 = 512 * 1024 * 1024;
+/// Package ID namespaces that read as NodeCraft's own. A package spelling one installs and
+/// enables only when a key the trust file trusts signed it, so an unsigned package can't pass
+/// itself off as part of NodeCraft (owning a DNS-looking name proves nothing).
+pub const RESERVED_NAMESPACES: [&str; 2] = ["nodecraft", "io.github.cyphernaught0x"];
 
 /// Owns a backend's transaction lock until dropped. Memory backends need no external lock.
 /// Native backends must open a separate handle and keep the same lock inode for every actor.
@@ -249,10 +258,18 @@ impl<B: StoreBackend> Store<B> {
         Ok((package, provenance))
     }
 
+    /// [`Store::verify`], and whether this host may install the package at all.
+    fn admissible_package(&self, bytes: &[u8], trust: &TrustStore) -> Result<(Package, Provenance), Error> {
+        let (package, provenance) = self.verify(bytes, trust)?;
+        compatible(&package.manifest)?;
+        namespace(&package.manifest.package_id, &provenance)?;
+        Ok((package, provenance))
+    }
+
     /// Verifies an incoming archive; when its digest is already kept, the kept archive is what
     /// counts (one digest can come from differently built archives), and nothing is written.
     fn incoming(&self, bytes: &[u8], trust: &TrustStore) -> Result<Incoming, Error> {
-        let (package, provenance) = self.verify(bytes, trust)?;
+        let (package, provenance) = self.admissible_package(bytes, trust)?;
         if self.index.objects.contains_key(&package.digest) {
             let kept = self.backend.read_object(&package.digest)?;
             let (stored, provenance) = self.verify(&kept, trust)?;
@@ -560,7 +577,9 @@ impl<B: StoreBackend> Store<B> {
             return Err(conflict("that package is already enabled"));
         }
         let loaded = self.load_digest(&digest)?;
-        provenance(&loaded, trust)?;
+        // A build or trust file older than the import's may not speak or trust it any more.
+        compatible(&loaded.manifest)?;
+        namespace(package, &provenance(&loaded, trust)?)?;
         let grant = if executable(&loaded.manifest.runtime) {
             let grants = self.read_grants()?;
             let live = grants.live(package, &digest).cloned();
@@ -704,6 +723,29 @@ fn depth(index: &Index, digest: &PackageDigest) -> Result<usize, Error> {
     Ok(depth)
 }
 
+/// Whether this build speaks the package's protocol, descriptor contract and required features.
+fn compatible(manifest: &Manifest) -> Result<(), Error> {
+    negotiate(&HostVersions::current(), manifest.host_protocol, manifest.descriptor_contract, &manifest.features)
+        .map(|_| ())
+        .map_err(|e| Error::new(ErrorKind::Unsupported, format!("this NodeCraft can't use the package, which was made for another version ({e})")))
+}
+
+/// Whether `id` is in one of the [`RESERVED_NAMESPACES`].
+pub fn reserved(id: &PackageId) -> bool {
+    RESERVED_NAMESPACES.iter().any(|ns| id.as_str().strip_prefix(ns).is_some_and(|rest| rest.is_empty() || rest.starts_with('.')))
+}
+
+/// Refuses a package in a reserved namespace unless a trusted key signed it.
+fn namespace(id: &PackageId, provenance: &Provenance) -> Result<(), Error> {
+    if reserved(id) && !matches!(provenance, Provenance::Verified { .. }) {
+        return Err(Error::new(
+            ErrorKind::Forbidden,
+            format!("{id} is in a namespace kept for NodeCraft's own packages; it needs a signature from a trusted key"),
+        ));
+    }
+    Ok(())
+}
+
 /// Whether a package's registrations run anything when used.
 fn executable(runtime: &Runtime) -> bool {
     !matches!(runtime, Runtime::Data)
@@ -741,7 +783,7 @@ fn provenance(package: &Package, trust: &TrustStore) -> Result<Provenance, Error
 
 const INDEX_LIMITS: Limits = Limits { bytes: 4 * 1024 * 1024, depth: 6, string_bytes: 4096, entries: 4 * MAX_OBJECTS, raw_numbers: false };
 
-fn encode_index(index: &Index) -> Result<String, Error> {
+pub(crate) fn encode_index(index: &Index) -> Result<String, Error> {
     let s = |t: String| Json::Str(t);
     let objects = index
         .objects
