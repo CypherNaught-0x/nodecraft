@@ -291,7 +291,7 @@ fn dragging_a_slider_previews_small_and_releasing_records_the_full_render() {
     let rect = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Strength").rect();
     let from = rect.center();
     h.drag_at(from);
-    h.run();
+    h.step();
     h.hover_at(from + egui::Vec2::new(8.0, 0.0));
     // Frames run while the drag holds, until the preview lands.
     until(&mut h, |app| previewed(app).is_some() && app.live.running.is_none());
@@ -319,7 +319,7 @@ fn an_edit_from_elsewhere_during_a_drag_replaces_its_preview() {
     let rect = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Strength").rect();
     let from = rect.center();
     h.drag_at(from);
-    h.run();
+    h.step();
     h.hover_at(from + egui::Vec2::new(8.0, 0.0));
     until(&mut h, |app| previewed(app).is_some() && app.live.running.is_none());
     assert!(previewed(h.state()).is_some());
@@ -353,7 +353,7 @@ fn drag88_visual() {
     shoot(&mut h, "1-before.png");
     let from = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Strength").rect().center();
     h.drag_at(from);
-    h.run();
+    h.step();
     h.hover_at(from + egui::Vec2::new(20.0, 0.0));
     until(&mut h, |app| previewed(app).is_some() && app.live.running.is_none());
     shoot(&mut h, "2-dragging.png");
@@ -445,7 +445,7 @@ fn a_card_whose_plugin_is_missing_says_what_it_needs() {
     // As in a project opened where the plugin isn't installed.
     app.session.set_plugins(PluginSnapshot::default()).unwrap();
     let mut h = Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
-    h.run();
+    settle(&mut h, |_| true);
     h.get_by_label("Node Shout");
     h.get_by_label_contains("This card needs io.example.text 1.0.0");
 }
@@ -462,11 +462,13 @@ fn update_card_brings_an_older_card_to_its_plugins_version() {
     // The project is opened where version 1.1.0 is installed, which renamed the input.
     app.session.set_plugins(PluginSnapshot::of(&shout_store_at("1.1.0", phrase))).unwrap();
     let mut h = Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
-    h.run();
+    settle(&mut h, |_| true);
     h.get_by_label_contains("made with another version of its plugin");
     assert!(h.query_by_label_contains("This card needs").is_none(), "its plugin is installed, at another version");
     h.get_by_label("Update card").click();
-    h.run();
+    // The click starts a live round whose worker repaints when it ends (#791).
+    settle(&mut h, |app| app.notice.is_some());
+    h.step();
     let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&shout).unwrap().clone();
     assert_eq!(node.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["phrase"]);
     assert_eq!(PluginLock::of(&node).unwrap().version, "1.1.0");
