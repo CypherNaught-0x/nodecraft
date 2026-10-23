@@ -27,6 +27,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 mod connection;
+mod spool;
 mod worker;
 
 use connection::Event;
@@ -132,17 +133,21 @@ impl Sharing {
     }
 
     /// Connects to `link`'s relay and takes part in its room through the [`Collab`] `make` makes.
+    /// A session that can import `large` assets takes those too large for one frame.
     fn begin(
         &mut self,
         ctx: &egui::Context,
         link: JoinLink,
         make: impl FnOnce() -> Result<Collab, Error> + Send + 'static,
         joining: bool,
+        large: bool,
     ) -> Result<(), Error> {
         let wake = ctx.clone();
         let mut desk = self.desk.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "live sharing is busy"))?;
         // Who comes in by the room id owns it; a link's role comes from the relay.
         let status = Status { role: matches!(link.key(), Key::Room(_)).then_some(Role::Owner), ..Status::default() };
+        // Assets too large for one frame come in parts, kept in files until imported (#700).
+        let make = move || make().map(|collab| if large { collab.with_spool(Box::new(spool::FileSpool::default())) } else { collab });
         let worker = Worker::spawn(link.relay().to_owned(), make, move || wake.request_repaint())?;
         *desk = Desk { links: Links::default(), role: status.role, live: true };
         drop(desk);
@@ -170,7 +175,11 @@ impl Sharing {
         match &live.state {
             State::Connecting => "Connecting…".into(),
             State::Reconnecting { .. } => "Reconnecting…".into(),
-            State::Connected(_) if status.waiting_for_assets > 0 => format!("Live · {} files to come", status.waiting_for_assets),
+            State::Connected(_) if status.waiting_for_assets > 0 => match status.asset_progress {
+                (received, total) if total > 0 => format!("Live · {} files to come · {}%", status.waiting_for_assets, received.saturating_mul(100) / total),
+                _ => format!("Live · {} files to come", status.waiting_for_assets),
+            },
+            State::Connected(_) if status.unusable_assets > 0 => format!("Live · {} files can't come", status.unusable_assets),
             State::Connected(_) if !live.caught_up() => "Live · catching up".into(),
             State::Connected(_) => "Live".into(),
         }
@@ -187,7 +196,15 @@ impl Sharing {
             State::Connected(_) if !live.caught_up() => "catching_up",
             State::Connected(_) => "live",
         };
-        json!({"state": state, "role": role, "waiting_for_assets": waiting})
+        let (received, total) = live.status.asset_progress;
+        json!({
+            "state": state,
+            "role": role,
+            "waiting_for_assets": waiting,
+            "asset_bytes_received": received,
+            "asset_bytes_total": total,
+            "unusable_assets": live.status.unusable_assets,
+        })
     }
 }
 
@@ -286,7 +303,8 @@ impl NodeCraftApp {
             return Err(Error::new(ErrorKind::Conflict, "this window is shared live already"));
         }
         let collab = link.join();
-        sharing.begin(ctx, link, move || Ok(collab), true)?;
+        let large = self.session.assets().context().supports_large_assets();
+        sharing.begin(ctx, link, move || Ok(collab), true, large)?;
         // Nothing made here before the shared project comes would survive taking it in.
         self.session.set_access(Access::new(Role::View, None)?);
         Ok(())
@@ -300,7 +318,8 @@ impl NodeCraftApp {
         }
         let (project, revision) = (self.session.document().clone(), self.session.revision());
         let room = link.clone();
-        sharing.begin(ctx, link, move || room.share_project(&project, revision), false)?;
+        let large = self.session.assets().context().supports_large_assets();
+        sharing.begin(ctx, link, move || room.share_project(&project, revision), false, large)?;
         sharing.panel.open = true;
         if let Some(live) = &mut sharing.live {
             live.lineage = Some(self.session.document_lineage());
@@ -407,8 +426,8 @@ impl NodeCraftApp {
             if let Some(notice) = report.notices.into_iter().last() {
                 self.notice = Some(notice);
             }
-            if let Some((n, hashes)) = report.assets {
-                let frames = hashes.into_iter().filter_map(|hash| Out::Asset(hash).frame(&self.session)).collect();
+            if let Some((n, asks)) = report.assets {
+                let frames = asks.into_iter().flat_map(|(hash, stretch)| Out::Asset(hash, stretch).frames(&self.session)).collect();
                 live.worker.send(n, frames)?;
             }
             plans.extend(report.plan);

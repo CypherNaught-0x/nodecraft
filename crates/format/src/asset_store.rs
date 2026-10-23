@@ -391,7 +391,9 @@ impl AssetStore {
         self.context.cache_verified(&entry.identity, data.clone())?;
         Ok(VerifiedAsset { identity: entry.identity.clone(), data })
     }
-    pub(crate) fn verified_content(&self, hash: &Blake3, cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<VerifiedAsset, Error> {
+    /// The bytes stored under `hash`, checked against it, without the MIME and header checks of
+    /// [`Self::open_verified`]: for passing an asset on as it is (#700), not for reading it.
+    pub fn verified_content(&self, hash: &Blake3, cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<VerifiedAsset, Error> {
         let _operation = self.context.operation()?;
         let entry = self.assets.get(hash).ok_or_else(|| invalid("missing retained asset"))?;
         let data = self.content_locked(entry, cancel, metrics)?;

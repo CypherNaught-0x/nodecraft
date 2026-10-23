@@ -95,6 +95,75 @@ fn a_newcomer_is_asked_for_what_someone_still_waits_on() {
     assert_eq!(room.handle(3, Frame::AssetPut { hash, bytes: bytes.clone() }), vec![Out::Send(2, Frame::AssetPut { hash, bytes })]);
 }
 
+fn part(total: u64, offset: u64, len: usize) -> Frame {
+    Frame::AssetPart { hash: [3; 32], total, offset, bytes: vec![1; len] }
+}
+
+#[test]
+fn parts_go_in_order_from_one_sender_to_who_asked() {
+    let mut room = Room::new();
+    for peer in 1..=3 {
+        room.join(peer);
+    }
+    let out = room.handle(3, Frame::AssetGet(vec![[3; 32]]));
+    assert_eq!(out.len(), 2, "both others are asked: {out:?}");
+    // Both send the first part; the asker takes peer 1's, and only peer 1's after that.
+    assert_eq!(room.handle(1, part(10, 0, 4)), vec![Out::Send(3, part(10, 0, 4))]);
+    assert!(room.handle(2, part(10, 0, 4)).is_empty());
+    assert!(room.handle(2, part(10, 4, 4)).is_empty());
+    // A part out of order isn't passed on.
+    assert!(room.handle(1, part(10, 8, 2)).is_empty());
+    // The asker asks for more of its sender alone.
+    let ask = Frame::AssetFrom { hash: [3; 32], offset: 4, len: 6 };
+    assert_eq!(room.handle(3, ask.clone()), vec![Out::Send(1, ask)]);
+    assert_eq!(room.handle(1, part(10, 4, 4)), vec![Out::Send(3, part(10, 4, 4))]);
+    assert_eq!(room.handle(1, part(10, 8, 2)), vec![Out::Send(3, part(10, 8, 2))]);
+    // Whole: nobody waits any more, and the room kept none of it.
+    assert!(room.wanted.is_empty());
+    assert!(room.assets.is_empty());
+}
+
+#[test]
+fn when_a_sender_leaves_the_others_are_asked_for_the_rest() {
+    let mut room = Room::new();
+    for peer in 1..=3 {
+        room.join(peer);
+    }
+    room.handle(3, Frame::AssetGet(vec![[3; 32]]));
+    room.handle(1, part(100, 0, 40));
+    let again = Frame::AssetFrom { hash: [3; 32], offset: 40, len: 60 };
+    assert_eq!(room.leave(1), vec![Out::Send(2, again)]);
+    // Peer 2 sends from there on, and its parts reach the asker.
+    assert_eq!(room.handle(2, part(100, 40, 60)), vec![Out::Send(3, part(100, 40, 60))]);
+    assert!(room.wanted.is_empty());
+}
+
+#[test]
+fn a_newcomer_is_asked_for_the_rest_nobody_sends() {
+    let mut room = Room::new();
+    room.join(1);
+    room.join(3);
+    room.handle(3, Frame::AssetGet(vec![[3; 32]]));
+    room.handle(1, part(100, 0, 40));
+    // The only one who had it leaves; nobody is left to ask.
+    assert!(room.leave(1).is_empty());
+    let out = room.join(2);
+    assert!(out.contains(&Out::Send(2, Frame::AssetFrom { hash: [3; 32], offset: 40, len: 60 })), "{out:?}");
+    assert!(!out.iter().any(|o| matches!(o, Out::Send(_, Frame::AssetGet(_)))), "{out:?}");
+}
+
+#[test]
+fn only_an_editor_sends_parts_and_a_stretch_is_capped() {
+    let mut room = Room::new();
+    room.join(1);
+    room.handle(1, Frame::LinkPut { hash: [9; 32], grant: grant(Role::View, "Ana") });
+    room.join_link(2, [9; 32], 0);
+    room.handle(1, Frame::AssetGet(vec![[3; 32]]));
+    assert!(room.handle(2, part(10, 0, 4)).is_empty());
+    // An ask past the most an asset may be is no frame at all.
+    assert!(Frame::AssetFrom { hash: [3; 32], offset: crate::MAX_SHARED_ASSET_BYTES, len: 1 }.encode().is_err());
+}
+
 fn grant(role: Role, name: &str) -> Grant {
     Grant { role, name: name.into(), expires: None }
 }

@@ -111,10 +111,12 @@ impl Rooms {
         if let Some(Inbox { room, .. }) = self.peers.remove(&peer)
             && let Some(state) = self.rooms.get_mut(&room)
         {
-            state.leave(peer);
+            // Whoever was taking an asset from the peer asks the others for the rest.
+            let again = state.leave(peer);
             if state.is_empty() {
                 self.rooms.remove(&room);
             }
+            self.deliver(again);
         }
     }
 }

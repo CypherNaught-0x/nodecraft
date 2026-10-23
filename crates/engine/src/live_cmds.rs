@@ -141,7 +141,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: plain_schema,
-            params_doc: "{} -> {state: off|connecting|catching_up|waiting|live|reconnecting, role?, waiting_for_assets?}. How this session's live sharing is going. Never holds the join link. Read-only.",
+            params_doc: "{} -> {state: off|connecting|catching_up|waiting|live|reconnecting, role?, waiting_for_assets?, asset_bytes_received?, asset_bytes_total?, unusable_assets?}. How this session's live sharing is going. Never holds the join link. Read-only.",
             enabled: enabled_plain,
             run: run_status,
         },

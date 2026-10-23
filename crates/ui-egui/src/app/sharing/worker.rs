@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
-use nodecraft_engine::collab::{Collab, Out, Plan, View};
+use nodecraft_engine::collab::{Collab, Out, Plan, Stretch, View};
 use nodecraft_graph::Project;
 use nodecraft_sync::{Frame, Role};
 use nodecraft_types::{Blake3, Error, ErrorKind, ProjectId};
@@ -47,6 +47,9 @@ pub(super) struct Turn {
 pub(super) struct Status {
     pub(super) role: Option<Role>,
     pub(super) waiting_for_assets: usize,
+    /// The bytes received of the assets coming in parts, and of how many.
+    pub(super) asset_progress: (u64, u64),
+    pub(super) unusable_assets: usize,
     pub(super) caught_up: bool,
     pub(super) project_id: Option<ProjectId>,
 }
@@ -59,7 +62,7 @@ pub(super) struct Report {
     /// The answer to a turn.
     pub(super) plan: Option<Plan>,
     /// Assets the others asked for, which only the session has the bytes of, for connection `n`.
-    pub(super) assets: Option<(u64, Vec<Blake3>)>,
+    pub(super) assets: Option<(u64, Vec<(Blake3, Stretch)>)>,
     pub(super) status: Status,
     /// Something to tell the person.
     pub(super) notices: Vec<String>,
@@ -262,7 +265,7 @@ impl Thread {
                 for out in out {
                     match out {
                         Out::Frame(frame) => frames.push(frame),
-                        Out::Asset(hash) => assets.push(hash),
+                        Out::Asset(hash, stretch) => assets.push((hash, stretch)),
                     }
                 }
                 self.send(frames)?;
@@ -287,5 +290,12 @@ impl Thread {
 }
 
 fn status(collab: &mut Collab) -> Result<Status, Error> {
-    Ok(Status { role: collab.role(), waiting_for_assets: collab.waiting_for_assets(), caught_up: collab.caught_up(), project_id: collab.project_id()? })
+    Ok(Status {
+        role: collab.role(),
+        waiting_for_assets: collab.waiting_for_assets(),
+        asset_progress: collab.asset_progress(),
+        unusable_assets: collab.unusable_assets(),
+        caught_up: collab.caught_up(),
+        project_id: collab.project_id()?,
+    })
 }

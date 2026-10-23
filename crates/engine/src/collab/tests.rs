@@ -34,11 +34,13 @@ struct Net {
     queue: Vec<Out>,
     /// Why each person who was put out, or gave up, left.
     ended: BTreeMap<Peer, String>,
+    /// Where joiners keep their projects, when they keep them on disk and so take large assets.
+    disk: Option<std::path::PathBuf>,
 }
 
 impl Net {
     fn new() -> Self {
-        Self { room: Room::new(), people: Vec::new(), queue: Vec::new(), ended: BTreeMap::new() }
+        Self { room: Room::new(), people: Vec::new(), queue: Vec::new(), ended: BTreeMap::new(), disk: None }
     }
 
     fn enter(&mut self, mut person: Person) {
@@ -101,7 +103,10 @@ impl Net {
                 if person.session.is_none()
                     && let Some(id) = person.collab.project_id().unwrap()
                 {
-                    person.session = Some(Session::new(joining(id).unwrap()).unwrap());
+                    person.session = Some(match &self.disk {
+                        Some(dir) => on_disk(joining(id).unwrap(), &dir.join(person.id.to_string())),
+                        None => Session::new(joining(id).unwrap()).unwrap(),
+                    });
                 }
                 if let Some(session) = &mut person.session {
                     for frame in person.collab.settle(session).unwrap() {
@@ -128,15 +133,27 @@ impl Net {
 
 /// A session whose project has one card showing a file.
 fn sharer() -> (Session, AssetRef) {
-    let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([1; 16]), "Shared").unwrap();
-    Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(canvas(), "Main") }]).apply(&mut project).unwrap();
-    let mut session = Session::new(project).unwrap();
+    let mut session = Session::new(empty()).unwrap();
     let hash = session.import_asset(b"not really a png").unwrap();
     let asset = AssetRef { hash, mime: "text/plain".parse().unwrap(), meta: MediaMeta::default() };
     let mut card = Node::new(nid(1), "text");
     card.params.insert("image".into(), Value::Media(asset.clone()));
     session.apply_remote(Changeset::new(vec![Change::AddNode { canvas: canvas(), node: card }])).unwrap();
     (session, asset)
+}
+
+/// A project with one empty canvas.
+fn empty() -> nodecraft_graph::Project {
+    let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([1; 16]), "Shared").unwrap();
+    Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(canvas(), "Main") }]).apply(&mut project).unwrap();
+    project
+}
+
+/// A session of `project` that keeps its assets on disk under `dir`, as the desktop's do.
+fn on_disk(project: nodecraft_graph::Project, dir: &std::path::Path) -> Session {
+    std::fs::create_dir_all(dir).unwrap();
+    let snapshot = nodecraft_format::Snapshot { project, assets: Default::default(), epoch: 0 };
+    Session::with_storage(snapshot, Box::new(nodecraft_format::NativeStorage::new(dir.join("recovery")).unwrap())).unwrap()
 }
 
 fn add(session: &mut Session, n: u8) {
@@ -555,7 +572,7 @@ fn plan_copy(collab: &mut Collab, session: &Session) -> (Vec<Frame>, Plan) {
     let held: BTreeSet<Blake3> = session.assets().hashes().copied().collect();
     let has = |hash: &Blake3| held.contains(hash);
     let (out, plan) = collab.plan(&View { revision: session.revision(), document: &copy, has: &has }).unwrap();
-    (out.into_iter().filter_map(|out| out.frame(session)).collect(), plan)
+    (out.into_iter().flat_map(|out| out.frames(session)).collect(), plan)
 }
 
 #[test]
@@ -649,4 +666,129 @@ fn a_joiner_takes_the_shared_project_whole_and_only_into_its_empty_start() {
     let mut empty = Session::new(joining(session.document().id()).unwrap()).unwrap();
     assert_eq!(empty.adopt_shared(whole()).unwrap_err().kind, ErrorKind::NotFound);
     assert_eq!(empty.document(), &joining(session.document().id()).unwrap());
+}
+
+/// Bytes that don't repeat, so a part out of place changes the hash.
+fn noise(len: usize) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(len);
+    let mut seed = 0x9e37_79b9_u32;
+    while bytes.len() < len {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        bytes.extend_from_slice(&seed.to_le_bytes());
+    }
+    bytes.truncate(len);
+    bytes
+}
+
+#[test]
+fn an_asset_too_large_for_one_frame_comes_in_parts() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = on_disk(empty(), &dir.path().join("sharer"));
+    // Larger than a window, and not a whole number of parts.
+    let bytes: std::sync::Arc<[u8]> = noise(nodecraft_sync::WINDOW_BYTES as usize + 5 * nodecraft_sync::PART_BYTES / 2).into();
+    let len = bytes.len() as u64;
+    let range = nodecraft_format::asset_source::AssetRange::new(std::sync::Arc::new(nodecraft_format::asset_source::MemorySource::new(bytes)), 0, len).unwrap();
+    let hash = session.import_asset_from(&range, &Default::default(), &Default::default()).unwrap();
+    let mut card = Node::new(nid(1), "text");
+    card.params.insert("image".into(), Value::Media(AssetRef { hash, mime: "application/octet-stream".parse().unwrap(), meta: MediaMeta::default() }));
+    session.apply_remote(Changeset::new(vec![Change::AddNode { canvas: canvas(), node: card }])).unwrap();
+
+    let mut net = Net::new();
+    net.disk = Some(dir.path().join("joiners"));
+    net.enter(Person { id: 1, collab: Collab::share(&session, room_id()).unwrap(), session: Some(session) });
+    let joiner = Collab::join(room_id()).with_spool(Box::new(MemorySpool::new(64 << 20)));
+    net.enter(Person { id: 2, collab: joiner, session: None });
+    let shared = net.session(1).document().clone();
+    assert_eq!(net.session(2).document(), &shared);
+    assert_eq!(net.session(2).assets().descriptor(&hash).map(|d| d.bytes), Some(len));
+    let collab = &net.person(2).collab;
+    assert_eq!((collab.waiting_for_assets(), collab.unusable_assets(), collab.asset_progress()), (0, 0, (0, 0)));
+}
+
+/// `b` has the project but not its image, which it has asked `a`'s session for.
+fn asking() -> (Session, Collab, Session, Blake3) {
+    let (mut session, asset) = sharer();
+    add(&mut session, 2);
+    let mut a = Collab::share(&session, room_id()).unwrap();
+    let mut b = Collab::join(room_id());
+    let _ = b.hello();
+    let replies = b.receive(Frame::Step1(Mirror::join().state_vector().unwrap())).unwrap();
+    let Some(Frame::Step1(b_has)) = replies.into_iter().nth(1) else { panic!("b asks back") };
+    let Some(Frame::Step2(everything)) = a.receive(Frame::Step1(b_has)).unwrap().into_iter().next() else { panic!("a answers") };
+    b.receive(Frame::Step2(everything)).unwrap();
+    let mut joined = Session::new(joining(b.project_id().unwrap().unwrap()).unwrap()).unwrap();
+    assert_eq!(b.settle(&mut joined).unwrap(), vec![Frame::AssetGet(vec![*asset.hash.as_bytes()])]);
+    (session, b, joined, asset.hash)
+}
+
+fn part(hash: Blake3, total: u64, offset: u64, bytes: &[u8]) -> Frame {
+    Frame::AssetPart { hash: *hash.as_bytes(), total, offset, bytes: bytes.to_vec() }
+}
+
+#[test]
+fn parts_are_taken_in_order_and_a_new_connection_asks_for_the_rest() {
+    let (session, mut b, mut joined, hash) = asking();
+    let bytes = b"not really a png";
+    let (head, tail) = bytes.split_at(6);
+    // One that doesn't start at the beginning, or wasn't asked for, isn't taken.
+    assert!(b.receive(part(hash, 16, 6, tail)).unwrap().is_empty());
+    assert!(b.receive(part(Blake3::from_bytes([1; 32]), 16, 0, head)).unwrap().is_empty());
+    assert_eq!(b.asset_progress(), (0, 0));
+    b.receive(part(hash, 16, 0, head)).unwrap();
+    assert_eq!(b.asset_progress(), (6, 16));
+    // A copy of the same part, or one of another size, is someone else's and is dropped.
+    b.receive(part(hash, 16, 0, head)).unwrap();
+    b.receive(part(hash, 17, 6, tail)).unwrap();
+    assert_eq!(b.asset_progress(), (6, 16));
+    // The connection drops; the next asks only for the rest.
+    let _ = b.hello();
+    assert_eq!(b.settle(&mut joined).unwrap(), vec![Frame::AssetFrom { hash: *hash.as_bytes(), offset: 6, len: 10 }]);
+    b.receive(part(hash, 16, 6, tail)).unwrap();
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+    assert_eq!(joined.document(), session.document());
+    assert_eq!(b.asset_progress(), (0, 0));
+}
+
+#[test]
+fn an_asset_not_as_named_or_too_large_is_given_up_and_its_card_waits() {
+    for total in [16, 64 << 20] {
+        let (_, mut b, mut joined, hash) = asking();
+        b.receive(part(hash, total, 0, b"not really")).unwrap();
+        b.receive(part(hash, total, 10, b" a gif")).unwrap();
+        assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (1, 0), "{total}");
+        // Not asked for again; the card stays out.
+        assert!(b.settle(&mut joined).unwrap().is_empty());
+        assert!(!joined.document().canvases()[&canvas()].nodes().contains_key(&nid(1)));
+    }
+}
+
+#[test]
+fn a_large_asset_is_sent_a_stretch_at_a_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = on_disk(empty(), dir.path());
+    let len = nodecraft_sync::WINDOW_BYTES as usize + 3;
+    let bytes: std::sync::Arc<[u8]> = noise(len).into();
+    let range =
+        nodecraft_format::asset_source::AssetRange::new(std::sync::Arc::new(nodecraft_format::asset_source::MemorySource::new(bytes.clone())), 0, len as u64)
+            .unwrap();
+    let hash = session.import_asset_from(&range, &Default::default(), &Default::default()).unwrap();
+    // Asked whole: the first window, in parts.
+    let frames = super::Out::Asset(hash, Stretch::Whole).frames(&session);
+    assert_eq!(frames.len(), nodecraft_sync::WINDOW_BYTES as usize / nodecraft_sync::PART_BYTES);
+    let mut at = 0;
+    for frame in &frames {
+        let Frame::AssetPart { total, offset, bytes: part, .. } = frame else { panic!("{frame:?}") };
+        assert_eq!((*total, *offset), (len as u64, at));
+        assert_eq!(&part[..], &bytes[at as usize..at as usize + part.len()]);
+        at += part.len() as u64;
+    }
+    // The rest, as asked; nothing past the end, nor of an asset it doesn't hold.
+    let [Frame::AssetPart { offset, bytes: rest, .. }] = &super::Out::Asset(hash, Stretch::From { offset: at, len: 100 }).frames(&session)[..] else {
+        panic!()
+    };
+    assert_eq!((*offset, &rest[..]), (at, &bytes[at as usize..]));
+    assert!(super::Out::Asset(hash, Stretch::From { offset: len as u64, len: 1 }).frames(&session).is_empty());
+    assert!(super::Out::Asset(Blake3::from_bytes([4; 32]), Stretch::Whole).frames(&session).is_empty());
 }

@@ -10,12 +10,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::role::{Grant, Role};
 
-/// The protocol version a hello names; a relay refuses any other. 2 added share links (#121).
-pub const PROTOCOL: u32 = 2;
+/// The protocol version a hello names; a relay refuses any other. 2 added share links (#121),
+/// 3 assets in parts (#700).
+pub const PROTOCOL: u32 = 3;
 /// The largest update a frame carries: a whole shared project, as a late joiner receives it.
 pub const MAX_UPDATE_BYTES: usize = 64 << 20;
 /// The largest asset a frame carries, the same as the project's own asset limit.
 pub const MAX_ASSET_BYTES: usize = 16 << 20;
+/// The largest asset shared in parts ([`Frame::AssetPart`]), the same as the largest a native
+/// project holds.
+pub const MAX_SHARED_ASSET_BYTES: u64 = 8 << 30;
+/// The most bytes one part carries.
+pub const PART_BYTES: usize = 4 << 20;
+/// What a peer sends of an asset that comes in parts when it is asked for the asset whole; the
+/// asker asks for the rest as it arrives ([`Frame::AssetFrom`]), so no more than about this much
+/// of one asset is on its way at a time.
+pub const WINDOW_BYTES: u64 = 16 << 20;
 /// The largest frame of any kind.
 pub const MAX_FRAME_BYTES: usize = MAX_UPDATE_BYTES + 64;
 /// The most assets one request names.
@@ -35,6 +45,8 @@ const LINK_PUT: u8 = 9;
 const LINK_REVOKE: u8 = 10;
 const COMMENT_PUT: u8 = 11;
 const COMMENT_DONE: u8 = 12;
+const ASSET_PART: u8 = 13;
+const ASSET_FROM: u8 = 14;
 
 /// A room's name, which is also what lets a peer in: 32 random bytes, shared only with the people
 /// invited, so it can't be guessed.
@@ -168,8 +180,14 @@ pub enum Frame {
     Update(Vec<u8>),
     /// An asset a card uses, under its content hash.
     AssetPut { hash: [u8; HASH], bytes: Vec<u8> },
-    /// "Send me these assets."
+    /// "Send me these assets." One that is too large for a single frame comes in parts.
     AssetGet(Vec<[u8; HASH]>),
+    /// `bytes` of an asset of `total` bytes, from `offset`. The parts of one asset come in order;
+    /// its hash is checked once the last has arrived.
+    AssetPart { hash: [u8; HASH], total: u64, offset: u64, bytes: Vec<u8> },
+    /// "Send me `len` bytes of this asset from `offset`": the next stretch of one coming in
+    /// parts, asked for as the last arrives, or where it left off before a reconnect.
+    AssetFrom { hash: [u8; HASH], offset: u64, len: u64 },
     /// The relay won't go on, and why.
     Refused(String),
     /// A peer's first frame when it comes in through a share link instead of the room id.
@@ -214,6 +232,22 @@ impl Frame {
                     return Err(Error::new(ErrorKind::Overflow, "too many assets asked for at once"));
                 }
                 (ASSET_GET, hashes.iter().flatten().copied().collect())
+            }
+            Self::AssetPart { hash, total, offset, bytes } => {
+                part(*total, *offset, bytes.len())?;
+                let mut body = Vec::with_capacity(PART_HEAD.saturating_add(bytes.len()));
+                body.extend_from_slice(hash);
+                body.extend_from_slice(&total.to_le_bytes());
+                body.extend_from_slice(&offset.to_le_bytes());
+                body.extend_from_slice(bytes);
+                (ASSET_PART, body)
+            }
+            Self::AssetFrom { hash, offset, len } => {
+                stretch(*offset, *len)?;
+                let mut body = hash.to_vec();
+                body.extend_from_slice(&offset.to_le_bytes());
+                body.extend_from_slice(&len.to_le_bytes());
+                (ASSET_FROM, body)
             }
             Self::Refused(message) => (REFUSED, message.as_bytes().to_vec()),
             Self::HelloLink { protocol, link } => (HELLO_LINK, body(&HelloLink { protocol: *protocol, link: link.0.clone() })?),
@@ -262,6 +296,18 @@ impl Frame {
                 }
                 Self::AssetGet(body.as_chunks::<HASH>().0.to_vec())
             }
+            ASSET_PART => {
+                let (head, bytes) = body.split_at_checked(PART_HEAD).ok_or_else(|| invalid("an asset part without its place"))?;
+                let (hash, total, offset) = head_of(head).ok_or_else(|| invalid("an asset part without its place"))?;
+                part(total, offset, bytes.len())?;
+                Self::AssetPart { hash, total, offset, bytes: bytes.to_vec() }
+            }
+            ASSET_FROM => {
+                let (hash, offset, len) =
+                    (body.len() == PART_HEAD).then(|| head_of(body)).flatten().ok_or_else(|| invalid("the asset request isn't readable"))?;
+                stretch(offset, len)?;
+                Self::AssetFrom { hash, offset, len }
+            }
             REFUSED => Self::Refused(String::from_utf8_lossy(body).chars().take(512).collect()),
             HELLO_LINK => {
                 let hello: HelloLink = small(body).and_then(|b| serde_json::from_slice(b).ok()).ok_or_else(|| invalid("the hello isn't readable"))?;
@@ -304,6 +350,35 @@ impl Frame {
 const MAX_COMMENT_FRAME_BYTES: usize = 16 << 20;
 /// The largest hello, welcome or link frame.
 const MAX_SMALL_BYTES: usize = 4096;
+
+/// A part's hash, total and offset.
+const PART_HEAD: usize = HASH + 16;
+
+fn head_of(head: &[u8]) -> Option<([u8; HASH], u64, u64)> {
+    let hash = head.get(..HASH)?.try_into().ok()?;
+    let total = u64::from_le_bytes(head.get(HASH..HASH + 8)?.try_into().ok()?);
+    let offset = u64::from_le_bytes(head.get(HASH + 8..PART_HEAD)?.try_into().ok()?);
+    Some((hash, total, offset))
+}
+
+/// A part holds something, no more than a part may, and lies inside an asset that may be shared.
+fn part(total: u64, offset: u64, len: usize) -> Result<(), Error> {
+    if len == 0 || len > PART_BYTES {
+        return Err(invalid("an asset part of the wrong size"));
+    }
+    match offset.checked_add(len as u64) {
+        Some(end) if end <= total && total <= MAX_SHARED_ASSET_BYTES => Ok(()),
+        _ => Err(invalid("an asset part outside its asset")),
+    }
+}
+
+/// A stretch asked for lies inside an asset that may be shared.
+fn stretch(offset: u64, len: u64) -> Result<(), Error> {
+    match offset.checked_add(len) {
+        Some(end) if len > 0 && end <= MAX_SHARED_ASSET_BYTES => Ok(()),
+        _ => Err(invalid("the asset request isn't readable")),
+    }
+}
 
 fn small(body: &[u8]) -> Option<&[u8]> {
     (body.len() <= MAX_SMALL_BYTES).then_some(body)
@@ -356,6 +431,8 @@ mod tests {
             Frame::Update(Vec::new()),
             Frame::AssetPut { hash, bytes },
             Frame::AssetGet(vec![hash, [0; 32]]),
+            Frame::AssetPart { hash, total: 10, offset: 4, bytes: b"pixels".to_vec() },
+            Frame::AssetFrom { hash, offset: 4, len: 6 },
             Frame::Refused("full".into()),
             Frame::HelloLink { protocol: PROTOCOL, link: LinkKey::from_bytes([0xcd; 32]) },
             Frame::Welcome { role: Role::Comment, name: Some("Ana".into()) },
@@ -381,6 +458,30 @@ mod tests {
         assert!(Frame::decode(&frame).is_err());
         frame.truncate(10);
         assert!(Frame::decode(&frame).is_err());
+    }
+
+    #[test]
+    fn a_part_lies_inside_its_asset() {
+        let part = |total, offset, bytes: Vec<u8>| Frame::AssetPart { hash: [1; 32], total, offset, bytes };
+        for bad in [
+            part(10, 5, b"pixels".to_vec()),
+            part(10, 0, Vec::new()),
+            part(u64::MAX, u64::MAX, b"x".to_vec()),
+            part(MAX_SHARED_ASSET_BYTES + 1, 0, b"x".to_vec()),
+        ] {
+            assert!(bad.encode().is_err(), "{bad:?}");
+        }
+        assert!(part(10, 0, vec![0; PART_BYTES + 1]).encode().is_err());
+        // Read as sent, a frame that claims an end past its total doesn't decode either.
+        let mut frame = part(10, 4, b"pixels".to_vec()).encode().unwrap();
+        frame[1 + 32] = 9;
+        assert!(Frame::decode(&frame).is_err());
+        for bad in [Frame::AssetFrom { hash: [1; 32], offset: 0, len: 0 }, Frame::AssetFrom { hash: [1; 32], offset: u64::MAX, len: 1 }] {
+            assert!(bad.encode().is_err());
+        }
+        let mut ask = Frame::AssetFrom { hash: [1; 32], offset: 1, len: 1 }.encode().unwrap();
+        ask.push(0);
+        assert!(Frame::decode(&ask).is_err());
     }
 
     #[test]
