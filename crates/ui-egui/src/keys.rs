@@ -51,10 +51,10 @@ pub enum KeyStatus {
     Missing,
     /// A `keys.test` check is with the provider.
     Testing,
-    /// The provider accepted the key.
-    Verified,
-    /// The key can't be checked for free; why.
-    Unverifiable(String),
+    /// The provider accepted the key; its masked tail.
+    Verified(String),
+    /// The key (its masked tail) can't be checked for free; why.
+    Unverifiable(String, String),
     Failed(String),
 }
 
@@ -190,8 +190,8 @@ impl KeysPanel {
             }
             Op::Test => {
                 let status = match answer.get("result").and_then(Value::as_str) {
-                    Some("verified") => KeyStatus::Verified,
-                    _ => KeyStatus::Unverifiable(answer.get("reason").and_then(Value::as_str).unwrap_or("no free check").to_owned()),
+                    Some("verified") => KeyStatus::Verified(masked()),
+                    _ => KeyStatus::Unverifiable(masked(), answer.get("reason").and_then(Value::as_str).unwrap_or("no free check").to_owned()),
                 };
                 self.set_status(account, status);
                 None
@@ -249,8 +249,8 @@ impl KeysPanel {
                         KeyStatus::Stored(masked) => (format!("Stored {masked}"), t.text),
                         KeyStatus::Missing => ("No key".to_owned(), t.text_muted),
                         KeyStatus::Testing => ("Asking the provider…".to_owned(), t.text_muted),
-                        KeyStatus::Verified => ("Works: the provider accepted it".to_owned(), t.accent),
-                        KeyStatus::Unverifiable(why) => (format!("Can't verify: {why}"), t.text_muted),
+                        KeyStatus::Verified(masked) => (format!("Stored {masked}, works: the provider accepted it"), t.accent),
+                        KeyStatus::Unverifiable(masked, why) => (format!("Stored {masked}, can't verify: {why}"), t.text_muted),
                         KeyStatus::Failed(why) => (why.clone(), t.danger),
                     };
                     ui.label(egui::RichText::new(text).color(color));

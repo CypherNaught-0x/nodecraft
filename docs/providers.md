@@ -78,20 +78,26 @@ that costs nothing. The key is read from the keychain only (never the environmen
 secret header to the provider's own API with redirects not followed, and never logged or put in an
 error; replies are never quoted. The answer comes from the HTTP status alone:
 
-- `{result: "verified"}`: the provider answered a request that needs a valid key. Checked this way:
-  `openai` (model list), `anthropic` (model list), `gemini` (model list), `replicate` (account),
-  `elevenlabs` (voice list), `tripo` (balance), `meshy` (balance), `higgsfield` (Soul ID list).
-- `{result: "unverifiable", reason}`: `openrouter`'s model list answers without a key, so success
-  only says it is reachable; `ollama` and `lmstudio` take no key; every other account (`fal`,
-  `seedream`, `kling`, `google-cloud`, `comfy-cloud`, `comfyui:*`) has no known free check, so
-  nothing is sent.
-- **Rejected:** a 401 or 403 (or Google's `API_KEY_INVALID`) is an `Authentication` error whose
-  message starts with `rejected:`. Rate limiting is `Busy`; redirects, other statuses, a reply that
-  isn't JSON and network failures are `Network` or `Timeout` errors that claim no verdict; a missing
-  key is `NotFound`.
+- `{result: "verified", masked}`: the provider answered a request that needs a valid key. Checked
+  this way: `openai` (model list), `anthropic` (model list), `gemini` (model list), `replicate`
+  (account), `elevenlabs` (voice list), `tripo` (balance), `meshy` (balance), `higgsfield` (Soul ID
+  list), `openrouter` (the key's own details).
+- `{result: "unverifiable", reason, masked}`: `ollama` and `lmstudio` take no key; every other
+  account (`fal`, `seedream`, `kling`, `google-cloud`, `comfy-cloud`, `comfyui:*`) has no known free
+  check, so nothing is sent.
+- **Rejected:** a 401 (or Google's `API_KEY_INVALID`) is an `Authentication` error whose message
+  starts with `rejected:`. A 403 is one too, starting `rejected or not allowed:`, since a valid key
+  can be refused for its region, a disabled API or scoped permissions. Rate limiting is `Busy`;
+  redirects, other statuses, a reply that isn't JSON and network failures are `Network` or
+  `Timeout` errors that claim no verdict (only a 5xx suggests trying again later); a missing key is
+  `NotFound`.
 
 The check runs on the keychain thread using the runs' runtime and HTTP client, so the window never
-waits. Hosts without one (`nodecraft-cli`, MCP, the browser) answer `Unsupported` at once.
+waits. The keychain thread waits for the check, though, so while a test is out (at most 25 seconds,
+for a slow or unreachable provider) other key requests, such as **Save**, **Check** or **Remove**,
+wait behind it. Hosts without the run host (`nodecraft-cli`, the browser, or a desktop app whose
+run host couldn't start) answer `Unsupported` at once. MCP clients can't run it (see
+[MCP](mcp.md)).
 
 ## Chat conversations and tools
 

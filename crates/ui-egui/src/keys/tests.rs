@@ -432,11 +432,11 @@ fn test_asks_the_provider_and_shows_works_rejected_or_unverifiable() {
         h.run_steps(2);
     }
     let statuses: Vec<KeyStatus> = h.state().panel.rows().iter().map(|(_, status)| status.clone()).collect();
-    assert_eq!(statuses[0], KeyStatus::Verified);
+    assert_eq!(statuses[0], KeyStatus::Verified("…1234".into()), "a test keeps the stored key's tail");
     assert!(matches!(&statuses[1], KeyStatus::Failed(why) if why.starts_with("rejected: Anthropic")), "{statuses:?}");
-    assert!(matches!(&statuses[2], KeyStatus::Unverifiable(_)), "{statuses:?}");
-    assert!(h.query_by_label("Works: the provider accepted it").is_some());
-    assert!(h.query_by_label_contains("Can't verify").is_some());
+    assert!(matches!(&statuses[2], KeyStatus::Unverifiable(masked, _) if masked == "…1234"), "{statuses:?}");
+    assert!(h.query_by_label("Stored …1234, works: the provider accepted it").is_some());
+    assert!(h.query_by_label_contains("Stored …1234, can't verify").is_some());
     assert!(h.query_by_label_contains("abcdefghij").is_none(), "the key is never shown");
     assert!(h.state().changes.is_empty(), "a test changes no remembered account");
 }

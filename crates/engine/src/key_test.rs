@@ -4,10 +4,10 @@
 //! account or balance endpoint. The answer is classified here, from the HTTP status alone, so it
 //! doesn't depend on any adapter's or client library's error mapping:
 //! - **verified**: the endpoint needs a valid key, and it answered;
-//! - **unverifiable**: the endpoint answers without any key (OpenRouter's model list), so success
-//!   only says it is reachable; or the provider has no free check (or, like Ollama and LM Studio,
-//!   takes no key at all), and nothing is sent;
-//! - **rejected**: 401 or 403 (or Google's `API_KEY_INVALID`), an error of kind `Authentication`.
+//! - **unverifiable**: the provider has no free check (or, like Ollama and LM Studio, takes no key
+//!   at all), and nothing is sent;
+//! - **rejected**: 401 (or Google's `API_KEY_INVALID`), an error of kind `Authentication`; a 403
+//!   is too, worded as rejected or not allowed, since a valid key can lack access.
 //!
 //! The key goes to the endpoint's origin only: it is a secret header ([`HttpRequest::secret_header`])
 //! and redirects are never followed ([`Http::send_no_redirect`]). It comes from the key store alone,
@@ -68,7 +68,6 @@ struct Probe {
     success: KeyCheck,
 }
 
-const PUBLIC_LIST: &str = "this endpoint lists its models without a key, so a reply only says it is reachable";
 const LOCAL: &str = "this local server takes requests without a key, so there is nothing to check";
 const NO_CHECK: &str = "NodeCraft knows no free request that checks this provider's key";
 
@@ -91,9 +90,8 @@ fn plan(account: &Account) -> Result<Probe, &'static str> {
         "meshy" => probe("Meshy", "https://api.meshy.ai/openapi/v1/balance", "Authorization", "Bearer "),
         // The Soul ID list the adapter already reads (#180).
         "higgsfield" => probe("Higgsfield", "https://api.higgsfield.ai/v1/custom-references/list?page=1&page_size=1", "Authorization", "Key "),
-        "openrouter" => {
-            Probe { success: KeyCheck::Unverifiable(PUBLIC_LIST), ..probe("OpenRouter", "https://openrouter.ai/api/v1/models", "Authorization", "Bearer ") }
-        }
+        // The key's own details (its limits and usage); the model list answers without a key.
+        "openrouter" => probe("OpenRouter", "https://openrouter.ai/api/v1/key", "Authorization", "Bearer "),
         "ollama" | "lmstudio" => return Err(LOCAL),
         _ => return Err(NO_CHECK),
     })
@@ -130,12 +128,15 @@ fn classify(probe: &Probe, response: &HttpResponse) -> Result<KeyCheck, Error> {
             Ok(_) => Ok(probe.success.clone()),
             Err(_) => Err(Error::new(ErrorKind::Network, format!("{provider} answered with something that isn't its API; check your network"))),
         },
-        401 | 403 => Err(rejected(provider, status)),
+        401 => Err(rejected(provider, status)),
+        // A valid key can be refused here too: a region, a disabled API, scoped permissions.
+        403 => Err(Error::new(ErrorKind::Authentication, format!("rejected or not allowed: {provider} refused this key or what it may do (HTTP 403)"))),
         // Google answers a key it doesn't know with 400 and this reason.
         400 if contains(&response.body, b"API_KEY_INVALID") => Err(rejected(provider, status)),
         300..=399 => Err(Error::new(ErrorKind::Network, format!("{provider} redirected the check (HTTP {status}); the key wasn't sent on"))),
         429 => Err(Error::new(ErrorKind::Busy, format!("{provider} is rate limiting requests; try again shortly"))),
-        _ => Err(Error::new(ErrorKind::Network, format!("{provider} couldn't check the key (HTTP {status}); try again later"))),
+        500..=599 => Err(Error::new(ErrorKind::Network, format!("{provider} couldn't check the key (HTTP {status}); try again later"))),
+        _ => Err(Error::new(ErrorKind::Network, format!("{provider} couldn't check the key (HTTP {status})"))),
     }
 }
 
@@ -194,6 +195,7 @@ mod tests {
             ("tripo", "https://api.tripo3d.ai/v2/openapi/user/balance", "authorization", format!("Bearer {KEY}")),
             ("meshy", "https://api.meshy.ai/openapi/v1/balance", "authorization", format!("Bearer {KEY}")),
             ("higgsfield", "https://api.higgsfield.ai/v1/custom-references/list?page=1&page_size=1", "authorization", format!("Key {KEY}")),
+            ("openrouter", "https://openrouter.ai/api/v1/key", "authorization", format!("Bearer {KEY}")),
         ] {
             let http = Fixture::status(200, r#"{"data": []}"#);
             assert_eq!(run(account, &http), Ok(KeyCheck::Verified), "{account}");
@@ -214,10 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn a_list_that_needs_no_key_and_a_provider_without_a_check_are_unverifiable() {
-        let http = Fixture::status(200, r#"{"data": [{"id": "x"}]}"#);
-        assert_eq!(run("openrouter", &http), Ok(KeyCheck::Unverifiable(PUBLIC_LIST)));
-        assert_eq!(http.sent.lock().unwrap()[0].url, "https://openrouter.ai/api/v1/models");
+    fn a_provider_without_a_free_check_is_unverifiable() {
         // Nothing is sent where there is nothing free to ask.
         for (account, why) in
             [("ollama", LOCAL), ("lmstudio", LOCAL), ("fal", NO_CHECK), ("kling", NO_CHECK), ("google-cloud", NO_CHECK), ("comfyui:gpu-box:8188", NO_CHECK)]
@@ -239,8 +238,11 @@ mod tests {
         {
             let err = run(account, &Fixture::status(status, body)).unwrap_err();
             assert_eq!(err.kind, ErrorKind::Authentication, "{account}");
-            assert!(err.message.starts_with("rejected:") && !err.message.contains("abcdefghij"), "{}", err.message);
+            assert!(err.message.starts_with("rejected") && !err.message.contains("abcdefghij"), "{}", err.message);
         }
+        // A 403 may be a valid key without access, and says so.
+        let err = run("anthropic", &Fixture::status(403, "{}")).unwrap_err();
+        assert!(err.message.starts_with("rejected or not allowed:"), "{}", err.message);
     }
 
     #[test]
@@ -256,6 +258,8 @@ mod tests {
         ] {
             let err = run("openai", &Fixture::status(status, body)).unwrap_err();
             assert_eq!(err.kind, kind, "{status}");
+            // Only a server error is worth retrying later.
+            assert_eq!(err.message.contains("try again later"), status == 503, "{status}: {}", err.message);
         }
         let fails = |kind, message: &str| Fixture { reply: Err(ProviderError::new(kind, message)), sent: Mutex::new(vec![]) };
         let err = run("openai", &fails(nodecraft_providers::ErrorKind::Timeout, "timed out")).unwrap_err();

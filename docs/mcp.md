@@ -105,9 +105,9 @@ act on. Protocol mistakes (an unknown tool, malformed arguments) are JSON-RPC er
 
 **Every command is classified.** Commands in `mcp::AGENT_COMMANDS` are listed and run. Commands
 in `mcp::HUMAN_ONLY` are neither: `keys.set` would pass an API key through the agent's context,
-and `keys.remove` deletes a key with no undo. `keys.status` and `keys.test` are agent commands:
-they never return the key, and `keys.test` costs nothing and sends the key only to its own
-provider (#237). `file.open`, `file.save`, `file.save_as` and
+and `keys.remove` deletes a key with no undo. `keys.test` is human-only too (#237): in the app it
+answers `{pending: id}` with no command to read the verdict back, and each test sends the stored key
+out and holds the keychain thread for up to 25 seconds. `file.open`, `file.save`, `file.save_as` and
 `file.cancel` are agent commands, admitted only inside allowed folders (see the bridge section
 above, #423). `history.export` writes a result to a file anywhere on the
 machine, so it is human-only for the same reason (#557), as are `timeline.export_interchange` and
@@ -141,10 +141,6 @@ lists, and a test fails until then.
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
 server waits until the prompt is answered.
-
-**Testing a key:** `keys.test {account}` asks the provider whether it accepts the stored key, with
-a free request, and needs the desktop app's run host to send it; `nodecraft-cli` and the browser
-answer it with an `Unsupported` error at once. See [providers](providers.md#testing-a-key).
 
 **Provider prices:** Standalone `nodecraft-cli mcp` supports `command_run` with
 `id: "run.estimate"` and the same parameters as `run.quote`. It sends the job's inputs to the

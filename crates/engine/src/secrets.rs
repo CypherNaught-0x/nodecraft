@@ -153,7 +153,7 @@ fn execute(store: &dyn SecretStore, account: &Account, op: &KeyOp) -> Result<Val
 }
 
 fn no_test_host() -> Error {
-    Error::new(ErrorKind::Unsupported, "testing a key needs the desktop app; this host can't send the check")
+    Error::new(ErrorKind::Unsupported, "testing a key needs the desktop app's run host, which isn't running here; this host can't send the check")
 }
 
 /// Registers the `keys` host service on `services`, answering synchronously from `store`. For
@@ -360,11 +360,14 @@ mod worker {
         })
     }
     /// Runs one `keys.test` on the worker thread: reads the key, sends the check on `host`'s
-    /// runtime and waits for it there, so results keep their order and the queue its bound.
+    /// runtime and waits for it there, so results keep their order and the queue its bound. That
+    /// wait (at most 25 s) delays key requests queued behind it. The result carries the stored
+    /// key's masked tail, as `keys.status` does, so the panel keeps showing which key it was.
     fn test(store: &dyn SecretStore, account: &Account, host: &KeyTestHost) -> Result<Value, Error> {
         let Some(key) = store.get(account).map_err(to_error)? else {
             return Err(Error::new(ErrorKind::NotFound, format!("no key is stored for {}", account.as_str())));
         };
+        let masked = key.masked();
         let (tx, rx) = sync_channel(1);
         let (account, http) = (account.clone(), Arc::clone(&host.http));
         host.runtime.spawn(Box::pin(async move {
@@ -372,7 +375,13 @@ mod worker {
         }));
         let wait = std::time::Duration::from_millis(crate::key_test::TEST_TIMEOUT_MS.saturating_add(5_000));
         match rx.recv_timeout(wait) {
-            Ok(result) => result.map(|check| check.to_json()),
+            Ok(result) => result.map(|check| {
+                let mut answer = check.to_json();
+                if let Some(fields) = answer.as_object_mut() {
+                    fields.insert("masked".into(), json!(masked));
+                }
+                answer
+            }),
             Err(RecvTimeoutError::Timeout) => Err(Error::new(ErrorKind::Timeout, "the provider didn't answer the key check in time")),
             Err(RecvTimeoutError::Disconnected) => Err(Error::new(ErrorKind::Internal, "the key check stopped before it finished")),
         }
@@ -674,7 +683,7 @@ mod tests {
         register_key_worker(&mut bare, worker).unwrap();
         assert_eq!(bare.invoke(KEY_SERVICE, &test).unwrap_err().kind, ErrorKind::Unsupported);
 
-        for (status, expected) in [(200, Ok(json!({"result": "verified"}))), (401, Err(ErrorKind::Authentication))] {
+        for (status, expected) in [(200, Ok(json!({"result": "verified", "masked": "…1234"}))), (401, Err(ErrorKind::Authentication))] {
             let http = Arc::new(Answer(status, Mutex::new(vec![])));
             let host = crate::key_test::KeyTestHost { runtime: Arc::new(Pool), http: http.clone() };
             let (worker, results) = KeyWorker::spawn_with_tests(store.clone(), Some(host)).unwrap();
