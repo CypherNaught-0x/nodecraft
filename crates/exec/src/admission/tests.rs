@@ -110,6 +110,7 @@ fn plan(jobs: Option<Vec<JobSpec>>) -> RunPlan {
             inputs: vec![],
             jobs,
             fanout: None,
+            variations: 1,
         }],
         edges: vec![],
         inner: Default::default(),
@@ -356,6 +357,7 @@ fn deferred_input_copies_and_jobs_keep_the_same_transferred_ledger() {
             inputs: vec![],
             jobs: Some(vec![JobSpec::Source { node: id(2), output: "out".into(), value: Value::Text("upstream".into()) }]),
             fanout: None,
+            variations: 1,
         },
     );
     plan.edges = vec![(id(2), id(1))];

@@ -327,6 +327,7 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "perf.stop",
         "run.reuse",
         "node.cache_set",
+        "node.variations_set",
         "node.shader_set",
         "node.mask_set",
         "mask.create",

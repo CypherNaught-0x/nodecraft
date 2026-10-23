@@ -1,7 +1,7 @@
 //! What a host keeps to record a model job's result after a restart (#508), when the run that
 //! sent it is gone: the generation the step would have recorded, minus its outputs.
 //!
-//! Only a step with exactly one job and no fan-out has one. Its result is that job's alone, so
+//! Only a step with exactly one job and no fan-out has one, or a variation of one job (#81). Its result is that job's alone, so
 //! it can be assembled without the run; a fanned or multi-job step needs its siblings, and a
 //! resumed job of one is followed to its end (so its charge settles) but not recorded.
 use super::{JobId, JobState, Run, StepState, recordable};
@@ -52,14 +52,22 @@ impl Run {
             item: None,
             billable_units: None,
         };
-        match self.steps.get(&node) {
-            Some(StepState { jobs, step, .. }) if jobs.as_slice() == [job] && step.fanout.is_none() => {}
+        // A variation (#81) made by one job alone is a result of its own, like a single-job step.
+        let variant = match self.steps.get(&node) {
+            Some(StepState { jobs, step, .. }) if jobs.as_slice() == [job] && step.fanout.is_none() => 0,
+            Some(StepState { jobs, job_variants, step, .. }) if step.fanout.is_none() && !job_variants.is_empty() => {
+                let variant = *jobs.iter().position(|j| *j == job).and_then(|n| job_variants.get(n))?;
+                if job_variants.iter().filter(|v| **v == variant).count() != 1 {
+                    return None;
+                }
+                variant
+            }
             _ => return None,
-        }
+        };
         let target = self.canvas.nodes().get(&node)?;
         let ports = target.outputs.iter().map(|port| RecipePort { name: port.name.clone(), many: port.port_type.many }).collect();
         let input_hash = self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten();
-        Some(ResumeRecipe { node, generation: self.generation_id(node), input_hash, settings: Some(settings), ports })
+        Some(ResumeRecipe { node, generation: self.generation_id(node, variant), input_hash, settings: Some(settings), ports })
     }
 }
 

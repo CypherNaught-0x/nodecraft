@@ -132,7 +132,7 @@ mod tests {
         }
     }
     fn step(n: u8, jobs: Option<Vec<JobSpec>>) -> Step {
-        Step { node: node(n), kind: "k".into(), mode: ModeId::new("generate").unwrap(), after: vec![], inputs: vec![], jobs, fanout: None }
+        Step { node: node(n), kind: "k".into(), mode: ModeId::new("generate").unwrap(), after: vec![], inputs: vec![], jobs, fanout: None, variations: 1 }
     }
     fn plan(steps: Vec<Step>) -> RunPlan {
         RunPlan { steps, edges: vec![], inner: Default::default() }
