@@ -387,9 +387,14 @@ impl Runs {
         self.host.set_budgets(session, budgets);
     }
 
-    /// What this session and the project have spent so far.
-    pub(super) fn spent(&self) -> nodecraft_exec::cost::Spent {
-        self.host.spent()
+    /// What this session, everything and the open project have spent so far.
+    pub(super) fn spent(&self, session: &Session) -> nodecraft_exec::cost::Spent {
+        self.host.spent(Some(session.document().id()))
+    }
+
+    /// Checks quotes against the open project's spending, after another project was opened.
+    pub(super) fn project_opened(&self, session: &mut Session) {
+        self.host.install(session);
     }
 
     /// The ffmpeg and ffprobe the settings name, for the Timeline's renders (#109).
@@ -895,6 +900,7 @@ mod plugin_maker_tests {
                 cost,
                 idempotency_key: nodecraft_engine::jobs::sent_key("k", 0),
                 status: Charge::Estimate,
+                project: Some(P),
             })
             .unwrap();
         let job = Submitted {

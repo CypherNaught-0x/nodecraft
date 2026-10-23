@@ -244,6 +244,7 @@ fn an_estimate_left_open_without_a_handle_is_charged_as_unresolved() {
     // saved but no handle came back, so the job can't be followed.
     let mut log = UsageLog::default();
     let entry = |key: &str| UsageEntry {
+        project: None,
         at_ms: 0,
         session: "before".into(),
         node: WRITER,

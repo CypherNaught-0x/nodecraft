@@ -642,7 +642,7 @@ impl Controller {
         Ownership::charge(&mut self.out.ownership.admin, metadata, 4 * MIB)?;
         self.out.session.swap_resource(Some(RunCatalog::new(catalog).map_err(|_| "catalog")?));
         let budget = lock(&self.out.budget.log);
-        let state = BudgetState::from_usage(self.fixture.budgets.clone(), &budget, "driver-fixture");
+        let state = BudgetState::from_usage(self.fixture.budgets.clone(), &budget, "driver-fixture", None);
         drop(budget);
         self.out.session.swap_resource(Some(state));
         let prepared = Arc::new(Mutex::new(None::<PreparedRun>));

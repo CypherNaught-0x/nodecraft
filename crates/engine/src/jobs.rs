@@ -127,6 +127,9 @@ pub struct JobPrice {
     /// The model's per-token rates (#595), which charge a finished job its measured usage when
     /// the provider reports tokens but no cost. Only an authorized run attaches them.
     pub(crate) rates: Option<nodecraft_catalog::TokenRates>,
+    /// The project the run started in (#847), whose own cap the job is held to and charged in.
+    /// Only an authorized run attaches one.
+    pub(crate) project: Option<nodecraft_types::ProjectId>,
 }
 
 /// What a finished job is charged as reported: the provider's own cost, or else its measured
@@ -143,7 +146,7 @@ impl JobPrice {
     /// apply. Like the estimate itself, this is the trusted host's statement; prices for an
     /// authorized run come from [`crate::run_cmds::AuthorizedRun::queued_job`].
     pub fn new(node: NodeId, model: String, estimate: Option<Money>) -> Self {
-        Self { node, model, estimate, ceiling: None, rates: None }
+        Self { node, model, estimate, ceiling: None, rates: None, project: None }
     }
     /// The run ceiling this price is bound to, if it came from an authorized run.
     pub fn ceiling(&self) -> Option<&crate::run_ceiling::RunCeiling> {
@@ -448,7 +451,7 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
     }
     let Some(estimate) = price.estimate else {
         // An unknown price: fine without caps (nothing to charge), refused with any.
-        let capped = budgets.per_call.is_some() || budgets.session.is_some() || budgets.project.is_some();
+        let capped = budgets.any();
         if capped && !resumed {
             return Err(format!("{REFUSAL_PREFIX}the price of {} isn't known, so the budget can't be checked", price.model));
         }
@@ -461,7 +464,7 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
     if !resumed {
         let step = StepQuote { node: price.node, models: vec![price.model.clone()], per_job: Ok(Some(estimate)), jobs: 1, jobs_known: true };
         let quote = nodecraft_exec::cost::Quote { steps: vec![step], totals: [(estimate.currency, estimate)].into_iter().collect() };
-        let blocks = check(&quote, &budgets, &log.spent(&budget.session)).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))?.blocks;
+        let blocks = check(&quote, &budgets, &log.spent_in(&budget.session, price.project)).map_err(|e| format!("{REFUSAL_PREFIX}{}", e.message))?.blocks;
         if let Some(block) = blocks.first() {
             return Err(format!("{REFUSAL_PREFIX}{}", block.message()));
         }
@@ -478,6 +481,7 @@ fn reserve(budget: &JobBudget, attempt: &Attempt, price: &JobPrice, resumed: boo
         node: price.node,
         provider: provider.adapter().to_owned(),
         instance: provider.instance(),
+        project: price.project,
         model: price.model.clone(),
         cost: estimate,
         idempotency_key: key.into(),
@@ -1062,7 +1066,7 @@ impl JobRunner for ProviderRunner {
                     if let Some(held) = retained {
                         if handle.is_none() && staged.is_none() {
                             let caps = budget.budgets.lock().unwrap_or_else(PoisonError::into_inner);
-                            if caps.per_call.is_some() || caps.session.is_some() || caps.project.is_some() {
+                            if caps.any() {
                                 drop(caps);
                                 lock().metadata.insert(attempt.clone(), held);
                                 return Outcome::Failed {
@@ -1107,6 +1111,7 @@ impl JobRunner for ProviderRunner {
                             let m = UsageMetadata {
                                 at_ms,
                                 session: &budget.session,
+                                project: price.project,
                                 node: price.node,
                                 provider: provider_id.adapter(),
                                 instance: provider_id.instance(),
@@ -1519,7 +1524,14 @@ mod tests {
         QueuedJob {
             provider: crate::provider_routing::RegisteredProvider::default_instance(provider).unwrap(),
             job,
-            price: Some(JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: micros.map(usd), ceiling: None, rates: None }),
+            price: Some(JobPrice {
+                project: None,
+                node: NodeId::from_bytes([5; 16]),
+                model: "test.img".into(),
+                estimate: micros.map(usd),
+                ceiling: None,
+                rates: None,
+            }),
             bound: None,
             resume_only: false,
         }
@@ -1537,8 +1549,14 @@ mod tests {
     fn the_run_ceiling_is_debited_once_and_credited_only_by_its_owner() {
         let (_, budget) = budgeted(None);
         let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 20)].into(), 0);
-        let price =
-            JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: Some(usd(20)), ceiling: Some(ceiling.clone()), rates: None };
+        let price = JobPrice {
+            project: None,
+            node: NodeId::from_bytes([5; 16]),
+            model: "test.img".into(),
+            estimate: Some(usd(20)),
+            ceiling: Some(ceiling.clone()),
+            rates: None,
+        };
         let target = nodecraft_types::ProviderTarget::default_instance("p").unwrap();
         let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
         let usd_status = || ceiling.status(nodecraft_types::Currency::USD);
@@ -1584,8 +1602,14 @@ mod tests {
         let (_, budget) = budgeted(None);
         *budget.log.lock().unwrap() = UsageLog::try_from(file).unwrap();
         let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 100)].into(), 0);
-        let price =
-            JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: Some(usd(80)), ceiling: Some(ceiling.clone()), rates: None };
+        let price = JobPrice {
+            project: None,
+            node: NodeId::from_bytes([5; 16]),
+            model: "test.img".into(),
+            estimate: Some(usd(80)),
+            ceiling: Some(ceiling.clone()),
+            rates: None,
+        };
         let target = nodecraft_types::ProviderTarget::default_instance("p").unwrap();
         let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
         // New work that can't be recorded is refused and leaves no debit.
@@ -1600,7 +1624,14 @@ mod tests {
     #[test]
     fn an_authorized_runs_bound_price_wins_and_needs_a_budget() {
         let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, 100)].into(), 0);
-        let bound = JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.img".into(), estimate: Some(usd(80)), ceiling: Some(ceiling), rates: None };
+        let bound = JobPrice {
+            project: None,
+            node: NodeId::from_bytes([5; 16]),
+            model: "test.img".into(),
+            estimate: Some(usd(80)),
+            ceiling: Some(ceiling),
+            rates: None,
+        };
         let provider = Arc::new(Flaky { submits: AtomicU64::new(0), polls: AtomicU64::new(0), fail_polls: 0 });
         let mut queued = priced(provider.clone(), Some(80));
         queued.bound = Some(Some(bound.clone()));
@@ -1628,6 +1659,7 @@ mod tests {
         let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
         let usd_ceiling = |limit: u64, unpriced: u64| crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, limit)].into(), unpriced);
         let price = |estimate: Option<u64>, ceiling: &crate::run_ceiling::RunCeiling| JobPrice {
+            project: None,
             node: NodeId::from_bytes([5; 16]),
             model: "test.img".into(),
             estimate: estimate.map(usd),
@@ -1682,8 +1714,14 @@ mod tests {
                 budget.log.lock().unwrap().settle_target(&target, "old", usd(80), Charge::Unresolved).unwrap();
             }
             let ceiling = crate::run_ceiling::RunCeiling::new(std::collections::BTreeMap::new(), 1);
-            let unknown =
-                JobPrice { node: NodeId::from_bytes([5; 16]), model: "test.usage".into(), estimate: None, ceiling: Some(ceiling.clone()), rates: None };
+            let unknown = JobPrice {
+                project: None,
+                node: NodeId::from_bytes([5; 16]),
+                model: "test.usage".into(),
+                estimate: None,
+                ceiling: Some(ceiling.clone()),
+                rates: None,
+            };
             // (a) The adoption uses the count and (c) keeps the row's money.
             reserve(&budget, &attempt("old"), &unknown, true, 1).unwrap();
             assert_eq!(ceiling.unpriced_status(), (1, 1), "unresolved: {unresolved}");
@@ -1714,6 +1752,7 @@ mod tests {
         let attempt = |key: &str| Attempt { provider: target.clone(), key: key.into(), base: key.into() };
         let ceiling = crate::run_ceiling::RunCeiling::new([(nodecraft_types::Currency::USD, u64::MAX)].into(), 0);
         let price = |micros: u64| JobPrice {
+            project: None,
             node: NodeId::from_bytes([5; 16]),
             model: "test.img".into(),
             estimate: Some(usd(micros)),
@@ -1749,6 +1788,33 @@ mod tests {
         free.register(JobId(2), priced(provider.clone(), None));
         assert_eq!(block_on(free.run(job(2), CancelToken::default())), Outcome::Done);
         assert_eq!(budget.log.lock().unwrap().entries().count(), 0);
+    }
+
+    #[test]
+    fn a_project_cap_counts_only_that_projects_charges() {
+        use nodecraft_types::ProjectId;
+        let (a, b) = (ProjectId::from_bytes([1; 16]), ProjectId::from_bytes([2; 16]));
+        let (runner, budget) = budgeted(None);
+        *budget.budgets.lock().unwrap() = Budgets { this_project: Some(usd(100_000)), ..Budgets::default() };
+        let for_project = |project, micros| {
+            let mut queued = priced(Arc::new(Reports(Some(usd(micros)))), Some(micros));
+            if let Some(price) = queued.price.as_mut() {
+                price.project = Some(project);
+            }
+            queued
+        };
+        runner.register(JobId(1), for_project(a, 80_000));
+        assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
+        // A's second job would take A past its cap.
+        runner.register(JobId(2), for_project(a, 30_000));
+        let refused = block_on(runner.run(job(2), CancelToken::default()));
+        assert!(matches!(&refused, Outcome::Failed { error, .. } if is_budget_refusal(error) && error.contains("project budget")), "{refused:?}");
+        // B has spent nothing, so the same job runs there; the total counts both.
+        runner.register(JobId(3), for_project(b, 30_000));
+        assert_eq!(block_on(runner.run(job(3), CancelToken::default())), Outcome::Done);
+        let log = budget.log.lock().unwrap();
+        assert_eq!(log.entries().map(|e| e.project).collect::<Vec<_>>(), [Some(a), Some(b)]);
+        assert_eq!(log.spent("now").project.get(&nodecraft_types::Currency::USD), Some(&usd(110_000)));
     }
 
     #[test]

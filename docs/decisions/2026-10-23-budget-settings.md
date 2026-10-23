@@ -19,5 +19,5 @@
 - **"In total", not per project.** The run host's spending log is one file in the settings folder,
   shared by every project the app opens, and its entries name no project. So the third cap is on
   everything the log has recorded, across projects and sessions, and the panel says so. A real
-  per-project cap needs the log to record which project each charge was for; that is tracked
-  separately.
+  per-project cap needs the log to record which project each charge was for; that came later
+  (`project_usd_cents`, see 2026-10-23-project-budgets).

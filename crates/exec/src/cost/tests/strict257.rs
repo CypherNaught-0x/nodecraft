@@ -1,7 +1,7 @@
 use super::*;
 
 fn metadata(key: &str) -> UsageMetadata<'_> {
-    UsageMetadata { instance: None, at_ms: 1, session: "a", node: NodeId::from_bytes([1; 16]), provider: "t", model: "m", idempotency_key: key }
+    UsageMetadata { project: None, instance: None, at_ms: 1, session: "a", node: NodeId::from_bytes([1; 16]), provider: "t", model: "m", idempotency_key: key }
 }
 
 fn ambiguous() -> UsageLog {
@@ -224,6 +224,7 @@ fn retained_text_exact_boundary_and_one_byte_short_precede_owned_copies() {
     file.sessions.insert(String::new(), [(Currency::USD, usd(n - 1))].into());
     file.quarantined = (0..count)
         .map(|i| UsageEntry {
+            project: None,
             instance: None,
             at_ms: 0,
             session: name.clone(),
@@ -302,7 +303,7 @@ fn listed_pagination_merges_actual_overlay_with_sequence_gaps_and_omits_holds() 
         pages.push(page.lines().nth(1).unwrap().to_owned());
     }
     assert_eq!(whole.lines().skip(1).collect::<Vec<_>>(), pages.iter().map(String::as_str).collect::<Vec<_>>());
-    assert!(pages[0].ends_with(",first") && pages[1].ends_with(",later") && pages[2].ends_with(",last"));
+    assert!(pages[0].ends_with(",first,") && pages[1].ends_with(",later,") && pages[2].ends_with(",last,"));
     let mut end = Vec::new();
     log.write_csv_rows(&mut end, usize::MAX, usize::MAX).unwrap();
     assert_eq!(String::from_utf8(end).unwrap().lines().count(), 1);

@@ -87,10 +87,22 @@ pub struct BudgetState {
 }
 
 impl BudgetState {
-    /// Includes finalized Actuals and the conservative uncertain-session upper bound.
-    pub fn from_usage(budgets: Budgets, usage: &UsageLog, session: &str) -> Self {
-        Self { budgets, spent: usage.spent(session) }
+    /// Includes finalized Actuals and the conservative uncertain-session upper bound;
+    /// [`Spent::this_project`] is `project`'s (#847).
+    pub fn from_usage(budgets: Budgets, usage: &UsageLog, session: &str, project: Option<nodecraft_types::ProjectId>) -> Self {
+        Self { budgets, spent: usage.spent_in(session, project) }
     }
+}
+
+/// What `budget` says was spent, with the open project's own total taken from the usage log when
+/// the host shares one: a project opened since the budget was last installed is checked against
+/// its own spending, not the previous project's (#847).
+fn admission_spent(c: &Context<'_>, budget: &BudgetState) -> Spent {
+    let mut spent = budget.spent.clone();
+    if let Some(usage) = c.resources.get::<UsageSnapshot>() {
+        spent.this_project = usage.0.reported_spent_in("", Some(c.document.id())).this_project;
+    }
+    spent
 }
 
 /// The usage log, for listed-row export (a host resource). Finalized Actuals are included;
@@ -453,7 +465,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     // Prices providers quoted (#663) count against budgets like catalog prices.
     let found = crate::provider_quotes::found(&run_plan, resources, c.routing.nonce)?;
     let quoted = crate::provider_quotes::apply(&mut priced, &found)?;
-    let admission = check(&priced, &budget.budgets, &budget.spent)?;
+    let admission = check(&priced, &budget.budgets, &admission_spent(c, budget))?;
     let totals: BTreeMap<String, u64> = priced.totals.iter().map(|(currency, m)| (String::from(*currency), m.micros)).collect();
     let mut totals_json = Map::new();
     for m in priced.totals.values() {
@@ -611,7 +623,7 @@ fn accepted_limits(accept: &Accept) -> Result<BTreeMap<nodecraft_types::Currency
 fn accept_quote(c: &Context<'_>, quote: &nodecraft_exec::cost::Quote, accept: &Accept) -> Result<(), Error> {
     accepted_limits(accept)?;
     let budget = c.resources.require::<BudgetState>()?;
-    if !check(quote, &budget.budgets, &budget.spent)?.allowed() {
+    if !check(quote, &budget.budgets, &admission_spent(c, budget))?.allowed() {
         return Err(invalid("the run exceeds current budgets"));
     }
     if !quote.is_complete() && !accept.partial {
@@ -666,7 +678,7 @@ pub(crate) fn authorize(
             _ => None,
         })
         .collect();
-    Ok((AuthorizedRun { run, bindings: prepared.bindings, quote: prepared.quote, ceiling, rates }, progress))
+    Ok((AuthorizedRun { run, bindings: prepared.bindings, quote: prepared.quote, ceiling, rates, project: c.document.id() }, progress))
 }
 fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if c.phase == crate::commands::Phase::Preview {
@@ -1001,6 +1013,8 @@ pub struct AuthorizedRun {
     bindings: Vec<(NodeId, crate::provider_routing::RegisteredProvider)>,
     /// Per-token rates of each step that runs one model with them (#595).
     rates: BTreeMap<NodeId, nodecraft_catalog::TokenRates>,
+    /// The project the run started in, which its jobs are charged to (#847).
+    project: nodecraft_types::ProjectId,
 }
 impl std::ops::Deref for AuthorizedRun {
     type Target = nodecraft_exec::run::Run;
@@ -1080,6 +1094,7 @@ impl AuthorizedRun {
                     estimate: amount.as_ref().ok().copied().flatten(),
                     ceiling: Some(self.ceiling.clone()),
                     rates: self.rates.get(node).cloned(),
+                    project: Some(self.project),
                 })
             }
         };

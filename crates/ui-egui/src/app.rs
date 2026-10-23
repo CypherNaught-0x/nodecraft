@@ -969,12 +969,15 @@ impl NodeCraftApp {
         self.selection.clear();
         self.editors.clear();
         self.centred = false;
+        if let Some(runs) = &self.runs {
+            runs.project_opened(&mut self.session);
+        }
     }
 
     /// The project a new window starts with: one canvas holding a sample Text node.
     fn starter_document(kinds: &nodecraft_nodes::Registry) -> Result<(Project, CanvasId), Error> {
         let canvas = CanvasId::from_bytes([1; 16]);
-        let mut document = Project::new(ProjectId::from_bytes([2; 16]), "Untitled")?;
+        let mut document = Project::new(ProjectId::from_bytes(starter_id()), "Untitled")?;
         Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut document)?;
         let mut values = BTreeMap::new();
         values.insert("text".into(), Value::Text("A quiet forest at dawn, soft light through the trees.".into()));
@@ -3208,6 +3211,21 @@ mod stream_tests;
 mod styles_tests;
 #[cfg(test)]
 mod technique_menu_tests;
+
+/// A new project's id. Each is its own, so its spending cap (#847) counts only its own runs; with
+/// no random source it falls back to one fixed id, which only merges unsaved projects' caps.
+#[cfg(not(test))]
+fn starter_id() -> [u8; 16] {
+    let mut id = [2; 16];
+    let _ = getrandom::fill(&mut id);
+    id
+}
+
+/// Tests keep the fixed id, so two fresh windows hold the same project.
+#[cfg(test)]
+fn starter_id() -> [u8; 16] {
+    [2; 16]
+}
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

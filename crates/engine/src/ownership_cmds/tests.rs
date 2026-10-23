@@ -15,6 +15,7 @@ fn ambiguous() -> UsageLog {
     let mut file = UsageLogFile::default();
     for (key, cost) in [("one", 2), ("two", 3), ("three", 4)] {
         file.entries.push(UsageEntry {
+            project: None,
             at_ms: 0,
             session: "a".into(),
             node: nodecraft_types::NodeId::from_bytes([2; 16]),
@@ -144,6 +145,7 @@ fn a_group_page_stays_within_the_byte_limit() {
     let long = "k".repeat(500);
     for n in 0..MAX_CHARGES_PER_PAGE {
         file.entries.push(UsageEntry {
+            project: None,
             at_ms: 0,
             session: "a".into(),
             node: nodecraft_types::NodeId::from_bytes([2; 16]),

@@ -635,7 +635,8 @@ impl RunHost {
         }
     }
 
-    /// Installs the budget resources quotes read, from the shared usage log.
+    /// Installs the budget resources quotes read, from the shared usage log; again after another
+    /// project is opened, so its own spending is what its cap is checked against.
     pub fn install(&self, session: &mut Session) {
         refresh(session, &self.budget);
     }
@@ -647,9 +648,10 @@ impl RunHost {
         refresh(session, &self.budget);
     }
 
-    /// What this session and the project have spent so far, as reported (not the admission bound).
-    pub fn spent(&self) -> Spent {
-        lock(&self.budget.log).reported_spent(&self.budget.session)
+    /// What this session, everything and `project` have spent so far, as reported (not the
+    /// admission bound).
+    pub fn spent(&self, project: Option<nodecraft_types::ProjectId>) -> Spent {
+        lock(&self.budget.log).reported_spent_in(&self.budget.session, project)
     }
 
     /// Whether any run is waiting or running.
@@ -906,11 +908,13 @@ fn stop(active: &mut Active) {
     }
 }
 
-/// Puts the budget the host charges against, and what it has spent, where quotes read them.
+/// Puts the budget the host charges against, and what it has spent (in the open project too),
+/// where quotes read them.
 fn refresh(session: &mut Session, budget: &JobBudget) {
     let budgets: Budgets = lock(&budget.budgets).clone();
     let log = Arc::new(lock(&budget.log).clone());
-    session.swap_resource(Some(BudgetState::from_usage(budgets, &log, &budget.session)));
+    let project = session.document().id();
+    session.swap_resource(Some(BudgetState::from_usage(budgets, &log, &budget.session, Some(project))));
     session.swap_resource(Some(UsageSnapshot(log)));
 }
 
