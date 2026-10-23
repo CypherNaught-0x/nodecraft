@@ -327,14 +327,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.list",
             "List plugin packages",
             none_schema,
-            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch, capabilities, origins}|null, reload_from: string|null (the file plugins.reload installs again)}], session_only?: true (the browser: packages last until the page closes)}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch, capabilities, origins}|null, reloadable: bool (plugins.reload has a file to install again), reload_file: string|null (that file's name, without its folder)}], session_only?: true (the browser: packages last until the page closes)}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             list,
         ),
         spec(
             "plugins.import",
             "Import plugin package",
             file_schema,
-            "{location: string (a path; in the browser, a picked file's location), dry_run?: bool, digest?: string}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only; digest: refuse unless the file still has the digest a dry run showed). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run, rights: {required, optional, origins}|{error}, rights_delta (update): {added_capabilities, removed_capabilities, added_origins, removed_origins}}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
+            "{location: string (a path; in the browser, a picked file's location), dry_run?: bool, digest?: string}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only; digest: refuse unless the file still has the digest a dry run showed). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run, rights: {required, optional, origins}|{error}, rights_delta (update): {added_capabilities, removed_capabilities, added_origins, removed_origins}, location_not_saved?: string (installed, but plugins.reload won't know its file)}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
             import,
         ),
         spec(
@@ -567,6 +567,11 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
 }
 
 /// Reads the package file at a request's location.
+/// The last component of a path, either separator: what a list shows instead of the folders.
+fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
 pub(crate) type ReadPackage<'a> = dyn FnMut(&str) -> Result<std::rc::Rc<Vec<u8>>, Error> + 'a;
 
 /// [`handle`], with package files read by `read` (given the request's location).
@@ -593,7 +598,10 @@ pub(crate) fn handle_reading<B: StoreBackend>(store: &mut Store<B>, host: &Plugi
                         "state": if *state == State::Enabled { "enabled" } else { "disabled" },
                         "license": entry.license, "signed_by": entry.signed_by, "kept": kept,
                         "grant": grants.live(id, digest).map(grant_json),
-                        "reload_from": sources.get(id),
+                        // Agents read this list too: the file's name only, never the full
+                        // path (it names the person's folders).
+                        "reloadable": sources.contains_key(id),
+                        "reload_file": sources.get(id).map(|path| file_name(path)),
                     }))
                 })
                 .collect();
@@ -602,14 +610,17 @@ pub(crate) fn handle_reading<B: StoreBackend>(store: &mut Store<B>, host: &Plugi
         Some(op @ ("import" | "update")) => {
             let location = request.get("location").and_then(Value::as_str).unwrap_or_default();
             let bytes = read(location)?;
-            let out = import_bytes(store, host, request, op, &bytes)?;
+            let mut out = import_bytes(store, host, request, op, &bytes)?;
             // Where it came from, for plugins.reload: only a path on this machine (never a
-            // browser pick), and best effort, since the package is installed either way.
+            // browser pick). The package is installed either way; the result says when its
+            // location couldn't be saved.
             if !request.get("dry_run").and_then(Value::as_bool).unwrap_or(false)
                 && std::path::Path::new(location).is_absolute()
                 && let Some(id) = out.get("package_id").and_then(Value::as_str).and_then(|id| PackageId::parse(id).ok())
+                && let Err(error) = store.remember_source(&id, Some(location))
+                && let Some(o) = out.as_object_mut()
             {
-                let _ = store.remember_source(&id, Some(location));
+                o.insert("location_not_saved".into(), json!(error.message));
             }
             Ok(out)
         }

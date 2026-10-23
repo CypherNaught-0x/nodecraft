@@ -119,17 +119,26 @@ runs anything, and `plugins.enable`.
 ### Trying a change: Reload
 
 NodeCraft remembers the file each package was last installed or updated from (by absolute path, in
-`sources.json` beside the store's index). To try a change, pack again to the same path and press
+`sources.json` beside the store's index). If that file is damaged or was written by a newer
+NodeCraft, it is never written over: the install still succeeds and says the location wasn't saved
+(`location_not_saved`), and Reload isn't offered. `plugins.list` shows only whether a package can
+be reloaded and the file's name (`reloadable`, `reload_file`), never its folders. To try a change, pack again to the same path and press
 **Reload** beside the package in the panel, or call `plugins.reload` with `{"package_id": "…"}`. It
 installs that file again as an update, after the same checks:
 
 - **Refused, with nothing changed,** when no file is remembered (a package installed some other
   way: update it from its file once), when the file is missing or broken, when it now holds
-  another package, or when it is unchanged (the same digest).
-- **An enabled package** is disabled for the update, which refuses while enabled packages depend
-  on it. A data package is enabled again. A package that runs anything stays disabled: grants
-  cover one digest and are never carried over, so grant the new version, then enable it. The
-  result says which: `enabled`, `needs_grant`, and `enable_error` if enabling again failed.
+  another package, when it is unchanged (the same digest), or when an enabled package is
+  something other enabled packages depend on.
+- **An enabled package** is disabled for the update. A data package signed by the same key as
+  before (or unsigned both times) is enabled again. One whose signer changed stays disabled until
+  you enable it, so a new signer never goes live unseen (`signer_changed`, `signed_by_before`). A
+  package that runs anything stays disabled: grants cover one digest and are never carried over,
+  so grant the new version, then enable it. The result says which: `enabled`, `needs_grant`, and
+  `enable_error` if enabling again failed.
+- **If the update fails** after the package was disabled, the old version is enabled again where
+  it still may be; when it can't be (its grant was already revoked), the error says it was left
+  disabled.
 - **Nothing is watched.** Each reload is one request from you; NodeCraft never reads the file on
   its own and opens no dialog. Agents can't call it (it installs code, like `plugins.update`).
 

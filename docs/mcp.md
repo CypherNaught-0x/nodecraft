@@ -117,7 +117,8 @@ own provider records (#325), as does `usage.resolve_charge` for what a reconcile
 results with `run.held` and retry or place them with `run.held_retry` and `run.held_place`. The
 `plugins.*` changes (import, update, reload, enable, disable, rollback, uninstall, prune) read package files
 and decide what extends the app, like installing software, so only a person runs them; agents can
-see what is installed with `plugins.list` (#172). Granting a text action package the right to run,
+see what is installed with `plugins.list` (#172), which names a package's reload file only by its
+file name (`reload_file`), never its folders. Granting a text action package the right to run,
 or revoking it (`plugins.grant`, `plugins.revoke`, #173), is the person's yes or no as well; a package that asks for capabilities is granted only the
 digest, capabilities and origins `plugins.rights` showed (#174), which agents may read to explain a
 grant before a person gives it. Worker-backed hosts return an opaque pending

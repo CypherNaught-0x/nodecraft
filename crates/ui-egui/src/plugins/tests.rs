@@ -357,7 +357,9 @@ fn reload_installs_a_changed_file_again_and_refuses_an_unchanged_one() {
     assert!(h.query_by_label("Reload").is_none(), "nothing installed yet");
     h.get_by_label("Install").click();
     settle(&mut h);
-    assert_eq!(h.state().panel.rows()[0].reload_from.as_deref(), Some(file.as_str()));
+    let row = h.state().panel.rows()[0].clone();
+    assert!(row.reloadable, "{row:?}");
+    assert_eq!(row.reload_file.as_deref(), std::path::Path::new(&file).file_name().and_then(|n| n.to_str()), "the name only");
     h.get_by_label("Enable").click();
     settle(&mut h);
     let before = h.state().panel.rows()[0].digest.clone();
@@ -401,7 +403,7 @@ fn reloading_a_granted_package_leaves_it_disabled_until_granted_again() {
     settle(&mut h);
     let row = &h.state().panel.rows()[0];
     assert!(!row.enabled && row.grant.is_none(), "{row:?}");
-    assert!(h.state().panel.status.as_deref().is_some_and(|s| s.contains("grant it again")), "{:?}", h.state().panel.status);
+    assert!(h.state().panel.status.as_deref().is_some_and(|s| s.contains("needs a grant") && s.contains("grant it again")), "{:?}", h.state().panel.status);
 }
 
 #[test]

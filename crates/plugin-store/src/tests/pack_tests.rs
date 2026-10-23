@@ -99,6 +99,17 @@ proptest! {
         prop_assert_eq!(st.import(&packed.bytes, &TrustStore::default(), false).unwrap().entry.digest, packed.digest);
     }
 
+    /// Unfiltered names (any characters, case-fold and file/folder clashes, reserved names,
+    /// over-long or too deep): `pack` and `inventory` accept and refuse alike.
+    #[test]
+    fn pack_and_inventory_refuse_the_same_folders(extra in prop::collection::vec((prop_oneof![path(), "[ -~]{0,24}", "(a|A|a/b|A/B|con|\\.\\.|/x|x/|é){1,3}"], contents()), 0..12)) {
+        let mut files = base();
+        files.extend(extra);
+        let packed = author::pack(files.clone(), None).map(|p| p.digest).map_err(|e| e.kind);
+        let listed = author::inventory(files).map(|(_, digest)| digest).map_err(|e| e.kind);
+        prop_assert_eq!(packed, listed);
+    }
+
     #[test]
     fn a_changed_byte_or_size_changes_the_digest(extra in prop::collection::vec((path(), contents()), 1..8), pick in any::<prop::sample::Index>(), grow in any::<bool>()) {
         let folder = folder(extra);

@@ -644,15 +644,49 @@ fn the_store_remembers_where_a_package_came_from_until_it_is_uninstalled() {
     st.remember_source(&palette, Some(&"x".repeat(crate::store::MAX_SOURCE + 1))).unwrap();
     assert_eq!(st.source(&palette).unwrap(), None);
     st.remember_source(&palette, Some("/plugins/palette.ncraft-plugin")).unwrap();
-    // A damaged sources file costs only the location.
-    let mut damaged = Store::open(MemoryBackend { sources: Some(b"{oops".to_vec()), ..st.backend().clone_for_test() }).unwrap();
-    assert_eq!(damaged.source(&palette).unwrap(), None);
-    damaged.remember_source(&palette, Some("/again.ncraft-plugin")).unwrap();
-    assert_eq!(damaged.source(&palette).unwrap().as_deref(), Some("/again.ncraft-plugin"));
+    // A damaged sources file, or one from a newer NodeCraft, costs only the locations: they read
+    // as none, and the file is never written over (nor on uninstall).
+    for unreadable in [&b"{oops"[..], br#"{"sources":{"io.example.palette":"/newer"},"sources_version":2}"#] {
+        let mut kept = Store::open(MemoryBackend { sources: Some(unreadable.to_vec()), ..st.backend().clone_for_test() }).unwrap();
+        assert_eq!(kept.source(&palette).unwrap(), None);
+        assert!(kept.sources().unwrap().is_empty());
+        let refused = kept.remember_source(&palette, Some("/again.ncraft-plugin")).unwrap_err();
+        assert!(refused.kind == ErrorKind::Conflict && refused.message.contains("isn't saved"), "{refused:?}");
+        kept.remember_source(&palette, None).unwrap_err();
+        kept.uninstall(&palette, &BTreeSet::new()).unwrap();
+        assert_eq!(kept.backend().sources.as_deref(), Some(unreadable), "left as it was");
+    }
     // Uninstalling forgets it.
     st.uninstall(&palette, &BTreeSet::new()).unwrap();
     assert_eq!(st.source(&palette).unwrap(), None);
     assert!(!String::from_utf8_lossy(st.backend().sources.as_deref().unwrap()).contains("palette"));
+}
+
+/// The sources file never grows past what reads back: a location that would push it over is
+/// refused and the file is left as it was, so no location already saved is lost.
+#[test]
+fn the_sources_file_refuses_a_location_it_could_not_read_back() {
+    let mut st = store();
+    // Control characters escape to six bytes each: the longest such locations fill the 2 MiB
+    // file after some 85 packages, well before MAX_OBJECTS.
+    let location = |i: usize| format!("/{i:03}{}", "\u{1}".repeat(crate::store::MAX_SOURCE - 4));
+    let mut saved = 0;
+    for i in 0..120 {
+        let package_id = format!("io.example.p{i:03}");
+        st.import(&package(&spec(&package_id)), &TrustStore::default(), false).unwrap();
+        let before = st.backend().sources.clone();
+        match st.remember_source(&id(&package_id), Some(&location(i))) {
+            Ok(()) => saved += 1,
+            Err(e) => {
+                assert_eq!(e.kind, ErrorKind::Unsupported, "{e:?}");
+                assert_eq!(st.backend().sources, before, "nothing written");
+            }
+        }
+    }
+    assert!((60..120).contains(&saved), "{saved}");
+    let sources = st.sources().unwrap();
+    assert_eq!(sources.len(), saved, "every saved location still reads back");
+    assert!(st.backend().sources.as_ref().unwrap().len() <= 2 * 1024 * 1024);
 }
 
 impl MemoryBackend {

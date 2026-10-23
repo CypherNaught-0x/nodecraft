@@ -77,7 +77,10 @@ fn the_examples_import_into_the_browser_store_and_only_data_is_enabled() {
     let packages = list["packages"].as_array().unwrap();
     let ids: Vec<&str> = packages.iter().filter_map(|p| p["package_id"].as_str()).collect();
     assert_eq!(ids, ["io.example.palette", "io.example.shout"]);
-    assert!(packages.iter().all(|p| p["reload_from"].is_null() && p["state"] == "disabled"), "a pick has no file to reload: {packages:?}");
+    assert!(
+        packages.iter().all(|p| p["reloadable"] == false && p["reload_file"].is_null() && p["state"] == "disabled"),
+        "a pick has no file to reload: {packages:?}"
+    );
 
     // The data package is enabled; its palette binding isn't one the browser offers, so it stays unbound.
     let enabled = s.dispatch("plugins.enable", &json!({"package_id": "io.example.palette"})).unwrap();
