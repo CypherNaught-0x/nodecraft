@@ -297,6 +297,11 @@ pub trait NodeKind: Send + Sync {
         self.resolve_instance(node)?;
         Ok(self.mode(inputs))
     }
+    /// Why a quote can't price `node` beyond its models, when it spends money no catalog price
+    /// covers (a ComfyUI workflow's partner nodes). Its step is then quoted as unpriced, never free.
+    fn unpriced(&self, _node: &Node) -> Option<String> {
+        None
+    }
     /// Refuse an input problem already proven before upstream work is admitted. This is pure
     /// and conservative: unavailable values must not be treated as absent. The complete plan
     /// still runs after all inputs arrive. Legacy kinds need no partial-input implementation.

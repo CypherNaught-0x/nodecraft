@@ -32,6 +32,7 @@ fn card() -> Card {
             inputs: vec![MappedInput { node: "1".into(), input: "image".into(), port: "photo".into(), modality: Modality::Image }],
             params: vec![MappedParam { node: "2".into(), input: "text".into(), spec: prompt }],
             outputs: vec![MappedOutput { node: "3".into(), label: "Save Image".into(), modality: Modality::Image }],
+            partners: Vec::new(),
         },
     }
 }

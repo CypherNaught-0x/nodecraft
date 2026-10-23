@@ -98,11 +98,21 @@ pub struct ExposedOutput {
     pub preview: bool,
 }
 
+/// A paid ComfyUI API (partner) node in the workflow: running it spends the server's comfy.org
+/// credits, which NodeCraft can't price.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartnerNode {
+    pub node: String,
+    pub class_type: String,
+}
+
 /// Inputs and outputs proposed for a workflow.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Exposed {
     pub inputs: Vec<ExposedInput>,
     pub outputs: Vec<ExposedOutput>,
+    /// Its partner nodes, in node order.
+    pub partners: Vec<PartnerNode>,
 }
 
 /// Proposes inputs and outputs for `workflow`. Only literal inputs are proposed (connected ones
@@ -117,6 +127,11 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Result<Exposed
     for (id, node) in &workflow.nodes {
         let Some(info) = catalog.get(&node.class_type) else { continue };
         let label = node.title.as_deref().unwrap_or(&info.display_name);
+        if info.api_node {
+            budget.container(2, 0)?;
+            budget.text(id, 1)?;
+            budget.text(&node.class_type, 1)?;
+        }
         for spec in info.inputs.iter().filter(|spec| spec.is_widget()) {
             if matches!(node.inputs.get(&spec.name), Some(InputValue::Link { .. })) {
                 continue;
@@ -157,6 +172,9 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Result<Exposed
         let Some(node) = workflow.nodes.get(id) else { continue };
         let Some(info) = catalog.get(&node.class_type) else { continue };
         let node_label = node.title.clone().unwrap_or_else(|| info.display_name.clone());
+        if info.api_node {
+            out.partners.push(PartnerNode { node: id.into(), class_type: node.class_type.clone() });
+        }
         if info.output_node {
             out.outputs.push(ExposedOutput {
                 node: id.into(),
@@ -317,6 +335,23 @@ mod tests {
         assert_eq!(ex.inputs[0].kind, ExposedKind::Media(Media::Image));
         assert_eq!(ex.inputs[0].role, InputRole::MediaInput);
         assert_eq!(ex.outputs[0].media, Some(Media::Image));
+    }
+
+    #[test]
+    fn partner_nodes_are_listed_in_node_order() {
+        let info = br#"{
+          "PartnerImage": {"input": {"required": {"prompt": ["STRING", {}]}}, "output": ["IMAGE"], "api_node": true},
+          "SaveImage": {"input": {"required": {"images": ["IMAGE"]}}, "output": [], "output_node": true}
+        }"#;
+        let c = NodeCatalog::parse(info).unwrap().0;
+        let wf = ApiWorkflow::parse(
+            br#"{"2":{"class_type":"SaveImage","inputs":{"images":["1",0]}},"1":{"class_type":"PartnerImage","inputs":{"prompt":"a"}}}"#,
+            None,
+        )
+        .unwrap();
+        let ex = discover(&wf, &c).unwrap();
+        assert_eq!(ex.partners, [PartnerNode { node: "1".into(), class_type: "PartnerImage".into() }]);
+        assert!(discover(&setup().0, &setup().1).unwrap().partners.is_empty());
     }
 
     #[test]

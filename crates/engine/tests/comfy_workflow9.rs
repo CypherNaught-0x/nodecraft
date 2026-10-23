@@ -121,6 +121,7 @@ fn card() -> Card {
                 MappedParam { node: "1".into(), input: "seed".into(), spec: spec("seed", ParamControl::Seed { max: None }, Value::Unsigned(Unsigned(7))) },
             ],
             outputs: vec![MappedOutput { node: "2".into(), label: "Save Image".into(), modality: Modality::Image }],
+            partners: Vec::new(),
         },
     }
 }
@@ -138,14 +139,14 @@ fn the_workflow_model_is_free_and_offered_on_no_ordinary_card() {
     assert!(snapshot.registry().unwrap().get(comfy_workflow::ID).is_ok());
 }
 
-#[test]
-fn a_placed_workflow_is_quoted_free_and_runs_on_the_comfyui_server() {
+/// A session with `card` placed, its photo input wired, and a ComfyUI server answering it.
+fn placed(card: Card) -> (Session, RunHost, Arc<Server>) {
     let snapshot = GenerationCatalog::builtin().unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([9; 16]), "Workflow").unwrap();
     Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
     let values = [("prompt".into(), Value::Text("a blue whale".into()))].into();
-    let node = kinds.get(comfy_workflow::ID).unwrap().instantiate_instance(CARD, card().config().unwrap(), &values).unwrap();
+    let node = kinds.get(comfy_workflow::ID).unwrap().instantiate_instance(CARD, card.config().unwrap(), &values).unwrap();
     assert_eq!(node.params.get("model"), Some(&Value::Text(comfy_workflow::MODEL_ID.into())));
     Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
     let mut resources = Resources::default();
@@ -157,7 +158,7 @@ fn a_placed_workflow_is_quoted_free_and_runs_on_the_comfyui_server() {
         session: "workflow".into(),
         wall_clock_ms: Arc::new(|| 0),
     };
-    let mut host = RunHost::new(Arc::new(Threads(Instant::now())), budget).with_retry(RetryPolicy { max_attempts: 1, ..Default::default() });
+    let host = RunHost::new(Arc::new(Threads(Instant::now())), budget).with_retry(RetryPolicy { max_attempts: 1, ..Default::default() });
     let mut services = Services::default();
     host.register(&mut services).unwrap();
     let png = nodecraft_media::encode_png(4, 4, &[90; 64], &Default::default()).unwrap();
@@ -180,6 +181,12 @@ fn a_placed_workflow_is_quoted_free_and_runs_on_the_comfyui_server() {
         order: 0,
     };
     session.dispatch("edge.connect", &json!({"canvas":C,"edge":edge})).unwrap();
+    (session, host, server)
+}
+
+#[test]
+fn a_placed_workflow_is_quoted_free_and_runs_on_the_comfyui_server() {
+    let (mut session, mut host, server) = placed(card());
 
     let request = json!({"canvas":C,"mode":"selected","nodes":[CARD]});
     let q = session.dispatch("run.quote", &request).unwrap();
@@ -215,4 +222,14 @@ fn a_placed_workflow_is_quoted_free_and_runs_on_the_comfyui_server() {
     assert!(requests.iter().any(|r| r.url.ends_with("/upload/image")), "the wired file was uploaded");
     assert_eq!(sent["prompt"]["3"]["inputs"]["image"], "in/stored.png", "the workflow loads the wired file");
     assert!(sent["prompt"].get("4").is_none(), "the output the card left out never runs");
+}
+
+#[test]
+fn a_workflow_with_partner_nodes_is_never_quoted_free() {
+    let mut card = card();
+    card.mapping.partners = vec!["PartnerImage".into()];
+    let (mut session, _host, _server) = placed(card);
+    let q = session.dispatch("run.quote", &json!({"canvas":C,"mode":"selected","nodes":[CARD]})).unwrap();
+    assert_eq!(q["complete"], false, "{q}");
+    assert!(q["steps"][0]["unpriced"].as_str().is_some_and(|why| why.contains("PartnerImage") && why.contains("comfy.org")), "{q}");
 }
