@@ -257,8 +257,24 @@ fn a_reshaped_image_badges_the_mask_and_the_editor_fits_the_strokes() {
     };
     let app = h.state_mut();
     app.view.pan = app.viewport.center() - app.viewport.min - world.center().to_vec2() * app.view.zoom;
-    h.run_steps(3);
-    h.get_by_label("Mask image reshaped: keep or fit the strokes").click();
+    // Let the canvas lay out the badge at its settled pan position before clicking it. A fixed
+    // frame count can leave AccessKit with a stale rect on slower runners.
+    let badge = "Mask image reshaped: keep or fit the strokes";
+    let mut previous_rect = None;
+    let mut badge_settled = false;
+    for _ in 0..120 {
+        h.step();
+        let rect = h.query_by_label(badge).map(|node| node.rect());
+        if rect.is_some() && rect == previous_rect {
+            badge_settled = true;
+            break;
+        }
+        previous_rect = rect;
+    }
+    assert!(badge_settled, "the reshaped-mask badge did not settle after the canvas pan");
+    h.get_by_label(badge).click();
+    // The banner's click handler applies the choice synchronously, so these frames only deliver
+    // the click; unlike the wait above, nothing here is racing a background worker.
     h.run_steps(3);
     assert_eq!(h.state().mask_editor.as_ref().map(|e| e.mask), Some(mask));
     h.get_by_label("Fit to new image").click();
