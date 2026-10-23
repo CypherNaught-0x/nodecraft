@@ -327,35 +327,3 @@ fn deck694_visual() {
         h.render().unwrap().save(dir.join(format!("{name}.png"))).unwrap();
     }
 }
-
-/// The editor's Export menu, and the PNG and PDF it writes, for the PR (#692).
-#[test]
-#[ignore = "renders with wgpu into DECK692_RENDER_DIR"]
-fn deck692_visual() {
-    let dir = std::path::PathBuf::from(std::env::var_os("DECK692_RENDER_DIR").unwrap());
-    let app = NodeCraftApp::headless().unwrap();
-    let mut h = Harness::builder().wgpu().with_size(egui::Vec2::new(1400.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
-    crate::theme::apply(&h.ctx, h.state().theme);
-    let canvas = h.state().canvas;
-    let session = &mut h.state_mut().session;
-    let words = "A quiet harbour at dawn: fishing boats, gulls and a lighthouse in soft morning light.";
-    session.dispatch("node.create", &json!({"canvas": canvas, "id": TEXT, "kind": "source.text", "pos": {"x": -300, "y": -110}})).unwrap();
-    session.dispatch("node.param_set", &json!({"canvas": canvas, "id": TEXT, "name": "text", "value": Value::Text(words.into())})).unwrap();
-    session
-        .dispatch("deck.create", &json!({"canvas": canvas, "id": DECK, "pos": {"x": 100, "y": -110}, "title": "Harbour", "nodes": [TEXT], "fields": []}))
-        .unwrap();
-    h.run();
-    h.state_mut().open_deck_editor(DECK);
-    h.run();
-    h.get_by_label("Add text").click();
-    h.run_steps(3);
-    h.get_by_label("Add shape").click();
-    h.run();
-    h.get_by_label("Ellipse").click();
-    h.run_steps(3);
-    export(&mut h, "This slide as PNG…", dir.join("Harbour.png"));
-    export(&mut h, "Slides as PDF…", dir.join("Harbour.pdf"));
-    h.get_by_label("Export").click();
-    h.run_steps(3);
-    h.render().unwrap().save(dir.join("deck692-menu.png")).unwrap();
-}

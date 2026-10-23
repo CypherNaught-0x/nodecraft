@@ -8,6 +8,7 @@ const CANVAS: CanvasId = CanvasId::from_bytes([1; 16]);
 const IMG: NodeId = NodeId::from_bytes([3; 16]);
 const TXT: NodeId = NodeId::from_bytes([4; 16]);
 const GONE: NodeId = NodeId::from_bytes([5; 16]);
+const LOST: NodeId = NodeId::from_bytes([6; 16]);
 const DECK: NodeId = NodeId::from_bytes([9; 16]);
 
 /// A 2×2 blue PNG.
@@ -15,20 +16,24 @@ fn blue() -> Vec<u8> {
     nodecraft_media::encode_png(2, 2, &[0, 0, 255, 255].repeat(4), &nodecraft_media::Limits::default()).unwrap()
 }
 
-/// An image source, a text source and a 200×100 white deck with one slide drawing a red box,
-/// the image, the text, a source whose node is gone, and a text layer.
+/// An image source, a text source, an image source whose image isn't in the project, and a
+/// 200×100 white deck. Slide one draws a red box, the image, the text, a source whose node is
+/// gone, and a text layer; slide two draws the lost image.
 fn session() -> Session {
     let kinds = nodecraft_nodes::Registry::builtins().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([2; 16]), "P").unwrap();
     Change::AddCanvas { canvas: Canvas::new(CANVAS, "C") }.apply(&mut project).unwrap();
     let png = blue();
-    let asset = AssetRef {
-        hash: nodecraft_types::Blake3::from_bytes(*blake3::hash(&png).as_bytes()),
+    let asset = |bytes: &[u8]| AssetRef {
+        hash: nodecraft_types::Blake3::from_bytes(*blake3::hash(bytes).as_bytes()),
         mime: "image/png".parse().unwrap(),
         meta: MediaMeta { width: Some(2), height: Some(2), ..MediaMeta::default() },
     };
-    for (id, kind, x, param) in [(IMG, "source.image", 0.0, ("asset", Value::Media(asset))), (TXT, "source.text", 400.0, ("text", Value::Text("Hello".into())))]
-    {
+    for (id, kind, x, param) in [
+        (IMG, "source.image", 0.0, ("asset", Value::Media(asset(&png)))),
+        (TXT, "source.text", 400.0, ("text", Value::Text("Hello".into()))),
+        (LOST, "source.image", 800.0, ("asset", Value::Media(asset(b"never imported")))),
+    ] {
         let mut node = kinds.get(kind).unwrap().instantiate_instance(id, BTreeMap::new(), &ParamValues::new()).unwrap();
         node.pos = Position { x, y: 0.0 };
         node.params.insert(param.0.into(), param.1);
@@ -51,7 +56,8 @@ fn session() -> Session {
         layer("gone", 0, 50, 100, source(GONE)),
         layer("title", 100, 50, 100, json!({"kind": "text", "text": "Hi", "size": 30, "color": "#000000"})),
     ];
-    s.dispatch("deck.set", &json!({"canvas": CANVAS, "id": DECK, "slides": [{"id": "one", "layers": layers}, {"id": "two"}]})).unwrap();
+    let lost = [layer("lost", 50, 25, 100, source(LOST))];
+    s.dispatch("deck.set", &json!({"canvas": CANVAS, "id": DECK, "slides": [{"id": "one", "layers": layers}, {"id": "two", "layers": lost}]})).unwrap();
     s
 }
 
@@ -104,6 +110,8 @@ fn a_deck_exports_as_one_pdf_page_per_slide() {
     let mut s = session();
     let out = s.dispatch("deck.export", &params(&path, json!({"format": "pdf"}))).unwrap();
     assert_eq!(out["slides"], json!(2));
+    let missing = json!([{"slide": "one", "layer": "gone"}, {"slide": "two", "layer": "lost"}]);
+    assert_eq!(out["missing"], missing, "an image that isn't in the project is an empty box too");
     let pdf = std::fs::read(&path).unwrap();
     let limits = nodecraft_media::DocumentLimits::default();
     assert_eq!(nodecraft_media::probe_document(&pdf, &limits).unwrap().pages, 2);
@@ -115,7 +123,12 @@ fn a_deck_exports_as_one_pdf_page_per_slide() {
     s.dispatch("deck.export", &params(&again, json!({"format": "pdf"}))).unwrap();
     assert_eq!(std::fs::read(&again).unwrap(), pdf, "exports are deterministic");
     let one = dir.path().join("one.pdf");
-    assert_eq!(s.dispatch("deck.export", &params(&one, json!({"format": "pdf", "slide": "two"}))).unwrap()["missing"], json!([]));
+    let out = s.dispatch("deck.export", &params(&one, json!({"format": "pdf", "slide": "two"}))).unwrap();
+    assert_eq!(out["missing"], json!([{"slide": "two", "layer": "lost"}]));
+    let page = nodecraft_media::Document::open(&std::fs::read(&one).unwrap(), &limits).unwrap().render(0, 200, [255; 4]).unwrap();
+    let at = |x: usize, y: usize| &page.rgba[((y * 200 + x) * 4)..][..4];
+    assert_eq!(at(100, 50), [255, 255, 255, 255], "the lost image's box is empty…");
+    assert_ne!(at(50, 50), [255, 255, 255, 255], "…with an outline");
 }
 
 #[test]

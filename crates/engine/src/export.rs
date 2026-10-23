@@ -18,16 +18,6 @@ pub enum Exported {
     Slides(Box<crate::deck_export::SlidesExport>),
 }
 
-impl Exported {
-    /// The command's result once `bytes` are written.
-    pub(crate) fn result(&self, bytes: u64) -> serde_json::Value {
-        match self {
-            Exported::Slides(slides) => slides.result(bytes),
-            Exported::Asset(_) | Exported::Bundle(_) => serde_json::json!({"bytes": bytes}),
-        }
-    }
-}
-
 /// Longest export path, in bytes.
 pub const MAX_PATH_BYTES: usize = 4096;
 
@@ -48,13 +38,13 @@ pub(crate) fn check(path: &Path) -> Result<(), Error> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn write(_: &AssetStore, _: &Exported, _: &Path, _: bool) -> Result<u64, Error> {
+pub(crate) fn write(_: &AssetStore, _: &Exported, _: &Path, _: bool) -> Result<serde_json::Value, Error> {
     Err(Error::new(ErrorKind::Unsupported, "exporting to a file needs the desktop app"))
 }
 
-/// Streams `what` to `path`; returns how many bytes were written.
+/// Streams `what` to `path`; returns the command's result, with how many bytes were written.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite: bool) -> Result<u64, Error> {
+pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite: bool) -> Result<serde_json::Value, Error> {
     use nodecraft_format::asset_source::{StreamMetrics, TransferCancel};
     use std::io::Seek;
     check(path)?;
@@ -63,6 +53,11 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
     }
     if !path.parent().is_some_and(Path::is_dir) {
         return Err(Error::new(ErrorKind::NotFound, "the export folder doesn't exist"));
+    }
+    // A name that's taken is refused before anything is read or drawn; the write below still
+    // refuses one that appears meanwhile.
+    if !overwrite && path.symlink_metadata().is_ok() {
+        return Err(io_error(std::io::ErrorKind::AlreadyExists));
     }
     let cancel = TransferCancel::default();
     // Checked before the file appears. The archive checks each asset as it copies it, into a
@@ -87,7 +82,7 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
                 .write_to(assets, &mut out, &cancel)
                 .and_then(|out| out.stream_position().map_err(|_| Error::new(ErrorKind::Internal, "the archive couldn't be written"))),
             Exported::Slides(_) => {
-                let bytes = drawn.as_deref().unwrap_or_default();
+                let bytes = drawn.as_ref().map_or(&[][..], |drawn| &drawn.bytes);
                 std::io::Write::write_all(&mut out, bytes)
                     .map(|()| bytes.len() as u64)
                     .map_err(|_| Error::new(ErrorKind::Internal, "the file couldn't be written"))
@@ -100,7 +95,10 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
     };
     let written = if overwrite { craft_atomic::atomic_write_with(path, fill) } else { craft_atomic::write_new_with(path, fill) };
     match written {
-        Ok(()) => copied,
+        Ok(()) => copied.map(|bytes| match (what, &drawn) {
+            (Exported::Slides(slides), Some(drawn)) => slides.result(bytes, &drawn.unreadable),
+            _ => serde_json::json!({"bytes": bytes}),
+        }),
         // A write that failed inside the copy says why the file did; else the copy's own error.
         Err(error) => Err(match (failed, copied) {
             (Some(kind), _) => io_error(kind),

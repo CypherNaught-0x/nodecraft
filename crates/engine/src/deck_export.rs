@@ -1,7 +1,8 @@
 //! `deck.export` (#692): draws a Deck card's slides at its frame size, as the presenter lays them
 //! out, and writes one slide as a PNG or the slides as one PDF. The command looks up what each
 //! source layer shows; drawing waits for the export itself, which is native only. A source whose
-//! node shows nothing draws as an empty box and is reported, so an export never fails over one.
+//! node shows nothing, or whose image is missing, damaged or too large, draws as an empty box and
+//! is reported, so an export never fails over one.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use crate::deck_cmds;
 use nodecraft_actions::deck::{self, Drawable};
@@ -29,17 +30,27 @@ pub enum SlideFormat {
 pub struct SlidesExport {
     pub frame: Frame,
     pub format: SlideFormat,
-    pub slides: Vec<Drawable<AssetRef>>,
-    /// Each source drawn as an empty box, as (slide id, layer id).
+    /// Each slide's id and what it draws.
+    pub slides: Vec<(String, Drawable<AssetRef>)>,
+    /// Each source whose node shows nothing, as (slide id, layer id).
     pub missing: Vec<(String, String)>,
 }
 
 impl SlidesExport {
-    /// The export's result once `bytes` are written.
-    pub(crate) fn result(&self, bytes: u64) -> Json {
-        let missing: Vec<Json> = self.missing.iter().map(|(slide, layer)| json!({"slide": slide, "layer": layer})).collect();
+    /// The export's result once `bytes` are written; `unreadable` are the image sources drawing
+    /// found it couldn't use.
+    pub(crate) fn result(&self, bytes: u64, unreadable: &[(String, String)]) -> Json {
+        let missing: Vec<Json> = self.missing.iter().chain(unreadable).map(|(slide, layer)| json!({"slide": slide, "layer": layer})).collect();
         json!({"bytes": bytes, "slides": self.slides.len(), "missing": missing})
     }
+}
+
+/// An export's bytes, and the image sources drawn as empty boxes because their image couldn't
+/// be used.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct Rendered {
+    pub bytes: Vec<u8>,
+    pub unreadable: Vec<(String, String)>,
 }
 
 #[derive(Deserialize)]
@@ -84,11 +95,8 @@ fn export(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let mut missing = Vec::new();
     for slide in chosen {
         let drawn = deck::drawable(slide, frame, |origin, nth| deck_cmds::shown(on, origin, nth));
-        for image in &drawn.images {
-            c.validate_asset(image)?;
-        }
         missing.extend(drawn.missing.iter().map(|layer| (slide.id.clone(), layer.clone())));
-        slides.push(drawn);
+        slides.push((slide.id.clone(), drawn));
     }
     let what = SlidesExport { frame, format: p.format, slides, missing };
     Ok(Effect::Export { what: crate::export::Exported::Slides(Box::new(what)), path: p.path, overwrite: p.overwrite })
@@ -100,15 +108,17 @@ fn enabled(c: &Context<'_>, value: &Json) -> Result<(), Error> {
 
 /// The file's bytes: the one slide as a PNG, or every slide as a page of a PDF.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn render(assets: &nodecraft_format::AssetStore, what: &SlidesExport) -> Result<Vec<u8>, Error> {
+pub(crate) fn render(assets: &nodecraft_format::AssetStore, what: &SlidesExport) -> Result<Rendered, Error> {
     use nodecraft_actions::image::ImageLimits;
     use nodecraft_actions::layers::Fonts;
     let limits = ImageLimits::default();
     let fonts = Fonts::default();
     let too_large = || Error::new(ErrorKind::InvalidInput, "the export is too large to write; export fewer slides, or make the deck smaller");
     let mut pages = Vec::new();
-    for drawn in &what.slides {
-        let raster = draw(assets, what.frame, drawn, &fonts, limits)?;
+    let mut unreadable = Vec::new();
+    for (slide, drawn) in &what.slides {
+        let (raster, boxed) = draw(assets, what.frame, drawn, &fonts, limits)?;
+        unreadable.extend(boxed.into_iter().map(|layer| (slide.clone(), layer)));
         pages.push(nodecraft_media::PageImage { width: raster.width(), height: raster.height(), rgba: raster.pixels().to_vec() });
     }
     let bytes = match (what.format, pages.as_slice()) {
@@ -120,10 +130,11 @@ pub(crate) fn render(assets: &nodecraft_format::AssetStore, what: &SlidesExport)
     if bytes.len() > MAX_EXPORT_BYTES {
         return Err(too_large());
     }
-    Ok(bytes)
+    Ok(Rendered { bytes, unreadable })
 }
 
-/// One slide drawn at its frame size, a missing source as an empty grey box.
+/// One slide drawn at its frame size, and the image layers it drew as empty boxes because their
+/// image couldn't be used. A source with nothing to show is an empty grey box too.
 #[cfg(not(target_arch = "wasm32"))]
 fn draw(
     assets: &nodecraft_format::AssetStore,
@@ -131,29 +142,46 @@ fn draw(
     drawn: &Drawable<AssetRef>,
     fonts: &nodecraft_actions::layers::Fonts<'_>,
     limits: nodecraft_actions::image::ImageLimits,
-) -> Result<nodecraft_actions::image::Raster, Error> {
+) -> Result<(nodecraft_actions::image::Raster, Vec<String>), Error> {
     use nodecraft_actions::layers::{self, Content, Layer, Layers, ShapeKind};
     let mut images = Vec::with_capacity(drawn.images.len());
     let mut decoded = 0u64;
     for asset in &drawn.images {
-        let image = raster(assets, asset, limits)?;
+        // An image that can't be used is an empty box, as the presenter shows it.
+        let Ok(image) = raster(assets, asset, limits) else {
+            images.push(None);
+            continue;
+        };
         decoded = decoded.saturating_add(image.pixels().len() as u64);
         if decoded > limits.working_bytes {
             return Err(Error::new(ErrorKind::InvalidInput, "a slide's images are too large to draw together; make some smaller first (Resize)"));
         }
         images.push(Some(image));
     }
-    let boxed = |layer: &Layer| match layer.content {
-        Content::Source { .. } => {
-            Layer { content: Content::Shape { shape: ShapeKind::Rectangle, fill: None, stroke: Some(EMPTY_BOX.into()), stroke_width: 2.0 }, ..layer.clone() }
-        }
-        _ => layer.clone(),
+    let mut unreadable = Vec::new();
+    let empty = |layer: &Layer| Layer {
+        content: Content::Shape { shape: ShapeKind::Rectangle, fill: None, stroke: Some(EMPTY_BOX.into()), stroke_width: 2.0 },
+        ..layer.clone()
     };
-    let scene = Layers { layers: drawn.layers.iter().map(boxed).collect() };
-    layers::composite(frame, &scene, &images, fonts, 1.0, limits).map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the slide can't be drawn: {e}")))
+    let scene: Vec<Layer> = drawn
+        .layers
+        .iter()
+        .map(|layer| match layer.content {
+            Content::Source { .. } => empty(layer),
+            Content::Image { input, .. } if images.get(input as usize).is_none_or(Option::is_none) => {
+                unreadable.push(layer.id.clone());
+                empty(layer)
+            }
+            _ => layer.clone(),
+        })
+        .collect();
+    let raster = layers::composite(frame, &Layers { layers: scene }, &images, fonts, 1.0, limits)
+        .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the slide can't be drawn: {e}")))?;
+    Ok((raster, unreadable))
 }
 
-/// The outline a source with nothing to show draws as.
+/// The outline a source with nothing to show draws as: a plain grey outline on the slide, where
+/// the editor's stage draws its own placeholder.
 #[cfg(not(target_arch = "wasm32"))]
 const EMPTY_BOX: &str = "#9a9a9a";
 
@@ -165,6 +193,7 @@ fn raster(
     limits: nodecraft_actions::image::ImageLimits,
 ) -> Result<nodecraft_actions::image::Raster, Error> {
     let unreadable = || Error::new(ErrorKind::InvalidInput, "an image on a slide can't be read");
+    assets.validate_reference(asset)?;
     let native = if assets.get(&asset.hash).is_none() {
         let read = assets.preview_read(asset).map_err(|error| match error {
             nodecraft_format::PreviewReadError::Missing => Error::new(ErrorKind::NotFound, "an image on a slide isn't in this project"),
@@ -202,7 +231,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: schema,
-        params_doc: "{canvas, id: Deck NodeId, format: \"png\" | \"pdf\", slide?: slide id (required for png), path: absolute file path, overwrite?: bool (default false)} -> {bytes, slides, missing: [{slide, layer}]}; draws slides at the deck's size, as the presenter shows them, and writes one slide as a PNG, or the named slide or every slide as the pages of one PDF. A source layer whose node shows nothing draws as an empty box and is listed in missing. Refuses a file that's already there unless `overwrite`, a missing folder, a full disk, and a PDF over 1 GiB of pixels, leaving nothing half written. Desktop only.",
+        params_doc: "{canvas, id: Deck NodeId, format: \"png\" | \"pdf\", slide?: slide id (required for png), path: absolute file path, overwrite?: bool (default false)} -> {bytes, slides, missing: [{slide, layer}]}; draws slides at the deck's size, as the presenter shows them, and writes one slide as a PNG, or the named slide or every slide as the pages of one PDF. A source layer whose node shows nothing, or whose image is missing, damaged or too large, draws as an empty box and is listed in missing. Refuses a file that's already there unless `overwrite`, a missing folder, a full disk, and a PDF over 1 GiB of pixels, leaving nothing half written. Desktop only.",
         enabled,
         run: export,
     }]
