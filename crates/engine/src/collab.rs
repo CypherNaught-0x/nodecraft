@@ -106,6 +106,9 @@ pub struct Collab {
     /// Assets this session can't take: too large for its spool, or not what they were named.
     /// They aren't asked for again; the cards that use them wait.
     unusable: BTreeSet<Blake3>,
+    /// Assets whose first copy wasn't what it was named or said it was too large: the relay
+    /// was told, and the next copy comes from someone else. A second such copy makes it unusable.
+    reported: BTreeSet<Blake3>,
     /// What the others asked for, answered at the next publish.
     wanted: BTreeSet<(Blake3, Stretch)>,
     /// The owner's share links, when this keeps them ([`Collab::links_request`]).
@@ -294,6 +297,7 @@ impl Collab {
             room_for: BTreeMap::new(),
             spool_tries: BTreeMap::new(),
             unusable: BTreeSet::new(),
+            reported: BTreeSet::new(),
             wanted: BTreeSet::new(),
             links: Links::default(),
             outbox: Vec::new(),
@@ -644,7 +648,8 @@ impl Collab {
             | Frame::LinkPut { .. }
             | Frame::LinkRevoke(_)
             | Frame::CommentPut { .. }
-            | Frame::Presence(_) => Err(Error::new(ErrorKind::InvalidInput, "the relay sent a frame it doesn't send")),
+            | Frame::Presence(_)
+            | Frame::AssetBad(_) => Err(Error::new(ErrorKind::InvalidInput, "the relay sent a frame it doesn't send")),
         }
     }
 
@@ -667,8 +672,7 @@ impl Collab {
             }
             let spooled = self.spooled();
             if total > self.spool.limit() {
-                self.give_up(hash);
-                return Ok(Vec::new());
+                return Ok(self.bad_copy(hash));
             }
             // Over budget, it waits for the others to be taken and is asked for again.
             if spooled.saturating_add(total) > self.spool.budget() {
@@ -703,15 +707,32 @@ impl Collab {
             Some(Ok(range)) => {
                 self.arrived.insert(hash, Arrival::Range(range));
                 self.spool_tries.remove(&hash);
+                self.reported.remove(&hash);
                 self.unsettled = true;
             }
             Some(Err(_)) => self.spool_failed(hash),
             None => {
                 self.spool.discard(&hash);
-                self.unusable.insert(hash);
+                return Ok(self.bad_copy(hash));
             }
         }
         Ok(Vec::new())
+    }
+
+    /// A copy of an asset that can't be the one named: the first time, the relay is told and
+    /// sends it from someone else (a peer with a damaged file, or a hostile one, doesn't stop
+    /// the asset from coming); the second time, it is given up.
+    fn bad_copy(&mut self, hash: Blake3) -> Vec<Frame> {
+        if !self.reported.insert(hash) {
+            self.reported.remove(&hash);
+            self.give_up(hash);
+            return Vec::new();
+        }
+        if self.incoming.remove(&hash).is_some() {
+            self.spool.discard(&hash);
+        }
+        self.asked.insert(hash);
+        vec![Frame::AssetBad(*hash.as_bytes())]
     }
 
     /// Puts off an asset the spool failed to keep (a full disk, say), to be asked for again from

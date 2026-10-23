@@ -812,16 +812,36 @@ fn parts_are_taken_in_order_and_a_new_connection_asks_for_the_rest() {
 }
 
 #[test]
-fn an_asset_not_as_named_or_too_large_is_given_up_and_its_card_waits() {
+fn an_asset_not_as_named_or_too_large_is_asked_of_someone_else_then_given_up_and_its_card_waits() {
     for total in [16, 64 << 20] {
         let (_, mut b, mut joined, hash) = asking();
-        b.receive(part(hash, total, 0, b"not really")).unwrap();
-        b.receive(part(hash, total, 10, b" a gif")).unwrap();
+        let bad = |b: &mut Collab| {
+            let mut out = b.receive(part(hash, total, 0, b"not really")).unwrap();
+            out.extend(b.receive(part(hash, total, 10, b" a gif")).unwrap());
+            out.into_iter().filter(|frame| matches!(frame, Frame::AssetBad(_))).collect::<Vec<_>>()
+        };
+        // The first bad copy is reported, so the relay sends the next from someone else.
+        assert_eq!(bad(&mut b), vec![Frame::AssetBad(*hash.as_bytes())], "{total}");
+        assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (0, 1), "{total}");
+        // The second is given up.
+        assert!(bad(&mut b).is_empty(), "{total}");
         assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (1, 0), "{total}");
         // Not asked for again; the card stays out.
         assert!(b.settle(&mut joined).unwrap().is_empty());
         assert!(!joined.document().canvases()[&canvas()].nodes().contains_key(&nid(1)));
     }
+}
+
+#[test]
+fn after_a_bad_copy_a_good_one_is_taken() {
+    let (session, mut b, mut joined, hash) = asking();
+    assert_eq!(b.receive(part(hash, 16, 0, b"not really a gif")).unwrap(), vec![Frame::AssetBad(*hash.as_bytes())]);
+    // What is left of the bad copy is dropped; the other sender's comes from the start.
+    assert!(b.receive(part(hash, 16, 10, b"a gif!")).unwrap().is_empty());
+    b.receive(part(hash, 16, 0, b"not really a png")).unwrap();
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+    assert_eq!(joined.document(), session.document());
+    assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (0, 0));
 }
 
 /// A spool in memory that can't write the first `fails` parts it is given, as a full disk.
