@@ -51,12 +51,11 @@ fn fed_by_image(h: &Harness<'static, NodeCraftApp>, id: NodeId) -> bool {
 fn the_menu_lists_every_tool_and_greys_the_ones_no_model_can_do() {
     let mut h = with_image();
     open_tools(&mut h, IMAGE);
-    for label in ["Inpaint…", "Expand…", "Upscale", "Split into grid…", "Color grade", "Make Element…", "Open in 3D"] {
+    for label in ["Inpaint…", "Expand…", "Remove background", "Upscale", "Split into grid…", "Color grade", "Make Element…", "Open in 3D"] {
         assert!(h.query_by_label_contains(label).is_some_and(|n| !n.accesskit_node().is_disabled()), "{label} is offered");
     }
-    for label in ["Remove background", "Split into layers"] {
-        assert!(h.query_by_label_contains(label).is_some_and(|n| n.accesskit_node().is_disabled()), "{label} waits for a model");
-    }
+    let label = "Split into layers";
+    assert!(h.query_by_label_contains(label).is_some_and(|n| n.accesskit_node().is_disabled()), "{label} waits for a model");
 }
 
 #[test]
