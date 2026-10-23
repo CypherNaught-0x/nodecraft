@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use super::template::{MAX_TEMPLATE_BYTES, SubmitReply};
 use super::*;
 use crate::{ErrorKind, HttpMethod, JobHandle, JobInput, JobProgress, Output, ProviderJob, Submission};
+use nodecraft_types::Modality;
 
 fn queued() -> Value {
     json!({
@@ -393,3 +394,34 @@ fn an_unauthenticated_template_sends_no_credential() {
 }
 
 mod adapter;
+
+#[test]
+fn a_model_says_what_it_makes_and_what_it_is_called() {
+    let m = template().models.remove(0);
+    assert_eq!((m.label.as_str(), m.output), ("acme/v1", Modality::Image), "links make an image unless the template says otherwise");
+    let named =
+        decode(&with("/models/0", json!({"id": "acme/v1", "label": " Acme V1 ", "output": "video", "price": {"currency": "USD", "micros": "1"}}))).unwrap();
+    assert_eq!((named.models[0].label.as_str(), named.models[0].output), ("Acme V1", Modality::Video));
+    for bad in [json!({"output": "style"}), json!({"output": "document"}), json!({"output": "text"}), json!({"label": ""}), json!({"label": "a\u{7}"})] {
+        let mut model = json!({"id": "acme/v1", "price": {"currency": "USD", "micros": "1"}});
+        model.as_object_mut().unwrap().extend(bad.as_object().unwrap().clone());
+        refused(with("/models/0", model), "/models/0");
+    }
+
+    // A reply of text makes text, and only text.
+    let mut v = without("/poll");
+    v.as_object_mut().unwrap().remove("cancel");
+    let submit = v.pointer_mut("/submit").unwrap().as_object_mut().unwrap();
+    submit.remove("handle");
+    submit.insert("outputs".into(), json!([{"at": "/text", "kind": "text"}]));
+    assert_eq!(decode(&v).unwrap().models[0].output, Modality::Text);
+    *v.pointer_mut("/models/0").unwrap() = json!({"id": "acme/v1", "output": "image", "price": {"currency": "USD", "micros": "1"}});
+    refused(v, "/models/0/output");
+}
+
+#[test]
+fn text_roles_are_the_body_text_placeholders() {
+    assert_eq!(template().text_roles().into_iter().collect::<Vec<_>>(), ["prompt"]);
+    let t = decode(&with("/submit/body", json!({"a": ["{text:negative}", {"b": "{text:prompt}"}], "c": "{param:seed}", "d": "{text:prompt}"}))).unwrap();
+    assert_eq!(t.text_roles().into_iter().collect::<Vec<_>>(), ["negative", "prompt"]);
+}

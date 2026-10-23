@@ -306,3 +306,16 @@ fn a_public_only_transport_never_connects_to_a_local_address() {
     let _ = rt.block_on(crate::ReqwestHttp::new().unwrap().send_no_redirect(request().timeout_ms(500)));
     assert!(listener.accept().is_ok(), "the control request connected");
 }
+
+#[test]
+fn a_withdrawn_grant_sends_nothing() {
+    let http = Transport::new(vec![]);
+    let granted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let held = granted.clone();
+    let b = broker(template(), http.clone()).granted(Arc::new(move || held.load(std::sync::atomic::Ordering::Acquire)));
+    let scope = SubmitContext::new();
+    let e = block_on(b.submit_with_delivery(&job(), &scope)).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Auth);
+    assert!(scope.finish_error().is_some(), "nothing was sent, so nothing was billed");
+    assert!(http.requests().is_empty());
+}

@@ -286,29 +286,49 @@ impl Session {
         &self.plugins
     }
     /// Publishes what the plugin store may run now (#173): its actions' node kinds replace the
-    /// plugin kinds, and actions whose grant is gone are flagged revoked, so their running jobs
-    /// stop and their results are dropped. Changes no document.
+    /// plugin kinds, its providers' models replace the plugin models in the generation catalog
+    /// (#174), and actions and providers whose grant is gone are flagged revoked, so their
+    /// running jobs stop and their results are dropped. Changes no document.
     pub fn set_plugins(&mut self, next: crate::plugin_runtime::PluginSnapshot) -> Result<(), Error> {
         if self.plugins.same(&next) {
             return Ok(());
         }
-        let prefix = nodecraft_plugin::id::PLUGIN_PREFIX;
         let next = self.plugins.succeed(next);
-        match self.kinds.with_replaced(prefix, next.kinds()) {
-            Ok(kinds) => {
+        match self.publish_plugins(&next) {
+            Ok(()) => {
                 self.plugins = Arc::new(next);
-                self.kinds = Arc::new(kinds);
                 Ok(())
             }
             Err(error) => {
                 // Cards and actions must agree: if the cards can't be published, nothing runs
                 // until the next snapshot, which is tried afresh since it differs from none.
                 let none = next.succeed(crate::plugin_runtime::PluginSnapshot::default());
-                self.kinds = Arc::new(self.kinds.with_replaced(prefix, Vec::new())?);
+                self.publish_plugins(&none)?;
                 self.plugins = Arc::new(none);
                 Err(error)
             }
         }
+    }
+    /// Installs the node kinds and catalog models of `plugins`, or nothing when either fails.
+    fn publish_plugins(&mut self, plugins: &crate::plugin_runtime::PluginSnapshot) -> Result<(), Error> {
+        let prefix = nodecraft_plugin::id::PLUGIN_PREFIX;
+        let changed = !self.plugins.same_providers(plugins);
+        let catalog = match self.resources.get::<crate::generation_catalog::GenerationCatalog>() {
+            // A session built on its own registry has no catalog to publish models in.
+            None => None,
+            Some(_) if !changed => None,
+            Some(_) => Some(crate::generation_catalog::GenerationCatalog::current(&self.resources)?.with_plugin_models(plugins.packages())?),
+        };
+        let kinds = match &catalog {
+            Some(catalog) => catalog.rebind(&self.kinds)?,
+            None => (*self.kinds).clone(),
+        };
+        let kinds = kinds.with_replaced(prefix, plugins.kinds())?;
+        if let Some(catalog) = catalog {
+            catalog.install(self);
+        }
+        self.kinds = Arc::new(kinds);
+        Ok(())
     }
     #[cfg(test)]
     pub(crate) fn exhaust_execution_generation(&mut self) {

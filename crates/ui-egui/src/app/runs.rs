@@ -15,6 +15,7 @@ use super::generate::RunKind;
 use nodecraft_engine::{
     Session,
     jobs::JobBudget,
+    plugin_runtime::{PluginSnapshot, is_plugin},
     provider_routing::{ProviderRouting, RegisteredProvider},
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
     run_host::{HeldView, RunHost, RunNotice},
@@ -91,6 +92,39 @@ pub(super) type Make = Box<dyn Fn(&str, &ProviderSettings) -> Result<Arc<dyn Pro
 /// In the browser adapters are built on the page's one thread.
 #[cfg(target_arch = "wasm32")]
 pub(super) type Make = Box<dyn Fn(&str, &ProviderSettings) -> Result<Arc<dyn Provider>, Readiness>>;
+
+/// Builds plugin brokers (#174) on a client that reaches public addresses only, so a template
+/// can't aim a request at the person's own network.
+struct PluginMaker {
+    board: Board,
+    #[cfg(not(target_arch = "wasm32"))]
+    http: Result<Arc<dyn Http>, String>,
+}
+
+impl PluginMaker {
+    fn new(board: Board) -> Self {
+        Self {
+            board,
+            #[cfg(not(target_arch = "wasm32"))]
+            http: nodecraft_providers::http::ReqwestHttp::public_only().map(|h| Arc::new(h) as Arc<dyn Http>).map_err(|e| e.message),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn make(&self, adapter: &str, keys: &dyn SecretStore) -> Result<Arc<dyn Provider>, Readiness> {
+        let provider = self.board.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(adapter).cloned();
+        let provider = provider.ok_or_else(|| Readiness::NotSetUp("that plugin isn't enabled".into()))?;
+        let http = self.http.clone().map_err(Readiness::Failed)?;
+        nodecraft_engine::plugin_providers::broker(adapter, &provider, keys, http)
+    }
+
+    /// The browser can't keep a request to public addresses, so plugin providers don't run there.
+    #[cfg(target_arch = "wasm32")]
+    fn make(&self, _: &str, _: &dyn SecretStore) -> Result<Arc<dyn Provider>, Readiness> {
+        let _ = &self.board;
+        Err(Readiness::NotSetUp("plugin providers run in the desktop app only".into()))
+    }
+}
 
 /// Builds adapters as runs ask for them.
 enum Maker {
@@ -235,7 +269,12 @@ pub(super) struct Runs {
     tokio: Option<tokio::runtime::Runtime>,
     /// Why the run journal couldn't be opened, told on the first frame.
     journal_problem: Option<String>,
+    /// The plugin providers the provider thread may build brokers for (#174).
+    plugins: Board,
 }
+
+/// The session's plugins as the provider thread last saw them.
+type Board = Arc<Mutex<Arc<PluginSnapshot>>>;
 
 impl Runs {
     /// The runtime, HTTP client and provider thread, with adapters reading their keys from
@@ -249,13 +288,37 @@ impl Runs {
             Some(Arc::new(nodecraft_providers::comfyui::progress::native::NativeFeeds));
         #[cfg(target_arch = "wasm32")]
         let progress: Option<Arc<dyn nodecraft_providers::comfyui::progress::Feeds>> = None;
-        Self::with_maker(
+        let board = Board::default();
+        let plugins = PluginMaker::new(Arc::clone(&board));
+        let mut runs = Self::with_maker(
             services,
             Box::new(move |adapter, settings| {
+                if is_plugin(adapter) {
+                    return plugins.make(adapter, keys.as_ref());
+                }
                 let env = HostEnv { keys: keys.as_ref(), http: http.clone(), settings, now_ms: now_ms.clone(), progress: progress.clone() };
                 provider_setup::make(adapter, &env)
             }),
-        )
+        )?;
+        runs.plugins = board;
+        Ok(runs)
+    }
+
+    /// Publishes the session's plugin providers to the provider thread (#174). When they
+    /// changed, every adapter is forgotten, so no run goes to a broker built under a grant that
+    /// is gone (it would refuse anyway) and a new provider is built afresh.
+    pub(super) fn set_plugins(&mut self, session: &mut Session) -> Result<(), Error> {
+        let next = Arc::clone(session.plugins());
+        let changed = {
+            let mut board = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let changed = !board.same_providers(&next);
+            *board = next;
+            changed
+        };
+        if changed {
+            self.forget_adapters(session)?;
+        }
+        Ok(())
     }
 
     /// [`Self::new`] with adapters built by `make`.
@@ -308,6 +371,7 @@ impl Runs {
             #[cfg(not(target_arch = "wasm32"))]
             tokio: Some(tokio),
             journal_problem: None,
+            plugins: Board::default(),
         })
     }
 
@@ -721,4 +785,20 @@ fn adapters_of(session: &Session, canvas: CanvasId) -> (BTreeMap<NodeId, String>
         })
         .collect();
     (adapters, expanded.inner)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod plugin_maker_tests {
+    use super::*;
+
+    #[test]
+    fn a_plugin_provider_runs_only_while_the_session_publishes_it() {
+        let maker = PluginMaker::new(Board::default());
+        let keys = nodecraft_engine::secrets::MemoryStore::default();
+        match maker.make("plugin.io.example.acme.acme", &keys) {
+            Err(Readiness::NotSetUp(why)) => assert_eq!(why, "that plugin isn't enabled"),
+            Err(other) => panic!("{other:?}"),
+            Ok(_) => panic!("built a broker for a plugin nobody enabled"),
+        }
+    }
 }

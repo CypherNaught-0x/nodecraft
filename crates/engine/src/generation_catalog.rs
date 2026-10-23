@@ -197,6 +197,32 @@ impl GenerationCatalog {
     pub fn models(&self, kind: &str) -> impl Iterator<Item = &GenerationModel> {
         self.kind(kind).ok().into_iter().flat_map(GenerationKind::models)
     }
+    /// This catalog with its plugin models (#174) replaced by `packages`' models: every model
+    /// whose provider is a plugin's goes, and each package's join the rest. A package whose
+    /// models the catalog can't hold (too many, or past its limits) is left out on its own, so
+    /// it never takes the other packages' models with it.
+    pub(crate) fn with_plugin_models(&self, packages: Vec<Vec<nodecraft_catalog::ModelDescriptor>>) -> Result<Self, Error> {
+        let prefix = nodecraft_plugin::id::PLUGIN_PREFIX;
+        let base: Vec<_> = self.0.catalog.catalog().models().filter(|m| !m.provider.starts_with(prefix)).cloned().collect();
+        let build = |models: &[nodecraft_catalog::ModelDescriptor]| Self::new(RunCatalog::new(Catalog::from_models(models.iter().cloned())?)?);
+        let all: Vec<_> = base.iter().cloned().chain(packages.iter().flatten().cloned()).collect();
+        if let Ok(catalog) = build(&all) {
+            return Ok(catalog);
+        }
+        let mut kept = base;
+        for package in packages {
+            let before = kept.len();
+            kept.extend(package);
+            if build(&kept).is_err() {
+                kept.truncate(before);
+            }
+        }
+        build(&kept)
+    }
+    /// `kinds` with this catalog's generation kinds in place of the ones it has.
+    pub(crate) fn rebind(&self, kinds: &nodecraft_nodes::Registry) -> Result<nodecraft_nodes::Registry, Error> {
+        kinds.with_generation(self.0.kinds.clone())
+    }
     pub fn registry(&self) -> Result<nodecraft_nodes::Registry, Error> {
         let mut kinds = nodecraft_nodes::Registry::builtins()?;
         for kind in &self.0.kinds {

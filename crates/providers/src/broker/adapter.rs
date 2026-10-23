@@ -40,6 +40,8 @@ pub struct Broker {
     template: Template,
     key: Option<Secret>,
     http: Arc<dyn Http>,
+    /// Whether the grant it runs under still stands; asked right before a paid request.
+    granted: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl Broker {
@@ -55,7 +57,12 @@ impl Broker {
             (Some(_), None) => return Err(ProviderError::new(ErrorKind::Auth, "this plugin provider needs an API key; add it in Settings")),
             (None, _) => None,
         };
-        Ok(Self { id: id.into(), template, key, http })
+        Ok(Self { id: id.into(), template, key, http, granted: Arc::new(|| true) })
+    }
+
+    /// This broker sending a paid request only while `granted` says its grant stands.
+    pub fn granted(self, granted: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self { granted, ..self }
     }
 
     fn key(&self) -> &str {
@@ -107,6 +114,10 @@ impl Broker {
 
     async fn create(&self, job: &ProviderJob, context: Option<&SubmitContext>) -> Result<Submission, ProviderError> {
         let request = authorize(&self.template, plan_submit(&self.template, job)?, self.key())?;
+        // The last moment the job can still be refused without being sent.
+        if !(self.granted)() {
+            return Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; nothing was sent"));
+        }
         // Everything local is done. This service has no documented list of replies that create
         // no job, so from here every failure may hide one it bills.
         if let Some(context) = context {

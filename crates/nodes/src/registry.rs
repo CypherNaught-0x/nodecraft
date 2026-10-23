@@ -87,6 +87,20 @@ impl Registry {
         Ok(())
     }
 
+    /// A copy whose catalog generation kinds are exactly `kinds` (#174: a catalog that gained or
+    /// lost plugin models); refused whole if any is invalid.
+    pub fn with_generation(&self, kinds: Vec<crate::generation::GenerationKind>) -> Result<Self, Error> {
+        let keep = |id: &String| !crate::generation::is_generation(id);
+        let mut next = Self {
+            kinds: self.kinds.iter().filter(|(id, _)| keep(id)).map(|(id, k)| (id.clone(), Arc::clone(k))).collect(),
+            public_errors: self.public_errors.iter().filter(|id| keep(id)).cloned().collect(),
+        };
+        for kind in kinds {
+            next.register_generation(kind)?;
+        }
+        Ok(next)
+    }
+
     /// A copy whose kinds under `prefix` are exactly `kinds`; refused whole if any kind is
     /// invalid, outside `prefix`, or clashes with another.
     pub fn with_replaced(&self, prefix: &str, kinds: Vec<Box<dyn NodeKind>>) -> Result<Self, Error> {

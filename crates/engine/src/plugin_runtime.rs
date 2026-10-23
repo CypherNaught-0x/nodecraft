@@ -7,6 +7,7 @@
 //! A card records the package it was made with ([`PluginLock`]) in its node's config, so a
 //! project keeps the card, says what it needs when the plugin is missing, and names the digest
 //! to the store so uninstalling or pruning keeps it.
+use crate::plugin_providers::PluginProvider;
 use crate::plugin_text::{PluginTextAction, compile};
 use nodecraft_actions::expr::{self, CompiledTextAction, ExprLimits, InputKind, OutputKind, ParamKind};
 use nodecraft_exec::run::ActionExecutor;
@@ -310,10 +311,12 @@ fn value_of(value: expr::Value) -> Result<Value, String> {
     }
 }
 
-/// The actions of every enabled, granted text action package, by registered ID.
+/// The actions of every enabled, granted text action package, and the provider templates of
+/// every such provider operations package (#174), by registered ID.
 #[derive(Clone, Debug, Default)]
 pub struct PluginSnapshot {
     actions: BTreeMap<String, Arc<PluginAction>>,
+    providers: BTreeMap<String, Arc<PluginProvider>>,
 }
 
 impl PluginSnapshot {
@@ -323,19 +326,47 @@ impl PluginSnapshot {
     pub fn of<B: StoreBackend>(store: &Store<B>) -> Self {
         let Ok(grants) = store.grants() else { return Self::default() };
         let mut actions = BTreeMap::new();
+        let mut providers = BTreeMap::new();
         for (id, (digest, state)) in &store.index().active {
             let Some(grant) = (*state == State::Enabled).then(|| grants.live(id, digest)).flatten() else { continue };
-            let Ok(compiled) = store.load(id).and_then(|package| nodecraft_plugin_store::store::compatible(&package.manifest).and_then(|()| compile(&package)))
-            else {
+            let Ok(package) = store.load(id).and_then(|package| nodecraft_plugin_store::store::compatible(&package.manifest).map(|()| package)) else {
                 continue;
             };
             let stamp = PluginStamp { grant_id: grant.grant_id.clone(), package: id.clone(), digest: *digest, epoch: grant.epoch };
+            for (provider_id, provider) in crate::plugin_providers::of(&package, grant, &stamp) {
+                providers.insert(provider_id, Arc::new(provider));
+            }
+            let Ok(compiled) = compile(&package) else { continue };
             for PluginTextAction { id: action_id, action, lock } in compiled {
                 let action = PluginAction { stamp: stamp.clone(), lock, action, revoked: AtomicBool::new(false) };
                 actions.insert(action_id.as_str().to_owned(), Arc::new(action));
             }
         }
-        Self { actions }
+        Self { actions, providers }
+    }
+
+    /// The granted provider `id`, while its grant stands.
+    pub fn provider(&self, id: &str) -> Option<&Arc<PluginProvider>> {
+        self.providers.get(id)
+    }
+
+    /// The catalog models its providers serve.
+    pub fn models(&self) -> Vec<nodecraft_catalog::ModelDescriptor> {
+        self.packages().into_iter().flatten().collect()
+    }
+
+    /// The catalog models its providers serve, one list per package.
+    pub(crate) fn packages(&self) -> Vec<Vec<nodecraft_catalog::ModelDescriptor>> {
+        let mut packages: BTreeMap<&str, Vec<_>> = BTreeMap::new();
+        for (id, provider) in &self.providers {
+            packages.entry(provider.stamp.package.as_str()).or_default().extend(crate::plugin_providers::models(id, provider));
+        }
+        packages.into_values().collect()
+    }
+
+    /// Whether both hold the same providers under the same grants.
+    pub fn same_providers(&self, other: &Self) -> bool {
+        self.providers.len() == other.providers.len() && self.providers.iter().zip(&other.providers).all(|((a, x), (b, y))| a == b && x.stamp == y.stamp)
     }
 
     pub fn get(&self, id: &str) -> Option<&Arc<PluginAction>> {
@@ -343,12 +374,14 @@ impl PluginSnapshot {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.actions.is_empty()
+        self.actions.is_empty() && self.providers.is_empty()
     }
 
-    /// Whether both hold the same actions under the same grants.
+    /// Whether both hold the same actions and providers under the same grants.
     pub fn same(&self, other: &Self) -> bool {
-        self.actions.len() == other.actions.len() && self.actions.iter().zip(&other.actions).all(|((a, x), (b, y))| a == b && x.stamp == y.stamp)
+        self.actions.len() == other.actions.len()
+            && self.actions.iter().zip(&other.actions).all(|((a, x), (b, y))| a == b && x.stamp == y.stamp)
+            && self.same_providers(other)
     }
 
     /// The node kinds of its actions; a definition that makes no kind is left out.
@@ -369,7 +402,17 @@ impl PluginSnapshot {
                 old.revoke();
             }
         }
-        Self { actions }
+        let mut providers = BTreeMap::new();
+        for (id, provider) in next.providers {
+            let kept = self.providers.get(&id).filter(|old| old.stamp == provider.stamp).cloned();
+            providers.insert(id, kept.unwrap_or(provider));
+        }
+        for (id, old) in &self.providers {
+            if !providers.get(id).is_some_and(|new| Arc::ptr_eq(new, old)) {
+                old.revoke();
+            }
+        }
+        Self { actions, providers }
     }
 }
 
