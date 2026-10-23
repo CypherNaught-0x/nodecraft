@@ -13,6 +13,10 @@ Original, public-safe fixtures for the [plugin package and wire contract](../../
   decoders refuse.
 - `stream/valid/<n>--<what>.bin`: byte streams holding `n` frames; `stream/invalid/<code>--<what>.bin`
   streams the frame reader refuses.
+- `lint/invalid/<code>--<what>/`: package folders that `nodecraft-cli plugin pack` or `plugin lint`
+  refuses with `<code>` (or, for a check with no wire code, its words: `unknown_function`).
+  The CLI's `every_package_in_the_lint_corpus_is_refused_with_its_code` test runs them; packages
+  over a size budget are generated there instead.
 - `package/textpack/`: a complete package (its `guest.wasm` is only a module header).
   `package/expected.json` records its digest; `package/trust.json` trusts the key that signed it.
 

@@ -55,7 +55,7 @@ pub fn lint(bytes: &[u8], host: &PluginHost) -> Result<Value, Error> {
         warnings.push(format!("this build can't grant the optional {} capability: the package runs without it", capability.as_str()));
     }
     for dep in &package.manifest.dependencies {
-        warnings.push(format!("it needs {} {} ({}) installed and enabled first", dep.package_id, dep.version, dep.digest));
+        warnings.push(format!("it needs {} {} ({}) installed and enabled first, and it must be a data package", dep.package_id, dep.version, dep.digest));
     }
     let mut out = report_json(&report, true);
     if let Some(o) = out.as_object_mut() {

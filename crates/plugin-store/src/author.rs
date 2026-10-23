@@ -8,7 +8,8 @@
 use crate::archive::{self, ArchiveLimits, wire};
 use nodecraft_plugin::inventory::MANIFEST_PATH;
 use nodecraft_plugin::manifest::MANIFEST_LIMITS;
-use nodecraft_plugin::{Inventory, PackageDigest, json};
+use nodecraft_plugin::signature::SigningKey;
+use nodecraft_plugin::{Inventory, Manifest, PackageDigest, json};
 use nodecraft_types::{Error, ErrorKind};
 
 /// Names the package format writes itself; an author's file may not take them.
@@ -56,4 +57,21 @@ pub fn pack(files: Vec<(String, Vec<u8>)>, signature: Option<&[u8]>) -> Result<P
     let bytes = archive::build(&borrowed, signature)?;
     let package = archive::open(&bytes, ArchiveLimits::DEFAULT)?;
     Ok(Packed { bytes, digest: package.digest, inventory: package.inventory.canonical_json() })
+}
+
+/// Packs `files` signed with `key` (#866). When the manifest names a `publisher_key_id`, only
+/// that key may sign it.
+pub fn pack_signed(files: Vec<(String, Vec<u8>)>, key: &SigningKey) -> Result<Packed, Error> {
+    let files = prepared(files)?;
+    let manifest = files.iter().find(|(name, _)| name == MANIFEST_PATH).map(|(_, bytes)| bytes.as_slice()).unwrap_or_default();
+    let manifest = Manifest::decode(manifest).map_err(|e| wire(e.at("/manifest.json")))?;
+    if let Some(publisher) = manifest.publisher_key_id.as_ref().filter(|p| *p != key.key_id()) {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("the manifest's publisher_key_id is {publisher}, but this key is {}; sign with that key or change the manifest", key.key_id()),
+        ));
+    }
+    let inventory = Inventory::from_files(files.iter().map(|(name, bytes)| (name.as_str(), bytes.as_slice()))).map_err(wire)?;
+    let signature = key.sign(&inventory.digest()).encode().map_err(wire)?;
+    pack(files, Some(signature.as_bytes()))
 }

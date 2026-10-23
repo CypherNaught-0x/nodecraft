@@ -623,3 +623,20 @@ mod grant_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod lock_tests;
 mod property_tests;
+
+#[test]
+fn an_author_signed_pack_installs_as_verified_and_only_the_publisher_may_sign() {
+    use nodecraft_plugin::signature::SigningKey;
+    let key = SigningKey::from_secret(Token::parse("pub-key").unwrap(), random_seed());
+    let mut sp = spec("io.example.authored");
+    sp.publisher = Some("pub-key");
+    let packed = crate::author::pack_signed(files(&sp), &key).unwrap();
+    assert_eq!(packed.digest, digest_of(&sp), "signing doesn't change the digest");
+    let entry = key.trust_entry("test").unwrap();
+    let trust = TrustStore::decode(format!(r#"{{"keys":[{entry}],"trust_version":1}}"#).as_bytes()).unwrap();
+    let report = store().import(&packed.bytes, &trust, false).unwrap();
+    assert_eq!(report.provenance, Provenance::Verified { key_id: Token::parse("pub-key").unwrap() });
+    let other = SigningKey::from_secret(Token::parse("other-key").unwrap(), random_seed());
+    let refused = crate::author::pack_signed(files(&sp), &other).unwrap_err();
+    assert!(refused.message.contains("publisher_key_id is pub-key"), "{}", refused.message);
+}

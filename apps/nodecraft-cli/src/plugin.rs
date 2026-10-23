@@ -1,13 +1,18 @@
-//! `plugin pack|inventory|lint` (#175): building and checking `.ncraft-plugin` packages.
+//! `plugin pack|inventory|lint|key` (#175, #866): building, signing and checking
+//! `.ncraft-plugin` packages.
 //!
-//! `pack` writes a package from a folder, the same bytes for the same files on any machine.
+//! `pack` writes a package from a folder, the same bytes for the same files on any machine, and
+//! signs it with `--sign <key file>`. `key new` writes a signing key file; `key trust` prints the
+//! entry that trusts it. The secret stays in the key file: it is never printed or logged.
 //! `inventory` prints the canonical inventory and digest a package of the folder would have.
 //! `lint` checks a package file the way installing, granting and enabling it would. None of them
 //! runs anything from the package or the folder, and none touches the app's plugin store.
 use std::path::{Path, PathBuf};
 
 use nodecraft_engine::plugin_cmds::{PluginHost, host_ids, lint};
+use nodecraft_plugin::id::Token;
 use nodecraft_plugin::inventory::{MAX_FILES, MAX_SEGMENTS};
+use nodecraft_plugin::signature::SigningKey;
 use nodecraft_plugin_store::ArchiveLimits;
 use nodecraft_plugin_store::author::{self, Packed};
 use nodecraft_types::{Error, ErrorKind};
@@ -87,9 +92,54 @@ fn read_capped(path: &Path, cap: u64) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-/// `plugin pack <folder> --out <file>`: packs the folder, refusing an output inside it (the next
-/// pack would take it in).
-pub fn pack(folder: &Path, out: &Path) -> Result<(Packed, Value), Error> {
+/// Most bytes of a key file read.
+const MAX_KEY_FILE: u64 = 4096;
+
+/// Reads the signing key in `file`. Errors say what is wrong with the file, never what it holds.
+pub fn read_key(file: &Path) -> Result<SigningKey, Error> {
+    let bytes = read_capped(file, MAX_KEY_FILE).map_err(|e| Error::new(e.kind, format!("the key file {}: {}", file.display(), e.message)))?;
+    SigningKey::decode(&bytes).map_err(|e| invalid(format!("the key file {} isn't a NodeCraft signing key ({} at {})", file.display(), e.code.as_str(), e.at)))
+}
+
+/// `plugin key new <file> --id <key-id>`: writes a new signing key, readable only by its owner
+/// where the OS has file modes. An existing file is never replaced.
+pub fn key_new(file: &Path, key_id: &str) -> Result<Value, Error> {
+    let key_id = Token::parse(key_id).map_err(|_| invalid("a key ID is [a-z0-9][a-z0-9_-]{0,63}"))?;
+    let mut secret = [0u8; 32];
+    getrandom::fill(&mut secret).map_err(|_| Error::new(ErrorKind::Internal, "the OS random source failed"))?;
+    let key = SigningKey::from_secret(key_id, secret);
+    let text = key.encode_secret().map_err(|e| Error::new(ErrorKind::Internal, format!("the key couldn't be written ({e})")))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut handle = options.open(file).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => Error::new(ErrorKind::Conflict, format!("{} exists; a key file is never replaced", file.display())),
+        _ => Error::new(ErrorKind::Internal, format!("{} can't be written ({e})", file.display())),
+    })?;
+    if let Err(e) = std::io::Write::write_all(&mut handle, text.as_bytes()).and_then(|()| handle.sync_all()) {
+        // The file is this call's own (it was created new): never leave half a key behind.
+        drop(handle);
+        let _ = std::fs::remove_file(file);
+        return Err(Error::new(ErrorKind::Internal, format!("{} can't be written ({e})", file.display())));
+    }
+    Ok(json!({"file": file.display().to_string(), "key_id": key.key_id().as_str(), "public_key": hex(&key.public_key())}))
+}
+
+/// `plugin key trust <file> [--provenance <text>]`: the entry to add to a trust file's `keys`.
+pub fn key_trust(file: &Path, provenance: &str) -> Result<Value, Error> {
+    let entry = read_key(file)?.trust_entry(provenance).map_err(|e| invalid(e.to_string()))?;
+    serde_json::from_str(&entry).map_err(|_| Error::new(ErrorKind::Internal, "the trust entry couldn't be read back"))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `plugin pack <folder> --out <file> [--sign <key file>]`: packs the folder, refusing an output
+/// inside it (the next pack would take it in), and signs it with the key file if given; a key
+/// file inside the folder is refused, so it can't be packed.
+pub fn pack(folder: &Path, out: &Path, sign: Option<&Path>) -> Result<(Packed, Value), Error> {
     let folder_abs = std::fs::canonicalize(folder).map_err(|e| Error::new(ErrorKind::NotFound, format!("{} can't be read ({e})", folder.display())))?;
     let out_dir = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let out_dir = std::fs::canonicalize(out_dir).map_err(|e| Error::new(ErrorKind::NotFound, format!("{} can't be written ({e})", out.display())))?;
@@ -99,7 +149,26 @@ pub fn pack(folder: &Path, out: &Path) -> Result<(Packed, Value), Error> {
     if std::fs::symlink_metadata(out).is_ok_and(|m| !m.is_file()) {
         return Err(invalid(format!("{} is a link or a folder; name a new or regular file", out.display())));
     }
-    let packed = author::pack(read_folder(folder)?, None)?;
+    let key = match sign {
+        Some(file) => {
+            let file_abs =
+                std::fs::canonicalize(file).map_err(|e| Error::new(ErrorKind::NotFound, format!("the key file {} can't be read ({e})", file.display())))?;
+            if file_abs.starts_with(&folder_abs) {
+                return Err(invalid("keep the key file outside the folder it signs, or it would be packed with it"));
+            }
+            // The package would replace the only copy of the key.
+            if out.file_name().is_some_and(|name| out_dir.join(name) == file_abs) {
+                return Err(invalid("--out names the key file; write the package somewhere else"));
+            }
+            Some(read_key(file)?)
+        }
+        None => None,
+    };
+    let files = read_folder(folder)?;
+    let packed = match &key {
+        Some(key) => author::pack_signed(files, key)?,
+        None => author::pack(files, None)?,
+    };
     // Written beside the output and moved into place, so a full disk never leaves half a package.
     let partial = out_dir.join(format!(".{}.partial", out.file_name().and_then(|n| n.to_str()).unwrap_or("package")));
     let written = std::fs::write(&partial, &packed.bytes).and_then(|()| std::fs::rename(&partial, out));
@@ -107,7 +176,10 @@ pub fn pack(folder: &Path, out: &Path) -> Result<(Packed, Value), Error> {
         let _ = std::fs::remove_file(&partial);
         return Err(Error::new(ErrorKind::Internal, format!("{} can't be written ({e})", out.display())));
     }
-    let report = json!({"file": out.display().to_string(), "digest": packed.digest.to_string(), "bytes": packed.bytes.len()});
+    let mut report = json!({"file": out.display().to_string(), "digest": packed.digest.to_string(), "bytes": packed.bytes.len()});
+    if let Some(key) = &key {
+        report["signed_by"] = json!(key.key_id().as_str());
+    }
     Ok((packed, report))
 }
 
@@ -161,40 +233,73 @@ pub fn lint_text(report: &Value) -> String {
 
 /// `plugin <pack|inventory|lint> …`: parses the arguments and prints the result, or the error.
 pub fn command(args: &[String]) -> Result<String, String> {
-    let (sub, rest) = args.split_first().ok_or("`plugin` needs pack, inventory or lint")?;
+    let (sub, rest) = args.split_first().ok_or("`plugin` needs pack, inventory, lint or key")?;
+    let (sub, rest) = match (sub.as_str(), rest.split_first()) {
+        ("key", Some((action, rest))) if action == "new" || action == "trust" => (format!("key {action}"), rest),
+        ("key", _) => return Err("`plugin key` needs new or trust".to_owned()),
+        _ => (sub.clone(), rest),
+    };
     let mut json_out = false;
     let mut out = None;
     let mut trust = None;
+    let mut sign = None;
+    let mut key_id = None;
+    let mut provenance = None;
     let mut positional = Vec::new();
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--json" => json_out = true,
             "--out" if sub == "pack" => out = Some(PathBuf::from(it.next().ok_or("--out needs a file")?)),
+            "--sign" if sub == "pack" => sign = Some(PathBuf::from(it.next().ok_or("--sign needs a key file")?)),
             "--trust" if sub == "lint" => trust = Some(PathBuf::from(it.next().ok_or("--trust needs a file")?)),
+            "--id" if sub == "key new" => key_id = Some(it.next().ok_or("--id needs a key ID")?.clone()),
+            "--provenance" if sub == "key trust" => provenance = Some(it.next().ok_or("--provenance needs a note")?.clone()),
             flag if flag.starts_with("--") => return Err(format!("`plugin {sub}` doesn't take {flag}")),
             path => positional.push(PathBuf::from(path)),
         }
     }
     let [path] = positional.as_slice() else {
-        return Err(format!("`plugin {sub}` takes one {}", if sub == "lint" { "package file" } else { "folder" }));
+        let what = match sub.as_str() {
+            "lint" => "package file",
+            "key new" | "key trust" => "key file",
+            _ => "folder",
+        };
+        return Err(format!("`plugin {sub}` takes one {what}"));
     };
     let shown = |value: &Value| serde_json::to_string_pretty(value).map(|s| s + "\n").map_err(|_| "the result couldn't be written".to_owned());
     match sub.as_str() {
         "pack" => {
             let out = out.ok_or("`plugin pack` needs --out <file>")?;
-            let (_, report) = pack(path, &out).map_err(|e| e.message)?;
+            let (_, report) = pack(path, &out, sign.as_deref()).map_err(|e| e.message)?;
             if json_out {
                 shown(&report)
             } else {
+                let signed = report["signed_by"].as_str().map(|by| format!("  signed by {by}\n")).unwrap_or_default();
                 Ok(format!(
-                    "wrote {} ({} bytes)\n  digest {}\n",
+                    "wrote {} ({} bytes)\n  digest {}\n{signed}",
                     report["file"].as_str().unwrap_or_default(),
                     report["bytes"],
                     report["digest"].as_str().unwrap_or_default()
                 ))
             }
         }
+        "key new" => {
+            let key_id = key_id.ok_or("`plugin key new` needs --id <key-id>")?;
+            let report = key_new(path, &key_id).map_err(|e| e.message)?;
+            if json_out {
+                shown(&report)
+            } else {
+                Ok(format!(
+                    "wrote the signing key {} to {}\n  public key {}\n  keep this file secret; `plugin key trust {}` prints the entry others add to trust.json\n",
+                    report["key_id"].as_str().unwrap_or_default(),
+                    report["file"].as_str().unwrap_or_default(),
+                    report["public_key"].as_str().unwrap_or_default(),
+                    report["file"].as_str().unwrap_or_default()
+                ))
+            }
+        }
+        "key trust" => shown(&key_trust(path, provenance.as_deref().unwrap_or_default()).map_err(|e| e.message)?),
         "inventory" => {
             let report = inventory(path).map_err(|e| e.message)?;
             if json_out {
@@ -207,6 +312,6 @@ pub fn command(args: &[String]) -> Result<String, String> {
             let report = lint_file(path, trust).map_err(|e| format!("{} doesn't pass: {}", path.display(), e.message))?;
             if json_out { shown(&report) } else { Ok(lint_text(&report)) }
         }
-        other => Err(format!("unknown `plugin` command `{other}`; use pack, inventory or lint")),
+        other => Err(format!("unknown `plugin` command `{other}`; use pack, inventory, lint or key")),
     }
 }

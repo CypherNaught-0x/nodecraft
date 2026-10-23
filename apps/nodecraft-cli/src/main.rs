@@ -4,7 +4,7 @@
 //! and `providers` read projects and the engine without changing them; `run` runs a project's
 //! nodes and exports their results, leaving the project file as it was. `serve` offers a
 //! project's techniques as a local HTTP API, and `webhook-secret` keeps the secret its webhooks are
-//! signed with. `relay` passes projects shared live between peers. `plugin` packs and lints plugin
+//! signed with. `relay` passes projects shared live between peers. `plugin` packs, signs and lints plugin
 //! packages. `batch` and `comfy` arrive with their milestones
 //! (docs/plan.md §4.8).
 
@@ -74,9 +74,14 @@ commands:
   webhook-secret [--delete]
                   keep the secret `serve` signs webhooks with in the keychain, read from stdin
                   (at least 32 characters; `whsec_<base64>` is decoded); --delete removes it
-  plugin pack <folder> --out <file>
+  plugin pack <folder> --out <file> [--sign <key file>]
                   build a .ncraft-plugin from a folder: the same files always give the same
-                  bytes and digest. Nothing in the folder runs; dot-files are left out
+                  bytes and digest. Nothing in the folder runs; dot-files are left out.
+                  --sign signs it with a key file kept outside the folder
+  plugin key new <file> --id <key-id>
+                  write a new signing key file (never replaces one); keep it secret
+  plugin key trust <file> [--provenance <note>]
+                  print the entry that trusts the key, to add to a trust.json's keys
   plugin inventory <folder>
                   print the canonical inventory and digest a package of the folder would have
   plugin lint <file> [--trust <trust.json>]

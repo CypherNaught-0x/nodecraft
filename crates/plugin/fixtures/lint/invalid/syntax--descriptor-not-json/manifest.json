@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "package_id": "io.example.palette",
+  "version": "1.0.0",
+  "license": "CC0-1.0",
+  "host_protocol": { "major": 1, "min_minor": 0, "max_minor": 0 },
+  "descriptor_contract": { "major": 1, "minor": 0 },
+  "runtime": { "kind": "data" },
+  "dependencies": [],
+  "capabilities": { "required": [], "optional": [] },
+  "registrations": [
+    { "id": "warm", "kind": "catalog", "binding": "color.palette", "descriptor": "data/warm.json" }
+  ]
+}
