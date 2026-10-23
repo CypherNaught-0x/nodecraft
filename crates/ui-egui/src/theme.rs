@@ -85,6 +85,12 @@ pub struct Tokens {
     pub search_button_width: f32,
     pub comments_width: f32,
     pub comments_height: f32,
+    /// The shader editor window (#90): its width, its source area's height, a parameter name field's width.
+    pub shader_editor_width: f32,
+    pub shader_editor_height: f32,
+    pub shader_name_width: f32,
+    /// The most height a compiler message takes before it scrolls.
+    pub shader_message_height: f32,
     pub comment_marker_size: f32,
     pub comment_marker_tail: f32,
     pub comment_marker_ring: f32,
@@ -243,6 +249,10 @@ pub const DARK: Tokens = Tokens {
     search_button_width: 130.0,
     comments_width: 340.0,
     comments_height: 500.0,
+    shader_editor_width: 560.0,
+    shader_editor_height: 240.0,
+    shader_name_width: 90.0,
+    shader_message_height: 72.0,
     comment_marker_size: 30.0,
     comment_marker_tail: 6.0,
     comment_marker_ring: 3.0,

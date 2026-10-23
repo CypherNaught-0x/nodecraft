@@ -86,3 +86,10 @@ fn call_chains_that_multiply_work_are_refused() {
     short.push_str("fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color * f3(1.0); }");
     validate(&spec(&short)).unwrap();
 }
+
+#[test]
+fn compiler_reports_point_at_the_persons_line_in_plain_ascii_framing() {
+    let error = validate(&spec("fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {\n    return color;\n}\noops")).unwrap_err().0;
+    assert!(error.contains("wgsl:4:1"), "the line is the person's own: {error}");
+    assert!(!error.chars().any(|c| ('\u{2500}'..='\u{257f}').contains(&c)), "box-drawing characters many fonts lack: {error}");
+}

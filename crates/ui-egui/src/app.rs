@@ -373,6 +373,7 @@ mod reader;
 mod recovery;
 mod runs;
 mod search;
+mod shader_editor;
 mod sharing;
 mod sheet_view;
 mod split;
@@ -505,6 +506,7 @@ pub struct NodeCraftApp {
     /// The mask editor (#102), while open.
     mask_editor: Option<mask_editor::MaskEditor>,
     layer_editor: Option<layer_editor::LayerEditor>,
+    shader_editor: Option<shader_editor::ShaderEditor>,
     presenter: Option<deck_presenter::Presenter>,
     deck_editor: Option<deck_editor::DeckEditor>,
     timeline_editor: Option<timeline_editor::TimelineEditor>,
@@ -1091,6 +1093,7 @@ impl NodeCraftApp {
             reader: None,
             mask_editor: None,
             layer_editor: None,
+            shader_editor: None,
             presenter: None,
             deck_editor: None,
             timeline_editor: None,
@@ -1876,6 +1879,22 @@ impl NodeCraftApp {
                                 layers_request = Some(node.id);
                                 ui.close();
                             }
+                            if node.kind == nodecraft_nodes::shader::ID
+                                && ui.button("Edit shader…").on_hover_text("Edit its WGSL and sliders, or ask a model to write it").clicked()
+                            {
+                                layers_request = Some(node.id);
+                                ui.close();
+                            }
+                            if nodecraft_engine::shader_assist_cmds::written_for(node).is_some()
+                                && ui
+                                    .add_enabled(node.active.is_some(), egui::Button::new("Use as shader"))
+                                    .on_hover_text("Store this answer as the shader of the card it was written for; one undo step")
+                                    .on_disabled_hover_text("Run the card first")
+                                    .clicked()
+                            {
+                                layers_request = Some(node.id);
+                                ui.close();
+                            }
                             if node.kind == nodecraft_nodes::deck::ID {
                                 if ui.button("Edit slides…").clicked() {
                                     layers_request = Some(node.id);
@@ -2155,9 +2174,15 @@ impl NodeCraftApp {
             self.open_reader(node);
         }
         if let Some(node) = layers_after {
-            let deck =
-                self.session.document().canvases().get(&self.canvas).and_then(|c| c.nodes().get(&node)).is_some_and(|n| n.kind == nodecraft_nodes::deck::ID);
-            if deck { self.open_deck_editor(node) } else { self.open_layer_editor(node) }
+            let found = self.session.document().canvases().get(&self.canvas).and_then(|c| c.nodes().get(&node));
+            let kind = found.map(|n| n.kind.clone());
+            let shader_for = found.and_then(nodecraft_engine::shader_assist_cmds::written_for);
+            match (kind.as_deref(), shader_for) {
+                (Some(nodecraft_nodes::deck::ID), _) => self.open_deck_editor(node),
+                (Some(nodecraft_nodes::shader::ID), _) => self.open_shader_editor(node),
+                (_, Some(target)) => self.use_shader_answer(node, target),
+                _ => self.open_layer_editor(node),
+            }
         }
         match present_after {
             Some(Some(node)) => self.open_presenter(node),
@@ -2362,6 +2387,7 @@ impl NodeCraftApp {
         self.sheets_panel(ui.ctx(), t);
         self.techniques_panel(ui.ctx(), t);
         self.elements_panel(ui.ctx(), t);
+        self.shader_editor_window(ui.ctx(), t);
         // Floating UI must lay out before final quick-add admission, including a Window's first
         // sizing pass. Keep Keys rendering/polling exactly once, in its existing place.
         // `minimap_press` is this frame's frozen minimap admission (#361): held minimap input owns
@@ -3104,6 +3130,8 @@ mod reader_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod runs_tests;
+#[cfg(test)]
+mod shader_editor_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod sheet_tests;
