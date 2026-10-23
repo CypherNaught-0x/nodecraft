@@ -165,6 +165,26 @@ fn scene_on_with_keys(
     h
 }
 
+/// Wait for the card's Generate hit target to exist, be enabled, and retain its rect
+/// across two frames. A key-result frame can have settled the adapter without having
+/// laid out the next interactive card frame yet.
+fn wait_for_generate(h: &mut Harness<'static, NodeCraftApp>) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut previous = None;
+    for _ in 0..120 {
+        h.step();
+        let button = h.query_by_role_and_label(Role::Button, "Generate");
+        let rect = button.as_ref().map(|button| button.rect());
+        let enabled = button.is_some_and(|button| !button.accesskit_node().is_disabled());
+        if enabled && rect.is_some() && rect == previous {
+            return;
+        }
+        previous = rect;
+        assert!(Instant::now() < deadline, "Generate press was not delivered: button not laid out and enabled with a stable rect");
+    }
+    panic!("Generate press was not delivered: button not laid out and enabled with a stable rect");
+}
+
 fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
     let pos = h.get_by_role_and_label(role, label).rect().center();
     h.hover_at(pos);
@@ -486,6 +506,7 @@ fn a_session_dispatched_key_set_rebuilds_the_next_run_with_the_new_key() {
     let response = h.state_mut().session.dispatch("keys.set", &json!({"account": "mock", "key": NEW_KEY})).unwrap();
     assert!(response.get("pending").is_some());
     frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| !runs.has_cached_adapters()));
+    wait_for_generate(&mut h);
     press(&mut h, Role::Button, "Generate");
     frames_until(&mut h, |app| app.run_confirm.is_some());
     assert_eq!(*reads.lock().unwrap(), [Some(false), Some(true)]);
@@ -498,6 +519,7 @@ fn a_session_dispatched_key_remove_cannot_reuse_the_old_adapter() {
     let response = h.state_mut().session.dispatch("keys.remove", &json!({"account": "mock"})).unwrap();
     assert!(response.get("pending").is_some());
     frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| !runs.has_cached_adapters()));
+    wait_for_generate(&mut h);
     press(&mut h, Role::Button, "Generate");
     frames_until(&mut h, |app| app.notice.as_deref().is_some_and(|notice| notice.contains("needs an API key")));
     assert_eq!(*reads.lock().unwrap(), [Some(false), None]);
@@ -515,7 +537,13 @@ fn failed_native_write_preserves_adapter(command: &str, params: serde_json::Valu
     frames_until(&mut h, |_| attempts.load(Ordering::SeqCst) >= 2);
     h.run();
     assert!(h.state().runs.as_ref().unwrap().has_cached_adapters(), "{command} failed");
+    wait_for_generate(&mut h);
     press(&mut h, Role::Button, "Generate");
+    assert!(
+        h.state().run_confirm.is_some() || h.state().notice.as_deref() == Some(super::runs::SETTING_UP),
+        "{command}: Generate press was not delivered; notice: {:?}",
+        h.state().notice
+    );
     frames_until(&mut h, |app| app.run_confirm.is_some());
     assert_eq!(*reads.lock().unwrap(), [Some(false)], "{command} must reuse the old adapter");
 }
@@ -574,12 +602,14 @@ fn a_synchronous_key_service_change_outside_the_panel_forgets_browser_adapters()
     h.state_mut().session.dispatch("keys.set", &json!({"account": "mock", "key": NEW_KEY})).unwrap();
     h.run();
     assert!(!h.state().runs.as_ref().unwrap().has_cached_adapters());
+    wait_for_generate(&mut h);
     press(&mut h, Role::Button, "Generate");
     frames_until(&mut h, |app| app.run_confirm.is_some());
     assert_eq!(*reads.lock().unwrap(), [Some(false), Some(true)]);
     h.state_mut().run_confirm = None;
     h.state_mut().session.dispatch("keys.remove", &json!({"account": "mock"})).unwrap();
     h.run();
+    wait_for_generate(&mut h);
     press(&mut h, Role::Button, "Generate");
     frames_until(&mut h, |app| app.notice.as_deref().is_some_and(|notice| notice.contains("needs an API key")));
     assert_eq!(*reads.lock().unwrap(), [Some(false), Some(true), None]);
@@ -593,9 +623,38 @@ fn failed_browser_style_write_preserves_adapter(command: &str, params: serde_jso
     assert_eq!(attempts.load(Ordering::SeqCst), 1, "{command} reached the rejecting browser store");
     h.run();
     assert!(h.state().runs.as_ref().unwrap().has_cached_adapters(), "{command} failed");
+    wait_for_generate(&mut h);
     press(&mut h, Role::Button, "Generate");
+    assert!(
+        h.state().run_confirm.is_some() || h.state().notice.as_deref() == Some(super::runs::SETTING_UP),
+        "{command}: Generate press was not delivered; notice: {:?}",
+        h.state().notice
+    );
     frames_until(&mut h, |app| app.run_confirm.is_some());
     assert_eq!(*reads.lock().unwrap(), [Some(false)], "{command} must reuse the old adapter");
+}
+
+#[test]
+fn generate_waits_for_a_card_laid_out_one_frame_late() {
+    let h = scene(making(image(MockModel::new(MockOutput::Image))));
+    // Test-only delayed layout: the first frame is intentionally not drawn. An unguarded
+    // press here cannot find a Generate hit target; the next frame builds the actual card.
+    let allow_layout = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let draw = Arc::clone(&allow_layout);
+    let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(
+        move |ui, app: &mut NodeCraftApp| {
+            if draw.load(Ordering::SeqCst) {
+                app.show(ui);
+            }
+        },
+        h.into_state(),
+    );
+    assert!(h.query_by_role_and_label(Role::Button, "Generate").is_none(), "first frame intentionally has no Generate hit target");
+    allow_layout.store(true, Ordering::SeqCst);
+    wait_for_generate(&mut h);
+    press(&mut h, Role::Button, "Generate");
+    assert!(h.state().run_confirm.is_some() || h.state().notice.as_deref() == Some(super::runs::SETTING_UP), "Generate press was not delivered");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
 }
 
 #[test]
@@ -672,6 +731,7 @@ fn refresh_accept(h: &mut Harness<'static, NodeCraftApp>) {
 
 /// Generates the card once and waits for its result.
 fn generated(h: &mut Harness<'static, NodeCraftApp>) {
+    wait_for_generate(h);
     press(h, Role::Button, "Generate");
     frames_until(h, |app| app.run_confirm.is_some());
     accept(h);
