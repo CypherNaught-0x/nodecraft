@@ -14,7 +14,7 @@
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
   <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-native-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: M1 feature work done, later milestones in progress" src="https://img.shields.io/badge/status-M1%20done%20%C2%B7%20later%20milestones%20in%20progress-d69e2e?style=flat-square">
+  <img alt="Status: M2 Organise done, later milestones in progress" src="https://img.shields.io/badge/status-M2%20done%20%C2%B7%20later%20milestones%20in%20progress-d69e2e?style=flat-square">
 </p>
 
 <p align="center">
@@ -24,10 +24,11 @@
 ---
 
 > [!NOTE]
-> NodeCraft is being built in the open. M1 canvas feature work and its measured exit criterion
-> are complete; the milestone still awaits this documentation close-out. The desktop saves and
-> opens `.ncraft` projects and can run supported generation cards through its wired host. That
-> does **not** mean every catalog model or provider works on every platform. See
+> NodeCraft is being built in the open. The M1 canvas core and the M2 organisation tools
+> (fields, tags, comments, search, auto-format, bulk editing, routers) are complete. The
+> desktop saves and opens `.ncraft` projects and can run supported generation cards through
+> its wired host. That does **not** mean every catalog model or provider works on every
+> platform. See
 > [`ROADMAP.md`](ROADMAP.md) for current limitations and next steps.
 
 ## What it does today
@@ -40,8 +41,10 @@
   a searchable quick-add palette with per-key shortcuts, "Turn into" when you drop a noodle on
   empty canvas, drag-to-reorder input order badges, copy/cut/paste/duplicate through the OS
   clipboard, OS file drop that creates source nodes, pinned discussions and Notes, grid/dependency
-  formatting, fields, a bulk parameter panel, and named colour tags with a bounded highlight
-  filter. Save/open `.ncraft` projects and recover unsaved work on desktop; image and text actions
+  formatting, router nodes as cable ties, a bulk parameter panel, named colour tags with a
+  bounded highlight filter and tag navigation, and fields: named, coloured zones that move with
+  their members and collapse to a header that search, tag navigation, the minimap and Fit all
+  respect. Save/open `.ncraft` projects and recover unsaved work on desktop; image and text actions
   recompute locally, and supported generation cards can run through the desktop host.
 - **Never lose work**: every edit is an invertible changeset, so undo/redo covers everything, and
   command dispatch runs under a panic guard. No `unsafe` and no `unwrap` outside tests.
@@ -159,9 +162,10 @@ The following are goals or partial capabilities, **not** a promise that every mo
 - **ComfyUI first-class.** Import any workflow as a node with typed ports, follow live progress,
   and switch a node between cloud models and local ComfyUI without rewiring.
 - **Providers**: LLM endpoints (OpenAI-compatible, Anthropic, LiteLLM, Ollama), OpenAI Images,
-  Replicate, Seedream, Tripo, Meshy, Higgsfield, Gemini images and Gemini Omni Flash video have
-  adapters. ComfyUI now accepts video/audio workflows; fal.ai and ElevenLabs also have adapters,
-  while Google Imagen/TTS, Seedance and other Kling work remain separately tracked. Adapters and
+  Replicate, Seedream, Tripo, Meshy, Higgsfield, Gemini images, Gemini Omni Flash video, and Veo
+  3.1 and Google TTS on Google Cloud have adapters. ComfyUI now accepts video/audio workflows;
+  fal.ai, ElevenLabs and Seedance (BytePlus ModelArk) also have adapters, while a direct Kling
+  adapter remains separately tracked. Adapters and
   catalog entries are not proof of usable workflows in every host. Consult
   [`docs/providers.md`](docs/providers.md) for per-adapter modes, authentication and limitations;
   desktop and browser support differ.
@@ -229,7 +233,7 @@ and checklists for adding commands, node kinds and providers.
 | Milestone | Focus | Where it stands |
 |---|---|---|
 | M0 | Workspace skeleton, lints, CI, empty canvas | done |
-| M1–M2 | Canvas core, organisation tools | M1 feature work and exit criterion done; M2 partial |
+| M1–M2 | Canvas core, organisation tools | done |
 | M3 | Generation engine, providers, history, cost | desktop host wired; remaining modes and issues open |
 | M4–M5 | Actions, Batch, Techniques, CLI | local action nodes work; reuse and first signed release partial |
 | M6–M8 | Layer/Timeline/Mask editors, video, audio, 3D, PDF | partial, with working desktop surfaces and open gaps |

@@ -715,7 +715,26 @@ follow-up):
   closed on Apple M3 Pro/Metal at 120 Hz (not measured on a 60 Hz display or Windows/Linux).
   The legacy UI kittest numbers at `481700ba` measure CPU preparation plus tessellation,
   **not** displayed frames. See [the measurement boundaries](performance.md#the-60-fps-criterion).
-- [ ] Close the M1 documentation follow-up (#372), then GitHub can mark its milestone closed.
+- [x] Close the M1 documentation follow-up (#372); the milestone is closed.
+
+M2's feature and exit-criterion checklist (completed issues; #373 closes the documentation
+follow-up):
+
+- [x] Fields: named, coloured zones whose header drag moves every member, empty layout zones,
+  resize and collapse (#66); Delete removes a selected field (#708); membership from stored
+  geometry and shift-drag box select from a header (#709); a collapsed field shows only its
+  header, which search and tag navigation expand to reveal a hidden card (#706), the minimap draws
+  (#707) and Fit all frames (#739).
+- [x] Colour tags with a bounded highlight filter and tag navigation (#67), persisted by the v3
+  tags/fields bridge (#193).
+- [x] Local pinned discussions and Note nodes (#68); canvas search (⌘/Ctrl+F) (#69).
+- [x] Auto-format of a selection into a grid or dependency layout, one undo step (#70).
+- [x] Bulk parameter panel with Mixed values and atomic undo (#71); router nodes (#72); input
+  ordering landed in M1 (#64).
+- [x] Exit criterion: the workshop "organise" pattern (§1.3, item 10) works in the desktop app:
+  coloured fields, colour tags with a jump-to-tagged filter, routers as cable ties, auto-format
+  of a selection, and canvas search.
+- [ ] Close the M2 documentation follow-up (#373), then GitHub can mark its milestone closed.
 
 ---
 

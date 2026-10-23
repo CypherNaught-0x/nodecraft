@@ -1,27 +1,27 @@
 # Roadmap
 
-**Now: M1 canvas core is complete; the later milestones are in progress.** The desktop can
-edit, save and run projects, while milestone exit criteria for generation, reuse and sharing still
-have open work. Details and exit criteria: [`docs/plan.md`](docs/plan.md) §7. Work is tracked as
+**Now: M0, M1 and M2 (Organise) are complete; the later milestones are in progress.** The
+desktop can edit, organise, save and run projects, while milestone exit criteria for generation,
+reuse and sharing still have open work. Details and exit criteria: [`docs/plan.md`](docs/plan.md) §7. Work is tracked as
 GitHub issues in milestones; comment `/claim` to take one.
 
-As of 2026-10-22, **Done** counts only issues closed as *completed* (not `not planned`); the
-denominator is all filed issues, including open and declined issues. M1 is 35 completed, one
-`not planned` (#135), and this close-out (#372) still open: its feature work and #65's exit
-criterion are done, but GitHub will only close the milestone after this issue lands. Other rows
-likewise reflect GitHub's live issue state, not a declaration that all milestone exit criteria
-have passed. Status distinguishes tested library capabilities from what someone can use in the app.
+As of 2026-10-23, **Done** counts only issues closed as *completed* (not `not planned`); the
+denominator is all filed issues, including open and declined issues. M1 is 36 completed and one
+`not planned` (#135). M2's feature work is done, including Fit all framing collapsed fields by
+their header (#739); its count includes #739 and leaves only this documentation close-out (#373),
+which GitHub closes when it lands. Other rows reflect GitHub's live issue state, not a
+declaration that all milestone exit criteria have passed. Status distinguishes tested library capabilities from what someone can use in the app.
 
 | M | Name | Status | Done |
 |---|---|---|---|
 | 0 | **Skeleton** — workspace, CI, release pipeline, themed canvas | ✅ feature work done | 10/10 |
-| 1 | **Canvas core** — graph, undo, commands, canvas, `.ncraft` | ✅ feature work done; close-out open | 35/37 |
-| 2 | **Organise** — fields, tags, comments, search, format, router | 🟡 partial | 10/14 |
+| 1 | **Canvas core** — graph, undo, commands, canvas, `.ncraft` | ✅ done | 36/37 |
+| 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done (close-out #373) | 13/14 |
 | 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired | 38/44 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | 🟡 partial; action nodes work in app | 8/12 |
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 16/27 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial | 6/10 |
-| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110) | 16/30 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 8/11 |
+| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18) | 19/30 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 6/12 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 4/8 |
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence pending | 6/14 |
@@ -39,7 +39,11 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   clipboard, OS file drop as source nodes, split-grid image previews (#337), per-node generation
   history strip, local pinned
   discussions with Note nodes (#68), grid/dependency formatting of selected nodes (#70), named
-  colour tags with a bounded highlight filter (#67), shared parameter editing with explicit Mixed
+  colour tags with a bounded highlight filter and tag navigation (#67), router nodes that carry
+  one modality as a cable tie (#72), fields: named, coloured zones that move with their members
+  and collapse to their header (#66), which Delete removes (#708), the minimap draws as a header
+  (#707), Fit all frames by that header (#739), and search and tag navigation open to reveal a
+  hidden card (#706); shared parameter editing with explicit Mixed
   values and atomic undo across compatible selected nodes (#71), and an API keys panel backed by
   the OS keychain. Shared model changes show per-target migration results before applying (#157).
   A mask editor paints brush masks over an image, expands its canvas and wires an inpaint or
@@ -129,7 +133,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   Video generation (#559) has text, frame, reference and speech-to-video modes declared per
   model; fal's Wan 2.2 maps text, first/last-frame and speech to video (#607), and no adapter
   maps reference-to-video yet. Gemini Omni Flash video (#17) supports text, first/last-frame and
-  reference-image inputs; Veo on Google Cloud is still tracked separately (#742). A Generate
+  reference-image inputs, and Veo 3.1 runs on Google Cloud with a service account (#742). A Generate
   audio card (#672) runs the catalog's text-to-audio and audio-to-audio models, such as fal's
   Kokoro speech, and plays its result.
   The Timeline (#109) renders clips with fades and cross-fades on a main track, with picture
@@ -164,13 +168,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
-1. **Close M1 paperwork** (#372): save/open/recovery, the run host and the canvas performance
-   exit criterion (#65) have landed. On Apple M3 Pro at 120 Hz, the desktop presented-frame
-   pan/zoom run met P1–P3 for 200 and 1,000 nodes (#634); this does not assert a result on 60 Hz,
-   Windows or Linux hardware. See [`docs/performance.md`](docs/performance.md).
-2. **Finish current M2/M3 interactions**: the chat-style text-card turn UI (#84) and remaining
-   open milestone issues; do not mistake a tested adapter for a working mode in every host.
-3. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
+1. **Finish M3 generation**: the chat-style text-card turn UI (#84), generation history and
+   variations (#81), cost and budget checks before a run (#201), and the remaining ComfyUI and
+   keychain issues (#9, #80); do not mistake a tested adapter for a working mode in every host.
+2. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
    then browser option-list parity (#721), verification/closure of HTTP serve's still-open
    tracker (#117), and later milestone gaps.
    For the changing priority order, use the [open milestone issues](https://github.com/CypherNaught-0x/nodecraft/milestones).
@@ -226,4 +227,11 @@ The near-term order follows the remaining open issues, not an already-finished w
   not comparable to the quiet #203 baseline). #65 closed after #634 measured presented pan/zoom
   frames on a 120 Hz Metal display against P1–P3. This closes the 2026-10-20 17.09/283.55 ms
   CPU regression report, **not** a blanket 60 fps claim across hardware or all edit workloads.
-  GitHub still has #372 open until this documentation close-out lands.
+  GitHub still had #372 open until its documentation close-out landed.
+- **2026-10-23** — M1 closed with its documentation close-out (#372). M2 (Organise) feature work
+  finished: fields gained Delete (#708), stored-geometry membership and shift-drag box select
+  (#709), reveal-on-search and tag navigation (#706), minimap headers (#707) and header-only Fit
+  all (#739), alongside the earlier tags, comments, search, auto-format, bulk panel and router
+  work. The M2 close-out (#373) refreshed README, ROADMAP and `docs/plan.md`. M6 gained the
+  Elements library (#552) and the Image tools menu (#103); providers gained Veo 3.1 on Google
+  Cloud (#742) and Google TTS (#21).
