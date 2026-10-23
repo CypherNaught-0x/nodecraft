@@ -2,7 +2,7 @@
 use super::*;
 use crate::action_exec::{
     LocalActions,
-    timeline::native::{closed, service},
+    timeline::native::{detach_test_service, service},
 };
 use nodecraft_exec::run::ActionExecutor;
 use nodecraft_format::AssetStore;
@@ -88,13 +88,26 @@ fn several_timeline_renders_respect_the_shared_staging_quota() {
         eprintln!("NODECRAFT_TIMELINE_STAGING_BYTES: {} retained in 2 completed renders", state.retained);
         assert_eq!(provider.requests().len(), 3, "captions came from the deterministic mock");
     }));
-    // These are test-owned service resources, including when an assertion fails above.
-    let _ = closed(nodecraft_media::video::VideoError::Closed);
-    let own = Arc::try_unwrap(open).ok().unwrap();
-    let cleanup = own.begin_shutdown().wait_blocking(Duration::from_secs(30));
+    // Only a sole owner can shut this service down. Other ignored tests may still be
+    // rendering through it, so a shared owner follows its normal lifetime instead.
+    detach_test_service(&open);
+    let cleanup = match Arc::try_unwrap(open) {
+        Ok(own) => {
+            let result = own.begin_shutdown().wait_blocking(Duration::from_secs(30));
+            if result.is_ok() {
+                eprintln!("NODECRAFT_TIMELINE_STAGING_CLEANUP: owned service cleaned up");
+            }
+            result.map(|_| ())
+        }
+        Err(shared) => {
+            drop(shared);
+            eprintln!("NODECRAFT_TIMELINE_STAGING_CLEANUP: service still shared; normal lifetime retained");
+            Ok(())
+        }
+    };
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
     assert!(cleanup.is_ok(), "the test service did not clean up");
-    eprintln!("NODECRAFT_TIMELINE_STAGING_QUOTA: 2 renders retained; third refused; cleanup complete");
+    eprintln!("NODECRAFT_TIMELINE_STAGING_QUOTA: 2 renders retained; third refused");
 }

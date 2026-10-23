@@ -173,6 +173,16 @@ pub(super) mod native {
         error
     }
 
+    /// The real fixture may share this process-wide slot with another ignored test. Detach
+    /// only this exact service; never clear one another test opened with different tools.
+    #[cfg(test)]
+    pub(in crate::action_exec) fn detach_test_service(service: &Arc<VideoService>) {
+        let mut slot = SERVICE.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.as_ref().is_some_and(|(_, current)| Arc::ptr_eq(current, service)) {
+            *slot = None;
+        }
+    }
+
     /// `job`'s result; cancels the job once `cancelled` says so. The service bounds every job by
     /// a deadline of its own, so this ends.
     pub(in crate::action_exec) fn wait<T>(mut job: VideoJob<T>, cancelled: &dyn Fn() -> bool) -> Result<T, VideoError> {
@@ -406,8 +416,7 @@ pub(super) mod native {
             read: &dyn Fn(u64, usize) -> Result<VideoJob<VideoChunk>, VideoError>,
             cancelled: &dyn Fn() -> bool,
         ) -> Result<Blake3, String> {
-            super::super::video_staging::read_back(
-                &self.videos,
+            self.retain_video(
                 bytes_len,
                 |offset, length| wait(read(offset, length).map_err(|error| message(closed(error)))?, cancelled).map_err(message),
                 VideoChunk::bytes,

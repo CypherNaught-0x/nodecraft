@@ -24,4 +24,7 @@ Small-limit tests exercise the exact production reader with concurrent reservati
 last-chunk cancellation, duplicate hashes and rollback. Mock-provider fixtures test accumulated
 outputs without network calls. An opt-in test additionally encodes several tiny Timelines with
 mock-generated captions, lowers only the test budget and checks that the next render is refused
-and the test-owned service cleans up. This does not imply actual tool execution on every platform.
+and a solely owned test service cleans up. If another ignored test still uses that process-wide
+service, cleanup keeps its normal shared lifetime and reports that explicitly. An ordinary CI test
+drives the actual `LocalActions` read-back entry point twice, proving both calls use its one budget
+and dropping the actions releases their payload. This does not imply actual tool execution on every platform.

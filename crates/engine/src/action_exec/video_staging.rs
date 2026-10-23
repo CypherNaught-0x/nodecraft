@@ -9,6 +9,18 @@ pub(super) const MAX_STAGED_RESULTS: usize = 4096;
 const CHUNK: u64 = 1024 * 1024;
 const CANCELLED: &str = "the render was cancelled";
 
+impl super::LocalActions {
+    /// All native read-back adapters enter the same run-owned staging budget here. Keeping
+    /// the transport generic also lets ordinary CI prove that wiring without installed tools.
+    pub(in crate::action_exec) fn retain_video<C, R, B>(&self, length: u64, read: R, bytes_of: B, cancelled: &dyn Fn() -> bool) -> Result<Blake3, String>
+    where
+        R: FnMut(u64, usize) -> Result<C, String>,
+        B: for<'a> Fn(&'a C) -> &'a [u8],
+    {
+        read_back(&self.videos, length, read, bytes_of, cancelled)
+    }
+}
+
 pub(super) struct Videos {
     entries: BTreeMap<Blake3, Arc<[u8]>>,
     retained: u64,

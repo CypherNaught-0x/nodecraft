@@ -201,7 +201,7 @@ fn concurrent_reads_reserve_against_the_same_remaining_capacity() {
 }
 
 #[test]
-fn mock_provider_outputs_share_the_same_readback_quota_and_drop_with_the_run() {
+fn mock_provider_outputs_share_the_same_readback_quota_and_drop_with_the_owner() {
     use nodecraft_providers::{JobInput, Output, ProviderJob, RunLimits, mock::MockProvider, run_to_completion};
     let provider = MockProvider::standard();
     let mut outputs = Vec::new();
@@ -228,8 +228,33 @@ fn mock_provider_outputs_share_the_same_readback_quota_and_drop_with_the_run() {
     let held = Arc::downgrade(videos.lock().unwrap().get(&first).unwrap());
     assert_eq!(videos.lock().unwrap().retained, (one * 2) as u64);
     drop(videos);
-    assert!(held.upgrade().is_none(), "the ended run retains none of its staged copies");
+    assert!(held.upgrade().is_none(), "the dropped staging owner retains none of its copies");
     assert_eq!(provider.requests().len(), 3);
+}
+
+#[test]
+fn local_actions_readbacks_share_its_actual_budget_and_release_with_the_actions() {
+    let mut actions = super::super::LocalActions::new(Default::default());
+    actions.videos = Mutex::new(Videos::limited(7, 4));
+    let first = actions.retain_video(4, |_, _| Ok(b"part".to_vec()), Vec::as_slice, &|| false).unwrap();
+    let reads = AtomicUsize::new(0);
+    let error = actions
+        .retain_video(
+            4,
+            |_, _| {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(b"next".to_vec())
+            },
+            Vec::as_slice,
+            &|| false,
+        )
+        .unwrap_err();
+    assert!(error.contains("staging limit"));
+    assert_eq!(reads.load(Ordering::SeqCst), 0, "LocalActions refuses the second read before requesting any chunk");
+    let held = Arc::downgrade(actions.videos.lock().unwrap().get(&first).unwrap());
+    assert_eq!(actions.staged_videos().len(), 1, "host import sees the same retained entry");
+    drop(actions);
+    assert!(held.upgrade().is_none(), "dropping actual LocalActions releases its retained payload");
 }
 
 #[cfg(not(target_arch = "wasm32"))]
