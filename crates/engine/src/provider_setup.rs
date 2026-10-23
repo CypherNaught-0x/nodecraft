@@ -64,7 +64,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "seedance" => Some("seedream"),
         "gemini-images" => Some("gemini"),
         "gemini-video" => Some("gemini"),
-        "google-veo" | "google-tts" => Some(nodecraft_providers::google_cloud::ACCOUNT),
+        "google-veo" | "google-tts" | "google-gemini-images" => Some(nodecraft_providers::google_cloud::ACCOUNT),
         "fal" => Some("fal"),
         "tripo" => Some("tripo"),
         "meshy" => Some("meshy"),
@@ -222,6 +222,13 @@ fn google_tts(env: &HostEnv<'_>) -> Result<nodecraft_providers::google_cloud::tt
     nodecraft_providers::google_cloud::tts::GoogleTts::new(&secret, env.http.clone(), nodecraft_providers::google_cloud::system_clock()).map_err(adapter_error)
 }
 
+/// Gemini image models on Vertex AI (#47), signed in as the same Google Cloud service account.
+fn google_gemini_images(env: &HostEnv<'_>) -> Result<nodecraft_providers::google_cloud::gemini_images::GoogleGeminiImages, Readiness> {
+    let secret = needs_key(env.keys, nodecraft_providers::google_cloud::ACCOUNT)?;
+    nodecraft_providers::google_cloud::gemini_images::GoogleGeminiImages::new(&secret, env.http.clone(), nodecraft_providers::google_cloud::system_clock())
+        .map_err(adapter_error)
+}
+
 fn llm(endpoint: Endpoint, env: &HostEnv<'_>) -> LlmClient {
     LlmClient::new(endpoint, env.http.clone())
 }
@@ -245,6 +252,7 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         "gemini-video" => Arc::new(nodecraft_providers::gemini_video::GeminiVideo::new(needs_key(env.keys, "gemini")?, env.http.clone())),
         "google-veo" => Arc::new(google_veo(env)?),
         "google-tts" => Arc::new(google_tts(env)?),
+        "google-gemini-images" => Arc::new(google_gemini_images(env)?),
         "fal" => Arc::new(nodecraft_providers::fal::Fal::new(needs_key(env.keys, "fal")?, env.http.clone())),
         "tripo" => Arc::new(nodecraft_providers::tripo::Tripo::new(needs_key(env.keys, "tripo")?, env.http.clone())),
         "meshy" => Arc::new(nodecraft_providers::meshy::Meshy::new(needs_key(env.keys, "meshy")?, env.http.clone())),

@@ -91,6 +91,11 @@ default = { type = "unsigned", value = "1" }
   `pricing = { type = "per_source_second", param = "resolution", prices = { "480p" = "0.318 USD",
   "720p" = "0.681 USD" } }`. Every mode must declare the same `edit` role and `uses_ms`, and send
   `param`. A source whose length isn't known yet leaves the step unpriced, never free.
+  `per_unit_by_choice` (`unit`, `param`, `prices`, and a `count` parameter and/or a
+  `default_count` as for `per_unit`) is `per_unit` at the price `prices` lists for the chosen
+  option of `param`, with the same rules for `param` as `per_source_second`: a Veo clip is priced
+  per second by its resolution (`count = "duration_seconds"`), a Gemini image per image by its
+  size (`default_count = 1`).
   `by_usage` describes composite measured usage without a reliable pre-submit amount. It always
   returns an unknown quote, never zero: finite caps refuse it; an uncapped authorized host must
   make the incomplete price explicit. Token counters are not an exact monetary invoice.

@@ -52,6 +52,8 @@ google-cloud = ["dep:base64", "dep:rsa", "dep:web-time", "dep:getrandom02"]
 google-veo = ["google-cloud"]
 # Cloud Text-to-Speech: classic and Gemini voices, one synchronous request each.
 google-tts = ["google-cloud"]
+# Gemini image models on Google Cloud: one synchronous generateContent request each.
+google-gemini-images = ["google-cloud"]
 # Opt-in deterministic testing tools; never enabled by adapter defaults.
 testkit = ["dep:blake3"]
 
@@ -119,6 +121,10 @@ path = "tests/live_elevenlabs.rs"
 [[test]]
 name = "live_gemini_video"
 path = "tests/live_gemini_video.rs"
+
+[[test]]
+name = "live_google_gemini_images"
+path = "tests/live_google_gemini_images.rs"
 
 [[test]]
 name = "live_google_tts"

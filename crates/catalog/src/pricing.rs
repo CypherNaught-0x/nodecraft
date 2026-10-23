@@ -94,9 +94,18 @@ pub enum Pricing {
     /// provider's cut (the mode's [`nodecraft_types::VideoEdit::uses_ms`]). The price is the one
     /// listed in `prices` for the value of the choice setting `param` (a resolution, say).
     PerSourceSecond { param: String, prices: BTreeMap<String, Price> },
-    /// [`Self::PerUnit`] counted from parameter `count`, at the price listed in `prices` for the
-    /// value of the choice setting `param` (#742: a second of video, priced by its resolution).
-    PerUnitByChoice { unit: Unit, count: String, param: String, prices: BTreeMap<String, Price> },
+    /// [`Self::PerUnit`] counted from parameter `count` (or `default_count`), at the price listed
+    /// in `prices` for the value of the choice setting `param` (#742: a second of video, priced by
+    /// its resolution; #47: one image, priced by its size).
+    PerUnitByChoice {
+        unit: Unit,
+        #[serde(default)]
+        count: Option<String>,
+        #[serde(default)]
+        default_count: Option<u64>,
+        param: String,
+        prices: BTreeMap<String, Price>,
+    },
 }
 
 impl Pricing {
@@ -133,9 +142,9 @@ impl Pricing {
                 // Started seconds, and never less than one.
                 price.0.checked_mul_ratio(ms.div_ceil(1000).max(1), 1, Rounding::Up).map(Some)
             }
-            Self::PerUnitByChoice { unit, count, param, prices } => {
+            Self::PerUnitByChoice { unit, count, default_count, param, prices } => {
                 let price = *chosen(&get, param, prices)?;
-                Self::PerUnit { unit: *unit, price, count: Some(count.clone()), default_count: None }.quote_source(get, None, fallback)
+                Self::PerUnit { unit: *unit, price, count: count.clone(), default_count: *default_count }.quote_source(get, None, fallback)
             }
             Self::Free => Ok(Some(Money::zero(fallback))),
             Self::ByUsage { .. } => Ok(None),
@@ -307,7 +316,7 @@ mod tests {
     #[test]
     fn a_count_is_priced_by_the_chosen_setting() {
         let prices = [("720p", "0.10 USD"), ("1080p", "0.12 USD")].map(|(k, v)| (k.to_owned(), v.parse::<Price>().unwrap())).into();
-        let pricing = Pricing::PerUnitByChoice { unit: Unit::Second, count: "duration".into(), param: "resolution".into(), prices };
+        let pricing = Pricing::PerUnitByChoice { unit: Unit::Second, count: Some("duration".into()), default_count: None, param: "resolution".into(), prices };
         let mut params = ParamValues::new();
         params.insert("duration".into(), Value::Unsigned(Unsigned(8)));
         assert!(pricing.quote(&params, Currency::USD).is_err(), "no resolution chosen");
@@ -321,6 +330,19 @@ mod tests {
         params.remove("duration");
         assert!(pricing.quote(&params, Currency::USD).is_err(), "no count");
         assert_eq!(pricing.currency(), Some(Currency::USD));
+    }
+
+    #[test]
+    fn a_fixed_count_is_priced_by_the_chosen_setting() {
+        // #47: one image a request, priced by its size.
+        let prices = [("1K", "0.0672 USD"), ("4K", "0.1512 USD")].map(|(k, v)| (k.to_owned(), v.parse::<Price>().unwrap())).into();
+        let pricing = Pricing::PerUnitByChoice { unit: Unit::Image, count: None, default_count: Some(1), param: "image_size".into(), prices };
+        let mut params = ParamValues::new();
+        assert!(pricing.quote(&params, Currency::USD).is_err(), "no size chosen");
+        params.insert("image_size".into(), Value::Text("4K".into()));
+        assert_eq!(pricing.quote(&params, Currency::USD).unwrap(), Some(usd(151_200)));
+        params.insert("image_size".into(), Value::Text("1K".into()));
+        assert_eq!(pricing.quote(&params, Currency::USD).unwrap(), Some(usd(67_200)));
     }
 
     #[test]
