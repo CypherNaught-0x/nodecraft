@@ -51,6 +51,13 @@ beyond 1 GiB, since sealing copies the asset again, so an asset over it waits fo
 of filling the disk. Free room comes from the `fs4` crate (pinned), as std has no safe call
 for it.
 
-Known limit: an editor who sends wrong bytes first makes the asset unusable for that receiver
-until it reconnects; asking another sender needs a relay frame of its own (a follow-up to
-#842).
+A bad sender (#842, protocol 5): a receiver whose copy doesn't hash to its name sends
+`AssetBad(hash)`. The relay remembers who sent each asker the whole of an asset (the latest
+4096 such records), stops passing that sender's parts to this asker, and asks the other editors
+for the asset from the start; one whose sender has left or been forgotten is asked of all. With
+nobody else to ask, the relay sends `AssetBad` back and the receiver gives the asset up, as it
+does on a second bad copy. So a hostile editor's wrong bytes don't stop an honest editor's copy
+from arriving. An asset larger than the receiver takes is given up at once: no sender can make
+it smaller. Known limit: one bad copy is reported per asset and connection, so a hostile editor
+in the room on two connections can still make an asset unusable for a receiver until it
+reconnects.

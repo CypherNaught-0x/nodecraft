@@ -54,6 +54,9 @@ struct Want {
     /// The asset's size and who sends it, from the first part it took.
     total: Option<u64>,
     source: Option<Peer>,
+    /// The sender whose copy the asker said was bad ([`Frame::AssetBad`]): its parts no longer
+    /// reach this asker, and it isn't asked on the asker's behalf.
+    shunned: Option<Peer>,
 }
 
 impl Want {
@@ -100,6 +103,11 @@ pub struct Room {
     asset_bytes: usize,
     /// Who waits for an asset, and how far each has got with one coming in parts.
     wanted: BTreeMap<[u8; 32], BTreeMap<Peer, Want>>,
+    /// Who sent each asker the whole of an asset that came in parts, so that a copy the asker
+    /// says is bad ([`Frame::AssetBad`]) is asked of the others; numbered in the order they came,
+    /// so past [`MAX_WANTED`] the oldest goes.
+    sent: BTreeMap<([u8; 32], Peer), (u64, Peer)>,
+    sent_seq: u64,
     damaged: bool,
 }
 
@@ -121,6 +129,8 @@ impl Room {
             assets: BTreeMap::new(),
             asset_bytes: 0,
             wanted: BTreeMap::new(),
+            sent: BTreeMap::new(),
+            sent_seq: 0,
             damaged: false,
         }
     }
@@ -214,13 +224,14 @@ impl Room {
             askers.remove(&peer);
             for (asker, want) in askers.iter_mut().filter(|(_, want)| want.source == Some(peer)) {
                 want.source = None;
-                again.extend(want.again(*hash).map(|frame| (*asker, frame)));
+                again.extend(want.again(*hash).map(|frame| (*asker, want.shunned, frame)));
             }
         }
         self.wanted.retain(|_, askers| !askers.is_empty());
+        self.sent.retain(|(_, asker), _| *asker != peer);
         let mut out = Vec::new();
-        for (asker, frame) in again {
-            for editor in self.editors_but(asker) {
+        for (asker, shunned, frame) in again {
+            for editor in self.editors_but(asker).into_iter().filter(|editor| Some(*editor) != shunned) {
                 let ask = Out::Send(editor, frame.clone());
                 if !out.contains(&ask) {
                     out.push(ask);
@@ -315,7 +326,9 @@ impl Room {
                         None if self.wanted.len() < MAX_WANTED || self.wanted.contains_key(&hash) => {
                             // Asked for whole, it starts again: one in parts comes first as its
                             // first part, from whoever sends it first, whatever came before.
-                            self.wanted.entry(hash).or_default().insert(from, Want { until: PART_BYTES as u64, ..Want::default() });
+                            let askers = self.wanted.entry(hash).or_default();
+                            let shunned = askers.get(&from).and_then(|want| want.shunned);
+                            askers.insert(from, Want { until: PART_BYTES as u64, shunned, ..Want::default() });
                             missing.push(hash);
                         }
                         None => {}
@@ -351,27 +364,66 @@ impl Room {
                 // The rest comes from whoever sends the parts already taken, while they are here.
                 match want.source.filter(|source| self.peers.contains_key(source)) {
                     Some(source) => vec![Out::Send(source, ask)],
-                    None => self.editors_but(from).into_iter().map(|peer| Out::Send(peer, ask.clone())).collect(),
+                    None => self.editors_but(from).into_iter().filter(|peer| Some(*peer) != want.shunned).map(|peer| Out::Send(peer, ask.clone())).collect(),
                 }
+            }
+            Frame::AssetBad(hash) => {
+                // Who sent the copy: the sender of the parts being taken, or of the whole that
+                // came. One that has left, or been forgotten, can't be told apart from the rest:
+                // everyone is asked, and the asker gives up on a second bad copy.
+                let taking = self.wanted.get(&hash).and_then(|askers| askers.get(&from)).and_then(|want| want.source);
+                let shunned = taking.or(self.sent.remove(&(hash, from)).map(|(_, source)| source));
+                let others: Vec<Peer> = self.editors_but(from).into_iter().filter(|peer| Some(*peer) != shunned).collect();
+                if others.is_empty() || (self.wanted.len() >= MAX_WANTED && !self.wanted.contains_key(&hash)) {
+                    // Nobody else to ask: the asker is told, and gives the asset up.
+                    if let Some(askers) = self.wanted.get_mut(&hash) {
+                        askers.remove(&from);
+                        if askers.is_empty() {
+                            self.wanted.remove(&hash);
+                        }
+                    }
+                    return vec![Out::Send(from, Frame::AssetBad(hash))];
+                }
+                self.wanted.entry(hash).or_default().insert(from, Want { until: PART_BYTES as u64, shunned, ..Want::default() });
+                // The asset again from the start, from everyone else who may have it.
+                others.into_iter().map(|peer| Out::Send(peer, Frame::AssetGet(vec![hash]))).collect()
             }
             Frame::AssetPart { .. } if !member.role.edits() => Vec::new(),
             Frame::AssetPart { hash, total, offset, bytes } => {
                 // The frame checked the part lies inside its asset; the asker checks the hash.
                 let end = offset.saturating_add(bytes.len() as u64);
                 let mut out = Vec::new();
+                let mut whole = Vec::new();
                 if let Some(askers) = self.wanted.get_mut(&hash) {
                     askers.retain(|peer, want| {
                         // Each asker takes one sender's parts, in order; any other copy is dropped.
-                        let takes = *peer != from && want.next == offset && want.source.is_none_or(|s| s == from) && want.total.is_none_or(|t| t == total);
+                        let takes = *peer != from
+                            && want.next == offset
+                            && want.source.is_none_or(|s| s == from)
+                            && want.shunned != Some(from)
+                            && want.total.is_none_or(|t| t == total);
                         if takes {
                             out.push(Out::Send(*peer, Frame::AssetPart { hash, total, offset, bytes: bytes.clone() }));
-                            *want = Want { next: end, until: want.until, total: Some(total), source: Some(from) };
+                            *want = Want { next: end, total: Some(total), source: Some(from), ..*want };
                         }
-                        want.total.is_none_or(|total| want.next < total)
+                        let waits = want.total.is_none_or(|total| want.next < total);
+                        if !waits {
+                            whole.push(*peer);
+                        }
+                        waits
                     });
                     if askers.is_empty() {
                         self.wanted.remove(&hash);
                     }
+                }
+                for asker in whole {
+                    if self.sent.len() >= MAX_WANTED
+                        && let Some(oldest) = self.sent.iter().min_by_key(|(_, (seq, _))| *seq).map(|(key, _)| *key)
+                    {
+                        self.sent.remove(&oldest);
+                    }
+                    self.sent_seq = self.sent_seq.saturating_add(1);
+                    self.sent.insert((hash, asker), (self.sent_seq, from));
                 }
                 out
             }

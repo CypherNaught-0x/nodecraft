@@ -12,8 +12,8 @@ use crate::presence::{Person, Presence};
 use crate::role::{Grant, Role};
 
 /// The protocol version a hello names; a relay refuses any other. 2 added share links (#121),
-/// 3 assets in parts (#700), 4 presence (#120).
-pub const PROTOCOL: u32 = 4;
+/// 3 assets in parts (#700), 4 presence (#120), 5 a bad copy of an asset asked for again (#842).
+pub const PROTOCOL: u32 = 5;
 /// The largest update a frame carries: a whole shared project, as a late joiner receives it.
 pub const MAX_UPDATE_BYTES: usize = 64 << 20;
 /// The largest asset a frame carries, the same as the project's own asset limit.
@@ -51,6 +51,7 @@ const ASSET_FROM: u8 = 14;
 const PRESENCE: u8 = 15;
 const PERSON: u8 = 16;
 const GONE: u8 = 17;
+const ASSET_BAD: u8 = 18;
 
 /// A room's name, which is also what lets a peer in: 32 random bytes, shared only with the people
 /// invited, so it can't be guessed.
@@ -192,6 +193,10 @@ pub enum Frame {
     /// "Send me `len` bytes of this asset from `offset`": the next stretch of one coming in
     /// parts, asked for as the last arrives, or where it left off before a reconnect.
     AssetFrom { hash: [u8; HASH], offset: u64, len: u64 },
+    /// "The parts of this asset I was sent don't make it": the relay no longer passes this
+    /// asker the parts of whoever sent them, and asks everyone else for the asset from the start.
+    /// Sent back by the relay when there is nobody else to ask.
+    AssetBad([u8; HASH]),
     /// The relay won't go on, and why.
     Refused(String),
     /// A peer's first frame when it comes in through a share link instead of the room id.
@@ -275,6 +280,7 @@ impl Frame {
             Self::Presence(presence) => (PRESENCE, checked(&body(presence)?, MAX_PRESENCE_BYTES, "presence")?.to_vec()),
             Self::Person(person) => (PERSON, checked(&body(person)?, MAX_PRESENCE_BYTES, "presence")?.to_vec()),
             Self::Gone(peer) => (GONE, peer.to_le_bytes().to_vec()),
+            Self::AssetBad(hash) => (ASSET_BAD, hash.to_vec()),
         };
         let mut frame = Vec::with_capacity(body.len().saturating_add(1));
         frame.push(tag);
@@ -369,6 +375,7 @@ impl Frame {
                 Self::Person(Box::new(person))
             }
             GONE => Self::Gone(u64::from_le_bytes(body.try_into().map_err(|_| invalid("the departure isn't readable"))?)),
+            ASSET_BAD => Self::AssetBad(body.try_into().map_err(|_| invalid("the asset report isn't readable"))?),
             _ => return Err(invalid("a frame of an unknown kind")),
         })
     }
@@ -492,6 +499,7 @@ mod tests {
                 },
             })),
             Frame::Gone(3),
+            Frame::AssetBad([5; 32]),
         ] {
             assert_eq!(Frame::decode(&frame.encode().unwrap()).unwrap(), frame);
         }
@@ -563,6 +571,7 @@ mod tests {
         frame.extend(serde_json::to_vec(&person).unwrap());
         assert!(Frame::decode(&frame).is_err());
         assert!(Frame::decode(&[GONE, 1, 2]).is_err());
+        assert!(Frame::decode(&[ASSET_BAD, 1, 2]).is_err());
     }
 
     proptest! {
