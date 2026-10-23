@@ -27,7 +27,7 @@ struct Pending {
     future: Pick,
 }
 
-enum Target {
+pub(super) enum Target {
     /// The command that writes the file and its params, without the path.
     File(&'static str, serde_json::Value),
     /// The command that writes each file, its params without the path, and the suggested file
@@ -112,7 +112,7 @@ impl NodeCraftApp {
         self.pick_export(Target::Folder("deck.export", files), "");
     }
 
-    fn pick_export(&mut self, target: Target, name: &str) {
+    pub(super) fn pick_export(&mut self, target: Target, name: &str) {
         if self.exports.pending.is_some() {
             self.notice = Some("Another export is choosing where to save; finish that first.".into());
             return;

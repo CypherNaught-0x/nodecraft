@@ -39,6 +39,8 @@ ed25519-dalek = { workspace = true }
 # Fallible live execution identities; Web Crypto on wasm, OS entropy natively.
 getrandom = { version = "=0.3.4", features = ["wasm_js"] }
 serde_path_to_error.workspace = true
+# Element bundles (#765): one library entry and its images in a stored ZIP.
+zip.workspace = true
 
 # The OS keychain wraps platform APIs; pinned exactly and reviewed (AGENTS.md: no unsafe of our own,
 # platform wrappers come from small audited crates). Native only: the browser has no keychain.
@@ -58,7 +60,6 @@ nodecraft-format = { workspace = true, features = ["validation-metrics"] }
 tempfile = { workspace = true }
 futures = { workspace = true, features = ["executor"] }
 serde_json = { workspace = true }
-zip = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Real native Reqwest/Driver fixtures need an entered reactor, not the virtual test runtime.

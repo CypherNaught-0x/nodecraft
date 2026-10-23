@@ -97,17 +97,38 @@ fn key(name: &str) -> String {
 struct ElementsFile {
     version: u32,
     #[serde(default)]
-    elements: Vec<Saved>,
+    elements: Vec<Json>,
 }
 
-/// The entries in the library, one per name.
+/// An entry the library file holds that this build can't use (#765): kept as it was, so writing
+/// the library back loses nothing, and reported with why.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Damaged {
+    /// Its place in the file, from 0.
+    pub index: usize,
+    /// Its name, if it has one that can be read.
+    pub name: Option<String>,
+    pub reason: String,
+    raw: Json,
+}
+
+impl Damaged {
+    fn summary(&self) -> Json {
+        json!({"index": self.index, "name": self.name, "reason": self.reason})
+    }
+}
+
+/// The entries in the library, one per name, and those that can't be used.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Elements {
     entries: BTreeMap<String, Saved>,
+    damaged: Vec<Damaged>,
 }
 
 impl Elements {
-    /// A library file, checked: every entry valid, each name once.
+    /// A library file, checked: every entry valid, each name once. An entry that isn't (one a
+    /// newer build wrote, or one edited by hand) is set aside as [`Damaged`] rather than refusing
+    /// the whole library.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.len() > MAX_ELEMENTS_BYTES {
             return Err(invalid("the Elements library file is too large"));
@@ -120,17 +141,31 @@ impl Elements {
             return Err(invalid("the Elements library holds too many Elements"));
         }
         let mut elements = Self::default();
-        for saved in file.elements {
-            let saved = saved.checked()?;
-            if elements.entries.insert(key(&saved.name), saved).is_some() {
-                return Err(invalid("the Elements library names one Element twice"));
-            }
+        for (index, raw) in file.elements.into_iter().enumerate() {
+            let name = raw.get("name").and_then(Json::as_str).filter(|name| name.len() <= nodecraft_nodes::element::MAX_NAME).map(str::to_owned);
+            let checked = serde_json::from_value::<Saved>(raw.clone())
+                .map_err(|_| invalid("it has a field this build doesn't know, or one is missing"))
+                .and_then(Saved::checked);
+            let reason = match checked {
+                Ok(saved) if elements.entries.contains_key(&key(&saved.name)) => "another Element has its name".to_owned(),
+                Ok(saved) => {
+                    elements.entries.insert(key(&saved.name), saved);
+                    continue;
+                }
+                Err(error) => error.message,
+            };
+            elements.damaged.push(Damaged { index, name, reason, raw });
         }
         Ok(elements)
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        let file = ElementsFile { version: ELEMENTS_VERSION, elements: self.entries.values().cloned().collect() };
+        let mut elements = Vec::new();
+        for saved in self.entries.values() {
+            elements.push(serde_json::to_value(saved).map_err(|_| Error::new(ErrorKind::Internal, "the Elements library couldn't be written"))?);
+        }
+        elements.extend(self.damaged.iter().map(|damaged| damaged.raw.clone()));
+        let file = ElementsFile { version: ELEMENTS_VERSION, elements };
         let bytes = serde_json::to_vec_pretty(&file).map_err(|_| Error::new(ErrorKind::Internal, "the Elements library couldn't be written"))?;
         if bytes.len() > MAX_ELEMENTS_BYTES {
             return Err(invalid("the Elements library would be too large"));
@@ -145,6 +180,16 @@ impl Elements {
 
     pub fn entries(&self) -> impl Iterator<Item = &Saved> {
         self.entries.values()
+    }
+
+    /// The entries set aside because they can't be used.
+    pub fn damaged(&self) -> &[Damaged] {
+        &self.damaged
+    }
+
+    /// How many entries the file holds, usable or not.
+    fn len(&self) -> usize {
+        self.entries.len().saturating_add(self.damaged.len())
     }
 
     /// Every image some entry shows.
@@ -169,6 +214,10 @@ pub trait ElementStore {
     /// can't be lost between them. Busy while another holds it.
     fn lock(&self) -> Result<Box<dyn std::any::Any>, Error> {
         Ok(Box::new(()))
+    }
+    /// Where the library file is, for messages that ask the person to fix it.
+    fn location(&self) -> Option<String> {
+        None
     }
 }
 
@@ -287,6 +336,9 @@ impl ElementStore for FileElements {
             Err(_) => Err(Error::new(ErrorKind::Internal, "an unused library image couldn't be removed")),
         }
     }
+    fn location(&self) -> Option<String> {
+        Some(self.dir.join("elements.json").display().to_string())
+    }
     fn lock(&self) -> Result<Box<dyn std::any::Any>, Error> {
         std::fs::create_dir_all(&self.dir).map_err(|_| Error::new(ErrorKind::Internal, "the Elements library's folder can't be made"))?;
         let file = std::fs::OpenOptions::new()
@@ -343,8 +395,14 @@ impl ElementShelf {
     }
 }
 
+/// The library in `store`. A file that can't be read at all names itself, so the person knows
+/// what to fix or move aside.
 fn read(store: &dyn ElementStore) -> Result<Elements, Error> {
-    store.load()?.map_or_else(|| Ok(Elements::default()), |bytes| Elements::from_bytes(&bytes))
+    let read = store.load()?.map_or_else(|| Ok(Elements::default()), |bytes| Elements::from_bytes(&bytes));
+    read.map_err(|error| match store.location() {
+        Some(file) => Error::new(error.kind, format!("{} ({file})", error.message)),
+        None => error,
+    })
 }
 
 /// What a library command asks of the session's library.
@@ -364,6 +422,24 @@ pub enum Request {
         name: String,
         to: String,
     },
+    /// Mark the entry meant for others, or not.
+    Share {
+        name: String,
+        shared: bool,
+    },
+    /// Write the entry as an Element bundle to `path`, over a file there only when `overwrite`.
+    Export {
+        name: String,
+        path: std::path::PathBuf,
+        overwrite: bool,
+    },
+    /// Add the Element bundle at `path` to the library, named `rename` when given, over an
+    /// entry of that name only when `replace`.
+    Import {
+        path: std::path::PathBuf,
+        rename: Option<String>,
+        replace: bool,
+    },
 }
 
 /// Answers `request` against the shelf's store, reading images `Save` needs from `assets`, and
@@ -373,7 +449,21 @@ pub fn handle(shelf: &ElementShelf, assets: &nodecraft_format::AssetStore, reque
     if request == Request::List {
         let read = read(store);
         shelf.put(read.clone());
-        return Ok(json!({"elements": read?.entries().map(Saved::summary).collect::<Vec<_>>()}));
+        let read = read?;
+        let mut listed = json!({"elements": read.entries().map(Saved::summary).collect::<Vec<_>>()});
+        if !read.damaged.is_empty() {
+            listed["damaged"] = read.damaged.iter().map(Damaged::summary).collect();
+            listed["file"] = json!(store.location());
+        }
+        return Ok(listed);
+    }
+    if let Request::Export { name, path, overwrite } = &request {
+        let elements = read(store);
+        shelf.put(elements.clone());
+        let entry = elements?.get(name).cloned().ok_or_else(|| Error::new(ErrorKind::NotFound, "the library has no Element with that name"))?;
+        let bytes = crate::element_bundle::encode(&entry, |hash| shelf.media(hash))?;
+        write_bundle(path, &bytes, *overwrite)?;
+        return Ok(json!({"exported": entry.summary(), "bytes": bytes.len()}));
     }
     let _lock = store.lock()?;
     let mut elements = read(store);
@@ -381,15 +471,10 @@ pub fn handle(shelf: &ElementShelf, assets: &nodecraft_format::AssetStore, reque
     let elements = elements.as_mut().map_err(|e| e.clone())?;
     let result = match request {
         Request::List => return Err(Error::new(ErrorKind::Internal, "listing doesn't change the library")),
+        Request::Export { .. } => return Err(Error::new(ErrorKind::Internal, "exporting doesn't change the library")),
         Request::Save { entry, replace } => {
             let entry = entry.checked()?;
-            let replaced = elements.entries.contains_key(&key(&entry.name));
-            if replaced && !replace {
-                return Err(Error::new(ErrorKind::Conflict, "the library already has an Element with that name: replace it, or rename one"));
-            }
-            if !replaced && elements.entries.len() >= MAX_ELEMENTS {
-                return Err(invalid("the Elements library is full; remove Elements you no longer use"));
-            }
+            let replaced = admit(elements, &entry.name, replace)?;
             // The images first: a crash between leaves unused images, never an entry without them.
             let kept: BTreeSet<Blake3> = store.media_kept()?.into_iter().collect();
             for asset in entry.media() {
@@ -405,6 +490,28 @@ pub fn handle(shelf: &ElementShelf, assets: &nodecraft_format::AssetStore, reque
             let summary = entry.summary();
             elements.entries.insert(key(&entry.name), entry);
             json!({"saved": summary, "replaced": replaced})
+        }
+        Request::Share { name, shared } => {
+            let entry = elements.entries.get_mut(&key(&name)).ok_or_else(|| Error::new(ErrorKind::NotFound, "the library has no Element with that name"))?;
+            entry.shared = shared;
+            json!({"shared": entry.summary()})
+        }
+        Request::Import { path, rename, replace } => {
+            let (mut entry, media) = crate::element_bundle::decode(&read_bundle(&path)?)?;
+            if let Some(rename) = rename {
+                if !valid_name(&rename) {
+                    return Err(invalid("an Element's name takes 1 to 40 letters, digits, - or _"));
+                }
+                entry.name = rename;
+            }
+            let replaced = admit(elements, &entry.name, replace)?;
+            // The images first, as when saving: a crash between leaves unused images only.
+            for (hash, bytes) in &media {
+                store.put_media(hash, bytes)?;
+            }
+            let summary = entry.summary();
+            elements.entries.insert(key(&entry.name), entry);
+            json!({"imported": summary, "replaced": replaced})
         }
         Request::Remove { name } => {
             let removed = elements.entries.remove(&key(&name)).ok_or_else(|| Error::new(ErrorKind::NotFound, "the library has no Element with that name"))?;
@@ -426,14 +533,78 @@ pub fn handle(shelf: &ElementShelf, assets: &nodecraft_format::AssetStore, reque
     };
     store.save(&elements.to_bytes()?)?;
     shelf.put(Ok(elements.clone()));
-    // Images no entry shows any more go; failing to tidy up loses nothing.
+    // Images no entry shows any more go; failing to tidy up loses nothing. A damaged entry may
+    // still show some, so nothing goes while there is one.
     let shown = elements.media();
-    for hash in store.media_kept().unwrap_or_default() {
+    let kept = if elements.damaged.is_empty() { store.media_kept().unwrap_or_default() } else { Vec::new() };
+    for hash in kept {
         if !shown.contains(&hash) {
             let _ = store.drop_media(&hash);
         }
     }
     Ok(result)
+}
+
+/// Whether an entry called `name` would replace one; refused unless `replace`, and when the
+/// library is full.
+fn admit(elements: &Elements, name: &str, replace: bool) -> Result<bool, Error> {
+    let replaced = elements.entries.contains_key(&key(name));
+    if replaced && !replace {
+        return Err(Error::new(ErrorKind::Conflict, "the library already has an Element with that name: replace it, or rename one"));
+    }
+    if !replaced && elements.len() >= MAX_ELEMENTS {
+        return Err(invalid("the Elements library is full; remove Elements you no longer use"));
+    }
+    Ok(replaced)
+}
+
+/// Reads the bundle at `path`: a regular file no larger than a bundle may be.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_bundle(path: &std::path::Path) -> Result<Vec<u8>, Error> {
+    use crate::element_bundle::MAX_BUNDLE_BYTES;
+    use std::io::Read;
+    if !path.is_absolute() {
+        return Err(invalid("the bundle's path must be absolute"));
+    }
+    let unreadable = |_| Error::new(ErrorKind::NotFound, "that Element bundle can't be read");
+    // A stat never blocks on a special file; only a regular file is opened.
+    let meta = std::fs::metadata(path).map_err(unreadable)?;
+    if !meta.is_file() {
+        return Err(invalid("that isn't a file"));
+    }
+    let cap = u64::try_from(MAX_BUNDLE_BYTES).unwrap_or(u64::MAX);
+    if meta.len() > cap {
+        return Err(invalid("that Element bundle is too large"));
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).map_err(unreadable)?.take(cap.saturating_add(1)).read_to_end(&mut bytes).map_err(unreadable)?;
+    Ok(bytes)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_bundle(_: &std::path::Path) -> Result<Vec<u8>, Error> {
+    Err(Error::new(ErrorKind::Unsupported, "importing an Element bundle needs the desktop app"))
+}
+
+/// Writes `bytes` to `path` whole or not at all, never over a file there unless `overwrite`.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_bundle(path: &std::path::Path, bytes: &[u8], overwrite: bool) -> Result<(), Error> {
+    crate::export::check(path)?;
+    if path.is_dir() {
+        return Err(invalid("the export path is a folder; name a file in it"));
+    }
+    if !path.parent().is_some_and(std::path::Path::is_dir) {
+        return Err(Error::new(ErrorKind::NotFound, "the export folder doesn't exist"));
+    }
+    if !overwrite && path.symlink_metadata().is_ok() {
+        return Err(Error::new(ErrorKind::Conflict, "a file with that name is already there"));
+    }
+    craft_atomic::atomic_write(path, bytes).map_err(|_| Error::new(ErrorKind::Internal, "the Element bundle couldn't be saved (is the disk full?)"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn write_bundle(_: &std::path::Path, _: &[u8], _: bool) -> Result<(), Error> {
+    Err(Error::new(ErrorKind::Unsupported, "exporting to a file needs the desktop app"))
 }
 
 /// Gives `session` the Elements library in `store`.

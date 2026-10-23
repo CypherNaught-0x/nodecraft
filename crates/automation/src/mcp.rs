@@ -277,6 +277,10 @@ pub const HUMAN_ONLY: &[&str] = &[
     "element.save",
     "library.remove_element",
     "library.rename_element",
+    "library.share_element",
+    // Writing or reading a bundle file on this machine is the person's call (#765).
+    "library.export_element",
+    "library.import_element",
     "shader.save",
     "library.remove_shader",
     // What untrusted skill text comes in, and which skills are offered to the agent, is the

@@ -21,11 +21,15 @@ use std::collections::BTreeMap;
 const SOURCE_DX: f32 = 360.0;
 const SOURCE_DY: f32 = 280.0;
 
+/// The library entry an Element was placed from (#765), kept in its config so it still updates
+/// from that entry once it is renamed on the canvas.
+pub const ENTRY_CONFIG: &str = "nodecraft.library_entry";
+
 fn not_found(what: &str) -> Error {
     Error::new(ErrorKind::NotFound, format!("{what} does not exist"))
 }
 
-fn shelf<'a>(c: &'a Context<'_>) -> Result<&'a ElementShelf, Error> {
+pub(crate) fn shelf<'a>(c: &'a Context<'_>) -> Result<&'a ElementShelf, Error> {
     c.resources.get::<ElementShelf>().ok_or_else(|| Error::new(ErrorKind::Unsupported, "this host has no Elements library"))
 }
 
@@ -130,6 +134,7 @@ fn place(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let canvas = canvas(c, p.canvas)?;
     let mut entry = shelf(c)?
         .with(|elements| elements.get(&p.name).cloned().ok_or_else(|| Error::new(ErrorKind::NotFound, "the library has no Element with that name")))?;
+    let config = BTreeMap::from([(ENTRY_CONFIG.to_owned(), Value::Text(entry.name.clone()))]);
     if let Some(rename) = p.rename {
         if !valid_name(&rename) {
             return Err(invalid("an Element's name takes 1 to 40 letters, digits, - or _"));
@@ -146,7 +151,7 @@ fn place(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     supplied.insert(NAME.into(), Value::Text(entry.name.clone()));
     supplied.insert(CATEGORY.into(), Value::Text(entry.category.clone()));
     supplied.insert(GUIDELINES.into(), Value::Text(entry.guidelines.clone()));
-    let mut node = c.kinds.get(ID)?.instantiate_instance(p.id, BTreeMap::new(), &supplied)?;
+    let mut node = c.kinds.get(ID)?.instantiate_instance(p.id, config, &supplied)?;
     node.pos = p.pos;
     let (wiring, ids) = sources(c, p.canvas, p.id, p.id, p.pos, &entry)?;
     let mut changes = vec![Change::AddNode { canvas: p.canvas, node }];
@@ -170,9 +175,21 @@ fn update(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: UpdateParams = params(value)?;
     let canvas = canvas(c, p.canvas)?;
     let node = element(canvas, p.id)?;
-    let name = text(node, NAME);
-    let entry = shelf(c)?
-        .with(|elements| elements.get(&name).cloned().ok_or_else(|| Error::new(ErrorKind::NotFound, "the library has no Element with this one's name")))?;
+    // The entry it was placed from; one saved before that was kept goes by its name.
+    let entry = match node.config.get(ENTRY_CONFIG) {
+        Some(Value::Text(from)) => shelf(c)?.with(|elements| {
+            elements
+                .get(from)
+                .cloned()
+                .ok_or_else(|| Error::new(ErrorKind::NotFound, format!("the library no longer has {from}, the Element this one was placed from")))
+        })?,
+        _ => {
+            let name = text(node, NAME);
+            shelf(c)?.with(|elements| {
+                elements.get(&name).cloned().ok_or_else(|| Error::new(ErrorKind::NotFound, "the library has no Element with this one's name"))
+            })?
+        }
+    };
     let mut changes = Vec::new();
     // What feeds it now goes: an image source that feeds only this Element is removed (with its
     // wires), anything else is just unwired.
@@ -249,11 +266,11 @@ fn enabled_library(c: &Context<'_>, _: &Json) -> Result<(), Error> {
     shelf(c).map(|_| ())
 }
 
-fn name() -> Json {
+pub(crate) fn name() -> Json {
     json!({"type": "string", "minLength": 1, "maxLength": MAX_NAME, "pattern": "^[A-Za-z0-9_-]+$"})
 }
 
-fn schema(required: &[&str], properties: Json) -> Json {
+pub(crate) fn schema(required: &[&str], properties: Json) -> Json {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": required, "properties": properties})
 }
 
@@ -304,7 +321,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: update_schema,
-            params_doc: "{canvas, id: Element NodeId, seed: new NodeId} -> {id, removed: [NodeId], sources: [NodeId]}; brings the Element up to date with the library's entry of its name, as one undo step: image sources feeding only it are removed, anything else feeding it is unwired, new sources with the entry's images are wired in (ids derived from seed), and its category and guidelines are set to the entry's. Reads the library as last listed (library.elements reads it afresh).",
+            params_doc: "{canvas, id: Element NodeId, seed: new NodeId} -> {id, removed: [NodeId], sources: [NodeId]}; brings the Element up to date with the library's entry it was placed from (whatever it is called on the canvas now), or, for one never placed, the entry of its name, as one undo step: image sources feeding only it are removed, anything else feeding it is unwired, new sources with the entry's images are wired in (ids derived from seed), and its category and guidelines are set to the entry's. Reads the library as last listed (library.elements reads it afresh).",
             enabled: enabled_update,
             run: update,
         },
@@ -314,7 +331,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: list_schema,
-            params_doc: "{} -> {elements: [{name, category, guidelines, images, sheet, shared}]}; the Elements library, read afresh.",
+            params_doc: "{} -> {elements: [{name, category, guidelines, images, sheet, shared}], damaged?: [{index, name, reason}], file?}; the Elements library, read afresh. Entries this build can't use (written by a newer one, or edited by hand) are listed under damaged with why, and kept in the file as they are.",
             enabled: enabled_library,
             run: list,
         },
