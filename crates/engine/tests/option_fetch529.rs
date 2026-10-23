@@ -129,12 +129,14 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     assert_eq!(http.asked.lock().unwrap()[0].1, OBJECT_INFO_CAP);
     let report = option_fetch::finish(&mut session, 1, fetched);
     assert_eq!(report.error, None);
-    assert_eq!(report.installed.len(), 1, "{report:?}");
+    // Both ComfyUI cards choose a checkpoint from the same list.
+    let owners: Vec<&str> = report.installed.iter().map(|i| i.owner.as_str()).collect();
+    assert_eq!(owners, ["comfyui.flux-dev", "comfyui.sdxl"], "{report:?}");
     // Higgsfield isn't set up: its list is unavailable, not refused.
     assert!(report.refused.is_empty(), "{report:?}");
     let unavailable: Vec<&str> = report.unavailable.iter().filter(|r| r.reason.contains("key")).map(|r| r.source.as_str()).collect();
     assert_eq!(unavailable, ["higgsfield.restyle_presets", "higgsfield.soul_ids"], "{report:?}");
-    assert_eq!((report.installed[0].owner.as_str(), report.installed[0].values, report.installed[0].skipped), ("comfyui.sdxl", 2, 2));
+    assert!(report.installed.iter().all(|i| (i.values, i.skipped) == (2, 2)), "{report:?}");
     let listed = session.dispatch("node.options", &json!({"canvas": C, "id": N, "param": "checkpoint"})).unwrap();
     assert_eq!(listed["known"], true);
     assert_eq!(
@@ -145,7 +147,7 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     // A stale value saved before the fetch is reported, and the rest of the card stays editable.
     checkpoint(&mut session, "juggernaut.safetensors").unwrap();
     let report = option_fetch::finish(&mut session, 2, fetch(server(&["sdxl.safetensors"]), &settings(), &sources));
-    assert_eq!(report.installed.len(), 1);
+    assert_eq!(report.installed.len(), 2);
     let described = session.dispatch("node.describe", &json!({"canvas": C, "id": N})).unwrap();
     let issues = described["resolution"]["issues"].as_array().unwrap();
     assert!(issues.iter().any(|issue| issue["code"] == "not_an_option" && issue["param"] == "checkpoint"), "{issues:?}");

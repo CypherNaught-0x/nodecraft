@@ -60,9 +60,11 @@ fn the_palette_refreshes_the_lists_and_says_what_it_installed() {
     // A second ask while the first runs is refused, not queued behind it.
     let busy = h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap_err();
     assert_eq!(busy.kind, ErrorKind::Busy);
-    assert_eq!(answered(&mut h), "Fetched 1 option list (2 values).");
+    // The FLUX and SDXL cards each list the server's checkpoints.
+    assert_eq!(answered(&mut h), "Fetched 2 option lists (4 values).");
     let status = h.state_mut().session.dispatch("options.status", &json!({})).unwrap();
-    assert_eq!(status["last"]["installed"][0]["owner"], "comfyui.sdxl");
+    let owners: Vec<&str> = status["last"]["installed"].as_array().unwrap().iter().filter_map(|i| i["owner"].as_str()).collect();
+    assert_eq!(owners, ["comfyui.flux-dev", "comfyui.sdxl"]);
     // And it can be asked again once that one is done.
     h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
     answered(&mut h);
@@ -202,7 +204,8 @@ mod picker {
         // Installed behind the view cache's back: the card reads the lists live.
         install(h.state_mut());
         h.run();
-        assert_eq!(shown(&h).as_deref(), Some("Choose…"));
+        // The card's default checkpoint, which this server doesn't list.
+        assert_eq!(shown(&h).as_deref(), Some("sd_xl_base_1.0.safetensors (not an option)"));
     }
 
     #[test]
