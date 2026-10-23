@@ -311,11 +311,15 @@ fn quitting_with_a_journal_suspends_the_job_instead_of_cancelling_it() {
     // estimate then survives, but there is no handle to resume until it is journaled.
     pump_until(&mut f, "the submitted job's handle was never saved", |_| journal.saved().is_some_and(|saved| saved.submitted.len() == 1));
     assert_eq!(mock.requests().len(), 1, "the saved job reached the provider");
+    // Forget the handle in the store, so only `shut_down`'s own forced save can bring it back.
+    let mut forgotten = journal.saved().unwrap();
+    forgotten.submitted.clear();
+    journal.save(&forgotten).unwrap();
     f.host.shut_down();
     f.runtime.kill();
     assert!(mock.cancelled().is_empty(), "left running at the provider");
     let saved = journal.saved().unwrap();
-    assert_eq!(saved.submitted.len(), 1, "saved for the next launch even before a pump: {saved:?}");
+    assert_eq!(saved.submitted.len(), 1, "shutting down saves the running job for the next launch: {saved:?}");
 }
 
 /// A store that notes whether a save held an open estimate before the provider saw any request.
