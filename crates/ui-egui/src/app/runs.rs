@@ -243,10 +243,16 @@ impl Runs {
     pub(super) fn new(services: &mut nodecraft_engine::commands::Services, keys: Arc<dyn SecretStore>) -> Result<Self, Error> {
         let http: Arc<dyn Http> = Arc::new(nodecraft_providers::http::ReqwestHttp::new().map_err(|e| Error::new(ErrorKind::Unsupported, e.message))?);
         let now_ms = monotonic_ms();
+        // ComfyUI's progress socket; the browser reports progress by polling only.
+        #[cfg(not(target_arch = "wasm32"))]
+        let progress: Option<Arc<dyn nodecraft_providers::comfyui::progress::Feeds>> =
+            Some(Arc::new(nodecraft_providers::comfyui::progress::native::NativeFeeds));
+        #[cfg(target_arch = "wasm32")]
+        let progress: Option<Arc<dyn nodecraft_providers::comfyui::progress::Feeds>> = None;
         Self::with_maker(
             services,
             Box::new(move |adapter, settings| {
-                let env = HostEnv { keys: keys.as_ref(), http: http.clone(), settings, now_ms: now_ms.clone() };
+                let env = HostEnv { keys: keys.as_ref(), http: http.clone(), settings, now_ms: now_ms.clone(), progress: progress.clone() };
                 provider_setup::make(adapter, &env)
             }),
         )

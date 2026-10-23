@@ -880,7 +880,7 @@ fn factory_built_fal_keeps_unknown_price_consent_and_job_count_admission() {
         let caps = if capped { Budgets { per_call: Some(usd(1_000_000)), ..Default::default() } } else { Budgets::default() };
         let (mut session, captured, _, transport) = fixture(FLUX, caps);
         let settings = ProviderSettings::default();
-        let env = provider_setup::HostEnv { keys: &keys, http: transport.clone(), settings: &settings, now_ms: Arc::new(|| 0) };
+        let env = provider_setup::HostEnv { keys: &keys, http: transport.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
         let setup = provider_setup::build(&nodecraft_catalog::Catalog::builtin().unwrap(), |adapter| provider_setup::make(adapter, &env));
         assert_eq!(setup.readiness("fal"), Some(&provider_setup::Readiness::Ready));
         session.set_provider_routing(setup.routing([(N, "fal")]).unwrap()).unwrap();
