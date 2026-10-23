@@ -126,7 +126,13 @@ fn busy_retries_and_backoff_share_the_admission_deadline() {
             let _ = writeln!(socket, "{reply}");
             attempts += 1;
             let mut request = String::new();
-            reader.read_line(&mut request).unwrap();
+            // A client whose deadline ran out after its hello closes the socket; our busy reply then
+            // draws a reset, which some platforms (Windows) report on this read. That is no operation.
+            match reader.read_line(&mut request) {
+                Ok(_) => {}
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => {}
+                Err(e) => panic!("{e:?}"),
+            }
             operations += usize::from(!request.is_empty());
         }
         (attempts, operations, expired_connections)
@@ -141,7 +147,8 @@ fn busy_retries_and_backoff_share_the_admission_deadline() {
     assert!(client.reconnect_until(Instant::now()).is_err());
     drop(client);
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    let (attempts, operations, _expired_connections) = peer.join().unwrap();
-    assert!(attempts > 1 && attempts < RECONNECT_ATTEMPTS as usize, "{attempts}");
+    let (attempts, operations, expired_connections) = peer.join().unwrap();
+    // A reconnect that connected but expired before its hello still retried within the one deadline.
+    assert!(attempts + expired_connections > 1 && attempts < RECONNECT_ATTEMPTS as usize, "{attempts} {expired_connections}");
     assert_eq!(operations, 0, "admission must never send the requested operation after expiry");
 }
