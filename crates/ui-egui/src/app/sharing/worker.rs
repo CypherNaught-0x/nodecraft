@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 
 use nodecraft_engine::collab::{Collab, Plan, View};
 use nodecraft_format::AssetStore;
+#[cfg(not(target_arch = "wasm32"))]
+use nodecraft_format::SealedAsset;
+#[cfg(target_arch = "wasm32")]
 use nodecraft_format::asset_source::TransferCancel;
 use nodecraft_graph::Project;
 use nodecraft_sync::{Frame, Person, Presence, Role};
@@ -39,6 +42,12 @@ enum Ask {
     },
     /// Where this person is now (#120).
     Presence(Presence),
+    /// What came of the seal of a large asset that came, run on a thread of its own (#880).
+    #[cfg(not(target_arch = "wasm32"))]
+    Sealed {
+        hash: Blake3,
+        result: Result<SealedAsset, Error>,
+    },
     /// The window let go: the thread ends, and the connection with it.
     #[cfg(not(target_arch = "wasm32"))]
     Stop,
@@ -90,8 +99,6 @@ pub(super) struct Report {
 pub(super) struct Worker {
     asks: Sender<Ask>,
     reports: Receiver<Report>,
-    /// Stops a seal the thread is in the middle of when the window lets go (#855).
-    cancel: TransferCancel,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -112,19 +119,18 @@ impl Worker {
             let _ = nudge.send(Ask::Wake);
         })?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
-        let cancel = TransferCancel::default();
-        let stop = cancel.clone();
+        let sealed = asks.clone();
         std::thread::Builder::new()
             .name("nodecraft-share-merge".into())
             .spawn(move || match make() {
-                Ok(collab) => run(Thread { connection, n: None, document: None, cancel: stop }, collab, &inbox, &outbox, &*wake),
+                Ok(collab) => run(Thread { connection, n: None, document: None, sealed }, collab, &inbox, &outbox, &*wake),
                 Err(error) => {
                     let _ = outbox.send(Report { ended: Some(error.message), ..Report::default() });
                     wake();
                 }
             })
             .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start live sharing: {e}")))?;
-        Ok(Self { asks, reports, cancel })
+        Ok(Self { asks, reports })
     }
 
     /// What the thread reported since the last call; an error if it has ended unasked.
@@ -149,9 +155,8 @@ impl Worker {
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for Worker {
     fn drop(&mut self) {
-        // A seal underway stops at once, so the thread sees the Stop.
-        self.cancel.cancel();
-        // The thread may have ended already.
+        // The thread lets go of its Collab, which stops a seal under way (#855). The thread may
+        // have ended already.
         let _ = self.asks.send(Ask::Stop);
     }
 }
@@ -196,7 +201,7 @@ impl Worker {
         }
         if let Some((make, connection)) = inline.start.take() {
             match make() {
-                Ok(collab) => inline.running = Some((Thread { connection, n: None, document: None, cancel: TransferCancel::default() }, collab)),
+                Ok(collab) => inline.running = Some((Thread { connection, n: None, document: None }, collab)),
                 Err(error) => {
                     inline.ended = true;
                     return Ok(vec![Report { ended: Some(error.message), ..Report::default() }]);
@@ -336,8 +341,9 @@ struct Thread {
     n: Option<u64>,
     /// The session's document as of the last turn.
     document: Option<Project>,
-    /// Tripped when the window lets go, stopping a seal underway.
-    cancel: TransferCancel,
+    /// Where a seal says what came of it.
+    #[cfg(not(target_arch = "wasm32"))]
+    sealed: Sender<Ask>,
 }
 
 impl Thread {
@@ -393,6 +399,9 @@ impl Thread {
             // Handled before it gets here.
             #[cfg(not(target_arch = "wasm32"))]
             Ask::Stop => {}
+            // The next turn takes it in, and starts the next seal.
+            #[cfg(not(target_arch = "wasm32"))]
+            Ask::Sealed { hash, result } => report.dirty |= collab.sealed(hash, result),
             Ask::Taken { revision, document, applied } => {
                 if let Some(document) = document {
                     self.document = Some(document);
@@ -406,21 +415,49 @@ impl Thread {
                     self.document = Some(document);
                 }
                 let document = self.document.as_ref().ok_or_else(|| Error::new(ErrorKind::Internal, "live sharing was asked to settle no document"))?;
-                // Slow for a large asset, so done here rather than in the window (#842), one a
-                // turn (#855).
-                let progressed = collab.seal_arrivals(&turn.assets, &self.cancel);
                 let has = |hash: &Blake3| turn.assets.contains(hash);
                 let (out, plan) = collab.plan(&View { revision: turn.revision, document, has: &has })?;
                 let frames = collab.frames(out, &turn.assets);
                 self.send(frames)?;
                 report.plan = Some(plan);
-                // Asks not answered this turn are, the next, and so is the next asset to seal.
+                // After the plan, which lets go of what no card uses any more (#880).
+                let progressed = self.seal(collab, &turn.assets);
+                // Asks not answered this turn are, the next, and so is what a seal brought.
                 // Assets and asks the storage was too busy for wait a while instead, so the
                 // window isn't asked for turn after turn.
-                report.dirty |= collab.owes_assets() || (progressed && collab.seals_pending());
+                report.dirty |= collab.owes_assets() || progressed;
             }
         }
         Ok(())
+    }
+
+    /// Starts the next seal on a thread of its own: slow for a large asset, so done away from
+    /// the window (#842) and from this thread, which meanwhile takes in what the others do and
+    /// stops the seal if that leaves no card using its asset (#880). Whether it took in what
+    /// came of one at once.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn seal(&self, collab: &mut Collab, assets: &AssetStore) -> bool {
+        let Some(seal) = collab.next_seal() else { return false };
+        let hash = seal.hash();
+        let assets = assets.clone();
+        let done = self.sealed.clone();
+        let spawned = std::thread::Builder::new().name("nodecraft-share-seal".into()).spawn(move || {
+            let result = seal.run(&assets);
+            // Gone only once the sharing has ended.
+            let _ = done.send(Ask::Sealed { hash, result });
+        });
+        match spawned {
+            Ok(_) => false,
+            // Tried again after a while, as when another transfer holds the storage.
+            Err(_) => collab.sealed(hash, Err(Error::new(ErrorKind::Conflict, "can't start sealing an asset that came"))),
+        }
+    }
+
+    /// The browser keeps no assets coming in parts, so it has none to seal; one that did would
+    /// seal here, in the frame.
+    #[cfg(target_arch = "wasm32")]
+    fn seal(&self, collab: &mut Collab, assets: &AssetStore) -> bool {
+        collab.seal_arrivals(assets, &TransferCancel::default())
     }
 
     /// Sends `frames` on the open connection; with none open they are dropped, and the next
@@ -444,19 +481,4 @@ fn status(collab: &mut Collab) -> Result<Status, Error> {
         project_id: collab.project_id()?,
         people: collab.people().cloned().collect(),
     })
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn letting_go_of_the_worker_stops_a_seal_under_way() {
-        let worker = Worker::spawn("ws://127.0.0.1:9".into(), || Err(Error::new(ErrorKind::Unsupported, "no project")), || {}).unwrap();
-        // The thread seals with a clone of this (#855).
-        let seals = worker.cancel.clone();
-        assert!(seals.check().is_ok());
-        drop(worker);
-        assert!(seals.check().is_err_and(|error| TransferCancel::is_cancellation(&error)));
-    }
 }

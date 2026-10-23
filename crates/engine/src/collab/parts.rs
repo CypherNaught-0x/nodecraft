@@ -102,7 +102,7 @@ pub enum Arrival {
     /// Put together from parts, whose hash was checked as the last arrived.
     Range(AssetRange),
     /// Put together from parts and sealed into the session's storage away from it
-    /// ([`super::Collab::seal_arrivals`]), so taking it doesn't read it again (#842).
+    /// ([`super::Collab::next_seal`]), so taking it doesn't read it again (#842).
     Sealed(SealedAsset),
 }
 
@@ -126,6 +126,29 @@ impl Arrival {
             return Err(Error::new(ErrorKind::Internal, "an asset that arrived isn't the one it was checked as"));
         }
         Ok(())
+    }
+}
+
+/// The seal of one large asset that came ([`super::Collab::next_seal`]): a host runs it away
+/// from its window and hands what came of it to [`super::Collab::sealed`] (#855). It has a
+/// cancel of its own, so it stops once no card uses the asset any more (#880), or once its
+/// `Collab` is dropped.
+pub struct Seal {
+    pub(super) hash: Blake3,
+    pub(super) range: AssetRange,
+    pub(super) cancel: TransferCancel,
+}
+
+impl Seal {
+    /// The asset it seals.
+    pub fn hash(&self) -> Blake3 {
+        self.hash
+    }
+
+    /// Copies the asset into `assets`' storage, a clone of the session's store, and checks it.
+    /// It reads the asset whole, so it is slow.
+    pub fn run(self, assets: &AssetStore) -> Result<SealedAsset, Error> {
+        assets.seal(&self.range, &self.cancel, &StreamMetrics::default())
     }
 }
 

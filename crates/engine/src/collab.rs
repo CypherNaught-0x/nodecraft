@@ -29,8 +29,8 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-use nodecraft_format::AssetStore;
 use nodecraft_format::asset_source::{StreamMetrics, TransferCancel};
+use nodecraft_format::{AssetStore, SealedAsset};
 use nodecraft_graph::{CanvasKind, Change, Changeset, Node, Project, diff};
 use nodecraft_sync::{CommentChange, Frame, LinkKey, Materialized, Mirror, PROTOCOL, Person, Presence, Role, RoomId};
 use nodecraft_types::{Blake3, CanvasId, Error, ErrorKind, ProjectId};
@@ -45,7 +45,7 @@ mod parts;
 pub use join::{JoinLink, Key, MAX_RELAY_BYTES, relay_address};
 pub use links::{LINKS_SERVICE, Links};
 use parts::Incoming;
-pub use parts::{Arrival, MemorySpool, Spool, Stretch};
+pub use parts::{Arrival, MemorySpool, Seal, Spool, Stretch};
 
 /// The most assets sent whole kept waiting for the edit that needs them.
 const MAX_ARRIVED_BYTES: usize = 256 << 20;
@@ -98,6 +98,9 @@ pub struct Collab {
     /// The last arrival that couldn't be sealed yet: the next call starts after it, so one that
     /// waits doesn't hold up the others (#855).
     seal_waited: Option<Blake3>,
+    /// The asset a host is sealing ([`Collab::next_seal`]), and what stops it: once no card
+    /// uses the asset any more, or this is dropped (#880).
+    under_way: Option<(Blake3, TransferCancel)>,
     /// Assets the spool had no room or no file for: asked for again only at
     /// [`Collab::retry_put_off`], so asking doesn't spin.
     put_off: BTreeSet<Blake3>,
@@ -300,6 +303,7 @@ impl Collab {
             seals: false,
             seal_tries: BTreeMap::new(),
             seal_waited: None,
+            under_way: None,
             put_off: BTreeSet::new(),
             room_for: BTreeMap::new(),
             spool_tries: BTreeMap::new(),
@@ -331,25 +335,22 @@ impl Collab {
         self
     }
 
-    /// Leaves sealing the large assets that come to the host, which calls
-    /// [`Self::seal_arrivals`] away from its window before each plan (#842); a plan brings one
-    /// only once it is sealed.
+    /// Leaves sealing the large assets that come to the host, which runs [`Self::next_seal`]
+    /// away from its window (#842); a plan brings one only once it is sealed.
     pub fn sealing(mut self) -> Self {
         self.seals = true;
         self
     }
 
-    /// Seals one of the large assets that came into `assets`' storage, a clone of the session's
-    /// store, so taking it is quick: it reads it whole, so it is slow, and the host calls it
-    /// once a turn so a few large assets don't hold up the others' edits (#855). `cancel` stops
-    /// it, leaving the asset to seal later. One the storage is too busy or too full for is
-    /// sealed at a later call ([`Self::seals_pending`]), which the host makes after a while
-    /// rather than at once; one it can't keep is given up. Whether it sealed or gave up one, so
-    /// another may be tried at once.
-    pub fn seal_arrivals(&mut self, assets: &AssetStore, cancel: &TransferCancel) -> bool {
+    /// The seal of one of the large assets that came, for the host to run away from its window
+    /// ([`Seal::run`]) into a clone of the session's store, so taking it is quick. It reads the
+    /// asset whole, so it is slow: the host runs one at a time, and starts the next after a plan
+    /// (#855), which drops what no card uses (#880). None while one is under way, or if none
+    /// waits. Say what came of it with [`Self::sealed`].
+    pub fn next_seal(&mut self) -> Option<Seal> {
         // One that doesn't seal takes them in with the plan.
-        if !self.seals {
-            return false;
+        if !self.seals || self.under_way.is_some() {
+            return None;
         }
         let range = |(hash, arrival): (&Blake3, &Arrival)| match arrival {
             Arrival::Range(range) => Some((*hash, range.clone())),
@@ -357,10 +358,25 @@ impl Collab {
         };
         let after = self.seal_waited.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
         let next = self.arrived.range((after, std::ops::Bound::Unbounded)).find_map(range).or_else(|| self.arrived.iter().find_map(range));
-        let Some((hash, range)) = next else {
-            return false;
-        };
-        match assets.seal(&range, cancel, &StreamMetrics::default()) {
+        let (hash, range) = next?;
+        let cancel = TransferCancel::default();
+        self.under_way = Some((hash, cancel.clone()));
+        Some(Seal { hash, range, cancel })
+    }
+
+    /// Takes what came of the seal of `hash`. A stopped one waits as it was. One the storage
+    /// is too busy or too full for is sealed again later ([`Self::seals_pending`]), which the
+    /// host starts after a while rather than at once; one it can't keep is given up. Whether it
+    /// sealed, gave up or let go of one, so another may be started at once.
+    pub fn sealed(&mut self, hash: Blake3, result: Result<SealedAsset, Error>) -> bool {
+        if self.under_way.as_ref().is_some_and(|(sealing, _)| *sealing == hash) {
+            self.under_way = None;
+        }
+        // No card uses it any more (#880): what was sealed, if anything, is let go.
+        if !matches!(self.arrived.get(&hash), Some(Arrival::Range(_))) {
+            return true;
+        }
+        match result {
             Ok(sealed) if sealed.hash() == hash => {
                 self.arrived.insert(hash, Arrival::Sealed(sealed));
                 self.seal_tries.remove(&hash);
@@ -387,9 +403,18 @@ impl Collab {
         false
     }
 
-    /// Whether large assets that came wait for [`Self::seal_arrivals`].
+    /// Runs the next seal ([`Self::next_seal`]) here and now, stopped by `cancel`, for a host
+    /// that has nowhere else to run it. Whether it sealed or gave up one, so another may be
+    /// tried at once.
+    pub fn seal_arrivals(&mut self, assets: &AssetStore, cancel: &TransferCancel) -> bool {
+        let Some(seal) = self.next_seal() else { return false };
+        let result = assets.seal(&seal.range, cancel, &StreamMetrics::default());
+        self.sealed(seal.hash, result)
+    }
+
+    /// Whether large assets that came wait for a seal to start ([`Self::next_seal`]).
     pub fn seals_pending(&self) -> bool {
-        self.arrived.values().any(|arrival| matches!(arrival, Arrival::Range(_)))
+        self.under_way.is_none() && self.arrived.values().any(|arrival| matches!(arrival, Arrival::Range(_)))
     }
 
     /// How many assets this session waits for before it can take in what the others did.
@@ -578,6 +603,11 @@ impl Collab {
             Role::Edit | Role::Owner => {
                 if let Some(update) = self.mirror.publish(&*shared(view.document)?)? {
                     out.push(Out::Frame(Frame::Update(update)));
+                    // The edit may have removed the last card that waits for an asset coming
+                    // in: the plan looks again, and lets it go (#880).
+                    if !self.arrived.is_empty() || !self.incoming.is_empty() {
+                        self.unsettled = true;
+                    }
                 }
             }
             Role::Comment => {
@@ -927,6 +957,13 @@ impl Collab {
         self.spool_tries.retain(|hash, _| missing.contains(hash));
         self.seal_tries.retain(|hash, _| missing.contains(hash));
         self.reported.retain(|hash| missing.contains(hash));
+        // A seal under way of one no card waits for any more stops at once (#880); its spool
+        // goes as soon as the seal lets go of it.
+        if let Some((hash, cancel)) = &self.under_way
+            && !self.arrived.contains_key(hash)
+        {
+            cancel.cancel();
+        }
         let unneeded: Vec<Blake3> = self.incoming.keys().filter(|hash| !missing.contains(hash)).copied().collect();
         for hash in unneeded {
             self.incoming.remove(&hash);
@@ -984,6 +1021,15 @@ impl Collab {
         }
         self.published = Some(revision);
         Ok(out)
+    }
+}
+
+impl Drop for Collab {
+    /// A seal under way stops: nobody is left to take it (#855).
+    fn drop(&mut self) {
+        if let Some((_, cancel)) = &self.under_way {
+            cancel.cancel();
+        }
     }
 }
 
