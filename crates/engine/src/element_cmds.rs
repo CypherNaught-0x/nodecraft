@@ -22,7 +22,7 @@ fn not_found(what: &str) -> Error {
     Error::new(ErrorKind::NotFound, format!("{what} does not exist"))
 }
 
-fn check_pos(pos: Position) -> Result<(), Error> {
+pub(crate) fn check_pos(pos: Position) -> Result<(), Error> {
     if pos.x.is_finite() && pos.y.is_finite() && pos.x.abs() <= MAX_COORDINATE && pos.y.abs() <= MAX_COORDINATE {
         Ok(())
     } else {
@@ -30,16 +30,16 @@ fn check_pos(pos: Position) -> Result<(), Error> {
     }
 }
 
-fn canvas<'a>(c: &'a Context<'_>, id: CanvasId) -> Result<&'a Canvas, Error> {
+pub(crate) fn canvas<'a>(c: &'a Context<'_>, id: CanvasId) -> Result<&'a Canvas, Error> {
     c.document.canvases().get(&id).ok_or_else(|| not_found("canvas"))
 }
 
 /// Whether another Element on `canvas` than `except` is called `name` (ignoring case).
-fn taken(canvas: &Canvas, name: &str, except: Option<NodeId>) -> bool {
+pub(crate) fn taken(canvas: &Canvas, name: &str, except: Option<NodeId>) -> bool {
     canvas.nodes().values().any(|n| Some(n.id) != except && element::name(n).is_some_and(|other| other.eq_ignore_ascii_case(name)))
 }
 
-fn text(node: &Node, name: &str) -> String {
+pub(crate) fn text(node: &Node, name: &str) -> String {
     match node.params.get(name) {
         Some(Value::Text(text)) => text.clone(),
         _ => String::new(),
@@ -156,7 +156,7 @@ pub fn sheet_models(catalog: &GenerationCatalog, images: usize) -> Vec<(String, 
 }
 
 /// The Element's reference image wires, in order.
-fn image_wires(canvas: &Canvas, id: NodeId) -> Vec<&Edge> {
+pub(crate) fn image_wires(canvas: &Canvas, id: NodeId) -> Vec<&Edge> {
     let mut wires: Vec<&Edge> = canvas.edges().values().filter(|e| e.to.node == id && e.to.port == IMAGES).collect();
     wires.sort_by_key(|e| (e.order, e.id));
     wires
@@ -278,11 +278,11 @@ fn enabled_sheet(c: &Context<'_>, value: &Json) -> Result<(), Error> {
     sheet(c, value).map(|_| ())
 }
 
-fn uuid() -> Json {
+pub(crate) fn uuid() -> Json {
     json!({"type": "string", "format": "uuid"})
 }
 
-fn pos() -> Json {
+pub(crate) fn pos() -> Json {
     let coordinate = json!({"type": "number", "minimum": -MAX_COORDINATE, "maximum": MAX_COORDINATE});
     json!({"type": "object", "required": ["x", "y"], "additionalProperties": false, "properties": {"x": coordinate, "y": coordinate}})
 }

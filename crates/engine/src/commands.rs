@@ -175,6 +175,17 @@ pub enum Effect {
     Perf {
         action: crate::perf_cmds::PerfAction,
     },
+    /// Read or change the Elements library (#552); saving reads the project's images.
+    Elements {
+        request: crate::element_library::Request,
+    },
+    /// An edit that shows images from the Elements library (#552): those of `media` the project
+    /// lacks are copied in from the library, and land with the edit as one undo step.
+    Place {
+        media: Vec<nodecraft_types::Blake3>,
+        changes: Changeset,
+        result: Value,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -239,6 +250,7 @@ impl Registry {
             .chain(crate::interchange_cmds::specs())
             .chain(crate::timeline_captions::specs())
             .chain(crate::element_cmds::specs())
+            .chain(crate::element_library_cmds::specs())
             .chain(crate::style_cmds::specs())
             .chain(crate::plugin_cmds::specs())
             .chain(crate::ownership_cmds::specs())

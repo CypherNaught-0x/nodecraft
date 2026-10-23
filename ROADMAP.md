@@ -47,7 +47,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   A Layer Editor card composites its wired images with text and shape layers into one frame;
   its full-screen editor moves, resizes, rotates, snaps and aligns layers (#101). Elements turn
   selected images into a named, reusable subject that prompts mention as `#name`, with a
-  generated reference sheet (#104). An image card's Image tools menu lists inpaint, expand,
+  generated reference sheet (#104), and are saved to an Elements library every project shares,
+  placed from it and updated from it (#552). An image card's Image tools menu lists inpaint, expand,
   remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
   image as one undo step (#103). 3D models (glTF, GLB, OBJ) become 3D nodes whose cards show

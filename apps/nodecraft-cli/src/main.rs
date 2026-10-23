@@ -138,6 +138,10 @@ fn mcp() -> ExitCode {
     {
         eprintln!("warning: the technique library is unavailable: {}", e.message);
     }
+    // The app's Elements library (#552), for agents to list and place from.
+    if let Some(dir) = nodecraft_engine::settings::settings_dir() {
+        nodecraft_engine::element_library::install(&mut session, std::rc::Rc::new(nodecraft_engine::element_library::FileElements::new(dir.join("elements"))));
+    }
     // The person's agent skills (#168), shared with the app; the folder is made on the first change.
     if let Some(dir) = nodecraft_engine::settings::settings_dir()
         && let Err(e) = nodecraft_engine::skills::install(&mut session, std::rc::Rc::new(nodecraft_engine::skills::FileSkills::new(dir.join("skills"))))

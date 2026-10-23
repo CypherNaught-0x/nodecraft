@@ -111,6 +111,29 @@ impl Session {
         let range = AssetRange::new(Arc::new(MemorySource::new(Arc::from(bytes))), 0, bytes.len() as u64)?;
         self.import_asset_from(&range, &TransferCancel::default(), &StreamMetrics::default())
     }
+    /// Commits an edit that shows `media`, copying those the project lacks in from the Elements
+    /// library first (#552): the copies land with the edit, or not at all.
+    pub(super) fn place(&mut self, command: &'static str, media: Vec<Blake3>, changes: nodecraft_graph::Changeset, result: Value) -> Result<Value, Error> {
+        let edit = Effect::Edit { changes, result, gesture: None };
+        let missing: BTreeSet<Blake3> = media.into_iter().filter(|hash| !self.assets.contains(hash)).collect();
+        if missing.is_empty() {
+            let prepared = guard(|| self.prepare(edit))?;
+            return self.commit_prepared(prepared, command);
+        }
+        let shelf = self.resources.require::<crate::element_library::ElementShelf>()?.clone();
+        let mut sources = Vec::new();
+        for hash in &missing {
+            let bytes = shelf.media(hash)?;
+            let len = bytes.len() as u64;
+            sources.push(AssetRange::new(Arc::new(MemorySource::new(Arc::from(bytes))), 0, len)?);
+        }
+        let imports = self.prepare_imports(&sources, &TransferCancel::default(), &StreamMetrics::default())?;
+        if imports.hashes.iter().copied().collect::<BTreeSet<_>>() != missing {
+            return Err(invalid("an image in the Elements library is damaged; save the Element again"));
+        }
+        let prepared = guard(|| self.prepare_with_assets(edit, &imports.assets, true))?;
+        self.commit_prepared(prepared, command)
+    }
     /// Dispatch one ordinary graph Edit using exactly this batch's candidate store.
     /// Service/file/history effects never execute through this import-only boundary.
     pub fn dispatch_with_imports(&mut self, command: &str, params: &Value, prepared: PreparedImports) -> Result<Value, Error> {

@@ -335,6 +335,7 @@ mod comments;
 mod deck_editor;
 mod deck_presenter;
 mod drop;
+mod element_library_view;
 mod elements;
 mod export;
 mod fields;
@@ -550,6 +551,7 @@ pub struct NodeCraftApp {
     sheet: sheet_view::SheetView,
     /// The Techniques panel (#96).
     library: library_view::LibraryView,
+    element_library: element_library_view::ElementLibraryView,
 }
 impl NodeCraftApp {
     /// Cancel one owner at a time: noodle, input order, marquee, then selection.
@@ -709,6 +711,12 @@ impl NodeCraftApp {
         if let Err(error) = nodecraft_engine::library::install(&mut app.session, library) {
             log::warn!("technique library unavailable: {}", error.message);
         }
+        // The Elements library (#552), beside it.
+        let elements: std::rc::Rc<dyn nodecraft_engine::element_library::ElementStore> = match store.dir() {
+            Some(dir) => std::rc::Rc::new(nodecraft_engine::element_library::FileElements::new(dir.join("elements"))),
+            None => std::rc::Rc::new(nodecraft_engine::element_library::MemoryElements::default()),
+        };
+        nodecraft_engine::element_library::install(&mut app.session, elements);
         // The person's agent skills (#168), beside the library.
         let skills: std::rc::Rc<dyn nodecraft_engine::skills::SkillStore> = match store.dir() {
             Some(dir) => std::rc::Rc::new(nodecraft_engine::skills::FileSkills::new(dir.join("skills"))),
@@ -771,6 +779,7 @@ impl NodeCraftApp {
     fn in_memory(services: nodecraft_engine::commands::Services, store: Box<dyn nodecraft_engine::library::LibraryStore>) -> Result<Self, Error> {
         let mut app = Self::with_services(services)?;
         nodecraft_engine::library::install(&mut app.session, store)?;
+        nodecraft_engine::element_library::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::element_library::MemoryElements::default()));
         nodecraft_engine::skills::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::skills::MemorySkills::default()))?;
         Ok(app)
     }
@@ -1067,6 +1076,7 @@ impl NodeCraftApp {
             ownership: None,
             sheet: sheet_view::SheetView::default(),
             library: library_view::LibraryView::default(),
+            element_library: element_library_view::ElementLibraryView::default(),
         })
     }
     /// Replace a document session together with scoped view services and all view caches.
@@ -1461,8 +1471,11 @@ impl NodeCraftApp {
         let mut present_request = None;
         let mut reader_request = None;
         let mut timeline_request = None;
+        // Element card menus offer saving to, or updating from, the library: know what it holds.
+        self.element_library_listed();
         let mut element_request = false;
         let mut image_tool_request = None;
+        let mut element_library_request = None;
         let mut technique_request = None;
         let mut style_request = None;
         let mut wire_command = None;
@@ -1478,6 +1491,7 @@ impl NodeCraftApp {
         let mut timeline_after = None;
         let mut element_after = false;
         let mut image_tool_after = None;
+        let mut element_library_after = None;
         let mut technique_after = None;
         let mut style_after = None;
         let mut tag_action = None;
@@ -1833,6 +1847,11 @@ impl NodeCraftApp {
                                     ui.close();
                                 }
                             }
+                            if node.kind == nodecraft_nodes::element::ID
+                                && let Some(action) = element_library_view::menu(ui, &self.element_library, node)
+                            {
+                                element_library_request = Some(action);
+                            }
                             if let Some(action) = styles::menu(ui, canvas, self.session.generation_catalog().ok(), node) {
                                 style_request = Some(action);
                             }
@@ -2019,6 +2038,7 @@ impl NodeCraftApp {
             timeline_after = timeline_request;
             element_after = element_request;
             image_tool_after = image_tool_request;
+            element_library_after = element_library_request;
             technique_after = technique_request;
             style_after = style_request;
             if let Some(marquee) = &mut self.marquee
@@ -2096,6 +2116,9 @@ impl NodeCraftApp {
         }
         if let Some(request) = image_tool_after {
             self.image_tool(request);
+        }
+        if let Some(action) = element_library_after {
+            self.element_library_action(action);
         }
         if let Some(action) = technique_after {
             self.technique_action(action);
@@ -2277,6 +2300,7 @@ impl NodeCraftApp {
         self.ownership_panel(ui.ctx(), t);
         self.sheets_panel(ui.ctx(), t);
         self.techniques_panel(ui.ctx(), t);
+        self.elements_panel(ui.ctx(), t);
         // Floating UI must lay out before final quick-add admission, including a Window's first
         // sizing pass. Keep Keys rendering/polling exactly once, in its existing place.
         // `minimap_press` is this frame's frozen minimap admission (#361): held minimap input owns
@@ -2415,6 +2439,7 @@ impl NodeCraftApp {
                     ui.horizontal(|ui| {
                         self.sheets_button(ui, t);
                         self.techniques_button(ui, t);
+                        self.elements_button(ui, t);
                         if let Some(node) = self.selected_technique()
                             && ui
                                 .add(egui::Button::new(egui::RichText::new("Open as app").color(t.text_muted)).frame(false))
@@ -2967,6 +2992,8 @@ mod audio_tests;
 mod deck_editor_tests;
 #[cfg(test)]
 mod deck_presenter_tests;
+#[cfg(test)]
+mod element_library_view_tests;
 #[cfg(test)]
 mod elements_tests;
 #[cfg(test)]
