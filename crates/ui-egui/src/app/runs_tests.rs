@@ -151,6 +151,13 @@ fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
     h.run();
 }
 
+/// Clicks a button in a window or dialog. A pointer held down on a window repaints every frame,
+/// so [`press`]'s frame between press and release would never settle there.
+fn click(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
+    h.get_by_role_and_label(Role::Button, label).click();
+    h.run();
+}
+
 /// Frames, as the window's loop runs them, until `done`.
 fn frames_until(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraftApp) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -886,6 +893,69 @@ fn variations808_visual() {
     press(&mut h, Role::Button, "Generate");
     frames_until(&mut h, |app| app.run_confirm.is_some());
     h.render().unwrap().save(dir.join("variations808-quote.png")).unwrap();
+}
+
+/// A cap that blocks a run names itself, and the confirmation opens the Budgets panel, where
+/// raising it lets the same run start (#201).
+#[test]
+fn a_run_a_budget_blocks_says_which_cap_and_opens_the_budgets_to_change_it() {
+    let mock = image(MockModel::new(MockOutput::Image));
+    let mut h = scene(making(mock.clone()));
+    h.state_mut().set_budget_caps(nodecraft_engine::settings::BudgetSettings { per_call_usd_cents: Some(1), ..Default::default() });
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    h.get_by_label("This run can't start:");
+    h.get_by_label_contains("This would exceed the per-call budget");
+    assert!(h.query_by_label_contains("Generate for").is_none(), "a blocked run offers no way to start it");
+    click(&mut h, "Change budgets…");
+    assert!(h.state().run_confirm.is_none() && h.state().budgets.open);
+    let field = h.get_by_role_and_label(Role::TextInput, "Per call");
+    assert_eq!(field.value().as_deref(), Some("0.01"), "the panel shows the cap now in force");
+    field.focus();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.get_by_role_and_label(Role::TextInput, "Per call").type_text("1");
+    h.run();
+    click(&mut h, "Save");
+    assert_eq!(h.state().budget_caps().per_call_usd_cents, Some(100));
+    h.get_by_label_contains("Runs are checked against these caps");
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    accept(&mut h);
+    frames_until(&mut h, |app| idle(app) && !node(app).history.is_empty());
+    assert_eq!(mock.requests().len(), 1, "the run went ahead under the raised cap");
+}
+
+#[test]
+fn a_bad_amount_in_the_budgets_is_refused_and_nothing_changes() {
+    let mut h = scene(making(image(MockModel::new(MockOutput::Image))));
+    h.state_mut().set_budget_caps(nodecraft_engine::settings::BudgetSettings { session_usd_cents: Some(500), ..Default::default() });
+    press(&mut h, Role::Button, "Budgets");
+    h.get_by_role_and_label(Role::TextInput, "This session").focus();
+    h.run();
+    h.get_by_role_and_label(Role::TextInput, "This session").type_text("x");
+    h.run();
+    click(&mut h, "Save");
+    h.get_by_label_contains("This session: type an amount in dollars");
+    assert_eq!(h.state().budget_caps().session_usd_cents, Some(500));
+}
+
+#[test]
+#[ignore = "manual public-safe capture; BUDGETS201_RENDER_DIR"]
+fn budgets201_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("BUDGETS201_RENDER_DIR").unwrap());
+    let mut h = drawn(scene(making(image(MockModel::new(MockOutput::Image)))));
+    h.state_mut().set_budget_caps(nodecraft_engine::settings::BudgetSettings {
+        per_call_usd_cents: Some(1),
+        session_usd_cents: Some(500),
+        ..Default::default()
+    });
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    h.render().unwrap().save(dir.join("budgets201-blocked.png")).unwrap();
+    click(&mut h, "Change budgets…");
+    h.run();
+    h.render().unwrap().save(dir.join("budgets201-panel.png")).unwrap();
 }
 
 mod known_media795;

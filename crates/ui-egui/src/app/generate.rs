@@ -93,6 +93,8 @@ pub(super) struct Quote {
     alike: usize,
     /// The planner found nothing in the way; a budget may still refuse the price.
     planned: bool,
+    /// A budget cap refuses the price; the Budgets panel can change it.
+    capped: bool,
 }
 
 /// What a quote says when a card asks for several variations with a pinned seed (#808).
@@ -132,7 +134,8 @@ impl Quote {
         let quoted = value.get("quoted").and_then(Json::as_array).map_or(0, Vec::len);
         let alike = value.get("alike").and_then(Json::as_array).map_or(0, Vec::len);
         let planned = value.get("blocked").and_then(Json::as_array).is_none_or(Vec::is_empty);
-        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed, resumable, quoted, alike, planned })
+        let capped = value.get("blocks").and_then(Json::as_array).is_some_and(|blocks| !blocks.is_empty());
+        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed, resumable, quoted, alike, planned, capped })
     }
 
     /// Whether the quote can be accepted as shown, given the consent collected so far.
@@ -313,6 +316,7 @@ impl NodeCraftApp {
         let mut close = false;
         let mut start = false;
         let mut requote = false;
+        let mut change_caps = false;
         let modal = egui::Modal::new(egui::Id::new("run_confirm")).show(ui.ctx(), |ui| {
             ui.set_width(t.dialog_width);
             ui.heading(confirm.kind.title());
@@ -381,9 +385,17 @@ impl NodeCraftApp {
                     let label = if quote.totals.is_empty() { format!("{title} now") } else { format!("{title} for {}", quote.price()) };
                     start = ui.add_enabled(quote.acceptable(confirm.partial), egui::Button::new(label)).clicked();
                 }
+                if quote.capped && !quote.allowed && !stale {
+                    change_caps = ui.button("Change budgets…").on_hover_text("Raise or remove the cap that blocks this run").clicked();
+                }
                 close |= ui.button(if failed { "Close" } else { "Cancel" }).clicked();
             });
         });
+        if change_caps {
+            // Generating again after changing a cap quotes afresh.
+            self.budgets.open();
+            close = true;
+        }
         close |= modal.should_close();
         if start && !stale && confirm.error.is_none() {
             let quote = &confirm.quote;

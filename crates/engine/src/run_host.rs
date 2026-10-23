@@ -46,7 +46,7 @@ use crate::resolve_cmds::{self, RESOLUTION_SERVICE};
 use crate::run_cmds::{AuthorizedRun, BudgetState, PreparedRun, UsageSnapshot};
 use crate::run_jobs::{JobKey, JobState, JobView, MAX_RECENT, Reports, RunJobs};
 use crate::run_journal::{JOURNAL_VERSION, Journal, JournalStore, MAX_PARKED_LAUNCHES, Submitted};
-use nodecraft_exec::cost::{Budgets, Charge, UsageLog};
+use nodecraft_exec::cost::{Budgets, Charge, Spent, UsageLog};
 use nodecraft_exec::driver::{CancelToken, Handle, JobRunner, Runtime, TaskFuture, driver};
 use nodecraft_exec::run::{Progress, RunOptions, SourceRunner, StepResult, take_outputs};
 use nodecraft_exec::scheduler::{CancelScope, Event, JobId, Outcome, RetryPolicy, Scheduler, Start};
@@ -632,6 +632,18 @@ impl RunHost {
     /// Installs the budget resources quotes read, from the shared usage log.
     pub fn install(&self, session: &mut Session) {
         refresh(session, &self.budget);
+    }
+
+    /// Caps later quotes and jobs with `budgets` (the person's settings, #201). Jobs running now
+    /// are checked against them too before they charge again.
+    pub fn set_budgets(&self, session: &mut Session, budgets: Budgets) {
+        *lock(&self.budget.budgets) = budgets;
+        refresh(session, &self.budget);
+    }
+
+    /// What this session and the project have spent so far, as reported (not the admission bound).
+    pub fn spent(&self) -> Spent {
+        lock(&self.budget.log).reported_spent(&self.budget.session)
     }
 
     /// Whether any run is waiting or running.

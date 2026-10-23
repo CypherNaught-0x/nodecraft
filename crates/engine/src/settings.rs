@@ -16,8 +16,10 @@
 use serde::{Deserialize, Serialize};
 
 mod agent;
+mod budgets;
 mod projects;
 pub use agent::{AgentEndpoint, AgentMode, AgentSettings};
+pub use budgets::BudgetSettings;
 pub use projects::ProjectSettings;
 
 pub use craft_settings::{DocumentMut, LoadReport, MigrateError, SaveStatus, SettingsError, TickResult};
@@ -42,6 +44,7 @@ pub struct NodeCraftSettings {
     pub media: MediaSettings,
     pub agent: AgentSettings,
     pub share: ShareSettings,
+    pub budgets: BudgetSettings,
 }
 
 /// External tools for video (#105). NodeCraft never downloads or bundles them, and never takes
@@ -327,6 +330,15 @@ mod tests {
 
     fn write_config(dir: &Path, text: &str) {
         std::fs::write(dir.join("config.toml"), text).unwrap();
+    }
+
+    #[test]
+    fn a_mistyped_budget_cap_in_the_file_blocks_rather_than_lifting_every_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "[budgets]\nper_call_usd_cents = 50.0\nsession_usd_cents = 700\ntotal_usd_cents = \"9\"\n");
+        let (store, _) = open_in(dir.path());
+        let caps = &store.get().budgets;
+        assert_eq!((caps.per_call_usd_cents, caps.session_usd_cents, caps.total_usd_cents), (Some(0), Some(700), Some(0)));
     }
 
     #[test]
