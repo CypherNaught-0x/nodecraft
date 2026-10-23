@@ -158,6 +158,11 @@ fn template(id: &str) -> (Session, Value) {
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"source.image","pos":{"x":0,"y":0}})).unwrap();
         document = seed.document().clone();
     }
+    if id.starts_with("shader.") {
+        let mut seed = Session::new(document.clone()).unwrap();
+        seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(0x5a),"kind":"image.shader","pos":{"x":0,"y":0}})).unwrap();
+        document = seed.document().clone();
+    }
     if id == "mesh.capture" {
         let mut seed = Session::new(document.clone()).unwrap();
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"source.mesh","pos":{"x":0,"y":0}})).unwrap();
@@ -570,6 +575,8 @@ fn template(id: &str) -> (Session, Value) {
         "share.join" => json!({"link":format!("ws://127.0.0.1:9/#room={}", "0".repeat(64))}),
         "share.stop" | "share.status" => json!({}),
         "node.shader_set" => json!({"canvas":canvas(),"id":node_id(1),"source":"fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color; }"}),
+        "shader.write" => json!({"canvas":canvas(),"node":node_id(0x5a),"id":node_id(0x5b),"request":"Blur the image a little"}),
+        "shader.apply" => json!({"canvas":canvas(),"id":node_id(0x5a),"from":node_id(1)}),
         "node.cache_set" => json!({"canvas":canvas(),"id":node_id(1),"enabled":true}),
         "node.variations_set" => json!({"canvas":canvas(),"id":node_id(1),"count":3}),
         "canvas.set_variation_cards" => json!({"canvas":canvas(),"cards":true}),

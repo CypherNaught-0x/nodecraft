@@ -51,16 +51,20 @@ fn always(_: &Context<'_>, _: &Value) -> Result<(), Error> {
 
 fn set(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: ShaderParams = params(value)?;
+    set_shader(c, p.canvas, p.id, StoredShader { source: p.source, params: p.params })
+}
+
+/// Validates `shader` and stores it on the custom shader node `id`, as one undo step.
+pub(crate) fn set_shader(c: &Context<'_>, canvas: CanvasId, id: NodeId, shader: StoredShader) -> Result<Effect, Error> {
     let node = c
         .document
         .canvases()
-        .get(&p.canvas)
-        .and_then(|canvas| canvas.nodes().get(&p.id))
+        .get(&canvas)
+        .and_then(|canvas| canvas.nodes().get(&id))
         .ok_or_else(|| Error::new(ErrorKind::NotFound, "document entity does not exist"))?;
     if node.kind != ID {
         return Err(Error::new(ErrorKind::InvalidInput, "only a custom shader node takes a shader"));
     }
-    let shader = StoredShader { source: p.source, params: p.params };
     // The person's code is checked before it is stored; the message is theirs to act on.
     nodecraft_gpu::shader::validate(&spec(&shader))
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the shader isn't valid: {}", e.0.chars().take(4000).collect::<String>())))?;
@@ -77,7 +81,7 @@ fn set(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     if changed == *node {
         return Ok(Effect::None { result: json!({"changed": false}) });
     }
-    Ok(Effect::Edit { changes: Changeset::new(vec![Change::SetNode { canvas: p.canvas, node: changed }]), result: json!({"changed": true}), gesture: None })
+    Ok(Effect::Edit { changes: Changeset::new(vec![Change::SetNode { canvas, node: changed }]), result: json!({"changed": true}), gesture: None })
 }
 
 pub fn specs() -> Vec<CommandSpec> {

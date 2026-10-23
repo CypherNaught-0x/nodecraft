@@ -59,8 +59,9 @@ fn text_only(model: &GenerationModel) -> bool {
     model.modes.iter().any(|mode| mode.inputs.iter().any(typed_prompt) && mode.inputs.iter().all(|role| typed_prompt(role) || role.min == 0))
 }
 
-/// The text model the assist card uses.
-fn pick_model(c: &Context<'_>, canvas: &nodecraft_graph::Canvas, asked: Option<&str>) -> Result<String, Error> {
+/// The text model an assist card uses: `asked`, else one a text card on `canvas` uses, else the
+/// first installed that answers a typed prompt alone.
+pub(crate) fn pick_model(c: &Context<'_>, canvas: &nodecraft_graph::Canvas, asked: Option<&str>) -> Result<String, Error> {
     let catalog = GenerationCatalog::current(c.resources)?;
     if let Some(id) = asked {
         let model = catalog.model(TEXT_KIND, id).ok_or_else(|| Error::new(ErrorKind::NotFound, format!("no text model is called {id}")))?;
@@ -76,7 +77,7 @@ fn pick_model(c: &Context<'_>, canvas: &nodecraft_graph::Canvas, asked: Option<&
     });
     on_canvas
         .or_else(|| catalog.models(TEXT_KIND).find(|model| text_only(model)).map(|model| model.id.clone()))
-        .ok_or_else(|| Error::new(ErrorKind::NotFound, "no text model is installed; add one to the model catalog to improve prompts"))
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, "no text model is installed; add one to the model catalog to ask a model"))
 }
 
 fn ask<'a>(kind: &str, instruction: Option<&'a str>) -> &'a str {
