@@ -148,4 +148,16 @@ fn option_lists_are_bounded_and_keep_the_old_list_on_refusal() {
     bytes.set(key("a.one", None), big("a")).unwrap();
     assert!(bytes.set(key("a.two", None), big("b")).is_err(), "aggregate text is capped");
     bytes.set(key("a.one", None), big("c")).unwrap();
+    bytes.clear_sources("a.");
+    assert!(bytes.is_empty());
+    bytes.set(key("a.two", None), big("b")).unwrap();
+    assert!(bytes.get(key("a.two", None)).is_some(), "clearing by source frees its bytes");
+
+    let mut mixed = OptionLists::default();
+    mixed.set(key("comfyui.checkpoints", None), choices(&["x"])).unwrap();
+    mixed.set(key("comfyui.loras", Some("x")), choices(&["y"])).unwrap();
+    mixed.set(key("fal.voices", None), choices(&["z"])).unwrap();
+    mixed.clear_sources("comfyui.");
+    assert_eq!(mixed.len(), 1);
+    assert!(mixed.get(key("fal.voices", None)).is_some(), "other providers' lists stay");
 }

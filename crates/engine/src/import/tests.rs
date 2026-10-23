@@ -299,7 +299,7 @@ fn read_comfy_nodes(s: &mut Session) {
     let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {"multiline": true}]}}, "output": ["IMAGE"]},
         "SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
     let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
-    crate::comfy_workflow_cmds::finish(s, 1, Ok(std::sync::Arc::new(catalog)));
+    crate::comfy_workflow_cmds::finish(s, 1, Ok(std::sync::Arc::new(catalog).into()));
 }
 
 #[test]

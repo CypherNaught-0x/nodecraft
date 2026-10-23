@@ -115,7 +115,7 @@ fn adapter_error(error: nodecraft_providers::ProviderError) -> Readiness {
 pub fn comfyui(env: &HostEnv<'_>) -> Result<nodecraft_providers::comfyui::ComfyProvider, Readiness> {
     let url = env.settings.comfyui_url.as_deref().map(str::trim).filter(|u| !u.is_empty());
     let Some(url) = url else {
-        return Err(Readiness::NotSetUp("add the ComfyUI server's address in settings ([providers] comfyui_url)".into()));
+        return Err(Readiness::NotSetUp("add the ComfyUI server's address with the toolbar's ComfyUI button, or in settings ([providers] comfyui_url)".into()));
     };
     if env.settings.install_salt.trim().is_empty() {
         return Err(Readiness::NotSetUp("the install salt isn't set ([providers] install_salt), and the settings can't be saved to make one".into()));

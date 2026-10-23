@@ -405,6 +405,29 @@ fn a_key_change_while_the_provider_is_set_up_builds_it_again_with_the_new_key() 
 }
 
 #[test]
+fn a_server_change_while_the_provider_is_set_up_builds_it_for_the_new_server() {
+    let (open, gate) = std::sync::mpsc::channel::<()>();
+    let gate = Mutex::new(gate);
+    let servers = Arc::new(Mutex::new(Vec::new()));
+    let seen = servers.clone();
+    let inner = making(image(MockModel::new(MockOutput::Image)));
+    let mut h = scene(Box::new(move |adapter, settings| {
+        let _ = gate.lock().unwrap().recv();
+        seen.lock().unwrap().push(settings.comfyui_url.clone());
+        inner(adapter, settings)
+    }));
+    press(&mut h, Role::Button, "Generate");
+    let app = h.state_mut();
+    let mut settings = app.provider_settings();
+    settings.comfyui_url = Some("http://other:8188".into());
+    app.runs.as_mut().unwrap().forget_adapters_for(&mut app.session, &settings).unwrap();
+    open.send(()).unwrap();
+    open.send(()).unwrap();
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert_eq!(servers.lock().unwrap().last().cloned().flatten().as_deref(), Some("http://other:8188"), "the waiting card is built for the new server");
+}
+
+#[test]
 fn leaving_the_canvas_while_its_provider_is_set_up_clears_the_waiting_notice() {
     let (make, open, _) = gated(image(MockModel::new(MockOutput::Image)));
     let mut h = scene(make);

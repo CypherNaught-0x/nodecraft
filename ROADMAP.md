@@ -17,7 +17,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 0 | **Skeleton** — workspace, CI, release pipeline, themed canvas | ✅ feature work done | 10/10 |
 | 1 | **Canvas core** — graph, undo, commands, canvas, `.ncraft` | ✅ done | 36/37 |
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done (close-out #373) | 13/14 |
-| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired | 38/44 |
+| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9) | 39/44 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | 🟡 partial; action nodes work in app | 8/12 |
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 16/27 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 8/11 |
@@ -178,8 +178,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
 1. **Finish M3 generation**: the chat-style text-card turn UI (#84), generation history and
-   variations (#81), cost and budget checks before a run (#201), and the remaining ComfyUI and
-   keychain issues (#9, #80); do not mistake a tested adapter for a working mode in every host.
+   variations (#81), cost and budget checks before a run (#201), and the remaining
+   keychain issue (#80); do not mistake a tested adapter for a working mode in every host.
 2. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
    then browser option-list parity (#721), verification/closure of HTTP serve's still-open
    tracker (#117), and later milestone gaps.

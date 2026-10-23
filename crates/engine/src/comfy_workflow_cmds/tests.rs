@@ -49,8 +49,8 @@ fn catalog() -> Arc<NodeCatalog> {
 /// A session that has read [`OBJECT_INFO`].
 fn ready() -> Session {
     let mut s = session();
-    let report = finish(&mut s, 1, Ok(catalog()));
-    assert_eq!(report, Report { id: 1, nodes: Some(4), error: None });
+    let report = finish(&mut s, 1, Ok(catalog().into()));
+    assert_eq!(report, Report { id: 1, nodes: Some(4), error: None, server: None });
     s
 }
 
@@ -181,4 +181,118 @@ fn a_seed_comfyui_randomised_is_imported_fixed_with_a_warning() {
     let result = s.dispatch("comfy.workflow.import", &import_params(&workflow)).unwrap();
     let warnings: Vec<&str> = result["warnings"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     assert!(warnings.iter().any(|w| w.contains("3.seed") && w.contains("randomize")), "{warnings:?}");
+}
+
+const SYSTEM_STATS: &str = r#"{"system": {"os": "posix", "comfyui_version": "0.3.40", "ram_total": 1, "ram_free": 1},
+  "devices": [{"name": "cuda:0 NVIDIA GeForce RTX 4090", "type": "cuda", "vram_total": 24000000000, "vram_free": 18200000000}]}"#;
+const QUEUE: &str = r#"{"queue_running": [[0, "a", {}, {}, []]], "queue_pending": [[1, "b", {}, {}, []], [2, "c", {}, {}, []]]}"#;
+
+/// A ComfyUI server answering by path; `healthy` false answers 404 to all but `/object_info`, as
+/// a proxy that only passes the API might.
+struct Server {
+    healthy: bool,
+}
+
+impl nodecraft_providers::http::Http for Server {
+    fn send(
+        &self,
+        request: nodecraft_providers::HttpRequest,
+    ) -> nodecraft_providers::BoxFuture<'_, Result<nodecraft_providers::HttpResponse, nodecraft_providers::ProviderError>> {
+        let path = request.url.split('?').next().unwrap_or_default().rsplit('/').next().unwrap_or_default().to_owned();
+        let body = match path.as_str() {
+            "object_info" => Some(OBJECT_INFO),
+            "system_stats" if self.healthy => Some(SYSTEM_STATS),
+            "queue" if self.healthy => Some(QUEUE),
+            _ => None,
+        };
+        let response = match body {
+            Some(body) => nodecraft_providers::HttpResponse { status: 200, headers: Vec::new(), body: body.as_bytes().to_vec() },
+            None => nodecraft_providers::HttpResponse { status: 404, headers: Vec::new(), body: Vec::new() },
+        };
+        Box::pin(async move { Ok(response) })
+    }
+}
+
+fn fetch_from(healthy: bool) -> Result<Fetched, Error> {
+    let settings = crate::settings::ProviderSettings { comfyui_url: Some("http://127.0.0.1:8188".into()), install_salt: "salt".into() };
+    let keys = crate::secrets::MemoryStore::default();
+    let env = HostEnv { keys: &keys, http: Arc::new(Server { healthy }), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
+    futures::executor::block_on(fetch(&env))
+}
+
+#[test]
+fn a_check_reads_the_nodes_and_the_servers_health() {
+    let mut s = session();
+    let report = finish(&mut s, 1, fetch_from(true));
+    let health = report.server.clone().unwrap();
+    assert_eq!(report.nodes, Some(4));
+    assert_eq!(health.summary(), "ComfyUI 0.3.40 · cuda:0 NVIDIA GeForce RTX 4090 · 18.2 / 24.0 GB free · 1 running, 2 waiting");
+    let status = s.dispatch("comfy.nodes.status", &json!({})).unwrap();
+    assert_eq!(
+        status["last"]["server"],
+        json!({"version": "0.3.40", "device": "cuda:0 NVIDIA GeForce RTX 4090 · 18.2 / 24.0 GB free", "running": 1, "pending": 2})
+    );
+    assert_eq!(last(&s), (Some(&report), Some(4)));
+}
+
+#[test]
+fn a_server_without_health_still_has_its_nodes_read() {
+    let mut s = session();
+    let report = finish(&mut s, 1, fetch_from(false));
+    assert_eq!(report, Report { id: 1, nodes: Some(4), error: None, server: None });
+    s.dispatch("comfy.workflow.import", &import_params(FOX)).unwrap();
+}
+
+#[test]
+fn forgetting_the_server_drops_its_nodes() {
+    let mut s = ready();
+    forget(&mut s);
+    assert_eq!(last(&s), (None, None));
+    assert_eq!(s.dispatch("comfy.nodes.status", &json!({})).unwrap(), json!({"last": null, "nodes": null}));
+    assert!(s.dispatch("comfy.workflow.import", &import_params(FOX)).is_err());
+}
+
+#[test]
+fn server_addresses_are_checked_without_echoing_them() {
+    assert_eq!(check_url("   ").unwrap(), None);
+    assert_eq!(check_url(" http://gpu-box:8188/comfy \n").unwrap().as_deref(), Some("http://gpu-box:8188/comfy"));
+    assert_eq!(check_url("https://comfy.example.com").unwrap().as_deref(), Some("https://comfy.example.com"));
+    for bad in [
+        "ftp://gpu-box:8188",
+        "gpu-box:8188",
+        "http://",
+        "http://me:hunter2@gpu-box:8188",
+        "http://gpu-box:8188/?token=hunter2",
+        "http://gpu-box:8188/#hunter2",
+    ] {
+        let error = check_url(bad).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{bad}");
+        assert!(!error.message.contains("hunter2") && !error.message.contains("gpu-box"), "{bad}: {}", error.message);
+    }
+    let long = format!("http://gpu-box:8188/{}", "a".repeat(MAX_URL));
+    assert!(check_url(&long).unwrap_err().message.contains("longer than"));
+}
+
+#[test]
+fn server_reported_text_is_one_bounded_line() {
+    assert_eq!(shown("0.3.40"), "0.3.40");
+    assert_eq!(shown("RTX\n4090\u{1b}[31m"), "RTX4090[31m");
+    let long = shown(&"é".repeat(10_000));
+    assert_eq!(long.chars().count(), MAX_SHOWN + 1);
+    assert!(long.ends_with('…'));
+}
+
+#[test]
+fn forgetting_the_server_drops_its_option_lists_only() {
+    let mut session = session();
+    let mut lists = OptionLists::default();
+    let choice = |v: &str| vec![nodecraft_types::Choice { value: v.into(), label: v.into() }];
+    let key = |source| nodecraft_types::OptionKey { owner: "m", source, scope: None };
+    lists.set(key("comfyui.checkpoints"), choice("old.safetensors")).unwrap();
+    lists.set(key("fal.voices"), choice("v")).unwrap();
+    session.swap_resource(Some(lists));
+    forget(&mut session);
+    let lists = session.resource::<OptionLists>().unwrap();
+    assert!(lists.get(key("comfyui.checkpoints")).is_none());
+    assert!(lists.get(key("fal.voices")).is_some());
 }
