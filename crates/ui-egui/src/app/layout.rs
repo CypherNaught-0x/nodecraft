@@ -720,13 +720,23 @@ mod tests {
         let ctx = h.ctx.clone();
         h.state_mut().schemas.clear(); // an evicted visible schema never controls layout
         h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid","columns":1})).unwrap();
+        let expected_height = |app: &NodeCraftApp| {
+            let node = app.session.document().canvases().get(&canvas).unwrap().nodes().get(&id(4)).unwrap();
+            let descriptor = app.session.kinds().get(&node.kind).unwrap().resolve_instance(node).unwrap();
+            card::world_size(node, Some(&descriptor), app.theme.tokens()).y
+        };
         let before = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id(3)).unwrap().pos.y;
-        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, h.state().theme.tokens().card_max_height);
+        let tall_height = expected_height(h.state());
+        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, tall_height);
         h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":id(4),"title":"Short"})).unwrap();
         h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid","columns":1})).unwrap();
         let after = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id(3)).unwrap().pos.y;
-        assert!(before - after > 400.0);
-        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, h.state().theme.tokens().card_min_height);
+        let short_height = expected_height(h.state());
+        assert!(tall_height > short_height * 4.0);
+        // Grid origins snap to eight world points; the full instance-height difference must move
+        // the following row, not just refresh the cached scalar without using it.
+        assert!((before - after - (tall_height - short_height)).abs() < 8.0);
+        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, short_height);
     }
     #[test]
     fn dirty_card_parameter_clicking_disabled_format_preserves_document_and_draft() {

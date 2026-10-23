@@ -180,6 +180,17 @@ impl NodeCraftApp {
         if !self.navigation.visible || !ctx.input(|i| i.pointer.primary_pressed()) {
             return false;
         }
+        // Right-side discussion chrome may cover the minimap in a short viewport. Its
+        // foreground press must not also admit a map pan before the overlays are drawn.
+        let discussion_press = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
+                _ => None,
+            })
+        });
+        if discussion_press.is_some_and(|pos| self.comments_toolbar_rect().contains(pos) || self.comments.open && self.discussion_rect().contains(pos)) {
+            return false;
+        }
         let context = self.navigation_context(ctx, "canvas.pan_to", &json!({"x":0,"y":0}));
         let pan = self.navigation_enabled_with_context(context, "canvas.pan_to", &json!({"x":0,"y":0})).is_ok() && !self.navigation.geometry.error;
         self.navigation.press_pending(ctx, self.viewport, pan, self.theme.tokens())

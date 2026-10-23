@@ -128,7 +128,9 @@ pub struct Tokens {
     pub card_width: f32,
     /// Duplicate displacement in world points, independent of zoom.
     pub duplicate_offset: f32,
+    /// Generation composer body budget (including card padding); ordinary cards size to controls.
     pub card_min_height: f32,
+    /// Maximum parameter body, including padding; previews and history reserve separate space.
     pub card_max_height: f32,
     /// Height of the image preview at the top of a card that shows an image (#386).
     pub card_preview_height: f32,
@@ -136,6 +138,8 @@ pub struct Tokens {
     pub dialog_width: f32,
     pub control_row_height: f32,
     pub control_gap: f32,
+    /// Vertical button padding on cards, keeping native controls within the logical row budget.
+    pub control_vertical_padding: f32,
     pub title_min_screen_px: f32,
     pub handle_min_screen_radius: f32,
     pub handle_stroke: f32,
@@ -291,6 +295,7 @@ pub const DARK: Tokens = Tokens {
     dialog_width: 440.0,
     control_row_height: 64.0,
     control_gap: 6.0,
+    control_vertical_padding: 2.0,
     title_min_screen_px: 9.0,
     handle_min_screen_radius: 5.0,
     handle_stroke: 1.5,

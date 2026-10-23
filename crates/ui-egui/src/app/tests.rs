@@ -14,7 +14,7 @@ fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
     app.session.document().canvases().get(&app.canvas).unwrap().nodes().values().next().unwrap()
 }
 fn screen(app: &NodeCraftApp) -> Rect {
-    app.view.rect_to_screen(app.viewport.min, card::world_rect(node(app), None, app.theme.tokens()))
+    app.view.rect_to_screen(app.viewport.min, payload_rect(&app.session, node(app), app.theme.tokens()))
 }
 fn click(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
     h.hover_at(pos);
@@ -505,8 +505,9 @@ fn typing_slider_value_commits_once_after_enter() {
         Value::Number(Number::new(0.5).unwrap()),
     )]);
     let before = h.state().session.document().clone();
-    let rect = h.get_by_role_and_label(Role::Slider, "strength").rect();
-    double_click(&mut h, Pos2::new(rect.max.x + 25.0, rect.center().y as f32));
+    // Exact entry uses its own full-width row below the full-width slider track.
+    let rect = h.get_by_role_and_label(Role::TextInput, "strength").rect();
+    click(&mut h, Pos2::new(rect.center().x as f32, rect.center().y as f32));
     h.run();
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     for character in ["0", ".", "7", "5"] {
@@ -805,12 +806,12 @@ pub(super) fn chain_id(n: u8) -> NodeId {
 fn ids(ns: &[u8]) -> BTreeSet<NodeId> {
     ns.iter().map(|n| chain_id(*n)).collect()
 }
-/// Screen point just inside the top-left of card `n`.
+/// Card background point clear of edge-port hit targets, even on compact overview cards.
 fn card_point(h: &Harness<'static, NodeCraftApp>, n: u8) -> Pos2 {
     let app = h.state();
     let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&chain_id(n)).unwrap();
-    let descriptor = app.session.kinds().get(&node.kind).ok().map(|k| k.descriptor());
-    app.view.rect_to_screen(app.viewport.min, card::world_rect(node, descriptor, app.theme.tokens())).min + Vec2::splat(6.0)
+    let rect = app.view.rect_to_screen(app.viewport.min, payload_rect(&app.session, node, app.theme.tokens()));
+    Pos2::new(rect.center().x, rect.top() + 6.0_f32.min(rect.height() * 0.25))
 }
 fn press(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2, button: egui::PointerButton, modifiers: egui::Modifiers) {
     h.event(egui::Event::ModifiersChanged(modifiers));
@@ -1599,8 +1600,8 @@ fn quick_add_keys_create_kinds_under_the_pointer_as_one_step() {
     // Centred on the pointer, and selected.
     let world = h.state().view.to_world(h.state().viewport.min, at);
     let t = h.state().theme.tokens();
-    assert!((image.pos.x - (world.x - t.card_width * 0.5)).abs() < 0.5);
-    assert!((image.pos.y - (world.y - t.card_min_height * 0.5)).abs() < 0.5);
+    let actual = payload_rect(&h.state().session, image, t);
+    assert!((actual.center() - world).length() < 0.5);
     assert_eq!(h.state().selection.nodes(), &[image.id].into_iter().collect());
     // With a modifier held the key is not a quick-add.
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
@@ -1883,8 +1884,8 @@ fn paste_lands_centred_duplicate_offsets_and_unreadable_copies_explain() {
     let pasted = h.state().selection.nodes().iter().next().copied().unwrap();
     let node = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&pasted).unwrap().clone();
     let world = h.state().view.to_world(h.state().viewport.min, at);
-    assert!((node.pos.x + t.card_width / 2.0 - world.x).abs() < 0.5);
-    assert!((node.pos.y + t.card_min_height / 2.0 - world.y).abs() < 0.5);
+    let actual = payload_rect(&h.state().session, &node, &t);
+    assert!((actual.center() - world).length() < 0.5);
     // A NodeCraft copy this version can't read gives a notice, not a Text node full of JSON.
     let before = h.state().session.document().clone();
     h.event(egui::Event::Paste(text.replace("\"version\":1", "\"version\":9")));

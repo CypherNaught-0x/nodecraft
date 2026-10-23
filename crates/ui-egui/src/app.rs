@@ -2891,6 +2891,20 @@ impl NodeCraftApp {
         }
     }
 
+    /// Resolve the same default instance that creation commands use, without publishing it.
+    fn creation_size(&self, kind: &str, id: NodeId, pos: nodecraft_graph::Position, output: Option<PortType>, t: &Tokens) -> Result<Vec2, Error> {
+        // Connected routers/batches carry the noodle's modality, just like create_connected.
+        let config = match (kind, output) {
+            (nodecraft_nodes::router::ID, Some(output)) => nodecraft_nodes::router::config(output.modality),
+            (nodecraft_nodes::batch::ID, Some(output)) => nodecraft_nodes::batch::config(output.modality),
+            _ => BTreeMap::new(),
+        };
+        let mut node = self.session.kinds().get(kind)?.instantiate_instance(id, config, &BTreeMap::new())?;
+        node.pos = pos;
+        let admitted = admission::admit_uncached(&self.session, &node);
+        Ok(card::world_size(&node, admitted.as_ref().map(|a| a.descriptor.as_ref()), t))
+    }
+
     /// Create a node of `kind` centred on `world`, select it, and report failures as a notice.
     fn create_node(&mut self, kind: &str, world: Pos2) {
         let t = self.theme.tokens();
@@ -2900,6 +2914,15 @@ impl NodeCraftApp {
             self.notice = Some("Couldn't allocate a node id; try again.".into());
             return;
         };
+        // Keep id allocation stable, but center the actual default card, not the old baseline.
+        let size = match self.creation_size(kind, id, pos, None, t) {
+            Ok(size) => size,
+            Err(error) => {
+                self.notice = Some(error.message);
+                return;
+            }
+        };
+        let pos = nodecraft_graph::Position { x: world.x - size.x * 0.5, y: world.y - size.y * 0.5 };
         match self.session.dispatch("node.create", &json!({"canvas": self.canvas, "id": id, "kind": kind, "pos": pos})) {
             Ok(_) => {
                 self.notice = None;
@@ -2920,6 +2943,14 @@ impl NodeCraftApp {
             self.notice = Some("Couldn't allocate a node id; try again.".into());
             return;
         };
+        let size = match self.creation_size(kind, id, pos, Some(menu.output), t) {
+            Ok(size) => size,
+            Err(error) => {
+                self.notice = Some(error.message);
+                return;
+            }
+        };
+        let pos = nodecraft_graph::Position { x: menu.world.x, y: menu.world.y - size.y * 0.5 };
         let params = json!({"canvas": self.canvas, "id": id, "kind": kind, "pos": pos, "from": menu.from, "edge": edge});
         match self.session.dispatch("node.create_connected", &params) {
             Ok(_) => {
@@ -3304,6 +3335,8 @@ fn starter_id() -> [u8; 16] {
 fn starter_id() -> [u8; 16] {
     [2; 16]
 }
+#[cfg(test)]
+mod centering_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

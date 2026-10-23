@@ -32,10 +32,20 @@ impl NodeCraftApp {
         let t = self.theme.tokens();
         let available_width = (self.viewport.width() - 2.0 * t.navigation_margin).max(1.0);
         let width = t.comments_width.min(if self.tag_filter.open { ((available_width - t.navigation_gap) / 2.0).max(1.0) } else { available_width });
-        let height = t.comments_height.min((self.viewport.height() - 2.0 * t.navigation_margin - t.navigation_toolbar_height).max(1.0));
+        let top = self.comments_toolbar_rect().bottom() + t.navigation_gap;
+        let map_top = self.navigation.usable(self.viewport, t).bottom();
+        // Prefer the space above navigation. A short viewport must still leave a usable
+        // scrolling discussion panel; foreground hit ownership then protects the map below it.
+        let bottom = if map_top - top >= 2.0 * t.card_padding + t.navigation_toolbar_height { map_top } else { self.viewport.bottom() - t.navigation_margin };
+        let height = t.comments_height.min((bottom - top).max(1.0));
+        Rect::from_min_size(Pos2::new(self.viewport.right() - t.navigation_margin - width, top), Vec2::new(width, height))
+    }
+    pub(super) fn comments_toolbar_rect(&self) -> Rect {
+        let t = self.theme.tokens();
+        let width = t.comments_button_width.min((self.viewport.width() - 2.0 * t.navigation_margin).max(1.0));
         Rect::from_min_size(
-            self.viewport.min + Vec2::new(t.navigation_margin, t.navigation_margin + t.navigation_toolbar_height + t.navigation_gap),
-            Vec2::new(width, height),
+            Pos2::new(self.viewport.right() - t.navigation_margin - width, self.search_rect().bottom() + t.navigation_gap),
+            Vec2::new(width, t.navigation_toolbar_height),
         )
     }
     fn discussion_context(&self, ctx: &egui::Context, owner: Option<egui::Id>) -> CommentContext {
@@ -141,7 +151,7 @@ impl NodeCraftApp {
         let outputs =
             self.session.document().canvases().get(&self.canvas).and_then(|canvas| canvas.nodes().get(&node)).is_some_and(|node| !node.outputs.is_empty());
         let size = rect.size();
-        let right = if outputs { t.port_radius.max(t.port_min_radius / self.view.zoom) } else { 0.0 };
+        let right = if outputs { t.handle_radius.max(t.handle_min_screen_radius / self.view.zoom) + card::PORT_HIT / self.view.zoom } else { 0.0 };
         let offset = Position { x: size.x + right + (t.comment_marker_gap + t.comment_marker_ring) / self.view.zoom, y: size.y * 0.5 };
         if let Err(error) = self.dispatch_comments_scoped(ctx, "comment.compose", &json!({"node":node,"pos":offset}), owner) {
             self.notice = Some(error.message);
@@ -431,10 +441,18 @@ impl NodeCraftApp {
             }
         }
         let available = !self.discussion_context(&ctx, None).blocked;
-        let toolbar_pos = self.viewport.min + Vec2::new(t.navigation_margin, t.navigation_margin);
-        let toolbar = egui::Area::new(egui::Id::new("comments_toolbar")).order(egui::Order::Foreground).fixed_pos(toolbar_pos).show(&ctx, |ui| {
-            ui.add_enabled(available, egui::Button::new("Comments").min_size(Vec2::new(t.comments_button_width, t.navigation_toolbar_height)))
-        });
+        let toolbar_rect = self.comments_toolbar_rect();
+        let toolbar = egui::Area::new(egui::Id::new("comments_toolbar"))
+            .order(egui::Order::Foreground)
+            .movable(false)
+            .fixed_pos(toolbar_rect.min)
+            .constrain(false)
+            .show(&ctx, |ui| ui.add_enabled(available, egui::Button::new("Comments").min_size(toolbar_rect.size())));
+        // A short viewport can put this row over the minimap. Keep actionable chrome
+        // above the map without raising it over an unrelated popup.
+        if !egui::Popup::is_any_open(&ctx) && toolbar.response.rect.intersects(crate::navigation::layout(self.viewport, self.navigation.visible, t).overlay) {
+            ctx.move_to_top(toolbar.response.layer_id);
+        }
         let exposed =
             ctx.pointer_interact_pos().is_some_and(|pos| toolbar.response.rect.contains(pos) && ctx.layer_id_at(pos) == Some(toolbar.response.layer_id));
         if !available
@@ -474,6 +492,10 @@ impl NodeCraftApp {
             self.comments.stamp = Some(stamp);
         }
         let mut action = None;
+        // Navigation's checked instance cache uses card::world_rect, including compact bodies.
+        // Never infer a body from declared parameter counts or persist this display correction.
+        self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
+        let membership = self.membership();
         self.comments.marker_ids.clear();
         if let Some(scene) = self.session.document().canvases().get(&self.canvas) {
             let mut visible = 0usize;
@@ -498,14 +520,30 @@ impl NodeCraftApp {
                     pos
                 };
                 let mut screen = self.view.to_screen(self.viewport.min, Pos2::new(pos.x, pos.y));
-                if !self.viewport.expand(t.comment_marker_size).contains(screen) {
-                    continue;
-                }
-                if visible >= 128 {
-                    break;
-                }
-                visible += 1;
                 let anchor_screen = screen;
+                let mut node_bounds = None;
+                if let Some(node) = root.node.and_then(|id| scene.nodes().get(&id)) {
+                    if membership.hidden.contains(&node.id) {
+                        continue;
+                    }
+                    if let Some(rect) = self.navigation.geometry.rects.get(&node.id) {
+                        let shift = self
+                            .drag
+                            .as_ref()
+                            .filter(|drag| drag.id == node.id)
+                            .map_or(Vec2::ZERO, |drag| Vec2::new(drag.pos.x - node.pos.x, drag.pos.y - node.pos.y));
+                        let body = self.view.rect_to_screen(self.viewport.min, rect.translate(shift));
+                        let right =
+                            if node.outputs.is_empty() { 0.0 } else { (t.handle_radius * self.view.zoom).max(t.handle_min_screen_radius) + card::PORT_HIT };
+                        let top = card::outer_insets(t, self.view.zoom, !node.outputs.is_empty()).1 * self.view.zoom;
+                        let decorated = Rect::from_min_max(body.min - Vec2::new(right, top), body.max + Vec2::new(right, right));
+                        node_bounds = Some(decorated);
+                        if decorated.intersects(Rect::from_min_size(screen, Vec2::splat(t.comment_marker_size)).expand(t.comment_marker_ring)) {
+                            screen.x = body.right() + right + t.comment_marker_gap + t.comment_marker_ring;
+                            screen.y = screen.y.clamp(body.top(), body.bottom().max(body.top() + t.comment_marker_size) - t.comment_marker_size);
+                        }
+                    }
+                }
                 let dragging = self.comments.drag.as_ref().filter(|drag| drag.id == *id && !drag.cancelled);
                 let placement = self
                     .comments
@@ -526,26 +564,49 @@ impl NodeCraftApp {
                 } else if let Some((_, _, offset)) = placement {
                     screen = anchor_screen + offset;
                 } else if self.comments.open && self.comments.active == Some(*id) {
-                    let width = t.comments_width.min((self.viewport.width() - 2.0 * t.navigation_margin).max(1.0));
-                    let height = t.comments_height.min((self.viewport.height() - 2.0 * t.navigation_margin - t.navigation_toolbar_height).max(1.0));
-                    let panel = Rect::from_min_size(
-                        self.viewport.min + Vec2::new(t.navigation_margin, t.navigation_margin + t.navigation_toolbar_height + t.navigation_gap),
-                        Vec2::new(width, height),
-                    );
-                    if panel.intersects(Rect::from_min_size(screen, Vec2::splat(t.comment_marker_size))) {
-                        let anchor = screen;
-                        let right = panel.right() + t.comment_marker_gap;
-                        if right + t.comment_marker_size <= self.viewport.right() - t.navigation_margin {
-                            screen.x = right;
+                    let panel = self.discussion_rect();
+                    if panel.intersects(Rect::from_min_size(screen, Vec2::splat(t.comment_marker_size)).expand(t.comment_marker_ring))
+                        || panel.intersects(Rect::from_min_size(anchor_screen, Vec2::splat(t.comment_marker_size)))
+                    {
+                        let left = panel.left() - t.comment_marker_gap - t.comment_marker_size - t.comment_marker_ring;
+                        if left >= self.viewport.left() + t.navigation_margin {
+                            screen.x = left;
                         } else {
-                            screen.x = self.viewport.right() - t.comment_marker_size - t.navigation_margin;
+                            screen.x = panel.left();
                             screen.y = panel.top() - t.comment_marker_size - t.navigation_gap;
                         }
-                        ui.painter().line_segment([anchor, screen], egui::Stroke::new(t.handle_stroke, t.text_muted));
+                        // Beside the panel must not mean on top of a node's preview or title.
+                        // Keep the reachable-marker fallback only when neither vertical side fits.
+                        if let Some(bounds) = node_bounds
+                            && bounds.intersects(Rect::from_min_size(screen, Vec2::splat(t.comment_marker_size)).expand(t.comment_marker_ring))
+                        {
+                            let above = bounds.top() - t.comment_marker_size - t.comment_marker_gap - t.comment_marker_ring;
+                            let below = bounds.bottom() + t.comment_marker_gap + t.comment_marker_ring;
+                            if above >= self.viewport.top() + t.navigation_margin {
+                                screen.y = above;
+                            } else if below + t.comment_marker_size <= self.viewport.bottom() - t.navigation_margin {
+                                screen.y = below;
+                            }
+                        }
                     }
                 }
-                let area =
-                    egui::Area::new(egui::Id::new("comment_pin").with(id)).order(egui::Order::Foreground).movable(false).fixed_pos(screen).show(&ctx, |ui| {
+                if !self.viewport.expand(t.comment_marker_size).contains(screen) {
+                    continue;
+                }
+                if visible >= 128 {
+                    break;
+                }
+                visible += 1;
+                if self.comments.open && self.comments.active == Some(*id) && screen.distance(anchor_screen) > t.comment_marker_ring {
+                    ui.painter().line_segment([anchor_screen, screen], egui::Stroke::new(t.handle_stroke, t.text_muted));
+                }
+                // Clamping an offscreen badge would put it back over the card/output handle.
+                let area = egui::Area::new(egui::Id::new("comment_pin").with(id))
+                    .order(egui::Order::Foreground)
+                    .movable(false)
+                    .constrain(false)
+                    .fixed_pos(screen)
+                    .show(&ctx, |ui| {
                         let response = ui
                             .add_enabled_ui(available, |ui| {
                                 crate::comments::pin_bubble(
@@ -636,7 +697,7 @@ impl NodeCraftApp {
                         .show(ui, |ui| {
                             ui.set_width((width - 2.0 * t.card_padding).max(1.0));
                             ui.set_max_height(height);
-                            egui::ScrollArea::vertical().max_height(height - 2.0 * t.card_padding).show(ui, |ui| {
+                            egui::ScrollArea::vertical().max_height((height - 2.0 * t.card_padding).max(1.0)).show(ui, |ui| {
                                 ui.heading("Comments · Local");
                                 if ui.button("Close comments").clicked() {
                                     action = Some(Action::Close);
@@ -902,6 +963,9 @@ impl NodeCraftApp {
                             });
                         });
                 });
+            if !egui::Popup::is_any_open(&ctx) && panel.response.rect.intersects(crate::navigation::layout(self.viewport, self.navigation.visible, t).overlay) {
+                ctx.move_to_top(panel.response.layer_id);
+            }
             blocked |= ctx.pointer_interact_pos().is_some_and(|pos| panel.response.rect.contains(pos) && ctx.layer_id_at(pos) == Some(panel.response.layer_id));
         }
         if !available
@@ -923,6 +987,10 @@ impl NodeCraftApp {
         blocked
     }
 }
+
+#[cfg(test)]
+#[path = "comment_layout_tests.rs"]
+mod layout_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1057,10 +1125,8 @@ mod tests {
         h.state_mut().tag_filter.open = true;
         h.run();
         let app = h.state();
-        let t = app.theme.tokens();
-        let available = (app.viewport.width() - 2.0 * t.navigation_margin).max(1.0);
-        let comments_right = app.viewport.min.x + t.navigation_margin + t.comments_width.min(((available - t.navigation_gap) / 2.0).max(1.0));
-        assert!(app.tag_rect().left() >= comments_right + t.navigation_gap);
+        assert!(!app.tag_rect().intersects(app.discussion_rect()));
+        assert!(app.discussion_rect().left() > app.tag_rect().right());
         h.state_mut().comments.gesture_cancelled = true;
         let ctx = h.ctx.clone();
         assert!(h.state_mut().tag_filter_enabled(&ctx, "canvas.tag_filter_open", &json!({})).is_err());
@@ -1351,7 +1417,7 @@ mod more_tests {
             h.state_mut().view.zoom = zoom;
             h.run();
             let id = CommentId::from_bytes([9; 16]);
-            let target = h.state().viewport.min + Vec2::new(100.0, 160.0);
+            let target = h.state().discussion_rect().min + Vec2::new(80.0, 80.0);
             let world = h.state().view.to_world(h.state().viewport.min, target);
             let node = pinned.then_some(NodeId::from_bytes([3; 16]));
             let node_pos = node.map(|id| h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().pos).unwrap_or_default();
@@ -1369,7 +1435,7 @@ mod more_tests {
             h.get_by_role_and_label(Role::Button, &label).click();
             h.run();
             assert_eq!(h.state().session.document(), &original);
-            let direction = if width < 500.0 { -1.0 } else { 1.0 };
+            let direction = if width < 500.0 { 1.0 } else { -1.0 };
             for cancel in [true, false] {
                 let from = h.get_by_role_and_label(Role::Button, &label).rect().center();
                 h.hover_at(from);
