@@ -30,7 +30,7 @@ impl PickedPackage {
         let mut slot = self.0.try_borrow_mut().map_err(|_| busy())?;
         slot.picks = slot.picks.saturating_add(1);
         let mut short = String::new();
-        for c in name.chars().filter(|c| !c.is_control() && *c != '/') {
+        for c in name.chars().filter(|c| shown(*c)) {
             if short.len().saturating_add(c.len_utf8()) > MAX_NAME_BYTES {
                 break;
             }
@@ -49,12 +49,23 @@ impl PickedPackage {
     }
 
     fn read(&self, location: &str) -> Result<Rc<Vec<u8>>, Error> {
+        if !location.starts_with("picked/") {
+            return Err(Error::new(ErrorKind::Unsupported, "the browser can't read files by path; pick the package in the Plugins panel"));
+        }
         let slot = self.0.try_borrow().map_err(|_| busy())?;
         match &slot.file {
             Some((held, bytes)) if held == location => Ok(Rc::clone(bytes)),
             _ => Err(Error::new(ErrorKind::NotFound, "that package file isn't picked any more; choose it again")),
         }
     }
+}
+
+/// Whether a picked file's name keeps `c`: no control characters, no `/`, and none of the
+/// invisible format or direction marks that could make the name read as something else.
+fn shown(c: char) -> bool {
+    !c.is_control()
+        && c != '/'
+        && !matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}')
 }
 
 fn busy() -> Error {

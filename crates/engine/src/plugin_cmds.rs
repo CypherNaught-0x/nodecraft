@@ -324,7 +324,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.list",
             "List plugin packages",
             none_schema,
-            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch, capabilities, origins}|null}]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch, capabilities, origins}|null}], session_only?: true (the browser: packages last until the page closes)}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             list,
         ),
         spec(
@@ -338,7 +338,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.update",
             "Update plugin package",
             file_schema,
-            "{location: string, dry_run?: bool, digest?: string}; installs a disabled package version (digest: as for plugins.import), keeping the previous digest for rollback. Direct result: import report with replaced. A session-only store (the browser) adds session_only: true to list and import reports. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{location: string, dry_run?: bool, digest?: string}; installs a disabled package version (digest: as for plugins.import), keeping the previous digest for rollback. Direct result: import report with replaced (and session_only: true in the browser). Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             update,
         ),
         spec(

@@ -380,7 +380,21 @@ fn a_picked_package_is_imported_from_its_bytes_and_listed_as_session_only() {
     assert_ne!(next, location);
     let gone = s.dispatch("plugins.import", &json!({"location": location})).unwrap_err();
     assert!((gone.kind == ErrorKind::NotFound) && gone.message.contains("choose it again"), "{gone:?}");
-    assert_eq!(s.dispatch("plugins.import", &json!({"location": "/etc/hosts"})).unwrap_err().kind, ErrorKind::NotFound);
+    let path = s.dispatch("plugins.import", &json!({"location": "/etc/hosts"})).unwrap_err();
+    assert!(path.kind == ErrorKind::Unsupported && path.message.contains("can't read files by path"), "{path:?}");
+    // An update comes from a pick too, says it is session-only, and lets the pick go.
+    s.dispatch("plugins.disable", &json!({"package_id": "io.example.palette"})).unwrap();
+    let v2 = picked.put("palette-2.ncraft-plugin", std::fs::read(package(dir.path(), "io.example.palette", "2.0.0")).unwrap()).unwrap();
+    let updated = s.dispatch("plugins.update", &json!({"location": v2})).unwrap();
+    assert_eq!((updated["version"].clone(), updated["session_only"].clone()), (json!("2.0.0"), json!(true)));
+    assert_eq!(s.dispatch("plugins.update", &json!({"location": v2})).unwrap_err().kind, ErrorKind::NotFound, "an installed update is let go");
+}
+
+#[test]
+fn a_picked_name_drops_marks_that_would_disguise_it() {
+    let picked = PickedPackage::default();
+    assert_eq!(picked.put("palette\u{202E}nigulp\u{200B}.ncraft-plugin", Vec::new()).unwrap(), "picked/1/palettenigulp.ncraft-plugin");
+    assert_eq!(picked.put("\u{2066}/\u{0007}", Vec::new()).unwrap(), "picked/2/package");
 }
 
 /// Nothing runs in the browser: a package that would run can be installed, never granted or enabled.
