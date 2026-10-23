@@ -159,14 +159,18 @@ fn report(prepared: &Prepared) -> String {
         prepared.fps,
         i.used.len()
     );
+    if i.srt.is_some() {
+        out.push_str(&format!("Subtitles: {}.srt (UTF-8 SubRip text and timing; no style or position)\n\n", stem(&prepared.name, "Timeline")));
+    }
     if i.losses.is_empty() {
         out.push_str("No losses detected.\n");
     } else {
         out.push_str("Left out or changed:\n");
         for loss in &i.losses {
-            match &loss.clip {
-                Some(clip) => out.push_str(&format!("- clip {clip}: {}: {}\n", loss.feature, loss.detail)),
-                None => out.push_str(&format!("- {}: {}\n", loss.feature, loss.detail)),
+            match (&loss.clip, &loss.caption) {
+                (_, Some(caption)) => out.push_str(&format!("- caption {caption}: {}: {}\n", loss.feature, loss.detail)),
+                (Some(clip), _) => out.push_str(&format!("- clip {clip}: {}: {}\n", loss.feature, loss.detail)),
+                _ => out.push_str(&format!("- {}: {}\n", loss.feature, loss.detail)),
             }
         }
     }
@@ -182,7 +186,8 @@ fn bundle(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<(Prepared, Bu
         let (source, asset) = prepared.sources.get(*index).ok_or_else(|| Error::new(ErrorKind::Internal, "the document names media that isn't listed"))?;
         media.push((source.file.clone(), asset.clone()));
     }
-    let bundle = Bundle { document: format!("{}.fcpxml", stem(&prepared.name, "Timeline")), xml: prepared.interchange.xml.clone(), report, media };
+    let subtitles = prepared.interchange.srt.as_ref().map(|srt| (format!("{}.srt", stem(&prepared.name, "Timeline")), srt.clone()));
+    let bundle = Bundle { document: format!("{}.fcpxml", stem(&prepared.name, "Timeline")), xml: prepared.interchange.xml.clone(), report, subtitles, media };
     bundle.check()?;
     Ok((prepared, bundle))
 }
@@ -213,6 +218,7 @@ fn preview(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             "media": media,
             "losses": prepared.interchange.losses,
             "xml": bundle.xml,
+            "subtitles": bundle.subtitles.as_ref().map(|(file, text)| json!({"file": file, "format": "srt", "text": text})),
             "report": bundle.report,
         }),
     })
@@ -258,7 +264,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: preview_schema,
-            params_doc: "{canvas, id: Timeline NodeId} -> {format: \"fcpxml\", version, document, frames, media: [{file, name, kind: video|audio|still, asset}], losses: [{clip?, feature, detail}], xml, report}; the FCPXML document timeline.export_interchange would write for the node's saved clips and the media wired in now, and every setting it leaves out or changes. Writes nothing. Fails, naming the clip, when a wired node has no result yet or a clip doesn't fit its media.",
+            params_doc: "{canvas, id: Timeline NodeId} -> {format: \"fcpxml\", version, document, frames, media: [{file, name, kind: video|audio|still, asset}], losses: [{clip?, caption?, feature, detail}], xml, subtitles: {file, format: \"srt\", text}|null, report}; the FCPXML document with caption titles and optional SRT companion timeline.export_interchange would write, and every setting left out or changed. Writes nothing. Fails, naming the clip, when wired media is missing or a clip doesn't fit it.",
             enabled: preview_enabled,
             run: preview,
         },
@@ -268,7 +274,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: export_schema,
-            params_doc: "{canvas, id: Timeline NodeId, path: absolute file path, overwrite?: bool (default false)} -> {bytes}; writes a ZIP archive to `path` on this machine holding <name>.fcpxml, report.txt (what the document leaves out) and media/ with each source the clips play, once, named by the relative paths the document uses. Nothing is rendered and no provider is called. Refuses a file that's already there unless `overwrite`, a missing folder and a full disk, leaving nothing half written. Desktop only.",
+            params_doc: "{canvas, id: Timeline NodeId, path: absolute file path, overwrite?: bool (default false)} -> {bytes}; writes a ZIP holding <name>.fcpxml with caption titles, optional <name>.srt (caption text/timing), report.txt (every loss) and media/ with each source once at relative paths. Nothing is rendered and no provider is called. Refuses an existing file unless `overwrite`, a missing folder and a full disk, leaving nothing half written. Desktop only.",
             enabled: export_enabled,
             run: export,
         },

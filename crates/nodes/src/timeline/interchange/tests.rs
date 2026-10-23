@@ -269,3 +269,115 @@ fn media_of_unknown_length_is_as_long_as_its_clips_play_it() {
 fn characters_xml_cannot_carry_become_spaces() {
     assert_eq!(escape("a\u{FFFE}b\u{FFFF}c\u{1}d"), "a b c d");
 }
+
+fn captioned() -> (Timeline, Vec<Wire>, Vec<Source>) {
+    let (mut timeline, wires, sources) = crossing();
+    let mut caption = crate::timeline::caption::Caption::new("intro".into(), "Füchse & <Eulen>\nSecond line".into(), 4_000_000, 5_000_000);
+    caption.align = crate::timeline::caption::Align::Right;
+    caption.position = crate::timeline::caption::Position::Top;
+    caption.font = "A requested font".into();
+    caption.color = "#12ab34cc".into();
+    caption.stroke_width = 3;
+    timeline.captions.push(caption);
+    (timeline, wires, sources)
+}
+
+#[test]
+fn captions_are_titles_in_parent_media_time_and_a_utf8_srt_companion() {
+    let (timeline, wires, sources) = captioned();
+    let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).unwrap();
+    assert!(out.xml.contains(r#"<effect id="rCaptionTitle" name="Basic Title""#));
+    // 4 s is frame120 in the sequence, but frame30 in the owl's local timeline.
+    assert!(out.xml.contains(r#"<title ref="rCaptionTitle" lane="1" name="intro" offset="30/30s" start="0s" duration="30/30s" role="titles">"#), "{}", out.xml);
+    assert!(out.xml.contains("<text><text-style alignment=\"right\">Füchse &amp; &lt;Eulen&gt;\nSecond line</text-style></text>"));
+    assert!(out.xml.contains(r#"<adjust-transform position="80.000 45.000"/>"#), "1280/720 frame-height percentages");
+    assert_eq!(out.srt.as_deref(), Some("1\n00:00:04,000 --> 00:00:05,000\nFüchse &amp; &lt;Eulen&gt;\nSecond line\n\n"));
+    let style = out.losses.iter().find(|loss| loss.caption.as_deref() == Some("intro") && loss.feature == "caption style").unwrap();
+    assert!(style.detail.contains("A requested font") && style.detail.contains("#12ab34cc") && style.detail.contains("3 px"));
+    assert!(out.losses.iter().any(|loss| loss.caption.as_deref() == Some("intro") && loss.feature == "caption placement"));
+    assert_eq!(out.frames, 180, "captions do not lengthen the cut");
+}
+
+#[test]
+fn caption_visibility_timing_and_clipping_follow_the_render_and_are_reported() {
+    use crate::timeline::caption::Caption;
+    let (mut timeline, wires, sources) = crossing();
+    timeline.captions = vec![
+        Caption::new("clipped".into(), "End".into(), 5_010_000, 7_000_000),
+        Caption { enabled: false, ..Caption::new("disabled".into(), "Off".into(), 0, 1_000_000) },
+        Caption::new("outside".into(), "After".into(), 6_000_000, 7_000_000),
+        Caption::new("tiny".into(), "One frame".into(), 1, 2),
+    ];
+    let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).unwrap();
+    assert_eq!(out.xml.matches("<title ").count(), 2);
+    assert!(!out.xml.contains("name=\"disabled\"") && !out.xml.contains("name=\"outside\""));
+    assert_eq!(out.srt.as_deref(), Some("1\n00:00:00,000 --> 00:00:00,033\nOne frame\n\n2\n00:00:05,000 --> 00:00:06,000\nEnd\n\n"));
+    for (id, feature) in [
+        ("clipped", "caption sub-frame timing"),
+        ("clipped", "caption clipped to sequence"),
+        ("disabled", "disabled caption"),
+        ("outside", "caption outside sequence"),
+        ("tiny", "caption SRT timing"),
+    ] {
+        assert!(out.losses.iter().any(|loss| loss.caption.as_deref() == Some(id) && loss.feature == feature), "{id}: {feature}");
+    }
+    assert_eq!(out.frames, 180);
+}
+
+#[test]
+fn overlapping_titles_stack_above_picture_lanes_and_srt_sorts_chronologically() {
+    use crate::timeline::caption::Caption;
+    let (mut timeline, wires, sources) = crossing();
+    timeline.tracks = vec![Track { kind: TrackKind::Video }, Track { kind: TrackKind::Audio }, Track { kind: TrackKind::Video }];
+    timeline.captions =
+        vec![Caption::new("late".into(), "Late".into(), 2_000_000, 4_000_000), Caption::new("early".into(), "Early".into(), 1_000_000, 3_000_000)];
+    let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).unwrap();
+    assert!(out.xml.contains(r#"lane="3" name="late""#));
+    assert!(out.xml.contains(r#"lane="4" name="early""#));
+    assert_eq!(out.srt.as_deref(), Some("1\n00:00:01,000 --> 00:00:03,000\nEarly\n\n2\n00:00:02,000 --> 00:00:04,000\nLate\n\n"));
+}
+
+#[test]
+fn blank_lines_and_xml_noncharacters_do_not_silently_corrupt_caption_text() {
+    let (mut timeline, wires, sources) = captioned();
+    timeline.captions[0].text = "One\n\nTwo\u{FFFE}".into();
+    let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).unwrap();
+    assert!(out.xml.contains("One\n\nTwo "));
+    assert!(out.srt.as_deref().unwrap().contains("One\n\u{200b}\nTwo\u{FFFE}\n\n"));
+    assert!(out.losses.iter().any(|loss| loss.feature == "caption SRT blank lines"));
+    assert!(out.losses.iter().any(|loss| loss.feature == "caption XML text"));
+}
+
+#[test]
+fn caption_limits_and_invalid_geometry_are_refused_without_panicking() {
+    let (mut timeline, wires, sources) = captioned();
+    let caption = timeline.captions[0].clone();
+    timeline.captions = vec![caption; crate::timeline::caption::MAX_CAPTIONS];
+    let mut seq = sequence(&timeline, &wires, &[Some(0), Some(1)], &sources);
+    let out = fcpxml(&seq).unwrap();
+    assert_eq!(out.xml.matches("<title ").count(), crate::timeline::caption::MAX_CAPTIONS);
+    seq.height = 0;
+    assert!(fcpxml(&seq).is_err());
+    timeline.captions.push(timeline.captions[0].clone());
+    assert!(fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).is_err());
+}
+
+#[test]
+fn public_writer_never_emits_zero_length_srt_cues_at_extreme_rates() {
+    let (mut timeline, wires, sources) = crossing();
+    timeline.captions.push(crate::timeline::caption::Caption::new("tiny".into(), "A tiny cue".into(), 1, 2));
+    let mut seq = sequence(&timeline, &wires, &[Some(0), Some(1)], &sources);
+    seq.fps = u32::MAX;
+    let out = fcpxml(&seq).unwrap();
+    assert_eq!(out.srt.as_deref(), Some("1\n00:00:00,000 --> 00:00:00,001\nA tiny cue\n\n"));
+    assert!(out.losses.iter().any(|loss| loss.feature == "caption SRT timing" && loss.detail.contains("at least one millisecond")));
+}
+
+#[test]
+#[ignore = "manual official Apple DTD validation; requires NODECRAFT_INTERCHANGE_XML_EVIDENCE"]
+fn write_caption_xml_for_official_dtd_validation() {
+    let path = std::env::var_os("NODECRAFT_INTERCHANGE_XML_EVIDENCE").unwrap();
+    let (timeline, wires, sources) = captioned();
+    let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).unwrap();
+    std::fs::write(path, out.xml).unwrap();
+}

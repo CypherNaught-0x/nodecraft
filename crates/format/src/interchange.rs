@@ -26,6 +26,8 @@ pub struct Bundle {
     pub xml: String,
     /// What the document leaves out, for a person to read.
     pub report: String,
+    /// Optional UTF-8 SubRip companion: its relative entry name and text.
+    pub subtitles: Option<(String, String)>,
     /// Each media file's entry name (as the document names it) and the asset it holds.
     pub media: Vec<(String, AssetRef)>,
 }
@@ -49,11 +51,16 @@ impl Bundle {
         if self.media.len() > MAX_MEDIA {
             return Err(invalid("the timeline names too many media files to export"));
         }
-        if self.xml.len() > MAX_TEXT_BYTES || self.report.len() > MAX_TEXT_BYTES {
+        if self.xml.len() > MAX_TEXT_BYTES || self.report.len() > MAX_TEXT_BYTES || self.subtitles.as_ref().is_some_and(|(_, text)| text.len() > MAX_TEXT_BYTES)
+        {
             return Err(invalid("the exported document is too large"));
         }
         let mut names = BTreeSet::new();
-        for name in std::iter::once(self.document.as_str()).chain([REPORT]).chain(self.media.iter().map(|(name, _)| name.as_str())) {
+        for name in std::iter::once(self.document.as_str())
+            .chain([REPORT])
+            .chain(self.subtitles.iter().map(|(name, _)| name.as_str()))
+            .chain(self.media.iter().map(|(name, _)| name.as_str()))
+        {
             if !safe_entry_name(name) {
                 return Err(invalid("an exported file name isn't a safe relative path"));
             }
@@ -73,6 +80,11 @@ impl Bundle {
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
         let mut zip = ZipWriter::new(out);
         for (name, text) in [(self.document.as_str(), &self.xml), (REPORT, &self.report)] {
+            zip.start_file(name, options).map_err(failed)?;
+            zip.write_all(text.as_bytes()).map_err(|_| Error::new(ErrorKind::Internal, "the archive couldn't be written"))?;
+        }
+        if let Some((name, text)) = &self.subtitles {
+            cancel.check()?;
             zip.start_file(name, options).map_err(failed)?;
             zip.write_all(text.as_bytes()).map_err(|_| Error::new(ErrorKind::Internal, "the archive couldn't be written"))?;
         }

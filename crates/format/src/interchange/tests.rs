@@ -8,7 +8,7 @@ fn asset(store: &mut AssetStore, bytes: &[u8], mime: &str) -> AssetRef {
 }
 
 fn bundle(media: Vec<(String, AssetRef)>) -> Bundle {
-    Bundle { document: "Cut.fcpxml".into(), xml: "<fcpxml/>".into(), report: "Nothing left out.\n".into(), media }
+    Bundle { document: "Cut.fcpxml".into(), xml: "<fcpxml/>".into(), report: "Nothing left out.\n".into(), subtitles: None, media }
 }
 
 #[test]
@@ -67,4 +67,24 @@ fn a_cancelled_export_stops() {
     let cancel = TransferCancel::default();
     cancel.cancel();
     assert!(b.write_to(&store, Cursor::new(Vec::new()), &cancel).is_err());
+}
+
+#[test]
+fn srt_companion_bytes_are_in_the_archive_and_obey_all_entry_limits() {
+    let store = AssetStore::default();
+    let text = "1\n00:00:01,000 --> 00:00:02,000\nFüchse\n\n";
+    let mut b = bundle(vec![]);
+    b.subtitles = Some(("Cut.srt".into(), text.into()));
+    let out = b.write_to(&store, Cursor::new(Vec::new()), &TransferCancel::default()).unwrap().into_inner();
+    let mut zip = zip::ZipArchive::new(Cursor::new(out)).unwrap();
+    assert_eq!(zip.len(), 3);
+    let mut actual = String::new();
+    zip.by_name("Cut.srt").unwrap().read_to_string(&mut actual).unwrap();
+    assert_eq!(actual, text);
+    for bad in ["../Cut.srt", "Cut.fcpxml", "REPORT.TXT", "C:Cut.srt"] {
+        b.subtitles = Some((bad.into(), text.into()));
+        assert!(b.check().is_err(), "{bad}");
+    }
+    b.subtitles = Some(("Cut.srt".into(), "x".repeat(MAX_TEXT_BYTES + 1)));
+    assert!(b.check().is_err());
 }
