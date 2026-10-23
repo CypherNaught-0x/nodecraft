@@ -148,8 +148,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   completion webhooks are already in current source; see [`docs/serve.md`](docs/serve.md).
   Provider availability and modes vary by adapter and host: Google Gemini Omni Flash video
   replaces the shut-down Veo API (#17), and Veo 3.1, Fast and Lite run on Google Cloud with a
-  service account (#742), as do Google TTS's classic and Gemini voices (#21); Seedance, Kling
-  and most `future` adapters remain tracked separately. ElevenLabs speech (v3,
+  service account (#742), as do Google TTS's classic and Gemini voices (#21); Seedance 2.5 and
+  2.0 make video on BytePlus ModelArk (#18); Kling and most `future` adapters remain tracked
+  separately. ElevenLabs speech (v3,
   Multilingual v2, Flash v2.5), effects, music and voice changer models (#20) have a Generate
   audio card (#672); 3D has Tripo text/image/multiview and fal Trellis (#22), plus Meshy
   text/image/multi-image/retexture/remesh (#23). Consult [`docs/providers.md`](docs/providers.md)

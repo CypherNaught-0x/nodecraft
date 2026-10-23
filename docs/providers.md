@@ -22,6 +22,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | Jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Progress is queue position and completion until the WebSocket lands. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan text/image/speech to video, Kokoro audio, Trellis 3D, ESRGAN upscale | Seven explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
+| **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
 | **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video); Soul ID training (images → identity) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
@@ -50,6 +51,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
+| `seedance` | `seedream` (the same ModelArk key) | each Seedance model activated in the ModelArk console |
 | `tripo` | `tripo` | — |
 | `meshy` | `meshy` | — |
 | `higgsfield` | `higgsfield` (the key id and secret joined as `id:secret`) | — |
@@ -689,6 +691,75 @@ output routing/conversion refuses it.
 The ignored live test requires NODECRAFT_LIVE_SEEDREAM=1,
 NODECRAFT_LIVE_SEEDREAM_ACKNOWLEDGE_COST=1 and ARK_API_KEY, plus separate explicit human spending
 authorization. It never runs in CI; ordinary contracts use authored fixtures and local HTTP.
+
+## Seedance video tasks
+
+The optional `seedance` adapter (feature `seedance`, #18) creates video tasks on BytePlus
+ModelArk at the fixed endpoint
+`https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks`, with the same API
+key as Seedream. Four dated models appear on the Generate video card:
+
+| Catalog model | Model | Length | Resolutions | References | Quote per second (720p) |
+|---|---|---|---|---|---|
+| `seedance.2-5` | `dreamina-seedance-2-5-260628` | 4–30 s | 480p, 720p, 1080p | up to 30 | 0.232577 USD |
+| `seedance.2-0` | `dreamina-seedance-2-0-260128` | 4–15 s | 480p, 720p, 1080p, 4K | up to 9 | 0.152153 USD |
+| `seedance.2-0-fast` | `dreamina-seedance-2-0-fast-260128` | 4–15 s | 480p, 720p | up to 9 | 0.121723 USD |
+| `seedance.2-0-mini` | `dreamina-seedance-2-0-mini-260615` | 4–15 s | 480p, 720p | up to 9 | 0.076077 USD |
+
+Each model takes a prompt (up to 8,000 characters) and either a first frame, optionally with a
+last frame, or reference images; never frames and references together. Images are PNG, JPEG or
+WebP whose bytes match their type, under 30 MB each and 45 MiB together, 300 to 6,000 pixels a
+side and at most 2.5 times as wide as tall (or tall as wide). They are sent inline as data URLs.
+The settings are resolution (default 720p), aspect ratio (`adaptive`, the default, or one of
+16:9, 4:3, 1:1, 3:4, 9:16, 21:9), duration (default 5 s), sound (default on) and an optional seed
+(0–2,147,483,647). Every one is sent explicitly, with `watermark` off, so nothing is left to the
+model's defaults. Seedance 2.5 keeps a first frame's own shape, so with a frame it needs the
+adaptive ratio. Anything else is refused before a request is sent.
+
+**Price.** BytePlus bills a finished video by its tokens: width × height × 24 × seconds / 1024,
+at a rate per million tokens (pricing page checked 2026-10-23: 2.5 at 10.7 USD, 11.7 at 1080p;
+2.0 at 7.0, 7.7 at 1080p and 4.0 at 4K; Fast 5.6; Mini 3.5). The quote is that formula at each
+resolution's largest listed output size, so it is an upper bound per second: a square clip has
+fewer pixels and costs less. An adaptive clip follows its frame or the prompt, and the quote
+assumes it is no larger than the listed sizes. The finished task's `completion_tokens` are
+recorded with the result as evidence; the recorded cost is the quote. A failed task isn't billed.
+
+**Submission.** Creating the task is the paid step. ModelArk has no idempotency key, so a create
+is never replayed automatically. A reply at one of the statuses ModelArk's error table documents
+for a refused request (400, 401, 403, 404 or 429) with an error code proves no task was created
+and releases the reservation; a 5xx, a lost reply or an unreadable body may hide a created task,
+and the error says it may be billed when it succeeds. Error codes map onto the shared kinds:
+content-safety codes (`…SensitiveContentDetected…`) to blocked content, authentication and
+activation codes (including `ModelNotOpen`) to auth, overdue accounts and a spending limit
+(`SetLimitExceeded`) to budget, `ServerOverloaded` to busy. Messages are cut short and withheld if
+they echo the key.
+
+**Polling and results.** The task is polled every five seconds. A finished task names a
+pre-signed link valid for 24 hours, which is downloaded **without the key** from public `https`
+hosts only; the download must be an MP4 of at most 512 MiB. A failed download is retryable: the
+next poll reads the link again, so a billed video is never given up on one failed fetch.
+
+**Cancelling.** ModelArk cancels a queued task when it is deleted, but deleting a finished task
+erases its record and with it a billed video's link, and a running task can't be stopped. So the
+adapter reads the task first and deletes it only while it is queued; a running task is left to
+finish (and is billed only if it succeeds). A task that starts between the read and the delete is
+refused by ModelArk and keeps running.
+
+Not offered: video and audio references (ModelArk takes them only as public links), draft mode
+and the Seedance 1.x models. Seedance is native only: results are fetched with no-redirect
+requests, which the builtin browser transport refuses.
+
+**Not verified live yet:** the price formula's output sizes for `adaptive` clips, and that the
+listed rates apply to the API as billed.
+
+The ignored live test requires `NODECRAFT_LIVE_SEEDANCE=1`,
+`NODECRAFT_LIVE_SEEDANCE_ACKNOWLEDGE_COST=1` and `ARK_API_KEY`, plus separate explicit human
+spending authorization (Seedance 2.0 Mini, 480p, 4 s: at most about 0.15 USD). It never runs in CI:
+
+```sh
+NODECRAFT_LIVE_SEEDANCE=1 NODECRAFT_LIVE_SEEDANCE_ACKNOWLEDGE_COST=1 ARK_API_KEY=… \
+  cargo test -p nodecraft-providers --features http,seedance --test live_seedance -- --ignored
+```
 
 ## Tripo 3D tasks
 

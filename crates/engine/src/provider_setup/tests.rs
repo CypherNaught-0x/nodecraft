@@ -58,6 +58,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     assert_eq!(setup.readiness("seedream"), Some(&Readiness::NeedsKey { account: "seedream".into() }));
     assert_eq!(setup.readiness("gemini-images"), Some(&Readiness::NeedsKey { account: "gemini".into() }));
     assert_eq!(setup.readiness("gemini-video"), Some(&Readiness::NeedsKey { account: "gemini".into() }));
+    assert_eq!(setup.readiness("seedance"), Some(&Readiness::NeedsKey { account: "seedream".into() }), "the ModelArk key Seedream uses");
     assert_eq!(setup.readiness("google-veo"), Some(&Readiness::NeedsKey { account: "google-cloud".into() }));
     assert_eq!(setup.readiness("google-tts"), Some(&Readiness::NeedsKey { account: "google-cloud".into() }));
     assert_eq!(setup.readiness("fal"), Some(&Readiness::NeedsKey { account: "fal".into() }));
@@ -93,6 +94,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "anthropic",
         "replicate",
         "seedream",
+        "seedance",
         "gemini-images",
         "gemini-video",
         "google-veo",
