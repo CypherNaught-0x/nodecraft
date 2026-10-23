@@ -748,20 +748,26 @@ impl NodeCraftApp {
         };
         self.canvas_prefs = settings.canvas.clone();
         self.key_accounts = settings.keys.clone();
-        self.videos.configure(settings.media.tools());
-        self.audios.configure(settings.media.tools());
+        self.set_media_tools(settings.media.tools());
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // Timelines render with the same tools the cards play with.
-            if let Some(runs) = self.runs.as_mut() {
-                runs.set_video_tools(settings.media.tools());
-            }
             self.files.projects = nodecraft_engine::settings::ProjectSettings { recent: settings.projects.recent() };
             if let Some(sharing) = self.sharing.as_mut() {
                 sharing.set_relay(settings.share.relay.clone());
             }
         }
         theme::apply(ctx, self.theme);
+    }
+
+    /// Configure playback and rendering together from trusted host settings or startup discovery.
+    /// The native host resolves paths before the frame loop; this does not inspect the filesystem.
+    pub fn set_media_tools(&mut self, tools: Option<(&std::path::Path, &std::path::Path)>) {
+        self.videos.configure(tools);
+        self.audios.configure(tools);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(runs) = self.runs.as_mut() {
+            runs.set_video_tools(tools);
+        }
     }
 
     /// The app with no host services but a technique library kept in memory.

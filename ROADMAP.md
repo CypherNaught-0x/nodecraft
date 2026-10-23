@@ -126,8 +126,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   still asks first. Files dropped in a browser are read asynchronously and added as nodes (#319);
   pasting a copied image works in the desktop app only.
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
-  and ffprobe set under `[media]` in settings; it neither finds them on `PATH` nor bundles them
-  (#411). Sound cards show a waveform and play through the default output device (#106); there
+  and ffprobe discovered on `PATH`, set under `[media]` in settings, or overridden with
+  `NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` (#411); it does not bundle them.
+  Sound cards show a waveform and play through the default output device (#106); there
   is no sound while a video plays on its card yet. Video actions (#108) trim, change speed, stitch, replace
   sound, extract frames, reverse, grade, key, watermark, split and extract sound.
   Video generation (#559) has text, frame, reference and speech-to-video modes declared per

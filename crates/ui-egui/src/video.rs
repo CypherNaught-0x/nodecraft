@@ -53,7 +53,8 @@ pub enum VideoIntent {
 }
 
 /// Shown when no tools are set.
-pub const UNCONFIGURED: &str = "Set ffmpeg and ffprobe under [media] in settings to play videos";
+pub const UNCONFIGURED: &str =
+    "Install FFmpeg (ffmpeg and ffprobe), or set their absolute paths under [media] in settings or NODECRAFT_FFMPEG / NODECRAFT_FFPROBE";
 
 /// `m:ss` (or `h:mm:ss`) for a time in microseconds.
 pub fn clock(us: u64) -> String {
@@ -316,7 +317,7 @@ mod native {
         match error {
             VideoError::Unsupported | VideoError::InvalidMetadata => "This video's format isn't supported",
             VideoError::Limit => "This video is too large to play here",
-            VideoError::Unavailable => "Can't run ffmpeg or ffprobe; check [media] in settings",
+            VideoError::Unavailable => "Can't run ffmpeg or ffprobe; check the installed tools, environment overrides or [media] settings",
             VideoError::Timeout => "This video took too long to load",
             _ => "Can't play this video",
         }
@@ -379,7 +380,7 @@ mod native {
                         None
                     }
                     Err(VideoError::Unavailable | VideoError::Unsupported | VideoError::Process) => {
-                        Some("The ffmpeg or ffprobe in [media] settings can't play videos")
+                        Some("The selected ffmpeg or ffprobe can't play videos; check the installed tools, environment overrides or [media] settings")
                     }
                     Err(error) => Some(message(error)),
                 };

@@ -123,10 +123,15 @@ zoom_speed = 1.0      # 0.25 to 4
 ```
 
 
-## Optional FFmpeg library integration
+## Optional FFmpeg tools
 
 The desktop app plays videos on cards with a user-installed FFmpeg and ffprobe; it does not
-bundle or install them. Set both as absolute paths in the settings file:
+bundle or install them. At startup it resolves each tool in this order: an absolute
+`NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` environment override, an absolute path in `[media]`
+settings, then the first executable `ffmpeg` / `ffprobe` on `PATH` (`.exe` on Windows).
+On macOS it then checks `/opt/homebrew/bin` and `/usr/local/bin`, so Homebrew tools are found
+when Finder or the Dock starts the app without the shell’s `PATH`.
+For explicit settings:
 
 ```toml
 [media]
@@ -134,6 +139,9 @@ ffmpeg = "/usr/bin/ffmpeg"
 ffprobe = "/usr/bin/ffprobe"
 ```
 
-Without them a video card says how to set them up. There is no timeline yet.
+An invalid explicit path does not fall back to another executable. Discovery skips empty and
+relative `PATH` entries, is bounded, and is not saved into settings; restart after changing
+tools or the environment. Without the tools a video card explains how to install or configure
+them. The same pair serves sound playback, video actions and Timeline rendering.
 See [media-video.md](media-video.md) for capabilities, Flatpak/browser limitations and resource
 contracts. Installing NodeCraft alone does not install a video toolchain.

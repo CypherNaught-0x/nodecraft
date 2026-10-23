@@ -3184,6 +3184,7 @@ dependencies = [
  "nodecraft-types",
  "nodecraft-ui-egui",
  "serde_json",
+ "tempfile",
  "tokio",
  "winresource",
 ]

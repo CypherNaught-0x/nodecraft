@@ -55,7 +55,8 @@ pub enum AudioIntent {
 }
 
 /// Shown when no tools are set.
-pub const UNCONFIGURED: &str = "Set ffmpeg and ffprobe under [media] in settings to play sounds";
+pub const UNCONFIGURED: &str =
+    "Install FFmpeg (ffmpeg and ffprobe), or set their absolute paths under [media] in settings or NODECRAFT_FFMPEG / NODECRAFT_FFPROBE";
 
 /// Slices in a card's waveform: a few per pixel of the widest card.
 pub const BUCKETS: usize = 512;
