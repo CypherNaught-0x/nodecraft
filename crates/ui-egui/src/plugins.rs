@@ -124,7 +124,7 @@ pub fn short(digest: &str) -> &str {
 }
 
 /// What a capability lets a package do, in words.
-pub fn capability_text(capability: &str) -> &'static str {
+pub fn capability_text(capability: &str) -> String {
     match capability {
         "asset.read" => "read the project's media",
         "asset.write" => "add media to the project",
@@ -133,8 +133,10 @@ pub fn capability_text(capability: &str) -> &'static str {
         "process" => "start programs on this computer",
         "gpu" => "use the graphics card",
         "secret" => "use one of your API keys",
-        _ => "something this NodeCraft doesn't know",
+        // Named, so the person sees exactly what they would agree to.
+        _ => return format!("something this NodeCraft doesn't know ({capability})"),
     }
+    .to_owned()
 }
 
 impl PluginsPanel {
@@ -158,6 +160,11 @@ impl PluginsPanel {
 
     /// Dispatches a `plugins.*` command and records the request or its immediate answer.
     fn send(&mut self, session: &mut Session, id: &str, params: Value, ask: Ask) {
+        // A new request from the person replaces the last failure; a list refresh never does, so
+        // the reason something was refused stays until they act again.
+        if !matches!(ask, Ask::List) {
+            self.notice = None;
+        }
         match session.dispatch(id, &params) {
             Ok(answer) => match answer.get("pending").and_then(Value::as_str) {
                 Some(pending) => {
@@ -209,17 +216,21 @@ impl PluginsPanel {
             Ok(answer) => answer,
             Err(e) => {
                 self.notice = Some(e.message);
+                self.status = None;
                 if matches!(ask, Ask::Install { .. } | Ask::Change(_)) {
                     self.list(session);
                 }
                 return;
             }
         };
-        self.notice = None;
         match ask {
             Ask::List => {
                 self.rows =
                     answer.get("packages").and_then(Value::as_array).map(|p| p.iter().take(MAX_ROWS).filter_map(Row::parse).collect()).unwrap_or_default();
+                // A package changed elsewhere (another window, the CLI) isn't what the consent showed.
+                if self.consent.as_ref().is_some_and(|c| !self.rows.iter().any(|r| r.package_id == c.package_id && r.digest == c.digest)) {
+                    self.consent = None;
+                }
             }
             Ask::Check { update, location } => {
                 self.status = None;
@@ -233,6 +244,8 @@ impl PluginsPanel {
                     self.notice = Some("The file changed after it was checked: look at what was installed before you enable it.".into());
                 }
                 self.preview = None;
+                // A consent shown for the digest this replaced no longer applies.
+                self.consent = None;
                 self.location.clear();
                 self.list(session);
             }
@@ -287,7 +300,8 @@ impl PluginsPanel {
         let Some(preview) = self.preview.clone() else { return };
         let digest = preview.report.get("digest").and_then(Value::as_str).unwrap_or_default().to_owned();
         let id = if preview.update { "plugins.update" } else { "plugins.import" };
-        self.send(session, id, json!({"location": preview.location}), Ask::Install { digest });
+        // The engine refuses a file that no longer has the digest the person looked at.
+        self.send(session, id, json!({"location": preview.location, "digest": digest}), Ask::Install { digest });
     }
 
     fn change(&mut self, session: &mut Session, id: &str, params: Value, done: String) {
@@ -313,7 +327,9 @@ impl PluginsPanel {
         {
             o.insert("origins".into(), json!(c.origins));
         }
-        self.change(session, "plugins.grant", params, format!("{} may run now.", c.package_id));
+        let enabled = self.rows.iter().any(|r| r.package_id == c.package_id && r.enabled);
+        let done = if enabled { format!("Granted {}.", c.package_id) } else { format!("Granted {}; enable it to let it run.", c.package_id) };
+        self.change(session, "plugins.grant", params, done);
     }
 
     /// Draws the panel when open.
@@ -581,7 +597,7 @@ fn preview_body(ui: &mut egui::Ui, report: &Value, t: &Tokens) {
     }
     if let Some(delta) = report.get("rights_delta") {
         let added: Vec<String> =
-            strings(delta.get("added_capabilities")).iter().map(|c| capability_text(c).to_owned()).chain(strings(delta.get("added_origins"))).collect();
+            strings(delta.get("added_capabilities")).iter().map(|c| capability_text(c)).chain(strings(delta.get("added_origins"))).collect();
         if !added.is_empty() {
             ui.label(egui::RichText::new(format!("New in this version: {}. It must be granted again.", added.join("; "))).color(t.danger));
         }

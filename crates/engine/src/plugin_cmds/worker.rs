@@ -334,10 +334,14 @@ fn bounded_request(request: &Value) -> Result<Value, Error> {
         "prune" => &["op", "referenced"],
         "import" | "update" => {
             let location = object.get("location").and_then(Value::as_str).ok_or_else(invalid)?;
-            if location.is_empty() || location.len() > 4096 || object.get("dry_run").is_some_and(|v| !v.is_boolean()) {
+            if location.is_empty()
+                || location.len() > 4096
+                || object.get("dry_run").is_some_and(|v| !v.is_boolean())
+                || object.get("digest").is_some_and(|d| d.as_str().is_none_or(|d| PackageDigest::parse(d).is_err()))
+            {
                 return Err(invalid());
             }
-            &["op", "location", "dry_run"]
+            &["op", "location", "dry_run", "digest"]
         }
         "revoke" => {
             let grant = object.get("grant_id").and_then(Value::as_str).ok_or_else(invalid)?;

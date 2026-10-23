@@ -327,3 +327,25 @@ fn a_dry_run_carries_the_notice_text_cut_at_a_character_boundary() {
     s.dispatch("plugins.import", &json!({"location": path.to_str().unwrap()})).unwrap();
     assert_eq!(s.dispatch("plugins.rights", &json!({"package_id": "io.example.palette"})).unwrap()["runs"], false);
 }
+
+#[test]
+fn an_install_names_the_digest_it_was_shown_and_a_changed_file_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = package(dir.path(), "io.example.palette", "1.0.0");
+    let mut s = session(BTreeSet::new(), None);
+    let shown = s.dispatch("plugins.import", &json!({"location": path, "dry_run": true})).unwrap()["digest"].as_str().unwrap().to_owned();
+    // The file is replaced by another version after the person looked at it.
+    let other = package(dir.path(), "io.example.palette", "2.0.0");
+    std::fs::rename(&other, &path).unwrap();
+    let error = s.dispatch("plugins.import", &json!({"location": path, "digest": shown})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict, "{error:?}");
+    assert!(error.message.contains("changed since it was checked"));
+    assert!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"].as_array().unwrap().is_empty(), "nothing installed");
+    for digest in [json!("blake3:zz"), json!(7), json!("x".repeat(100))] {
+        let error = s.dispatch("plugins.import", &json!({"location": path, "digest": digest})).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput, "{digest}");
+    }
+    // The digest it has now installs.
+    let now = s.dispatch("plugins.import", &json!({"location": path, "dry_run": true})).unwrap()["digest"].clone();
+    s.dispatch("plugins.import", &json!({"location": path, "digest": now})).unwrap();
+}

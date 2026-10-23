@@ -188,3 +188,62 @@ fn hostile_list_entries_and_digests_never_panic() {
     let row = Row::parse(&json!({"package_id": "io.example.x", "digest": "d", "grant": {"grant_id": 7}, "kept": [1, "k"]})).unwrap();
     assert_eq!((row.grant, row.kept), (None, vec!["k".to_owned()]));
 }
+
+/// A refusal stays on screen after the list refreshes, until the person acts again.
+#[test]
+fn a_refused_enable_says_why_and_the_reason_stays() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(worker());
+    check(&mut h, &package(dir.path(), "text_actions", "MIT\n"));
+    h.get_by_label("Install").click();
+    settle(&mut h);
+    h.get_by_label("Enable").click();
+    settle(&mut h);
+    assert!(!h.state().panel.rows()[0].enabled);
+    let notice = h.state().panel.notice.clone();
+    assert!(notice.is_some(), "an ungranted package can't be enabled, and the panel says so");
+    h.run_steps(5);
+    assert_eq!(h.state().panel.notice, notice, "the list refresh kept the reason");
+    assert!(h.state().panel.status.is_none(), "no stale success under the error");
+}
+
+/// A file replaced between Check and Install is refused, not installed unseen.
+#[test]
+fn a_file_changed_after_it_was_checked_is_not_installed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(worker());
+    let file = package(dir.path(), "text_actions", "MIT\n");
+    check(&mut h, &file);
+    package(dir.path(), "text_actions", "MIT, changed after it was checked\n");
+    h.get_by_label("Install").click();
+    settle(&mut h);
+    assert!(h.state().panel.rows().is_empty(), "nothing installed");
+    assert!(h.state().panel.notice.as_deref().is_some_and(|n| n.contains("changed since it was checked")), "{:?}", h.state().panel.notice);
+}
+
+/// A consent shown before an update is gone after it: it was for the old digest.
+#[test]
+fn an_update_closes_a_consent_shown_for_the_old_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("old");
+    std::fs::create_dir(&old).unwrap();
+    let mut h = harness(direct());
+    check(&mut h, &package(&old, "text_actions", "MIT\n"));
+    h.get_by_label("Install").click();
+    settle(&mut h);
+    h.get_by_label("Grant…").click();
+    settle(&mut h);
+    assert!(h.state().panel.consent().is_some());
+    h.state_mut().panel.update = true;
+    check(&mut h, &package(dir.path(), "text_actions", "MIT, second version\n"));
+    h.get_by_label("Update").click();
+    settle(&mut h);
+    assert_ne!(h.state().panel.rows()[0].digest, "");
+    assert!(h.state().panel.consent().is_none(), "the consent was for the replaced digest");
+}
+
+#[test]
+fn an_unknown_capability_is_named() {
+    assert!(capability_text("io.example.teleport").contains("io.example.teleport"));
+    assert_eq!(capability_text("gpu"), "use the graphics card");
+}
