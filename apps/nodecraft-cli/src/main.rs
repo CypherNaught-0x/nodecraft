@@ -8,6 +8,7 @@
 //! (docs/plan.md §4.8).
 
 mod control;
+mod estimates;
 mod inspect;
 mod project;
 mod providers;
@@ -39,15 +40,18 @@ commands:
                   list the engine's commands; --full adds their parameters
   inspect <project.ncraft>
                   list a project's canvases and nodes, with which are stale
-  quote <project.ncraft> [--canvas <id>] [--node <id>]...
+  quote <project.ncraft> [--canvas <id>] [--node <id>]... [--estimate]
                   price a run of the nodes and their upstream (default: every stale or never-run node);
                   nothing runs and nothing is charged
-  run <project.ncraft> [--canvas <id>] [--node <id>]... [--out <folder>] [--yes]
+  run <project.ncraft> [--canvas <id>] [--node <id>]... [--out <folder>] [--yes] [--estimate]
                   run the nodes and their stale upstream (default: every stale or never-run node)
                   and export their media results into the folder; a run that costs money, or
                   whose price isn't fully known, needs --yes (check it with `quote` first). The
                   project file is not changed. Stopping the CLI mid-run doesn't stop jobs a
                   provider already accepted; they may still be charged
+  --estimate      with quote/run, ask providers for by-usage prices first (up to 62 seconds).
+                  This sends job inputs, including images, to their providers before run consent;
+                  no generation is submitted or charged by the estimate
   serve <project.ncraft> [--listen <addr>] [--token-file <path>] [--max-cost <CUR=amount>]...
         [--allow-unpriced] [--webhook-allow <url>]... [--webhook-allow-private]
                   offer the project's published techniques as a local HTTP API (default
@@ -124,6 +128,9 @@ fn mcp() -> ExitCode {
     let mut new_id = random_bytes();
     let session = nodecraft_automation::blank_session(ProjectId::from_bytes(new_id()), CanvasId::from_bytes(new_id()));
     let mut services = Services::default();
+    let estimates = estimates::optional_setup(&mut services, || {
+        providers::keychain_maker(nodecraft_engine::settings::peek().providers).map(|maker| Box::new(maker) as Box<quote::Maker<'static>>)
+    });
     let mut session = match session.and_then(|s| register_key_service(&mut services, Arc::new(KeyringStore)).map(|()| s)) {
         Ok(s) => s.with_services(services),
         Err(e) => {
@@ -148,7 +155,10 @@ fn mcp() -> ExitCode {
     {
         eprintln!("warning: your skills are unavailable: {}", e.message);
     }
-    serve_stdio(&mut McpServer::new(session, Box::new(new_id)))
+    match estimates {
+        Some((runner, maker)) => serve_stdio(&mut McpServer::with_host(estimates::Host::new(session, runner, maker), Box::new(new_id))),
+        None => serve_stdio(&mut McpServer::new(session, Box::new(new_id))),
+    }
 }
 
 /// The options of the read-only commands.
@@ -160,6 +170,7 @@ struct Options {
     nodes: Vec<NodeId>,
     out: Option<String>,
     yes: bool,
+    estimate: bool,
     positional: Vec<String>,
 }
 
@@ -181,6 +192,7 @@ fn options(args: &[String], allowed: &[&str]) -> Result<Options, String> {
             "--out" if out.out.is_some() => return Err("`--out` is given twice".into()),
             "--out" => out.out = Some(value()?),
             "--yes" => out.yes = true,
+            "--estimate" => out.estimate = true,
             "--node" => {
                 let id = value()?;
                 out.nodes.push(id.parse().map_err(|_| format!("`{id}` isn't a node id (see `inspect`)"))?);
@@ -223,8 +235,8 @@ fn project_arg(command: &str, options: &Options) -> Result<std::path::PathBuf, S
 fn read_only(command: &str, args: &[String]) -> ExitCode {
     let allowed: &[&str] = match command {
         "commands" => &["--json", "--full"],
-        "quote" => &["--json", "--canvas", "--node"],
-        "run" => &["--json", "--canvas", "--node", "--out", "--yes"],
+        "quote" => &["--json", "--canvas", "--node", "--estimate"],
+        "run" => &["--json", "--canvas", "--node", "--out", "--yes", "--estimate"],
         _ => &["--json"],
     };
     let options = match options(args, allowed) {
@@ -257,6 +269,9 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
             };
             if command == "run" {
                 return run(&path, &options);
+            }
+            if command == "quote" && options.estimate {
+                return estimates::quote(&path, &options);
             }
             let mut session = match project::open(&path) {
                 Ok(session) => session,
@@ -437,6 +452,7 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
         let mut maker = providers::keychain_maker(nodecraft_engine::settings::peek().providers)?;
         quote::prepare(session, canvas, &targets, &mut maker)?;
         runner.install(session);
+        let estimate = options.estimate.then(|| estimates::for_targets(&mut runner, session, canvas, &targets)).transpose()?;
         let quoted = quote::quote(session, canvas, &targets)?;
         let steps = runner.run(session, canvas, &targets, &quoted, run::Consent { spend: options.yes })?;
         // An unaccounted result was kept on its card, so it is exported too.
@@ -446,7 +462,11 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
             Some(out) => run::export(session, canvas, &ran, out)?,
             None => Vec::new(),
         };
-        Ok(serde_json::json!({"quote": quoted, "steps": steps, "results": results}))
+        let mut report = serde_json::json!({"quote": quoted, "steps": steps, "results": results});
+        if let Some(estimate) = estimate {
+            report["estimate"] = estimate;
+        }
+        Ok(report)
     });
     match done {
         Ok(report) => {

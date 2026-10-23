@@ -105,6 +105,22 @@ fn quote_prices_a_run_without_running_it() {
 }
 
 #[test]
+fn explicitly_estimating_reports_its_terminal_result_without_writing_anything() {
+    let (dir, path) = project("estimate.ncraft");
+    let before = std::fs::read(&path).unwrap();
+    let out = cli(&["quote", "--estimate", "--json", path.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let quoted: Value = serde_json::from_slice(&out.stdout).unwrap();
+    // The old text fixture's kind is deliberately not installed, so the shared host explains
+    // why it could not ask, rather than reporting an accepted request with no answer.
+    assert_eq!(quoted["estimate"]["status"], "not_estimated", "{quoted}");
+    assert_eq!(quoted["estimate"]["request"], 0);
+    assert!(quoted["estimate"]["reason"].is_string());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(names(dir.path()), vec!["estimate.ncraft"]);
+}
+
+#[test]
 fn bad_input_is_an_error_not_a_panic() {
     let (dir, path) = project("fox.ncraft");
     let missing = dir.path().join("absent.ncraft");

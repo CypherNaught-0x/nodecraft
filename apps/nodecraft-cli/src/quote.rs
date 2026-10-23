@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use nodecraft_engine::Session;
-use nodecraft_engine::provider_setup::{ProviderSetup, Readiness};
+use nodecraft_engine::provider_setup::Readiness;
 use nodecraft_engine::run_cmds::BudgetState;
 use nodecraft_exec::cost::{Budgets, Spent};
 use nodecraft_graph::Canvas;
@@ -17,6 +17,8 @@ use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde_json::{Value, json};
 
 use crate::inspect::{has_result, model_of};
+mod routing;
+pub use routing::Routing;
 
 /// Builds one provider's adapter (the CLI's reads the keychain; tests pass their own).
 pub type Maker<'a> = dyn FnMut(&str) -> Result<Arc<dyn Provider>, Readiness> + 'a;
@@ -95,21 +97,13 @@ pub fn targets(session: &Session, canvas: CanvasId, nodes: &[NodeId]) -> Result<
 /// Builds the adapters a run of `targets` and their upstream needs with `maker`, routes the
 /// canvas's cards to them and installs empty budgets: what `run.quote` reads.
 pub fn prepare(session: &mut Session, canvas: CanvasId, targets: &[NodeId], maker: &mut Maker<'_>) -> Result<(), Error> {
-    let graph = session.document().canvases().get(&canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "no such canvas"))?;
-    let stale = nodecraft_exec::staleness::stale(graph, session.kinds())?;
-    let mut reached = with_upstream(graph, targets, &stale);
-    let (adapters, inner) = adapters_of(session, graph)?;
-    reached.extend(inner.iter().filter(|(_, owner)| reached.contains(owner)).map(|(id, _)| *id).collect::<Vec<_>>());
-    let needed: BTreeSet<&str> = reached.iter().filter_map(|node| adapters.get(node).map(String::as_str)).collect();
-    let mut setup = ProviderSetup::default();
-    let unready: Vec<String> = needed.into_iter().filter_map(|adapter| setup.ensure(adapter, &mut *maker).message(adapter)).collect();
-    if !unready.is_empty() {
-        return Err(Error::new(ErrorKind::Unsupported, unready.join(" ")));
-    }
-    let ready = adapters.iter().filter(|(_, a)| setup.readiness(a) == Some(&Readiness::Ready)).map(|(node, a)| (*node, a.as_str()));
-    let routing = setup.routing(ready)?;
-    session.set_provider_routing(routing)?;
-    // No budgets are set from the command line, and nothing was spent in this process.
+    prepare_selection(session, canvas, targets, maker, true)
+}
+
+/// The same routing setup for a command whose selected/field mode excludes upstream cards.
+pub fn prepare_selection(session: &mut Session, canvas: CanvasId, targets: &[NodeId], maker: &mut Maker<'_>, upstream: bool) -> Result<(), Error> {
+    Routing::default().prepare(session, canvas, targets, maker, upstream)?;
+    // A one-shot CLI quote starts with an empty budget, including local-only or empty runs.
     session.swap_resource(Some(BudgetState { budgets: Budgets::default(), spent: Spent::default() }));
     Ok(())
 }

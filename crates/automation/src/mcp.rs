@@ -295,7 +295,7 @@ pub struct McpServer {
 
 enum Backend {
     /// A headless session of its own.
-    Local(Box<Session>),
+    Local(Box<dyn crate::commands::CommandHost>),
     /// The running app's session, through its control channel (`nodecraft --control`).
     #[cfg(not(target_arch = "wasm32"))]
     Bridge(crate::control::Client),
@@ -563,7 +563,12 @@ pub(crate) fn canvas_inspect(session: &Session, args: &Map<String, Value>) -> Re
 
 impl McpServer {
     pub fn new(session: Session, new_id: IdSource) -> Self {
-        Self { backend: Backend::Local(Box::new(session)), new_id }
+        Self::with_host(session, new_id)
+    }
+
+    /// A local frontend that supplies scoped capabilities while retaining engine dispatch.
+    pub fn with_host(host: impl crate::commands::CommandHost + 'static, new_id: IdSource) -> Self {
+        Self { backend: Backend::Local(Box::new(host)), new_id }
     }
 
     /// A server that works on the running app (`nodecraft --control`) through `client`: the
@@ -576,7 +581,7 @@ impl McpServer {
     /// The local session (`None` when bridged to the app).
     pub fn session(&self) -> Option<&Session> {
         match &self.backend {
-            Backend::Local(session) => Some(session),
+            Backend::Local(host) => Some(host.session()),
             #[cfg(not(target_arch = "wasm32"))]
             Backend::Bridge(_) => None,
         }
@@ -661,7 +666,7 @@ impl McpServer {
             (_, "ids_new") => ids_new(&mut self.new_id, &args),
             (Backend::Local(session), "command_list") => command_list(&mut **session, &args),
             (Backend::Local(session), "command_run") => command_run(&mut **session, args),
-            (Backend::Local(session), "canvas_inspect") => canvas_inspect(session, &args),
+            (Backend::Local(host), "canvas_inspect") => canvas_inspect(host.session(), &args),
             #[cfg(not(target_arch = "wasm32"))]
             (Backend::Bridge(client), tool @ ("command_list" | "command_run" | "canvas_inspect")) => {
                 let method = match tool {

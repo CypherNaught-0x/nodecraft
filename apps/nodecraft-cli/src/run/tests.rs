@@ -125,3 +125,14 @@ fn file_names_are_safe_and_distinct() {
     assert_eq!(name("fox", "日本", None), "fox-out");
     assert_eq!(extension("application/x-unknown"), "bin");
 }
+
+#[test]
+fn an_unanswered_estimate_wait_has_a_defensive_deadline_and_keeps_its_id() {
+    let (mut session, mut runner) = scene(MockModel::new(MockOutput::Image));
+    let started = Instant::now();
+    let result = runner.wait_estimate(&mut session, 12_345, Duration::ZERO);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(result["request"], 12_345);
+    assert_eq!(result["status"], "not_estimated");
+    assert!(result["reason"].as_str().is_some_and(|reason| !reason.is_empty()));
+}

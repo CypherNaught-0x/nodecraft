@@ -31,6 +31,19 @@ fn an_mcp_client_session() {
     assert_eq!(init["result"]["serverInfo"]["name"], "nodecraft");
     let overview = ask(2, "tools/call", json!({"name": "canvas_inspect", "arguments": {}}));
     let canvas = overview["result"]["structuredContent"]["canvases"][0]["id"].clone();
+    let estimate = ask(
+        11,
+        "tools/call",
+        json!({"name": "command_run", "arguments": {
+            "id": "run.estimate", "params": {"canvas": canvas, "mode": "all_stale"}
+        }}),
+    );
+    assert_eq!(estimate["result"]["isError"], false, "{estimate}");
+    let estimated = &estimate["result"]["structuredContent"]["result"];
+    assert_eq!(estimated["status"], "estimated");
+    assert_eq!(estimated["request"], 0);
+    assert_eq!(estimated["quoted"], 0);
+    assert_eq!(estimated["unquoted"], 0);
     let id = ask(3, "tools/call", json!({"name": "ids_new"}))["result"]["structuredContent"]["ids"][0].clone();
     let added =
         ask(4, "tools/call", json!({"name": "command_run", "arguments": {"id": "node.add", "params": {"canvas": canvas, "node": {"id": id, "kind": "text"}}}}));

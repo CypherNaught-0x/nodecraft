@@ -109,6 +109,31 @@ the live selection and trusted card geometry, which MCP and the control bridge c
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
 server waits until the prompt is answered.
 
+**Provider prices:** Standalone `nodecraft-cli mcp` supports `command_run` with
+`id: "run.estimate"` and the same parameters as `run.quote`. It sends the job's inputs to the
+providers (including image uploads), submits no generation and charges nothing. After adapter/keychain setup, the price wait lasts
+at most 62 seconds for its own request. OS keychain prompts can wait for a person, as described above. Its command result includes `{accepted: true, request,
+status: "estimated", canvas, quoted, unquoted}`, or `{accepted: true, request,
+status: "not_estimated", reason}` when the request could not be estimated. Failed or timed-out
+provider quotes count as unquoted and keep an unknown price. Call `run.quote` again after the
+answer to read the prices and a fresh token. Quotes expire after ten minutes and belong only to
+this process/session. Ready adapters are reused, so estimating a second card on the same
+provider (or an empty selection) keeps earlier unexpired prices and avoids another keychain
+read. Adding an adapter or changing routed cards rebuilds endpoint authority and invalidates
+earlier prices; estimate affected cards again. Provider server settings are read at startup;
+restart MCP after changing them. Successful `keys.set` / `keys.remove` commands make the next
+estimate rebuild its adapters. If optional estimate support cannot start, MCP warns on stderr
+and keeps ordinary commands available; `run.estimate` then returns Unsupported.
+The standalone host still does not offer paid execution; the desktop
+bridge retains its asynchronous `{accepted, request}` result.
+
+The file CLI offers the same request with `nodecraft-cli quote project.ncraft --estimate`
+and `nodecraft-cli run project.ncraft --estimate --yes`. The flag explicitly allows sending job
+inputs for prices before run consent. Quoting changes no files; running still requires the
+existing spending consent and checks the final quote. JSON output adds `estimate` with the
+terminal result; text output reports quoted/unquoted counts or why asking failed. Without the
+flag, neither command requests provider estimates.
+
 **Option lists:** `options.refresh` asks the host to fetch the run-time option lists the
 catalog's models name (the checkpoints the ComfyUI server in settings has, #529) and returns
 `{pending: id}`; read what was installed, refused and why with `options.status`, then
