@@ -3,10 +3,14 @@
 //! never reads the project; it only merges and forwards, except for a commenter's discussion
 //! changes, which it checks and writes itself (#121). Every byte it keeps is capped.
 //!
+//! An asset too large for one frame comes in parts (#700), which the room passes on without
+//! keeping: each asker takes the parts of one sender, in order, and when that sender leaves the
+//! room asks the others for the rest.
+//!
 //! Whoever joins by the room id is its owner. The owner may hand out share links, each with one
 //! role ([`Role`]); the room keeps only each link's hash. A viewer or commenter is never asked
 //! for its document, and anything it sends that would change the project is refused.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use yrs::updates::decoder::Decode;
@@ -17,7 +21,7 @@ use nodecraft_graph::Comment;
 use nodecraft_types::{CanvasId, CommentId};
 
 use crate::discussion;
-use crate::frame::{Frame, MAX_UPDATE_BYTES};
+use crate::frame::{Frame, MAX_UPDATE_BYTES, PART_BYTES, WINDOW_BYTES};
 use crate::mirror::{comment_in, open_canvas_in, write_comment};
 use crate::role::{Grant, Role};
 
@@ -34,6 +38,30 @@ pub const MAX_PEERS: usize = 32;
 const MAX_WANTED: usize = 4096;
 /// The most share links one room holds.
 pub const MAX_LINKS: usize = 256;
+
+/// One asker's wait for an asset.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Want {
+    /// The next byte it takes of an asset coming in parts.
+    next: u64,
+    /// The end of what it has asked for.
+    until: u64,
+    /// The asset's size and who sends it, from the first part it took.
+    total: Option<u64>,
+    source: Option<Peer>,
+}
+
+impl Want {
+    /// Asks for what this asker still waits on, of whoever has it, once its sender has gone;
+    /// nothing if all it asked for came (its next ask goes to everyone).
+    fn again(&self, hash: [u8; 32]) -> Option<Frame> {
+        let mut len = self.until.saturating_sub(self.next);
+        if let Some(left) = self.total.map(|total| total.saturating_sub(self.next)) {
+            len = len.min(left);
+        }
+        (len > 0).then_some(Frame::AssetFrom { hash, offset: self.next, len })
+    }
+}
 
 /// What the relay should do after a frame.
 #[derive(Debug, PartialEq)]
@@ -58,8 +86,8 @@ pub struct Room {
     merged: usize,
     assets: BTreeMap<[u8; 32], Vec<u8>>,
     asset_bytes: usize,
-    /// Who asked for an asset nobody has sent yet.
-    wanted: BTreeMap<[u8; 32], BTreeSet<Peer>>,
+    /// Who waits for an asset, and how far each has got with one coming in parts.
+    wanted: BTreeMap<[u8; 32], BTreeMap<Peer, Want>>,
     damaged: bool,
 }
 
@@ -132,11 +160,20 @@ impl Room {
                     return Vec::new();
                 }
                 let mut out = vec![Out::Send(peer, Frame::Step1(sv))];
-                // Whoever asked for an asset may be waiting on someone who left: the newcomer
-                // may have it.
-                let wanted: Vec<[u8; 32]> = self.wanted.keys().copied().collect();
-                if !wanted.is_empty() {
-                    out.push(Out::Send(peer, Frame::AssetGet(wanted)));
+                // Whoever asked for an asset may be waiting on someone who left, or on nobody
+                // yet: the newcomer may have it.
+                let mut whole = Vec::new();
+                for (hash, askers) in &self.wanted {
+                    let mut rest: Vec<Frame> =
+                        askers.values().filter(|want| want.source.is_none() && want.next > 0).filter_map(|want| want.again(*hash)).collect();
+                    rest.dedup();
+                    if askers.values().any(|want| want.source.is_none() && want.next == 0) {
+                        whole.push(*hash);
+                    }
+                    out.extend(rest.into_iter().map(|frame| Out::Send(peer, frame)));
+                }
+                if !whole.is_empty() {
+                    out.insert(1, Out::Send(peer, Frame::AssetGet(whole)));
                 }
                 out
             }
@@ -144,12 +181,29 @@ impl Room {
         }
     }
 
-    pub fn leave(&mut self, peer: Peer) {
+    /// Lets `peer` go. Whoever was taking an asset's parts from it is sent the rest by another
+    /// editor who has it, if one answers what this returns.
+    pub fn leave(&mut self, peer: Peer) -> Vec<Out> {
         self.peers.remove(&peer);
-        for askers in self.wanted.values_mut() {
+        let mut again = Vec::new();
+        for (hash, askers) in &mut self.wanted {
             askers.remove(&peer);
+            for (asker, want) in askers.iter_mut().filter(|(_, want)| want.source == Some(peer)) {
+                want.source = None;
+                again.extend(want.again(*hash).map(|frame| (*asker, frame)));
+            }
         }
         self.wanted.retain(|_, askers| !askers.is_empty());
+        let mut out = Vec::new();
+        for (asker, frame) in again {
+            for editor in self.editors_but(asker) {
+                let ask = Out::Send(editor, frame.clone());
+                if !out.contains(&ask) {
+                    out.push(ask);
+                }
+            }
+        }
+        out
     }
 
     /// Puts out everyone whose link has run out by `now` (seconds since 1970), and forgets the
@@ -168,10 +222,13 @@ impl Room {
     fn put_out(&mut self, link: [u8; 32], why: &str) -> Vec<Out> {
         let through: Vec<Peer> = self.peers.iter().filter(|(_, member)| member.link == Some(link)).map(|(peer, _)| *peer).collect();
         let mut out = Vec::new();
+        let mut again = Vec::new();
         for peer in through {
-            self.leave(peer);
+            again.extend(self.leave(peer));
             out.push(Out::Close(peer, Frame::Refused(why.into())));
         }
+        // Those put out aren't asked for anything.
+        out.extend(again.into_iter().filter(|o| !matches!(o, Out::Send(peer, _) if !self.peers.contains_key(peer))));
         out
     }
 
@@ -210,7 +267,7 @@ impl Room {
                     .wanted
                     .remove(&hash)
                     .unwrap_or_default()
-                    .into_iter()
+                    .into_keys()
                     .filter(|peer| *peer != from && self.peers.contains_key(peer))
                     .map(|peer| Out::Send(peer, Frame::AssetPut { hash, bytes: bytes.clone() }))
                     .collect();
@@ -229,16 +286,65 @@ impl Room {
                     match self.assets.get(&hash) {
                         Some(bytes) => out.push(Out::Send(from, Frame::AssetPut { hash, bytes: bytes.clone() })),
                         None if self.wanted.len() < MAX_WANTED || self.wanted.contains_key(&hash) => {
-                            self.wanted.entry(hash).or_default().insert(from);
+                            // Asked for whole, it starts again: one in parts comes first as its
+                            // first part, from whoever sends it first, whatever came before.
+                            self.wanted.entry(hash).or_default().insert(from, Want { until: PART_BYTES as u64, ..Want::default() });
                             missing.push(hash);
                         }
                         None => {}
                     }
                 }
                 if !missing.is_empty() {
-                    // Only an editor can have media the project needs.
-                    let others: Vec<Peer> = self.others(from).filter(|peer| self.peers.get(peer).is_some_and(|m| m.role.edits())).collect();
-                    out.extend(others.into_iter().map(|peer| Out::Send(peer, Frame::AssetGet(missing.clone()))));
+                    out.extend(self.editors_but(from).into_iter().map(|peer| Out::Send(peer, Frame::AssetGet(missing.clone()))));
+                }
+                out
+            }
+            Frame::AssetFrom { hash, offset, len } => {
+                let len = len.min(WINDOW_BYTES);
+                let end = offset.saturating_add(len);
+                match self.wanted.get_mut(&hash).and_then(|askers| askers.get_mut(&from)) {
+                    // An asker goes on from the end of what it asked for, at most two windows
+                    // ahead of what it has; any other ask, as a flood would be, isn't passed on.
+                    Some(want) => {
+                        if offset != want.until || end.saturating_sub(want.next) > 2 * WINDOW_BYTES {
+                            return Vec::new();
+                        }
+                        want.until = end;
+                    }
+                    // A first ask, on a new connection, starts where it says.
+                    None => {
+                        if self.wanted.len() >= MAX_WANTED && !self.wanted.contains_key(&hash) {
+                            return Vec::new();
+                        }
+                        self.wanted.entry(hash).or_default().insert(from, Want { next: offset, until: end, ..Want::default() });
+                    }
+                }
+                let Some(want) = self.wanted.get(&hash).and_then(|askers| askers.get(&from)) else { return Vec::new() };
+                let ask = Frame::AssetFrom { hash, offset, len };
+                // The rest comes from whoever sends the parts already taken, while they are here.
+                match want.source.filter(|source| self.peers.contains_key(source)) {
+                    Some(source) => vec![Out::Send(source, ask)],
+                    None => self.editors_but(from).into_iter().map(|peer| Out::Send(peer, ask.clone())).collect(),
+                }
+            }
+            Frame::AssetPart { .. } if !member.role.edits() => Vec::new(),
+            Frame::AssetPart { hash, total, offset, bytes } => {
+                // The frame checked the part lies inside its asset; the asker checks the hash.
+                let end = offset.saturating_add(bytes.len() as u64);
+                let mut out = Vec::new();
+                if let Some(askers) = self.wanted.get_mut(&hash) {
+                    askers.retain(|peer, want| {
+                        // Each asker takes one sender's parts, in order; any other copy is dropped.
+                        let takes = *peer != from && want.next == offset && want.source.is_none_or(|s| s == from) && want.total.is_none_or(|t| t == total);
+                        if takes {
+                            out.push(Out::Send(*peer, Frame::AssetPart { hash, total, offset, bytes: bytes.clone() }));
+                            *want = Want { next: end, until: want.until, total: Some(total), source: Some(from) };
+                        }
+                        want.total.is_none_or(|total| want.next < total)
+                    });
+                    if askers.is_empty() {
+                        self.wanted.remove(&hash);
+                    }
                 }
                 out
             }
@@ -327,9 +433,16 @@ impl Room {
         self.peers.keys().copied().filter(move |peer| *peer != from)
     }
 
+    /// The editors other than `from`: only an editor can have media the project needs.
+    fn editors_but(&self, from: Peer) -> Vec<Peer> {
+        self.others(from).filter(|peer| self.peers.get(peer).is_some_and(|m| m.role.edits())).collect()
+    }
+
     fn refuse(&mut self, peer: Peer, message: &str) -> Vec<Out> {
-        self.leave(peer);
-        vec![Out::Close(peer, Frame::Refused(message.into()))]
+        let again = self.leave(peer);
+        let mut out = vec![Out::Close(peer, Frame::Refused(message.into()))];
+        out.extend(again);
+        out
     }
 
     fn state_vector(&self) -> Option<Vec<u8>> {

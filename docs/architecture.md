@@ -709,3 +709,5 @@ first copy of the project whole (`Session::adopt_shared`). See the
 `nodecraft-cli relay [--listen <addr>]` hosts the rooms. Nothing in the library crates touches a
 socket; the host passes frames. See the [decision](decisions/2026-10-22-crdt-sync.md) for the
 entry schema, the protocol and the limits.
+Assets over 16 MiB travel in parts, paced by the receiver and kept in a `Spool` until whole
+(the desktop's spools to temporary files); see the [decision](decisions/2026-10-23-large-shared-assets.md).

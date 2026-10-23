@@ -15,7 +15,7 @@ mod mirror;
 mod role;
 mod room;
 
-pub use frame::{Frame, LinkKey, MAX_ASSET_BYTES, MAX_FRAME_BYTES, MAX_UPDATE_BYTES, PROTOCOL, RoomId};
+pub use frame::{Frame, LinkKey, MAX_ASSET_BYTES, MAX_FRAME_BYTES, MAX_SHARED_ASSET_BYTES, MAX_UPDATE_BYTES, PART_BYTES, PROTOCOL, RoomId, WINDOW_BYTES};
 pub use mirror::{CommentChange, Materialized, Mirror};
 pub use role::{Grant, Role};
 pub use room::{MAX_LINKS, Out, Peer, Room};

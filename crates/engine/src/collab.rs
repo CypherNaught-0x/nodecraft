@@ -17,6 +17,9 @@
 //! owner does; a viewer writes nothing; a commenter sends each change to a discussion to the
 //! relay, which checks it is theirs to make and writes it for them.
 //!
+//! An asset too large for one frame comes in parts into a [`Spool`] (#700): a host that can
+//! write files gives the session one that keeps them on disk ([`Collab::with_spool`]).
+//!
 //! A canvas marked private stays out of the shared document: the room sees the project
 //! without it ([`shared`]), each settle keeps it as the session has it, and no asset is given
 //! out that only it uses.
@@ -24,7 +27,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use nodecraft_graph::{CanvasKind, Change, Changeset, Node, Project, diff};
-use nodecraft_sync::{CommentChange, Frame, LinkKey, MAX_ASSET_BYTES, Materialized, Mirror, PROTOCOL, Role, RoomId};
+use nodecraft_sync::{CommentChange, Frame, LinkKey, Materialized, Mirror, PROTOCOL, Role, RoomId};
 use nodecraft_types::{Blake3, CanvasId, Error, ErrorKind, ProjectId};
 
 use crate::access::Access;
@@ -32,12 +35,20 @@ use crate::session::Session;
 
 mod join;
 mod links;
+mod parts;
 
 pub use join::{JoinLink, Key, MAX_RELAY_BYTES, relay_address};
 pub use links::{LINKS_SERVICE, Links};
+use parts::Incoming;
+pub use parts::{Arrival, MemorySpool, Spool, Stretch};
 
-/// The most assets kept waiting for the edit that needs them.
+/// The most assets sent whole kept waiting for the edit that needs them.
 const MAX_ARRIVED_BYTES: usize = 256 << 20;
+/// The most asks for assets kept for the next publish.
+const MAX_WANTED: usize = 4096;
+/// The most asks for assets answered at one publish. A stretch is at most a window, so this
+/// bounds what one publish reads; the rest wait for the next ([`Collab::owes_assets`]).
+const ANSWERED_PER_PUBLISH: usize = 2;
 /// The most discussion changes waiting for the relay before the commenter's next ones wait too.
 const MAX_PENDING: usize = 256;
 /// The most of a relay's reason shown to the person.
@@ -63,9 +74,15 @@ pub struct Collab {
     unsettled: bool,
     /// Assets asked of the others, and those that arrived before the edit that needs them.
     asked: BTreeSet<Blake3>,
-    arrived: BTreeMap<Blake3, Vec<u8>>,
-    /// Assets the others asked for, answered at the next publish.
-    wanted: BTreeSet<Blake3>,
+    arrived: BTreeMap<Blake3, Arrival>,
+    /// Assets coming in parts, kept across connections so a new one asks only for the rest.
+    incoming: BTreeMap<Blake3, Incoming>,
+    spool: Box<dyn Spool>,
+    /// Assets this session can't take: too large for its spool, or not what they were named.
+    /// They aren't asked for again; the cards that use them wait.
+    unusable: BTreeSet<Blake3>,
+    /// What the others asked for, answered at the next publish.
+    wanted: BTreeSet<(Blake3, Stretch)>,
     /// The owner's share links, when this keeps them ([`Collab::links_request`]).
     links: Links,
     /// Link frames for the next publish.
@@ -98,25 +115,21 @@ pub struct View<'a> {
     pub has: &'a dyn Fn(&Blake3) -> bool,
 }
 
-/// What goes to the relay: a frame, or an asset the others asked for, which only the session
-/// holds the bytes of ([`Out::frame`]).
+/// What goes to the relay: a frame, or (some of) an asset the others asked for, which only the
+/// session holds the bytes of ([`Out::frames`]).
 #[derive(Debug)]
 pub enum Out {
     Frame(Frame),
-    Asset(Blake3),
+    Asset(Blake3, Stretch),
 }
 
 impl Out {
-    /// The frame, with an asset's bytes from `session`; `None` for an asset it doesn't have, or
-    /// one too large to send.
-    pub fn frame(self, session: &Session) -> Option<Frame> {
+    /// The frames, with an asset's bytes from `session`: whole if it fits in one frame, else the
+    /// parts asked for. None for an asset it can't read, or one too large to share.
+    pub fn frames(self, session: &Session) -> Vec<Frame> {
         match self {
-            Self::Frame(frame) => Some(frame),
-            Self::Asset(hash) => session
-                .assets()
-                .get(&hash)
-                .filter(|bytes| bytes.len() <= MAX_ASSET_BYTES)
-                .map(|bytes| Frame::AssetPut { hash: *hash.as_bytes(), bytes: bytes.to_vec() }),
+            Self::Frame(frame) => vec![frame],
+            Self::Asset(hash, stretch) => parts::frames(session, &hash, stretch).unwrap_or_default(),
         }
     }
 }
@@ -127,7 +140,7 @@ impl Out {
 pub struct Plan {
     base: u64,
     access: Option<Access>,
-    imports: Vec<Vec<u8>>,
+    imports: Vec<(Blake3, Arrival)>,
     /// `None` when nothing was settled: there is nothing to tell [`Collab::taken`].
     sets: Option<Sets>,
 }
@@ -195,8 +208,8 @@ impl Plan {
         if let Some(access) = self.access.filter(|_| fresh || self.sets.is_none()) {
             session.set_access(access);
         }
-        for bytes in &self.imports {
-            session.import_asset(bytes)?;
+        for (hash, arrival) in &self.imports {
+            arrival.import(hash, session)?;
         }
         Ok(match self.sets {
             None => Taken::Nothing,
@@ -242,6 +255,9 @@ impl Collab {
             unsettled: false,
             asked: BTreeSet::new(),
             arrived: BTreeMap::new(),
+            incoming: BTreeMap::new(),
+            spool: Box::new(MemorySpool::default()),
+            unusable: BTreeSet::new(),
             wanted: BTreeSet::new(),
             links: Links::default(),
             outbox: Vec::new(),
@@ -256,9 +272,34 @@ impl Collab {
         }
     }
 
+    /// Keeps the parts of assets coming in in `spool`, which decides how large one may be.
+    pub fn with_spool(mut self, spool: Box<dyn Spool>) -> Self {
+        for hash in std::mem::take(&mut self.incoming).keys() {
+            self.spool.discard(hash);
+        }
+        self.spool = spool;
+        self
+    }
+
     /// How many assets this session waits for before it can take in what the others did.
     pub fn waiting_for_assets(&self) -> usize {
         self.asked.len()
+    }
+
+    /// Whether asks for assets wait to be answered at the next publish.
+    pub fn owes_assets(&self) -> bool {
+        !self.wanted.is_empty()
+    }
+
+    /// How far the assets coming in parts have got: the bytes received, of how many.
+    pub fn asset_progress(&self) -> (u64, u64) {
+        self.incoming.values().fold((0, 0), |(received, total), incoming| (received.saturating_add(incoming.received), total.saturating_add(incoming.total)))
+    }
+
+    /// How many assets the cards wait for that this session can't take: too large for it, or
+    /// not what they were named.
+    pub fn unusable_assets(&self) -> usize {
+        self.unusable.len()
     }
 
     /// Whether this session holds what the room holds, as far as it has heard: the relay has
@@ -322,7 +363,7 @@ impl Collab {
     pub fn publish(&mut self, session: &Session) -> Result<Vec<Frame>, Error> {
         let has = |hash: &Blake3| session.assets().contains(hash);
         let view = View { revision: session.revision(), document: session.document(), has: &has };
-        Ok(self.publish_view(&view)?.into_iter().filter_map(|out| out.frame(session)).collect())
+        Ok(self.publish_view(&view)?.into_iter().flat_map(|out| out.frames(session)).collect())
     }
 
     fn publish_view(&mut self, view: &View<'_>) -> Result<Vec<Out>, Error> {
@@ -331,10 +372,15 @@ impl Collab {
         if !role.edits() {
             self.wanted.clear();
         }
-        let wanted = std::mem::take(&mut self.wanted);
         // Only what the room's project uses goes out: not what only a private canvas does.
-        let used = if wanted.is_empty() { BTreeSet::new() } else { assets_in(&*shared(view.document)?)? };
-        out.extend(wanted.intersection(&used).filter(|hash| (view.has)(hash)).map(|hash| Out::Asset(*hash)));
+        if !self.wanted.is_empty() {
+            let used = assets_in(&*shared(view.document)?)?;
+            self.wanted.retain(|(hash, _)| used.contains(hash) && (view.has)(hash));
+        }
+        for _ in 0..ANSWERED_PER_PUBLISH {
+            let Some((hash, stretch)) = self.wanted.pop_first() else { break };
+            out.push(Out::Asset(hash, stretch));
+        }
         if role == Role::Comment && !self.sent_pending {
             out.extend(self.pending.iter().map(|(seq, change)| Out::Frame(put(*seq, change))));
             self.sent_pending = true;
@@ -385,16 +431,25 @@ impl Collab {
             }
             Frame::AssetPut { hash, bytes } => {
                 let hash = Blake3::from_bytes(hash);
-                let held: usize = self.arrived.values().map(Vec::len).sum();
-                if self.asked.remove(&hash) && held.saturating_add(bytes.len()) <= MAX_ARRIVED_BYTES {
-                    self.arrived.insert(hash, bytes);
+                let held: u64 = self.arrived.values().filter(|arrival| matches!(arrival, Arrival::Bytes(_))).map(Arrival::byte_len).sum();
+                if self.asked.remove(&hash) && held.saturating_add(bytes.len() as u64) <= MAX_ARRIVED_BYTES as u64 {
+                    self.arrived.insert(hash, Arrival::Bytes(bytes));
                     self.unsettled = true;
                 }
                 Ok(Vec::new())
             }
+            Frame::AssetPart { hash, total, offset, bytes } => self.part(Blake3::from_bytes(hash), total, offset, &bytes),
             Frame::AssetGet(hashes) => {
                 if self.role.is_some_and(Role::edits) {
-                    self.wanted.extend(hashes.into_iter().map(Blake3::from_bytes));
+                    for hash in hashes {
+                        self.want(Blake3::from_bytes(hash), Stretch::Whole);
+                    }
+                }
+                Ok(Vec::new())
+            }
+            Frame::AssetFrom { hash, offset, len } => {
+                if self.role.is_some_and(Role::edits) {
+                    self.want(Blake3::from_bytes(hash), Stretch::From { offset, len });
                 }
                 Ok(Vec::new())
             }
@@ -433,13 +488,92 @@ impl Collab {
         }
     }
 
+    /// Notes an ask for `stretch` of an asset, answered at the next publish.
+    fn want(&mut self, hash: Blake3, stretch: Stretch) {
+        if self.wanted.len() < MAX_WANTED {
+            self.wanted.insert((hash, stretch));
+        }
+    }
+
+    /// Takes the part at `offset` of an asset of `total` bytes, if it was asked for and is the
+    /// next one; may ask for more of it.
+    fn part(&mut self, hash: Blake3, total: u64, offset: u64, bytes: &[u8]) -> Result<Vec<Frame>, Error> {
+        if !self.asked.contains(&hash) || self.unusable.contains(&hash) {
+            return Ok(Vec::new());
+        }
+        if !self.incoming.contains_key(&hash) {
+            if offset != 0 {
+                return Ok(Vec::new());
+            }
+            let spooled = self
+                .incoming
+                .values()
+                .map(|incoming| incoming.total)
+                .chain(self.arrived.values().filter(|arrival| matches!(arrival, Arrival::Range(_))).map(Arrival::byte_len))
+                .fold(0u64, u64::saturating_add);
+            if total > self.spool.limit() {
+                self.give_up(hash);
+                return Ok(Vec::new());
+            }
+            // Over budget, it waits for the others to be taken and is asked for again.
+            if spooled.saturating_add(total) > self.spool.budget() {
+                self.asked.remove(&hash);
+                return Ok(Vec::new());
+            }
+            if self.spool.begin(hash, total).is_err() {
+                self.give_up(hash);
+                return Ok(Vec::new());
+            }
+            self.incoming.insert(hash, Incoming::new(total));
+        }
+        let Some(incoming) = self.incoming.get_mut(&hash) else { return Ok(Vec::new()) };
+        // Parts come in order; one that doesn't follow on is another sender's copy.
+        if incoming.total != total || incoming.received != offset {
+            return Ok(Vec::new());
+        }
+        if self.spool.append(&hash, bytes).is_err() {
+            self.give_up(hash);
+            return Ok(Vec::new());
+        }
+        incoming.take(bytes);
+        if !incoming.whole() {
+            return Ok(incoming.more(&hash).into_iter().collect());
+        }
+        let checks = incoming.checks(&hash);
+        self.incoming.remove(&hash);
+        self.asked.remove(&hash);
+        match checks.then(|| self.spool.finish(&hash)) {
+            Some(Ok(range)) => {
+                self.arrived.insert(hash, Arrival::Range(range));
+                self.unsettled = true;
+            }
+            Some(Err(_)) => {
+                self.unusable.insert(hash);
+            }
+            None => {
+                self.spool.discard(&hash);
+                self.unusable.insert(hash);
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    /// Stops taking an asset this session can't keep.
+    fn give_up(&mut self, hash: Blake3) {
+        if self.incoming.remove(&hash).is_some() {
+            self.spool.discard(&hash);
+        }
+        self.asked.remove(&hash);
+        self.unusable.insert(hash);
+    }
+
     /// Brings `session` up to what the shared document holds, once every asset it needs has
     /// arrived, and gives it the role the room lets it have. Local edits go out first, so
     /// nothing made here is lost.
     pub fn settle(&mut self, session: &mut Session) -> Result<Vec<Frame>, Error> {
         let has = |hash: &Blake3| session.assets().contains(hash);
         let (out, plan) = self.plan(&View { revision: session.revision(), document: session.document(), has: &has })?;
-        let mut out: Vec<Frame> = out.into_iter().filter_map(|out| out.frame(session)).collect();
+        let mut out: Vec<Frame> = out.into_iter().flat_map(|out| out.frames(session)).collect();
         let applied = match plan.take(session)? {
             Taken::Nothing => return Ok(out),
             Taken::Stale => {
@@ -514,17 +648,36 @@ impl Collab {
         // An asset that arrived goes in with the plan, if it is what was asked for.
         let mut brought = BTreeSet::new();
         for hash in &missing {
-            if let Some(bytes) = self.arrived.remove(hash)
-                && Blake3::from_bytes(*blake3::hash(&bytes).as_bytes()) == *hash
-            {
+            let checks = |arrival: &Arrival| match arrival {
+                Arrival::Bytes(bytes) => blake3::hash(bytes).as_bytes() == hash.as_bytes(),
+                Arrival::Range(_) => true,
+            };
+            if let Some(arrival) = self.arrived.remove(hash).filter(checks) {
                 brought.insert(*hash);
-                plan.imports.push(bytes);
+                plan.imports.push((*hash, arrival));
             }
         }
         missing.retain(|hash| !brought.contains(hash));
-        // Ask once for each asset still missing; the cards that use one wait for it, and the
-        // rest goes in now.
-        let ask: Vec<[u8; 32]> = missing.iter().filter(|hash| self.asked.insert(**hash)).map(|hash| *hash.as_bytes()).collect();
+        // One coming in parts, or come, that no card waits for any more needn't be kept.
+        self.arrived.retain(|hash, _| missing.contains(hash));
+        let unneeded: Vec<Blake3> = self.incoming.keys().filter(|hash| !missing.contains(hash)).copied().collect();
+        for hash in unneeded {
+            self.incoming.remove(&hash);
+            self.spool.discard(&hash);
+            self.asked.remove(&hash);
+        }
+        // Ask once for each asset still missing, or for the rest of one that was coming on an
+        // earlier connection; the cards that use one wait for it, and the rest goes in now.
+        let mut ask = Vec::new();
+        for hash in missing.iter().filter(|hash| !self.unusable.contains(hash)) {
+            if !self.asked.insert(*hash) {
+                continue;
+            }
+            match self.incoming.get_mut(hash) {
+                Some(incoming) => out.push(Out::Frame(incoming.resume(hash))),
+                None => ask.push(*hash.as_bytes()),
+            }
+        }
         if !ask.is_empty() {
             out.push(Out::Frame(Frame::AssetGet(ask)));
         }
