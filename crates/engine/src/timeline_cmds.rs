@@ -90,8 +90,8 @@ fn shown<'a>(node: &'a Node, port: &str, input: Input) -> Vec<Option<&'a AssetRe
         (Value::List(items), fanned) => items
             .iter()
             .flat_map(|item| match item {
-                Value::List(inner) if fanned => inner.iter().collect::<Vec<_>>(),
-                single => vec![single],
+                Value::List(inner) if fanned => inner.as_slice(),
+                single => std::slice::from_ref(single),
             })
             .take(MAX_INPUTS.saturating_add(1))
             .map(|v| media(v, input))

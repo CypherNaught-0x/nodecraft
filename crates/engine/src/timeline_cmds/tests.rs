@@ -116,6 +116,67 @@ fn structural_clip_bound_reports_oversized_wires_instead_of_losing_them() {
 }
 
 #[test]
+fn opened_project_with_oversized_stored_timeline_keeps_its_data_and_redo() {
+    // Simulate a project saved before this bound existed: 129 stored clips, with no
+    // automatic clips needed to exceed the limit. The format must not discard it.
+    let mut s = session();
+    let accepted: Vec<Json> = (0..128).map(|n| json!({"id": format!("ok{n}"), "origin": "absent", "enabled": false})).collect();
+    s.dispatch("node.timeline_set", &json!({"canvas": CANVAS, "id": EDITOR, "clips": accepted})).unwrap();
+    assert_eq!(stored(&node(&s)).unwrap().clips.len(), 128);
+    let clips: Vec<Json> = (0..129).map(|n| json!({"id": format!("old{n}"), "origin": "absent", "enabled": false})).collect();
+    let original = json!({"clips": clips}).to_string();
+    let mut timeline_node = node(&s);
+    timeline_node.config.insert(CONFIG.into(), Value::Text(original.clone()));
+    let mut project = s.document().clone();
+    Change::SetNode { canvas: CANVAS, node: timeline_node }.apply(&mut project).unwrap();
+    let snapshot = nodecraft_format::Snapshot { project, assets: Default::default(), epoch: 0 };
+    let saved = nodecraft_format::encode(&snapshot).unwrap();
+    let opened = nodecraft_format::decode(&saved).unwrap();
+    let mut s = Session::new(opened.project).unwrap();
+    assert_eq!(node(&s).config.get(CONFIG), Some(&Value::Text(original.clone())));
+    let list_error = s.dispatch("timeline.list", &json!({"canvas": CANVAS, "id": EDITOR})).unwrap_err();
+    assert!(list_error.message.contains("a timeline stores at most 128 clips: disconnect or remove some"), "{}", list_error.message);
+
+    // Establish a redo step in the reopened session. A refused edit must not clear it.
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": NodeId::from_bytes([90; 16]), "kind": "source.video", "pos": {"x": 0, "y": 300}})).unwrap();
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert!(s.can_redo());
+    let before = (s.document().clone(), s.revision());
+    let error = s.dispatch("timeline.update", &with(on("old0"), json!({"set": {"in_us": 100_000}}))).unwrap_err();
+    assert!(error.message.contains("a timeline stores at most 128 clips: disconnect or remove some"), "{}", error.message);
+    assert_eq!((s.document(), s.revision()), (&before.0, before.1));
+    assert!(s.can_redo());
+    let saved_again = nodecraft_format::encode(&nodecraft_format::Snapshot { project: s.document().clone(), assets: Default::default(), epoch: 0 }).unwrap();
+    let reopened = nodecraft_format::decode(&saved_again).unwrap();
+    assert_eq!(reopened.project.canvases().get(&CANVAS).unwrap().nodes().get(&EDITOR).unwrap().config.get(CONFIG), Some(&Value::Text(original)));
+}
+
+#[test]
+fn enormous_nested_result_stops_before_materializing_the_inner_list() {
+    let mut source = node(&session());
+    source.kind = "image.blur".into();
+    source.outputs.first_mut().unwrap().name = "out".into();
+    let id = nodecraft_types::GenerationId::from_bytes([88; 16]);
+    source.active = Some(id);
+    source.history.push(nodecraft_graph::Generation {
+        id,
+        outputs: vec![Value::List(vec![Value::List(vec![Value::Bool(false); 2_000_000])])],
+        input_hash: None,
+        items: vec![Default::default()],
+        settings: Vec::new(),
+        incomplete: None,
+    });
+    // A 2-million-item inner list previously made a 2-million-reference temporary Vec
+    // before the outer take(129). Measure allocation so the old implementation fails
+    // deterministically instead of depending on a machine's memory or timing.
+    let mut result = Vec::new();
+    let allocation = allocation_counter::measure(|| result = shown(&source, "out", Input::Clips));
+    assert_eq!(result.len(), MAX_INPUTS + 1);
+    assert!(allocation.count_total > 0, "allocation counter must observe the output vector");
+    assert!(allocation.bytes_total <= 32 * 1024, "nested input allocation exceeded its bound: {allocation:?}");
+}
+
+#[test]
 fn each_wired_video_is_listed_as_a_whole_clip_until_it_is_stored() {
     let mut s = session();
     let (a, b) = (timeline::auto_id(Input::Clips, &A.to_string(), 0), timeline::auto_id(Input::Clips, &B.to_string(), 0));

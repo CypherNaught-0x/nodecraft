@@ -3295,6 +3295,7 @@ dependencies = [
 name = "nodecraft-engine"
 version = "0.2.0-rc.1"
 dependencies = [
+ "allocation-counter",
  "blake3",
  "craft-atomic",
  "craft-settings",
