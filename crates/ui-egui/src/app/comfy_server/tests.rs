@@ -19,11 +19,13 @@ const SYSTEM_STATS: &str = r#"{"system": {"os": "posix", "comfyui_version": "0.3
   "devices": [{"name": "cuda:0 GPU", "type": "cuda", "vram_total": 24000000000, "vram_free": 18200000000}]}"#;
 const QUEUE: &str = r#"{"queue_running": [], "queue_pending": [[1, "b", {}, {}, []]]}"#;
 
-/// Answers by path, and records the URLs asked for. The host `down` answers 503.
-struct Server(Arc<Mutex<Vec<String>>>);
+/// Answers by path, and records the URLs asked for. The host `down` answers 503. Each answer waits
+/// for the gate, so a test can hold a check open while it acts.
+struct Server(Arc<Mutex<Vec<String>>>, Arc<Mutex<()>>);
 
 impl Http for Server {
     fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        drop(self.1.lock().unwrap());
         if request.url.starts_with("http://down:") {
             self.0.lock().unwrap().push(request.url);
             return Box::pin(async { Ok(HttpResponse { status: 503, headers: Vec::new(), body: b"busy".to_vec() }) });
@@ -40,14 +42,19 @@ impl Http for Server {
 
 /// The app with settings in `dir` and a fetch thread over the fixture server.
 fn app(dir: &std::path::Path, asked: Arc<Mutex<Vec<String>>>) -> Harness<'static, NodeCraftApp> {
+    gated_app(dir, asked, Arc::default())
+}
+
+/// [`app`] whose fixture server answers only while `gate` isn't held.
+fn gated_app(dir: &std::path::Path, asked: Arc<Mutex<Vec<String>>>, gate: Arc<Mutex<()>>) -> Harness<'static, NodeCraftApp> {
     let mut h = harness();
-    serve(&mut h, dir, asked);
+    serve(&mut h, dir, asked, gate);
     h
 }
 
 /// Gives `h`'s app settings in `dir` and a fetch thread over the fixture server.
-fn serve(h: &mut Harness<'static, NodeCraftApp>, dir: &std::path::Path, asked: Arc<Mutex<Vec<String>>>) {
-    let http: Arc<dyn Http> = Arc::new(Server(asked));
+fn serve(h: &mut Harness<'static, NodeCraftApp>, dir: &std::path::Path, asked: Arc<Mutex<Vec<String>>>, gate: Arc<Mutex<()>>) {
+    let http: Arc<dyn Http> = Arc::new(Server(asked, gate));
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let fetch: Fetch = Box::new(move |settings| {
         let keys = nodecraft_engine::secrets::MemoryStore::default();
@@ -189,11 +196,14 @@ fn each_server_is_checked_on_its_own_and_only_the_default_gives_the_node_list() 
 #[test]
 fn changing_one_server_leaves_another_servers_check_running() {
     let dir = tempfile::tempdir().unwrap();
-    let mut h = app(dir.path(), Arc::new(Mutex::new(Vec::new())));
+    let gate = Arc::new(Mutex::new(()));
+    let mut h = gated_app(dir.path(), Arc::new(Mutex::new(Vec::new())), gate.clone());
     h.state_mut().add_comfy_server("studio", "http://gpu-box:8188", "").unwrap();
     answered(&mut h);
     h.state_mut().add_comfy_server("spare", "http://other:8188", "").unwrap();
     answered(&mut h);
+    // Studio's read is held open until the edit below is made.
+    let held = gate.lock().unwrap();
     h.state_mut().check_comfy_server("studio").unwrap();
     assert_eq!(h.state_mut().check_comfy_server("spare").unwrap_err().kind, ErrorKind::Busy, "one read at a time");
     let ctx = h.ctx.clone();
@@ -204,6 +214,7 @@ fn changing_one_server_leaves_another_servers_check_running() {
     assert_eq!(busy.kind, ErrorKind::Busy);
     assert_eq!(servers(&h)[1].1, "http://other:8189");
     assert!(h.state().comfy_nodes.as_ref().unwrap().is_waiting());
+    drop(held);
     answered(&mut h);
     assert_eq!(comfy_server_cmds::report(&h.state().session, "studio").unwrap().id, 3);
     // Editing studio itself drops its read at once, and the new address is read instead.
@@ -272,7 +283,7 @@ fn comfy9_server_visual() {
         .wgpu()
         .with_size(egui::Vec2::new(1000.0, 800.0))
         .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap());
-    serve(&mut h, dir.path(), Arc::new(Mutex::new(Vec::new())));
+    serve(&mut h, dir.path(), Arc::new(Mutex::new(Vec::new())), Arc::default());
     h.state_mut().add_comfy_server("studio", "http://127.0.0.1:8188", "1").unwrap();
     answered(&mut h);
     h.state_mut().add_comfy_server("spare", "http://down:8188", "").unwrap();
