@@ -108,7 +108,8 @@ fn default_clears_a_stale_override_and_the_same_parameter_edit_is_undoable() {
     h.get_by_label("Use default").click();
     h.run();
     assert_eq!(stored(h.state()), None, "clearing restores the optional parameter's default");
-    assert_eq!(h.get_by_role_and_label(Role::ComboBox, "Checkpoint").accesskit_node().value().as_deref(), Some("Choose…"));
+    // The card shows the catalog's default checkpoint again, which this public list doesn't offer.
+    assert_eq!(h.get_by_role_and_label(Role::ComboBox, "Checkpoint").accesskit_node().value().as_deref(), Some("sd_xl_base_1.0.safetensors (not an option)"));
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     h.run();
     assert_eq!(h.state().session.document(), &before);
