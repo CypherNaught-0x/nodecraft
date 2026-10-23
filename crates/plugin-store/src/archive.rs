@@ -123,9 +123,11 @@ pub fn build(files: &[(&str, &[u8])], signature: Option<&[u8]>) -> Result<Vec<u8
     use std::io::Write;
     let inventory = Inventory::from_files(files.iter().copied()).map_err(wire)?;
     let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    // Fixed time and mode, never the clock or the file's own, so the same files give the same bytes.
+    // Fixed time, mode and host system, never the clock, the file's own or the OS packing it, so
+    // the same files give the same bytes everywhere (zip records Windows as DOS by default).
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(CompressionMethod::Stored)
+        .system(zip::System::Unix)
         .last_modified_time(zip::DateTime::DEFAULT)
         .unix_permissions(0o644);
     let canonical = inventory.canonical_json();
