@@ -13,7 +13,25 @@ use serde_json::{Value as Json, json};
 
 /// The node's fonts, by name, in the order they were added.
 pub fn held(node: &Node) -> Vec<(String, AssetRef)> {
-    nodecraft_nodes::layers::fonts(node).into_iter().map(|(name, asset)| (name.to_owned(), asset.clone())).collect()
+    let Some(Value::List(pairs)) = node.config.get(FONTS_CONFIG) else { return Vec::new() };
+    pairs
+        .iter()
+        .filter_map(|pair| match pair {
+            Value::List(pair) => match pair.as_slice() {
+                [Value::Text(name), Value::Media(asset)]
+                    if !name.trim().is_empty()
+                        && name.len() <= layers::MAX_NAME_BYTES
+                        && !name.chars().any(char::is_control)
+                        && !same_name(name, layers::BUILTIN_FONT) =>
+                {
+                    Some((name.clone(), asset.clone()))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .take(MAX_FONTS)
+        .collect()
 }
 
 /// The fonts as `layers.list` shows them.
@@ -48,10 +66,26 @@ fn bytes(c: &Context<'_>, font: &AssetRef) -> Result<Vec<u8>, Error> {
 /// the name layers use for it. A file that isn't a font, or is named Lato, is refused before
 /// anything is stored.
 pub fn import(session: &mut crate::Session, canvas: CanvasId, id: NodeId, bytes: &[u8]) -> Result<String, Error> {
+    import_into(session, canvas, id, bytes, "layers.font_add", None)
+}
+
+/// Shared byte validation and import; each caller owns its target and revision checks.
+pub(crate) fn import_into(
+    session: &mut crate::Session,
+    canvas: CanvasId,
+    id: NodeId,
+    bytes: &[u8],
+    command: &str,
+    expected: Option<u64>,
+) -> Result<String, Error> {
     let info = font_info(bytes).map_err(not_a_font)?;
     refuse_builtin(&info.name)?;
     let hash = session.import_asset(bytes)?;
-    let added = session.dispatch("layers.font_add", &json!({"canvas": canvas, "id": id, "font": {"hash": hash, "mime": info.mime}}))?;
+    let mut input = json!({"canvas": canvas, "id": id, "font": {"hash": hash, "mime": info.mime}});
+    if let Some(expected) = expected {
+        input.as_object_mut().ok_or_else(|| invalid("the font request can't be formed"))?.insert("expected_revision".into(), json!(expected));
+    }
+    let added = session.dispatch(command, &input)?;
     Ok(added.get("name").and_then(Json::as_str).unwrap_or(&info.name).to_owned())
 }
 
@@ -95,17 +129,22 @@ struct AddParams {
 fn add(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: AddParams = params(value)?;
     let node = editor(c, p.canvas, p.id)?;
-    let info = font_info(&bytes(c, &p.font)?).map_err(not_a_font)?;
+    add_to(c, p.canvas, node, &p.font, "a Layer Editor")
+}
+
+/// Stores the same bounded font collection on either card kind, after its own edit guard.
+pub(crate) fn add_to(c: &Context<'_>, canvas: CanvasId, node: &Node, asset: &AssetRef, label: &str) -> Result<Effect, Error> {
+    let info = font_info(&bytes(c, asset)?).map_err(not_a_font)?;
     refuse_builtin(&info.name)?;
     let mime = info.mime.parse().map_err(|_| invalid("the font's type can't be recorded"))?;
-    let font = AssetRef { hash: p.font.hash, mime, meta: Default::default() };
+    let font = AssetRef { hash: asset.hash, mime, meta: Default::default() };
     let mut fonts = held(node);
     fonts.retain(|(name, _)| !same_name(name, &info.name));
     if fonts.len() >= MAX_FONTS {
-        return Err(invalid("a Layer Editor holds at most 16 fonts; remove one first"));
+        return Err(Error::new(ErrorKind::InvalidInput, format!("{label} holds at most {MAX_FONTS} fonts; remove one first")));
     }
     fonts.push((info.name.clone(), font));
-    Ok(store(p.canvas, node, fonts, json!({"changed": true, "name": info.name})))
+    Ok(store(canvas, node, fonts, json!({"changed": true, "name": info.name})))
 }
 
 #[derive(Deserialize)]
@@ -119,19 +158,26 @@ struct RemoveParams {
 fn remove(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: RemoveParams = params(value)?;
     let node = editor(c, p.canvas, p.id)?;
+    remove_from(p.canvas, node, &p.name)
+}
+
+pub(crate) fn remove_from(canvas: CanvasId, node: &Node, name: &str) -> Result<Effect, Error> {
     let mut fonts = held(node);
     let before = fonts.len();
-    fonts.retain(|(name, _)| !same_name(name, &p.name));
+    fonts.retain(|(held, _)| !same_name(held, name));
     if fonts.len() == before {
         return Err(Error::new(ErrorKind::NotFound, "the node holds no font of that name"));
     }
-    Ok(store(p.canvas, node, fonts, json!({"changed": true})))
+    Ok(store(canvas, node, fonts, json!({"changed": true})))
+}
+
+pub(crate) fn font_schema() -> Json {
+    json!({"type": "object", "required": ["hash", "mime"], "additionalProperties": false, "properties": {
+        "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "mime": {"type": "string"}, "meta": {"type": "object"}}})
 }
 
 fn add_schema() -> Json {
-    let font = json!({"type": "object", "required": ["hash", "mime"], "additionalProperties": false, "properties": {
-        "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "mime": {"type": "string"}, "meta": {"type": "object"}}});
-    object(&["font"], props(json!({"font": font})))
+    object(&["font"], props(json!({"font": font_schema()})))
 }
 
 fn remove_schema() -> Json {
