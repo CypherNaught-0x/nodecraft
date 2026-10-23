@@ -201,7 +201,7 @@ struct AddParams {
     after: Option<NodeId>,
     /// One new row per prompt.
     prompts: Vec<String>,
-    /// For the first row of an empty sheet: `generation.image` (default) or `generation.text`.
+    /// For the first row of an empty sheet: any catalog-backed generation kind.
     #[serde(default)]
     kind: Option<String>,
 }
@@ -565,10 +565,10 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add rows",
             schema(
                 &["canvas", "seed", "prompts"],
-                json!({"canvas": uuid(), "seed": uuid(), "after": uuid(), "kind": {"enum": [generation::KIND, generation::TEXT_KIND]},
+                json!({"canvas": uuid(), "seed": uuid(), "after": uuid(), "kind": {"enum": generation::KINDS},
                     "prompts": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": MAX_ADD}})
             ),
-            "{canvas, seed: new UUID, after?: row, prompts: [text], kind?} -> {rows}; one row per prompt after `after` (the last row when absent), copying its model, settings and shared references. `kind` picks an empty sheet's first row: generation.image (default) or generation.text; it is refused once the sheet has rows. New ids derive from `seed`: use a fresh one per command. A one-row sheet has no shared references.",
+            "{canvas, seed: new UUID, after?: row, prompts: [text], kind?} -> {rows}; one row per prompt after `after` (the last row when absent), copying its model, settings and shared references. `kind` picks an empty sheet's first row: generation.image (default), generation.text, generation.mesh, generation.video, generation.style or generation.audio; it is refused once the sheet has rows. New ids derive from `seed`: use a fresh one per command. A one-row sheet has no shared references.",
             add
         ),
         spec!(

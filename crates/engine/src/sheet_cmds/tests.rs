@@ -1,9 +1,10 @@
 use super::{MAX_ROWS, ROW_SPACING};
 use crate::{Session, commands::Registry, generation_catalog::GenerationCatalog};
 use nodecraft_graph::{Canvas, CanvasKind, Change, Project};
-use nodecraft_types::{CanvasId, ErrorKind, NodeId, ProjectId, Value};
+use nodecraft_nodes::generation;
+use nodecraft_types::{CanvasId, ErrorKind, Modality, NodeId, ProjectId, Value};
 use serde_json::{Value as Json, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const SHEET: CanvasId = CanvasId::from_bytes([1; 16]);
 const PLAIN: CanvasId = CanvasId::from_bytes([2; 16]);
@@ -214,6 +215,38 @@ fn rows_move_down_and_a_cleared_sheet_starts_again() {
     assert!(ids(&rows(&mut s)).is_empty());
     add(&mut s, 11, &["fresh"]);
     assert_eq!(prompts(&rows(&mut s)), ["fresh"]);
+}
+
+#[test]
+fn sheet_rows_add_schema_advertises_exactly_accepted_generation_kinds() {
+    let spec = super::specs().into_iter().find(|spec| spec.id == "sheet.rows_add").unwrap();
+    let schema = (spec.input_schema)();
+    let advertised: BTreeSet<&str> = schema["properties"]["kind"]["enum"].as_array().unwrap().iter().map(|kind| kind.as_str().unwrap()).collect();
+    assert_eq!(advertised.len(), schema["properties"]["kind"]["enum"].as_array().unwrap().len(), "no duplicate schema kinds");
+
+    // Include registered kinds and every catalog-backed kind, even when this catalog has no
+    // model for one of them. A new accepted kind must enter the schema; an extra one must leave.
+    let s = session();
+    let candidates: BTreeSet<&str> = s.kinds().descriptors().map(|kind| kind.id.as_str()).chain(generation::KINDS).collect();
+    let accepted: BTreeSet<&str> = candidates.iter().copied().filter(|kind| generation::is_generation(kind)).collect();
+    assert_eq!(advertised, accepted);
+    // Independently walk the generation output mapping. Adding a production kind there
+    // without adding it to the shared kind set (and therefore this schema) breaks this test.
+    let outputs = [Modality::Image, Modality::Text, Modality::Mesh, Modality::Video, Modality::Style, Modality::Audio];
+    let mapped: BTreeSet<&str> = outputs.into_iter().filter_map(generation::kind_for).collect();
+    assert_eq!(advertised, mapped);
+    assert!(advertised.iter().all(|kind| spec.params_doc.contains(kind)), "help must name every advertised kind");
+    assert!(advertised.contains(generation::KIND));
+    assert!(!advertised.contains("source.text"));
+
+    for kind in s.kinds().descriptors().filter(|kind| generation::is_generation(&kind.id)).map(|kind| kind.id.clone()) {
+        let mut empty = session();
+        empty.dispatch("sheet.rows_add", &json!({"canvas": SHEET, "seed": seed(40), "prompts": ["one"], "kind": kind})).unwrap();
+        assert_eq!(rows(&mut empty)["rows"][0]["kind"], kind);
+    }
+    let mut empty = session();
+    let refused = empty.dispatch("sheet.rows_add", &json!({"canvas": SHEET, "seed": seed(41), "prompts": ["one"], "kind": "source.text"}));
+    assert_eq!(refused.unwrap_err().message, "a sheet's rows are Generate cards");
 }
 
 #[test]
