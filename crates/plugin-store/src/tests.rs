@@ -622,3 +622,4 @@ mod admission_tests;
 mod grant_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod lock_tests;
+mod property_tests;

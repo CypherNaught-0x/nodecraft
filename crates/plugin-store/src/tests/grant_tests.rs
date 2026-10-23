@@ -14,7 +14,7 @@ fn text_files(id: &str, version: &str) -> Vec<(String, Vec<u8>)> {
     vec![("manifest.json".to_owned(), manifest.into_bytes()), ("LICENSE".to_owned(), LICENSE.to_vec()), ("d/shout.json".to_owned(), DEFINITION.to_vec())]
 }
 
-fn text_package(id: &str, version: &str) -> Vec<u8> {
+pub(super) fn text_package(id: &str, version: &str) -> Vec<u8> {
     let f = text_files(id, version);
     archive::build(&f.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect::<Vec<_>>(), None).unwrap()
 }
