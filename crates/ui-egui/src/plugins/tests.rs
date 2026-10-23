@@ -97,7 +97,8 @@ fn settle(h: &mut Harness<'static, State>) {
 
 fn check(h: &mut Harness<'static, State>, location: &str) {
     h.state_mut().panel.location = location.to_owned();
-    h.run();
+    // The panel lists packages when it opens; a slow worker keeps it repainting until answered.
+    settle(h);
     h.get_by_label("Check").click();
     settle(h);
 }
