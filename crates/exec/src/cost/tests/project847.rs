@@ -121,3 +121,26 @@ fn past_the_project_limit_the_least_recently_charged_total_is_forgotten() {
     let back: UsageLog = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
     assert_eq!(back, log);
 }
+
+#[test]
+fn a_log_at_the_project_limit_with_a_reported_cost_for_a_new_project_still_loads() {
+    let mut log = UsageLog::default();
+    let project = |n: usize| {
+        let mut bytes = [0u8; 16];
+        bytes[..8].copy_from_slice(&(n as u64 + 1).to_le_bytes());
+        ProjectId::from_bytes(bytes)
+    };
+    for n in 0..MAX_PROJECTS {
+        log.record(charge_for(Some(project(n)), &format!("k{n}"), 1, Charge::Actual)).unwrap();
+    }
+    let new = project(MAX_PROJECTS);
+    let metadata =
+        UsageMetadata { project: Some(new), instance: None, at_ms: 1, session: "now", node: id(2), provider: "fal", model: "m", idempotency_key: "new" };
+    let mut held = log.reserve_metadata(metadata).unwrap();
+    log.finalize_metadata(&mut held, usd(5)).unwrap();
+    let wire = serde_json::to_string(&log).unwrap();
+    let file: UsageLogFile = serde_json::from_str(&wire).unwrap();
+    assert_eq!(file.projects.len(), MAX_PROJECTS);
+    let back: UsageLog = serde_json::from_str(&wire).unwrap();
+    assert_eq!(this_project(&back, new), Some(usd(5)), "the newest charge is kept");
+}

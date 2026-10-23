@@ -1309,7 +1309,16 @@ impl From<UsageLog> for UsageLogFile {
         let entries = log.entries().cloned().collect();
         let project = log.reported_spent("").project;
         let sessions = log.merged_sessions();
-        let projects = log.merged_projects();
+        let mut projects = log.merged_projects();
+        // Costs reported since the last charge can name a project the totals don't hold yet: the
+        // file keeps within [`MAX_PROJECTS`] as the log does, forgetting the least recently charged.
+        if projects.len() > MAX_PROJECTS {
+            let mut oldest: Vec<(u64, ProjectId)> = projects.keys().map(|id| (log.project_clock.get(id).copied().unwrap_or(u64::MAX), *id)).collect();
+            oldest.sort_unstable();
+            for (_, id) in oldest.into_iter().take(projects.len().saturating_sub(MAX_PROJECTS)) {
+                projects.remove(&id);
+            }
+        }
         Self {
             provider_identity_version: log.provider_identity_version,
             open_session_ownership: if !log.ownership.resolutions.is_empty() {

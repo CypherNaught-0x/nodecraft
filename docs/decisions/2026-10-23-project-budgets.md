@@ -13,13 +13,18 @@
   is held to that project's cap when it reaches the provider, even if another project has been
   opened meanwhile. Quotes read the open document's id from the usage snapshot each time, so a
   project opened by a command (not just the File menu) is quoted against its own spending. The
-  desktop app also re-installs the budget after a file opens. `nodecraft-cli` and jobs resumed
-  after a restart carry no project: they count towards the session and the total.
+  desktop app also re-installs the budget after a file opens. A job resumed after a restart is
+  held to the project its journal entry names. `nodecraft-cli` binds its open project's id too,
+  but keeps its log in memory with no caps.
 - **New projects get their own id.** The desktop starter project used one fixed id, so every new,
   unsaved project would have shared one cap. It now draws a random id, and falls back to the
-  fixed one only when no random source is available.
+  fixed one only when no random source is available. Projects saved before this build, and
+  Save As copies, keep the id they have, so those made from the old starter share one total
+  until they are given new ids (#879). That is over-restrictive, never overspending. Since a
+  crashed unsaved project now has its own id, its jobs resume only once it is recovered, not
+  into whatever new project the next launch starts.
 - **A bounded number of project totals.** At most `MAX_PROJECTS` (4,096) projects keep a total.
-  Past that, the least recently charged project's total is forgotten: its charges still count in
+  Past that, the least recently charged project's total is forgotten (on saving too, so a cost reported for a new project at the limit can't make the file unreadable): its charges still count in
   the overall total, but its own total starts again from nothing. That is the documented
   boundary, and it only matters for someone with thousands of charged projects. Settling or
   releasing a charge whose project total was forgotten takes nothing from it.
