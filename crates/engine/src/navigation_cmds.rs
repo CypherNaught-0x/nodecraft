@@ -77,7 +77,10 @@ fn selected(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
     if let Some(nodes) = p.nodes {
         let canvas = c.document.canvases().get(&host.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "active canvas does not exist"))?;
         if !(2..=MAX_CHANGES).contains(&nodes.len()) || nodes.len() > canvas.nodes().len() {
-            return Err(Error::new(ErrorKind::Conflict, "select at least two nodes with complete current geometry"));
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                format!("fit selection requires between 2 and {MAX_CHANGES} nodes on the shown canvas with complete current geometry"),
+            ));
         }
         let selected: BTreeSet<_> = nodes.iter().copied().collect();
         if selected.len() != nodes.len() || selected.iter().any(|id| !canvas.nodes().contains_key(id)) {

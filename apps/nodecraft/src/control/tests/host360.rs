@@ -64,24 +64,52 @@ fn an_agent_formats_named_cards_it_never_selected_in_one_undo_step() {
 fn an_agent_frames_named_cards_without_changing_the_persons_selection() {
     let (mut app, ctx, ids) = three_cards();
     app.selection.only(ids[0]);
+    // Keep a real redo entry available: framing must neither journal a step nor clear redo.
+    let canvas = app.canvas;
+    app.session.dispatch("node.move", &json!({"canvas":canvas,"id":ids[0],"pos":{"x":50.0,"y":0.0}})).unwrap();
+    app.session.dispatch("edit.undo", &json!({})).unwrap();
     let (document, revision, selection) = (app.session.document().clone(), app.session.revision(), app.selection.clone());
+    let events = app.session.events_since(0).unwrap();
+    let history = (app.session.can_undo(), app.session.can_redo());
+    assert_eq!(history, (true, true));
     let mut connection = connection();
     let result = run(&mut app, &ctx, &mut connection, "canvas.fit_selection", json!({"nodes":[ids[1],ids[2]]})).unwrap();
     assert!(result["result"]["zoom"].as_f64().is_some(), "{result}");
+    assert_eq!(result["result"]["clamped"], false, "these two cards fit without a zoom clamp: {result}");
+    assert_eq!(result["revision"], revision);
     for id in [ids[1], ids[2]] {
         let rect = *app.navigation.geometry.rects.get(&id).unwrap();
         let screen = app.view.rect_to_screen(app.viewport.min, rect);
-        assert!(app.viewport.intersects(screen), "named card is framed: {screen:?} outside {:?}", app.viewport);
+        assert!(app.viewport.contains_rect(screen), "named card must fit entirely: {screen:?} outside {:?}", app.viewport);
     }
+    let aside = app.view.rect_to_screen(app.viewport.min, *app.navigation.geometry.rects.get(&ids[0]).unwrap());
+    assert!(!app.viewport.intersects(aside), "the selected, off-to-the-side card must not be framed: {aside:?}");
     assert_eq!((app.session.document(), app.session.revision()), (&document, revision));
     assert_eq!(app.selection, selection, "agent framing cannot select its named cards");
-    for nodes in [json!([ids[1], ids[1]]), json!([ids[1], NodeId::from_bytes([9; 16])]), json!([ids[0]])] {
+    assert_eq!(app.session.events_since(0).unwrap(), events, "framing must not emit a document event");
+    assert_eq!((app.session.can_undo(), app.session.can_redo()), history, "framing must preserve undo and redo");
+    let max = (nodecraft_engine::navigation_cmds::specs().into_iter().find(|spec| spec.id == "canvas.fit_selection").unwrap().input_schema)();
+    let max = usize::try_from(max["properties"]["nodes"]["maxItems"].as_u64().unwrap()).unwrap();
+    let bounds = format!("between 2 and {max} nodes");
+    for (nodes, message) in [
+        (json!([]), bounds.as_str()),
+        (json!(vec![ids[1]; max + 1]), bounds.as_str()),
+        (json!([ids[1], ids[1]]), "fit selection nodes are invalid"),
+        (json!([ids[1], NodeId::from_bytes([9; 16])]), "fit selection nodes are invalid"),
+        (json!([ids[0]]), bounds.as_str()),
+    ] {
         let before = app.view;
         let error = run(&mut app, &ctx, &mut connection, "canvas.fit_selection", json!({"nodes":nodes})).unwrap_err();
         assert!(matches!(error.kind, ErrorKind::Conflict | ErrorKind::InvalidInput), "{error:?}");
+        assert!(error.message.contains(message), "invalid nodes need an actionable error: {error:?}");
         assert_eq!(app.view, before, "invalid nodes cannot move the camera");
         assert_eq!(app.selection, selection);
+        assert_eq!(app.session.events_since(0).unwrap(), events);
+        assert_eq!((app.session.can_undo(), app.session.can_redo()), history);
     }
+    app.session.dispatch("edit.redo", &json!({})).unwrap();
+    assert_ne!(app.session.document(), &document, "the original redo action remains available");
+    assert!(app.session.events_since(0).unwrap().len() > events.len(), "the ordinary document event still fires on redo");
 }
 
 #[test]
