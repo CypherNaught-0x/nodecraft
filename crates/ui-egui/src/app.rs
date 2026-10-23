@@ -386,6 +386,8 @@ mod timeline_editor;
 pub(crate) mod updates;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod web_files;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use web_files::pick_package;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod web_journal;
 
@@ -807,11 +809,14 @@ impl NodeCraftApp {
         let runs = runs::Runs::new(&mut services, std::sync::Arc::clone(&store) as std::sync::Arc<dyn SecretStore>)
             .inspect_err(|e| log::warn!("runs unavailable: {}", e.message))
             .ok();
+        // Without it the panel says plugin packages aren't available here.
+        let picked = Self::register_session_plugins(&mut services).inspect_err(|e| log::warn!("plugin packages unavailable: {}", e.message)).ok();
         let recovery = web_journal::WebRecovery::new(Box::<web_journal::IndexedDb>::default(), web_journal::fresh_slot());
         // Live sharing through a relay over the page's WebSocket (#699).
         let sharing = Self::register_sharing(&mut services, Box::new(sharing::open_window));
         let mut app = Self::with_web_files(services, web_files::WebFiles::browser(), Some(recovery))?;
         app.sharing = sharing;
+        app.plugin_panel.picked_files = picked;
         if let Some(runs) = &runs {
             runs.install(&mut app.session);
         }
@@ -849,12 +854,26 @@ impl NodeCraftApp {
         dir: std::path::PathBuf,
     ) -> Result<Arc<nodecraft_engine::plugin_cmds::PluginWorker>, Error> {
         use nodecraft_engine::plugin_cmds::{PluginHost, PluginWorker, register_plugin_worker};
-        let mut taken: std::collections::BTreeSet<String> = nodecraft_engine::commands::Registry::builtins()?.specs().map(|s| s.id.to_owned()).collect();
-        taken.extend(nodecraft_engine::generation_catalog::default_registry()?.0.descriptors().map(|d| d.id.clone()));
-        let host = PluginHost { trust: Some(dir.join("trust.json")), taken, bindings: Default::default() };
+        let host = PluginHost { trust: Some(dir.join("trust.json")), taken: Self::taken_ids()?, bindings: Default::default() };
         let worker = PluginWorker::spawn(move || nodecraft_plugin_store::Store::open(nodecraft_plugin_store::FolderBackend::new(dir.join("store"))?), host)?;
         register_plugin_worker(services, Arc::clone(&worker))?;
         Ok(worker)
+    }
+
+    /// The IDs the app registers, which no package may take.
+    fn taken_ids() -> Result<std::collections::BTreeSet<String>, Error> {
+        let mut taken: std::collections::BTreeSet<String> = nodecraft_engine::commands::Registry::builtins()?.specs().map(|s| s.id.to_owned()).collect();
+        taken.extend(nodecraft_engine::generation_catalog::default_registry()?.0.descriptors().map(|d| d.id.clone()));
+        Ok(taken)
+    }
+
+    /// The browser's `plugins` service (#823): a store in memory, for this session only, filled
+    /// from files the person picks. Nothing in it runs; there is no trust file.
+    #[cfg(target_arch = "wasm32")]
+    fn register_session_plugins(services: &mut nodecraft_engine::commands::Services) -> Result<nodecraft_engine::plugin_cmds::PickedPackage, Error> {
+        use nodecraft_engine::plugin_cmds::{PluginHost, register_session_plugins};
+        let store = nodecraft_plugin_store::Store::open(nodecraft_plugin_store::MemoryBackend::default())?;
+        register_session_plugins(services, store, PluginHost { trust: None, taken: Self::taken_ids()?, bindings: Default::default() })
     }
 
     /// Hands the session what the plugin store may run whenever that changes (#173); the first

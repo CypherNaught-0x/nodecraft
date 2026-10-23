@@ -349,3 +349,58 @@ fn an_install_names_the_digest_it_was_shown_and_a_changed_file_is_refused() {
     let now = s.dispatch("plugins.import", &json!({"location": path, "dry_run": true})).unwrap()["digest"].clone();
     s.dispatch("plugins.import", &json!({"location": path, "digest": now})).unwrap();
 }
+
+fn session_only() -> (Session, PickedPackage) {
+    let mut services = Services::default();
+    let store = Store::open(MemoryBackend::default()).unwrap();
+    let picked = register_session_plugins(&mut services, store, PluginHost { trust: None, taken: BTreeSet::new(), bindings: BTreeSet::new() }).unwrap();
+    let session = Session::new(nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([1; 16]), "P").unwrap()).unwrap().with_services(services);
+    (session, picked)
+}
+
+/// The browser's store (#823): a picked file is imported by the location it was given, and lists
+/// say the packages last only for the session.
+#[test]
+fn a_picked_package_is_imported_from_its_bytes_and_listed_as_session_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, picked) = session_only();
+    let bytes = std::fs::read(package(dir.path(), "io.example.palette", "1.0.0")).unwrap();
+    let location = picked.put("palette.ncraft-plugin", bytes).unwrap();
+    let dry = s.dispatch("plugins.import", &json!({"location": location, "dry_run": true})).unwrap();
+    s.dispatch("plugins.import", &json!({"location": location, "digest": dry["digest"]})).unwrap();
+    let list = s.dispatch("plugins.list", &json!({})).unwrap();
+    assert_eq!((list["session_only"].clone(), list["packages"][0]["package_id"].clone()), (json!(true), json!("io.example.palette")));
+    s.dispatch("plugins.enable", &json!({"package_id": "io.example.palette"})).unwrap();
+    assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["state"], "enabled", "a data package runs nothing, so it may be enabled");
+    // Only the last pick is held; an earlier location, or a path, names nothing.
+    let next = picked.put("other.ncraft-plugin", b"x".to_vec()).unwrap();
+    assert_ne!(next, location);
+    let gone = s.dispatch("plugins.import", &json!({"location": location})).unwrap_err();
+    assert!((gone.kind == ErrorKind::NotFound) && gone.message.contains("choose it again"), "{gone:?}");
+    assert_eq!(s.dispatch("plugins.import", &json!({"location": "/etc/hosts"})).unwrap_err().kind, ErrorKind::NotFound);
+}
+
+/// Nothing runs in the browser: a package that would run can be installed, never granted or enabled.
+#[test]
+fn a_session_only_store_never_lets_a_package_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut s, picked) = session_only();
+    let location = picked.put("shout.ncraft-plugin", std::fs::read(text_package(dir.path(), "io.example.shout", "1.0.0", SHOUT)).unwrap()).unwrap();
+    s.dispatch("plugins.import", &json!({"location": location})).unwrap();
+    for (id, params) in [("plugins.grant", json!({"package_id": "io.example.shout"})), ("plugins.enable", json!({"package_id": "io.example.shout"}))] {
+        let error = s.dispatch(id, &params).unwrap_err();
+        assert!(error.kind == ErrorKind::Unsupported && error.message.contains("can't run in the browser"), "{id}: {error:?}");
+    }
+    assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["state"], "disabled");
+    assert!(s.plugins().kinds().is_empty());
+}
+
+#[test]
+fn picked_files_are_bounded_and_their_names_kept_safe() {
+    let picked = PickedPackage::default();
+    let over = usize::try_from(package_limit()).unwrap() + 1;
+    assert_eq!(picked.put("big", vec![0; over]).unwrap_err().kind, ErrorKind::InvalidInput);
+    let location = picked.put(&format!("a/b\u{7}{}", "é".repeat(400)), Vec::new()).unwrap();
+    assert!(location.starts_with("picked/") && location.len() <= 300 && location.matches('/').count() == 2, "{location}");
+    assert!(picked.put("", Vec::new()).unwrap().ends_with("/package"));
+}

@@ -63,34 +63,34 @@ fn picker_options(suggested: Option<&str>) -> Result<JsValue, JsValue> {
     Ok(options.into())
 }
 
-/// Reads `file` whole, refusing one over `max` bytes before reading it.
-async fn read(file: web_sys::File, max: u64) -> Result<(String, Vec<u8>), String> {
+/// Reads `file` (a `what`: "project") whole, refusing one over `max` bytes before reading it.
+async fn read(file: web_sys::File, max: u64, what: &str) -> Result<(String, Vec<u8>), String> {
     let size = file.size();
     // A size the browser reports wrongly still can't get past the check after reading.
     if !size.is_finite() || size < 0.0 || size > max as f64 {
-        return Err(too_large(max));
+        return Err(too_large(max, what));
     }
-    let buffer = JsFuture::from(file.array_buffer()).await.map_err(|_| "The browser couldn't read the project file.".to_owned())?;
+    let buffer = JsFuture::from(file.array_buffer()).await.map_err(|_| format!("The browser couldn't read the {what} file."))?;
     let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
     if bytes.len() as u64 > max {
-        return Err(too_large(max));
+        return Err(too_large(max, what));
     }
     Ok((file.name(), bytes))
 }
 
-fn too_large(max: u64) -> String {
-    format!("The project is larger than the browser build opens ({} MiB).", max / (1024 * 1024))
+fn too_large(max: u64, what: &str) -> String {
+    format!("The {what} is larger than the browser build opens ({} MiB).", max / (1024 * 1024))
 }
 
 /// Waits for the person to choose a file in a hidden `<input type="file">`. Browsers that never
 /// report a cancelled choice leave this pending; the next open replaces it.
-async fn input_file() -> Result<Option<web_sys::File>, String> {
+async fn input_file(accept: &str) -> Result<Option<web_sys::File>, String> {
     let failed = |_| "The browser couldn't open the file picker.".to_owned();
     let document = window()?.document().ok_or_else(|| "The page has no document.".to_owned())?;
     let input: web_sys::HtmlInputElement =
         document.create_element("input").map_err(failed)?.dyn_into().map_err(|_| "The page refused a file field.".to_owned())?;
     input.set_type("file");
-    input.set_accept(".ncraft");
+    input.set_accept(accept);
     let target = input.clone();
     let chosen = js_sys::Promise::new(&mut |resolve, _reject| {
         let done = resolve.clone();
@@ -113,6 +113,12 @@ async fn input_file() -> Result<Option<web_sys::File>, String> {
     Ok(input.files().and_then(|files| files.get(0)))
 }
 
+/// Asks for a plugin package file and reads it (#823); `None` when the person cancels.
+pub(crate) async fn pick_package(max: u64) -> Result<Option<(String, Vec<u8>)>, String> {
+    let Some(file) = input_file(".ncraft-plugin").await? else { return Ok(None) };
+    read(file, max, "plugin package").await.map(Some)
+}
+
 impl Browser {
     fn keep(&self, handle: JsValue) -> u64 {
         let id = self.next.get().wrapping_add(1);
@@ -127,8 +133,8 @@ impl Port for Browser {
         let port = Self { handles: std::rc::Rc::clone(&self.handles), next: std::rc::Rc::clone(&self.next) };
         Box::pin(async move {
             if !has_pickers() {
-                let Some(file) = input_file().await? else { return Ok(None) };
-                let (name, bytes) = read(file, max).await?;
+                let Some(file) = input_file(".ncraft").await? else { return Ok(None) };
+                let (name, bytes) = read(file, max, "project").await?;
                 return Ok(Some(Picked { name, bytes, target: None }));
             }
             let window: JsValue = window()?.into();
@@ -138,8 +144,8 @@ impl Port for Browser {
                 Err(error) if error_name(&error) == "AbortError" => return Ok(None),
                 // Refused here (a framed page, say): a file field still works.
                 Err(_) => {
-                    let Some(file) = input_file().await? else { return Ok(None) };
-                    let (name, bytes) = read(file, max).await?;
+                    let Some(file) = input_file(".ncraft").await? else { return Ok(None) };
+                    let (name, bytes) = read(file, max, "project").await?;
                     return Ok(Some(Picked { name, bytes, target: None }));
                 }
             };
@@ -152,7 +158,7 @@ impl Port for Browser {
                 .ok()
                 .and_then(|file| file.dyn_into().ok())
                 .ok_or_else(|| "The browser couldn't read the chosen file.".to_owned())?;
-            let (name, bytes) = read(file, max).await?;
+            let (name, bytes) = read(file, max, "project").await?;
             Ok(Some(Picked { name, bytes, target: Some(port.keep(handle)) }))
         })
     }
