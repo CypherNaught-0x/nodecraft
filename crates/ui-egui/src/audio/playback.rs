@@ -15,6 +15,7 @@ const SEEK_SETTLE: Duration = Duration::from_millis(75);
 const LOST_DRAG: Duration = Duration::from_secs(2);
 const STALL: Duration = Duration::from_secs(3);
 const DEVICE_STOPPED: &str = "The sound device stopped; press play to try again";
+const DEVICE_UNRESPONSIVE: &str = "The sound device isn't responding; press play to try again";
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -84,6 +85,7 @@ struct Request {
     play: u64,
     settle_until: Option<Instant>,
     held: Option<Instant>,
+    admitted_at: Instant,
 }
 #[derive(Default)]
 struct Desired {
@@ -109,6 +111,10 @@ struct Shared {
     wake: Condvar,
     quit: AtomicBool,
     dead: AtomicBool,
+    #[cfg(test)]
+    turns: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    idle: AtomicBool,
 }
 
 type Open = Box<dyn FnMut() -> Result<Box<dyn Sink>, &'static str> + Send>;
@@ -120,6 +126,18 @@ pub(super) struct Feeder {
 impl Feeder {
     pub fn new() -> Result<Self, &'static str> {
         Self::spawn(Box::new(|| Output::open().map(|device| Box::new(device) as Box<dyn Sink>)))
+    }
+
+    /// Replace only a worker that has finished unwinding, never one blocked in a native call.
+    pub fn ready(slot: &mut Option<Self>) -> Result<&Self, &'static str> {
+        Self::ready_with(slot, Self::new)
+    }
+
+    fn ready_with(slot: &mut Option<Self>, create: impl FnOnce() -> Result<Self, &'static str>) -> Result<&Self, &'static str> {
+        if slot.as_ref().is_none_or(|feeder| feeder.shared.dead.load(Ordering::Acquire)) {
+            *slot = Some(create()?);
+        }
+        slot.as_ref().ok_or("Can't start sound playback")
     }
 
     fn spawn(mut open: Open) -> Result<Self, &'static str> {
@@ -159,7 +177,7 @@ impl Feeder {
         }
         let mut desired = lock(&self.shared.desired);
         desired.epoch = desired.epoch.checked_add(1).ok_or("Too many sound requests; reopen the app")?;
-        desired.request = Some(Request { decoder, duration_us, from_us, play: desired.epoch, settle_until: None, held: None });
+        desired.request = Some(Request { decoder, duration_us, from_us, play: desired.epoch, settle_until: None, held: None, admitted_at: Instant::now() });
         drop(desired);
         self.shared.wake.notify_one();
         Ok(())
@@ -187,6 +205,7 @@ impl Feeder {
         request.from_us = from_us;
         request.settle_until = Instant::now().checked_add(SEEK_SETTLE);
         request.held = held.then(|| Instant::now().checked_add(LOST_DRAG)).flatten();
+        request.admitted_at = Instant::now();
         desired.epoch = epoch;
         drop(desired);
         self.shared.wake.notify_one();
@@ -204,7 +223,8 @@ impl Feeder {
         if let Some(report) = report.as_ref().filter(|report| report.epoch == desired.epoch) {
             return Some(report.status);
         }
-        Some(Status { position_us: request.from_us, duration_us: request.duration_us, playing: true, notice: None })
+        let stalled = request.admitted_at.elapsed() >= STALL;
+        Some(Status { position_us: request.from_us, duration_us: request.duration_us, playing: !stalled, notice: stalled.then_some(DEVICE_UNRESPONSIVE) })
     }
 }
 impl Drop for Feeder {
@@ -304,6 +324,8 @@ fn run(shared: &Shared, open: &mut Open) {
     let mut active: Option<Active> = None;
     let mut finished = None;
     loop {
+        #[cfg(test)]
+        shared.turns.fetch_add(1, Ordering::Relaxed);
         if shared.quit.load(Ordering::Acquire) {
             return;
         }
@@ -313,11 +335,11 @@ fn run(shared: &Shared, open: &mut Open) {
         };
         let Some(mut request) = request else {
             active = None;
-            wait(shared);
+            wait_idle(shared, epoch, false);
             continue;
         };
         if finished == Some(epoch) {
-            wait(shared);
+            wait_idle(shared, epoch, true);
             continue;
         }
         let now = Instant::now();
@@ -336,7 +358,7 @@ fn run(shared: &Shared, open: &mut Open) {
             current.retry = None;
         }
         if request.held.is_some_and(|due| now >= due) {
-            // No frames may arrive to deliver drag release after focus/minimize changes.
+            // A stationary held pointer or missing app frames must not suspend sound forever.
             let mut desired = lock(&shared.desired);
             if desired.epoch != epoch {
                 continue;
@@ -349,7 +371,7 @@ fn run(shared: &Shared, open: &mut Open) {
             request.settle_until = None;
         }
         if request.held.is_some() || request.settle_until.is_some_and(|due| now < due) {
-            wait(shared);
+            wait(shared, epoch);
             continue;
         }
         if active.is_none() {
@@ -387,7 +409,6 @@ fn run(shared: &Shared, open: &mut Open) {
                         status: Status { position_us: request.from_us, duration_us: request.duration_us, playing: false, notice: Some(notice) },
                     });
                     finished = Some(epoch);
-                    wait(shared);
                     continue;
                 }
             }
@@ -407,12 +428,28 @@ fn run(shared: &Shared, open: &mut Open) {
                 finished = Some(epoch);
             }
         }
-        wait(shared);
+        wait(shared, epoch);
     }
 }
-fn wait(shared: &Shared) {
+fn wait(shared: &Shared, epoch: u64) {
     let desired = lock(&shared.desired);
+    if shared.quit.load(Ordering::Acquire) || desired.epoch != epoch || desired.request.is_none() {
+        return;
+    }
     drop(shared.wake.wait_timeout(desired, POLL).unwrap_or_else(PoisonError::into_inner));
+}
+
+fn wait_idle(shared: &Shared, epoch: u64, had_request: bool) {
+    let mut desired = lock(&shared.desired);
+    // Check under the same guard used by request/stop, so a notification before this wait
+    // cannot be lost. Idle and terminal epochs do not need wall-clock polling.
+    while !shared.quit.load(Ordering::Acquire) && desired.epoch == epoch && desired.request.is_some() == had_request {
+        #[cfg(test)]
+        shared.idle.store(true, Ordering::Release);
+        desired = shared.wake.wait(desired).unwrap_or_else(PoisonError::into_inner);
+        #[cfg(test)]
+        shared.idle.store(false, Ordering::Release);
+    }
 }
 
 #[cfg(test)]

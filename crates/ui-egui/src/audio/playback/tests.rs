@@ -197,7 +197,7 @@ fn a_device_without_callbacks_has_a_terminal_failure_without_an_error_callback()
     let device = Arc::new(Device::default());
     let source = Arc::new(Decode::new(480_000, true));
     let started = Instant::now();
-    let request = Request { decoder: source, duration_us: 10_000_000, from_us: 0, play: 1, settle_until: None, held: None };
+    let request = Request { decoder: source, duration_us: 10_000_000, from_us: 0, play: 1, settle_until: None, held: None, admitted_at: started };
     let mut active = Active {
         play: 1,
         epoch: 1,
@@ -242,4 +242,67 @@ fn dropping_the_host_cancels_its_job_and_releases_the_decoder_without_an_app_fra
     until(|| shared.dead.load(Ordering::Acquire));
     assert_eq!(cancelled.load(Ordering::Relaxed), 1);
     assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn a_blocked_device_open_reports_a_notice_without_spawning_a_replacement_worker() {
+    let (entered, opening) = std::sync::mpsc::sync_channel(1);
+    let (release, gate) = std::sync::mpsc::sync_channel(1);
+    let device = Arc::new(Device::default());
+    let mut slot = Some(
+        Feeder::spawn(Box::new(move || {
+            entered.send(()).unwrap();
+            gate.recv().unwrap();
+            Ok(Box::new(FakeSink(Arc::clone(&device))))
+        }))
+        .unwrap(),
+    );
+    let source = Arc::new(Decode::new(48_000, false));
+    let feeder = slot.as_ref().unwrap();
+    feeder.request(source.clone(), 1_000_000, 0).unwrap();
+    opening.recv_timeout(Duration::from_secs(5)).unwrap();
+    lock(&feeder.shared.desired).request.as_mut().unwrap().admitted_at = Instant::now() - STALL;
+    let status = feeder.status().unwrap();
+    assert!(!status.playing);
+    assert_eq!(status.notice, Some(DEVICE_UNRESPONSIVE));
+    let shared = Arc::clone(&feeder.shared);
+    Feeder::ready_with(&mut slot, || panic!("a blocked worker must never be replaced")).unwrap().stop();
+    assert!(lock(&source.requests).is_empty());
+    drop(slot);
+    release.send(()).unwrap();
+    until(|| shared.dead.load(Ordering::Acquire));
+    assert!(lock(&source.requests).is_empty(), "a late open cannot revive the stopped request");
+}
+
+#[test]
+fn an_unwound_worker_can_be_replaced_for_the_next_play() {
+    let mut slot = Some(Feeder::spawn(Box::new(|| panic!("injected output failure"))).unwrap());
+    let source = Arc::new(Decode::new(48_000, true));
+    slot.as_ref().unwrap().request(source.clone(), 1_000_000, 0).unwrap();
+    until(|| slot.as_ref().unwrap().shared.dead.load(Ordering::Acquire));
+    let (replacement, device) = feeder();
+    Feeder::ready_with(&mut slot, || Ok(replacement)).unwrap().request(source.clone(), 1_000_000, 0).unwrap();
+    until(|| !lock(&source.requests).is_empty());
+    assert_eq!(device.opens.load(Ordering::Relaxed), 1);
+    assert!(slot.as_ref().unwrap().status().unwrap().playing);
+}
+
+#[test]
+fn idle_and_finished_workers_park_until_a_new_request_or_stop() {
+    let feeder = Feeder::spawn(Box::new(|| Err("No sound output device found"))).unwrap();
+    for terminal in [false, true] {
+        if terminal {
+            feeder.request(Arc::new(Decode::new(48_000, false)), 1_000_000, 0).unwrap();
+            until(|| feeder.status().is_some_and(|status| !status.playing));
+        }
+        until(|| feeder.shared.idle.load(Ordering::Acquire));
+        let turns = feeder.shared.turns.load(Ordering::Relaxed);
+        std::thread::sleep(POLL * 4);
+        assert_eq!(feeder.shared.turns.load(Ordering::Relaxed), turns, "no idle timer wakes");
+    }
+    feeder.stop();
+    until(|| feeder.status().is_none() && feeder.shared.idle.load(Ordering::Acquire));
+    feeder.request(Arc::new(Decode::new(48_000, false)), 1_000_000, 200_000).unwrap();
+    until(|| feeder.status().is_some_and(|status| !status.playing));
+    assert_eq!(feeder.status().unwrap().position_us, 200_000);
 }

@@ -564,6 +564,7 @@ mod native {
                 (AudioIntent::Toggle, Some(status)) => {
                     if let Some(player) = self.players.get_mut(&id) {
                         player.position_us = status.position_us;
+                        player.duration_us = Some(status.duration_us);
                     }
                     self.stop();
                 }
@@ -586,11 +587,8 @@ mod native {
                         None => return,
                     };
                     let result = (|| {
-                        if self.feeder.is_none() {
-                            self.feeder = Some(Feeder::new()?);
-                        }
+                        let feeder = Feeder::ready(&mut self.feeder)?;
                         let Service::Ready(service) = &self.service else { return Err("This sound is not ready to play") };
-                        let Some(feeder) = &self.feeder else { return Err("Can't start sound playback") };
                         feeder.play(Arc::clone(service), asset, from, duration)
                     })();
                     match result {
