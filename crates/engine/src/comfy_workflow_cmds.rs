@@ -1,9 +1,10 @@
 //! Importing ComfyUI workflows as cards (#9). Reading a workflow needs the server's node list
 //! (`/object_info`), which only a host can fetch.
 //!
-//! `comfy.nodes.refresh` asks the host's [`NODES_SERVICE`] to read the list; the host runs
-//! [`fetch`] off the UI thread and hands the outcome to [`finish`], which installs it as a session
-//! resource. A failed fetch keeps the list installed before. `comfy.nodes.status` reports the last
+//! `comfy.nodes.refresh` asks the host's [`NODES_SERVICE`] to read the list, and the server's
+//! health beside it; the host runs [`fetch`] off the UI thread and hands the outcome to
+//! [`finish`], which installs it as a session resource. A failed fetch keeps the list installed
+//! before; [`forget`] drops it when the server changes. `comfy.nodes.status` reports the last
 //! outcome. `comfy.workflow.import` turns a workflow file (API or UI format) into one
 //! `generation.comfy_workflow` card using the installed list. Handlers do no I/O.
 use crate::commands::{CommandSpec, Context, Effect, Phase, invalid, params};
@@ -14,7 +15,7 @@ use nodecraft_comfy::ApiWorkflow;
 pub use nodecraft_comfy::NodeCatalog;
 use nodecraft_graph::{Change, Changeset, Position};
 use nodecraft_nodes::comfy_workflow;
-use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ParamValues};
+use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, OptionLists, ParamValues};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -44,34 +45,137 @@ pub struct Report {
     pub nodes: Option<usize>,
     /// Why the list couldn't be read; what was installed before stays.
     pub error: Option<String>,
+    /// The server's health, when the list was read and the server reported it.
+    pub server: Option<Health>,
+}
+
+/// What a check finds beside the node list: `/system_stats` and `/queue`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Health {
+    /// The ComfyUI version, when the server reports it.
+    pub version: Option<String>,
+    /// The first device and its free VRAM, e.g. `NVIDIA GeForce RTX 4090 · 18.2 / 24.0 GB free`.
+    pub device: String,
+    /// Prompts running in the server's queue, when it could be read.
+    pub running: Option<usize>,
+    /// Prompts waiting in the server's queue, when it could be read.
+    pub pending: Option<usize>,
+}
+
+impl Health {
+    /// One line for a notice or the server panel.
+    pub fn summary(&self) -> String {
+        let mut parts = vec![self.version.as_ref().map_or_else(|| "ComfyUI".to_owned(), |v| format!("ComfyUI {v}")), self.device.clone()];
+        if let (Some(running), Some(pending)) = (self.running, self.pending) {
+            parts.push(format!("{running} running, {pending} waiting"));
+        }
+        parts.join(" · ")
+    }
+}
+
+/// What one [`fetch`] read.
+pub struct Fetched {
+    pub nodes: NodeList,
+    pub health: Option<Health>,
+}
+
+impl From<NodeList> for Fetched {
+    fn from(nodes: NodeList) -> Self {
+        Self { nodes, health: None }
+    }
 }
 
 struct LastFetch(Report);
 
-/// Reads the node list of the ComfyUI server in `env`'s settings. The host calls it off the UI
-/// thread: it may read the server's token from the keychain and calls the server.
-pub async fn fetch(env: &HostEnv<'_>) -> Result<NodeList, Error> {
+/// Reads the node list of the ComfyUI server in `env`'s settings, and its health. The host calls
+/// it off the UI thread: it may read the server's token from the keychain and calls the server.
+/// Only the list must be read; a server that doesn't report its health still has its nodes.
+pub async fn fetch(env: &HostEnv<'_>) -> Result<Fetched, Error> {
     let provider = crate::provider_setup::comfyui(env)
         .map_err(|readiness| Error::new(ErrorKind::Unsupported, readiness.message("ComfyUI").unwrap_or_else(|| "ComfyUI isn't set up".into())))?;
-    provider
+    let nodes = provider
         .catalog()
         .await
-        .map_err(|error| Error::new(crate::option_fetch::provider_kind(error.kind), format!("ComfyUI's node list couldn't be read: {}", error.message)))
+        .map_err(|error| Error::new(crate::option_fetch::provider_kind(error.kind), format!("ComfyUI's node list couldn't be read: {}", error.message)))?;
+    let health = match provider.system_stats().await {
+        Ok(stats) => {
+            let queue = provider.queue_state().await.ok();
+            Some(Health {
+                version: stats.comfyui_version.as_deref().map(shown),
+                device: shown(&stats.summary()),
+                running: queue.as_ref().map(|q| q.running.len()),
+                pending: queue.as_ref().map(|q| q.pending.len()),
+            })
+        }
+        Err(_) => None,
+    };
+    Ok(Fetched { nodes, health })
+}
+
+/// The longest server-reported text (version, device name) shown in a notice or the panel.
+const MAX_SHOWN: usize = 128;
+
+/// Server-reported text as one bounded line: control characters dropped, cut at a character
+/// boundary after [`MAX_SHOWN`] characters.
+fn shown(text: &str) -> String {
+    let mut line: String = text.chars().filter(|c| !c.is_control()).take(MAX_SHOWN.saturating_add(1)).collect();
+    if line.chars().count() > MAX_SHOWN {
+        line = line.chars().take(MAX_SHOWN).chain(std::iter::once('…')).collect();
+    }
+    line.trim().to_owned()
 }
 
 /// Installs what fetch `id` brought back and records the outcome for `comfy.nodes.status`. A
 /// failed fetch keeps the list installed before.
-pub fn finish(session: &mut Session, id: u64, fetched: Result<NodeList, Error>) -> Report {
+pub fn finish(session: &mut Session, id: u64, fetched: Result<Fetched, Error>) -> Report {
     let report = match fetched {
-        Ok(catalog) => {
-            let nodes = catalog.len();
-            session.swap_resource(Some(ComfyNodes(catalog)));
-            Report { id, nodes: Some(nodes), error: None }
+        Ok(Fetched { nodes, health }) => {
+            let count = nodes.len();
+            session.swap_resource(Some(ComfyNodes(nodes)));
+            Report { id, nodes: Some(count), error: None, server: health }
         }
-        Err(error) => Report { id, nodes: None, error: Some(error.message) },
+        Err(error) => Report { id, nodes: None, error: Some(error.message), server: None },
     };
     session.swap_resource(Some(LastFetch(report.clone())));
     report
+}
+
+/// Drops the installed node list, the last outcome and the ComfyUI option lists (checkpoints,
+/// LoRAs, samplers), for when the server changes: they were another server's.
+pub fn forget(session: &mut Session) {
+    session.swap_resource::<ComfyNodes>(None);
+    session.swap_resource::<LastFetch>(None);
+    if let Some(mut lists) = session.swap_resource::<OptionLists>(None) {
+        lists.clear_sources("comfyui.");
+        session.swap_resource(Some(lists));
+    }
+}
+
+/// The last fetch's outcome, and how many node types are installed.
+pub fn last(session: &Session) -> (Option<&Report>, Option<usize>) {
+    (session.resource::<LastFetch>().map(|last| &last.0), session.resource::<ComfyNodes>().map(|nodes| nodes.0.len()))
+}
+
+/// The longest server address accepted.
+const MAX_URL: usize = 2048;
+
+/// Checks a ComfyUI server address typed into settings: `None` when it is blank (ComfyUI isn't
+/// set up), the trimmed address otherwise. The error never echoes the address, which could hold
+/// credentials.
+pub fn check_url(url: &str) -> Result<Option<String>, Error> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Ok(None);
+    }
+    if url.len() > MAX_URL {
+        return Err(Error::new(ErrorKind::InvalidInput, format!("the ComfyUI address is longer than {MAX_URL} characters")));
+    }
+    nodecraft_comfy::Server::new(url).map_err(|error| Error::new(ErrorKind::InvalidInput, error.to_string()))?;
+    // The client drops a query, so a token put there would silently never be sent.
+    if url.contains(['?', '#']) {
+        return Err(Error::new(ErrorKind::InvalidInput, "the ComfyUI address can't carry a query or fragment; add a token under API keys"));
+    }
+    Ok(Some(url.to_owned()))
 }
 
 #[derive(Deserialize)]
@@ -293,7 +397,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{} -> {pending: id}; reads the node list (/object_info) of the ComfyUI server in settings, which comfy.workflow.import needs. The host answers later: read the outcome with comfy.nodes.status. A list that can't be read keeps the one read before. Refused when the host can't fetch (the CLI).",
+            params_doc: "{} -> {pending: id}; reads the node list (/object_info) of the ComfyUI server in settings, which comfy.workflow.import needs, and checks the server's health (/system_stats, /queue). The host answers later: read the outcome with comfy.nodes.status. A list that can't be read keeps the one read before. Refused when the host can't fetch (the CLI).",
             enabled: enabled_refresh,
             run: refresh,
         },
@@ -303,7 +407,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{} -> {last: {id, nodes, error} | null, nodes: number | null}; the outcome of the last comfy.nodes.refresh, and how many node classes the list in use has (null before one was read). Read-only.",
+            params_doc: "{} -> {last: {id, nodes, error, server: {version, device, running, pending} | null} | null, nodes: number | null}; the outcome of the last comfy.nodes.refresh (server is the health it found: ComfyUI version, first device and free VRAM, queue lengths), and how many node classes the list in use has (null before one was read). Read-only.",
             enabled: enabled_status,
             run: status,
         },

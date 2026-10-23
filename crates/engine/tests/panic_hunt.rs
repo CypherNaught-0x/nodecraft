@@ -387,7 +387,7 @@ fn template(id: &str) -> (Session, Value) {
         // The server's nodes as comfy.nodes.refresh installs them, so the import succeeds.
         let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {}]}}, "output": ["IMAGE"]}, "SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
         let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
-        nodecraft_engine::comfy_workflow_cmds::finish(&mut session, 1, Ok(std::sync::Arc::new(catalog)));
+        nodecraft_engine::comfy_workflow_cmds::finish(&mut session, 1, Ok(std::sync::Arc::new(catalog).into()));
     }
     let plugin_old =
         if id.starts_with("plugins.") && !matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register(&mut session)) } else { None };

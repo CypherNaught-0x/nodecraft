@@ -264,7 +264,7 @@ fn a_dropped_comfyui_workflow_asks_for_the_servers_nodes_then_becomes_its_card()
     let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {}]}}, "output": ["IMAGE"]},
         "SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
     let catalog = nodecraft_engine::comfy_workflow_cmds::NodeCatalog::parse(info).unwrap().0;
-    nodecraft_engine::comfy_workflow_cmds::finish(&mut h.state_mut().session, 1, Ok(Arc::new(catalog)));
+    nodecraft_engine::comfy_workflow_cmds::finish(&mut h.state_mut().session, 1, Ok(Arc::new(catalog).into()));
     drop_at(&mut h, Pos2::new(700.0, 150.0), &[path]);
     let card = nodes(&h).into_iter().find(|n| n.kind == nodecraft_nodes::comfy_workflow::ID).expect("the workflow's card");
     assert_eq!(card.title, "fox");

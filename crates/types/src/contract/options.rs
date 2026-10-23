@@ -116,6 +116,20 @@ impl OptionLists {
         }
     }
 
+    /// Forget every list whose source id starts with `prefix` (e.g. `comfyui.`), for when the
+    /// server they came from changes.
+    pub fn clear_sources(&mut self, prefix: &str) {
+        let mut freed = 0usize;
+        self.lists.retain(|(_, source, _), list| {
+            let keep = !source.starts_with(prefix);
+            if !keep {
+                freed = freed.saturating_add(list.bytes);
+            }
+            keep
+        });
+        self.bytes = self.bytes.saturating_sub(freed);
+    }
+
     /// A fetched list in the host's order, or `None` while it is unknown.
     pub fn get(&self, key: OptionKey<'_>) -> Option<&[Choice]> {
         self.lists.get(&owned(key)).map(|list| list.choices.as_slice())

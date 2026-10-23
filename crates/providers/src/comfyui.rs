@@ -35,7 +35,9 @@ pub(crate) mod upload;
 
 use serde_json::{Map, Value};
 
-use nodecraft_comfy::{self as comfy, ApiWorkflow, ComfyError, FileRef, HistoryEntry, InputKind, NodeCatalog, PromptRequest, QueueState, Server, UploadKind};
+use nodecraft_comfy::{
+    self as comfy, ApiWorkflow, ComfyError, FileRef, HistoryEntry, InputKind, NodeCatalog, PromptRequest, QueueState, Server, SystemStats, UploadKind,
+};
 
 use crate::http::{Http, HttpMethod, HttpRequest, HttpResponse};
 use crate::provider::{BoxFuture, Completed, JobHandle, JobInput, JobProgress, Output, Provider, ProviderJob, Submission};
@@ -57,6 +59,8 @@ const MAX_ATTEMPT_IDS: u32 = 16;
 const DOWNLOAD_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 /// `/queue` lists every pending prompt's workflow; on a busy server it is large.
 const MAX_QUEUE_BYTES: usize = 64 * 1024 * 1024;
+/// `/system_stats` is a few lines per device.
+const MAX_STATS_BYTES: usize = 4 * 1024 * 1024;
 
 /// A ComfyUI server as a provider.
 pub struct ComfyProvider {
@@ -327,7 +331,14 @@ impl ComfyProvider {
         HistoryEntry::parse(&response.body, prompt_id).map_err(comfy_error)
     }
 
-    async fn queue_state(&self) -> Result<QueueState, ProviderError> {
+    /// The server's health check (#9): its versions, devices and free VRAM.
+    pub async fn system_stats(&self) -> Result<SystemStats, ProviderError> {
+        let response = self.send_ok(self.server.system_stats().map_err(comfy_error)?, MAX_STATS_BYTES).await?;
+        SystemStats::parse(&response.body).map_err(comfy_error)
+    }
+
+    /// The prompts the server is running and has waiting.
+    pub async fn queue_state(&self) -> Result<QueueState, ProviderError> {
         let response = self.send_ok(self.server.queue().map_err(comfy_error)?, MAX_QUEUE_BYTES).await.map_err(|e| {
             // A huge queue on a busy shared server is a passing condition, not a broken reply.
             if e.kind == ErrorKind::Malformed {

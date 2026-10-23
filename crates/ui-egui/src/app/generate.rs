@@ -166,7 +166,7 @@ impl NodeCraftApp {
 
     /// The provider settings runs are set up with: the settings file's, and the defaults in the
     /// browser, which has none (so ComfyUI isn't set up there yet).
-    fn provider_settings(&self) -> nodecraft_engine::settings::ProviderSettings {
+    pub(super) fn provider_settings(&self) -> nodecraft_engine::settings::ProviderSettings {
         #[cfg(not(target_arch = "wasm32"))]
         return self.store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default();
         #[cfg(target_arch = "wasm32")]

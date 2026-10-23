@@ -554,6 +554,15 @@ impl Runs {
         Ok(())
     }
 
+    /// [`Self::forget_adapters`] after the provider settings changed: a card waiting for its
+    /// provider is asked for again with `settings`, not the ones it was routed with.
+    pub(super) fn forget_adapters_for(&mut self, session: &mut Session, settings: &ProviderSettings) -> Result<(), Error> {
+        if let Some(waiting) = &mut self.waiting {
+            waiting.settings = settings.clone();
+        }
+        self.forget_adapters(session)
+    }
+
     /// One frame: takes built adapters and pumps the host.
     pub(super) fn tick(&mut self, session: &mut Session, canvas: CanvasId) -> Tick {
         let mut tick = Tick::default();

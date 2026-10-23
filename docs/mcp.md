@@ -149,7 +149,8 @@ bridge to the desktop app it works, while the standalone CLI reports it unavaila
 format, passed as text) as one card: its file inputs become ports, its prompts and seeds (or the
 `node.input` names in `params`) become parameters, and its save nodes become results (#9). It
 reads the workflow against the ComfyUI server's node list, so call `comfy.nodes.refresh` first
-(`{pending: id}`) and check `comfy.nodes.status`. As with option lists, only a host with a fetch
+(`{pending: id}`) and check `comfy.nodes.status`, whose `last.server` also gives the server's
+ComfyUI version, first device with free VRAM, and queue lengths. As with option lists, only a host with a fetch
 service reads the list: the bridge to the desktop app does, the standalone CLI reports it
 unavailable.
 

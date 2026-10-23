@@ -333,6 +333,8 @@ pub(crate) mod admission;
 mod app_mode;
 #[cfg(not(target_arch = "wasm32"))]
 mod comfy_nodes;
+#[cfg(not(target_arch = "wasm32"))]
+mod comfy_server;
 mod comments;
 mod deck_editor;
 mod deck_presenter;
@@ -541,6 +543,9 @@ pub struct NodeCraftApp {
     /// Reads the ComfyUI server's nodes `comfy.nodes.refresh` asks for (#9).
     #[cfg(not(target_arch = "wasm32"))]
     comfy_nodes: Option<comfy_nodes::ComfyNodesFetcher>,
+    /// The ComfyUI server's address and its check (#9).
+    #[cfg(not(target_arch = "wasm32"))]
+    comfy_server: comfy_server::ComfyServerPanel,
     /// Checks for a newer release (#123).
     #[cfg(not(target_arch = "wasm32"))]
     updates: Option<updates::UpdateChecker>,
@@ -1115,6 +1120,8 @@ impl NodeCraftApp {
             option_fetch: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_nodes: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            comfy_server: comfy_server::ComfyServerPanel::default(),
             #[cfg(not(target_arch = "wasm32"))]
             updates: None,
             sharing: None,
@@ -2355,6 +2362,8 @@ impl NodeCraftApp {
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
         self.plugin_panel.show(ui.ctx(), &mut self.session, t);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.comfy_server_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);
         self.share_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
@@ -2525,6 +2534,8 @@ impl NodeCraftApp {
                         {
                             self.keys.open = !self.keys.open;
                         }
+                        #[cfg(not(target_arch = "wasm32"))]
+                        self.comfy_server_button(ui, t);
                         if self.session.enabled("plugins.list", &json!({})).is_ok()
                             && ui
                                 .add(egui::Button::new(egui::RichText::new("Plugins").color(t.text_muted)).frame(false))
