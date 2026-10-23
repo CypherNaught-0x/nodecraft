@@ -502,15 +502,49 @@ fn a_model_change_marks_the_result_stale() {
     assert_eq!(mock.requests().len(), 1, "marking stale runs nothing");
 }
 
+/// Wait for the actual clickable geometry, not for the viewer after a possibly missed press.
+fn wait_for_expand(h: &mut Harness<'static, NodeCraftApp>) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut previous = None;
+    let mut rect_settled = false;
+    let mut toolbar_live = false;
+    for _ in 0..120 {
+        h.step();
+        let button = h.query_by_role_and_label(Role::Button, "Expand");
+        let rect = button.as_ref().map(|button| button.rect());
+        toolbar_live = button.is_some_and(|button| !button.accesskit_node().is_disabled());
+        rect_settled = rect.is_some() && rect == previous;
+        if rect_settled && toolbar_live {
+            return;
+        }
+        previous = rect;
+        assert!(Instant::now() < deadline, "Expand never settled: rect stable={rect_settled}, toolbar interactive={toolbar_live}");
+    }
+    panic!("Expand never settled: rect stable={rect_settled}, toolbar interactive={toolbar_live}");
+}
+
 #[test]
 fn the_toolbar_expands_a_result_into_the_viewer() {
     let mock = image(MockModel::new(MockOutput::Image));
     let mut h = scene(making(mock));
     generated(&mut h);
     h.state_mut().selection.only(N);
-    h.run();
+    // Render one frame with the old toolbar rect, then move the canvas before the next
+    // frame. The old press-after-one-frame shape reads that stale rect and misses.
+    let shift_once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let pending_shift = shift_once.clone();
+    let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(
+        move |ui, app: &mut NodeCraftApp| {
+            app.show(ui);
+            if pending_shift.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                app.view.pan.x += 150.0;
+            }
+        },
+        h.into_state(),
+    );
+    shift_once.store(true, std::sync::atomic::Ordering::SeqCst);
+    wait_for_expand(&mut h);
     press(&mut h, Role::Button, "Expand");
-    frames_until(&mut h, |app| app.viewer == Some(N));
     assert_eq!(h.state().viewer, Some(N));
     assert!(h.query_by_label("Image").is_some(), "the viewer window is open");
     h.state_mut().selection.clear();
