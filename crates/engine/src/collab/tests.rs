@@ -734,7 +734,7 @@ fn a_host_that_seals_takes_a_large_asset_once_sealed_without_reading_it_again() 
 
     // Sealed on a clone of the store, as the desktop's worker does; then taken in a moment.
     let store = net.session(2).assets().clone();
-    net.collab(2).seal_arrivals(&store);
+    assert!(net.collab(2).seal_arrivals(&store, &Default::default()));
     assert!(!net.person(2).collab.seals_pending());
     net.settle();
     assert_eq!(net.person(2).collab.waiting_for_assets(), 0);
@@ -1139,3 +1139,5 @@ fn only_so_many_people_are_kept_and_one_who_goes_makes_room() {
     collab.receive(person(1000)).unwrap();
     assert!(collab.people().any(|p| p.peer == 1000));
 }
+
+mod busy855;
