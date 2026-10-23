@@ -3437,6 +3437,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hmac",
  "image",
+ "js-sys",
  "nodecraft-catalog",
  "nodecraft-comfy",
  "nodecraft-media",
@@ -3449,6 +3450,7 @@ dependencies = [
  "tokio",
  "tungstenite",
  "url",
+ "web-sys",
  "web-time",
  "zip",
 ]

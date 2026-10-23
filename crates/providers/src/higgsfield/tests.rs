@@ -298,6 +298,69 @@ fn assembled_estimate_refreshes_expired_cached_input_before_quoting() {
 }
 
 #[test]
+fn persistence_expiring_a_multi_input_body_refuses_paid_dispatch_and_keeps_staged_bytes() {
+    let clock = Arc::new(FixtureClock(AtomicU64::new(100)));
+    let t = Transport::new(vec![image_grant(1), empty(200)]);
+    let p = Higgsfield::with_clock(key(), t.clone(), clock.clone());
+    p.uploads().push_back(Uploaded {
+        mime: "video/mp4",
+        bytes: ContentHash::of(&mp4()),
+        url: "https://upload.cdn.example.com/inputs/old-source.mp4".into(),
+        uploaded_at_ms: 100,
+    });
+    let saved = Arc::new(Mutex::new(Vec::<StagedSubmit>::new()));
+    let stager = {
+        let saved = saved.clone();
+        let clock = clock.clone();
+        Arc::new(move |body: &StagedSubmit| {
+            saved.lock().unwrap().push(body.clone());
+            // Simulate blocking disk persistence after body freshness was verified.
+            clock.0.store(100 + UPLOAD_TTL_MS, Ordering::Relaxed);
+            Ok(())
+        })
+    };
+    let context = crate::SubmitContext::new().with_stager(Some(stager));
+    let job = genjutsu(OBJECT_SWAP, json!({}), vec![source(), image()]);
+    let error = block_on(p.submit_with_delivery(&job, &context)).unwrap_err();
+    assert!(error.message.contains("expired before dispatch"));
+    assert_eq!(t.requests().len(), 2, "no paid transport call after persistence expires the link");
+    let staged = saved.lock().unwrap();
+    assert_eq!(staged.len(), 1);
+    assert!(staged[0].body.contains("old-source.mp4"));
+    assert!(staged[0].body.contains("ref1.png"));
+    drop(staged);
+    // The unsent in-process body is not silently regenerated or sent stale on another attempt.
+    assert!(block_on(p.submit(&job)).is_err());
+    assert_eq!(t.requests().len(), 2);
+}
+
+struct DispatchClock {
+    calls: AtomicU64,
+}
+impl Clock for DispatchClock {
+    fn sleep(&self, _: u64) -> BoxFuture<'static, ()> {
+        Box::pin(async {})
+    }
+    fn now_ms(&self) -> u64 {
+        if self.calls.fetch_add(1, Ordering::Relaxed) >= 5 { UPLOAD_TTL_MS } else { 0 }
+    }
+}
+
+#[test]
+fn estimate_refuses_multi_input_body_that_expires_at_transport_handoff() {
+    let clock = Arc::new(DispatchClock { calls: AtomicU64::new(0) });
+    let t = Transport::new(vec![]);
+    let p = Higgsfield::with_clock(key(), t.clone(), clock);
+    for (mime, bytes, url) in [("video/mp4", mp4(), "https://upload.cdn.example.com/inputs/source.mp4"), ("image/png", png(), PUBLIC)] {
+        p.uploads().push_back(Uploaded { mime, bytes: ContentHash::of(&bytes), url: url.into(), uploaded_at_ms: 0 });
+    }
+    let job = genjutsu(OBJECT_SWAP, json!({}), vec![source(), image()]);
+    let error = block_on(p.estimate(&job)).unwrap_err();
+    assert!(error.message.contains("expired before dispatch"));
+    assert!(t.requests().is_empty(), "no stale estimate POST handed to transport");
+}
+
+#[test]
 fn upload_cache_evicts_the_oldest_at_thirty_two_entries() {
     let t = Transport::new((0..=STAGED).flat_map(|_| [grant(), empty(200)]).collect());
     let p = adapter(&t);
@@ -357,6 +420,11 @@ fn refusals_are_typed_and_only_documented_ones_prove_nothing_was_accepted() {
     // 5xx and unreadable bodies stay possibly billed.
     assert!(!response::refused_submit(&refusal(500, json!("oops"))));
     assert!(!response::refused_submit(&HttpResponse { status: 400, headers: vec![], body: b"<html>".to_vec() }));
+    // A provider detail echoing a signed storage URL must not reach public error text.
+    let t = Transport::new(vec![status(422, json!({"detail": format!("invalid uploaded image {UPLOAD}&X-Amz-Credential=private-marker")}))]);
+    let e = block_on(adapter(&t).submit(&soul(json!({})))).unwrap_err();
+    assert!(e.message.contains("withheld"));
+    assert!(!e.message.contains(UPLOAD) && !e.message.contains("private-marker") && !e.message.contains("X-Amz-Signature"));
     // A message echoing the credential is withheld.
     let t = Transport::new(vec![status(400, json!({"detail": format!("bad key {ID}:{SECRET}")}))]);
     let e = block_on(adapter(&t).submit(&soul(json!({})))).unwrap_err();

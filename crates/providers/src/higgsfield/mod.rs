@@ -51,15 +51,29 @@ const STAGED: usize = 32;
 /// Presigned upload retention is unspecified; reuse an estimate's link for at most five minutes.
 const UPLOAD_TTL_MS: u64 = 5 * 60 * 1_000;
 
-/// Default monotonic clock for callers using the existing two-argument constructor.
+/// Default clock for callers using the existing two-argument constructor.
+#[cfg(not(target_arch = "wasm32"))]
 struct UploadClock(std::time::Instant);
+#[cfg(target_arch = "wasm32")]
+struct UploadClock;
 impl Clock for UploadClock {
     fn sleep(&self, _: u64) -> BoxFuture<'static, ()> {
         // Only now_ms is used for upload retention; the adapter never schedules a sleep.
         Box::pin(futures::future::pending())
     }
     fn now_ms(&self) -> u64 {
-        u64::try_from(self.0.elapsed().as_millis()).unwrap_or(u64::MAX)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            u64::try_from(self.0.elapsed().as_millis()).unwrap_or(u64::MAX)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // std::time::Instant::now traps on wasm32-unknown-unknown. The browser run host
+            // uses performance.now() too; Date is only a fallback when Performance is absent.
+            // Backward clock changes invalidate cached links via fresh()'s checked subtraction.
+            let ms = web_sys::window().and_then(|window| window.performance()).map_or_else(js_sys::Date::now, |performance| performance.now());
+            if ms.is_finite() && ms > 0.0 { ms as u64 } else { 0 }
+        }
     }
 }
 
@@ -188,6 +202,9 @@ struct Staged {
     /// The job it was staged for: a different job under the same key never reuses it.
     job: ContentHash,
     body: Arc<[u8]>,
+    /// Known timestamps for first-send freshness; replay must never replace this body.
+    uploads: Vec<Uploaded>,
+    dispatched: bool,
 }
 
 /// A file an estimate uploaded, kept for the submit that follows it.
@@ -200,6 +217,11 @@ struct Uploaded {
 }
 fn fresh(uploaded: &Uploaded, now: u64) -> bool {
     now.checked_sub(uploaded.uploaded_at_ms).is_some_and(|age| age < UPLOAD_TTL_MS)
+}
+
+struct Assembled {
+    body: Arc<[u8]>,
+    uploads: Vec<Uploaded>,
 }
 
 /// Whether an upload is for an estimate, which keeps it, or a submit, which takes it.
@@ -227,7 +249,11 @@ pub struct Higgsfield {
 }
 impl Higgsfield {
     pub fn new(key: Secret, http: Arc<dyn Http>) -> Self {
-        Self::with_clock(key, http, Arc::new(UploadClock(std::time::Instant::now())))
+        #[cfg(not(target_arch = "wasm32"))]
+        let clock = UploadClock(std::time::Instant::now());
+        #[cfg(target_arch = "wasm32")]
+        let clock = UploadClock; // No Instant construction on this cfg path: browser-safe even at runtime.
+        Self::with_clock(key, http, Arc::new(clock))
     }
     /// Inject a monotonic clock, including a deterministic fixture clock for upload expiry.
     pub fn with_clock(key: Secret, http: Arc<dyn Http>, clock: Arc<dyn Clock>) -> Self {
@@ -260,7 +286,33 @@ impl Higgsfield {
         Ok(r.secret_header("Authorization", format!("Key {key}")).max_response_bytes(self.limits.response_bytes))
     }
     async fn send(&self, request: HttpRequest, paid: bool, refusal: Option<&crate::SubmitContext>) -> Result<HttpResponse, ProviderError> {
-        let reply = self.http.send_no_redirect(self.auth(request)?).await.map_err(|e| transport(e, paid))?;
+        self.send_checked(request, paid, refusal, None, None).await
+    }
+    async fn send_checked(
+        &self,
+        request: HttpRequest,
+        paid: bool,
+        refusal: Option<&crate::SubmitContext>,
+        uploads: Option<&[Uploaded]>,
+        staged_key: Option<&str>,
+    ) -> Result<HttpResponse, ProviderError> {
+        let request = self.auth(request)?;
+        // Last synchronous step before giving the request to the transport. In particular this
+        // occurs AFTER potentially blocking persistence. A stale staged first submit stays
+        // unchanged for reconciliation; it is never silently rebuilt under the paid key.
+        let now = self.clock.now_ms();
+        if uploads.is_some_and(|uploads| !uploads.iter().all(|upload| fresh(upload, now))) {
+            return Err(invalid("Higgsfield uploads expired before dispatch; the request was not sent. Check any saved staged request before retrying"));
+        }
+        if let Some(key) = staged_key
+            && let Some(staged) = self.lock().iter_mut().find(|staged| staged.key == key)
+        {
+            staged.dispatched = true;
+        }
+        if paid && let Some(context) = refusal {
+            context.paid();
+        }
+        let reply = self.http.send_no_redirect(request).await.map_err(|e| transport(e, paid))?;
         if let Some(context) = refusal
             && reply.body.len() <= self.limits.response_bytes
             && response::refused_submit(&reply)
@@ -276,33 +328,39 @@ impl Higgsfield {
     /// The exact body for this job: the one already staged under its key, or a new one, with its
     /// source video and images uploaded. Uploads are free, so a failure here proves nothing was
     /// billed.
-    async fn stage(&self, job: &ProviderJob, prepared: &request::Prepared<'_>) -> Result<Arc<[u8]>, ProviderError> {
+    async fn stage(&self, job: &ProviderJob, prepared: &request::Prepared<'_>) -> Result<(Arc<[u8]>, Option<Vec<Uploaded>>), ProviderError> {
         let fingerprint = request::fingerprint(job);
         if let Some(staged) = self.lock().iter().find(|s| s.key == job.idempotency_key && s.job == fingerprint) {
             // An ambiguous paid submit must replay precisely its original body and key, even if
             // its upload links have expired. New links under the same key could bill twice.
-            return Ok(Arc::clone(&staged.body));
+            return Ok((Arc::clone(&staged.body), (!staged.dispatched).then(|| staged.uploads.clone())));
         }
         // A Soul ID is checked once, when the body is first staged; a replay sends the body
         // that was checked.
         if let Some(id) = &prepared.reference {
             self.ready(id).await?;
         }
-        let body = self.body(prepared, Use::Submit).await?;
+        let assembled = self.body(prepared, Use::Submit).await?;
         let mut staged = self.lock();
         // Another submit under this key may have staged first; keep the body it may have sent.
         if let Some(existing) = staged.iter().find(|s| s.key == job.idempotency_key && s.job == fingerprint) {
-            return Ok(Arc::clone(&existing.body));
+            return Ok((Arc::clone(&existing.body), (!existing.dispatched).then(|| existing.uploads.clone())));
         }
         staged.retain(|s| s.key != job.idempotency_key);
         if staged.len() >= STAGED {
             staged.pop_front();
         }
-        staged.push_back(Staged { key: job.idempotency_key.clone(), job: fingerprint, body: Arc::clone(&body) });
-        Ok(body)
+        staged.push_back(Staged {
+            key: job.idempotency_key.clone(),
+            job: fingerprint,
+            body: Arc::clone(&assembled.body),
+            uploads: assembled.uploads.clone(),
+            dispatched: false,
+        });
+        Ok((assembled.body, Some(assembled.uploads)))
     }
     /// The body for `prepared`, its source video and images uploaded, or reused from an estimate.
-    async fn body(&self, prepared: &request::Prepared<'_>, using: Use) -> Result<Arc<[u8]>, ProviderError> {
+    async fn body(&self, prepared: &request::Prepared<'_>, using: Use) -> Result<Assembled, ProviderError> {
         let mut video = match &prepared.video {
             Some(video) => Some(self.file(video.mime, video.bytes, using).await?),
             None => None,
@@ -339,7 +397,11 @@ impl Higgsfield {
                     .map_err(|_| malformed("Higgsfield request couldn't be encoded"))?;
                 let now = self.clock.now_ms();
                 if video.as_ref().is_none_or(|u| fresh(u, now)) && images.iter().all(|u| fresh(u, now)) {
-                    return Ok(body.into());
+                    let mut uploads = images.clone();
+                    if let Some(video) = video {
+                        uploads.push(video);
+                    }
+                    return Ok(Assembled { body: body.into(), uploads });
                 }
             }
         }
@@ -410,7 +472,7 @@ impl Higgsfield {
         }
         let prepared = request::prepare(job, self.limits)?;
         let key = request::idempotency_key(&job.idempotency_key);
-        let body = self.stage(job, &prepared).await?;
+        let (body, uploads) = self.stage(job, &prepared).await?;
         let mut submit = HttpRequest { method: HttpMethod::Post, body: body.to_vec(), ..HttpRequest::get(format!("{API}/{}", prepared.model)) }
             .header("Content-Type", "application/json")
             .header("Idempotency-Key", key)
@@ -423,9 +485,8 @@ impl Higgsfield {
         if let Some(context) = context {
             let staged = String::from_utf8(body.to_vec()).map_err(|_| malformed("a Higgsfield request body wasn't text"))?;
             context.stage(&StagedSubmit { body: staged, data: data.clone() })?;
-            context.paid();
         }
-        let reply = self.send(submit, true, context).await?;
+        let reply = self.send_checked(submit, true, context, uploads.as_deref(), Some(&job.idempotency_key)).await?;
         let id = response::receipt(&reply.body)?;
         Ok(Submission::Queued(JobHandle { remote_id: id, data }))
     }
@@ -477,12 +538,13 @@ impl Higgsfield {
             return Err(invalid("Higgsfield gives no estimate for Soul ID training; the catalog prices it"));
         }
         let prepared = request::prepare(job, self.limits)?;
-        let body = self.body(&prepared, Use::Estimate).await?;
-        let mut quote = HttpRequest { method: HttpMethod::Post, body: body.to_vec(), ..HttpRequest::get(format!("{API}/estimate/{}", prepared.model)) }
-            .header("Content-Type", "application/json")
-            .timeout_ms(30_000);
+        let assembled = self.body(&prepared, Use::Estimate).await?;
+        let mut quote =
+            HttpRequest { method: HttpMethod::Post, body: assembled.body.to_vec(), ..HttpRequest::get(format!("{API}/estimate/{}", prepared.model)) }
+                .header("Content-Type", "application/json")
+                .timeout_ms(30_000);
         quote.max_response_bytes = self.limits.response_bytes;
-        let reply = self.send(quote, false, None).await?;
+        let reply = self.send_checked(quote, false, None, Some(&assembled.uploads), None).await?;
         response::estimate(&reply.body)
     }
     /// Refuses a Soul ID this account doesn't have, or whose training isn't done or was for
