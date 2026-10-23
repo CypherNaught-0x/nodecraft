@@ -11,10 +11,10 @@ use nodecraft_nodes::mesh::{MAX_PHOTO_SIDE, MAX_VIEW_SIDE, PHOTO, VIEWS, sheet_g
 use nodecraft_types::{ParamValues, Value};
 
 /// Most edges the wireframe style draws (as the viewer).
-const MAX_EDGES: usize = 6_000_000;
+pub(super) const MAX_EDGES: usize = 6_000_000;
 
 /// `#rrggbb` or `#rrggbbaa` as linear RGBA premultiplied by its alpha, as a capture takes it.
-fn linear(text: &str) -> Result<[f32; 4], String> {
+pub(super) fn linear(text: &str) -> Result<[f32; 4], String> {
     let json = color(text)?;
     let channel = |name: &str| json.get(name).and_then(serde_json::Value::as_u64).map_or(0.0, |v| v.min(255) as f32 / 255.0);
     let decode = |v: f32| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
@@ -22,7 +22,7 @@ fn linear(text: &str) -> Result<[f32; 4], String> {
     Ok([decode(channel("r")) * alpha, decode(channel("g")) * alpha, decode(channel("b")) * alpha, alpha])
 }
 
-fn style(params: &ParamValues) -> Result<Style, String> {
+pub(super) fn style(params: &ParamValues) -> Result<Style, String> {
     match word(params, "style")? {
         "shaded" => Ok(Style::Shaded),
         "unlit" => Ok(Style::Unlit),
@@ -43,7 +43,7 @@ fn side(params: &ParamValues, name: &str, max: u64) -> Result<u32, String> {
     u32::try_from(whole(params, name)?.clamp(1, max)).map_err(|_| format!("the {name} setting is out of range"))
 }
 
-fn message(error: CaptureError) -> String {
+pub(super) fn message(error: CaptureError) -> String {
     match error {
         CaptureError::Unavailable => "3D captures need a GPU, and none is available".to_owned(),
         CaptureError::Model(why) => format!("the model can't be drawn: {why}"),

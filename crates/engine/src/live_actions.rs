@@ -327,6 +327,7 @@ impl Settled {
 /// Whether nodes of `kind` work on the video service (rendering or decoding a video), which never runs live.
 fn renders_video(kind: &str) -> bool {
     kind == nodecraft_nodes::timeline::ID
+        || kind == nodecraft_nodes::mesh::TURNTABLE
         || nodecraft_nodes::video_edit::IDS.contains(&kind)
         || nodecraft_nodes::video_frames::IDS.contains(&kind)
         || nodecraft_nodes::video_look::IDS.contains(&kind)
@@ -346,7 +347,12 @@ fn local_only(plan: &RunPlan, live: &Canvas, kinds: &Registry) -> bool {
 /// Whether `step` is a source, an action or structure.
 fn local_step(step: &Step, live: &Canvas, kinds: &Registry) -> bool {
     let jobs_local = step.jobs.as_ref().is_none_or(|jobs| jobs.iter().all(|j| matches!(j, JobSpec::Source { .. } | JobSpec::Action { .. })));
-    let kind_local = live.nodes().get(&step.node).and_then(|n| kinds.get(&n.kind).ok()).is_some_and(|k| k.descriptor().category != Category::Generation);
+    let kind_local = live
+        .nodes()
+        .get(&step.node)
+        .filter(|n| !renders_video(&n.kind))
+        .and_then(|n| kinds.get(&n.kind).ok())
+        .is_some_and(|k| k.descriptor().category != Category::Generation);
     jobs_local && kind_local
 }
 

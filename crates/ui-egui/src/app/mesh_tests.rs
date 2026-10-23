@@ -148,3 +148,105 @@ fn the_capture_buttons_add_a_wired_photo_or_view_sheet_from_the_cards_view_as_on
     let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
     assert!(canvas.nodes().values().any(|n| n.kind == nodecraft_nodes::mesh::VIEWS));
 }
+#[test]
+fn the_turntable_button_seeds_a_video_card_from_the_view_and_undo_removes_both_edits() {
+    let mut h = harness();
+    let id = add_cube(&mut h);
+    let before = {
+        let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
+        (canvas.nodes().len(), canvas.edges().len())
+    };
+    assert!(wait_for(&mut h, "3D model, 12 triangles, shaded view"));
+    h.state_mut().mesh_views.entry(id).or_default().orbit = nodecraft_gpu::mesh::Orbit { yaw: 1.0, pitch: 0.5, zoom: 2.0 };
+    h.get_by_label("Turntable").click();
+    h.run_steps(3);
+    let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
+    let video = canvas.nodes().values().find(|n| n.kind == nodecraft_nodes::mesh::TURNTABLE).unwrap();
+    let saved = video.clone();
+    assert_eq!(video.outputs.first().unwrap().port_type.modality, nodecraft_types::Modality::Video);
+    assert_eq!(video.params.get("start"), Some(&Value::Number(nodecraft_types::Number::new(57.0).unwrap())));
+    assert!(canvas.edges().values().any(|e| e.from.node == id && e.to.node == video.id));
+    h.state_mut().mesh_views.entry(id).or_default().orbit = Default::default();
+    assert_eq!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&saved.id), Some(&saved));
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
+    assert_eq!((canvas.nodes().len(), canvas.edges().len()), before);
+}
+
+#[test]
+#[ignore = "actual GPU; public-safe turntable UI evidence in NODECRAFT_TURNTABLE_RENDER_DIR"]
+fn turntable575_visual() {
+    let render = egui_kittest::wgpu::create_render_state(egui_kittest::wgpu::default_wgpu_setup(), Default::default());
+    let mut services = nodecraft_engine::commands::Services::default();
+    let runs = super::runs::Runs::with_inline_maker(&mut services, Box::new(|_, _| panic!("a local turntable never requests a provider"))).unwrap();
+    let mut app = NodeCraftApp::with_services(services).unwrap();
+    runs.install(&mut app.session);
+    app.runs = Some(runs);
+    app.install_mesh_renderer(&render);
+    let ffmpeg = std::path::PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let ffprobe = std::path::PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFPROBE").unwrap());
+    app.set_media_tools(Some((&ffmpeg, &ffprobe)));
+    let mut h = Harness::builder()
+        .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(render))
+        .with_size(Vec2::new(1600.0, 1200.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    let id = add_cube(&mut h);
+    assert!(wait_for(&mut h, "3D model, 12 triangles, shaded view"));
+    h.get_by_label("Turntable").click();
+    h.run_steps(3);
+    let video = h
+        .state()
+        .session
+        .document()
+        .canvases()
+        .get(&h.state().canvas)
+        .unwrap()
+        .nodes()
+        .values()
+        .find(|n| n.kind == nodecraft_nodes::mesh::TURNTABLE)
+        .unwrap()
+        .id;
+    let canvas = h.state().canvas;
+    for (name, value) in [
+        ("width", Value::Unsigned(nodecraft_types::Unsigned(64))),
+        ("height", Value::Unsigned(nodecraft_types::Unsigned(48))),
+        ("fps", Value::Unsigned(nodecraft_types::Unsigned(12))),
+        ("duration", Value::Number(nodecraft_types::Number::new(1.0).unwrap())),
+    ] {
+        h.state_mut().session.dispatch("node.param_set", &json!({"canvas":canvas,"id":video,"name":name,"value":value})).unwrap();
+    }
+    h.state_mut().request_generate(video).unwrap();
+    h.run();
+    h.get_by_label("Generate now").click();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+    let mut ready = false;
+    while std::time::Instant::now() < deadline {
+        let ctx = h.ctx.clone();
+        h.state_mut().tick_runs(&ctx);
+        h.step();
+        let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&video).unwrap();
+        ready = node.history.iter().find(|g| Some(g.id) == node.active).is_some_and(|g| {
+            g.outputs.iter().any(|value| {
+                matches!(value, Value::Media(asset) if asset.mime.essence() == "video/webm"
+                && asset.meta.width == Some(64) && asset.meta.height == Some(48) && asset.meta.duration_ms == Some(1000))
+            })
+        }) && h.query_by_label("Video, 0:01").is_some();
+        if ready {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(ready, "the pointer-created card renders and shows its ordinary video: {:?}", h.state().notice);
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.minimap_toggle", &json!({})).unwrap();
+    // Keep the saved camera and full card below the toolbar without shrinking the evidence text.
+    h.state_mut().view.zoom = 0.9;
+    h.state_mut().view.pan = Vec2::new(430.0, 260.0);
+    h.run_steps(3);
+    let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
+    assert!(canvas.nodes().values().any(|n| n.kind == nodecraft_nodes::mesh::TURNTABLE));
+    assert!(canvas.edges().values().any(|e| e.from.node == id));
+    if let Some(dir) = std::env::var_os("NODECRAFT_TURNTABLE_RENDER_DIR") {
+        h.render().unwrap().save(std::path::PathBuf::from(dir).join("turntable-after.png")).unwrap();
+    }
+}

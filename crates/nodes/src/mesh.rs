@@ -13,6 +13,9 @@ pub const CONVERT: &str = "mesh.convert";
 pub const PHOTO: &str = "mesh.photo";
 /// The 3D view sheet action kind: 4, 8 or 16 views round the model, in one image.
 pub const VIEWS: &str = "mesh.views";
+/// A soundless video of a saved orbit around a model.
+pub const TURNTABLE: &str = "mesh.turntable";
+pub mod turntable;
 /// The longest side of a photo, and of one view on a sheet.
 pub const MAX_PHOTO_SIDE: u64 = 2048;
 pub const MAX_VIEW_SIDE: u64 = 1024;

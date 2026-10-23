@@ -484,6 +484,45 @@ fn a_video_action_renders_only_when_asked() {
     assert!(s.document().canvases().get(&CANVAS).unwrap().nodes().get(&trim).unwrap().active.is_none());
 }
 
+#[test]
+fn a_turntable_renders_only_when_asked() {
+    let mut s = session();
+    connect(&mut s);
+    let (mesh, turntable) = (NodeId::from_bytes([63; 16]), NodeId::from_bytes([64; 16]));
+    let hash = s.import_asset(b"not really a mesh").unwrap();
+    let asset = AssetRef { hash, mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() };
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": mesh, "kind": "source.mesh", "pos": {"x": 0, "y": 600}})).unwrap();
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": mesh, "name": "asset", "value": Value::Media(asset)})).unwrap();
+    s.dispatch(
+        "mesh.capture",
+        &json!({"canvas": CANVAS, "from": {"node": mesh, "port": "out"}, "shot": "turntable", "id": turntable,
+        "edge": nodecraft_types::EdgeId::from_bytes([65; 16]), "pos": {"x": 400, "y": 600}}),
+    )
+    .unwrap();
+    // Reference-only downstream actions may refresh live, but must not pull an unrun or stale
+    // renderer into their upstream plan.
+    let duplicate = NodeId::from_bytes([66; 16]);
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": duplicate, "kind": nodecraft_nodes::video_look::DUPLICATE, "pos": {"x": 800, "y": 600}}))
+        .unwrap();
+    s.dispatch(
+        "edge.connect",
+        &json!({"canvas": CANVAS, "edge": {"id": nodecraft_types::EdgeId::from_bytes([67; 16]),
+        "from": {"node": turntable, "port": "out"}, "to": {"node": duplicate, "port": "video"}, "order": 0}}),
+    )
+    .unwrap();
+    assert!(settle(&mut s), "the neighboring image action still refreshes live");
+    assert!(pending(&s, CANVAS, &BTreeMap::new()).unwrap().is_none(), "a turntable waits for an explicit run");
+    s.dispatch(
+        "node.param_set",
+        &json!({"canvas": CANVAS, "id": turntable, "name": "duration", "value": Value::Number(nodecraft_types::Number::new(1.0).unwrap())}),
+    )
+    .unwrap();
+    assert!(pending(&s, CANVAS, &BTreeMap::new()).unwrap().is_none(), "editing its saved settings does not render live");
+    let draft = Draft { node: turntable, name: "duration".into(), value: Value::Number(nodecraft_types::Number::new(2.0).unwrap()) };
+    assert!(preview(&s, CANVAS, &draft).unwrap().is_none(), "draft previews do not pull a turntable through its downstream copy");
+    assert!(s.document().canvases().get(&CANVAS).unwrap().nodes().get(&turntable).unwrap().active.is_none());
+}
+
 fn draft(sigma: f64) -> Draft {
     Draft { node: BLUR, name: "sigma".into(), value: Value::Number(nodecraft_types::Number::new(sigma).unwrap()) }
 }

@@ -4,7 +4,7 @@
 //! exactly after the viewer moves on. Nothing here runs: the new node runs like any action.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_graph::{Change, Changeset, Edge, Endpoint, Position};
-use nodecraft_nodes::mesh::{PHOTO, VIEWS};
+use nodecraft_nodes::mesh::{PHOTO, TURNTABLE, VIEWS};
 use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, Modality, NodeId, Number, ParamValues, Value};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -20,6 +20,7 @@ const MAX_PITCH: f64 = 88.0;
 enum Shot {
     Photo,
     Views,
+    Turntable,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +98,11 @@ fn capture(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         };
         supplied.insert("style".into(), Value::Text(style.into()));
     }
-    let kind = if p.shot == Shot::Photo { PHOTO } else { VIEWS };
+    let kind = match p.shot {
+        Shot::Photo => PHOTO,
+        Shot::Views => VIEWS,
+        Shot::Turntable => TURNTABLE,
+    };
     let mut node = c.kinds.get(kind)?.instantiate_instance(p.id, BTreeMap::new(), &supplied)?;
     node.pos = p.pos;
     let changes = Changeset::new(vec![
@@ -120,7 +125,7 @@ fn schema() -> Json {
         "properties": {"canvas": uuid, "id": uuid, "edge": uuid,
             "pos": {"type": "object", "required": ["x", "y"], "additionalProperties": false, "properties": {"x": coordinate, "y": coordinate}},
             "from": {"type": "object", "required": ["node", "port"], "additionalProperties": false, "properties": {"node": uuid, "port": {"type": "string", "maxLength": 256}}},
-            "shot": {"enum": ["photo", "views"]},
+            "shot": {"enum": ["photo", "views", "turntable"]},
             "yaw": {"type": "number", "description": "Degrees round the model; 0 looks at its front, along -z."},
             "pitch": {"type": "number", "description": "Degrees above the model, -88 to 88."},
             "zoom": {"type": "number", "description": "1 fits the model; larger is closer (0.25 to 16)."},
@@ -134,7 +139,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: schema,
-        params_doc: "{canvas, from: {node, port}, shot: \"photo\"|\"views\", id: new NodeId, edge: new EdgeId, pos: {x, y}, yaw?, pitch?, zoom?, style?} -> {id}; adds a 3D photo (shot photo) or 3D view sheet (shot views: 4, 8 or 16 views round the model, the first at yaw) wired to the model output `from`, as one undo step. yaw and pitch are degrees, zoom 1 fits the model; omitted ones keep the node's defaults. The camera is saved on the new node, so re-running it draws the same image. It does not run: run the new node as usual.",
+        params_doc: "{canvas, from: {node, port}, shot: \"photo\"|\"views\"|\"turntable\", id: new NodeId, edge: new EdgeId, pos: {x, y}, yaw?, pitch?, zoom?, style?} -> {id}; adds a 3D photo (shot photo) or 3D view sheet (shot views: 4, 8 or 16 views round the model, the first at yaw) or a 3D turntable video (shot turntable) wired to the model output `from`, as one undo step. yaw and pitch are degrees, zoom 1 fits the model; omitted ones keep the node's defaults. The camera is saved on the new node, so re-running it draws the same capture sequence. It does not run: run the new node as usual.",
         enabled,
         run: capture,
     }]

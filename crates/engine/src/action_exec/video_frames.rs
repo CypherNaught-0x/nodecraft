@@ -461,7 +461,7 @@ impl LocalActions {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-mod native {
+pub(super) mod native {
     use super::super::timeline::native::{BUSY_WAIT, POLL, closed, message, service, wait};
     use super::super::video::{frame_for, quality};
     use super::reversible;
@@ -495,7 +495,11 @@ mod native {
     }
 
     /// The frame renderer for `spec`, once the service's one render slot is free.
-    fn renderer(service: &VideoService, spec: RenderSpec, cancelled: &dyn Fn() -> bool) -> Result<(FrameSender, VideoJob<RenderedVideo>), String> {
+    pub(in crate::action_exec) fn renderer(
+        service: &VideoService,
+        spec: RenderSpec,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(FrameSender, VideoJob<RenderedVideo>), String> {
         let started = Instant::now();
         loop {
             match service.render(spec) {
@@ -507,7 +511,13 @@ mod native {
 
     /// Hands frame `index` to the renderer, waiting while its queue is full. A renderer that
     /// stopped says why through its job.
-    fn push(sender: &mut FrameSender, job: &mut VideoJob<RenderedVideo>, index: u32, rgba: Vec<u8>, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
+    pub(in crate::action_exec) fn push(
+        sender: &mut FrameSender,
+        job: &mut VideoJob<RenderedVideo>,
+        index: u32,
+        rgba: Vec<u8>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(), String> {
         let mut packet = FramePacket { index, rgba: Arc::from(rgba) };
         loop {
             if cancelled() {

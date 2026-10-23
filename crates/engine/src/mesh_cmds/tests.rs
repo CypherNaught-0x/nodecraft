@@ -89,3 +89,19 @@ fn only_a_3d_output_is_captured_and_hostile_numbers_are_refused() {
     assert!((-180.0..=180.0).contains(&yaw), "{yaw}");
     assert_eq!((param(&photo, "pitch"), param(&photo, "zoom")), (Some(-MAX_PITCH), Some(0.25)));
 }
+#[test]
+fn a_turntable_saves_the_view_and_undo_redo_restore_its_node_and_edge_together() {
+    let mut s = session();
+    s.dispatch("mesh.capture", &capture("turntable", json!({"yaw":200.4,"pitch":30.6,"zoom":2.33,"style":"wireframe"}))).unwrap();
+    let saved = node(&s, CAPTURE);
+    assert_eq!(saved.kind, TURNTABLE);
+    assert_eq!(saved.outputs.first().unwrap().port_type.modality, Modality::Video);
+    assert_eq!((param(&saved, "start"), param(&saved, "pitch"), param(&saved, "zoom")), (Some(-160.0), Some(31.0), Some(2.35)));
+    assert_eq!(saved.params.get("style"), Some(&Value::Text("wireframe".into())));
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    let canvas = s.document().canvases().get(&CANVAS).unwrap();
+    assert!(canvas.nodes().get(&CAPTURE).is_none() && canvas.edges().is_empty());
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert_eq!(node(&s, CAPTURE), saved);
+    assert_eq!(s.document().canvases().get(&CANVAS).unwrap().edges().len(), 1);
+}
