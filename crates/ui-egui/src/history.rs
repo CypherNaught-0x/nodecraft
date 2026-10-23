@@ -106,13 +106,14 @@ pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Opt
 /// What the Copy menu offers for a result: each text or image output, or each such item of a
 /// list output (up to [`MAX_EXTRACT_ITEMS`]), labelled for the menu.
 pub fn copy_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>)> {
-    let copies = |value: &Value| match value {
-        Value::Text(_) => true,
-        Value::Media(asset) => asset.mime.essence().starts_with("image/"),
-        _ => false,
-    };
     let mut targets = Vec::new();
     for (port, value) in node.outputs.iter().zip(&generation.outputs) {
+        // As `history.copy` decides: text, or media from an image output.
+        let copies = |value: &Value| match value {
+            Value::Text(_) => true,
+            Value::Media(_) => port.port_type.modality == nodecraft_types::Modality::Image,
+            _ => false,
+        };
         match value {
             Value::List(items) => {
                 let items = || nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty());

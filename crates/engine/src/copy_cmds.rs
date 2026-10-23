@@ -12,6 +12,9 @@ use serde_json::{Value as Json, json};
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Widest or tallest image copied, in pixels: 8192² RGBA is 256 MiB on the clipboard.
 pub const MAX_SIDE: u32 = 8192;
+/// Most memory decoding may take: a 16-bit image, or an 8-bit one and its rotated copy, at
+/// [`MAX_SIDE`]. Kept well under what a browser tab can allocate.
+const MAX_DECODE_BYTES: u64 = 512 * 1024 * 1024;
 
 /// What `history.copy` puts on the clipboard, once read.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +79,10 @@ pub(crate) fn read(assets: &AssetStore, what: Copied) -> Result<Clip, Error> {
         Copied::Text(text) => return Ok(Clip::Text(text)),
         Copied::Image(asset) => asset,
     };
+    // Checked before opening: opening hashes every byte.
+    if assets.descriptor(&asset.hash).is_some_and(|descriptor| descriptor.bytes > MAX_IMAGE_BYTES as u64) {
+        return Err(too_big());
+    }
     let metrics = StreamMetrics::default();
     let verified = assets.open_verified(&asset, &TransferCancel::default(), &metrics)?;
     let length = verified.byte_len();
@@ -85,7 +92,7 @@ pub(crate) fn read(assets: &AssetStore, what: Copied) -> Result<Clip, Error> {
     let mut bytes = Vec::with_capacity(usize::try_from(length).unwrap_or(MAX_IMAGE_BYTES));
     std::io::Read::read_to_end(&mut std::io::Read::take(verified.reader(metrics), length), &mut bytes)
         .map_err(|_| Error::new(ErrorKind::Internal, "the image couldn't be read from the project"))?;
-    let limits = nodecraft_media::Limits { max_input_bytes: MAX_IMAGE_BYTES as u64, max_width: MAX_SIDE, max_height: MAX_SIDE, ..Default::default() };
+    let limits = nodecraft_media::Limits { max_input_bytes: MAX_IMAGE_BYTES as u64, max_width: MAX_SIDE, max_height: MAX_SIDE, max_alloc: MAX_DECODE_BYTES };
     let (_, image) = nodecraft_media::decode_image(&bytes, &limits).map_err(|error| match error {
         nodecraft_media::MediaError::TooLarge { .. } | nodecraft_media::MediaError::LimitExceeded(_) => too_big(),
         error => Error::new(ErrorKind::InvalidInput, format!("the image can't be read: {error}")),
@@ -97,7 +104,11 @@ pub(crate) fn read(assets: &AssetStore, what: Copied) -> Result<Clip, Error> {
 fn too_big() -> Error {
     Error::new(
         ErrorKind::Unsupported,
-        format!("images over {MAX_SIDE}×{MAX_SIDE} pixels or {} MiB don't copy; export the result instead", MAX_IMAGE_BYTES / (1024 * 1024)),
+        format!(
+            "images over {MAX_SIDE}×{MAX_SIDE} pixels, {} MiB, or {} MiB once decoded don't copy; export the result instead",
+            MAX_IMAGE_BYTES / (1024 * 1024),
+            MAX_DECODE_BYTES / (1024 * 1024)
+        ),
     )
 }
 

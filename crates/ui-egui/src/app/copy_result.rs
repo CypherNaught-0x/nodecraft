@@ -31,12 +31,16 @@ impl NodeCraftApp {
             }
             Clip::Image { width, height, rgba } => {
                 let size = [usize::try_from(width).unwrap_or(0), usize::try_from(height).unwrap_or(0)];
-                // `from_rgba_unmultiplied` asserts the length; a mismatch is reported instead.
+                // The constructor asserts the length; a mismatch is reported instead.
                 if size[0].checked_mul(size[1]).and_then(|pixels| pixels.checked_mul(4)) != Some(rgba.len()) {
                     self.notice = Some("The image couldn't be copied.".into());
                     return;
                 }
-                ctx.copy_image(egui::ColorImage::from_rgba_unmultiplied(size, &rgba));
+                // Kept byte for byte: the backends hand `Color32`'s bytes to the clipboard as
+                // straight RGBA, so premultiplying here would darken see-through pixels.
+                let image = egui::ColorImage::from_rgba_premultiplied(size, &rgba);
+                drop(rgba);
+                ctx.copy_image(image);
                 self.notice = Some(format!("Copied the {width}×{height} image."));
             }
         }

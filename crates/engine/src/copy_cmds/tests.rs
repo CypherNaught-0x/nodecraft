@@ -20,6 +20,11 @@ fn wide() -> Vec<u8> {
     nodecraft_media::encode_png(width, 1, &vec![0; width as usize * 4], &nodecraft_media::Limits::default()).unwrap()
 }
 
+/// A PNG cut short after its header: recognised, but its pixels can't be read.
+fn broken() -> Vec<u8> {
+    png().get(..40).unwrap().to_vec()
+}
+
 /// A 2×1 PNG: one red pixel, one half-transparent blue one.
 fn png() -> Vec<u8> {
     nodecraft_media::encode_png(2, 1, &[255, 0, 0, 255, 0, 0, 255, 128], &nodecraft_media::Limits::default()).unwrap()
@@ -38,7 +43,7 @@ fn session(clipboard: Option<Rc<RefCell<Vec<Clip>>>>) -> Session {
     node.outputs = vec![Port { name: "out".into(), port_type: PortType { modality: Modality::Image, many: false } }];
     node.history.push(Generation::new(IMAGE, vec![Value::Media(asset(&png(), "image/png"))]));
     node.history.push(Generation::new(TEXT, vec![Value::Text("a quiet forest".into())]));
-    node.history.push(Generation::new(BROKEN, vec![Value::Media(asset(b"not a picture", "image/png"))]));
+    node.history.push(Generation::new(BROKEN, vec![Value::Media(asset(&broken(), "image/png"))]));
     node.history.push(Generation::new(WIDE, vec![Value::Media(asset(&wide(), "image/png"))]));
     Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
     let mut clip = Node::new(NodeId::from_bytes([7; 16]), "test.gen");
@@ -46,7 +51,7 @@ fn session(clipboard: Option<Rc<RefCell<Vec<Clip>>>>) -> Session {
     clip.history.push(Generation::new(VIDEO, vec![Value::Media(asset(b"moov", "video/mp4"))]));
     Change::AddNode { canvas: C, node: clip }.apply(&mut project).unwrap();
     let mut session = Session::new(project).unwrap();
-    for bytes in [png(), b"not a picture".to_vec(), b"moov".to_vec(), wide()] {
+    for bytes in [png(), broken(), b"moov".to_vec(), wide()] {
         session.import_asset(&bytes).unwrap();
     }
     if let Some(copied) = clipboard {

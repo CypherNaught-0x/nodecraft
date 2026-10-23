@@ -11,10 +11,11 @@ const IMAGE: nodecraft_types::GenerationId = nodecraft_types::GenerationId::from
 const TEXT: nodecraft_types::GenerationId = nodecraft_types::GenerationId::from_bytes([73; 16]);
 const VIDEO: nodecraft_types::GenerationId = nodecraft_types::GenerationId::from_bytes([74; 16]);
 
-/// A node whose results are a 2×1 PNG, a text and a video, the text active.
+/// A node whose results are a 2×1 PNG (its second pixel half see-through) and a text, the text
+/// active, and a video node with one result.
 fn with_results() -> Harness<'static, NodeCraftApp> {
     let canvas = CanvasId::from_bytes([70; 16]);
-    let png = nodecraft_media::encode_png(2, 1, &[255, 0, 0, 255, 0, 0, 255, 255], &Default::default()).unwrap();
+    let png = nodecraft_media::encode_png(2, 1, &[255, 0, 0, 255, 0, 0, 255, 128], &Default::default()).unwrap();
     let mut project = Project::new(ProjectId::from_bytes([75; 16]), "Copy").unwrap();
     Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
     let mut node = nodecraft_graph::Node::new(NODE, "generation.image");
@@ -26,9 +27,14 @@ fn with_results() -> Harness<'static, NodeCraftApp> {
     let video = nodecraft_types::AssetRef { hash: scratch.import_asset(b"moov").unwrap(), mime: "video/mp4".parse().unwrap(), meta: Default::default() };
     node.history.push(nodecraft_graph::Generation::new(IMAGE, vec![Value::Media(image)]));
     node.history.push(nodecraft_graph::Generation::new(TEXT, vec![Value::Text("a quiet forest".into())]));
-    node.history.push(nodecraft_graph::Generation::new(VIDEO, vec![Value::Media(video)]));
     node.active = Some(TEXT);
     Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+    let mut clip = nodecraft_graph::Node::new(NodeId::from_bytes([77; 16]), "generation.video");
+    clip.pos = nodecraft_graph::Position { x: 0.0, y: 400.0 };
+    clip.outputs =
+        vec![nodecraft_graph::Port { name: "out".into(), port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Video, many: false } }];
+    clip.history.push(nodecraft_graph::Generation::new(VIDEO, vec![Value::Media(video)]));
+    Change::AddNode { canvas, node: clip }.apply(&mut project).unwrap();
     let mut session = Session::new(project).unwrap();
     session.import_asset(&png).unwrap();
     session.import_asset(b"moov").unwrap();
@@ -54,14 +60,14 @@ fn the_chip_menu_copies_text_and_image_results() {
     let mut h = with_results();
     let revision = h.state().session.revision();
 
-    let text = copy(&mut h, "Result 2 of 3, active");
+    let text = copy(&mut h, "Result 2 of 2, active");
     assert!(matches!(text.as_slice(), [egui::OutputCommand::CopyText(t)] if t == "a quiet forest"), "{text:?}");
     assert_eq!(h.state().notice.as_deref(), Some("Copied the text."));
 
-    let image = copy(&mut h, "Result 1 of 3");
+    let image = copy(&mut h, "Result 1 of 2");
     let [egui::OutputCommand::CopyImage(image)] = image.as_slice() else { panic!("{image:?}") };
     assert_eq!(image.size, [2, 1]);
-    assert_eq!(image.pixels, vec![egui::Color32::from_rgb(255, 0, 0), egui::Color32::from_rgb(0, 0, 255)]);
+    assert_eq!(image.pixels, vec![egui::Color32::from_rgb(255, 0, 0), egui::Color32::from_rgba_premultiplied(0, 0, 255, 128)]);
     assert_eq!(h.state().notice.as_deref(), Some("Copied the 2×1 image."));
     assert_eq!(h.state().session.revision(), revision, "copying doesn't edit the project");
 }
@@ -69,7 +75,7 @@ fn the_chip_menu_copies_text_and_image_results() {
 #[test]
 fn a_video_result_offers_no_copy() {
     let mut h = with_results();
-    h.get_by_label("Result 3 of 3").click_secondary();
+    h.get_by_label("Result 1 of 1").click_secondary();
     h.run();
     assert!(h.get_by_label("Copy").accesskit_node().is_disabled());
 }

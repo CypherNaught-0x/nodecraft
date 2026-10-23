@@ -293,6 +293,9 @@ fn template(id: &str) -> (Session, Value) {
         session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
         session.register_run_host(|_| Ok(json!({"run":"accepted"}))).unwrap();
     }
+    if id == "history.copy" {
+        session.register_clipboard_host(|_| Ok(())).unwrap();
+    }
     if id == "usage.unsettled" || id == "usage.resolve_charge" {
         use nodecraft_engine::resolve_cmds::*;
         // One reconciled open charge, so adversarial params reach the token and amount checks.
