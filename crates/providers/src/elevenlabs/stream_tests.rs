@@ -248,3 +248,35 @@ fn only_speech_streams_and_only_when_previews_are_wanted() {
     let sent: Value = serde_json::from_slice(&r.body).unwrap();
     assert_eq!(sent["text"], "Hello there.");
 }
+
+/// A transport that can't stream: it keeps [`Http::send_streaming_no_redirect`]'s default, which
+/// hands the whole reply over as one chunk once it has all arrived.
+struct AtOnce(Vec<u8>, Mutex<usize>);
+impl Http for AtOnce {
+    fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        panic!("redirect-following fallback forbidden")
+    }
+    fn send_no_redirect(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        *self.1.lock().unwrap() += 1;
+        let body = self.0.clone();
+        Box::pin(async move { Ok(HttpResponse { status: 200, headers: vec![], body }) })
+    }
+}
+
+#[test]
+fn a_transport_that_cant_stream_previews_nothing_and_never_the_whole_reply() {
+    // #875: a preview equal to the whole reply would play the result before it is one.
+    let body = speech(300 * 1024);
+    let http = Arc::new(AtOnce(body.clone(), Mutex::default()));
+    let p = ElevenLabs::with_limits(Secret::new(KEY).unwrap(), http.clone(), Limits::HARD).unwrap();
+    let mut updates = Vec::new();
+    let result = block_on(run_to_completion(&p, &job(V3), &Never, &Still, previewing(), |u| updates.push(u))).unwrap();
+    assert_eq!(*http.1.lock().unwrap(), 1);
+    assert!(previews(&updates).is_empty(), "{} previews", updates.len());
+    let [Output::Bytes { bytes, .. }] = result.outputs.as_slice() else { panic!("one MP3") };
+    assert_eq!(&bytes[..], &body[..]);
+    // A streaming transport never previews its last chunk either: every preview is shorter.
+    let (_, updates) = run(&Trickle::new(200, &body, 64 * 1024), Limits::HARD, previewing(), &job(V3));
+    let shown = previews(&updates);
+    assert!(!shown.is_empty() && shown.iter().all(|p| p.len() < body.len()), "{:?}", shown.iter().map(|p| p.len()).collect::<Vec<_>>());
+}

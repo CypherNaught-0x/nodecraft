@@ -22,6 +22,8 @@ pub use generate::Roles;
 pub use listed::Listed;
 
 pub const BODY_MIN_ZOOM: f32 = 0.55;
+/// What a speech card with no sound yet shows where its sound will play (#875).
+pub const NO_SOUND: &str = "No sound yet";
 pub const MIN_TEXT_PX: f32 = 5.0;
 
 #[derive(Default)]
@@ -128,7 +130,10 @@ pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
     let shows = nodecraft_engine::split::image_of(node).is_some()
         || crate::video::video_of(node).is_some()
         || crate::audio::audio_of(node).is_some()
-        || crate::mesh_view::mesh_of(node).is_some();
+        || crate::mesh_view::mesh_of(node).is_some()
+        // A speech card always has room for its sound, so the card doesn't jump when a preview
+        // of the first one starts playing (#875).
+        || node.kind == nodecraft_nodes::generation::AUDIO_KIND;
     let preview = if shows { t.card_preview_height } else { 0.0 };
     // A text card always has room for its answer, so the card doesn't jump when one starts
     // streaming in (#504).
@@ -379,6 +384,11 @@ pub fn show(
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
             inner = rest;
             crate::mesh_view::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), view.zoom, mesh, t);
+        } else if node.kind == nodecraft_nodes::generation::AUDIO_KIND {
+            // The room `world_size` keeps for the sound to come.
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            show_audio(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &crate::audio::AudioView::Unavailable(NO_SOUND), &mut intents, t);
         }
         if node.kind == nodecraft_nodes::generation::TEXT_KIND {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);

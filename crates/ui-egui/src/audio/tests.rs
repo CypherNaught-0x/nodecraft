@@ -1,4 +1,5 @@
 use super::*;
+use nodecraft_engine::run_jobs::{JobKey, Take};
 use nodecraft_graph::Generation;
 use nodecraft_types::Blake3;
 use nodecraft_types::{GenerationId, NodeId};
@@ -73,6 +74,136 @@ fn unset_tools_say_how_to_set_them_and_start_nothing() {
     audios.act(&ctx, NodeId::from_bytes([1; 16]), AudioIntent::Toggle);
     audios.act(&ctx, NodeId::from_bytes([9; 16]), AudioIntent::Seek(u64::MAX));
     assert_eq!(audios.test_counts(), (0, 0, 0, false));
+}
+
+#[test]
+fn a_preview_plays_on_into_its_next_preview_and_its_jobs_result_only() {
+    use nodecraft_exec::scheduler::JobId;
+    let job = Take { job: JobKey { run: 1, job: JobId(1) }, attempt: 1 };
+    let other = Take { job: JobKey { run: 2, job: JobId(1) }, attempt: 1 };
+    let retry = Take { attempt: 2, ..job };
+    let [a, b] = [Blake3::from_bytes([1; 32]), Blake3::from_bytes([2; 32])];
+    assert_eq!(change(a, Some(job), a, Some(job)), Change::Same);
+    assert_eq!(change(a, None, a, None), Change::Same);
+    // The sound so far grew, or the job finished with its result: play on from the same place.
+    assert_eq!(change(a, Some(job), b, Some(job)), Change::Continue);
+    // Another job's sound, a sound no job is making, or a result after a result: from the start.
+    assert_eq!(change(a, Some(job), b, Some(other)), Change::Restart);
+    // A retry of the same job is another take: it starts again, not where the first one was.
+    assert_eq!(change(a, Some(job), b, Some(retry)), Change::Restart);
+    assert_eq!(change(a, Some(job), b, None), Change::Restart);
+    assert_eq!(change(a, None, b, Some(job)), Change::Restart, "only a preview plays on");
+    assert_eq!(change(a, None, b, None), Change::Restart);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn unset_tools_say_so_for_a_preview_too_and_keep_nothing() {
+    use nodecraft_exec::scheduler::JobId;
+    let ctx = egui::Context::default();
+    let mut audios = Audios::default();
+    let bytes: Arc<[u8]> = Arc::from(&b"ID3\x04\0\0\0\0\0\0\xFF\xFB\x90\x64"[..]);
+    let preview = nodecraft_engine::run_jobs::AudioPreview {
+        take: Take { job: JobKey { run: 1, job: JobId(1) }, attempt: 1 },
+        mime: "audio/mpeg",
+        hash: Blake3::from_bytes(*blake3::hash(&bytes).as_bytes()),
+        bytes,
+    };
+    assert_eq!(audios.view_preview(&ctx, NodeId::from_bytes([1; 16]), &preview), AudioView::Unavailable(UNCONFIGURED));
+    assert_eq!(audios.test_counts(), (0, 0, 0, false));
+}
+
+/// A preview of an MP3 plays, then its job's result takes over at the same place (#875), and the
+/// preview is let go. Opt-in like the other real-tool tests:
+/// `NODECRAFT_VIDEO_TEST_FFMPEG=/abs/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/abs/ffprobe
+/// cargo test -p nodecraft-ui-egui preview_then_result -- --ignored`. It plays through the
+/// default sound device when there is one.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+#[ignore = "needs installed ffmpeg and ffprobe"]
+fn actual_preview_then_result_plays_on_from_the_same_place() {
+    use nodecraft_exec::scheduler::JobId;
+    let ffmpeg = std::path::PathBuf::from(std::env::var("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let ffprobe = std::path::PathBuf::from(std::env::var("NODECRAFT_VIDEO_TEST_FFPROBE").unwrap());
+    let path = std::env::temp_dir().join(format!("nodecraft-audio875-{}.mp3", std::process::id()));
+    let made = std::process::Command::new(&ffmpeg)
+        .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=6", "-c:a", "libmp3lame", "-b:a", "128k", "-write_xing", "0"])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let whole = std::fs::read(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    // Half the MP3, cut mid-frame, as a stream would be. A stream can't know its length up
+    // front, so it has no Xing header saying how long the whole is; neither does this one.
+    let half: Arc<[u8]> = Arc::from(&whole[..whole.len() / 2 + 7]);
+    let job = Take { job: JobKey { run: 1, job: JobId(1) }, attempt: 1 };
+    let preview =
+        nodecraft_engine::run_jobs::AudioPreview { take: job, mime: "audio/mpeg", hash: Blake3::from_bytes(*blake3::hash(&half).as_bytes()), bytes: half };
+    let mut session =
+        nodecraft_engine::Session::new(nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([75; 16]), "Speech").unwrap()).unwrap();
+    let hash = session.import_asset(&whole).unwrap();
+    let result = AssetRef { hash, mime: "audio/mpeg".parse().unwrap(), meta: Default::default() };
+
+    let ctx = egui::Context::default();
+    let mut audios = Audios::default();
+    audios.configure(Some((&ffmpeg, &ffprobe)));
+    let card = NodeId::from_bytes([1; 16]);
+    let wait = |audios: &mut Audios, view: &mut dyn FnMut(&mut Audios) -> AudioView, done: &dyn Fn(&AudioView) -> bool| {
+        for _ in 0..2000 {
+            audios.poll(&ctx);
+            let shown = view(audios);
+            if done(&shown) {
+                return shown;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("never got there");
+    };
+    let shown = wait(&mut audios, &mut |a| a.view_preview(&ctx, card, &preview), &|v| matches!(v, AudioView::Sound { .. }));
+    let AudioView::Sound { peaks, duration_us, .. } = shown else { panic!("not a sound") };
+    assert!(peaks.is_none(), "a preview has no waveform");
+    assert!((2_000_000..4_000_000).contains(&duration_us), "about three of six seconds: {duration_us}");
+    audios.act(&ctx, card, AudioIntent::Seek(1_500_000));
+    audios.act(&ctx, card, AudioIntent::Toggle);
+    let playing = audios.test_counts().3;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // The job finishes: its result takes over from where the preview was.
+    let read = |session: &nodecraft_engine::Session| session.assets().preview_read(&result);
+    let shown = wait(
+        &mut audios,
+        &mut |a| a.view_result(&ctx, card, &result, Some(job), || read(&session)),
+        &|v| matches!(v, AudioView::Sound { duration_us, .. } if *duration_us > 5_000_000),
+    );
+    let AudioView::Sound { position_us, playing: still, .. } = shown else { panic!("not a sound") };
+    assert!(position_us >= 1_500_000, "it plays on from the same place, not the start: {position_us}");
+    assert_eq!(still, playing, "playing on if it played");
+    assert_eq!(audios.test_counts().0, 1, "the preview is let go once the result plays");
+
+    // Another card plays a preview whose job then ends with nothing for the card to show.
+    let other = NodeId::from_bytes([2; 16]);
+    wait(&mut audios, &mut |a| a.view_preview(&ctx, other, &preview), &|v| matches!(v, AudioView::Sound { .. }));
+    audios.act(&ctx, other, AudioIntent::Toggle);
+    assert!(audios.test_counts().3, "it plays");
+    audios.let_go(other);
+    let (sources, _, players, playing) = audios.test_counts();
+    assert_eq!((sources, players, playing), (1, 1, false), "it stops, and the preview's bytes go with its player");
+    audios.stop();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_preview_whose_job_ended_is_let_go_and_nothing_else_is() {
+    use nodecraft_exec::scheduler::JobId;
+    let mut audios = Audios::default();
+    let card = NodeId::from_bytes([1; 16]);
+    audios.let_go(card);
+    assert_eq!(audios.test_counts(), (0, 0, 0, false), "a card with no player has nothing to let go");
+    audios.test_preview_player(card, Blake3::from_bytes([3; 32]), Take { job: JobKey { run: 1, job: JobId(1) }, attempt: 1 });
+    assert_eq!(audios.test_counts().2, 1);
+    audios.let_go(card);
+    assert_eq!(audios.test_counts(), (0, 0, 0, false), "its player is gone, so nothing plays it on");
 }
 
 #[cfg(not(target_arch = "wasm32"))]

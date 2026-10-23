@@ -166,13 +166,16 @@ impl ElevenLabs {
                 failure = Some(e.clone());
                 return Err(e);
             }
-            body.extend_from_slice(chunk);
+            // What came before this chunk is previewed only once more has arrived, so the last
+            // chunk never makes one (#875): a transport that can't stream hands the whole reply
+            // over as one chunk, and a preview of all of it would be the result played twice.
             // Only audio that reads as MP3 is previewed; the result is still judged whole.
-            if previews < MAX_PREVIEWS && body.len() >= next && nodecraft_media::sniff(&body).map(|s| s.mime) == Some("audio/mpeg") {
+            if !chunk.is_empty() && previews < MAX_PREVIEWS && body.len() >= next && nodecraft_media::sniff(&body).map(|s| s.mime) == Some("audio/mpeg") {
                 context.push_preview(Output::Bytes { mime: "audio/mpeg".into(), bytes: Arc::from(body.as_slice()) });
                 previews = previews.saturating_add(1);
                 next = body.len().saturating_mul(2);
             }
+            body.extend_from_slice(chunk);
             Ok(())
         };
         let head = self.http.send_streaming_no_redirect(request, &mut sink).await;

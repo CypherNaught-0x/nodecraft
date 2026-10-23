@@ -1142,12 +1142,14 @@ the reply. A preview is reported only once the audio sniffs as MP3. The reply is
 capped at the same 32 MiB and read exactly as the one sent at once, so the result is unchanged. It
 goes through the same no-redirect transport; a stream cut short is a lost reply, possibly billed,
 and keeps the previews already reported. Sound effects, music and the voice changer never stream.
-Nothing shows a partial audio result yet, so the app's runner leaves previews off.
+The audio before each chunk is previewed only once that chunk arrives, so the last chunk never
+makes a preview: a transport that can't stream hands the whole reply over as one chunk and makes
+none, rather than one equal to the result. The desktop app's runner asks for previews and its
+speech cards play them while the sound arrives (#875); the CLI's and the browser's don't.
 
-**Not wired yet:** there is no Generate audio card, so these models (like fal's Kokoro) are
-reachable through the catalog and the engine but not from a card on the canvas.
-
-The ignored live test speaks one short sentence with Flash v2.5 (about 0.002 USD). It requires
+The ignored live tests speak one short sentence with Flash v2.5 (about 0.002 USD) and stream one
+through `/stream` with Eleven v3 as `mp3_44100_128`, checking that its previews grow and are never
+the whole reply. They require
 `NODECRAFT_LIVE_ELEVENLABS=1` and `ELEVENLABS_API_KEY`, plus explicit human spending
 authorization, and never runs in CI:
 
