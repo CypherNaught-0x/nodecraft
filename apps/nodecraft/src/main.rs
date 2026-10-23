@@ -91,7 +91,15 @@ fn main() -> ExitCode {
     }
     // Restarting after an update (#540): the copy that updated waits for this one to exit.
     if let Some((msi, blake3, exe)) = &args.finish_update {
-        nodecraft_ui_egui::finish_update(msi, blake3, exe, args.wait_for.as_deref().unwrap_or_default(), args.project.as_deref(), args.control);
+        nodecraft_ui_egui::finish_update(
+            msi,
+            blake3,
+            exe,
+            args.wait_for.as_deref().unwrap_or_default(),
+            args.project.as_deref(),
+            args.control,
+            (&args.read_roots, &args.roots),
+        );
         return ExitCode::SUCCESS;
     }
     if let Some(pid) = &args.wait_for {
@@ -118,6 +126,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Keep the startup-validated canonical grants, not the original spelling of a symlink
+    // that could point somewhere else by the time an update restarts the app.
+    nodecraft_ui_egui::remember_update_roots(control, roots.read_roots(), roots.write_roots());
     let join = args.join.then(read_join_link);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -296,6 +307,10 @@ mod tests {
         assert_eq!(args.roots, [std::path::PathBuf::from(work), refs.into()]);
         assert_eq!(args.read_roots, [std::path::PathBuf::from(refs)]);
         assert!(!args.root_missing);
+        let helper = parse(&["--finish-update", "u.msi", "ab12", "app.exe", "--wait-for", "7", "--control", "--root", work, "--read-root", refs]);
+        assert!(helper.finish_update.is_some());
+        assert_eq!(helper.roots, [std::path::PathBuf::from(work)]);
+        assert_eq!(helper.read_roots, [std::path::PathBuf::from(refs)]);
         assert!(parse(&["--control", "--root"]).root_missing);
         assert!(parse(&["--read-root", "--control"]).root_missing, "a flag isn't a folder");
     }

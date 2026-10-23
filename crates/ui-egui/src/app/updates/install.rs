@@ -12,7 +12,7 @@
 //!   the MSI (whose `MajorUpgrade` replaces the old version), then starts NodeCraft again.
 //!
 //! Every new process is started with `--wait-for <pid>`, so it opens the project only after this
-//! one has closed it, and with `--control` when this one had it. What happened is written to
+//! one has closed it, and with `--control` and its allowed folders when this one had them. What happened is written to
 //! `last-update.json` in the updates folder, and the next start says so.
 //!
 //! A staged update can wait days for the restart, in a folder the person can write to, so it is
@@ -426,17 +426,56 @@ pub(crate) fn apply(staged: &Staged, updates: &Path) -> Result<Relaunch, Error> 
     Ok(relaunch)
 }
 
-/// Starts the new copy (or the Windows helper); it waits for this process to exit. `control`:
-/// this copy was started with `--control`, so the new one is too.
+/// Snapshot of the startup-validated, canonical grants. Original symlink spellings must not
+/// silently grant a different folder if a link changes while an update is staged.
+static UPDATE_ROOTS: std::sync::OnceLock<(Vec<PathBuf>, Vec<PathBuf>)> = std::sync::OnceLock::new();
+
+/// Called after startup has validated the control folders. A relaunch reuses only these grants.
+pub fn remember_update_roots(control: bool, read: &[PathBuf], write: &[PathBuf]) {
+    let _ = UPDATE_ROOTS.set(if control { (read.to_vec(), write.to_vec()) } else { (Vec::new(), Vec::new()) });
+}
+
+/// Starts the new copy (or the Windows helper); it waits for this process to exit.
 pub(crate) fn relaunch(relaunch: &Relaunch, project: Option<&Path>, control: bool) -> Result<(), Error> {
-    command(relaunch, project, control, &std::process::id().to_string())
+    let (read, write) = UPDATE_ROOTS.get().map_or((&[][..], &[][..]), |(read, write)| (read.as_slice(), write.as_slice()));
+    if control {
+        check_relaunch_roots(read, write)?;
+    }
+    command(relaunch, project, control, read, write, &std::process::id().to_string())
         .spawn()
         .map(drop)
         .map_err(|e| Error::new(ErrorKind::Internal, format!("NodeCraft couldn't start again after updating: {e}; open it yourself")))
 }
 
+/// Refuse to carry a grant to a different folder if a canonical path was replaced by a link,
+/// or if its folder disappeared. The new app validates existence again on startup.
+fn check_relaunch_roots(read: &[PathBuf], write: &[PathBuf]) -> Result<(), Error> {
+    for root in read.iter().chain(write) {
+        if std::fs::canonicalize(root).ok().as_deref() != Some(root.as_path()) || !root.is_dir() {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!("allowed folder {} changed or disappeared; restart NodeCraft manually with the folders you want to allow", root.display()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Append folder grants only with control mode. The final Windows launch uses this too.
+fn append_grants(command: &mut std::process::Command, control: bool, read: &[PathBuf], write: &[PathBuf]) {
+    if control {
+        command.arg("--control");
+        for root in write {
+            command.arg("--root").arg(root);
+        }
+        for root in read {
+            command.arg("--read-root").arg(root);
+        }
+    }
+}
+
 /// The command [`relaunch`] starts, for this process's `pid`.
-fn command(relaunch: &Relaunch, project: Option<&Path>, control: bool, pid: &str) -> std::process::Command {
+fn command(relaunch: &Relaunch, project: Option<&Path>, control: bool, read: &[PathBuf], write: &[PathBuf], pid: &str) -> std::process::Command {
     let mut command = match relaunch {
         Relaunch::Bundle(bundle) => {
             let mut command = std::process::Command::new("/usr/bin/open");
@@ -451,9 +490,7 @@ fn command(relaunch: &Relaunch, project: Option<&Path>, control: bool, pid: &str
         }
     };
     command.args(["--wait-for", pid]);
-    if control {
-        command.arg("--control");
-    }
+    append_grants(&mut command, control, read, write);
     if let Some(project) = project {
         command.arg(project);
     }
@@ -640,10 +677,11 @@ fn hold_checked(msi: &Path, blake3: &str) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
-/// `--finish-update <msi> <blake3> <exe> --wait-for <pid> [--control] [project]` (Windows): run by
+/// `--finish-update <msi> <blake3> <exe> --wait-for <pid> [--control --root/--read-root ...] [project]` (Windows): run by
 /// a copy of the app from the updates folder, so the MSI can replace the installed executable.
 /// The MSI is run only while it is still the one the feed signed.
-pub fn finish_update(msi: &Path, blake3: &str, exe: &Path, pid: &str, project: Option<&Path>, control: bool) {
+pub fn finish_update(msi: &Path, blake3: &str, exe: &Path, pid: &str, project: Option<&Path>, control: bool, roots: (&[PathBuf], &[PathBuf])) {
+    let (read, write) = roots;
     wait_for_exit(pid);
     let to = msi.file_stem().map(|stem| stem.to_string_lossy().trim_start_matches("nodecraft-").to_owned()).unwrap_or_default();
     let held = hold_checked(msi, blake3);
@@ -657,16 +695,27 @@ pub fn finish_update(msi: &Path, blake3: &str, exe: &Path, pid: &str, project: O
     if let Some(updates) = msi.parent().filter(|_| error.is_some()) {
         write_last(updates, &LastUpdate { from: VERSION.into(), to, error });
     }
-    let mut command = std::process::Command::new(exe);
-    if control {
-        command.arg("--control");
+    // The helper runs later than the first relaunch; never let a newly replaced symlink
+    // silently redirect a grant. Start the app without control in that case.
+    let control = if control && check_relaunch_roots(read, write).is_err() {
+        log::error!("allowed folders changed during the update; restarting without control access; relaunch manually with the folders you want to allow");
+        false
+    } else {
+        control
+    };
+    if let Err(e) = installed_command(exe, project, control, read, write).spawn() {
+        log::error!("NodeCraft couldn't start after updating: {e}");
     }
+}
+
+/// The installed Windows copy's command line after the helper has finished.
+fn installed_command(exe: &Path, project: Option<&Path>, control: bool, read: &[PathBuf], write: &[PathBuf]) -> std::process::Command {
+    let mut command = std::process::Command::new(exe);
+    append_grants(&mut command, control, read, write);
     if let Some(project) = project {
         command.arg(project);
     }
-    if let Err(e) = command.spawn() {
-        log::error!("NodeCraft couldn't start after updating: {e}");
-    }
+    command
 }
 
 /// Why `msiexec` didn't install, from how it exited.

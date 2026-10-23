@@ -35,4 +35,4 @@ mod web_storage;
 pub use app::NodeCraftApp;
 /// The update restart's helper modes, which the desktop app's `main` runs before any window (#540).
 #[cfg(not(target_arch = "wasm32"))]
-pub use app::updates::install::{finish_update, wait_for_exit};
+pub use app::updates::install::{finish_update, remember_update_roots, wait_for_exit};

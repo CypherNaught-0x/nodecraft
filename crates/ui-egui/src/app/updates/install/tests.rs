@@ -261,15 +261,80 @@ fn the_helper_checks_the_msi_again_while_holding_it() {
 fn a_relaunch_keeps_control_and_the_project() {
     let project = Path::new("a.ncraft");
     let args = |command: &std::process::Command| command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
-    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), Some(project), true, "42");
-    assert_eq!(args(&exec), ["--wait-for", "42", "--control", "a.ncraft"]);
-    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), None, false, "42");
-    assert_eq!(args(&exec), ["--wait-for", "42"]);
+    let read = vec![PathBuf::from("/reference materials"), PathBuf::from("/sources")];
+    let write = vec![PathBuf::from("/working files")];
+    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), Some(project), true, &read, &write, "42");
+    assert_eq!(
+        args(&exec),
+        ["--wait-for", "42", "--control", "--root", "/working files", "--read-root", "/reference materials", "--read-root", "/sources", "a.ncraft"]
+    );
+    let bundle = command(&Relaunch::Bundle("NodeCraft.app".into()), Some(project), true, &read, &write, "42");
+    assert_eq!(
+        args(&bundle),
+        [
+            "-n",
+            "NodeCraft.app",
+            "--args",
+            "--wait-for",
+            "42",
+            "--control",
+            "--root",
+            "/working files",
+            "--read-root",
+            "/reference materials",
+            "--read-root",
+            "/sources",
+            "a.ncraft"
+        ]
+    );
+    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), Some(project), false, &read, &write, "42");
+    assert_eq!(args(&exec), ["--wait-for", "42", "a.ncraft"], "no control means no grants");
     let helper = Relaunch::Helper { helper: "helper.exe".into(), msi: "u.msi".into(), blake3: "ab12".into(), exe: "NodeCraft.exe".into() };
     assert_eq!(
-        args(&command(&helper, Some(project), true, "7")),
-        ["--finish-update", "u.msi", "ab12", "NodeCraft.exe", "--wait-for", "7", "--control", "a.ncraft"]
+        args(&command(&helper, Some(project), true, &read, &write, "7")),
+        [
+            "--finish-update",
+            "u.msi",
+            "ab12",
+            "NodeCraft.exe",
+            "--wait-for",
+            "7",
+            "--control",
+            "--root",
+            "/working files",
+            "--read-root",
+            "/reference materials",
+            "--read-root",
+            "/sources",
+            "a.ncraft"
+        ]
     );
+    assert_eq!(
+        args(&installed_command(Path::new("NodeCraft.exe"), Some(project), true, &read, &write)),
+        ["--control", "--root", "/working files", "--read-root", "/reference materials", "--read-root", "/sources", "a.ncraft"]
+    );
+    assert_eq!(args(&installed_command(Path::new("NodeCraft.exe"), None, false, &read, &write)), Vec::<String>::new());
+    assert_eq!(args(&command(&helper, None, false, &read, &write, "7")), ["--finish-update", "u.msi", "ab12", "NodeCraft.exe", "--wait-for", "7"]);
+}
+
+#[test]
+fn relaunch_refuses_a_missing_or_redirected_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let granted = dir.path().join("granted");
+    let other = dir.path().join("other");
+    std::fs::create_dir(&granted).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    // macOS tempdirs may live under a symlinked /var; startup stores canonical paths.
+    let granted = std::fs::canonicalize(granted).unwrap();
+    let write = vec![granted.clone()];
+    assert!(check_relaunch_roots(&[], &write).is_ok());
+    std::fs::remove_dir(&granted).unwrap();
+    assert!(check_relaunch_roots(&[], &write).unwrap_err().message.contains("restart NodeCraft manually"));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&other, &granted).unwrap();
+        assert!(check_relaunch_roots(&[], &write).is_err(), "a changed link must not grant its new destination");
+    }
 }
 
 #[test]
