@@ -274,6 +274,7 @@ fn ask(shared: &Rc<RefCell<Shared>>, request: &serde_json::Value) -> Result<serd
                     .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "no relay to share through: give one, or set `[share] relay` in settings"))?,
             };
             let relay = relay_address(&relay)?;
+            reachable(&relay)?;
             shared.live = true;
             shared.status = json!({"state": "connecting"});
             shared.asks.push_back(Ask::Start(relay));
@@ -281,6 +282,7 @@ fn ask(shared: &Rc<RefCell<Shared>>, request: &serde_json::Value) -> Result<serd
         }
         Some("join") => {
             let link = request.get("link").and_then(serde_json::Value::as_str).unwrap_or_default().parse::<JoinLink>()?;
+            reachable(link.relay())?;
             shared.asks.push_back(Ask::Join(link));
             Ok(json!({"opening": true}))
         }
@@ -293,6 +295,39 @@ fn ask(shared: &Rc<RefCell<Shared>>, request: &serde_json::Value) -> Result<serd
         }
         _ => Err(Error::new(ErrorKind::InvalidInput, "a live sharing request isn't readable")),
     }
+}
+
+/// Whether this build can reach `relay`, told when asked rather than after: the desktop has no
+/// TLS, so no `wss://`; a page served over https may open only `wss://`, or `ws://` to this
+/// machine.
+fn reachable(relay: &str) -> Result<(), Error> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let (browser, secure_page) = (false, false);
+    #[cfg(target_arch = "wasm32")]
+    let (browser, secure_page) = (true, web_sys::window().and_then(|w| w.location().protocol().ok()).is_some_and(|p| p == "https:"));
+    can_reach(relay, browser, secure_page)
+}
+
+fn can_reach(relay: &str, browser: bool, secure_page: bool) -> Result<(), Error> {
+    if !browser && relay.starts_with("wss://") {
+        return Err(Error::new(ErrorKind::Unsupported, "the desktop app can't reach a relay over wss:// yet; use a ws:// address"));
+    }
+    if browser && secure_page && !relay.starts_with("wss://") && !on_this_machine(relay) {
+        return Err(Error::new(ErrorKind::Unsupported, "this page is served over https, so it can only reach a relay over wss://"));
+    }
+    Ok(())
+}
+
+/// Whether `relay` is a `ws://` address on this machine, which browsers let an https page open.
+fn on_this_machine(relay: &str) -> bool {
+    let Some(rest) = relay.strip_prefix("ws://") else { return false };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    let host = host.to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost") || host == "::1" || host.split('.').next() == Some("127")
 }
 
 /// Seconds since 1970, by this machine's clock: when share links run out.
@@ -622,18 +657,27 @@ impl Live {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+const RELAY_HINT: &str = "ws://relay.example:7070";
+#[cfg(target_arch = "wasm32")]
+const RELAY_HINT: &str = "wss://relay.example";
+#[cfg(not(target_arch = "wasm32"))]
+const JOIN_LABEL: &str = "Join a shared project in a new window";
+#[cfg(target_arch = "wasm32")]
+const JOIN_LABEL: &str = "Join a shared project in this tab";
+
 /// Nothing shared: share through a relay, or join with a link.
 fn idle(ui: &mut egui::Ui, t: &Tokens, panel: &mut Panel, command: &mut Option<(&'static str, serde_json::Value)>) {
     ui.label(egui::RichText::new("Share this project with others through a relay. Everyone with the join link can edit it.").color(t.text_muted));
     ui.horizontal(|ui| {
         ui.label("Relay");
-        ui.add(egui::TextEdit::singleline(&mut panel.relay).hint_text("ws://relay.example:7070").desired_width(t.minimap_height * 1.5));
+        ui.add(egui::TextEdit::singleline(&mut panel.relay).hint_text(RELAY_HINT).desired_width(t.minimap_height * 1.5));
     });
     if ui.add_enabled(!panel.relay.trim().is_empty(), egui::Button::new("Share")).clicked() {
         *command = Some(("share.start", json!({"relay": panel.relay.trim()})));
     }
     ui.separator();
-    ui.label(egui::RichText::new("Join a shared project in a new window").color(t.text_muted));
+    ui.label(egui::RichText::new(JOIN_LABEL).color(t.text_muted));
     ui.horizontal(|ui| {
         // Masked: whoever sees a join link can use it.
         ui.add(egui::TextEdit::singleline(&mut panel.join).password(true).hint_text("Paste a join link").desired_width(t.minimap_height * 1.5));

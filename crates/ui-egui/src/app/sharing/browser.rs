@@ -6,6 +6,9 @@
 //! The browser answers the relay's pings itself and never shows them, so a connection that dies
 //! quietly is noticed when the browser closes it rather than after a set silence. Nor can it stop
 //! reading: a relay that sends more than the app takes in is dropped, and connected to again.
+//!
+//! A hidden tab gets no frames, so it can't take in what the relay sends: the connection is closed
+//! while the tab is hidden and opened again when it is shown.
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
@@ -14,7 +17,7 @@ use std::time::Duration;
 
 use eframe::wasm_bindgen::{JsCast as _, closure::Closure};
 use nodecraft_sync::MAX_FRAME_BYTES;
-use nodecraft_types::{Error, ErrorKind};
+use nodecraft_types::Error;
 use web_sys::{BinaryType, CloseEvent, MessageEvent, WebSocket};
 
 use super::Event;
@@ -22,8 +25,8 @@ use super::Event;
 /// The longest wait between tries.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Bytes of frames waiting for the app; a relay that sends more before the app takes them is
-/// dropped, so a flood can't fill memory.
-const INBOX_BYTES: usize = 4 * MAX_FRAME_BYTES;
+/// dropped, so a flood can't fill memory. The same as the desktop's.
+const INBOX_BYTES: usize = 2 * MAX_FRAME_BYTES;
 /// Bytes the app takes from the inbox in one frame; the rest wait for the next.
 const TAKE_BYTES: usize = MAX_FRAME_BYTES;
 /// What a frame costs in the inbox beyond its bytes, so empty frames count too.
@@ -32,6 +35,8 @@ const FRAME_COST: usize = 64;
 /// The app's end. Dropping it closes the socket and stops the retries.
 pub(super) struct Connection {
     state: Rc<RefCell<State>>,
+    /// The page's `visibilitychange` handler, taken off when this is dropped.
+    visibility: Option<(web_sys::Document, Closure<dyn FnMut()>)>,
 }
 
 struct State {
@@ -50,6 +55,8 @@ struct State {
     events: VecDeque<Event>,
     /// Bytes of frames in `events`.
     queued: usize,
+    /// The tab is hidden: no socket, and no tries until it is shown.
+    hidden: bool,
 }
 
 /// A `WebSocket` and the handlers it calls, which hold only a weak reference to the state.
@@ -95,10 +102,8 @@ impl Connection {
     /// Connects to `relay` (a checked `ws://` or `wss://` address); `wake` asks for a frame when
     /// something comes in. A page served over https may reach only a `wss://` relay.
     pub(super) fn open(relay: String, wake: impl Fn() + Send + Sync + 'static) -> Result<Self, Error> {
-        let secure_page = web_sys::window().and_then(|w| w.location().protocol().ok()).is_some_and(|p| p == "https:");
-        if secure_page && !relay.starts_with("wss://") {
-            return Err(Error::new(ErrorKind::Unsupported, "this page is served over https, so it can only reach a relay over wss://"));
-        }
+        super::reachable(&relay)?;
+        let document = web_sys::window().and_then(|w| w.document());
         let state = Rc::new(RefCell::new(State {
             relay,
             wake: Arc::new(wake),
@@ -110,9 +115,16 @@ impl Connection {
             backoff: Duration::from_secs(1),
             events: VecDeque::new(),
             queued: 0,
+            hidden: document.as_ref().is_some_and(web_sys::Document::hidden),
         }));
+        let visibility = document.and_then(|document| {
+            let weak = Rc::downgrade(&state);
+            let changed = Closure::<dyn FnMut()>::new(move || shown_or_hidden(&weak));
+            document.add_event_listener_with_callback("visibilitychange", changed.as_ref().unchecked_ref()).ok()?;
+            Some((document, changed))
+        });
         connect(&state);
-        Ok(Self { state })
+        Ok(Self { state, visibility })
     }
 
     /// Sends `frame` on connection `n`, if it is still the open one.
@@ -147,6 +159,9 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        if let Some((document, changed)) = &self.visibility {
+            let _ = document.remove_event_listener_with_callback("visibilitychange", changed.as_ref().unchecked_ref());
+        }
         if let Ok(mut state) = self.state.try_borrow_mut() {
             state.timer = None;
             state.socket = None;
@@ -166,6 +181,9 @@ fn cost(event: &Event) -> usize {
 fn connect(state: &Rc<RefCell<State>>) {
     let Ok(mut held) = state.try_borrow_mut() else { return };
     held.retired = None;
+    if held.hidden {
+        return;
+    }
     let socket = match WebSocket::new(&held.relay) {
         Ok(socket) => socket,
         Err(_) => {
@@ -230,6 +248,29 @@ fn received(state: &Weak<RefCell<State>>, event: &MessageEvent) {
     wake();
 }
 
+/// The tab was hidden or shown: closes the connection, or opens it again at once.
+fn shown_or_hidden(state: &Weak<RefCell<State>>) {
+    let Some(state) = state.upgrade() else { return };
+    let hidden = web_sys::window().and_then(|w| w.document()).is_some_and(|d| d.hidden());
+    let Ok(mut held) = state.try_borrow_mut() else { return };
+    if held.hidden == hidden {
+        return;
+    }
+    held.hidden = hidden;
+    if hidden {
+        let had = held.socket.is_some();
+        drop(held);
+        if had {
+            lost(&state, "this tab is hidden; sharing picks up again when it is shown");
+        }
+    } else {
+        held.timer = None;
+        held.backoff = Duration::from_secs(1);
+        drop(held);
+        connect(&state);
+    }
+}
+
 /// The socket closed or couldn't open: says why, and tries again after the backoff.
 fn lost(state: &Rc<RefCell<State>>, why: &str) {
     let Ok(mut held) = state.try_borrow_mut() else { return };
@@ -242,6 +283,12 @@ fn lost(state: &Rc<RefCell<State>>, why: &str) {
     let retry = held.backoff;
     held.events.push_back(Event::Dropped { why: why.to_owned(), retry });
     held.backoff = held.backoff.saturating_mul(2).min(MAX_BACKOFF);
+    if held.hidden {
+        held.timer = None;
+        let wake = Arc::clone(&held.wake);
+        drop(held);
+        return wake();
+    }
     let weak = Rc::downgrade(state);
     let fire = Closure::<dyn FnMut()>::new(move || {
         if let Some(state) = weak.upgrade() {

@@ -407,3 +407,29 @@ fn a_large_project_comes_in_without_a_frame_over_budget() {
     // wall-clock limit while still catching frames that consume a substantial share of that work.
     assert!(slowest.as_secs_f64() < in_one_frame.as_secs_f64() * 0.1, "a frame took {slowest:?}, at least 10% of the catch-up in one frame ({in_one_frame:?})");
 }
+
+#[test]
+fn the_desktop_refuses_a_wss_relay_when_asked() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let mut app = app(&opened);
+    let refused = app.session.dispatch("share.start", &json!({"relay": "wss://relay.example/"})).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Unsupported);
+    assert_eq!(app.session.dispatch("share.status", &json!({})).unwrap()["state"], "off");
+    let link = format!("wss://relay.example/#room={}", "ab".repeat(32));
+    assert_eq!(app.session.dispatch("share.join", &json!({"link": link})).unwrap_err().kind, ErrorKind::Unsupported);
+    app.tick_sharing(&egui::Context::default());
+    assert!(opened.borrow().is_empty(), "no window is opened for a relay it can't reach");
+}
+
+#[test]
+fn an_https_page_reaches_wss_or_this_machine() {
+    for relay in ["wss://relay.example/", "ws://localhost:7070/", "ws://127.0.0.1:7070/", "ws://[::1]:7070/", "ws://app.localhost/"] {
+        assert!(can_reach(relay, true, true).is_ok(), "{relay}");
+    }
+    for relay in ["ws://relay.example:7070/", "ws://localhost.example/", "ws://128.0.0.1/"] {
+        assert_eq!(can_reach(relay, true, true).unwrap_err().kind, ErrorKind::Unsupported, "{relay}");
+        assert!(can_reach(relay, true, false).is_ok(), "{relay}");
+    }
+    assert!(can_reach("wss://relay.example/", false, false).is_err());
+    assert!(can_reach("ws://relay.example/", false, false).is_ok());
+}
