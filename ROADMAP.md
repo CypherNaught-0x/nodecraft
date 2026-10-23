@@ -78,7 +78,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   within a documented 45-second capture budget (#603). Turntable adds a saved full-turn or back-and-forth video orbit, rendered one frame at a time with bounded pixel work (#575). PDFs become PDF cards showing the
   first page and page count; PDF to images draws a page range as images and PDF to text reads
   the text the pages draw (#113). A PDF reader pages through a PDF, sets a node's page range, and extracts a page or
-  its text into new nodes (#590). Scanned pages are recognised by a vision-capable text model: PDF to
+  its text into new nodes (#590). The same bounded, undoable extractions are engine commands
+  available to MCP and the control channel (#606). Scanned pages are recognised by a vision-capable text model: PDF to
   text headings mark pages that draw no text, PDF to images can draw only those, and the built-in
   chat models take up to 16 images on a text card (#592). They also read up to 5 wired PDFs
   directly, up to 100 pages a request, refused before sending when longer and with the pages'

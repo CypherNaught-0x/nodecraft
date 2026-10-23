@@ -7,7 +7,6 @@
 use super::NodeCraftApp;
 use crate::{card, ids, preview::Preview};
 use egui::{Key, Modifiers, Pos2, Rect, Sense, Vec2};
-use nodecraft_engine::document_cmds::{Extract, extract_page, extract_text};
 use nodecraft_graph::{Node, Position};
 use nodecraft_types::{AssetRef, NodeId, Value};
 use serde_json::json;
@@ -320,12 +319,19 @@ impl NodeCraftApp {
                     self.notice = Some("Couldn't allocate a node id; try again.".into());
                     return;
                 };
-                let extract = Extract { canvas: self.canvas, node, page, id, at };
                 match ask {
-                    Ask::Page => extract_page(&mut self.session, &extract),
-                    _ => extract_text(&mut self.session, &extract, region.map(|r| r.map(f64::from))),
+                    Ask::Page => self.session.dispatch(
+                        "document.extract_page",
+                        &json!({"canvas":self.canvas,"node":node,
+                        "page":u64::from(page).saturating_add(1),"id":id,"at":at}),
+                    ),
+                    _ => self.session.dispatch(
+                        "document.extract_text",
+                        &json!({"canvas":self.canvas,"node":node,
+                        "page":u64::from(page).saturating_add(1),"id":id,"at":at,"region":region.map(|r|r.map(f64::from))}),
+                    ),
                 }
-                .map(Some)
+                .map(|_| Some(id))
             }
         };
         match result {

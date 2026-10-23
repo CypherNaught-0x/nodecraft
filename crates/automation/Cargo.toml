@@ -27,6 +27,7 @@ nodecraft-media = { workspace = true }
 getrandom = "=0.3.4"
 
 [dev-dependencies]
+nodecraft-media = { workspace = true, features = ["fixtures"] }
 tempfile = { workspace = true }
 
 # Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.

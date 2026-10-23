@@ -8,6 +8,8 @@ mod bridge;
 mod command_host;
 #[path = "comments.rs"]
 mod comments;
+#[path = "document606.rs"]
+mod document606;
 #[path = "layout.rs"]
 mod layout;
 #[path = "mcp.rs"]

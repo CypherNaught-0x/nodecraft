@@ -31,6 +31,7 @@ pub const MAX_HISTORY_STEPS: usize = 4096;
 pub const MAX_HISTORY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_EVENTS: usize = 256;
 
+mod document_extract;
 mod imports;
 pub use imports::PreparedImports;
 mod file_lifecycle;
@@ -995,6 +996,10 @@ impl Session {
             return self.dispatch_inner(id, params);
         }
         let effect = match effect {
+            Effect::DocumentExtract { request } => {
+                let prepared = guard(|| self.prepare_document_extract(*request))?;
+                return self.commit_prepared(prepared, spec.id);
+            }
             Effect::None { result } => {
                 validate_json(&result)?;
                 return Ok(result);
@@ -1336,6 +1341,7 @@ impl Session {
                 (document, inverse, entry.inverse.clone(), entry.state, Direction::Redo, None, Value::Null)
             }
             Effect::None { .. }
+            | Effect::DocumentExtract { .. }
             | Effect::PreparedRun { .. }
             | Effect::Service { .. }
             | Effect::Export { .. }

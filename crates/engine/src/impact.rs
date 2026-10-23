@@ -36,7 +36,7 @@ impl Impact {
     pub(crate) fn of(effect: &Effect) -> Result<Self, Error> {
         Ok(match effect {
             Effect::None { .. } | Effect::Elements { request: crate::element_library::Request::List } => Self::Read,
-            Effect::Edit { .. } | Effect::Undo | Effect::Redo | Effect::Place { .. } => Self::Edit,
+            Effect::Edit { .. } | Effect::DocumentExtract { .. } | Effect::Undo | Effect::Redo | Effect::Place { .. } => Self::Edit,
             Effect::PreparedRun { prepared } => {
                 Self::Run(RunImpact { ceiling: prepared.ceiling()?, partial: prepared.partial(), unpriced_jobs: prepared.unpriced_jobs() })
             }
