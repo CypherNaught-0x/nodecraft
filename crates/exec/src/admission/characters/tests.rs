@@ -49,6 +49,7 @@ fn step(provider: &str, values: &[Value]) -> Step {
                 .collect(),
         ),
         fanout: None,
+        variations: 1,
     }
 }
 
