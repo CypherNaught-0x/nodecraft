@@ -633,6 +633,7 @@ fn template(id: &str) -> (Session, Value) {
         "deck.slide_remove" => json!({"canvas":canvas(),"id":node_id(9),"slide":"s1"}),
         "deck.slide_move" => json!({"canvas":canvas(),"id":node_id(9),"slide":"s1","index":3}),
         "deck.layer_update" => json!({"canvas":canvas(),"id":node_id(9),"slide":"s1","layer":"t1","set":{"x":10,"content":{"text":"Hello"}}}),
+        "deck.export" => json!({"canvas":canvas(),"id":node_id(9),"format":"pdf","path":"/nodecraft-panic-hunt/deck.pdf"}),
         "timeline.list" => json!({"canvas":canvas(),"id":node_id(9)}),
         "timeline.interchange" => json!({"canvas":canvas(),"id":node_id(9)}),
         "timeline.export_interchange" => json!({"canvas":canvas(),"id":node_id(9),"path":"/nodecraft-panic-hunt/cut.zip"}),

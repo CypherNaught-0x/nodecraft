@@ -99,3 +99,22 @@ fn text_in_a_region_keeps_only_the_glyphs_starting_there() {
     assert_eq!(reader.text_in(0, Some([-5.0, -5.0, 9.0, 9.0])).unwrap(), "Top left\nBottom right", "clamped to the page");
     assert!(reader.text_in(0, Some([f64::NAN, 0.0, 1.0, 1.0])).is_err());
 }
+
+#[test]
+fn images_become_one_page_each() {
+    let red = PageImage { width: 40, height: 20, rgba: [255, 0, 0, 255].repeat(40 * 20) };
+    let blue = PageImage { width: 10, height: 30, rgba: [0, 0, 255, 255].repeat(10 * 30) };
+    let bytes = images_to_pdf(vec![red, blue]).unwrap();
+    let doc = Document::open(&bytes, &DocumentLimits::default()).unwrap();
+    assert_eq!(probe_document(&bytes, &DocumentLimits::default()).unwrap(), DocumentInfo { pages: 2 });
+    let first = doc.render(0, 40, [255; 4]).unwrap();
+    assert_eq!((first.width, first.height), (40, 20), "the page keeps the image's shape");
+    assert_eq!(&first.rgba[(10 * 40 + 20) * 4..][..4], [255, 0, 0, 255]);
+    let second = doc.render(1, 30, [255; 4]).unwrap();
+    assert_eq!((second.width, second.height), (10, 30));
+    assert_eq!(&second.rgba[(15 * 10 + 5) * 4..][..4], [0, 0, 255, 255]);
+
+    assert!(images_to_pdf(Vec::new()).is_err());
+    assert!(images_to_pdf(vec![PageImage { width: 2, height: 2, rgba: vec![0; 15] }]).is_err(), "pixels must match the size");
+    assert!(images_to_pdf(vec![PageImage { width: 0, height: 2, rgba: Vec::new() }]).is_err());
+}

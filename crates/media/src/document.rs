@@ -334,6 +334,45 @@ impl<'a> Device<'a> for TextDevice {
     fn pop_transparency_group(&mut self) {}
 }
 
+/// The largest page side a PDF reader is required to show, in points.
+const MAX_PAGE_POINTS: f32 = 14_400.0;
+
+/// A PDF with one page per image, each page filled by its image. Pages are sized at 96 pixels
+/// to the inch (scaled down to the largest page PDF readers support).
+pub fn images_to_pdf(pages: Vec<PageImage>) -> Result<Vec<u8>, MediaError> {
+    use craft_pdf::write::backend::{Document as Out, SerializeSettings, configure::PdfVersion, geom::Size, image::Image, page::PageSettings};
+    if pages.is_empty() {
+        return Err(MediaError::InvalidParameter("pages"));
+    }
+    let mut checked = Vec::with_capacity(pages.len());
+    for page in pages {
+        let expected = u64::from(page.width).saturating_mul(u64::from(page.height)).saturating_mul(4);
+        let longest = page.width.max(page.height) as f32;
+        if page.width == 0 || page.height == 0 || u64::try_from(page.rgba.len()).ok() != Some(expected) {
+            return Err(MediaError::InvalidParameter("page image"));
+        }
+        let scale = (MAX_PAGE_POINTS / longest).min(0.75);
+        let (width, height) = (page.width as f32 * scale, page.height as f32 * scale);
+        let (Some(settings), Some(size)) = (PageSettings::from_wh(width, height), Size::from_wh(width, height)) else {
+            return Err(MediaError::InvalidParameter("page image"));
+        };
+        checked.push((page, settings, size));
+    }
+    craft_pdf::write::guard(|| {
+        let configuration = craft_pdf::write::configuration(PdfVersion::Pdf17, None)?;
+        let mut out = Out::new_with(SerializeSettings { configuration, ..SerializeSettings::default() });
+        for (page, settings, size) in checked {
+            let mut drawn = out.start_page_with(settings);
+            let mut surface = drawn.surface();
+            surface.draw_image(Image::from_rgba8(page.rgba, page.width, page.height), size);
+            surface.finish();
+            drawn.finish();
+        }
+        out.finish().map_err(|error| craft_pdf::write::WriteError::Serialization(Box::new(error)))
+    })
+    .map_err(|e| MediaError::UnsupportedFeature(format!("the PDF can't be written: {e}")))
+}
+
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixture;
 #[cfg(test)]

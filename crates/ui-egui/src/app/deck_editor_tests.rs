@@ -116,6 +116,42 @@ fn slides_are_added_named_reordered_and_removed_from_the_sorter() {
     assert_eq!(names(&h), ["Text", "Closing"]);
 }
 
+fn export(h: &mut Harness<'static, NodeCraftApp>, item: &str, answer: std::path::PathBuf) {
+    h.state_mut().exports.answer = Some(answer);
+    h.get_by_label("Export").click();
+    h.run();
+    h.get_by_label(item).click();
+    h.run_steps(3);
+}
+
+#[test]
+fn slides_export_as_a_pdf_or_pngs_from_the_editor() {
+    let mut h = with_deck();
+    open(&mut h);
+    h.get_by_label("Add slide").click();
+    h.run_steps(3);
+    let dir = tempfile::tempdir().unwrap();
+
+    export(&mut h, "Slides as PDF…", dir.path().join("talk.pdf"));
+    let pdf = std::fs::read(dir.path().join("talk.pdf")).unwrap_or_else(|_| panic!("{:?}", h.state().notice));
+    assert_eq!(nodecraft_media::probe_document(&pdf, &Default::default()).unwrap().pages, 2, "one page per slide");
+    assert_eq!(h.state().notice.as_deref(), Some("Exported talk.pdf."));
+
+    // PNGs go into a folder, numbered past files already there.
+    std::fs::write(dir.path().join("Talk-1.png"), b"mine").unwrap();
+    export(&mut h, "Slides as PNGs…", dir.path().to_path_buf());
+    assert_eq!(h.state().notice.as_deref(), Some("Exported 2 files."));
+    assert_eq!(std::fs::read(dir.path().join("Talk-1.png")).unwrap(), b"mine");
+    for name in ["Talk-2.png", "Talk-3.png"] {
+        let (_, image) = nodecraft_media::decode_image(&std::fs::read(dir.path().join(name)).unwrap(), &Default::default()).unwrap();
+        assert_eq!((image.width(), image.height()), (1920, 1080), "slides are drawn at the deck's size");
+    }
+
+    export(&mut h, "This slide as PNG…", dir.path().join("one.png"));
+    assert!(dir.path().join("one.png").exists(), "{:?}", h.state().notice);
+    assert!(h.state().deck_editor.is_some(), "the editor stays open");
+}
+
 #[test]
 fn a_slide_takes_text_a_drag_in_one_undo_step_and_delete() {
     let mut h = with_deck();

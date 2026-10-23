@@ -29,11 +29,11 @@ fn unusable(e: nodecraft_actions::image::ImageError) -> Error {
     Error::new(ErrorKind::InvalidInput, format!("the deck isn't valid: {e}"))
 }
 
-fn canvas<'a>(c: &'a Context<'_>, canvas: CanvasId) -> Result<&'a Canvas, Error> {
+pub(crate) fn canvas<'a>(c: &'a Context<'_>, canvas: CanvasId) -> Result<&'a Canvas, Error> {
     c.document.canvases().get(&canvas).ok_or_else(|| not_found("canvas"))
 }
 
-fn card<'a>(c: &'a Context<'_>, at: CanvasId, id: NodeId) -> Result<&'a Node, Error> {
+pub(crate) fn card<'a>(c: &'a Context<'_>, at: CanvasId, id: NodeId) -> Result<&'a Node, Error> {
     let node = canvas(c, at)?.nodes().get(&id).ok_or_else(|| not_found("document entity"))?;
     if node.kind == ID { Ok(node) } else { Err(invalid("only a Deck card has slides")) }
 }

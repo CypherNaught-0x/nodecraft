@@ -24,7 +24,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18) | 19/30 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 7/12 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 4/8 |
-| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120) | 7/14 |
+| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120) | 8/14 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial | 1/27 |
 
 ## What works today
@@ -65,7 +65,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   Present selection makes a Deck card with a slide per card and presents it full-window; slides
   are layer stacks whose source layers show what their card shows now, and `deck.*` commands
   list and edit them with revision checks (#122). Edit slides opens a slide sorter beside the
-  Layer Editor's stage, to arrange each slide's text, shapes and sources (#694).
+  Layer Editor's stage, to arrange each slide's text, shapes and sources (#694); its Export menu
+  saves the slides as one PDF or as PNGs, drawn at the deck's size (`deck.export`, #692).
   A generation card's `− N× +` counter makes up to 20 variations a run, each its own request
   (quoted as such) and its own result in the node's history (#81).
   The viewer's Photo and Views buttons add a 3D photo or a
