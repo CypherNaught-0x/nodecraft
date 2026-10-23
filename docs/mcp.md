@@ -117,7 +117,14 @@ status: "estimated", canvas, quoted, unquoted}`, or `{accepted: true, request,
 status: "not_estimated", reason}` when the request could not be estimated. Failed or timed-out
 provider quotes count as unquoted and keep an unknown price. Call `run.quote` again after the
 answer to read the prices and a fresh token. Quotes expire after ten minutes and belong only to
-this process/session. The standalone host still does not offer paid execution; the desktop
+this process/session. Ready adapters are reused, so estimating a second card on the same
+provider (or an empty selection) keeps earlier unexpired prices and avoids another keychain
+read. Adding an adapter or changing routed cards rebuilds endpoint authority and invalidates
+earlier prices; estimate affected cards again. Provider server settings are read at startup;
+restart MCP after changing them. Successful `keys.set` / `keys.remove` commands make the next
+estimate rebuild its adapters. If optional estimate support cannot start, MCP warns on stderr
+and keeps ordinary commands available; `run.estimate` then returns Unsupported.
+The standalone host still does not offer paid execution; the desktop
 bridge retains its asynchronous `{accepted, request}` result.
 
 The file CLI offers the same request with `nodecraft-cli quote project.ncraft --estimate`

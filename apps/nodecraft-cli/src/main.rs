@@ -128,10 +128,9 @@ fn mcp() -> ExitCode {
     let mut new_id = random_bytes();
     let session = nodecraft_automation::blank_session(ProjectId::from_bytes(new_id()), CanvasId::from_bytes(new_id()));
     let mut services = Services::default();
-    let runner = match run::Runner::estimates_only(&mut services, "mcp-estimates".into()) {
-        Ok(runner) => runner,
-        Err(error) => return fail(&error.message),
-    };
+    let estimates = estimates::optional_setup(&mut services, || {
+        providers::keychain_maker(nodecraft_engine::settings::peek().providers).map(|maker| Box::new(maker) as Box<quote::Maker<'static>>)
+    });
     let mut session = match session.and_then(|s| register_key_service(&mut services, Arc::new(KeyringStore)).map(|()| s)) {
         Ok(s) => s.with_services(services),
         Err(e) => {
@@ -152,11 +151,10 @@ fn mcp() -> ExitCode {
     {
         eprintln!("warning: your skills are unavailable: {}", e.message);
     }
-    let maker = match providers::keychain_maker(nodecraft_engine::settings::peek().providers) {
-        Ok(maker) => maker,
-        Err(error) => return fail(&error.message),
-    };
-    serve_stdio(&mut McpServer::with_host(estimates::Host { session, runner, maker: Box::new(maker) }, Box::new(new_id)))
+    match estimates {
+        Some((runner, maker)) => serve_stdio(&mut McpServer::with_host(estimates::Host::new(session, runner, maker), Box::new(new_id))),
+        None => serve_stdio(&mut McpServer::new(session, Box::new(new_id))),
+    }
 }
 
 /// The options of the read-only commands.

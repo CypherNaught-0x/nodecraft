@@ -114,6 +114,10 @@ impl Runner {
     /// The engine finishes partial answers after 60 seconds; the outer deadline also bounds a
     /// broken host. No run is started, no consent is accepted, and no generation is submitted.
     pub fn estimate(&mut self, session: &mut Session, params: &Value) -> Result<Value, Error> {
+        crate::estimates::guarded(|| self.estimate_inner(session, params))
+    }
+
+    fn estimate_inner(&mut self, session: &mut Session, params: &Value) -> Result<Value, Error> {
         if self.host.is_busy() {
             return Err(Error::new(ErrorKind::Busy, "finish the active run before asking for provider prices"));
         }
@@ -146,6 +150,22 @@ impl Runner {
     /// Refreshes estimates/expiry for a headless host that has no background frame pump.
     pub fn refresh_estimates(&mut self, session: &mut Session) {
         let _ = self.host.pump(session);
+    }
+
+    /// Deterministic clock injection for the idle-MCP expiry contract; no real waiting or keys.
+    #[cfg(test)]
+    pub(crate) fn test_estimates(services: &mut Services, runtime: Arc<dyn Runtime>) -> Result<Self, Error> {
+        let host = RunHost::new(
+            runtime,
+            JobBudget {
+                log: Arc::new(Mutex::new(UsageLog::default())),
+                budgets: Arc::new(Mutex::new(Budgets::default())),
+                session: "clock-fixture".into(),
+                wall_clock_ms: Arc::new(|| 0),
+            },
+        );
+        host.register_estimates(services)?;
+        Ok(Self { host, tokio: None })
     }
 
     /// Hands the run host's budget state to `session`; call after the providers are routed.

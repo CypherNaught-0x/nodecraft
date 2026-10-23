@@ -56,7 +56,7 @@ fn fixture_with_runner(price: Result<Money, nodecraft_providers::ErrorKind>, exe
         assert_eq!(adapter, "mock");
         Ok(Arc::new(provider.clone()))
     });
-    (Host { session, runner, maker }, mock)
+    (Host::new(session, runner, maker), mock)
 }
 
 fn params() -> Value {
@@ -66,7 +66,7 @@ fn params() -> Value {
 #[test]
 fn blocking_cli_estimate_matches_its_request_and_prices_the_following_quote() {
     let (mut host, mock) = fixture(Ok(PRICE));
-    prepare(&mut host.session, &params(), &mut *host.maker).unwrap();
+    prepare(&mut host.session, &params(), &mut *host.maker, &mut host.routing).unwrap();
     host.runner.install(&mut host.session);
     let before = host.session.dispatch("run.quote", &params()).unwrap();
     assert_eq!(before["complete"], false);
@@ -141,7 +141,7 @@ fn failed_provider_quotes_remain_unknown_and_submit_nothing() {
 #[test]
 fn not_estimated_is_returned_with_its_accepted_request_id() {
     let (mut host, mock) = fixture(Ok(PRICE));
-    prepare(&mut host.session, &params(), &mut *host.maker).unwrap();
+    prepare(&mut host.session, &params(), &mut *host.maker, &mut host.routing).unwrap();
     host.runner.install(&mut host.session);
     // A syntactically valid request whose empty selection cannot make a plan is accepted,
     // then explained by the host's NotEstimated notice.
@@ -183,4 +183,86 @@ fn cli_run_uses_the_estimated_price_but_still_requires_spending_consent() {
     assert_eq!(mock.requests().len(), 1);
     assert!(!mock.requests()[0].idempotency_key.is_empty());
     assert_eq!(mock.billed(), 1);
+}
+
+#[test]
+fn estimates_for_two_cards_and_an_empty_request_keep_prior_prices_and_adapter() {
+    let (mut host, mock) = fixture(Ok(PRICE));
+    let second = NodeId::from_bytes([87; 16]);
+    let mut other = host.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap().clone();
+    other.id = second;
+    other.params.insert("prompt".into(), Output::Text("A different job for the second card".into()));
+    host.session.dispatch("node.add", &json!({"canvas": C, "node": other})).unwrap();
+    let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&builds);
+    let provider = mock.clone();
+    host.maker = Box::new(move |_| {
+        count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(Arc::new(provider.clone()))
+    });
+    assert_eq!(host.dispatch("run.estimate", &params()).unwrap()["quoted"], 1);
+    let second_params = json!({"canvas": C, "mode": "selected", "nodes": [second]});
+    assert_eq!(host.dispatch("run.estimate", &second_params).unwrap()["quoted"], 1);
+    assert_eq!(host.dispatch("run.quote", &params()).unwrap()["complete"], true);
+    assert_eq!(host.dispatch("run.quote", &second_params).unwrap()["complete"], true);
+    assert_eq!(host.dispatch("run.estimate", &json!({"canvas": C, "mode": "selected"})).unwrap()["status"], "not_estimated");
+    assert_eq!(host.dispatch("run.quote", &params()).unwrap()["complete"], true);
+    assert_eq!(builds.load(std::sync::atomic::Ordering::Relaxed), 1, "the same captured adapter is reused without another keychain read");
+    assert_eq!(mock.quoted().len(), 2);
+    assert!(mock.requests().is_empty());
+    assert_eq!(mock.billed(), 0);
+}
+
+#[test]
+fn optional_estimate_setup_failure_keeps_ordinary_mcp_commands_available() {
+    let mut services = Services::default();
+    assert!(optional_setup(&mut services, || Err(Error::new(ErrorKind::Unsupported, "offline TLS fixture"))).is_none());
+    let session = nodecraft_automation::blank_session(ProjectId::from_bytes([88; 16]), C).unwrap().with_services(services);
+    let mut server = McpServer::new(session, Box::new(|| [89; 16]));
+    let ordinary = call(&mut server, 1, "canvas.stale", json!({"canvas": C}));
+    assert_eq!(ordinary["result"]["isError"], false, "{ordinary}");
+    assert_eq!(ordinary["result"]["structuredContent"]["result"]["nodes"], json!([]));
+    let unsupported = call(&mut server, 2, "run.estimate", json!({"canvas": C, "mode": "all_stale"}));
+    assert_eq!(unsupported["result"]["isError"], true, "{unsupported}");
+}
+
+#[test]
+fn a_panicking_adapter_factory_returns_an_error_and_mcp_keeps_working() {
+    let (mut host, mock) = fixture(Ok(PRICE));
+    host.maker = Box::new(|_| panic!("public factory panic fixture"));
+    assert_eq!(host.dispatch("run.estimate", &params()).unwrap_err().kind, ErrorKind::Internal);
+    assert!(host.dispatch("canvas.stale", &json!({"canvas": C})).unwrap()["nodes"].is_array());
+    assert!(mock.requests().is_empty());
+    assert_eq!(mock.billed(), 0);
+}
+
+#[test]
+fn an_idle_mcp_command_expires_a_quote_after_ten_minutes_without_estimating_again() {
+    use nodecraft_exec::driver::{Runtime, TaskFuture};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct Clock(Arc<AtomicU64>);
+    impl Runtime for Clock {
+        fn spawn(&self, mut task: TaskFuture<()>) {
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(task.as_mut().poll(&mut context).is_ready(), "the fixture's quote completes synchronously");
+        }
+        fn sleep(&self, _: u64) -> TaskFuture<()> {
+            Box::pin(async {})
+        }
+        fn now_ms(&self) -> u64 {
+            self.0.load(Ordering::Relaxed)
+        }
+    }
+    let (mut host, mock) = fixture(Ok(PRICE));
+    let clock = Arc::new(AtomicU64::new(0));
+    let mut services = Services::default();
+    host.runner = Runner::test_estimates(&mut services, Arc::new(Clock(Arc::clone(&clock)))).unwrap();
+    host.session = host.session.with_services(services);
+    assert_eq!(host.dispatch("run.estimate", &params()).unwrap()["quoted"], 1);
+    assert_eq!(host.dispatch("run.quote", &params()).unwrap()["complete"], true);
+    clock.store(nodecraft_engine::provider_quotes::QUOTE_TTL_MS + 1, Ordering::Relaxed);
+    assert_eq!(host.dispatch("run.quote", &params()).unwrap()["complete"], false);
+    assert_eq!(mock.quoted().len(), 1, "idle expiry never asks for another price automatically");
+    assert!(mock.requests().is_empty());
+    assert_eq!(mock.billed(), 0);
 }

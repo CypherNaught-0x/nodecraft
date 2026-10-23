@@ -21,3 +21,12 @@
   old prices before dispatch; ten-minute quote validity therefore does not depend on another
   estimate being requested. A caller refreshes a price explicitly with another `run.estimate`.
   Quotes are process/session-local, never persisted in the project file.
+
+- **Ready endpoint authority survives successive requests.** Standalone MCP retains lazy provider
+  setup and routes every card on its already-built adapters. A request for another card on the
+  same endpoint, including another canvas, keeps the existing routing nonce and earlier prices;
+  an empty/local-only request does not touch routing. Adding an adapter or changing routed cards
+  intentionally changes authority and invalidates old prices. Failed setup can be retried after
+  adding a key. Successful key mutations reset the adapter cache, and server settings are a
+  startup snapshot. Optional HTTP/runtime failure leaves ordinary MCP available without the
+  estimate service. Preparation and the estimate pump have a panic boundary with a static error.
