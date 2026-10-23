@@ -940,4 +940,22 @@ fn a_bad_amount_in_the_budgets_is_refused_and_nothing_changes() {
     assert_eq!(h.state().budget_caps().session_usd_cents, Some(500));
 }
 
+#[test]
+#[ignore = "manual public-safe capture; BUDGETS201_RENDER_DIR"]
+fn budgets201_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("BUDGETS201_RENDER_DIR").unwrap());
+    let mut h = drawn(scene(making(image(MockModel::new(MockOutput::Image)))));
+    h.state_mut().set_budget_caps(nodecraft_engine::settings::BudgetSettings {
+        per_call_usd_cents: Some(1),
+        session_usd_cents: Some(500),
+        ..Default::default()
+    });
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    h.render().unwrap().save(dir.join("budgets201-blocked.png")).unwrap();
+    click(&mut h, "Change budgets…");
+    h.run();
+    h.render().unwrap().save(dir.join("budgets201-panel.png")).unwrap();
+}
+
 mod known_media795;
