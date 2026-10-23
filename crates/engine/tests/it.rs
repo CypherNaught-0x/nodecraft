@@ -119,6 +119,8 @@ mod run_resume508;
 mod seedream;
 #[path = "settled_read_only556.rs"]
 mod settled_read_only556;
+#[path = "shader_write90.rs"]
+mod shader_write90;
 #[path = "share.rs"]
 mod share;
 #[path = "soul_training680.rs"]
