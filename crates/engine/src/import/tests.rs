@@ -291,3 +291,80 @@ fn pdfs_become_document_nodes_with_their_page_count_and_damaged_ones_are_refused
     assert!(why.contains("PDF can't be read"), "{why}");
     assert_eq!((empty_name.as_str(), empty_why.as_str()), ("empty.pdf", "the PDF has no pages"));
 }
+
+const WORKFLOW: &str =
+    r#"{"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a red fox"}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}"#;
+
+fn read_comfy_nodes(s: &mut Session) {
+    let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {"multiline": true}]}}, "output": ["IMAGE"]},
+        "SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
+    let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
+    crate::comfy_workflow_cmds::finish(s, 1, Ok(std::sync::Arc::new(catalog)));
+}
+
+#[test]
+fn a_dropped_comfyui_workflow_becomes_its_card_beside_other_files() {
+    let mut s = session();
+    read_comfy_nodes(&mut s);
+    let image = png();
+    let files = [Incoming { name: "fox.json", bytes: WORKFLOW.as_bytes() }, Incoming { name: "a.png", bytes: &image }];
+    let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(2)).unwrap();
+    assert_eq!(imported.skipped, []);
+    let card = node(&s, ids(1)[0]);
+    assert_eq!(card.kind, nodecraft_nodes::comfy_workflow::ID);
+    assert_eq!(card.title, "fox");
+    assert_eq!((card.pos.x, card.pos.y), (AT.x, AT.y));
+    assert!(nodecraft_nodes::comfy_workflow::card(card).unwrap().mapping.params.iter().any(|p| p.input == "text"), "the prompt is a parameter");
+    assert_eq!(node(&s, ids(2)[1]).kind, "source.image");
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert!(s.document().canvases().get(&C).unwrap().nodes().is_empty(), "one undo step");
+}
+
+#[test]
+fn a_dropped_workflow_waits_for_the_servers_nodes_and_other_json_stays_text() {
+    let mut s = session();
+    let other = br#"{"prompt": "a red fox", "seed": 7}"#;
+    let files = [Incoming { name: "fox.json", bytes: WORKFLOW.as_bytes() }, Incoming { name: "notes.json", bytes: other }];
+    let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(2)).unwrap();
+    assert_eq!(imported.skipped.len(), 1);
+    assert_eq!(imported.skipped[0].0, "fox.json");
+    assert!(imported.skipped[0].1.contains("Read ComfyUI server nodes"), "{:?}", imported.skipped);
+    assert_eq!(node(&s, ids(2)[1]).kind, "source.text");
+
+    read_comfy_nodes(&mut s);
+    let missing = WORKFLOW.replace("SaveImage", "FancySave");
+    let imported = import_files(&mut s, C, AT, 300.0, &[Incoming { name: "fancy.json", bytes: missing.as_bytes() }], &[NodeId::from_bytes([9; 16])]).unwrap();
+    assert!(imported.skipped[0].1.contains("FancySave"), "{:?}", imported.skipped);
+}
+
+#[test]
+fn only_workflow_shaped_json_is_taken_for_a_workflow() {
+    use crate::comfy_workflow_cmds::is_workflow;
+    assert!(is_workflow(WORKFLOW));
+    assert!(is_workflow(r#"{"nodes": [], "links": [], "version": 0.4}"#));
+    assert!(!is_workflow(r#"{"nodes": [{"id": "Myriel", "group": 1}], "links": [{"source": "Napoleon", "target": "Myriel"}]}"#), "a d3 graph");
+    for text in ["", "[]", "{}", r#"{"1": {"inputs": {}}}"#, r#"{"1": {"class_type": 5}}"#, r#"{"nodes": []}"#, "a red fox"] {
+        assert!(!is_workflow(text), "{text}");
+    }
+}
+
+#[test]
+fn a_workflow_card_too_large_for_the_drop_is_skipped_not_the_whole_drop() {
+    let mut s = session();
+    read_comfy_nodes(&mut s);
+    // The card stores the long prompt in its workflow, its mapping and its values.
+    let prompt = "fox ".repeat(60 * 1024);
+    let workflow = WORKFLOW.replace("a red fox", &prompt);
+    let notes = "n".repeat(MAX_DROP_TEXT_BYTES - workflow.len() - 1024);
+    let files = [Incoming { name: "notes.txt", bytes: notes.as_bytes() }, Incoming { name: "fox.JSON", bytes: workflow.as_bytes() }];
+    let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(2)).unwrap();
+    assert_eq!(imported.skipped.len(), 1, "{:?}", imported.skipped);
+    assert!(imported.skipped[0].1.contains("comfy.workflow.import"), "{:?}", imported.skipped);
+    assert_eq!(node(&s, ids(1)[0]).kind, "source.text", "the rest of the drop lands");
+
+    let mut s = session();
+    read_comfy_nodes(&mut s);
+    let small = [Incoming { name: "Fox.JSON", bytes: WORKFLOW.as_bytes() }];
+    import_files(&mut s, C, AT, 300.0, &small, &ids(1)).unwrap();
+    assert_eq!(node(&s, ids(1)[0]).title, "Fox");
+}

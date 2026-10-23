@@ -16,7 +16,10 @@ A card made by a newer NodeCraft is refused as unsupported rather than guessed a
 server's node list, which the host fetches with `comfy.nodes.refresh` and the session keeps. A
 failed read keeps the list from before. By default it exposes the workflow's prompts and seeds
 as parameters; `params` names others. A workflow that uses a node the server lacks is refused,
-with those nodes named.
+with those nodes named. A workflow file dropped on the canvas is recognised by its contents
+(an editor save, or an API export whose nodes each have a `class_type`) and becomes the same card,
+titled after the file, with the default parameters. Before the server's nodes have been read, the
+drop skips the file and says to read them; other JSON still becomes a text node.
 
 The card runs through the existing run path, not a new one. It has a `model` parameter that
 defaults to the catalog model `comfyui.workflow` (provider `comfyui`, `provider_model =
