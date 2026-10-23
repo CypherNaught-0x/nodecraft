@@ -2,6 +2,8 @@
 //! Gemini Enterprise Agent Platform (formerly Vertex AI). A service account's key signs a
 //! short-lived JWT, which Google's token endpoint exchanges, free, for an hour's access token.
 mod credential;
+#[cfg(feature = "google-gemini-images")]
+pub mod gemini_images;
 #[cfg(test)]
 mod tests;
 mod token;

@@ -157,6 +157,10 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             // Per second by resolution (#18); quoted in seedance_is_quoted_per_second_at_its_largest_size.
             assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
             assert!(model.quote(&ParamValues::new()).unwrap().is_some(), "{}", model.id);
+        } else if model.provider == "google-gemini-images" {
+            // Per image by size (#47); quoted in gemini_images_on_google_cloud_are_quoted_per_image_by_size.
+            assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Image, .. } | Pricing::PerUnit { unit: Unit::Image, .. }), "{}", model.id);
+            assert!(model.quote(&ParamValues::new()).unwrap().is_some() && model.usage.is_some(), "{}", model.id);
         } else if model.provider == "google-veo" {
             // Per second by resolution (#742); quoted in veo_on_google_cloud_is_quoted_by_length_and_resolution.
             assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
@@ -214,6 +218,11 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("gemini-images.pro", true),
             ("gemini-images.nano-banana-2.1", true),
             ("gemini-images.flash-lite", true),
+            ("google-gemini-images.3-pro", true),
+            ("google-gemini-images.3.1-flash", true),
+            ("google-gemini-images.nano-banana-2.1", true),
+            ("google-gemini-images.2.5-flash", true),
+            ("google-gemini-images.3.1-flash-lite", true),
             ("higgsfield.soul-2", true),
             ("kling.image_v2_1", true),
             ("openai-images.flare", true),
@@ -633,6 +642,34 @@ fn veo_on_google_cloud_is_quoted_by_length_and_resolution() {
     let lite = c.get("google-veo.veo-3.1-lite").unwrap();
     assert!(lite.mode("image-to-video").is_none() && lite.mode("reference-to-video").is_none(), "Lite is text only");
     assert_eq!(c.get("google-veo.veo-3.1-fast").unwrap().mode("reference-to-video").unwrap().inputs.iter().find(|i| i.role == "reference").unwrap().max, 3);
+}
+
+#[test]
+fn gemini_images_on_google_cloud_are_quoted_per_image_by_size() {
+    // Vertex AI pricing page, checked 2026-10-23: image output tokens per image by size, at the
+    // model's image output rate per million tokens (Standard PayGo, global).
+    let c = Catalog::builtin().unwrap();
+    let usd = |micros| Some(Money::new(Currency::USD, micros));
+    let quote = |id: &str, size: Option<&str>| {
+        let mut p = ParamValues::new();
+        if let Some(size) = size {
+            p.insert("image_size".into(), Value::Text(size.into()));
+        }
+        c.get(id).unwrap().quote(&p).unwrap()
+    };
+    assert_eq!(quote("google-gemini-images.3.1-flash", None), usd(67_200), "1K by default: 1120 tokens at 60 USD/M");
+    assert_eq!(quote("google-gemini-images.3.1-flash", Some("2K")), usd(100_800));
+    assert_eq!(quote("google-gemini-images.3.1-flash", Some("4K")), usd(151_200));
+    assert_eq!(quote("google-gemini-images.3-pro", Some("2K")), usd(134_400));
+    assert_eq!(quote("google-gemini-images.3-pro", Some("4K")), usd(240_000));
+    assert_eq!(quote("google-gemini-images.nano-banana-2.1", Some("4K")), usd(113_400));
+    assert_eq!(quote("google-gemini-images.3.1-flash-lite", None), usd(33_600));
+    assert_eq!(quote("google-gemini-images.2.5-flash", None), usd(38_700));
+    let pro = c.get("google-gemini-images.3-pro").unwrap();
+    let rates = pro.usage.as_ref().unwrap();
+    assert_eq!((rates.input.0, rates.output.0), (Money::new(Currency::USD, 2_000), Money::new(Currency::USD, 120_000)));
+    assert_eq!(pro.mode("edit").unwrap().inputs.iter().find(|i| i.role == "image").unwrap().max, 14);
+    assert_eq!(c.get("google-gemini-images.2.5-flash").unwrap().mode("edit").unwrap().inputs.iter().find(|i| i.role == "image").unwrap().max, 3);
 }
 
 #[test]

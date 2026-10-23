@@ -61,6 +61,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     assert_eq!(setup.readiness("seedance"), Some(&Readiness::NeedsKey { account: "seedream".into() }), "the ModelArk key Seedream uses");
     assert_eq!(setup.readiness("google-veo"), Some(&Readiness::NeedsKey { account: "google-cloud".into() }));
     assert_eq!(setup.readiness("google-tts"), Some(&Readiness::NeedsKey { account: "google-cloud".into() }));
+    assert_eq!(setup.readiness("google-gemini-images"), Some(&Readiness::NeedsKey { account: "google-cloud".into() }));
     assert_eq!(setup.readiness("fal"), Some(&Readiness::NeedsKey { account: "fal".into() }));
     assert_eq!(setup.readiness("tripo"), Some(&Readiness::NeedsKey { account: "tripo".into() }));
     assert_eq!(setup.readiness("meshy"), Some(&Readiness::NeedsKey { account: "meshy".into() }));
@@ -102,6 +103,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "gemini-video",
         "google-veo",
         "google-tts",
+        "google-gemini-images",
         "fal",
         "tripo",
         "meshy",
@@ -226,7 +228,7 @@ fn the_test_path_binds_whatever_the_maker_gives_through_the_same_routing() {
 }
 
 #[test]
-fn a_damaged_google_cloud_key_fails_veo_and_tts_without_quoting_it_or_sending_anything() {
+fn a_damaged_google_cloud_key_fails_every_google_cloud_adapter_without_quoting_it_or_sending_anything() {
     let catalog = Catalog::builtin().unwrap();
     let keys = MemoryStore::default();
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new("gsa1:not-a-service-account-zzz").unwrap()).unwrap();
@@ -234,7 +236,7 @@ fn a_damaged_google_cloud_key_fails_veo_and_tts_without_quoting_it_or_sending_an
     let settings = ProviderSettings::default();
     let env = env(&keys, &http, &settings);
     let setup = build(&catalog, |adapter| make(adapter, &env));
-    for adapter in ["google-veo", "google-tts"] {
+    for adapter in ["google-veo", "google-tts", "google-gemini-images"] {
         let Some(Readiness::Failed(why)) = setup.readiness(adapter) else { panic!("{adapter}: {:?}", setup.readiness(adapter)) };
         assert!(why.contains("paste the service-account key file again") && !why.contains("zzz"), "{adapter}: {why}");
     }

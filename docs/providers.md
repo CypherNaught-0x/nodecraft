@@ -12,6 +12,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Gemini Video** | `gemini-video` | supplied Gemini API key (`x-goog-api-key`), same `gemini` account | Omni Flash text, first/last frame and reference images → video with sound | Veo on the Gemini API is shut down; Veo now runs on Google Cloud (`google-veo`). Paid tier only; charged by measured tokens, no price before the run. See below. |
 | **Veo on Google Cloud** | `google-veo` | a service-account key file, kept compact in the `google-cloud` account; a signed JWT is exchanged for an hour's OAuth token (`Authorization: Bearer`) | Veo 3.1, Fast and Lite: text → video with sound. Veo 3.1 and Fast also: first/last frame, and up to three subject references | Runs in the account's own project in `us-central1`. Quoted per second by resolution before the run. Never replayed after an ambiguous submit; no remote cancellation. See below. |
 | **Google TTS** | `google-tts` | the same `google-cloud` service-account key as Veo (`Authorization: Bearer`, billed to the account's project) | text → speech (MP3): Chirp 3 HD, Neural2, WaveNet, Standard and Studio voices with speaking rate, pitch and SSML; Gemini 2.5 Pro, Flash, Flash-Lite and 3.1 Flash voices with a style prompt and two-speaker dialogue | One synchronous request per line. Classic voices are priced per character, and the cost is counted from the characters sent once the run is done; Gemini voices are billed by tokens Google doesn't report, so no price before the run. Never replayed; nothing to cancel. See below. |
+| **Gemini images on Google Cloud** | `google-gemini-images` | the same `google-cloud` service-account key as Veo (`Authorization: Bearer`, billed to the account's project) | Gemini 3.1 Flash Image, 3 Pro Image, Nano Banana 2.1, 3.1 Flash-Lite Image and 2.5 Flash Image: text → image and up to 14 reference images (3 on 2.5) → image, with aspect ratio and 1K/2K/4K size | One synchronous `generateContent` request on the global endpoint. Quoted per image by size before the run; charged by the tokens the reply measured. Never replayed; nothing to cancel. See below. |
 | **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded credential-free delivery downloads; unknown usage price. See below. |
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
@@ -60,6 +61,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `elevenlabs` | `elevenlabs` | — |
 | `google-veo` | `google-cloud` (paste the whole service-account key file; it is stored compactly) | the Vertex AI API enabled, and the Vertex AI User role on the account's project |
 | `google-tts` | `google-cloud` (the same key as `google-veo`) | the Cloud Text-to-Speech API enabled in the account's project; Gemini voices also need the Vertex AI User role |
+| `google-gemini-images` | `google-cloud` (the same key as `google-veo`) | the Vertex AI API enabled, and the Vertex AI User role on the account's project |
 | `comfy-cloud` | `comfy-cloud` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[[providers.comfyui]]` entries with `name`, `url` (such as `"http://127.0.0.1:8188"`) and optional `max_jobs` (1–16; unset, 4), and `[providers] comfyui_default` naming one (or the desktop toolbar's ComfyUI panel), and the per-install `install_salt`; an older `comfyui_url` is read as one server |
 
@@ -370,6 +372,74 @@ Contract checked 2026-10-22: [Veo 3.1 model](https://cloud.google.com/vertex-ai/
 [video generation API](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/veo-video-generation),
 [pricing](https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing) (section "Veo"),
 [service-account JWT flow](https://developers.google.com/identity/protocols/oauth2/service-account).
+
+## Gemini images on Google Cloud (`google-gemini-images` feature)
+
+`GoogleGeminiImages` runs Google's Gemini image models on Vertex AI (#47), signed in with the same
+`google-cloud` service-account key and tokens as Veo (see above). Imagen 4, the issue's original
+target, is discontinued on Vertex AI, so this adapter covers the image models that replace it.
+
+- **Models:** `google-gemini-images.3.1-flash` (`gemini-3.1-flash-image`), `3-pro`
+  (`gemini-3-pro-image`), `nano-banana-2.1` (`gemini-nano-banana-2.1`), `3.1-flash-lite`
+  (`gemini-3.1-flash-lite-image`) and `2.5-flash` (`gemini-2.5-flash-image`, deprecated). They run
+  in the account's project on the `global` endpoint, the only one the Gemini 3 image models are
+  served on.
+- **Modes:** text → image, and a prompt with reference images → image (`edit`): up to 14 images,
+  3 on 2.5 Flash. Images are PNG, JPEG or WebP, at most 7 MB each and 48 MiB together, sent
+  inline; one whose bytes don't match its type is refused before anything is sent.
+- **Options:** aspect ratio (1:1 by default; the ten standard ratios, plus 1:4, 4:1, 1:8 and 8:1
+  on 3.1 Flash, the only model documented with them) and, on 3.1 Flash, 3 Pro and Nano Banana 2.1, image size 1K (default), 2K or 4K.
+  Flash-Lite makes 1K only and 2.5 Flash has one size. 3.1 Flash's 512 size isn't offered:
+  Vertex AI's `imageConfig` documents only 1K, 2K and 4K.
+- **Flow:** one `POST …/locations/global/publishers/google/models/{model}:generateContent` with
+  `responseModalities` TEXT and IMAGE and `candidateCount` 1. It is the paid step and is never
+  replayed after a lost reply; there is nothing to poll or cancel. Images come back inline. Each
+  must decode to at most 32 MiB (64 MiB together, 96 MiB for the whole reply) and sniff as the PNG,
+  JPEG or WebP it claims to be, with a header of at most 16,384 pixels a side and 64 Mi pixels;
+  thinking parts are skipped. A reply may hold more than one image,
+  and every one becomes an output.
+- **Refusals and filters:**
+  - a blocked prompt (`promptFeedback.blockReason`) or a reply whose images were removed by a
+    safety, recitation, blocklist or Model Armor filter is reported as blocked content, with
+    Google's code
+  - a reply with no image and no filter reason is a failed job, quoting the model's text
+  - a 401 drops the held token; 403 names the Vertex AI API and the Vertex AI User role; 429
+    keeps Google's `Retry-After`
+- **Cost:** quoted before the run as one image at the chosen size, from the pricing page's
+  tokens per image at the model's image output rate:
+
+  | Model | 1K | 2K | 4K |
+  |---|---|---|---|
+  | 3.1 Flash Image | 0.0672 USD | 0.1008 USD | 0.1512 USD |
+  | 3 Pro Image | 0.1344 USD | 0.1344 USD | 0.24 USD |
+  | Nano Banana 2.1 | 0.0336 USD | 0.0504 USD | 0.1134 USD |
+  | 3.1 Flash-Lite Image | 0.0336 USD | — | — |
+  | 2.5 Flash Image | 0.0387 USD (one size) | — | — |
+
+  The catalog prices this with `per_unit_by_choice` and a fixed count of one image. A finished run
+  is charged what the reply measured (`usageMetadata`): prompt tokens, reference images included,
+  at the input rate, and reply tokens at the image output rate. That covers reference images and
+  replies with several images. The reply's few text tokens are charged at the image rate (a little
+  over), and thinking tokens, which Google bills at the text rate, aren't charged (a little under).
+  The quote leaves out the prompt and reference images, so an edit run is charged more than it
+  was quoted: with 14 references, about 12% more on 3 Pro or 3.1 Flash. A budget that admits the
+  quote can be passed by that much.
+- **Not verified live:**
+  - whether a reply whose images were filtered is billed (it is treated as possibly billed, so it
+    is not marked refused)
+  - `imageConfig` is marked deprecated in favour of a newer response-format field; the documented
+    `imageConfig` is what is sent
+
+  Spending money needs authorization. With it, run
+  `NODECRAFT_LIVE_GOOGLE_GEMINI_IMAGES=1 NODECRAFT_LIVE_GOOGLE_GEMINI_IMAGES_ACKNOWLEDGE_COST=1
+  GOOGLE_GEMINI_IMAGES_KEY_FILE=/path/to/key.json cargo test -p nodecraft-providers --features
+  http,google-gemini-images --test live_google_gemini_images -- --ignored`. It makes one 1K
+  Flash-Lite image, about 0.034 USD.
+
+Contract checked 2026-10-23: [3.1 Flash Image model](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-1-flash-image),
+[image generation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/image-generation),
+[`generateContent`](https://cloud.google.com/vertex-ai/docs/reference/rest/v1/projects.locations.publishers.models/generateContent),
+[pricing](https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing).
 
 ## Replicate predictions
 

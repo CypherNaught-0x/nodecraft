@@ -227,11 +227,11 @@ impl ModelDescriptor {
         if let Pricing::PerUnit { unit, count, default_count, .. } = &self.pricing {
             self.validate_count(*unit, count.as_deref(), *default_count)?;
         }
-        if let Pricing::PerUnitByChoice { unit, count, param, prices } = &self.pricing {
+        if let Pricing::PerUnitByChoice { unit, count, default_count, param, prices } = &self.pricing {
             if unit.usage_based() {
                 return Err(invalid(id, "pricing by a setting counts units known before the run"));
             }
-            self.validate_count(*unit, Some(count), None)?;
+            self.validate_count(*unit, count.as_deref(), *default_count)?;
             self.validate_choice_prices(param, prices)?;
         }
         Ok(())
