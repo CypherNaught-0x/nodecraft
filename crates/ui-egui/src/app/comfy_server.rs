@@ -123,7 +123,7 @@ impl NodeCraftApp {
                     });
                     ui.horizontal(|ui| {
                         let label = ui.label("Jobs at once");
-                        ui.add(egui::TextEdit::singleline(&mut row.jobs).hint_text("4").desired_width(48.0))
+                        ui.add(egui::TextEdit::singleline(&mut row.jobs).hint_text("4").desired_width(t.comfy_jobs_width))
                             .labelled_by(label.id)
                             .on_hover_text("How many of a run's jobs this server takes at once; one for a single GPU");
                         let edited = row.url.trim() != kept.url.trim() || row.jobs.trim() != kept.jobs.trim();
@@ -153,7 +153,8 @@ impl NodeCraftApp {
                     ui.horizontal(|ui| {
                         let label = ui.label("Name");
                         let hint = server_name_for(&self.comfy_server.new_url);
-                        ui.add(egui::TextEdit::singleline(&mut self.comfy_server.new_name).hint_text(hint).desired_width(160.0)).labelled_by(label.id);
+                        ui.add(egui::TextEdit::singleline(&mut self.comfy_server.new_name).hint_text(hint).desired_width(t.comfy_name_width))
+                            .labelled_by(label.id);
                         if ui.add_enabled(!self.comfy_server.new_url.trim().is_empty(), egui::Button::new("Add and check")).clicked() {
                             asked = Some(Asked::Add);
                         }
@@ -198,7 +199,7 @@ impl NodeCraftApp {
         self.keep_comfy_servers(&settings, name, false)?;
         self.comfy_server.new_name.clear();
         self.comfy_server.new_url.clear();
-        self.check_comfy_server(name)
+        self.followup_comfy_server(Some(name))
     }
 
     /// Saves a changed address or job cap for the server `name`, then checks it. Only its own
@@ -212,7 +213,7 @@ impl NodeCraftApp {
         };
         *kept = server;
         self.keep_comfy_servers(&settings, name, was_default)?;
-        self.check_comfy_server(name)
+        self.followup_comfy_server(Some(name))
     }
 
     /// Makes `name` the default server, and reads its nodes, which workflows are imported against.
@@ -232,7 +233,7 @@ impl NodeCraftApp {
         if let Some(fetcher) = &mut self.comfy_nodes {
             fetcher.abandon();
         }
-        self.check_comfy_server(name)
+        self.followup_comfy_server(Some(name))
     }
 
     /// Removes the server `name`; cards that picked it follow the default.
@@ -245,7 +246,7 @@ impl NodeCraftApp {
         }
         self.keep_comfy_servers(&settings, name, was_default)?;
         if was_default && settings.default_comfy().is_some() {
-            return self.session.dispatch("comfy.nodes.refresh", &json!({})).map(|_| ());
+            return self.followup_comfy_server(None);
         }
         Ok(())
     }
@@ -253,6 +254,18 @@ impl NodeCraftApp {
     /// Reads the nodes and health of the server `name`.
     pub(super) fn check_comfy_server(&mut self, name: &str) -> Result<(), Error> {
         self.session.dispatch("comfy.nodes.refresh", &json!({"server": name})).map(|_| ())
+    }
+
+    /// Queues a panel mutation's follow-up behind another server's running check.
+    fn followup_comfy_server(&mut self, server: Option<&str>) -> Result<(), Error> {
+        if let Some(fetcher) = &mut self.comfy_nodes {
+            fetcher.allow_followup(true);
+        }
+        let result = self.session.dispatch("comfy.nodes.refresh", &json!({"server": server})).map(|_| ());
+        if let Some(fetcher) = &mut self.comfy_nodes {
+            fetcher.allow_followup(false);
+        }
+        result
     }
 
     /// Saves `settings`, in which the server `changed` was added, edited or removed, and drops
@@ -267,7 +280,24 @@ impl NodeCraftApp {
             fetcher.abandon_for(changed, was_default);
         }
         comfy_server_cmds::forget(&mut self.session, changed, was_default);
-        self.comfy_server.loaded = false;
+        if self.comfy_server.loaded {
+            // Reconcile only the saved/removed row: drafts in other rows are still the person's
+            // edits, even when settings changed after an unrelated panel action.
+            let mut rows = std::mem::take(&mut self.comfy_server.rows);
+            self.comfy_server.rows = settings
+                .comfy_servers()
+                .into_iter()
+                .map(|server| {
+                    if server.name == changed {
+                        Row::of(server)
+                    } else if let Some(position) = rows.iter().position(|row| row.name == server.name) {
+                        rows.remove(position)
+                    } else {
+                        Row::of(server)
+                    }
+                })
+                .collect();
+        }
         Ok(())
     }
 

@@ -80,6 +80,9 @@ pub struct Tokens {
     pub field_min_width: f32,
     pub field_min_height: f32,
     pub field_fill_opacity: f32,
+    /// ComfyUI servers panel's job-count and new-name text field widths (#874).
+    pub comfy_jobs_width: f32,
+    pub comfy_name_width: f32,
     pub search_width: f32,
     pub search_height: f32,
     pub search_button_width: f32,
@@ -244,6 +247,8 @@ pub const DARK: Tokens = Tokens {
     field_min_width: 160.0,
     field_min_height: 96.0,
     field_fill_opacity: 0.10,
+    comfy_jobs_width: 48.0,
+    comfy_name_width: 160.0,
     search_width: 420.0,
     search_height: 128.0,
     search_button_width: 130.0,

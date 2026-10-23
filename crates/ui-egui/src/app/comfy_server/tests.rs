@@ -210,13 +210,14 @@ fn changing_one_server_leaves_another_servers_check_running() {
     h.state_mut().tick_comfy_nodes(&ctx);
     // Editing the other server keeps studio's read; its answer still lands. The edit is saved, and
     // its own check waits its turn.
-    let busy = h.state_mut().save_comfy_server("spare", "http://other:8189", "").unwrap_err();
-    assert_eq!(busy.kind, ErrorKind::Busy);
+    h.state_mut().save_comfy_server("spare", "http://other:8189", "").unwrap();
     assert_eq!(servers(&h)[1].1, "http://other:8189");
     assert!(h.state().comfy_nodes.as_ref().unwrap().is_waiting());
     drop(held);
     answered(&mut h);
     assert_eq!(comfy_server_cmds::report(&h.state().session, "studio").unwrap().id, 3);
+    assert_eq!(comfy_server_cmds::report(&h.state().session, "spare").unwrap().id, 4);
+    assert!(comfy_server_cmds::report(&h.state().session, "spare").unwrap().error.is_none());
     // Editing studio itself drops its read at once, and the new address is read instead.
     h.state_mut().check_comfy_server("studio").unwrap();
     h.state_mut().tick_comfy_nodes(&ctx);
@@ -225,6 +226,122 @@ fn changing_one_server_leaves_another_servers_check_running() {
     answered(&mut h);
     assert_eq!(nodes(&h), Some(1));
     assert_eq!(servers(&h)[0].1, "http://gpu-box:8190");
+}
+
+fn edit_address(h: &mut Harness<'static, NodeCraftApp>, row: usize, url: &str) {
+    let pos = h.query_all_by_role_and_label(Role::TextInput, "Address").nth(row).unwrap().rect().center();
+    h.hover_at(pos);
+    h.run();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text(url.into()));
+    h.run();
+}
+
+#[test]
+fn editing_a_in_the_panel_queues_its_check_behind_b() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = Arc::new(Mutex::new(()));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let mut h = gated_app(dir.path(), asked.clone(), gate.clone());
+    h.state_mut().add_comfy_server("a", "http://a:8188", "").unwrap();
+    answered(&mut h);
+    h.state_mut().add_comfy_server("b", "http://b:8188", "").unwrap();
+    answered(&mut h);
+    h.state_mut().comfy_server.open = true;
+    h.run();
+    let held = gate.lock().unwrap();
+    h.state_mut().check_comfy_server("b").unwrap();
+    let ctx = h.ctx.clone();
+    h.state_mut().tick_comfy_nodes(&ctx);
+    edit_address(&mut h, 0, "http://a:8189");
+    h.get_by_label("Save and check").click();
+    h.run();
+    assert_eq!(servers(&h)[0].1, "http://a:8189");
+    assert!(comfy_server_cmds::report(&h.state().session, "a").is_none());
+    drop(held);
+    answered(&mut h);
+    assert_eq!(comfy_server_cmds::report(&h.state().session, "b").unwrap().id, 3);
+    assert_eq!(comfy_server_cmds::report(&h.state().session, "a").unwrap().id, 4);
+    assert!(asked.lock().unwrap().iter().any(|url| url == "http://a:8189/object_info"));
+    assert_eq!(h.query_all_by_role_and_label(Role::Label, "ComfyUI 0.3.40 · cuda:0 GPU · 18.2 / 24.0 GB free · 0 running, 1 waiting").count(), 2);
+}
+
+#[test]
+fn abandoning_a_running_server_preserves_another_servers_accepted_pending_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = Arc::new(Mutex::new(()));
+    let mut h = gated_app(dir.path(), Arc::new(Mutex::new(Vec::new())), gate.clone());
+    h.state_mut().add_comfy_server("a", "http://a:8188", "").unwrap();
+    answered(&mut h);
+    h.state_mut().add_comfy_server("b", "http://b:8188", "").unwrap();
+    answered(&mut h);
+    let held = gate.lock().unwrap();
+    h.state_mut().check_comfy_server("b").unwrap();
+    let ctx = h.ctx.clone();
+    h.state_mut().tick_comfy_nodes(&ctx);
+    h.state_mut().comfy_nodes.as_mut().unwrap().allow_followup(true);
+    let pending = h.state_mut().session.dispatch("comfy.nodes.refresh", &json!({"server": "a"})).unwrap()["pending"].as_u64().unwrap();
+    h.state_mut().comfy_nodes.as_mut().unwrap().allow_followup(false);
+    h.state_mut().comfy_nodes.as_mut().unwrap().abandon();
+    drop(held);
+    answered(&mut h);
+    assert_eq!(comfy_server_cmds::report(&h.state().session, "a").unwrap().id, pending);
+    assert!(comfy_server_cmds::report(&h.state().session, "a").unwrap().error.is_none());
+}
+
+#[test]
+fn adding_and_removing_the_default_queue_followup_checks() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = Arc::new(Mutex::new(()));
+    let mut h = gated_app(dir.path(), Arc::new(Mutex::new(Vec::new())), gate.clone());
+    h.state_mut().add_comfy_server("a", "http://a:8188", "").unwrap();
+    answered(&mut h);
+    h.state_mut().add_comfy_server("b", "http://b:8188", "").unwrap();
+    answered(&mut h);
+    let held = gate.lock().unwrap();
+    h.state_mut().check_comfy_server("b").unwrap();
+    let ctx = h.ctx.clone();
+    h.state_mut().tick_comfy_nodes(&ctx);
+    h.state_mut().add_comfy_server("c", "http://c:8188", "").unwrap();
+    h.state_mut().remove_comfy_server("a").unwrap();
+    assert_eq!(default_name(&h).as_deref(), Some("b"));
+    drop(held);
+    answered(&mut h);
+    assert_eq!(comfy_server_cmds::report(&h.state().session, "c").unwrap().id, 4);
+    assert_eq!(comfy_server_cmds::report(&h.state().session, "b").unwrap().id, 5);
+    assert_eq!(nodes(&h), Some(1));
+}
+
+#[test]
+fn panel_action_preserves_unsaved_draft_in_another_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = app(dir.path(), Arc::new(Mutex::new(Vec::new())));
+    h.state_mut().add_comfy_server("a", "http://a:8188", "").unwrap();
+    answered(&mut h);
+    h.state_mut().add_comfy_server("b", "http://b:8188", "").unwrap();
+    answered(&mut h);
+    h.state_mut().comfy_server.open = true;
+    h.run();
+    edit_address(&mut h, 0, "http://a:8189");
+    assert_eq!(h.state().comfy_server.rows[0].url, "http://a:8189");
+    let pos = h.query_all_by_role_and_label(Role::Button, "Remove").nth(1).unwrap().rect().center();
+    h.hover_at(pos);
+    h.run();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert_eq!(servers(&h).len(), 1, "the unrelated row was removed through the panel");
+    assert_eq!(h.state().comfy_server.rows[0].url, "http://a:8189");
+    assert_eq!(servers(&h)[0].1, "http://a:8188", "the draft was not saved by the other action");
+    h.get_by_label("Save and check").click();
+    h.run();
+    answered(&mut h);
+    assert_eq!(servers(&h)[0].1, "http://a:8189");
 }
 
 #[test]
