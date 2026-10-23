@@ -321,8 +321,9 @@ impl PluginsPanel {
         };
         match files.put(name, bytes) {
             Ok(location) => {
+                // The name as `put` kept it: shortened, without control characters.
+                self.chosen = location.rsplit('/').next().map(str::to_owned);
                 self.location = location;
-                self.chosen = Some(name.to_owned());
                 self.preview = None;
                 self.notice = None;
             }
@@ -405,7 +406,7 @@ impl PluginsPanel {
                     )
                     .color(t.text_muted),
                 );
-                if self.session_only {
+                if self.session_only || self.picked_files.is_some() {
                     ui.label(
                         egui::RichText::new("Packages last only for this session: closing or reloading the page removes them, and plugins can't run here yet.")
                             .color(t.text)
@@ -516,6 +517,8 @@ impl PluginsPanel {
                                 self.change(session, "plugins.revoke", json!({"grant_id": grant_id}), format!("{id} may no longer run."));
                             }
                         }
+                        // Nothing can run in a session-only store, so there is nothing to consent to.
+                        None if self.session_only => {}
                         None => {
                             if ui.button("Grant…").on_hover_text("See what it asks for, then let it run").clicked() {
                                 self.ask_rights(session, id);

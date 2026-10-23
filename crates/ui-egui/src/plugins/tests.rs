@@ -337,6 +337,7 @@ fn a_picked_file_is_installed_into_a_session_only_store() {
     h.get_by_label("Install").click();
     settle(&mut h);
     assert_eq!(h.state().panel.rows().first().map(|r| r.package_id.as_str()), Some("io.example.text"));
+    assert!(h.query_by_label("Grant…").is_none(), "nothing runs here, so nothing is offered to consent to");
     h.get_by_label("Enable").click();
     settle(&mut h);
     assert!(!h.state().panel.rows()[0].enabled);

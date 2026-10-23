@@ -367,7 +367,10 @@ fn a_picked_package_is_imported_from_its_bytes_and_listed_as_session_only() {
     let bytes = std::fs::read(package(dir.path(), "io.example.palette", "1.0.0")).unwrap();
     let location = picked.put("palette.ncraft-plugin", bytes).unwrap();
     let dry = s.dispatch("plugins.import", &json!({"location": location, "dry_run": true})).unwrap();
-    s.dispatch("plugins.import", &json!({"location": location, "digest": dry["digest"]})).unwrap();
+    let report = s.dispatch("plugins.import", &json!({"location": location, "digest": dry["digest"]})).unwrap();
+    assert_eq!((dry["session_only"].clone(), report["session_only"].clone()), (json!(true), json!(true)));
+    let released = s.dispatch("plugins.import", &json!({"location": location})).unwrap_err();
+    assert_eq!(released.kind, ErrorKind::NotFound, "an installed pick is let go");
     let list = s.dispatch("plugins.list", &json!({})).unwrap();
     assert_eq!((list["session_only"].clone(), list["packages"][0]["package_id"].clone()), (json!(true), json!("io.example.palette")));
     s.dispatch("plugins.enable", &json!({"package_id": "io.example.palette"})).unwrap();

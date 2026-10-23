@@ -13,7 +13,7 @@ const MAX_NAME_BYTES: usize = 255;
 #[derive(Default)]
 struct Slot {
     picks: u64,
-    file: Option<(String, Rc<[u8]>)>,
+    file: Option<(String, Rc<Vec<u8>>)>,
 }
 
 /// The package file the person picked last, shared by the panel and the service.
@@ -37,11 +37,18 @@ impl PickedPackage {
             short.push(c);
         }
         let location = format!("picked/{}/{}", slot.picks, if short.is_empty() { "package" } else { &short });
-        slot.file = Some((location.clone(), bytes.into()));
+        slot.file = Some((location.clone(), Rc::new(bytes)));
         Ok(location)
     }
 
-    fn read(&self, location: &str) -> Result<Rc<[u8]>, Error> {
+    /// Lets go of the picked file; the store keeps its own copy of what was installed.
+    pub fn clear(&self) {
+        if let Ok(mut slot) = self.0.try_borrow_mut() {
+            slot.file = None;
+        }
+    }
+
+    fn read(&self, location: &str) -> Result<Rc<Vec<u8>>, Error> {
         let slot = self.0.try_borrow().map_err(|_| busy())?;
         match &slot.file {
             Some((held, bytes)) if held == location => Ok(Rc::clone(bytes)),
@@ -64,7 +71,8 @@ pub fn register_session_plugins<B: StoreBackend + 'static>(services: &mut Servic
     let picked = PickedPackage::default();
     let files = picked.clone();
     services.register(PLUGIN_SERVICE, move |request: &Value| {
-        match request.get("op").and_then(Value::as_str) {
+        let op = request.get("op").and_then(Value::as_str);
+        match op {
             Some("grant") => return Err(cant_run()),
             Some("enable") => {
                 store.refresh()?;
@@ -74,8 +82,13 @@ pub fn register_session_plugins<B: StoreBackend + 'static>(services: &mut Servic
             }
             _ => {}
         }
-        let mut out = handle_reading(&mut store, &host, request, &mut |location| files.read(location).map(|bytes| bytes.to_vec()))?;
-        if request.get("op").and_then(Value::as_str) == Some("list")
+        let mut out = handle_reading(&mut store, &host, request, &mut |location| files.read(location))?;
+        let installing = matches!(op, Some("import" | "update"));
+        if installing && request.get("dry_run").and_then(Value::as_bool) != Some(true) {
+            // Up to 32 MiB the store already holds a copy of; wasm memory never shrinks back.
+            files.clear();
+        }
+        if (installing || op == Some("list"))
             && let Some(o) = out.as_object_mut()
         {
             o.insert("session_only".into(), json!(true));

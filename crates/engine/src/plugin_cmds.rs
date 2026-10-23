@@ -331,14 +331,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.import",
             "Import plugin package",
             file_schema,
-            "{location: string, dry_run?: bool, digest?: string}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only; digest: refuse unless the file still has the digest a dry run showed). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run, rights: {required, optional, origins}|{error}, rights_delta (update): {added_capabilities, removed_capabilities, added_origins, removed_origins}}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
+            "{location: string (a path; in the browser, a picked file's location), dry_run?: bool, digest?: string}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only; digest: refuse unless the file still has the digest a dry run showed). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run, rights: {required, optional, origins}|{error}, rights_delta (update): {added_capabilities, removed_capabilities, added_origins, removed_origins}}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
             import,
         ),
         spec(
             "plugins.update",
             "Update plugin package",
             file_schema,
-            "{location: string, dry_run?: bool, digest?: string}; installs a disabled package version (digest: as for plugins.import), keeping the previous digest for rollback. Direct result: import report with replaced. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{location: string, dry_run?: bool, digest?: string}; installs a disabled package version (digest: as for plugins.import), keeping the previous digest for rollback. Direct result: import report with replaced. A session-only store (the browser) adds session_only: true to list and import reports. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             update,
         ),
         spec(
@@ -559,16 +559,14 @@ fn package_id(request: &Value) -> Result<PackageId, Error> {
 
 /// Runs one `plugins` request against `store`.
 pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request: &Value) -> Result<Value, Error> {
-    handle_reading(store, host, request, &mut |location| read_capped(std::path::Path::new(location), package_limit(), "package file"))
+    handle_reading(store, host, request, &mut |location| read_capped(std::path::Path::new(location), package_limit(), "package file").map(std::rc::Rc::new))
 }
 
+/// Reads the package file at a request's location.
+pub(crate) type ReadPackage<'a> = dyn FnMut(&str) -> Result<std::rc::Rc<Vec<u8>>, Error> + 'a;
+
 /// [`handle`], with package files read by `read` (given the request's location).
-pub(crate) fn handle_reading<B: StoreBackend>(
-    store: &mut Store<B>,
-    host: &PluginHost,
-    request: &Value,
-    read: &mut dyn FnMut(&str) -> Result<Vec<u8>, Error>,
-) -> Result<Value, Error> {
+pub(crate) fn handle_reading<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request: &Value, read: &mut ReadPackage) -> Result<Value, Error> {
     // Another window or the CLI may have changed the store since the last request.
     store.refresh()?;
     let referenced = referenced_of(request)?;
