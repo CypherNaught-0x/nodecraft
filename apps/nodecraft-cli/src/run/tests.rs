@@ -30,6 +30,11 @@ inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true 
 
 /// A session with one image card on the mock model, routed and ready to run.
 fn scene(model: MockModel) -> (Session, Runner) {
+    scene_with(model, None)
+}
+
+/// [`scene`], its runner held to `spend` when given.
+fn scene_with(model: MockModel, spend: Option<&Spend>) -> (Session, Runner) {
     let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_IMAGE).unwrap();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
@@ -50,7 +55,10 @@ fn scene(model: MockModel) -> (Session, Runner) {
     resources.insert(snapshot.clone());
     resources.insert(snapshot.run_catalog());
     let mut services = Services::default();
-    let runner = Runner::new(&mut services, "cli-test".into()).unwrap();
+    let runner = match spend {
+        Some(spend) => Runner::with_spend(&mut services, "cli-test".into(), spend).unwrap(),
+        None => Runner::new(&mut services, "cli-test".into()).unwrap(),
+    };
     let mut session = Session::with_registries(project, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
     let mock = MockProvider::new("mock", [("mock-image".to_owned(), model)]);
     let mut maker = move |adapter: &str| -> Result<Arc<dyn Provider>, Readiness> {
@@ -135,4 +143,39 @@ fn an_unanswered_estimate_wait_has_a_defensive_deadline_and_keeps_its_id() {
     assert_eq!(result["request"], 12_345);
     assert_eq!(result["status"], "not_estimated");
     assert!(result["reason"].as_str().is_some_and(|reason| !reason.is_empty()));
+}
+
+#[test]
+fn runners_sharing_a_spend_are_held_to_its_budget_together() {
+    let spend = Spend::default();
+    let usd = nodecraft_types::Currency::try_from("USD".to_owned()).unwrap();
+    spend.budgets.lock().unwrap().project = Some(nodecraft_types::Money { currency: usd, micros: 50_000 });
+    let (mut session, mut runner) = scene_with(MockModel::new(MockOutput::Image), Some(&spend));
+    let quote = crate::quote::quote(&mut session, C, &[N]).unwrap();
+    let steps = runner.run(&mut session, C, &[N], &quote, Consent { spend: true }).unwrap();
+    assert_eq!(steps[0]["status"], "recorded", "{steps:?}");
+
+    // A second runner, as the next served run gets: its 0.04 would bring the total past 0.05.
+    let (mut session, mut runner) = scene_with(MockModel::new(MockOutput::Image), Some(&spend));
+    let quote = crate::quote::quote(&mut session, C, &[N]).unwrap();
+    let outcome = runner.run(&mut session, C, &[N], &quote, Consent { spend: true });
+    let refused = match &outcome {
+        Err(error) => error.message.to_lowercase(),
+        Ok(steps) => steps[0].to_string().to_lowercase(),
+    };
+    assert!(outcome.as_ref().map_or(true, |steps| steps[0]["status"] != "recorded"), "{outcome:?}");
+    assert!(refused.contains("budget"), "{refused}");
+}
+
+#[test]
+fn a_run_past_its_deadline_is_cancelled_and_fails_as_timed_out() {
+    let mut slow = MockModel::new(MockOutput::Image);
+    slow.polls = u32::MAX;
+    let (mut session, mut runner) = scene(slow);
+    let quote = crate::quote::quote(&mut session, C, &[N]).unwrap();
+    let started = Instant::now();
+    let error = runner.run_within(&mut session, C, &[N], &quote, Consent { spend: true }, Some(started)).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Timeout, "{}", error.message);
+    assert!(error.message.contains("may still be charged"), "{}", error.message);
+    assert!(started.elapsed() < CANCEL_GRACE, "the cancelled job stopped without waiting out the grace");
 }

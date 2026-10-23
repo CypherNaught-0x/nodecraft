@@ -3,6 +3,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use nodecraft_engine::Session;
 use nodecraft_engine::commands::Services;
@@ -17,12 +18,18 @@ use tokio::sync::mpsc::Sender;
 
 use super::webhook::{self, Delivery};
 use crate::quote::Maker;
-use crate::run::{Consent, Runner};
+use crate::run::{Consent, Runner, Spend};
 
 /// Runs remembered at most; the oldest finished one is forgotten first.
 pub const MAX_RUNS: usize = 256;
 /// Bytes of run results kept at most; the oldest finished run's files are let go first.
 pub const MAX_KEPT_BYTES: u64 = 1024 * 1024 * 1024;
+/// Bytes of uploads waiting in the queue at most, on top of the kept results.
+pub const MAX_QUEUED_BYTES: u64 = 256 * 1024 * 1024;
+/// How long an `Idempotency-Key` is remembered, even after its run is forgotten.
+pub const KEY_TTL: Duration = Duration::from_secs(24 * 3600);
+/// Keys remembered at most; past it new keyed runs are refused until old keys expire.
+pub const MAX_KEYS: usize = 65_536;
 /// Items of one list output kept at most.
 const MAX_ITEMS: usize = 64;
 
@@ -75,6 +82,20 @@ pub struct Job {
     pub policy: Policy,
     /// Where to tell the client the run ended.
     pub webhook: Option<url::Url>,
+}
+
+impl Job {
+    /// The bytes it holds: its files, and its values as JSON.
+    pub fn bytes(&self) -> u64 {
+        let size = |given: &Given| {
+            let len = match given {
+                Given::Media { bytes, .. } => bytes.len(),
+                Given::Value(value) => serde_json::to_vec(value).map_or(0, |json| json.len()),
+            };
+            u64::try_from(len).unwrap_or(u64::MAX)
+        };
+        self.inputs.iter().flat_map(|(_, given)| given).map(size).fold(0, u64::saturating_add)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,6 +215,25 @@ pub struct Book {
     pub order: VecDeque<String>,
     pub runs: HashMap<String, Run>,
     kept: u64,
+    /// Each `Idempotency-Key` seen, kept for [`KEY_TTL`] even once its run is forgotten.
+    keys: HashMap<String, Remembered>,
+    /// Bytes of uploads in jobs the worker hasn't taken yet.
+    queued: u64,
+}
+
+/// What a key was used for.
+struct Remembered {
+    fingerprint: u64,
+    run: String,
+    at: Instant,
+}
+
+/// A key's run, as far as the book knows.
+pub enum Keyed<'a> {
+    /// The run, still remembered.
+    Run(&'a String, &'a Run),
+    /// The key was used for a run since forgotten.
+    Forgotten { fingerprint: u64 },
 }
 
 impl Runs {
@@ -217,15 +257,56 @@ impl Book {
         Some(())
     }
 
-    /// The run made with `key`, if it is still remembered.
-    pub fn keyed(&self, key: &str) -> Option<(&String, &Run)> {
-        self.runs.iter().find(|(_, run)| run.key.as_ref().is_some_and(|(k, _)| k == key))
+    /// What `key` was used for: its run while that is remembered, and after that until
+    /// [`KEY_TTL`] has passed since `now`.
+    pub fn keyed(&self, key: &str, now: Instant) -> Option<Keyed<'_>> {
+        let seen = self.keys.get(key)?;
+        match self.runs.get_key_value(&seen.run) {
+            Some((id, run)) => Some(Keyed::Run(id, run)),
+            None if self.lives(seen, now) => Some(Keyed::Forgotten { fingerprint: seen.fingerprint }),
+            None => None,
+        }
     }
 
-    /// Forgets a run that never reached the worker.
+    /// Whether a key still protects: its run is remembered, or it is younger than [`KEY_TTL`].
+    fn lives(&self, seen: &Remembered, now: Instant) -> bool {
+        self.runs.contains_key(&seen.run) || now.saturating_duration_since(seen.at) < KEY_TTL
+    }
+
+    /// Remembers that `key` made run `id`. `false` if [`MAX_KEYS`] unexpired keys are held.
+    pub fn remember(&mut self, key: String, fingerprint: u64, id: String, now: Instant) -> bool {
+        if self.keys.len() >= MAX_KEYS {
+            let runs = &self.runs;
+            self.keys.retain(|_, seen| runs.contains_key(&seen.run) || now.saturating_duration_since(seen.at) < KEY_TTL);
+            if self.keys.len() >= MAX_KEYS {
+                return false;
+            }
+        }
+        self.keys.insert(key, Remembered { fingerprint, run: id, at: now });
+        true
+    }
+
+    /// Counts `bytes` of uploads as queued. `false`, counting nothing, if they don't fit.
+    pub fn queue_bytes(&mut self, bytes: u64) -> bool {
+        match self.queued.checked_add(bytes) {
+            Some(total) if total <= MAX_QUEUED_BYTES => {
+                self.queued = total;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Stops counting `bytes` of uploads as queued.
+    pub fn unqueue_bytes(&mut self, bytes: u64) {
+        self.queued = self.queued.saturating_sub(bytes);
+    }
+
+    /// Forgets a run that never reached the worker, and the key it was made with.
     pub fn drop_run(&mut self, id: &str) {
         self.runs.remove(id);
         self.order.retain(|other| other != id);
+        self.keys.retain(|_, seen| seen.run != id);
     }
 
     /// Records a finished run, then lets the oldest files go until the kept bytes fit.
@@ -271,12 +352,13 @@ pub fn spawn(
     queue: Receiver<Job>,
     runs: Arc<Runs>,
     hooks: Option<Sender<Delivery>>,
+    spend: Spend,
 ) -> Result<Vec<Entry>, Error> {
     let (ready, listed) = channel();
     std::thread::Builder::new()
         .name("nodecraft-serve-runs".into())
         .spawn(move || {
-            let prepared = load().and_then(Worker::new);
+            let prepared = load().and_then(|loaded| Worker::new(loaded, spend));
             let mut worker = match prepared {
                 Ok((worker, entries)) => {
                     let _ = ready.send(Ok(entries));
@@ -289,7 +371,11 @@ pub fn spawn(
             };
             // Ends when the server is gone and the queue with it.
             while let Ok(job) = queue.recv() {
-                runs.lock().set_status(&job.id, Status::Running);
+                {
+                    let mut book = runs.lock();
+                    book.unqueue_bytes(job.bytes());
+                    book.set_status(&job.id, Status::Running);
+                }
                 // A bug in one run fails that run, not the server: it is reported, never left running.
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.run(&job)))
                     .unwrap_or_else(|_| Err((Error::new(ErrorKind::Internal, "the run stopped on an internal error; the server keeps serving"), None)));
@@ -351,15 +437,17 @@ struct Worker {
     /// The scratch canvas each run places its technique on.
     canvas: CanvasId,
     new_id: Box<dyn FnMut() -> [u8; 16]>,
+    /// What every run has spent, held to the server's overall budget.
+    spend: Spend,
 }
 
 impl Worker {
     /// Adds the scratch canvas to the snapshot and lists what it serves.
-    fn new(mut loaded: Loaded) -> Result<(Self, Vec<Entry>), Error> {
+    fn new(mut loaded: Loaded, spend: Spend) -> Result<(Self, Vec<Entry>), Error> {
         let mut new_id = crate::random_bytes();
         let canvas = CanvasId::from_bytes(new_id());
         Change::AddCanvas { canvas: Canvas::new(canvas, "Served runs") }.apply(&mut loaded.snapshot.project)?;
-        let mut worker = Self { loaded, canvas, new_id: Box::new(new_id) };
+        let mut worker = Self { loaded, canvas, new_id: Box::new(new_id), spend };
         let entries = worker.entries()?;
         Ok((worker, entries))
     }
@@ -428,8 +516,10 @@ impl Worker {
 
     /// Runs `job` to its end. A failure that came after the quote carries it.
     fn run(&mut self, job: &Job) -> Result<Done, (Error, Option<Value>)> {
+        // Counted from when the worker takes the job, not from when it was queued.
+        let deadline = job.policy.run_timeout.and_then(|limit| Instant::now().checked_add(limit));
         let mut services = Services::default();
-        let mut runner = Runner::new(&mut services, job.id.clone()).map_err(|e| (e, None))?;
+        let mut runner = Runner::with_spend(&mut services, job.id.clone(), &self.spend).map_err(|e| (e, None))?;
         let mut session = self.session(services).map_err(|e| (e, None))?;
         let session = &mut session;
         let id = self.place(session, job.canvas).map_err(|e| (e, None))?;
@@ -442,7 +532,7 @@ impl Worker {
         if let Err(error) = within(&quote, &job.policy) {
             return Err((error, Some(quote)));
         }
-        let steps = runner.run(session, canvas, &[id], &quote, Consent { spend: true }).map_err(|e| (e, Some(quote.clone())))?;
+        let steps = runner.run_within(session, canvas, &[id], &quote, Consent { spend: true }, deadline).map_err(|e| (e, Some(quote.clone())))?;
         let failed = steps.iter().any(|step| step["status"] != "recorded");
         let outputs = if failed { Vec::new() } else { outputs(session, canvas, id, &job.names).map_err(|e| (e, Some(quote.clone())))? };
         Ok(Done { quote, steps, outputs, failed })
@@ -531,4 +621,78 @@ fn outputs(session: &Session, canvas: CanvasId, id: NodeId, names: &[(String, St
         }
     }
     Ok(produced)
+}
+
+#[cfg(test)]
+mod book_tests {
+    use super::*;
+
+    fn done(book: &mut Book, id: &str) {
+        book.finish(id, |run| run.status = Status::Succeeded);
+    }
+
+    #[test]
+    fn a_key_outlives_its_run_until_it_expires() {
+        let now = Instant::now();
+        let mut book = Book::default();
+        book.add("first".into(), Run::new("t".into(), 1, Some(("k".into(), 7)))).unwrap();
+        assert!(book.remember("k".into(), 7, "first".into(), now));
+        done(&mut book, "first");
+        assert!(matches!(book.keyed("k", now), Some(Keyed::Run(id, _)) if id == "first"));
+        // While its run is remembered a key never expires, however old.
+        assert!(matches!(book.keyed("k", now + KEY_TTL * 2), Some(Keyed::Run(..))));
+        // Enough newer runs push the first one out of the book; its key stays.
+        for n in 0..MAX_RUNS {
+            book.add(format!("r{n}"), Run::new("t".into(), 1, None)).unwrap();
+            done(&mut book, &format!("r{n}"));
+        }
+        assert!(!book.runs.contains_key("first"));
+        assert!(matches!(book.keyed("k", now), Some(Keyed::Forgotten { fingerprint: 7 })));
+        assert!(book.keyed("k", now + KEY_TTL).is_none(), "an expired key is forgotten");
+    }
+
+    #[test]
+    fn a_full_key_table_refuses_new_keys_until_old_ones_expire() {
+        let now = Instant::now();
+        let mut book = Book::default();
+        for n in 0..MAX_KEYS {
+            assert!(book.remember(format!("k{n}"), 0, "run".into(), now));
+        }
+        assert!(!book.remember("one more".into(), 0, "run".into(), now));
+        assert!(book.remember("one more".into(), 0, "run".into(), now + KEY_TTL));
+        assert_eq!(book.keys.len(), 1, "the expired keys were let go");
+    }
+
+    #[test]
+    fn a_dropped_run_takes_its_key_with_it() {
+        let now = Instant::now();
+        let mut book = Book::default();
+        book.add("run".into(), Run::new("t".into(), 1, Some(("k".into(), 1)))).unwrap();
+        assert!(book.remember("k".into(), 1, "run".into(), now));
+        book.drop_run("run");
+        assert!(book.keyed("k", now).is_none());
+    }
+
+    #[test]
+    fn queued_upload_bytes_are_budgeted() {
+        let mut book = Book::default();
+        assert!(book.queue_bytes(MAX_QUEUED_BYTES - 10));
+        assert!(!book.queue_bytes(11), "past the budget nothing is counted");
+        assert!(!book.queue_bytes(u64::MAX));
+        assert!(book.queue_bytes(10));
+        book.unqueue_bytes(MAX_QUEUED_BYTES);
+        assert!(book.queue_bytes(MAX_QUEUED_BYTES));
+        book.unqueue_bytes(u64::MAX);
+        assert_eq!(book.queued, 0);
+        let job = Job {
+            id: "j".into(),
+            canvas: CanvasId::from_bytes([1; 16]),
+            inputs: vec![("a".into(), vec![Given::Media { name: "x".into(), bytes: vec![0; 5] }, Given::Value(json!(1))])],
+            params: Vec::new(),
+            names: Vec::new(),
+            policy: Policy::default(),
+            webhook: None,
+        };
+        assert_eq!(job.bytes(), 6, "five bytes of file and `1`");
+    }
 }

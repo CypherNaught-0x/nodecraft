@@ -226,6 +226,7 @@ pub fn write<W: Write>(out: &mut W, response: Response) -> std::io::Result<()> {
         Body::Bytes(bytes) => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
         Body::Stream(_, len) => *len,
     };
+    let out = &mut WriteBy { out, by: Instant::now().checked_add(allowed(length)) };
     let mut head = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {length}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n",
         response.status,
@@ -251,6 +252,44 @@ pub fn write<W: Write>(out: &mut W, response: Response) -> std::io::Result<()> {
     out.flush()
 }
 
+/// The slowest a reader may take a response before the connection is dropped.
+const SLOWEST_READ: u64 = 256 * 1024;
+/// Time any response is given, however small.
+const WRITE_GRACE: Duration = Duration::from_secs(30);
+
+/// How long a response of `length` bytes may take to send: a reader as slow as
+/// [`SLOWEST_READ`] bytes a second still gets it, but nobody holds a connection forever.
+fn allowed(length: u64) -> Duration {
+    WRITE_GRACE.saturating_add(Duration::from_secs(length / SLOWEST_READ))
+}
+
+/// A writer that refuses to write once `by` has passed (the per-write timeout alone lets a
+/// steady trickle hold a connection for as long as the file lasts).
+struct WriteBy<'a, W> {
+    out: &'a mut W,
+    by: Option<Instant>,
+}
+
+impl<W: Write> WriteBy<'_, W> {
+    fn check(&self) -> std::io::Result<()> {
+        match self.by {
+            Some(by) if Instant::now() > by => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the response took too long to send")),
+            _ => Ok(()),
+        }
+    }
+}
+
+impl<W: Write> Write for WriteBy<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.check()?;
+        self.out.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.check()?;
+        self.out.flush()
+    }
+}
+
 /// The interim reply a client sent `Expect: 100-continue` waits for.
 pub fn write_continue<W: Write>(out: &mut W) -> std::io::Result<()> {
     out.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
@@ -261,4 +300,21 @@ pub fn write_continue<W: Write>(out: &mut W) -> std::io::Result<()> {
 pub fn refusal(refusal: &Refusal) -> Response {
     let response = Response::json(refusal.status, &serde_json::json!({"error": {"kind": refusal.kind, "message": refusal.message}}));
     if refusal.status == 401 { response.header("WWW-Authenticate", "Bearer".into()) } else { response }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn a_response_is_given_time_by_its_length_and_no_more() {
+        assert_eq!(allowed(0), WRITE_GRACE);
+        assert_eq!(allowed(SLOWEST_READ * 100), WRITE_GRACE + Duration::from_secs(100));
+        assert!(allowed(u64::MAX) > WRITE_GRACE, "no overflow");
+        let mut sink = Vec::new();
+        let mut late = WriteBy { out: &mut sink, by: Instant::now().checked_sub(Duration::from_secs(1)) };
+        assert_eq!(late.write(b"x").unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        let mut open = WriteBy { out: &mut sink, by: Instant::now().checked_add(Duration::from_secs(60)) };
+        assert_eq!(open.write(b"x").unwrap(), 1);
+    }
 }

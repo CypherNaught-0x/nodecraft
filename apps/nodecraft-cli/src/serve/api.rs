@@ -7,6 +7,7 @@
 use std::hash::{BuildHasher, RandomState};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use nodecraft_automation::control::Token;
 use nodecraft_format::asset_source::StreamMetrics;
@@ -15,7 +16,7 @@ use serde_json::{Map, Value, json};
 use super::Policy;
 use super::http::{Body as HttpBody, Request, Response};
 use super::webhook::Settings;
-use super::worker::{Body, Book, Entry, Given, Hook, HookStatus, Job, Run, Runs, Status};
+use super::worker::{Body, Book, Entry, Given, Hook, HookStatus, Job, Keyed, Run, Runs, Status};
 
 /// Longest `Idempotency-Key` taken.
 const MAX_KEY: usize = 128;
@@ -91,7 +92,7 @@ impl State {
         };
         let fingerprint = self.hasher.hash_one((technique, &request.body));
         // A quick answer for a retry; checked again below, where it counts.
-        if let Some(replayed) = key.as_deref().and_then(|key| self.replay(&self.runs.lock(), key, fingerprint)) {
+        if let Some(replayed) = key.as_deref().and_then(|key| self.replay(&self.runs.lock(), key, fingerprint, Instant::now())) {
             return replayed;
         }
         if !request.header("content-type").is_some_and(|t| t.split(';').next().is_some_and(|t| t.trim().eq_ignore_ascii_case("application/json"))) {
@@ -113,24 +114,38 @@ impl State {
         // requests with the same key can't both start a run, and a run is never seen without its
         // job. The worker waits for the lock only to record progress.
         let mut book = self.runs.lock();
-        if let Some(replayed) = key.as_deref().and_then(|key| self.replay(&book, key, fingerprint)) {
+        let now = Instant::now();
+        if let Some(replayed) = key.as_deref().and_then(|key| self.replay(&book, key, fingerprint, now)) {
             return replayed;
         }
-        let mut run = Run::new(entry.technique.clone(), entry.version, key.map(|k| (k, fingerprint)));
+        let mut run = Run::new(entry.technique.clone(), entry.version, key.clone().map(|k| (k, fingerprint)));
         if job.webhook.is_some() {
             run.webhook = Some(Hook { status: HookStatus::Pending, attempts: 0, error: None });
         }
         if book.add(id.clone(), run).is_none() {
             return error(429, "busy", "too many runs are unfinished; try again later").header("Retry-After", "5".into());
         }
+        if let Some(key) = key
+            && !book.remember(key, fingerprint, id.clone(), now)
+        {
+            book.drop_run(&id);
+            return error(429, "busy", "too many Idempotency-Keys are remembered; try again later").header("Retry-After", "60".into());
+        }
         let job = Job { id: id.clone(), ..job };
+        let bytes = job.bytes();
+        if !book.queue_bytes(bytes) {
+            book.drop_run(&id);
+            return error(429, "busy", "too many uploaded bytes are waiting to run; try again later").header("Retry-After", "5".into());
+        }
         match self.jobs.try_send(job) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
+                book.unqueue_bytes(bytes);
                 book.drop_run(&id);
                 return error(429, "busy", "the run queue is full; try again later").header("Retry-After", "5".into());
             }
             Err(TrySendError::Disconnected(_)) => {
+                book.unqueue_bytes(bytes);
                 book.drop_run(&id);
                 return error(503, "unavailable", "the run thread has stopped; restart the server");
             }
@@ -139,13 +154,16 @@ impl State {
         Response::json(202, &described).header("Location", format!("/runs/{id}"))
     }
 
-    /// The run already made with `key`: itself if the request is the same, refused if not.
-    fn replay(&self, book: &Book, key: &str, fingerprint: u64) -> Option<Response> {
-        let (id, run) = book.keyed(key)?;
-        if run.key.as_ref().is_some_and(|(_, seen)| *seen != fingerprint) {
-            return Some(error(422, "idempotency_key_reuse", "this Idempotency-Key was used for a different request"));
+    /// The run already made with `key`: itself if the request is the same, refused if not. A
+    /// key whose run was since forgotten still never starts the run again.
+    fn replay(&self, book: &Book, key: &str, fingerprint: u64, now: Instant) -> Option<Response> {
+        let reused = || error(422, "idempotency_key_reuse", "this Idempotency-Key was used for a different request");
+        match book.keyed(key, now)? {
+            Keyed::Run(_, run) if run.key.as_ref().is_some_and(|(_, seen)| *seen != fingerprint) => Some(reused()),
+            Keyed::Run(id, run) => Some(Response::json(200, &describe(id, run)).header("Location", format!("/runs/{id}"))),
+            Keyed::Forgotten { fingerprint: seen } if seen != fingerprint => Some(reused()),
+            Keyed::Forgotten { .. } => Some(error(410, "expired", "this Idempotency-Key's run was forgotten to make room for newer runs; it isn't run again")),
         }
-        Some(Response::json(200, &describe(id, run)).header("Location", format!("/runs/{id}")))
     }
 
     /// The job a run request asks for, checked against the technique's form.

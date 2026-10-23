@@ -12,16 +12,18 @@ nodecraft-cli serve fox.ncraft --max-cost USD=0.50
 | Option | Default | What it does |
 |---|---|---|
 | `--listen <addr>` | `127.0.0.1:7341` | Where to listen. Port `0` picks a free one. Listening beyond loopback exposes your provider keys' spending to anyone with the token. |
-| `--token-file <path>` | `control/serve.json` in the app's settings folder | Where the bearer token is written (JSON: `port`, `token`, `pid`). Its folder must be private to you. The file stays after the server stops, and the default is shared, so give each server its own file to run several at once. |
+| `--token-file <path>` | `control/serve.json` in the app's settings folder | Where the bearer token is written (JSON: `port`, `token`, `pid`). Its folder must be private to you. It is removed when the server is stopped with Ctrl-C (exit code 130) or `SIGTERM` on Linux and macOS (143), but stays if the process is killed; the default is shared, so give each server its own file to run several at once. |
 | `--max-cost <CUR=amount>` | none | The most one run may cost in that currency, e.g. `USD=1.50`. Repeat for more currencies. A run that would charge a currency without a limit is refused. |
 | `--allow-unpriced` | off | Let runs start whose price isn't fully known (a provider that reports no price). |
+| `--max-total <CUR=amount>` | none | The most every run together may spend while the server runs, e.g. `USD=20`. A run that would take the total past it is refused. One currency: with it, a run that would spend any other currency, or whose price isn't fully known, is refused even with `--allow-unpriced`. |
+| `--run-timeout <seconds>` | 3600 | How long one run may take, counted from when it leaves the queue. Past it the run is cancelled and fails (`timeout`); jobs a provider had already accepted may still be charged. |
 | `--webhook-allow <url>` | none | Let runs name a webhook under this URL: the same scheme, host and port, and a path under its path. Repeat for more. Without it, requests can't name webhooks. |
 | `--webhook-allow-private` | off | Let webhooks reach loopback, private and link-local addresses (a receiver on your own network). |
 
 Without `--max-cost`, only free runs (local actions, ComfyUI) are served, plus runs whose price
-isn't known if `--allow-unpriced` is set. The limit is per run: there is no overall cap yet, so
-a client holding the token can start as many runs as it likes, each up to the limit. Keep the
-token to yourself, and set provider-side spending limits.
+isn't known if `--allow-unpriced` is set. `--max-cost` is per run; `--max-total` caps them all
+together, counted from when the server starts (a restart starts the count again). Keep the token
+to yourself, and set provider-side spending limits too.
 
 ## Requests
 
@@ -57,7 +59,9 @@ Each published technique version: `technique` (its id), `version`, `name`, `desc
   carry no credentials or fragment.
 - An `Idempotency-Key` header (1–128 printable characters) makes a retry safe: the same key
   with the same body returns the run already made (`200`); with a different body it is refused
-  (`422`, `idempotency_key_reuse`). A key is remembered as long as its run is (below).
+  (`422`, `idempotency_key_reuse`). A key is remembered for 24 hours, even after its run is
+  forgotten (below): then the same request answers `410` (`expired`) and is never run again. While its run is remembered, a key never expires. At
+  most 65,536 keys are remembered; past that, keyed requests answer `429` until old keys expire.
 
 The answer is `202 Accepted` with the run and a `Location: /runs/{id}` header. A full queue
 answers `429` with `Retry-After`.
@@ -84,9 +88,12 @@ text. `409` until the run has succeeded; `410` once its files were let go (below
   is charged.
 - The server remembers the last 256 runs and keeps at most 1 GiB of result files; older runs'
   files are let go first (`"expired": true`). Nothing survives a restart; save what you need.
-- At most 8 connections are served at once and 32 runs may wait. A request's head is 16 KiB at
+- At most 8 connections are served at once and 32 runs may wait, holding at most 256 MiB of
+  uploaded files and values between them; past either, a run request answers `429` with `Retry-After`. A request's head is 16 KiB at
   most and must arrive within 10 seconds; its body is 64 MiB at most, and the whole request
-  must arrive within 60 seconds. The token is checked before any of the body is read.
+  must arrive within 60 seconds. The token is checked before any of the body is read. A
+  response must be read within 30 seconds plus one second per 256 KiB, or the connection is
+  dropped.
 - A run that fails on an internal error is reported as failed; the server keeps serving.
 - Stopping the server doesn't stop jobs a provider already accepted; they may still be charged.
 

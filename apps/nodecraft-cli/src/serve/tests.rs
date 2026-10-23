@@ -59,7 +59,7 @@ fn serve_with(policy: Policy, webhooks: Option<Webhooks>) -> Served {
     let dir = tempfile::tempdir().unwrap();
     // The token file is only written to a folder no one else can read.
     let file = nodecraft_automation::control::private_dir(dir.path()).unwrap().join("serve.json");
-    let config = Config { listen: SocketAddr::from(([127, 0, 0, 1], 0)), token_file: Some(file.clone()), policy, webhooks };
+    let config = Config { listen: SocketAddr::from(([127, 0, 0, 1], 0)), token_file: Some(file.clone()), policy, webhooks, max_total: None };
     let server = start(config, loaded).unwrap();
     let written: Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
     assert_eq!(written["port"], server.addr.port());

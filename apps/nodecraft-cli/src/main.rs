@@ -53,12 +53,15 @@ commands:
                   This sends job inputs, including images, to their providers before run consent;
                   no generation is submitted or charged by the estimate
   serve <project.ncraft> [--listen <addr>] [--token-file <path>] [--max-cost <CUR=amount>]...
-        [--allow-unpriced] [--webhook-allow <url>]... [--webhook-allow-private]
+        [--allow-unpriced] [--max-total <CUR=amount>] [--run-timeout <seconds>]
+        [--webhook-allow <url>]... [--webhook-allow-private]
                   offer the project's published techniques as a local HTTP API (default
                   127.0.0.1:7341); requests need the bearer token written to the token file
                   (default control/serve.json in the app's settings folder). A run may spend
                   only up to --max-cost per currency (nothing without it), and a run whose price
-                  isn't fully known needs --allow-unpriced. A run may name a webhook under a
+                  isn't fully known needs --allow-unpriced; --max-total caps every run together
+                  while the server runs. A run is cancelled and fails after --run-timeout
+                  (default 3600 seconds). A run may name a webhook under a
                   --webhook-allow URL, called when it ends and signed with the webhook secret;
                   private addresses need --webhook-allow-private. The project file is not changed
   relay [--listen <addr>]
@@ -301,8 +304,13 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
 /// `serve`: offers the project's techniques until the process is stopped.
 fn serve_command(args: &[String]) -> ExitCode {
     let mut path = None;
-    let mut config =
-        serve::Config { listen: std::net::SocketAddr::from(([127, 0, 0, 1], 7341)), token_file: None, policy: serve::Policy::default(), webhooks: None };
+    let mut config = serve::Config {
+        listen: std::net::SocketAddr::from(([127, 0, 0, 1], 7341)),
+        token_file: None,
+        policy: serve::Policy { run_timeout: Some(std::time::Duration::from_secs(3600)), ..serve::Policy::default() },
+        webhooks: None,
+        max_total: None,
+    };
     let (mut allow, mut allow_private) = (Vec::new(), false);
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -313,6 +321,14 @@ fn serve_command(args: &[String]) -> ExitCode {
             "--token-file" => value("--token-file").map(|v| config.token_file = Some(v.into())),
             "--max-cost" => value("--max-cost").and_then(|v| serve::parse_max_cost(v)).map(|(code, micros)| {
                 config.policy.max_cost.insert(code, micros);
+            }),
+            "--max-total" => value("--max-total").and_then(|v| serve::parse_max_total(v)).map(|total| config.max_total = Some(total)),
+            "--run-timeout" => value("--run-timeout").and_then(|v| match v.parse::<u64>() {
+                Ok(seconds) if (1..=7 * 24 * 3600).contains(&seconds) => {
+                    config.policy.run_timeout = Some(std::time::Duration::from_secs(seconds));
+                    Ok(())
+                }
+                _ => Err(format!("`--run-timeout` takes 1 to 604800 seconds, not `{v}`")),
             }),
             "--allow-unpriced" => {
                 config.policy.allow_unpriced = true;
@@ -353,6 +369,7 @@ fn serve_command(args: &[String]) -> ExitCode {
     match serve::start(config, move || serve::load(&path)) {
         Ok(server) => {
             let _ = writeln!(std::io::stderr(), "Serving on http://{}/ (token in {}). Stop with Ctrl-C.", server.addr, server.token_file.display());
+            server.exit_on_signal();
             server.wait();
             ExitCode::SUCCESS
         }
