@@ -8,7 +8,7 @@ use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
-use nodecraft_engine::secrets::{Account, KeyWorker, MemoryStore, Secret, SecretStore, register_key_service, register_key_worker};
+use nodecraft_engine::secrets::{Account, KeyWorker, MemoryStore, Secret, SecretError, SecretStore, register_key_service, register_key_worker};
 use nodecraft_engine::{
     commands::{Registry, Resources, Services},
     generation_catalog::GenerationCatalog,
@@ -16,7 +16,10 @@ use nodecraft_engine::{
     run_cmds::RunCatalog,
 };
 use nodecraft_provider_testkit::mock::{MockFailure, MockModel, MockOutput, MockProvider};
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
 
 const C: CanvasId = CanvasId::from_bytes([91; 16]);
@@ -409,9 +412,39 @@ const NEW_KEY: &str = "fixture-new-not-a-real-key";
 
 type KeyReads = Arc<Mutex<Vec<Option<bool>>>>;
 
+/// A refusing keychain/origin store: reads still work and rejected writes never change the key.
+struct RejectWrites {
+    inner: Arc<MemoryStore>,
+    attempts: Arc<AtomicUsize>,
+}
+
+impl SecretStore for RejectWrites {
+    fn get(&self, account: &Account) -> Result<Option<Secret>, SecretError> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        self.inner.get(account)
+    }
+
+    fn set(&self, _: &Account, _: &Secret) -> Result<(), SecretError> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        Err(SecretError::Denied("allow NodeCraft access to the key store".into()))
+    }
+
+    fn delete(&self, _: &Account) -> Result<bool, SecretError> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        Err(SecretError::Denied("allow NodeCraft access to the key store".into()))
+    }
+}
+
 fn key_scene() -> (Harness<'static, NodeCraftApp>, KeyReads) {
+    key_scene_with_store(false).0
+}
+
+fn key_scene_with_store(reject: bool) -> ((Harness<'static, NodeCraftApp>, KeyReads), Arc<AtomicUsize>) {
     let store = Arc::new(MemoryStore::default());
     store.set(&Account::new("mock").unwrap(), &Secret::new(OLD_KEY).unwrap()).unwrap();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let worker_store: Arc<dyn SecretStore> =
+        if reject { Arc::new(RejectWrites { inner: Arc::clone(&store), attempts: Arc::clone(&attempts) }) } else { store.clone() };
     let reads = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::clone(&reads);
     let maker_store = Arc::clone(&store);
@@ -423,7 +456,6 @@ fn key_scene() -> (Harness<'static, NodeCraftApp>, KeyReads) {
             None => Err(Readiness::NeedsKey { account: "mock".into() }),
         }
     });
-    let worker_store = Arc::clone(&store);
     let h = scene_on_with_keys(
         MOCK_IMAGE,
         "mock-square",
@@ -436,7 +468,7 @@ fn key_scene() -> (Harness<'static, NodeCraftApp>, KeyReads) {
             (Some(results), None)
         },
     );
-    (h, reads)
+    ((h, reads), attempts)
 }
 
 #[test]
@@ -465,10 +497,38 @@ fn a_session_dispatched_key_remove_cannot_reuse_the_old_adapter() {
     assert!(h.state().run_confirm.is_none());
 }
 
+fn failed_native_write_preserves_adapter(command: &str, params: serde_json::Value) {
+    let ((mut h, reads), attempts) = key_scene_with_store(true);
+    generated(&mut h);
+    assert_eq!(*reads.lock().unwrap(), [Some(false)]);
+    assert!(h.state_mut().session.dispatch(command, &params).unwrap().get("pending").is_some());
+    // FIFO status completes after the failed write; observing its store read guarantees the
+    // prior outcome has reached tick_keys without relying on thread scheduling or a delay.
+    h.state_mut().session.dispatch("keys.status", &json!({"account": "mock"})).unwrap();
+    frames_until(&mut h, |_| attempts.load(Ordering::SeqCst) >= 2);
+    h.run();
+    assert!(h.state().runs.as_ref().unwrap().has_cached_adapters(), "{command} failed");
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert_eq!(*reads.lock().unwrap(), [Some(false)], "{command} must reuse the old adapter");
+}
+
 #[test]
-fn a_synchronous_key_service_change_outside_the_panel_forgets_browser_adapters() {
+fn failed_native_key_set_preserves_the_cached_adapter() {
+    failed_native_write_preserves_adapter("keys.set", json!({"account": "mock", "key": NEW_KEY}));
+}
+
+#[test]
+fn failed_native_key_remove_preserves_the_cached_adapter() {
+    failed_native_write_preserves_adapter("keys.remove", json!({"account": "mock"}));
+}
+
+fn browser_key_scene(reject: bool) -> ((Harness<'static, NodeCraftApp>, KeyReads), Arc<AtomicUsize>) {
     let store = Arc::new(MemoryStore::default());
     store.set(&Account::new("mock").unwrap(), &Secret::new(OLD_KEY).unwrap()).unwrap();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let service_store: Arc<dyn SecretStore> =
+        if reject { Arc::new(RejectWrites { inner: Arc::clone(&store), attempts: Arc::clone(&attempts) }) } else { store.clone() };
     let reads = Arc::new(Mutex::new(Vec::new()));
     let observed = Arc::clone(&reads);
     let maker_store = Arc::clone(&store);
@@ -482,17 +542,23 @@ fn a_synchronous_key_service_change_outside_the_panel_forgets_browser_adapters()
     });
     let changed = Arc::new(key_changes::KeyChanges::default());
     let observed_changes = Arc::clone(&changed);
-    let mut h = scene_on_with_keys(
+    let h = scene_on_with_keys(
         MOCK_IMAGE,
         "mock-square",
         Runs::with_inline_maker,
         make,
         |_, _| {},
         move |services| {
-            register_key_service(services, Arc::new(key_changes::ObservedStore::new(store, Arc::clone(&observed_changes)))).unwrap();
+            register_key_service(services, Arc::new(key_changes::ObservedStore::new(service_store, Arc::clone(&observed_changes)))).unwrap();
             (None, Some(observed_changes))
         },
     );
+    ((h, reads), attempts)
+}
+
+#[test]
+fn a_synchronous_key_service_change_outside_the_panel_forgets_browser_adapters() {
+    let ((mut h, reads), _) = browser_key_scene(false);
     generated(&mut h);
     assert_eq!(*reads.lock().unwrap(), [Some(false)]);
     h.state_mut().session.dispatch("keys.status", &json!({"account": "mock"})).unwrap();
@@ -510,6 +576,29 @@ fn a_synchronous_key_service_change_outside_the_panel_forgets_browser_adapters()
     press(&mut h, Role::Button, "Generate");
     frames_until(&mut h, |app| app.notice.as_deref().is_some_and(|notice| notice.contains("needs an API key")));
     assert_eq!(*reads.lock().unwrap(), [Some(false), Some(true), None]);
+}
+
+fn failed_browser_style_write_preserves_adapter(command: &str, params: serde_json::Value) {
+    let ((mut h, reads), attempts) = browser_key_scene(true);
+    generated(&mut h);
+    assert_eq!(*reads.lock().unwrap(), [Some(false)]);
+    assert!(h.state_mut().session.dispatch(command, &params).is_err(), "{command} must fail");
+    assert_eq!(attempts.load(Ordering::SeqCst), 1, "{command} reached the rejecting browser store");
+    h.run();
+    assert!(h.state().runs.as_ref().unwrap().has_cached_adapters(), "{command} failed");
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert_eq!(*reads.lock().unwrap(), [Some(false)], "{command} must reuse the old adapter");
+}
+
+#[test]
+fn failed_browser_style_key_set_preserves_the_cached_adapter() {
+    failed_browser_style_write_preserves_adapter("keys.set", json!({"account": "mock", "key": NEW_KEY}));
+}
+
+#[test]
+fn failed_browser_style_key_remove_preserves_the_cached_adapter() {
+    failed_browser_style_write_preserves_adapter("keys.remove", json!({"account": "mock"}));
 }
 
 #[test]
