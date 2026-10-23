@@ -114,6 +114,7 @@ fn opened_regular_object_and_length_are_checked_before_read() {
             busy: Arc::default(),
             alive: AtomicBool::new(true),
             stop: AtomicBool::new(false),
+            idle_waiting: AtomicBool::new(false),
             backend: Arc::new(Backend { regular, length, calls: calls.clone() }),
             clock: Arc::new(Monotonic),
         };
@@ -192,6 +193,7 @@ fn interruption_exhaustion_stops_all_later_file_io() {
         busy: Arc::default(),
         alive: AtomicBool::new(true),
         stop: AtomicBool::new(false),
+        idle_waiting: AtomicBool::new(false),
         backend: Arc::new(Interrupting { opens: opens.clone(), reads: reads.clone() }),
         clock: Arc::new(Monotonic),
     };

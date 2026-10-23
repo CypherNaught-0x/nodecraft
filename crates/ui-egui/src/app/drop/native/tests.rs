@@ -103,6 +103,19 @@ fn idle(service: &Service) {
     }
 }
 #[test]
+fn idle_test_worker_exits_after_stop_notification() {
+    let worker = TestService::filesystem();
+    let end = Instant::now() + Duration::from_secs(10);
+    while !worker.service.0.idle_waiting.load(Ordering::Acquire) {
+        assert!(Instant::now() < end, "test worker reached idle wait");
+        std::thread::yield_now();
+    }
+    // The marker is set while the mailbox lock is held. TestService::drop must acquire
+    // that lock before setting stop, so the worker has entered Condvar::wait by then.
+    // Without the notification it cannot pass the bounded cleanup assertion.
+    drop(worker);
+}
+#[test]
 fn shared_lease_survives_cancel_and_late_result_without_replacement_worker() {
     let (worker, backend, entered, release) = gated(0);
     let mut ticket = start(&worker.service, &handles(&["path"]));
