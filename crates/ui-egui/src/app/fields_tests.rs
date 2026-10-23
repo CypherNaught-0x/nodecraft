@@ -522,6 +522,82 @@ fn fit_all_frames_a_collapsed_field_by_its_header_not_its_hidden_cards() {
     assert!(!viewport.intersects(view.rect_to_screen(viewport.min, card)), "and not the card hidden far below it");
 }
 
+/// Put a selected card far below its field header and collapse the field. The collapse drops
+/// the hidden card from the selection; its cached geometry stays available though the canvas no
+/// longer paints it.
+fn selected_card_in_distant_collapsed_field(h: &mut Harness<'static, NodeCraftApp>) -> (FieldId, NodeId, Rect) {
+    h.run();
+    let id = field_around_card(h);
+    h.run();
+    let node = member(h);
+    let card = *h.state().navigation.geometry.rects.get(&node).unwrap();
+    let canvas_id = h.state().canvas;
+    let rect = json!({"pos": {"x": card.min.x - 40.0, "y": card.min.y - 3000.0}, "width": card.width() + 80.0, "height": 3000.0 + card.height() + 40.0});
+    let target = self::card(h).unwrap().min + Vec2::new(150.0, 30.0);
+    press(h, target, egui::PointerButton::Primary, true);
+    press(h, target, egui::PointerButton::Primary, false);
+    assert!(h.state().selection.contains(node), "pointer selects the member card");
+    h.state_mut().session.dispatch("field.update", &json!({"canvas": canvas_id, "field": id, "rect": rect, "collapsed": true})).unwrap();
+    h.run();
+    assert!(!h.state().selection.contains(node), "collapse drops the hidden card from the selection");
+    assert!(self::card(h).is_none(), "the hidden card is not painted");
+    (id, node, card)
+}
+
+fn assert_fit_frames_header_not_card(h: &Harness<'static, NodeCraftApp>, id: FieldId, card: Rect) {
+    let (view, viewport) = (h.state().view, h.state().viewport);
+    let field = canvas(h).fields().get(&id).unwrap();
+    let header = view.rect_to_screen(viewport.min, super::fields::world_rect(field, h.state().theme.tokens(), view.zoom));
+    assert!(viewport.contains_rect(header), "selected hidden card frames its collapsed field header: {header:?} outside {viewport:?}");
+    assert!(!viewport.intersects(view.rect_to_screen(viewport.min, card)), "hidden card's own rect stays outside view");
+}
+
+#[test]
+fn collapse_drops_a_selected_card_so_delete_cannot_reach_it() {
+    let mut h = harness();
+    let (_, node, _) = selected_card_in_distant_collapsed_field(&mut h);
+    h.key_press(egui::Key::Delete);
+    h.run();
+    assert!(canvas(&h).nodes().contains_key(&node), "Delete never removes a card the user cannot see");
+}
+
+#[test]
+fn fit_selection_frames_only_hidden_cards_by_their_header() {
+    let mut h = harness();
+    let (id, node, card) = selected_card_in_distant_collapsed_field(&mut h);
+    // A test, an agent or a same-frame race can still hand Fit selected a hidden card; set it
+    // after this frame's selection sync so it is in the selection when the fit runs.
+    h.state_mut().selection.only(node);
+    let ctx = h.ctx.clone();
+    assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_selection", &json!({})).is_ok(), "hidden-only selection keeps Fit selected enabled");
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_selection", &json!({})).unwrap();
+    h.run();
+    assert_fit_frames_header_not_card(&h, id, card);
+}
+
+#[test]
+fn fit_selection_command_frames_visible_card_and_hidden_field_header() {
+    let mut h = harness();
+    let (id, hidden, card) = selected_card_in_distant_collapsed_field(&mut h);
+    h.hover_at(Pos2::new(60.0, 590.0));
+    h.key_press(egui::Key::T);
+    h.run();
+    let visible = *canvas(&h).nodes().keys().find(|node| **node != hidden).unwrap();
+    let pos = canvas(&h).nodes().get(&visible).unwrap().pos;
+    let canvas_id = h.state().canvas;
+    h.state_mut().session.dispatch("node.move", &json!({"canvas": canvas_id, "id": visible, "pos": {"x": pos.x, "y": card.min.y - 2900.0}})).unwrap();
+    h.run();
+    let visible_rect = *h.state().navigation.geometry.rects.get(&visible).unwrap();
+    h.state_mut().selection.only(visible);
+    h.state_mut().selection.add(hidden);
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_selection", &json!({})).unwrap();
+    h.run();
+    assert_fit_frames_header_not_card(&h, id, card);
+    let view = h.state().view;
+    assert!(h.state().viewport.contains_rect(view.rect_to_screen(h.state().viewport.min, visible_rect)), "visible selected card is framed too");
+}
+
 #[test]
 fn fit_all_from_far_out_frames_a_collapsed_header_the_same_twice() {
     let mut h = harness();

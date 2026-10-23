@@ -36,7 +36,7 @@ impl NodeCraftApp {
             || self.drop_pointer_owned();
         let dragging = ctx.dragged_id().is_some() || self.navigation.drag.is_some();
         let fit_all = self.fit_all_bounds().is_some();
-        let fit_selection = self.navigation.geometry.bounds(Some(&self.selection), t).is_some();
+        let fit_selection = self.fit_selection_bounds().is_some();
         std::array::from_fn(|index| NavigationContext {
             canvas: self.canvas,
             viewport_available: if index < 2 { fit_available } else { viewport_available },
@@ -60,6 +60,25 @@ impl NodeCraftApp {
             .into_iter()
             .map(|(_, rect)| crate::navigation::decorated(rect, t))
             .reduce(|a, b| a.union(b))
+    }
+    /// Frame selected visible cards and the headers standing in for selected hidden cards.
+    /// Use the same membership and header geometry as the canvas and minimap, at Fit all's
+    /// stable header zoom rather than the previous view's zoom. Like the plain selection bounds,
+    /// an invalid unselected node does not matter, but a selected visible node without valid
+    /// geometry refuses the fit rather than being left out of it.
+    fn fit_selection_bounds(&mut self) -> Option<Rect> {
+        if self.selection.is_empty() {
+            return None;
+        }
+        let membership = self.membership();
+        let t = self.theme.tokens();
+        let rects = &self.navigation.geometry.rects;
+        let visible: Vec<Rect> =
+            self.selection.nodes().iter().filter(|id| !membership.hidden.contains(*id)).map(|id| rects.get(id).copied()).collect::<Option<_>>()?;
+        let hidden = self.session.document().canvases().get(&self.canvas).into_iter().flat_map(|canvas| {
+            fields::stand_ins(canvas, &membership.hidden, t, 1.0, self.field_shift()).filter(|(id, _)| self.selection.contains(*id)).map(|(_, rect)| rect)
+        });
+        visible.into_iter().chain(hidden).map(|rect| crate::navigation::decorated(rect, t)).reduce(|a, b| a.union(b))
     }
     fn navigation_context(&mut self, ctx: &egui::Context, id: &str) -> NavigationContext {
         let [all, selected, toggle, pan] = self.navigation_contexts(ctx);
@@ -110,7 +129,7 @@ impl NodeCraftApp {
         match intent.get("action").and_then(Json::as_str) {
             Some("fit_all" | "fit_selection") => {
                 let t = self.theme.tokens();
-                let bounds = if id == "canvas.fit_selection" { self.navigation.geometry.bounds(Some(&self.selection), t) } else { self.fit_all_bounds() };
+                let bounds = if id == "canvas.fit_selection" { self.fit_selection_bounds() } else { self.fit_all_bounds() };
                 let bounds = bounds.ok_or_else(|| Error::new(ErrorKind::Conflict, "node geometry is unavailable"))?;
                 let viewport = self.navigation.usable(self.viewport, t);
                 let padding = t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius;
@@ -497,6 +516,32 @@ mod tests {
         assert_eq!(actual, card::world_rect(&node, None, app.theme.tokens()));
         let decorated = crate::navigation::decorated(actual, app.theme.tokens());
         assert!(app.navigation.usable(app.viewport, app.theme.tokens()).contains_rect(app.view.rect_to_screen(app.viewport.min, decorated)));
+    }
+    #[test]
+    fn an_invalid_unselected_node_does_not_disable_fit_selected() {
+        let mut h = harness();
+        h.run();
+        let ids: Vec<NodeId> = h.state().navigation.geometry.rects.keys().copied().collect();
+        assert!(ids.len() >= 2);
+        let (selected, broken) = (ids[0], ids[1]);
+        // A node whose geometry fails (a corrupt payload or a NaN position) has no rect and marks
+        // the geometry invalid; the cache keeps that until the document changes.
+        let geometry = &mut h.state_mut().navigation.geometry;
+        geometry.rects.remove(&broken);
+        geometry.error = true;
+        h.state_mut().selection.only(selected);
+        let ctx = h.ctx.clone();
+        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_all", &json!({})).is_err(), "Fit all never frames a partial graph");
+        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_selection", &json!({})).is_ok(), "an unselected bad node leaves Fit selected on");
+        h.state_mut().dispatch_navigation(&ctx, "canvas.fit_selection", &json!({})).unwrap();
+        let app = h.state();
+        let t = app.theme.tokens();
+        let decorated = crate::navigation::decorated(app.navigation.geometry.rects[&selected], t);
+        assert!(app.navigation.usable(app.viewport, t).contains_rect(app.view.rect_to_screen(app.viewport.min, decorated)));
+        // A selected visible node without geometry refuses the fit rather than being left out.
+        h.state_mut().selection.add(broken);
+        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_selection", &json!({})).is_err());
+        assert!(h.state_mut().dispatch_navigation(&ctx, "canvas.fit_selection", &json!({})).is_err());
     }
     #[test]
     fn node_text_editor_owns_shifted_navigation_events_without_mutation() {
