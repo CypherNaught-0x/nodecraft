@@ -396,9 +396,10 @@ impl<B: StoreBackend> Store<B> {
         Ok(grant)
     }
 
-    /// Revokes `grant_id`, disabling its package if it is enabled under it, and every enabled
-    /// package depending on it. Revoking a revoked grant changes nothing. The package is
-    /// disabled first, so a failed write never leaves it enabled with no grant.
+    /// Revokes `grant_id`, disabling an enabled package at its digest (and its dependents) only
+    /// when no other live grant still covers that digest. Revoking a revoked grant with a newer
+    /// live grant changes nothing. The package is disabled first, so a failed write never leaves
+    /// it enabled with no grant.
     pub fn revoke(&mut self, grant_id: &str) -> Result<RevokeReport, Error> {
         let _transaction = self.backend.transaction()?;
         self.ensure_current()?;
@@ -412,6 +413,7 @@ impl<B: StoreBackend> Store<B> {
         let mut report = RevokeReport { grant, disabled: false, dependents: Vec::new() };
         if let Some((digest, State::Enabled)) = self.index.active.get(&report.grant.package_id).copied()
             && digest == report.grant.digest
+            && grants.live(&report.grant.package_id, &digest).is_none()
         {
             let mut next = self.index.clone();
             next.active.insert(report.grant.package_id.clone(), (digest, State::Disabled));
