@@ -894,15 +894,28 @@ fn advance(session: &mut Session, active: &mut Active, progress: Progress, notic
         hold_dropped(active, &progress.dropped, held);
         // Then results: a partial one (#480) is recorded, and its step then reports why it is
         // partial. A technique node's record takes its inner steps' results along (#615).
+        // On a canvas that lays variations out as cards (#808), every variation but the last (the
+        // one the run passes on) goes on a card of its own.
+        let as_cards = session.document().canvases().get(&canvas).is_some_and(nodecraft_graph::Canvas::variation_cards);
+        let mut later: BTreeMap<NodeId, usize> = BTreeMap::new();
+        for result in &progress.finished {
+            *later.entry(result.node).or_default() += 1;
+        }
         for result in progress.finished {
             let run = &active.run;
             let node = result.node;
+            let left = later.get_mut(&node).map_or(0, |n| {
+                *n = n.saturating_sub(1);
+                *n
+            });
+            let card = (as_cards && left > 0 && run.variation_jobs(node, result.generation.id).is_some())
+                .then(|| crate::variation_cmds::card_id(result.generation.id));
             // One of several variations (#81) takes only its own jobs' results.
             let awaiting = match run.variation_jobs(node, result.generation.id) {
                 Some(jobs) => take_by_step(&mut active.awaiting, |job, _| jobs.contains(&job)),
                 None => take_by_step(&mut active.awaiting, |_, a| run.owner(a.step) == node && (a.step == node || !run.is_running(a.step))),
             };
-            let notice = record(session, canvas, result);
+            let notice = record(session, canvas, result, card);
             notices.push(match notice {
                 RunNotice::Failed { canvas, node, reason } => {
                     let kept = hold_all(held, awaiting, |_| reason.clone());
@@ -1365,9 +1378,13 @@ fn act_on_held(session: &mut Session, results: &Mutex<held::Held>, notices: &mut
 }
 
 /// Records one finished step on its card.
-fn record(session: &mut Session, canvas: CanvasId, result: StepResult) -> RunNotice {
+fn record(session: &mut Session, canvas: CanvasId, result: StepResult, card: Option<NodeId>) -> RunNotice {
     let node = result.node;
-    let params = json!({"canvas": canvas, "results": [{"node": node, "generation": result.generation}]});
+    let mut entry = json!({"node": node, "generation": result.generation});
+    if let (Some(card), Some(entry)) = (card, entry.as_object_mut()) {
+        entry.insert("card".into(), json!(card));
+    }
+    let params = json!({"canvas": canvas, "results": [entry]});
     match session.dispatch("run.record", &params) {
         Ok(_) => RunNotice::Recorded { canvas, node },
         Err(error) => RunNotice::Failed { canvas, node, reason: format!("the result could not be saved: {}", error.message) },

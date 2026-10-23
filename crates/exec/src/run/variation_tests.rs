@@ -152,12 +152,17 @@ fn a_variation_of_one_job_has_a_resume_recipe_for_its_own_generation() {
     vary(&mut p, 2, 3);
     let (mut run, first) = admitted_calls(&p, &kinds, &[2]);
     assert_eq!(first.jobs.len(), 3);
-    let recipes: Vec<GenerationId> = first.jobs.iter().map(|j| run.resume_recipe(&kinds, j.id).unwrap().generation).collect();
+    let recipes: Vec<_> = first.jobs.iter().map(|j| run.resume_recipe(&kinds, j.id).unwrap()).collect();
     let mut made = Vec::new();
     for job in &first.jobs {
         made.extend(run.job_done(&kinds, job.id, vec![("out".into(), Value::Text("made".into()))]).finished);
     }
-    assert_eq!(recipes, made.iter().map(|r| r.generation.id).collect::<Vec<_>>());
+    let made: Vec<GenerationId> = made.iter().map(|r| r.generation.id).collect();
+    assert_eq!(recipes.iter().map(|r| r.generation).collect::<Vec<_>>(), made);
+    // Each names the variations after it (#808), so one recorded late goes before them.
+    for (n, recipe) in recipes.iter().enumerate() {
+        assert_eq!(recipe.later.as_slice(), made.get(n + 1..).unwrap(), "variant {n}");
+    }
 }
 
 #[test]

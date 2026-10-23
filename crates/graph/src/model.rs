@@ -403,6 +403,10 @@ pub struct Canvas {
     /// Kept by whoever marked it so: a project shared live leaves it out (#121).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) private: bool,
+    /// Whether a run's extra variations become cards beside their source instead of entries in
+    /// its history (#808).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) variation_cards: bool,
 }
 
 impl Canvas {
@@ -418,6 +422,7 @@ impl Canvas {
             tags: BTreeMap::new(),
             technique: None,
             private: false,
+            variation_cards: false,
         }
     }
 
@@ -426,7 +431,7 @@ impl Canvas {
     /// reads differs, so work derived from one canvas holds for the other (#549). Every other
     /// field counts; a new one does too until it is listed here as layout.
     pub fn same_but_layout(&self, other: &Canvas) -> bool {
-        let Canvas { id, title, kind, nodes, edges, fields: _, comments: _, tags, technique, private: _ } = self;
+        let Canvas { id, title, kind, nodes, edges, fields: _, comments: _, tags, technique, private: _, variation_cards } = self;
         let same_node = |a: &Node, b: &Node| {
             let Node { id, kind, title, pos: _, params, config, inputs, outputs, history, active, tag, field: _ } = a;
             *id == b.id
@@ -446,6 +451,7 @@ impl Canvas {
             && *edges == other.edges
             && *tags == other.tags
             && *technique == other.technique
+            && *variation_cards == other.variation_cards
             && nodes.len() == other.nodes.len()
             && nodes.iter().zip(&other.nodes).all(|((a_id, a), (b_id, b))| a_id == b_id && same_node(a, b))
     }
@@ -467,6 +473,10 @@ impl Canvas {
     /// Whether a project shared live keeps this canvas to whoever marked it (#121).
     pub fn is_private(&self) -> bool {
         self.private
+    }
+    /// Whether a run's extra variations become cards beside their source (#808).
+    pub fn variation_cards(&self) -> bool {
+        self.variation_cards
     }
     pub fn nodes(&self) -> &BTreeMap<NodeId, Node> {
         &self.nodes

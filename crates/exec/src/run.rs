@@ -241,6 +241,29 @@ pub fn keep_changes(canvas: CanvasId, node: &Node, generation: Generation) -> Re
     Ok(changes)
 }
 
+/// [`record_changes`] for a variation recorded out of order (#808): when any of `later`, the
+/// variations after it, is already in the node's history, it goes just before the first of them
+/// and the active result stays as it is; otherwise it is recorded as usual.
+pub fn record_before_changes(canvas: CanvasId, node: &Node, generation: Generation, later: &[GenerationId]) -> Result<Vec<Change>, Error> {
+    let mut changes = record_changes(canvas, node, generation)?;
+    let removed: BTreeSet<GenerationId> = changes
+        .iter()
+        .filter_map(|change| match change {
+            Change::RemoveGeneration { generation, .. } => Some(*generation),
+            _ => None,
+        })
+        .collect();
+    let kept = node.history.iter().filter(|g| !removed.contains(&g.id));
+    let Some(before) = kept.clone().position(|g| later.contains(&g.id)) else { return Ok(changes) };
+    for change in &mut changes {
+        if let Change::AddGeneration { index, .. } = change {
+            *index = before;
+        }
+    }
+    changes.retain(|change| !matches!(change, Change::SetActiveGeneration { .. }));
+    Ok(changes)
+}
+
 /// Drops part of a result's settings so it can fit (#162): first its jobs' inputs, which can
 /// be large and are often wired from elsewhere, so the parameters, drawn seeds among them,
 /// survive; then the settings altogether. False once there is nothing left to drop.
@@ -416,8 +439,6 @@ impl Run {
         }
     }
 
-    /// The generation id of `node`'s result in this run: of its `variant`th variation (#81),
-    /// the first having the id a step of one variation has.
     /// The jobs of `node`'s variation `variant` (#81); none for a step without variations.
     fn variation_of(&self, node: NodeId, variant: usize) -> Vec<JobId> {
         self.steps
@@ -433,6 +454,8 @@ impl Run {
         Some(self.variation_of(node, variant).into_iter().collect())
     }
 
+    /// The generation id of `node`'s result in this run: of its `variant`th variation (#81),
+    /// the first having the id a step of one variation has.
     fn generation_id(&self, node: NodeId, variant: usize) -> GenerationId {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"nodecraft.run.generation");

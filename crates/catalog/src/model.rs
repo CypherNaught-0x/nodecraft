@@ -317,6 +317,27 @@ impl ModelDescriptor {
         Ok(contract.random_seeds(&contract.resolve_selected(params, ready)?))
     }
 
+    /// The seed parameters these parameters pin to a fixed value (#808): every job sends the same
+    /// seed, so several variations of a deterministic model come back alike. A semantic contract
+    /// says so of its own seeds; a schema-only model pins each seed it would send.
+    pub fn pinned_seeds(&self, params: &ParamValues, ready: bool) -> Result<Vec<String>, Error> {
+        self.validate()?;
+        if let Some(contract) = &self.parameter_contract {
+            return Ok(contract.pinned_seeds(&contract.resolve_selected(params, ready)?));
+        }
+        // A node's map holds more than its model's settings (its model, its prompt).
+        let own: ParamValues =
+            params.iter().filter(|(name, _)| self.params.params.iter().any(|spec| &spec.name == *name)).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let sent = self.effective_params(&own, ready)?;
+        Ok(self
+            .params
+            .params
+            .iter()
+            .filter(|spec| matches!(spec.control, nodecraft_types::ParamControl::Seed { .. }) && sent.contains_key(&spec.name))
+            .map(|spec| spec.name.clone())
+            .collect())
+    }
+
     /// The price of one job with these parameters: schema defaults are applied first, so the
     /// quote counts what the run will actually ask for. `None` when the cost depends on usage.
     pub fn quote(&self, params: &ParamValues) -> Result<Option<Money>, Error> {

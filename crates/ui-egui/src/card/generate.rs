@@ -224,12 +224,22 @@ pub(super) struct Composer<'a> {
     pub mentions: &'a [super::mention::Candidate],
     /// Why the prompt's mentions block the run, when they do.
     pub blocked: Option<&'a str>,
+    pub variations: Variations,
+}
+
+/// What the variations counter shows besides the count (#808).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Variations {
+    /// The canvas puts extra variations on cards beside their source, not in its history.
+    pub cards: bool,
+    /// The card asks for several variations with a pinned seed.
+    pub alike: bool,
 }
 
 /// Draws the composer at the top of `area` and returns the space left under it. The prompt and
 /// the count drawn here are left out of the card's parameter list.
 pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor: &mut EditorState, intents: &mut Vec<Intent>, t: &Tokens) -> Rect {
-    let Composer { node, wired, descriptor, roles, visible, enabled, elements, mentions, blocked } = composer;
+    let Composer { node, wired, descriptor, roles, visible, enabled, elements, mentions, blocked, variations: shown_variations } = composer;
     let shown = |name: &str| visible.is_some_and(|names| names.contains(name));
     let editable = |name: &str| enabled.is_none_or(|names| names.contains(name));
     let mut child = ui.new_child(egui::UiBuilder::new().id_salt("composer").max_rect(area).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -287,7 +297,7 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
             {
                 counter(ui, node, spec, editable(&spec.name), intents, t);
             }
-            variations(ui, node, intents, t);
+            variations(ui, node, shown_variations, intents, t);
             // Only as tall as the button, so the row never stretches to the card's height.
             ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), t.submit_size), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if submit(ui, t).on_hover_text("Generate (Enter on the card, or Cmd/Ctrl+Enter in the prompt). Shows the price first.").clicked() {
@@ -347,7 +357,7 @@ fn counter(ui: &mut egui::Ui, node: &Node, spec: &nodecraft_types::ParamSpec, ed
 }
 
 /// How many variations a run makes (#81), each its own request and its own result.
-fn variations(ui: &mut egui::Ui, node: &Node, intents: &mut Vec<Intent>, t: &Tokens) {
+fn variations(ui: &mut egui::Ui, node: &Node, shown: Variations, intents: &mut Vec<Intent>, t: &Tokens) {
     let current = nodecraft_exec::variations::requested(node);
     ui.push_id("variations", |ui| {
         for (text, next, name) in
@@ -362,8 +372,26 @@ fn variations(ui: &mut egui::Ui, node: &Node, intents: &mut Vec<Intent>, t: &Tok
             }
             if text == "-" {
                 ui.label(egui::RichText::new(format!("{current}×")).color(t.text))
-                    .on_hover_text("Variations: each is a request of its own, priced as such, and a result of its own in the history");
+                    .on_hover_text("Variations: each is a request of its own, priced as such, and a result of its own");
             }
+        }
+        if current > 1 {
+            // Where this canvas puts them: one switch for the whole canvas.
+            let (text, hint) = if shown.cards {
+                ("as cards", "Extra variations go on new cards beside this one. Click to keep them in this card's history instead.")
+            } else {
+                ("in history", "Variations go in this card's history. Click to put the extra ones on new cards beside it instead.")
+            };
+            let r = ui.add(egui::Button::new(egui::RichText::new(text).color(t.text_muted)).small()).on_hover_text(hint);
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Variations as cards"));
+            if r.clicked() {
+                intents.push(Intent::VariationCards(!shown.cards));
+            }
+        }
+        if shown.alike {
+            ui.label(egui::RichText::new("same seed").color(t.stale)).on_hover_text(
+                "This card's seed is fixed, so a model that follows its seed returns the same result for each variation, and each is charged. Set the seed to random for different results.",
+            );
         }
     });
 }

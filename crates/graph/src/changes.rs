@@ -39,6 +39,11 @@ pub enum Change {
         canvas: CanvasId,
         private: bool,
     },
+    /// Sends a run's extra variations to cards beside their source, or back to its history (#808).
+    SetCanvasVariationCards {
+        canvas: CanvasId,
+        cards: bool,
+    },
     AddNode {
         canvas: CanvasId,
         node: Node,
@@ -590,6 +595,10 @@ impl Change {
             Self::SetCanvasPrivate { canvas, private } => {
                 let target = canvas_mut(project, *canvas)?;
                 Self::SetCanvasPrivate { canvas: *canvas, private: std::mem::replace(&mut target.private, *private) }
+            }
+            Self::SetCanvasVariationCards { canvas, cards } => {
+                let target = canvas_mut(project, *canvas)?;
+                Self::SetCanvasVariationCards { canvas: *canvas, cards: std::mem::replace(&mut target.variation_cards, *cards) }
             }
             Self::AddNode { canvas, node } => {
                 let target = canvas_mut(project, *canvas)?;

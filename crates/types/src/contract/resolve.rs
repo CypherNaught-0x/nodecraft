@@ -188,6 +188,19 @@ impl Contract {
             .collect()
     }
 
+    /// The seeds this resolution pins (#808): each enabled seed parameter set to a fixed value,
+    /// stored or the schema's default, in schema order. A model that honours its seed returns the
+    /// same result for each job that sends the same one.
+    pub fn pinned_seeds(&self, resolution: &Resolution) -> Vec<String> {
+        resolution
+            .params
+            .iter()
+            .filter(|state| state.enabled && matches!(state.value, Effective::Explicit(_) | Effective::Default(_)))
+            .filter(|state| self.schema.params.iter().any(|spec| spec.name == state.name && matches!(spec.control, ParamControl::Seed { .. })))
+            .map(|state| state.name.clone())
+            .collect()
+    }
+
     /// Resolve model settings in a whole node map without copying a filtered input map.
     /// Foreign keys remain caller-owned and are ignored, while all known values and shared
     /// aggregate input limits are still checked before effective values are copied.

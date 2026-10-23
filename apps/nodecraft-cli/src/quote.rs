@@ -157,6 +157,11 @@ pub fn quote_text(session: &Session, canvas: CanvasId, quote: &Value) -> String 
         (false, false) => format!("{} so far; some steps are priced during the run", totals.join(" + ")),
     };
     out.push_str(&format!("Total: {total}\n"));
+    if quote["alike"].as_array().is_some_and(|nodes| !nodes.is_empty()) {
+        out.push_str(
+            "Some nodes ask for several variations with a fixed seed: a model that follows its seed returns the same result each time, and each is charged\n",
+        );
+    }
     if quote["resumable"].as_array().is_some_and(|nodes| !nodes.is_empty()) {
         out.push_str("Some batches may run only the items they lack, so this total is an upper bound\n");
     }

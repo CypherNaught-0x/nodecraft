@@ -33,9 +33,10 @@ use crate::commands::{CommandSpec, Context, Effect, params};
 use nodecraft_catalog::Catalog;
 use nodecraft_exec::cost::{Budgets, Spent, StepQuote, Unpriced, UsageLog, check, format_money};
 use nodecraft_exec::planner::{Planned, RunMode, plan_settled};
-use nodecraft_exec::run::{keep_changes, record_changes};
+use nodecraft_exec::run::{keep_changes, record_before_changes, record_changes};
+use nodecraft_exec::variations::MAX_VARIATIONS;
 use nodecraft_graph::{Changeset, Generation};
-use nodecraft_types::{CanvasId, Error, ErrorKind, FieldId, Money, NodeId};
+use nodecraft_types::{CanvasId, Error, ErrorKind, FieldId, GenerationId, Money, NodeId};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -357,6 +358,26 @@ fn reusing(c: &Context<'_>, p: &RunParams, planned: &Planned) -> Result<Option<r
     }
 }
 
+/// The steps that ask for several variations while pinning a seed (#808): a model that honours
+/// its seed returns the same result each time, at the price of all of them. `{node, variations,
+/// seeds}` per step, for the first [`MAX_LISTED`].
+fn alike(catalog: &Catalog, canvas: &nodecraft_graph::Canvas, steps: &[StepQuote]) -> Vec<Value> {
+    steps
+        .iter()
+        .filter_map(|step| {
+            let node = canvas.nodes().get(&step.node)?;
+            let variations = nodecraft_exec::variations::requested(node);
+            if variations < 2 {
+                return None;
+            }
+            let mut seeds: Vec<String> = step.models.iter().filter_map(|id| catalog.get(id)?.pinned_seeds(&node.params, false).ok()).flatten().collect();
+            seeds.dedup();
+            (!seeds.is_empty()).then(|| json!({"node": step.node, "variations": variations, "seeds": seeds}))
+        })
+        .take(MAX_LISTED)
+        .collect()
+}
+
 fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error> {
     let document = c.document;
     let kinds = c.kinds;
@@ -455,6 +476,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         "resumable": resumable,
         "quoted": quoted,
         "reused": reused,
+        "alike": alike(catalog, canvas, &priced.steps),
         "requests": requests_json,
         "requests_complete": requests_complete,
         "token": token,
@@ -740,6 +762,14 @@ struct RecordResult {
     /// Kept by hand, like a partial answer (#504): it doesn't replace the node's active result.
     #[serde(default)]
     keep: bool,
+    /// Put the result on a new card with this id, a copy of `node` beside it, instead of in
+    /// `node`'s history: an extra variation on a canvas that lays them out as cards (#808).
+    #[serde(default)]
+    card: Option<NodeId>,
+    /// The variations after this one (#808): when any is in `node`'s history already (it is
+    /// recorded after a restart), it goes before them and doesn't become the active result.
+    #[serde(default)]
+    later: Vec<GenerationId>,
 }
 
 #[derive(Deserialize)]
@@ -762,7 +792,20 @@ fn run_record(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
             return Err(invalid("a node is recorded twice"));
         }
         let node = canvas.nodes().get(&result.node).ok_or_else(|| Error::new(ErrorKind::NotFound, "a recorded node is not on the canvas"))?;
-        changes.extend(if result.keep { keep_changes(p.canvas, node, result.generation)? } else { record_changes(p.canvas, node, result.generation)? });
+        if result.later.len() >= MAX_VARIATIONS {
+            return Err(invalid(format!("a variation has fewer than {MAX_VARIATIONS} after it")));
+        }
+        changes.extend(match result.card {
+            Some(card) => {
+                if result.keep || !seen.insert(card) {
+                    return Err(invalid("a variation's card is recorded once, and not kept by hand"));
+                }
+                crate::variation_cmds::card_changes(p.canvas, canvas, node, card, result.generation)?
+            }
+            None if result.keep => keep_changes(p.canvas, node, result.generation)?,
+            None if !result.later.is_empty() => record_before_changes(p.canvas, node, result.generation, &result.later)?,
+            None => record_changes(p.canvas, node, result.generation)?,
+        });
     }
     Ok(Effect::Edit { changes: Changeset::new(changes), result: json!({"recorded": seen.len()}), gesture: None })
 }
@@ -882,7 +925,8 @@ fn record_schema() -> Value {
             "results": {"type": "array", "minItems": 1, "maxItems": MAX_RESULTS, "items": {"type": "object", "additionalProperties": false,
                 "required": ["node", "generation"], "properties": {"node": {"type": "string", "format": "uuid"}, "generation": {"type": "object",
                     "required": ["id"], "properties": {"id": {"type": "string", "format": "uuid"}, "outputs": {"type": "array"}, "input_hash": {"type": "string"}}},
-                    "keep": {"type": "boolean"}}}}}})
+                    "keep": {"type": "boolean"}, "card": {"type": "string", "format": "uuid"},
+                    "later": {"type": "array", "maxItems": MAX_VARIATIONS - 1, "items": {"type": "string", "format": "uuid"}}}}}}})
 }
 
 fn export_schema() -> Value {
@@ -898,7 +942,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: quote_schema,
-            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, reused, requests, requests_complete, blocked?, token}. `nodes` is used by selected and with_upstream. `reused` lists nodes with caching on (node.cache_set) whose identical result is already in the project: they aren't steps and cost nothing. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. `requests` lists, per node whose model calls are already known, its largest call counted against one call's limits (`values`, `inputs`, `bytes`, `media_bytes`, each with its `*_limit`) and why it would be `refused` (`jobs` of `total_jobs` checked; refused first, first 500); a refused call blocks the run. `requests_complete` is false when some known calls were left to runtime admission (at most 4,096 are checked, each node's first before any node's second). Read-only.",
+            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, reused, alike, requests, requests_complete, blocked?, token}. `nodes` is used by selected and with_upstream. `reused` lists nodes with caching on (node.cache_set) whose identical result is already in the project: they aren't steps and cost nothing. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `alike` lists [{node, variations, seeds}] for nodes asking for several variations with a pinned seed: a deterministic model returns the same result each time, at the price of all of them. `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. `requests` lists, per node whose model calls are already known, its largest call counted against one call's limits (`values`, `inputs`, `bytes`, `media_bytes`, each with its `*_limit`) and why it would be `refused` (`jobs` of `total_jobs` checked; refused first, first 500); a refused call blocks the run. `requests_complete` is false when some known calls were left to runtime admission (at most 4,096 are checked, each node's first before any node's second). Read-only.",
             enabled: enabled_quote,
             run: run_quote,
         },
@@ -919,7 +963,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: record_schema,
-            params_doc: "{canvas, results: [{node: NodeId, generation: graph::Generation, keep?: bool}]}; records each result as the node's new active generation, all in one undo step. A `keep` result (a partial answer kept by hand) joins the history without replacing the active generation, and becomes it only when there is none. For the host that ran the jobs.",
+            params_doc: "{canvas, results: [{node: NodeId, generation: graph::Generation, keep?: bool}]}; records each result as the node's new active generation, all in one undo step. A `keep` result (a partial answer kept by hand) joins the history without replacing the active generation, and becomes it only when there is none. A `card` result (an extra variation on a canvas set to canvas.set_variation_cards) goes on a new card with that id instead: a copy of the node, beside it, wired to the same inputs, holding just that result. `later` lists the variations after this one: when one of them is recorded already (this one finished after a restart), this result goes before it in the history and doesn't become the active one. For the host that ran the jobs.",
             enabled: enabled_record,
             run: run_record,
         },

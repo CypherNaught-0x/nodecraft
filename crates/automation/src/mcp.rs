@@ -142,6 +142,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "run.reuse",
     "node.cache_set",
     "node.variations_set",
+    "canvas.set_variation_cards",
     "node.shader_set",
     // Masks only add and wire cards; the edit card runs (and is quoted) through run.start.
     "node.mask_set",

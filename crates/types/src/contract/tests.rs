@@ -143,6 +143,8 @@ fn a_generation_identity_admits_a_random_seed_and_names_it_to_draw() {
     // A fixed seed is not drawn.
     let fixed = contract.resolve(&values(&[("seed", Value::Unsigned(Unsigned(3)))]), true).unwrap();
     assert!(contract.random_seeds(&fixed).is_empty());
+    assert_eq!(contract.pinned_seeds(&fixed), ["seed"], "a fixed seed is pinned");
+    assert!(contract.pinned_seeds(&random).is_empty(), "a drawn seed isn't");
 }
 
 #[test]

@@ -75,6 +75,8 @@ pub enum Intent {
     Migrate,
     /// Make this many variations a run (#81).
     Variations(u64),
+    /// Put this canvas's extra variations on cards beside their source, or in its history (#808).
+    VariationCards(bool),
 }
 pub struct CardResponse {
     pub response: egui::Response,
@@ -175,6 +177,8 @@ pub struct CardView<'a> {
     /// A plugin card its plugin's current version would change (#173): another version's
     /// ports, lock or settings.
     pub outdated: bool,
+    /// Where the canvas puts extra variations, and whether this card pins a seed (#808).
+    pub variations: generate::Variations,
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -218,6 +222,7 @@ pub fn show(
         audio,
         mesh,
         outdated,
+        variations,
     } = card;
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
@@ -384,7 +389,18 @@ pub fn show(
             inner = generate::show(
                 &mut ui,
                 inner,
-                generate::Composer { node, wired: prompt_wired, descriptor: d, roles, visible, enabled, elements, mentions, blocked: mention_blocked },
+                generate::Composer {
+                    node,
+                    wired: prompt_wired,
+                    descriptor: d,
+                    roles,
+                    visible,
+                    enabled,
+                    elements,
+                    mentions,
+                    blocked: mention_blocked,
+                    variations,
+                },
                 editor,
                 &mut intents,
                 t,

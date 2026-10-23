@@ -186,6 +186,7 @@ impl AssetStore {
                 | Change::RemoveCanvas { .. }
                 | Change::SetCanvasTitle { .. }
                 | Change::SetCanvasPrivate { .. }
+                | Change::SetCanvasVariationCards { .. }
                 | Change::RemoveNode { .. }
                 | Change::MoveNode { .. }
                 | Change::MoveNodes { .. }
