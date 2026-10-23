@@ -129,3 +129,7 @@ fn actual_video_plays_pauses_and_scrubs_on_its_card() {
     assert!(wait_for(&mut h, "0:01 / 0:02", 50).is_some());
     assert_eq!(h.state().session.revision(), revision);
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "video_tests/vp9_573.rs"]
+mod vp9_573;

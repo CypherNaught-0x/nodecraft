@@ -54,6 +54,11 @@ refuses missing properties. Finite BT709/601 profiles are supported; explicit HD
 unsupported bit depths, alpha-video and interlacing are rejected. No HDR/ICC fidelity claim.
 Conversions use fixed colorspace filters to sRGB, not just metadata retagging.
 
+VP9 Profile 1 with 8-bit `yuv444p` is supported. RGB `gbrp` is outside this SDR
+YUV contract: a card reports “This video's format isn't supported” instead of staying pending.
+With ffmpeg 9, the `testsrc` → `libvpx-vp9` command in #573 defaults to `gbrp`;
+use an explicit `-pix_fmt yuv444p` or `-pix_fmt yuv420p` when generating a supported fixture.
+
 `ScrubSession` cancels old work and exposes only the latest requested result. A bounded 256-entry LRU cache
 shares immutable pixels; caller-held frames remain globally charged after cache eviction. The
 fallibly preallocated registry and cache container capacities remain charged in the service base
@@ -290,13 +295,16 @@ Real integration tests require explicit tool paths and run authored tiny media o
 ```sh
 NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-media --features video actual_ -- --ignored
 NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-ui-egui actual_video -- --ignored
+NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-ui-egui actual_vp9_profiles -- --ignored --nocapture
 NODECRAFT_VIDEO_TEST_FFMPEG=/absolute/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/absolute/ffprobe cargo test -p nodecraft-ui-egui actual_sound -- --ignored
 cargo test -p nodecraft-ui-egui the_default_sound_device -- --ignored
 ```
 
-The second drives a real clip through a card: play, the end, and a seek. The third does the same
-for a sound (its waveform, seeking, and a second of playing when there is a device); the last
-opens the real default output device.
+`actual_video` drives a real clip through a card: play, the end, and a seek. `actual_vp9_profiles`
+generates and verifies YUV420/Profile 0, YUV444/Profile 1 and RGB/Profile 1 fixtures, then drives
+their imports through real cards to check poster/length/controls or an explicit refusal within
+a deadline. `actual_sound` exercises a sound's waveform, seeking, and a second of playing when
+there is a device; the last command opens the real default output device.
 
 These tests cost no provider budget. Native runtime proof and wasm compilation are distinct;
 Windows/Linux/browser behavior must not be inferred from a macOS run. No binary fixtures are
