@@ -1,6 +1,10 @@
 //! Dependency locks: exact version and digest, data packages only, no cycles, at most 8 deep,
 //! one version of a package at a time. No resolver and no fetching: every lock is satisfied by
 //! a package already installed, or the dependent stays disabled.
+//!
+//! The installed store allows dependencies that run code under their own grant
+//! (`docs/decisions/2026-10-23-plugin-store-admission.md`); this resolver's data-only rule is
+//! the stricter one and is kept on purpose for the packages it resolves.
 use crate::digest::PackageDigest;
 use crate::error::{Code, Result, err};
 use crate::id::PackageId;

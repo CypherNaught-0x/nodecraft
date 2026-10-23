@@ -618,6 +618,7 @@ fn an_import_in_flight_elsewhere_isnt_swept_and_refresh_sees_other_windows() {
     assert!(a.index().active.contains_key(&id("io.example.other")));
 }
 
+mod admission_tests;
 mod grant_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod lock_tests;
