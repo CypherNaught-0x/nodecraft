@@ -2,9 +2,11 @@
 //! reading frames, merging what the others did into the shared document and working out what
 //! the session must take to match it never hold up a frame. The window hands it a copy of the
 //! document when that has changed ([`Turn`]), and takes the [`Plan`] that comes back only if
-//! nothing was edited meanwhile; otherwise the next turn plans again from the newer copy.
+//! nothing was edited meanwhile; otherwise the next turn plans again from the newer copy. The
+//! browser has no threads (#699): there the same work is done in the frame, a batch at a time.
 use std::collections::BTreeSet;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use nodecraft_engine::collab::{Collab, Out, Plan, Stretch, View};
@@ -12,7 +14,8 @@ use nodecraft_graph::Project;
 use nodecraft_sync::{Frame, Role};
 use nodecraft_types::{Blake3, Error, ErrorKind, ProjectId};
 
-use super::connection::{Connection, Event};
+use super::Event;
+use super::connection::Connection;
 
 /// What the window asks of the thread.
 enum Ask {
@@ -31,6 +34,7 @@ enum Ask {
         applied: bool,
     },
     /// The window let go: the thread ends, and the connection with it.
+    #[cfg(not(target_arch = "wasm32"))]
     Stop,
 }
 
@@ -73,11 +77,13 @@ pub(super) struct Report {
 }
 
 /// The window's end. Dropping it ends the thread, and with it the connection.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) struct Worker {
     asks: Sender<Ask>,
     reports: Receiver<Report>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Worker {
     /// Connects to `relay` and takes part in its room through the [`Collab`] `make` makes on the
     /// thread (sharing a large project takes a while too); `wake` asks for a frame when there is
@@ -108,6 +114,107 @@ impl Worker {
         Ok(Self { asks, reports })
     }
 
+    /// What the thread reported since the last call; an error if it has ended unasked.
+    pub(super) fn reports(&self) -> Result<Vec<Report>, String> {
+        let mut reports = Vec::new();
+        loop {
+            match self.reports.try_recv() {
+                Ok(report) => reports.push(report),
+                Err(TryRecvError::Empty) => return Ok(reports),
+                // The thread ends by itself only after reporting why.
+                Err(TryRecvError::Disconnected) if reports.is_empty() => return Err(gone()),
+                Err(TryRecvError::Disconnected) => return Ok(reports),
+            }
+        }
+    }
+
+    fn ask(&self, ask: Ask) -> Result<(), String> {
+        self.asks.send(ask).map_err(|_| gone())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for Worker {
+    fn drop(&mut self) {
+        // The thread may have ended already.
+        let _ = self.asks.send(Ask::Stop);
+    }
+}
+
+/// The window's end in the browser, which has no threads: the work is done in [`Self::reports`],
+/// a batch each frame, asking for another frame while some is left. Dropping it closes the
+/// connection.
+#[cfg(target_arch = "wasm32")]
+pub(super) struct Worker {
+    inline: std::cell::RefCell<Inline>,
+}
+
+#[cfg(target_arch = "wasm32")]
+struct Inline {
+    /// Makes the [`Collab`], in the first frame, with the connection it then works through.
+    start: Option<(Box<dyn FnOnce() -> Result<Collab, Error>>, Connection)>,
+    running: Option<(Thread, Collab)>,
+    asks: std::collections::VecDeque<Ask>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    /// Said why it ended; a later call is an error, as once the thread has ended.
+    ended: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Worker {
+    /// Connects to `relay` and takes part in its room through the [`Collab`] `make` makes in the
+    /// next frame; `wake` asks for a frame when there is something to do.
+    pub(super) fn spawn(
+        relay: String,
+        make: impl FnOnce() -> Result<Collab, Error> + Send + 'static,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self, Error> {
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+        let nudge = Arc::clone(&wake);
+        let connection = Connection::open(relay, move || nudge())?;
+        wake();
+        let inline = Inline { start: Some((Box::new(make), connection)), running: None, asks: Default::default(), wake, ended: false };
+        Ok(Self { inline: std::cell::RefCell::new(inline) })
+    }
+
+    /// Does the next batch of what was asked, with what came in, and reports what came of it.
+    pub(super) fn reports(&self) -> Result<Vec<Report>, String> {
+        let mut inline = self.inline.try_borrow_mut().map_err(|_| gone())?;
+        if inline.ended {
+            return Err(gone());
+        }
+        if let Some((make, connection)) = inline.start.take() {
+            match make() {
+                Ok(collab) => inline.running = Some((Thread { connection, n: None, document: None }, collab)),
+                Err(error) => {
+                    inline.ended = true;
+                    return Ok(vec![Report { ended: Some(error.message), ..Report::default() }]);
+                }
+            }
+        }
+        let take = inline.asks.len().min(BATCH - 1);
+        let asks: Vec<Ask> = std::iter::once(Ask::Wake).chain(inline.asks.drain(..take)).collect();
+        if !inline.asks.is_empty() {
+            (inline.wake)();
+        }
+        let Some((thread, collab)) = inline.running.as_mut() else { return Err(gone()) };
+        let (report, ended) = work(thread, collab, asks);
+        inline.ended = ended;
+        Ok(report.into_iter().collect())
+    }
+
+    fn ask(&self, ask: Ask) -> Result<(), String> {
+        let mut inline = self.inline.try_borrow_mut().map_err(|_| gone())?;
+        if inline.ended {
+            return Err(gone());
+        }
+        inline.asks.push_back(ask);
+        (inline.wake)();
+        Ok(())
+    }
+}
+
+impl Worker {
     /// Hands the thread `turn`. Its answer comes as a report's plan.
     pub(super) fn turn(&self, turn: Turn) -> Result<(), String> {
         self.ask(Ask::Turn(turn))
@@ -128,31 +235,6 @@ impl Worker {
     pub(super) fn send(&self, n: u64, frames: Vec<Frame>) -> Result<(), String> {
         if frames.is_empty() { Ok(()) } else { self.ask(Ask::Send(n, frames)) }
     }
-
-    /// What the thread reported since the last call; an error if it has ended unasked.
-    pub(super) fn reports(&self) -> Result<Vec<Report>, String> {
-        let mut reports = Vec::new();
-        loop {
-            match self.reports.try_recv() {
-                Ok(report) => reports.push(report),
-                Err(TryRecvError::Empty) => return Ok(reports),
-                // The thread ends by itself only after reporting why.
-                Err(TryRecvError::Disconnected) if reports.is_empty() => return Err(gone()),
-                Err(TryRecvError::Disconnected) => return Ok(reports),
-            }
-        }
-    }
-
-    fn ask(&self, ask: Ask) -> Result<(), String> {
-        self.asks.send(ask).map_err(|_| gone())
-    }
-}
-
-impl Drop for Worker {
-    fn drop(&mut self) {
-        // The thread may have ended already.
-        let _ = self.asks.send(Ask::Stop);
-    }
 }
 
 fn gone() -> String {
@@ -163,31 +245,16 @@ fn gone() -> String {
 const BATCH: usize = 64;
 
 /// The thread: waits for something to do, does all of it, and reports.
+#[cfg(not(target_arch = "wasm32"))]
 fn run(connection: Connection, mut collab: Collab, inbox: &Receiver<Ask>, outbox: &Sender<Report>, wake: &(dyn Fn() + Send + Sync)) {
     let mut thread = Thread { connection, n: None, document: None };
     while let Ok(first) = inbox.recv() {
-        let mut report = Report::default();
-        let mut quiet = true;
-        for ask in std::iter::once(first).chain(inbox.try_iter().take(BATCH - 1)) {
-            if matches!(ask, Ask::Stop) {
-                return;
-            }
-            quiet &= matches!(ask, Ask::Wake);
-            if let Err(error) = thread.handle(&mut collab, ask, &mut report) {
-                report.ended = Some(error.message);
-                break;
-            }
+        let asks: Vec<Ask> = std::iter::once(first).chain(inbox.try_iter().take(BATCH - 1)).collect();
+        if asks.iter().any(|ask| matches!(ask, Ask::Stop)) {
+            return;
         }
-        let ended = report.ended.is_some();
-        match status(&mut collab) {
-            Ok(status) => report.status = status,
-            Err(error) => report.ended = report.ended.or(Some(error.message)),
-        }
-        report.notices.extend(collab.take_refusal().map(|why| format!("The relay didn't take a change to a discussion: {why}")));
-        report.notices.extend(collab.take_clash());
-        // A wake that brought nothing needn't wake the window.
-        let news = !quiet || report.dirty || !report.events.is_empty() || report.ended.is_some() || !report.notices.is_empty();
-        if news {
+        let (report, ended) = work(&mut thread, &mut collab, asks);
+        if let Some(report) = report {
             if outbox.send(report).is_err() {
                 return;
             }
@@ -197,6 +264,30 @@ fn run(connection: Connection, mut collab: Collab, inbox: &Receiver<Ask>, outbox
             return;
         }
     }
+}
+
+/// Does `asks` and says what came of them, if anything worth waking the window for, and whether
+/// the sharing ended.
+fn work(thread: &mut Thread, collab: &mut Collab, asks: Vec<Ask>) -> (Option<Report>, bool) {
+    let mut report = Report::default();
+    let mut quiet = true;
+    for ask in asks {
+        quiet &= matches!(ask, Ask::Wake);
+        if let Err(error) = thread.handle(collab, ask, &mut report) {
+            report.ended = Some(error.message);
+            break;
+        }
+    }
+    let ended = report.ended.is_some();
+    match status(collab) {
+        Ok(status) => report.status = status,
+        Err(error) => report.ended = report.ended.or(Some(error.message)),
+    }
+    report.notices.extend(collab.take_refusal().map(|why| format!("The relay didn't take a change to a discussion: {why}")));
+    report.notices.extend(collab.take_clash());
+    // A wake that brought nothing needn't wake the window.
+    let news = !quiet || report.dirty || !report.events.is_empty() || report.ended.is_some() || !report.notices.is_empty();
+    (news.then_some(report), ended)
 }
 
 struct Thread {
@@ -244,6 +335,7 @@ impl Thread {
                 }
             }
             // Handled before it gets here.
+            #[cfg(not(target_arch = "wasm32"))]
             Ask::Stop => {}
             Ask::Taken { revision, document, applied } => {
                 if let Some(document) = document {

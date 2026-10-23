@@ -140,17 +140,17 @@ fn live_sharing_is_asked_of_the_host_with_a_checked_relay_and_link() {
         Ok(json!({"accepted": true}))
     })
     .unwrap();
-    for (params, why) in [
-        (json!({"relay": "http://relay.example"}), ErrorKind::InvalidInput),
-        (json!({"relay": "wss://relay.example"}), ErrorKind::Unsupported),
-        (json!({"relay": "ws://relay", "room": "x"}), ErrorKind::InvalidInput),
-    ] {
+    for (params, why) in
+        [(json!({"relay": "http://relay.example"}), ErrorKind::InvalidInput), (json!({"relay": "ws://relay", "room": "x"}), ErrorKind::InvalidInput)]
+    {
         assert_eq!(s.dispatch("share.start", &params).unwrap_err().kind, why, "{params}");
     }
     let bad = s.dispatch("share.join", &json!({"link": room.replace("#room", "#rooms")})).unwrap_err();
     assert!(!bad.message.contains(&"ab".repeat(8)), "{}", bad.message);
     s.dispatch("share.start", &json!({})).unwrap();
     s.dispatch("share.start", &json!({"relay": " ws://relay.example "})).unwrap();
+    // The browser reaches a relay over TLS (#699); the desktop refuses one when it connects.
+    s.dispatch("share.start", &json!({"relay": "wss://relay.example"})).unwrap();
     s.dispatch("share.join", &json!({"link": format!("  {room}\n")})).unwrap();
     s.dispatch("share.stop", &json!({})).unwrap();
     assert_eq!(
@@ -158,6 +158,7 @@ fn live_sharing_is_asked_of_the_host_with_a_checked_relay_and_link() {
         vec![
             json!({"op": "start", "relay": null}),
             json!({"op": "start", "relay": "ws://relay.example"}),
+            json!({"op": "start", "relay": "wss://relay.example"}),
             json!({"op": "join", "link": room}),
             json!({"op": "stop"})
         ]
