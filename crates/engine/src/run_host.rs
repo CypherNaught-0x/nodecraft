@@ -423,6 +423,9 @@ impl RunHost {
     /// left running at the provider, to be followed next launch; without one, it is cancelled.
     /// Jobs not yet sent are refused from here on, so none can be sent after the last save.
     pub fn shut_down(&mut self) {
+        for run in &self.runs {
+            run.actions.cancel_captures();
+        }
         let journaled = {
             let mut shared = lock(&self.journal);
             shared.closing = true;

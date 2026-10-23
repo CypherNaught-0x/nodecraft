@@ -208,6 +208,33 @@ fn closing_waits_for_a_recompute_still_running() {
     assert!(done.load(std::sync::atomic::Ordering::SeqCst), "the app closed before its worker finished");
 }
 
+#[test]
+fn closing_gives_up_on_a_worker_still_blocked_and_observes_a_worker_panic() {
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        release_rx.recv().unwrap();
+        done_tx.send(()).unwrap();
+    });
+    let outcome = wait_for_worker(worker, Instant::now() + Duration::from_millis(20));
+    release_tx.send(()).unwrap();
+    done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(outcome, WorkerExit::TimedOut, "close must return before a blocked worker is released");
+    let worker = std::thread::spawn(|| panic!("authored close worker panic"));
+    assert_eq!(wait_for_worker(worker, Instant::now() + Duration::from_secs(2)), WorkerExit::Panicked);
+}
+
+#[test]
+fn dropping_one_harness_cancels_only_its_live_round() {
+    let own = live_actions::LiveCancel::default();
+    let other = live_actions::LiveCancel::default();
+    let mut live = Live::default();
+    live.cancel = Some(own.clone());
+    drop(live);
+    assert!(own.is_cancelled());
+    assert!(!other.is_cancelled(), "a Harness drop must not shut down another app's capture");
+}
+
 const SOURCE: NodeId = NodeId::from_bytes([80; 16]);
 const BLUR: NodeId = NodeId::from_bytes([81; 16]);
 

@@ -84,7 +84,21 @@ fn shot(action: &str, params: &ParamValues) -> Result<Shot, String> {
 }
 
 impl LocalActions {
-    pub(super) fn capture_mesh(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
+    pub(super) fn capture_mesh(&self, action: &str, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
+        capture_state::with(cancelled, |slot, stopping| self.capture_mesh_in(action, params, inputs, slot, stopping))
+    }
+
+    fn capture_mesh_in(
+        &self,
+        action: &str,
+        params: &ParamValues,
+        inputs: &[Value],
+        slot: &mut Option<MeshCapture>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Value, String> {
+        if cancelled() {
+            return Err("the 3D capture was cancelled".into());
+        }
         let shot = shot(action, params)?;
         let style = style(params)?;
         let pitch = degrees(params, "pitch")?;
@@ -97,14 +111,15 @@ impl LocalActions {
         let bounds = mesh.bounds().ok_or("the input model has nothing to draw")?;
         let edges = if style == Style::Wireframe { mesh.edges(MAX_EDGES) } else { None };
         let data = MeshData { positions: &mesh.positions, normals: &mesh.normals, colors: &mesh.colors, indices: &mesh.indices, edges: edges.as_deref() };
-        let (width, height, pixels) = capture_state::with(|slot| {
+        let (width, height, pixels) = {
+            if cancelled() {
+                return Err("the 3D capture was cancelled".into());
+            }
             if slot.as_ref().is_none_or(MeshCapture::is_lost) {
-                // A device left busy by a timeout may wait for its work when dropped, holding every
-                // capture up; leaking it (once per lost device) frees the slot at once.
-                if let Some(lost) = slot.take() {
-                    std::mem::forget(lost);
-                }
                 *slot = Some(MeshCapture::request().map_err(message)?);
+            }
+            if cancelled() {
+                return Err("the 3D capture was cancelled".into());
             }
             let capture = slot.as_ref().ok_or_else(|| message(CaptureError::Unavailable))?;
             let gpu = capture.upload(data).map_err(message)?;
@@ -121,6 +136,9 @@ impl LocalActions {
             sheet.try_reserve_exact(total).map_err(|_| "there isn't enough memory for the capture")?;
             sheet.resize(total, 0);
             for (index, yaw) in (0u32..).zip(&shot.yaws) {
+                if cancelled() {
+                    return Err("the 3D capture was cancelled".into());
+                }
                 let orbit = Orbit { yaw: 0.0, pitch: 0.0, zoom: 1.0 }.turned(*yaw, pitch).zoomed(zoom);
                 let view = View { orbit, style, center: bounds.center(), radius: bounds.radius(), background, line };
                 let pixels = capture.render(&gpu, &target, &view, timeout).map_err(message)?;
@@ -130,8 +148,8 @@ impl LocalActions {
                     sheet.get_mut(at..at.saturating_add(row)).ok_or("the capture doesn't fit its sheet")?.copy_from_slice(source);
                 }
             }
-            Ok((sheet_w, sheet_h, sheet))
-        })?;
+            (sheet_w, sheet_h, sheet)
+        };
         let raster = Raster::new(width, height, pixels, ImageLimits::default()).map_err(|e| format!("the capture can't be used: {e}"))?;
         self.stage(&raster)
     }

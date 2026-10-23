@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 /// Longest the app waits, when it closes, for a recompute still running (#594).
 #[cfg(not(target_arch = "wasm32"))]
-const CLOSE_WAIT: Duration = Duration::from_secs(10);
+const CLOSE_WAIT: Duration = nodecraft_engine::action_exec::CAPTURE_CLOSE_WAIT;
 
 #[derive(Default)]
 pub(super) struct Live {
@@ -26,6 +26,8 @@ pub(super) struct Live {
     /// The worker computing `running`, waited for when the app closes (#594).
     #[cfg(not(target_arch = "wasm32"))]
     worker: Option<std::thread::JoinHandle<()>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    cancel: Option<live_actions::LiveCancel>,
     /// The canvas and revision last looked at.
     checked: Option<(CanvasId, u64)>,
     /// Nodes that failed, with the input hash they failed with: not retried (or reported
@@ -216,9 +218,15 @@ impl NodeCraftApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
+            self.live.cancel = Some(job.cancel_handle());
             let repaint = ctx.clone();
             let started = std::thread::Builder::new().name("nodecraft-live".into()).spawn(move || {
-                let _ = send.send(live_actions::compute(job));
+                // Report a panic even if this finished worker's handle is replaced next frame.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| live_actions::compute(job))).unwrap_or_else(|_| {
+                    log::warn!("live recompute worker panicked");
+                    Err(Error::new(nodecraft_types::ErrorKind::Internal, "live recompute worker failed"))
+                });
+                let _ = send.send(result);
                 repaint.request_repaint();
             });
             match started {
@@ -247,18 +255,51 @@ impl NodeCraftApp {
 /// shader), and a driver torn down under it crashes the process (#594). Closing waits for it,
 /// for at most [`CLOSE_WAIT`]. (The browser has no worker threads.)
 #[cfg(not(target_arch = "wasm32"))]
+impl Live {
+    pub(super) fn cancel(&self) {
+        if let Some(cancel) = &self.cancel {
+            cancel.cancel();
+        }
+    }
+
+    pub(super) fn stop(&mut self, deadline: Instant) {
+        self.cancel();
+        let Some(worker) = self.worker.take() else { return };
+        match wait_for_worker(worker, deadline) {
+            WorkerExit::Finished => {}
+            WorkerExit::Panicked => log::warn!("live recompute worker panicked at close"),
+            WorkerExit::TimedOut => log::warn!("live recompute still running at close"),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, PartialEq, Eq)]
+enum WorkerExit {
+    Finished,
+    Panicked,
+    TimedOut,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn wait_for_worker(worker: std::thread::JoinHandle<()>, deadline: Instant) -> WorkerExit {
+    while !worker.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())));
+    }
+    if !worker.is_finished() {
+        WorkerExit::TimedOut
+    } else if worker.join().is_err() {
+        WorkerExit::Panicked
+    } else {
+        WorkerExit::Finished
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl Drop for Live {
     fn drop(&mut self) {
-        let Some(worker) = self.worker.take() else { return };
-        let deadline = Instant::now() + CLOSE_WAIT;
-        while !worker.is_finished() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        if worker.is_finished() {
-            let _ = worker.join();
-        } else {
-            log::warn!("live recompute still running at close");
-        }
+        // A Harness drop cancels only this round. Process-wide draining belongs to on_exit.
+        self.stop(Instant::now() + CLOSE_WAIT);
     }
 }
 
