@@ -118,6 +118,39 @@ fn the_worker_feeds_past_eight_seconds_without_ui_frames_and_uses_decoded_eof() 
 }
 
 #[test]
+fn empty_seek_keeps_the_hint_and_restarts_until_decoding_establishes_the_actual_end() {
+    let (feeder, device) = feeder();
+    let source = Arc::new(Decode::new(384_000, false)); // Eight seconds under a ten-second hint.
+    feeder.request(source.clone(), 10_000_000, 9_000_000).unwrap();
+    until(|| feeder.status().is_some_and(|status| !status.playing));
+    let status = feeder.status().unwrap();
+    assert_eq!((status.position_us, status.duration_us, status.notice), (0, 10_000_000, None));
+    assert_eq!(*lock(&source.requests), vec![9_000_000]);
+
+    feeder.request(source, status.duration_us, status.position_us).unwrap();
+    until(|| {
+        device.callbacks.fetch_add(1, Ordering::Relaxed);
+        let mut ring = lock(&device.ring);
+        for _ in 0..ring.buffered().min(96_000) {
+            ring.next();
+        }
+        drop(ring);
+        feeder.status().is_some_and(|status| !status.playing)
+    });
+    let status = feeder.status().unwrap();
+    assert_eq!((status.position_us, status.duration_us, status.notice), (8_000_000, 8_000_000, None));
+}
+
+#[test]
+fn empty_beginning_establishes_zero_length_even_with_a_nonzero_hint() {
+    let (feeder, _) = feeder();
+    feeder.request(Arc::new(Decode::new(0, false)), 10_000_000, 0).unwrap();
+    until(|| feeder.status().is_some_and(|status| !status.playing));
+    let status = feeder.status().unwrap();
+    assert_eq!((status.position_us, status.duration_us, status.notice), (0, 0, None));
+}
+
+#[test]
 fn dragging_seeks_cancels_old_work_and_decodes_only_the_latest_settled_position() {
     let (feeder, device) = feeder();
     let source = Arc::new(Decode::new(480_000, true));

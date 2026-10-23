@@ -259,7 +259,12 @@ impl Active {
     fn status(&self, playing: bool, notice: Option<&'static str>) -> Status {
         Status {
             position_us: self.request.from_us.saturating_add(us(self.output.played())).min(self.next_us),
-            duration_us: if self.ended { self.next_us } else { self.request.duration_us.max(self.next_us) },
+            // An empty first seek only proves the target is past EOF, not where EOF is.
+            duration_us: if self.ended && (self.request.from_us == 0 || self.next_us > self.request.from_us) {
+                self.next_us
+            } else {
+                self.request.duration_us.max(self.next_us)
+            },
             playing,
             notice,
         }
@@ -295,7 +300,9 @@ impl Active {
         }
         if self.ended && self.output.buffered() == 0 {
             let mut status = self.status(false, None);
-            status.position_us = self.next_us;
+            // A seek with no decoded frames cannot establish an end position. Reset so
+            // the next Play starts at the beginning instead of repeating the empty seek.
+            status.position_us = if self.next_us == self.request.from_us { 0 } else { self.next_us };
             return status;
         }
         if self.job.is_none() && !self.ended && us(self.output.buffered()) < LOW_US && self.retry.is_none_or(|retry| retry.due(elapsed)) {

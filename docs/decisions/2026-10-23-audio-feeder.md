@@ -25,6 +25,10 @@
 - A reported duration is a playback hint. PCM requests continue to decoded EOF, at most two
   seconds per request and no further than the existing one-hour accepted audio limit. This fixes
   understated VBR durations without extending an untrusted input's allocation/process bounds.
+  An empty first seek does not locate the real end; keep the hint until a nonempty decoded
+  range establishes EOF, rather than treating an out-of-range seek target as an observed length.
+  Reset an empty seek to the beginning so Play can recover; an empty decode from zero proves
+  zero length without trusting the container hint.
   Observed playback length is view state; no document metadata or undo entry changes.
 - Fake decoder/output tests exercise the actual worker without app frames, including playback
   beyond eight seconds, underestimated duration, cancellation, seek coalescing, blocked device
