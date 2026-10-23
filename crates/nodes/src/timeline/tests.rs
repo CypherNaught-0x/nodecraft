@@ -61,7 +61,7 @@ fn clips_are_checked_where_they_are_read() {
     assert_eq!(Timeline::parse(&many.encode().unwrap()).unwrap(), many);
     let mut oversized = many;
     oversized.clips.push(Clip { enabled: false, ..Clip::whole("extra".into(), "n".into(), 0) });
-    assert_eq!(oversized.encode().unwrap_err().message, "a timeline stores at most 128 clips: disconnect or remove some");
+    assert_eq!(oversized.encode().unwrap_err().message, "a timeline stores at most 128 clips");
     assert!(Timeline::parse(&" ".repeat(MAX_ENCODED_BYTES + 1)).is_err());
 }
 

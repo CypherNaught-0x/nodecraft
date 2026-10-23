@@ -440,7 +440,7 @@ impl Timeline {
 
     pub fn check(&self) -> Result<(), Error> {
         if self.clips.len() > MAX_STRUCTURAL_CLIPS {
-            return Err(bad("a timeline stores at most 128 clips: disconnect or remove some"));
+            return Err(Error::new(ErrorKind::InvalidInput, format!("a timeline stores at most {MAX_STRUCTURAL_CLIPS} clips")));
         }
         if self.tracks.len() > MAX_TRACKS {
             return Err(bad("a timeline has at most 8 tracks besides the main one"));
