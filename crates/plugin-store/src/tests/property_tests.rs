@@ -53,8 +53,9 @@ enum Hostile {
     Unlisted(String),
     /// A listed file left out.
     Missing(usize),
-    /// A listed file stored as a symbolic link.
-    Link(String),
+    /// A listed file stored as a symbolic link to its own listed bytes, so only the entry type
+    /// is wrong.
+    Link,
     /// The first entry's declared sizes, in both headers, set to `size`.
     Declared(u32),
     /// One byte of the inventory's JSON changed.
@@ -66,7 +67,7 @@ fn hostile() -> impl Strategy<Value = Hostile> {
         proptest::sample::select(HOSTILE_NAMES).prop_map(Hostile::Name),
         "[a-z]{1,8}(/[a-z]{1,8}){0,2}".prop_map(Hostile::Unlisted),
         (0usize..8).prop_map(Hostile::Missing),
-        "(\\.\\./){0,3}[a-z]{1,8}".prop_map(Hostile::Link),
+        Just(Hostile::Link),
         any::<u32>().prop_map(Hostile::Declared),
         (any::<usize>(), any::<u8>()).prop_map(|(at, byte)| Hostile::Inventory(at, byte)),
     ]
@@ -115,14 +116,14 @@ fn hostile_bytes(h: &Hostile) -> Vec<u8> {
             entries.remove(which % entries.len());
             raw(&entries, &listed)
         }
-        Hostile::Link(target) => {
+        Hostile::Link => {
             let f = files(&spec("io.example.hostile"));
             let listed: Vec<(&str, &[u8])> = f.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
             let inventory = Inventory::from_files(listed.iter().copied()).unwrap().canonical_json();
             let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
             for (name, bytes) in &listed {
                 if name.starts_with("d/") {
-                    out.add_symlink(*name, target.as_str(), stored()).unwrap();
+                    out.add_symlink(*name, std::str::from_utf8(bytes).unwrap(), stored()).unwrap();
                 } else {
                     out.start_file(*name, stored()).unwrap();
                     out.write_all(bytes).unwrap();
@@ -154,18 +155,32 @@ fn hostile_bytes(h: &Hostile) -> Vec<u8> {
     }
 }
 
+fn refused_with_nothing_kept(h: &Hostile) -> Result<(), TestCaseError> {
+    let bytes = hostile_bytes(h);
+    let mut st = store();
+    let dry = st.import(&bytes, &TrustStore::default(), true).err();
+    prop_assert_eq!(dry.map(|e| e.kind), Some(ErrorKind::InvalidInput), "{:?}: inspected", h);
+    let error = st.import(&bytes, &TrustStore::default(), false).err();
+    prop_assert_eq!(error.map(|e| e.kind), Some(ErrorKind::InvalidInput), "{:?}: imported", h);
+    prop_assert!(st.index().active.is_empty() && st.index().objects.is_empty(), "{h:?}");
+    prop_assert!(st.backend().index.is_none() && st.backend().objects.is_empty() && st.backend().grants.is_none(), "{h:?}");
+    Ok(())
+}
+
 proptest! {
     #[test]
     fn a_structurally_hostile_archive_is_refused_with_nothing_kept(h in hostile()) {
-        let bytes = hostile_bytes(&h);
-        let mut st = store();
-        let dry = st.import(&bytes, &TrustStore::default(), true);
-        prop_assert!(dry.is_err(), "{h:?}: inspected");
-        let error = st.import(&bytes, &TrustStore::default(), false).err();
-        prop_assert!(error.is_some(), "{h:?}: imported");
-        prop_assert!(st.index().active.is_empty() && st.index().objects.is_empty(), "{h:?}");
-        prop_assert!(st.backend().index.is_none() && st.backend().objects.is_empty() && st.backend().grants.is_none(), "{h:?}");
+        refused_with_nothing_kept(&h)?;
     }
+}
+
+/// Every hostile name, every run: sampling alone would skip one now and then.
+#[test]
+fn every_hostile_name_is_refused() {
+    for name in HOSTILE_NAMES {
+        refused_with_nothing_kept(&Hostile::Name(name)).unwrap();
+    }
+    refused_with_nothing_kept(&Hostile::Link).unwrap();
 }
 
 // ---- Operation sequences with failing writes ----
@@ -352,10 +367,75 @@ fn run(st: &mut Store<Failing>, p: &Packages, op: &Op) -> Result<(), nodecraft_t
     }
 }
 
+/// Whether `after` differs from `before` only by enabled packages now disabled: what a revoke
+/// commits before it writes the grants.
+fn only_disabled(before: &Index, after: &Index) -> bool {
+    before.objects == after.objects
+        && before.active.len() == after.active.len()
+        && before.active.iter().zip(&after.active).all(|((bi, (bd, bs)), (ai, (ad, as_)))| bi == ai && bd == ad && (bs == as_ || *as_ == State::Disabled))
+}
+
 /// An enabled package that runs anything holds a live grant of exactly its active digest.
 fn enabled_text_holds_a_live_grant(st: &Store<Failing>) -> bool {
     let grants = grants_of(&st.backend().inner);
     st.index().active.get(&id(PACKAGES[0])).is_none_or(|(digest, state)| *state == State::Disabled || grants.live(&id(PACKAGES[0]), digest).is_some())
+}
+
+/// Runs `steps`, checking after each that a failed step left nothing half done.
+fn check_sequence(steps: &[(Op, Fault)]) -> Result<(), TestCaseError> {
+    let p = packages();
+    let faults = Rc::new(Faults::default());
+    let mut st = Store::open(Failing { inner: MemoryBackend::default(), faults: faults.clone() }).unwrap();
+    let mut epoch = 0u64;
+    for (step, (op, fault)) in steps.iter().enumerate() {
+        let before = snapshot(&st);
+        faults.index.set(*fault == Fault::Index);
+        faults.object.set(*fault == Fault::Object);
+        faults.grants.set(*fault == Fault::Grants);
+        let result = run(&mut st, &p, op);
+        let injected = (*fault == Fault::Index && !faults.index.get())
+            || (*fault == Fault::Object && !faults.object.get())
+            || (*fault == Fault::Grants && !faults.grants.get());
+        faults.index.set(false);
+        faults.object.set(false);
+        faults.grants.set(false);
+        let after = snapshot(&st);
+        let at = format!("step {step}: {op:?} with {fault:?} -> {result:?}");
+        match &result {
+            Err(error) if injected => {
+                prop_assert_eq!(error.message.as_str(), "disk full", "{}", at);
+                if matches!(op, Op::Revoke(_)) && *fault == Fault::Grants {
+                    // A revoke disables first, so a failed grants write leaves it disabled.
+                    prop_assert!(only_disabled(&before.index, &after.index), "{at}: {:?} -> {:?}", before.index, after.index);
+                } else {
+                    // A failed write may revoke before it fails, never grant: the index and the
+                    // archives it names are as they were, and grants only went away.
+                    prop_assert_eq!(&after.index, &before.index, "{}", at);
+                    prop_assert_eq!(&after.on_disk, &before.on_disk, "{}", at);
+                }
+                prop_assert_eq!(&after.objects, &before.objects, "{}", at);
+                prop_assert!(only_revoked(&before.grants, &after.grants), "{at}: grants {:?} -> {:?}", before.grants, after.grants);
+            }
+            Err(_) => prop_assert_eq!(&after, &before, "a refused step changes nothing: {}", at),
+            Ok(()) => prop_assert!(!injected, "{at}: the failed write was ignored"),
+        }
+        // Epochs never go down, and the store's view is what a fresh open reads.
+        prop_assert!(after.grants.next_epoch >= epoch, "{at}: epoch {} after {epoch}", after.grants.next_epoch);
+        epoch = after.grants.next_epoch;
+        prop_assert!(enabled_text_holds_a_live_grant(&st), "{at}: enabled without a grant");
+        let reopened = Store::open(MemoryBackend {
+            index: st.backend().inner.index.clone(),
+            objects: st.backend().inner.objects.clone(),
+            grants: st.backend().inner.grants.clone(),
+            ..MemoryBackend::default()
+        })
+        .unwrap();
+        prop_assert_eq!(reopened.index(), st.index(), "{}", at);
+        for digest in st.index().objects.keys() {
+            prop_assert!(reopened.backend().objects.contains_key(digest), "{at}: a named archive is missing");
+        }
+    }
+    Ok(())
 }
 
 proptest! {
@@ -363,53 +443,13 @@ proptest! {
 
     #[test]
     fn a_failed_step_leaves_nothing_half_done(steps in proptest::collection::vec((op(), fault()), 1..24)) {
-        let p = packages();
-        let faults = Rc::new(Faults::default());
-        let mut st = Store::open(Failing { inner: MemoryBackend::default(), faults: faults.clone() }).unwrap();
-        let mut epoch = 0u64;
-        for (step, (op, fault)) in steps.iter().enumerate() {
-            let before = snapshot(&st);
-            faults.index.set(*fault == Fault::Index);
-            faults.object.set(*fault == Fault::Object);
-            faults.grants.set(*fault == Fault::Grants);
-            let result = run(&mut st, &p, op);
-            let injected = (*fault == Fault::Index && !faults.index.get())
-                || (*fault == Fault::Object && !faults.object.get())
-                || (*fault == Fault::Grants && !faults.grants.get());
-            faults.index.set(false);
-            faults.object.set(false);
-            faults.grants.set(false);
-            let after = snapshot(&st);
-            let at = format!("step {step}: {op:?} with {fault:?} -> {result:?}");
-            if result.is_err() {
-                if injected {
-                    // A failed write may revoke before it fails, never grant: the index and the
-                    // archives it names are as they were, and grants only went away.
-                    prop_assert_eq!(&after.index, &before.index, "{}", at);
-                    prop_assert_eq!(&after.on_disk, &before.on_disk, "{}", at);
-                    prop_assert_eq!(&after.objects, &before.objects, "{}", at);
-                    prop_assert!(only_revoked(&before.grants, &after.grants), "{at}: grants {:?} -> {:?}", before.grants, after.grants);
-                } else {
-                    prop_assert_eq!(&after, &before, "a refused step changes nothing: {}", at);
-                }
-            } else if *fault != Fault::None {
-                prop_assert!(!injected, "{at}: the failed write was ignored");
-            }
-            // Epochs never go down, and the store's view is what a fresh open reads.
-            prop_assert!(after.grants.next_epoch >= epoch, "{at}: epoch {} after {epoch}", after.grants.next_epoch);
-            epoch = after.grants.next_epoch;
-            prop_assert!(enabled_text_holds_a_live_grant(&st), "{at}: enabled without a grant");
-            let reopened = Store::open(MemoryBackend {
-                index: st.backend().inner.index.clone(),
-                objects: st.backend().inner.objects.clone(),
-                grants: st.backend().inner.grants.clone(),
-                ..MemoryBackend::default()
-            })
-            .unwrap();
-            prop_assert_eq!(reopened.index(), st.index(), "{}", at);
-            for digest in st.index().objects.keys() {
-                prop_assert!(reopened.backend().objects.contains_key(digest), "{at}: a named archive is missing");
-            }
-        }
+        check_sequence(&steps)?;
     }
+}
+
+/// Revoking the grant an enabled package runs under, with the grants write failing: it stays
+/// disabled, and that is the only change.
+#[test]
+fn a_revoke_whose_grants_write_fails_leaves_the_package_disabled() {
+    check_sequence(&[(Op::Import(0, 0), Fault::None), (Op::Grant(0), Fault::None), (Op::Enable(0), Fault::None), (Op::Revoke(0), Fault::Grants)]).unwrap();
 }
