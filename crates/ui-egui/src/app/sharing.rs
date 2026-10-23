@@ -46,6 +46,17 @@ mod worker;
 
 use worker::{Status, Turn, Worker};
 
+/// `Send` on the desktop, where the work runs on a thread of its own; nothing in the browser,
+/// where it runs in the frame and what it holds needn't cross threads.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSend for T {}
+#[cfg(target_arch = "wasm32")]
+pub(super) trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSend for T {}
+
 /// What the connection tells the app.
 #[derive(Debug, PartialEq)]
 enum Event {
@@ -166,7 +177,7 @@ impl Sharing {
         &mut self,
         ctx: &egui::Context,
         link: JoinLink,
-        make: impl FnOnce() -> Result<Collab, Error> + Send + 'static,
+        make: impl FnOnce() -> Result<Collab, Error> + MaybeSend + 'static,
         joining: bool,
         large: bool,
     ) -> Result<(), Error> {

@@ -164,11 +164,7 @@ struct Inline {
 impl Worker {
     /// Connects to `relay` and takes part in its room through the [`Collab`] `make` makes in the
     /// next frame; `wake` asks for a frame when there is something to do.
-    pub(super) fn spawn(
-        relay: String,
-        make: impl FnOnce() -> Result<Collab, Error> + Send + 'static,
-        wake: impl Fn() + Send + Sync + 'static,
-    ) -> Result<Self, Error> {
+    pub(super) fn spawn(relay: String, make: impl FnOnce() -> Result<Collab, Error> + 'static, wake: impl Fn() + Send + Sync + 'static) -> Result<Self, Error> {
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
         let nudge = Arc::clone(&wake);
         let connection = Connection::open(relay, move || nudge())?;
