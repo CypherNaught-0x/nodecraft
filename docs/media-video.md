@@ -137,6 +137,19 @@ Every kind has a Quality choice (Draft, Standard, High). Settings are checked be
 imported, so a bad trim or too many stitched videos costs no import. Without `[media]` tools the
 actions say so; in a browser they say they need the desktop app.
 
+### Rendered output staging
+
+One run retains at most **1 GiB of rendered video and extracted sound**, including space
+reserved by unfinished read-backs, and at most 4,096 retained results and unfinished reads.
+Each file is still limited to 256 MiB. Reaching the shared budget refuses the next read-back
+with guidance to render fewer nodes at a time or use a lower quality. Earlier results remain
+readable by chained actions in that run. Failed and cancelled reads release their reservations;
+a failed split returns the budget of its new parts.
+
+This bounds encoded staging payload, not total process memory. Chunk storage, conversion into
+shared buffers, decoded frames, project assets and service scratch files have separate limits.
+Even a duplicate output needs provisional read-back capacity until its hash is known.
+
 ### Frame-based actions
 
 The frame-based kinds (`crates/nodes/src/video_frames.rs`, executor
@@ -301,3 +314,7 @@ opens the real default output device.
 These tests cost no provider budget. Native runtime proof and wasm compilation are distinct;
 Windows/Linux/browser behavior must not be inferred from a macOS run. No binary fixtures are
 redistributed. No speed, full codec support or fully decoded security guarantee is implied.
+
+The engine's ignored `several_timeline_renders_respect_the_shared_staging_quota` test uses the
+same explicit tool variables, deterministic mock-provider captions and tiny actual renders to
+check aggregate admission and cleanup with a small test-only budget.

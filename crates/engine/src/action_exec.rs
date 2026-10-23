@@ -10,13 +10,14 @@
 //! the GPU path (#89) is a later step. A rendered timeline (#109) may be larger than the
 //! project's resident limit, so it is staged on its own ([`LocalActions::staged_videos`]) and
 //! the host streams it in.
+//! Retained rendered media and in-flight read-back reservations share a 1 GiB, 4,096-result
+//! budget for this run. A refusal tells the person to render fewer nodes or lower the quality.
 use nodecraft_actions::image::{CpuExecutor, ImageLimits, ImageRequest, ImageResult, Raster};
 use nodecraft_actions::text::{self, ConcatOptions, MatchMode, ReplaceOptions, SplitMode, TextRequest, TextResult};
 use nodecraft_exec::run::ActionExecutor;
 use nodecraft_format::AssetStore;
 use nodecraft_types::{AssetRef, Blake3, MediaMeta, ParamValues, Value};
 use serde_json::{Map, Value as Json, json};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -26,7 +27,7 @@ pub struct LocalActions {
     assets: AssetStore,
     staged: Mutex<AssetStore>,
     /// Rendered videos, by content hash.
-    videos: Mutex<BTreeMap<Blake3, Arc<[u8]>>>,
+    videos: Mutex<video_staging::Videos>,
     /// ffmpeg and ffprobe, from the settings; renders refuse to run without them.
     video: Option<(PathBuf, PathBuf)>,
     /// For a drag preview (#88): input images larger than this, in pixels on their longer edge,
@@ -348,6 +349,8 @@ mod video;
 mod video_frames;
 mod video_look;
 mod video_split;
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+mod video_staging;
 
 impl LocalActions {
     fn shader(&self, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {

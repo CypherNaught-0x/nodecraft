@@ -238,3 +238,6 @@ The near-term order follows the remaining open issues, not an already-finished w
   work. The M2 close-out (#373) refreshed README, ROADMAP and `docs/plan.md`. M6 gained the
   Elements library (#552) and the Image tools menu (#103); providers gained Veo 3.1 on Google
   Cloud (#742) and Google TTS (#21).
+- **2026-10-23** — rendered videos and extracted sound share a per-run staging budget (#584):
+  1 GiB and 4,096 results, including read-backs in flight. Failure and cancellation return their
+  reservations; chained actions retain access to earlier completed outputs.
