@@ -86,7 +86,7 @@ impl Default for UpdateSettings {
 
 /// How to reach the providers that need more than a key (#409). Keys stay in the keychain.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, from = "ReadProviderSettings")]
 pub struct ProviderSettings {
     /// The ComfyUI servers (`[[providers.comfyui]]`, #864); none, ComfyUI models aren't set up.
     /// Read them through [`Self::comfy_servers`], which skips bad and repeated entries. A key
@@ -99,6 +99,28 @@ pub struct ProviderSettings {
     pub install_salt: String,
 }
 
+/// [`ProviderSettings`] as read. A file with no `schema_version` counts as current and isn't
+/// migrated, so a hand-written one may still hold the old single `comfyui_url`: with no servers
+/// listed, it becomes the one server and the default.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ReadProviderSettings {
+    comfyui: Vec<ComfyServer>,
+    comfyui_default: Option<String>,
+    install_salt: String,
+    comfyui_url: Option<String>,
+}
+
+impl From<ReadProviderSettings> for ProviderSettings {
+    fn from(read: ReadProviderSettings) -> Self {
+        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url } = read;
+        match comfyui_url.as_deref().map(str::trim).filter(|url| !url.is_empty()) {
+            Some(url) if comfyui.is_empty() => Self::with_comfyui(url, &install_salt),
+            _ => Self { comfyui, comfyui_default, install_salt },
+        }
+    }
+}
+
 /// One ComfyUI server (#864).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -107,17 +129,29 @@ pub struct ComfyServer {
     pub name: String,
     /// Such as `http://127.0.0.1:8188`.
     pub url: String,
-    /// How many jobs one run sends it at once; unset, the scheduler's usual number. Read through
+    /// How many jobs one run sends it at once; unset, the scheduler's usual 4. Read through
     /// [`Self::max_jobs`].
+    #[serde(deserialize_with = "lenient_jobs")]
     pub max_jobs: Option<u32>,
+}
+
+/// A hand-edited `max_jobs` that isn't a whole number in range drops the cap (or is clamped),
+/// rather than resetting the whole `[providers]` section.
+fn lenient_jobs<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+    let jobs = match <Option<serde_json::Value> as Deserialize>::deserialize(deserializer)? {
+        Some(serde_json::Value::Number(n)) => n.as_i64(),
+        Some(serde_json::Value::String(text)) => text.trim().parse::<i64>().ok(),
+        _ => None,
+    };
+    Ok(jobs.map(|n| u32::try_from(n.clamp(1, i64::from(MAX_SERVER_JOBS))).unwrap_or(1)))
 }
 
 /// At most this many ComfyUI servers are used; later entries are ignored.
 pub const MAX_COMFY_SERVERS: usize = 32;
 /// The longest server name, in characters.
 pub const MAX_SERVER_NAME: usize = 64;
-/// The most jobs one run sends a server at once.
-pub const MAX_SERVER_JOBS: u32 = 64;
+/// The most jobs one run sends a server at once: the scheduler runs at most 16 jobs at once in all.
+pub const MAX_SERVER_JOBS: u32 = 16;
 
 impl ComfyServer {
     pub fn new(name: &str, url: &str) -> Self {
@@ -226,6 +260,8 @@ fn migrate_comfy_servers(doc: &mut DocumentMut) -> Result<(), String> {
     let Some(providers) = doc.get_mut("providers").and_then(|item| item.as_table_like_mut()) else {
         return Ok(());
     };
+    // The comment above the old key stays above the new ones.
+    let comment = providers.key_mut("comfyui_url").map(|key| key.leaf_decor().clone());
     let Some(url) = providers.remove("comfyui_url") else {
         return Ok(());
     };
@@ -248,6 +284,9 @@ fn migrate_comfy_servers(doc: &mut DocumentMut) -> Result<(), String> {
         if let Some(item) = made.remove(key) {
             providers.insert(key, item);
         }
+    }
+    if let (Some(comment), Some(mut key)) = (comment, providers.key_mut("comfyui_default")) {
+        *key.leaf_decor_mut() = comment;
     }
     Ok(())
 }
@@ -685,7 +724,10 @@ mod tests {
         assert_eq!(providers.install_salt, "s");
         store.flush().unwrap();
         let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
-        assert!(!text.contains("comfyui_url") && text.contains("[[providers.comfyui]]") && text.contains("# mine"), "{text}");
+        // Arrays are rewritten whole on saving, so the list comes back inline.
+        assert!(!text.contains("comfyui_url") && text.contains("comfyui = [") && text.contains("# mine\ncomfyui_default"), "{text}");
+        let (store, _) = open_in(dir.path());
+        assert_eq!(store.get().providers, providers, "reads back the same");
 
         // No address, or a blank one, leaves no server.
         for file in ["schema_version = 1\n[providers]\ninstall_salt = \"s\"\n", "schema_version = 1\n[providers]\ncomfyui_url = ' '\n"] {
@@ -695,6 +737,20 @@ mod tests {
             assert!(report.section_errors.is_empty(), "{report:?}");
             assert!(store.get().providers.comfyui.is_empty());
         }
+    }
+
+    /// A hand-edited job cap that's out of range or not a number never resets `[providers]`.
+    #[test]
+    fn a_bad_job_cap_is_clamped_or_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let servers = [("a", "-1"), ("b", "\"3\""), ("c", "999"), ("d", "true"), ("e", "99999999999")]
+            .map(|(name, jobs)| format!("[[providers.comfyui]]\nname = \"{name}\"\nurl = \"http://{name}:1\"\nmax_jobs = {jobs}\n"));
+        write_config(dir.path(), &format!("schema_version = 2\n[providers]\ninstall_salt = \"s\"\n{}", servers.concat()));
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        let caps: Vec<_> = store.get().providers.comfyui.iter().map(|server| server.max_jobs).collect();
+        assert_eq!(caps, [Some(1), Some(3), Some(MAX_SERVER_JOBS), None, Some(MAX_SERVER_JOBS)]);
+        assert_eq!(store.get().providers.install_salt, "s");
     }
 
     #[test]

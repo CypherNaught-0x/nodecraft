@@ -223,6 +223,10 @@ impl NodeCraftApp {
         }
         settings.comfyui_default = Some(name.to_owned());
         self.save_providers(&settings)?;
+        // Cards that follow the default are routed again, a waiting one included.
+        if let Some(runs) = &mut self.runs {
+            runs.forget_comfy_server(&mut self.session, name, &settings)?;
+        }
         // The node list was the old default's; its health stays in its row.
         comfy_workflow_cmds::forget(&mut self.session);
         if let Some(fetcher) = &mut self.comfy_nodes {
@@ -337,7 +341,7 @@ impl NodeCraftApp {
     }
 }
 
-/// A server from what was typed: a good name, an address, and a job cap that's empty or 1–64.
+/// A server from what was typed: a good name, an address, and a job cap that's empty or 1–16.
 fn server_from(name: &str, url: &str, jobs: &str) -> Result<ComfyServer, Error> {
     check_server_name(name).map_err(|why| Error::new(ErrorKind::InvalidInput, why))?;
     let Some(url) = comfy_workflow_cmds::check_url(url)? else {

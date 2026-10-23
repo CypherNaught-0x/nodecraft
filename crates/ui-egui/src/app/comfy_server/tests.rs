@@ -159,6 +159,13 @@ fn each_server_is_checked_on_its_own_and_only_the_default_gives_the_node_list() 
     assert_eq!(servers(&h)[0].1, "http://gpu-box:8188", "a refused address changes nothing");
     assert_eq!(nodes(&h), Some(1));
 
+    // Checking a server that isn't there keeps no report, so made-up names can't crowd out real ones.
+    h.state_mut().session.dispatch("comfy.nodes.refresh", &serde_json::json!({"server": "ghost"})).unwrap();
+    answered(&mut h);
+    assert!(comfy_server_cmds::report(&h.state().session, "ghost").is_none());
+    assert_eq!(h.state().notice.as_deref(), Some("There's no ComfyUI server called ghost."));
+    assert_eq!(nodes(&h), Some(1));
+
     // Making the failing server the default drops the node list it can't give.
     h.state_mut().default_comfy_server("spare").unwrap();
     assert_eq!(nodes(&h), None);

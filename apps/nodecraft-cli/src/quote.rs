@@ -8,8 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use nodecraft_engine::Session;
-use nodecraft_engine::provider_setup::Readiness;
+use nodecraft_engine::provider_setup::{Readiness, slot_for};
 use nodecraft_engine::run_cmds::BudgetState;
+use nodecraft_engine::settings::ProviderSettings;
 use nodecraft_exec::cost::{Budgets, Spent};
 use nodecraft_graph::Canvas;
 use nodecraft_providers::Provider;
@@ -65,8 +66,9 @@ fn with_upstream(canvas: &Canvas, nodes: &[NodeId], stale: &BTreeSet<NodeId>) ->
 }
 
 /// The adapter each card with a catalog model runs on (cards a technique inlines included), and
-/// the technique node each inlined card runs for.
-fn adapters_of(session: &Session, canvas: &Canvas) -> Result<Adapters, Error> {
+/// the technique node each inlined card runs for. A ComfyUI card's is the slot of the server it
+/// picked, or of the default (#864).
+fn adapters_of(session: &Session, canvas: &Canvas, settings: &ProviderSettings) -> Result<Adapters, Error> {
     let catalog = session.generation_catalog()?.run_catalog();
     let expanded = nodecraft_exec::technique::expand(session.document().canvases(), canvas, session.kinds())
         .unwrap_or_else(|_| nodecraft_exec::technique::Expanded::plain(canvas));
@@ -74,7 +76,7 @@ fn adapters_of(session: &Session, canvas: &Canvas) -> Result<Adapters, Error> {
         .canvas
         .nodes()
         .iter()
-        .filter_map(|(id, node)| catalog.catalog().get(model_of(node)?).map(|descriptor| (*id, descriptor.provider.clone())))
+        .filter_map(|(id, node)| catalog.catalog().get(model_of(node)?).map(|descriptor| (*id, slot_for(&descriptor.provider, node, settings))))
         .collect();
     Ok((adapters, expanded.inner))
 }
@@ -102,7 +104,7 @@ pub fn prepare(session: &mut Session, canvas: CanvasId, targets: &[NodeId], make
 
 /// The same routing setup for a command whose selected/field mode excludes upstream cards.
 pub fn prepare_selection(session: &mut Session, canvas: CanvasId, targets: &[NodeId], maker: &mut Maker<'_>, upstream: bool) -> Result<(), Error> {
-    Routing::default().prepare(session, canvas, targets, maker, upstream)?;
+    Routing::new(nodecraft_engine::settings::peek().providers).prepare(session, canvas, targets, maker, upstream)?;
     // A one-shot CLI quote starts with an empty budget, including local-only or empty runs.
     session.swap_resource(Some(BudgetState { budgets: Budgets::default(), spent: Spent::default() }));
     Ok(())

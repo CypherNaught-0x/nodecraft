@@ -136,7 +136,13 @@ impl ComfyNodesFetcher {
     pub(super) fn tick(&mut self, session: &mut Session, settings: impl FnOnce() -> ProviderSettings) -> Option<String> {
         let queued = self.asked.borrow_mut().queued.take();
         if let Some((id, server)) = queued {
-            let (settings, aim) = aimed(settings(), server.as_deref());
+            let Some((settings, aim)) = aimed(settings(), server.as_deref()) else {
+                // Nothing to read, and no report kept for a name that isn't a server.
+                let mut asked = self.asked.borrow_mut();
+                asked.busy = false;
+                asked.running = None;
+                return Some(format!("There's no ComfyUI server called {}.", server.unwrap_or_default()));
+            };
             match self.asks.try_send((id, settings)) {
                 Ok(()) => self.asked.borrow_mut().running = Some((id, aim)),
                 // An abandoned fetch still holds the thread; this one goes when it finishes.
@@ -173,23 +179,18 @@ impl ComfyNodesFetcher {
     }
 }
 
-/// `settings` aimed at the server called `server` (the default when `None`, or when there's no
-/// such server, which then fails as not set up), and which server that is.
-fn aimed(mut settings: ProviderSettings, server: Option<&str>) -> (ProviderSettings, Aim) {
+/// `settings` aimed at the server called `server` (the default when `None`), and which server
+/// that is; `None` when there's no server called `server`.
+fn aimed(mut settings: ProviderSettings, server: Option<&str>) -> Option<(ProviderSettings, Aim)> {
     let default = settings.default_comfy().map(|server| server.name.clone());
     match server {
         Some(name) if settings.comfy_server(name).is_some() => {
             let is_default = default.as_deref() == Some(name);
             settings.comfyui_default = Some(name.to_owned());
-            (settings, Some((name.to_owned(), is_default)))
+            Some((settings, Some((name.to_owned(), is_default))))
         }
-        Some(name) => {
-            // No such server: nothing to fetch from, and nothing of the default's to replace.
-            settings.comfyui.clear();
-            settings.comfyui_default = None;
-            (settings, Some((name.to_owned(), false)))
-        }
-        None => (settings, default.map(|name| (name, true))),
+        Some(_) => None,
+        None => Some((settings, default.map(|name| (name, true)))),
     }
 }
 

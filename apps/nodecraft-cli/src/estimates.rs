@@ -41,7 +41,7 @@ pub(super) fn guarded<T>(work: impl FnOnce() -> Result<T, Error>) -> Result<T, E
 
 impl Host {
     pub fn new(session: Session, runner: Runner, maker: Box<Maker<'static>>) -> Self {
-        Self { session, runner, maker, routing: crate::quote::Routing::default() }
+        Self { session, runner, maker, routing: crate::quote::Routing::new(nodecraft_engine::settings::peek().providers) }
     }
 
     fn dispatch_inner(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
@@ -50,7 +50,7 @@ impl Host {
             self.runner.refresh_estimates(&mut self.session);
             let result = self.session.dispatch(id, params)?;
             if matches!(id, "keys.set" | "keys.remove") {
-                self.routing = crate::quote::Routing::default();
+                self.routing = crate::quote::Routing::new(nodecraft_engine::settings::peek().providers);
             }
             return Ok(result);
         }
