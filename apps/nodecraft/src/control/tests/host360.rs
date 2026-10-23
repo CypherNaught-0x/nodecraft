@@ -44,7 +44,7 @@ fn an_agent_formats_named_cards_it_never_selected_in_one_undo_step() {
     let revision = app.session.revision();
     let params = json!({"mode":"grid","columns":1,"nodes":ids});
     {
-        let mut live = LiveCommands { app: &mut app, ctx: &ctx };
+        let mut live = LiveCommands { app: &mut app, ctx: &ctx, roots: None };
         live.enabled("canvas.auto_format", &params).unwrap();
         assert_eq!(live.impact("canvas.auto_format", &params).unwrap(), nodecraft_engine::impact::Impact::Edit);
     }

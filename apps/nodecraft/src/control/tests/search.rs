@@ -92,7 +92,7 @@ fn active_minimap_refuses_every_external_search_then_release_restores_it() {
         ("canvas.search_previous", json!({})),
         ("canvas.search_close", json!({})),
     ] {
-        let mut host = LiveCommands { app: h.state_mut(), ctx: &ctx };
+        let mut host = LiveCommands { app: h.state_mut(), ctx: &ctx, roots: None };
         assert_eq!(host.enabled(id, &params).unwrap_err().kind, ErrorKind::Conflict);
         assert_eq!(run(h.state_mut(), &ctx, &mut connection, id, params).unwrap_err().kind, ErrorKind::Conflict);
     }
@@ -239,7 +239,7 @@ fn mcp_bridge_search_uses_the_real_live_host_and_frames_the_match() {
     while !worker.is_finished() && Instant::now() < deadline {
         match listener.calls.recv_timeout(Duration::from_millis(50)) {
             Ok(call) => {
-                let response = answer(&mut app, &ctx, &call.request).unwrap();
+                let response = answer(&mut app, &ctx, &FileRoots::default(), &call.request).unwrap();
                 call.reply(response);
                 draw(&mut app, &ctx);
             }

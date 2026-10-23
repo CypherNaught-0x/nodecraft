@@ -3239,6 +3239,7 @@ dependencies = [
  "nodecraft-types",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

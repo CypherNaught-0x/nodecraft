@@ -92,6 +92,10 @@ commands stay excluded. Agent-visible `run.start` still requires engine quote/co
 and a capable run host; this bridge does not bypass either. Screenshot requests retain their
 separate asynchronous capture path.
 
+Project file commands run only inside the folders given with `--root` (save and open) and
+`--read-root` (open only) when the app started; see "Opening and saving projects" in
+`docs/mcp.md`. Without them, the file commands return `unsupported`.
+
 ## Headless stdio
 
 `nodecraft-cli control` serves the same methods against a new empty in-memory project on

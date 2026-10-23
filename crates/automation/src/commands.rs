@@ -21,6 +21,11 @@ pub trait CommandHost {
     fn live(&self) -> bool {
         false
     }
+    /// The folders an agent may open projects from and save them to (#423); none refuses the
+    /// file commands.
+    fn file_roots(&self) -> Option<&crate::roots::FileRoots> {
+        None
+    }
 }
 
 impl CommandHost for Session {

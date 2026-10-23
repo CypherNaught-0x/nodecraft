@@ -10,11 +10,9 @@ claude mcp add nodecraft -- nodecraft-cli mcp      # Claude Code
 
 For other clients, configure a stdio server that runs `nodecraft-cli` with the argument `mcp`.
 
-The server starts with a new, empty project with one canvas. Project file commands are currently
-hidden and refused over MCP, including when the host configures project storage. Allowed
-read/write roots must be enforced before exposing them (#116); native path canonicalization
-does not provide that authorization. Streamable HTTP and the in-app server setting are still
-to come (#116).
+The server starts with a new, empty project with one canvas. It has no allowed folders, so the
+project file commands are listed but refused; use the bridge below to open and save projects.
+Streamable HTTP and the in-app server setting are still to come (#116).
 
 ## Bridge to the running app
 
@@ -32,6 +30,32 @@ the connection drops (the app restarted, or it closed an idle connection), the f
 so and the next call reconnects, re-reading the token file. The CLI only resolves the settings
 folder, never touching it; in portable mode, pass the token file's path if the CLI lives
 elsewhere.
+
+### Opening and saving projects
+
+An agent opens and saves projects only inside folders the person names when starting the app:
+
+```sh
+nodecraft --control --root ~/Projects/agent --read-root ~/Projects/reference
+```
+
+`--root <folder>` allows `file.save_as`, `file.save` and `file.open` there; `--read-root <folder>`
+allows only `file.open`. Each may repeat (32 folders at most), each folder must exist, and both
+need `--control`. Locations must be absolute paths. They are checked after `..` and symbolic links
+are resolved, and the command receives the resolved path, so a link inside a folder can't lead
+outside it. A path outside is refused with `forbidden` and nothing is read or written; without
+any folders the file commands are refused with `unsupported`, saying how to allow them.
+`file.save` is refused when the open project lives outside the save folders. `file.open` refuses
+`discard_dirty: true`: an agent can't throw away unsaved work, so it saves first. No dialog
+opens, whatever window has focus. The folders apply to control clients only; the app's own
+menus and shortcuts are unaffected. They aren't yet kept when the app relaunches after an update
+(#887).
+
+Limits: the check happens when the command arrives. A program that can change the folders
+themselves (swap a folder for a link between the check and the write) isn't guarded against.
+`file.cancel` cancels any background save or open, including one the person started outside the
+folders. Opening checks that the project's folder is writable for recovery, which briefly creates
+a file there, even in a `--read-root` folder.
 
 ## Tools
 
@@ -81,9 +105,9 @@ act on. Protocol mistakes (an unknown tool, malformed arguments) are JSON-RPC er
 
 **Every command is classified.** Commands in `mcp::AGENT_COMMANDS` are listed and run. Commands
 in `mcp::HUMAN_ONLY` are neither: `keys.set` would pass an API key through the agent's context,
-and `keys.remove` deletes a key with no undo. `file.open`, `file.save`, `file.save_as` and `file.cancel` are
-temporarily human-only until MCP enforces allowed read/write roots (#116); they remain available
-through the engine and native app. `history.export` writes a result to a file anywhere on the
+and `keys.remove` deletes a key with no undo. `file.open`, `file.save`, `file.save_as` and
+`file.cancel` are agent commands, admitted only inside allowed folders (see the bridge section
+above, #423). `history.export` writes a result to a file anywhere on the
 machine, so it is human-only for the same reason (#557), as are `timeline.export_interchange` and
 `deck.export` (#692). `history.copy` puts a result on the person's clipboard, where their next paste
 takes it from, so it is human-only too (#831). `run.record` writes results the host ran, and

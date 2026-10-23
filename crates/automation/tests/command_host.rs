@@ -38,17 +38,11 @@ fn human_only_and_unclassified_commands_never_reach_the_host() {
     let list = answer_with(&mut host, &Request::ListCommands(Default::default())).unwrap().unwrap();
     assert!(list["commands"].as_array().unwrap().iter().all(|entry| !matches!(
         entry["id"].as_str(),
-        Some(
-            "keys.set"
-                | "keys.remove"
-                | "file.open"
-                | "file.save"
-                | "usage.reconcile_ownership"
-                | "usage.resolve_charge"
-                | "run.selected"
-                | "test.unclassified"
-        )
+        Some("keys.set" | "keys.remove" | "usage.reconcile_ownership" | "usage.resolve_charge" | "run.selected" | "test.unclassified")
     )));
+    // File commands are listed but not ready on a host without allowed folders (#423).
+    let cancel = list["commands"].as_array().unwrap().iter().find(|entry| entry["id"] == "file.cancel").unwrap();
+    assert_eq!(cancel["ready"], false, "{cancel}");
     // Paid is not a separate exclusion: classified run.start reaches engine admission, which
     // still refuses absent/invalid quote and host resources. No provider is installed here.
     assert!(nodecraft_automation::mcp::visible("run.start"));

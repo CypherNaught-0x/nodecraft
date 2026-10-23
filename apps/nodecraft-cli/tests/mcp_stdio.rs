@@ -53,14 +53,16 @@ fn an_mcp_client_session() {
     let listed = ask(6, "tools/call", json!({"name":"command_list","arguments":{}}));
     let commands = listed["result"]["structuredContent"]["commands"].as_array().unwrap();
     for (offset, command) in ["file.open", "file.save", "file.save_as"].into_iter().enumerate() {
-        assert!(!commands.iter().any(|item| item["id"] == command));
+        // Listed, but refused without folders the person allowed (#423).
+        assert!(commands.iter().any(|item| item["id"] == command));
         let refused = ask(
             7 + i64::try_from(offset).unwrap(),
             "tools/call",
             json!({"name":"command_run","arguments":{"id":command,"params":{"location":"PRIVATE_cli_destination.ncraft"}}}),
         );
         assert_eq!(refused["result"]["isError"], true);
-        assert_eq!(refused["result"]["content"][0]["text"], format!("unsupported: {command} can only be run by a person in the app"));
+        let text = refused["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.starts_with(&format!("unsupported: {command} needs folders automation may use")), "{text}");
         assert!(!refused.to_string().contains("PRIVATE_cli_destination"));
     }
     let intact = ask(10, "tools/call", json!({"name":"canvas_inspect","arguments":{"canvas":canvas}}));

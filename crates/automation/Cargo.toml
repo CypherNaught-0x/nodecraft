@@ -13,6 +13,7 @@ workspace = true
 
 [dependencies]
 nodecraft-engine = { workspace = true }
+nodecraft-format = { workspace = true }
 nodecraft-graph = { workspace = true }
 nodecraft-nodes = { workspace = true }
 nodecraft-types = { workspace = true }
@@ -26,7 +27,7 @@ nodecraft-media = { workspace = true }
 getrandom = "=0.3.4"
 
 [dev-dependencies]
-nodecraft-format = { workspace = true }
+tempfile = { workspace = true }
 
 # Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
 [[test]]

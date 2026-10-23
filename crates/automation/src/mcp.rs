@@ -67,6 +67,11 @@ const NEEDS_LIVE_APP: &str = "needs the running app's canvas: run `nodecraft --c
 
 /// Commands an agent may see and run.
 pub const AGENT_COMMANDS: &[&str] = &[
+    // Only inside the folders the person allowed (#423): `crate::roots`.
+    "file.open",
+    "file.save",
+    "file.save_as",
+    "file.cancel",
     "node.add",
     "node.create",
     "node.create_connected",
@@ -262,10 +267,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "skill.export",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
-/// pass through an agent's context, and `keys.remove` deletes a key with no undo. File commands
-/// remain human-only until MCP/control enforce allowed read/write roots (#116); native path
-/// canonicalization is not filesystem authorization. Engine/native callers retain their existing
-/// file access. `run.record` writes the results of a run the host executed: an agent must not
+/// pass through an agent's context, and `keys.remove` deletes a key with no undo. (The file
+/// commands are agent commands, admitted only inside the folders the person allowed: see
+/// [`crate::roots`].) `run.record` writes the results of a run the host executed: an agent must not
 /// fabricate them. `usage.reconcile_ownership` records a person's judgement about historical
 /// charges against their own provider records (#325), and `usage.resolve_charge` what those records
 /// show a reconciled charge cost (#332). `plugins.*` changes read package files and
@@ -304,10 +308,6 @@ pub const HUMAN_ONLY: &[&str] = &[
     // What lands on the person's clipboard is what they paste next: theirs to put there (#831).
     "history.copy",
     "deck.export",
-    "file.open",
-    "file.save",
-    "file.save_as",
-    "file.cancel",
     "run.record",
     "usage.reconcile_ownership",
     "usage.resolve_charge",
@@ -483,7 +483,7 @@ pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut 
                 entry["ready"] = json!(false);
                 entry["not_ready_because"] = json!(NEEDS_LIVE_APP);
             } else if !takes_params {
-                let enabled = host.enabled(s.id, &json!({}));
+                let enabled = crate::roots::admit(host, s.id, json!({})).and_then(|params| host.enabled(s.id, &params));
                 entry["ready"] = json!(enabled.is_ok());
                 if let Err(e) = enabled {
                     entry["not_ready_because"] = json!(e.message);
@@ -515,7 +515,9 @@ pub(crate) fn admitted<H: crate::commands::CommandHost + ?Sized>(host: &H, mut a
     if LIVE_ONLY.contains(&id.as_str()) && !host.live() {
         return Err(Error::new(ErrorKind::Unsupported, format!("{id} {NEEDS_LIVE_APP}")));
     }
-    Ok((id, args.remove("params").unwrap_or(Value::Object(Map::new()))))
+    let params = args.remove("params").unwrap_or(Value::Object(Map::new()));
+    let params = crate::roots::admit(host, &id, params)?;
+    Ok((id, params))
 }
 
 /// `count` fresh version-4 UUIDs from `new_id`.

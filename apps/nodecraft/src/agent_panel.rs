@@ -120,7 +120,7 @@ impl AgentPanel {
                 replies.push(reply);
             }
             for (ticket, reply) in replies {
-                let mut tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx }, new_id: &mut *self.new_id };
+                let mut tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx, roots: None }, new_id: &mut *self.new_id };
                 let next = self.agent.on_reply(ticket, reply, &mut tools);
                 self.follow(next);
             }
@@ -145,7 +145,7 @@ impl AgentPanel {
                 Intent::Ask => self.ask(app, ctx),
                 Intent::Cancel => self.agent.cancel(),
                 Intent::Approve | Intent::Decline => {
-                    let mut tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx }, new_id: &mut *self.new_id };
+                    let mut tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx, roots: None }, new_id: &mut *self.new_id };
                     let next = if intent == Intent::Approve { self.agent.approve(&mut tools) } else { self.agent.decline(&mut tools) };
                     self.follow(next);
                 }
@@ -195,7 +195,7 @@ impl AgentPanel {
         self.agent.set_model(model);
         self.agent.set_budget(budget(&self.settings));
         let focus = focus(app, &self.mentions);
-        let tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx }, new_id: &mut *self.new_id };
+        let tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx, roots: None }, new_id: &mut *self.new_id };
         let next = self.agent.ask(&self.input, &focus, &tools);
         match next {
             Ok(next) => {
