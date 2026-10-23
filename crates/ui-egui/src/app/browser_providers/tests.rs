@@ -46,6 +46,7 @@ fn server_panel_saves_through_commands_and_a_reload_reads_the_same_origin() {
     h.get_by_label("Providers").click();
     h.run();
     assert!(h.query_by_label_contains("CORS").is_some());
+    assert!(h.query_by_label_contains("LiteLLM models are not available yet").is_some());
     let providers = h.state_mut().browser_providers.as_mut().unwrap();
     providers.comfyui = "http://127.0.0.1:8188".into();
     providers.litellm = "https://proxy.example".into();

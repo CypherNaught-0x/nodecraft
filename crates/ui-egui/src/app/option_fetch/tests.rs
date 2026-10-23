@@ -308,19 +308,43 @@ mod picker {
     }
 
     #[test]
+    fn changing_servers_cancels_a_queued_refresh_before_its_future_is_created() {
+        let (ready, wake, seen) = (Rc::new(std::cell::Cell::new(false)), Rc::new(RefCell::new(None)), Rc::new(RefCell::new(Vec::new())));
+        let mut h = harness(browser_scene(scene(None).session.document().clone(), C));
+        let (fetcher, mut service) = OptionFetcher::asynchronous(async_fixture(ready, wake, Rc::clone(&seen)));
+        h.state_mut().session.register_host_service(OPTION_SERVICE, move |request| service(request)).unwrap();
+        h.state_mut().option_fetch = Some(fetcher);
+        let pending = h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
+        h.state_mut().session.dispatch("providers.settings_set", &json!({"comfyui_url": "https://queued-new.example"})).unwrap();
+        h.state_mut().tick_browser_providers();
+        let status = h.state_mut().session.dispatch("options.status", &json!({})).unwrap();
+        assert_eq!(status["last"]["id"], pending["pending"]);
+        assert_eq!(status["last"]["error"], "the provider server changed; refresh again");
+        assert!(!h.state().option_fetch.as_ref().unwrap().is_waiting());
+        let ctx = h.ctx.clone();
+        h.state_mut().tick_option_fetch(&ctx);
+        assert!(seen.borrow().is_empty(), "cancelled queued work never reads provider configuration");
+    }
+
+    #[test]
     fn changing_servers_drops_the_old_async_reply_and_the_next_fetch_uses_new_settings() {
         let (ready, wake, seen) = (Rc::new(std::cell::Cell::new(false)), Rc::new(RefCell::new(None)), Rc::new(RefCell::new(Vec::new())));
         let mut h = harness(browser_scene(scene(None).session.document().clone(), C));
         let (fetcher, mut service) = OptionFetcher::asynchronous(async_fixture(Rc::clone(&ready), Rc::clone(&wake), Rc::clone(&seen)));
         h.state_mut().session.register_host_service(OPTION_SERVICE, move |request| service(request)).unwrap();
         h.state_mut().option_fetch = Some(fetcher);
-        h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
+        let pending = h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
         let ctx = h.ctx.clone();
         h.state_mut().tick_option_fetch(&ctx);
         h.state_mut().tick_option_fetch(&ctx);
         h.state_mut().session.dispatch("providers.settings_set", &json!({"comfyui_url": "https://new-comfy.example"})).unwrap();
         h.state_mut().tick_browser_providers();
         assert!(!h.state().option_fetch.as_ref().unwrap().is_waiting());
+        let status = h.state_mut().session.dispatch("options.status", &json!({})).unwrap();
+        assert_eq!(status["last"]["id"], pending["pending"]);
+        assert_eq!(status["last"]["error"], "the provider server changed; refresh again");
+        assert_eq!(status["last"]["installed"], json!([]));
+        assert!(h.state().notice.as_deref().is_some_and(|notice| notice.contains("server changed")));
         ready.set(true);
         wake.borrow_mut().take().unwrap().wake();
         h.state_mut().tick_option_fetch(&ctx);
@@ -330,6 +354,13 @@ mod picker {
         h.state_mut().tick_option_fetch(&ctx);
         assert_eq!(nodecraft_engine::browser_providers::comfyui_url(seen.borrow().last().unwrap()).as_deref(), Some("https://new-comfy.example"));
         assert!(h.state().session.option_lists().is_some());
+        h.state_mut().session.dispatch("providers.settings_set", &json!({"comfyui_url": "https://third-comfy.example"})).unwrap();
+        h.state_mut().tick_browser_providers();
+        assert!(h.state().session.option_lists().is_none());
+        assert!(
+            h.state_mut().session.dispatch("options.status", &json!({})).unwrap()["last"].is_null(),
+            "old installed lists are not reported for a new server"
+        );
     }
 
     use egui::accesskit::Role;

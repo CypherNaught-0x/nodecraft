@@ -51,7 +51,6 @@ to do, and a node routed to it is refused before planning, so no request is sent
 |---|---|---|
 | `openai` (chat) | `openai` | — |
 | `anthropic` (chat) | `anthropic` | — |
-| `litellm` (chat) | `litellm` (optional virtual key) | `[providers] litellm_url = "https://proxy.example"`, the proxy root without `/v1`; or save the address in the browser's Providers panel |
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
@@ -66,6 +65,12 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `google-gemini-images` | `google-cloud` (the same key as `google-veo`) | the Vertex AI API enabled, and the Vertex AI User role on the account's project |
 | `comfy-cloud` | `comfy-cloud` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[[providers.comfyui]]` entries with `name`, `url` (such as `"http://127.0.0.1:8188"`) and optional `max_jobs` (1–16; unset, 4), and `[providers] comfyui_default` naming one (or the desktop toolbar's ComfyUI panel), and the per-install `install_salt`; an older `comfyui_url` is read as one server |
+
+LiteLLM's endpoint and optional `litellm` virtual key can be saved now, but the shipped model
+catalog has no LiteLLM entries: no card can select or call the proxy yet. The adapter accepts the
+proxy root (`[providers] litellm_url = "https://proxy.example"`, without `/v1`) for future catalog
+integration. Saving this address alone does not add models.
+The model-catalog integration decision is tracked in [#489](https://github.com/CypherNaught-0x/nodecraft/issues/489).
 
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
 adapters off the UI thread and only for the providers a run uses; each run gets a fresh routing

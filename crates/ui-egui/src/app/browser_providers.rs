@@ -62,6 +62,7 @@ impl BrowserProviders {
             let label = ui.label("LiteLLM server");
             ui.add(egui::TextEdit::singleline(&mut self.litellm).id(egui::Id::new("browser_litellm_url")).char_limit(2048).hint_text("http://127.0.0.1:4000")).labelled_by(label.id);
             ui.label("Use the LiteLLM proxy's root address, without /v1. Its optional virtual key uses the litellm account in API keys.");
+            ui.label("LiteLLM models are not available yet. You can save this address for future use.");
             if ui.button("Save servers").clicked() {
                 match session.dispatch("providers.settings_set", &serde_json::json!({"comfyui_url": self.comfyui, "litellm_url": self.litellm})) {
                     Ok(_) => self.notice = Some("Provider servers saved for this site.".into()),
@@ -104,8 +105,11 @@ impl NodeCraftApp {
             }
         };
         self.run_confirm = None;
-        if let Some(fetcher) = &mut self.option_fetch {
-            fetcher.invalidate();
+        nodecraft_engine::option_fetch::invalidate(&mut self.session);
+        if let Some(fetcher) = &mut self.option_fetch
+            && let Some(notice) = fetcher.invalidate(&mut self.session)
+        {
+            self.notice = Some(notice);
         }
         self.session.swap_resource::<nodecraft_types::OptionLists>(None);
         self.schemas.forget_listed();

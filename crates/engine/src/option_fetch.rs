@@ -350,6 +350,12 @@ pub struct Report {
 /// The last fetch's report, a session resource.
 struct LastFetch(Report);
 
+/// A different provider destination invalidates both lists and their previous outcome.
+pub fn invalidate(session: &mut Session) {
+    session.swap_resource::<OptionLists>(None);
+    session.swap_resource::<LastFetch>(None);
+}
+
 /// Installs what fetch `id` brought back for every list the catalog names, and records the
 /// outcome for `options.status`. A failed fetch, and each refused list, keep the lists installed
 /// before.

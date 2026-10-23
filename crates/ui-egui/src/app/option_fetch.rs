@@ -127,17 +127,21 @@ impl OptionFetcher {
     }
 
     /// A new endpoint invalidates both queued work and any old server's late answer.
-    pub(super) fn invalidate(&mut self) {
+    pub(super) fn invalidate(&mut self, session: &mut Session) -> Option<String> {
         let mut asked = self.asked.borrow_mut();
-        asked.queued = None;
-        asked.running = None;
+        let id = asked.queued.take().map(|(id, _)| id).or(asked.running.take());
         asked.busy = false;
+        drop(asked);
         match &mut self.worker {
             #[cfg(not(target_arch = "wasm32"))]
             Worker::Thread { .. } => {}
             #[cfg(any(test, target_arch = "wasm32"))]
             Worker::Async { pending, .. } => *pending = None,
         }
+        id.map(|id| {
+            let report = option_fetch::finish(session, id, Err(Error::new(ErrorKind::Conflict, "the provider server changed; refresh again")));
+            notice(&report)
+        })
     }
 
     pub(super) fn tick(&mut self, session: &mut Session, settings: impl FnOnce() -> ProviderSettings, _ctx: &egui::Context) -> Option<String> {
