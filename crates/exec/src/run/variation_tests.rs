@@ -179,3 +179,30 @@ fn source_kinds_ignore_a_variation_count() {
     let plan = plan_of(&p, &[1]);
     assert_eq!(plan.steps.first().map(|s| s.variations), Some(1));
 }
+
+#[test]
+fn a_variation_that_made_nothing_lets_its_paid_result_go_to_be_held() {
+    let p = chain();
+    let kinds = kinds();
+    let (mut run, first) = Run::start(&plan_of(&p, &[2, 3]), C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    let jobs: Vec<JobId> = first.jobs.iter().map(|j| j.id).collect();
+    let (mut finished, mut dropped, mut failed) = (Vec::new(), Vec::new(), Vec::new());
+    for (n, job) in jobs.iter().enumerate() {
+        let Some(JobSpec::Source { output, value, .. }) = run.work(*job).cloned() else { panic!("only source jobs here") };
+        // The second variation comes back with nothing on its one output.
+        let outputs = if n == 1 { Vec::new() } else { vec![(output, value)] };
+        let progress = run.job_done(&kinds, *job, outputs);
+        finished.extend(progress.finished);
+        dropped.extend(progress.dropped);
+        failed.extend(progress.failed);
+    }
+    let ours: Vec<&StepResult> = finished.iter().filter(|r| r.node == id(2)).collect();
+    assert_eq!(ours.len(), 2);
+    assert_eq!(dropped, vec![jobs[1]], "the lost variation's job is let go, to be held");
+    assert!(failed.iter().any(|f| f.node == id(2) && f.reason.starts_with("1 of 3 variations didn't finish")), "{failed:?}");
+    // Each recorded variation names its own job only.
+    for (result, job) in ours.iter().zip([jobs[0], jobs[2]]) {
+        assert_eq!(run.variation_jobs(id(2), result.generation.id), Some([job].into_iter().collect()));
+    }
+    assert_eq!(run.variation_jobs(id(3), ours[0].generation.id), None, "a step without variations names none");
+}

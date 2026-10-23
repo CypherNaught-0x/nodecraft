@@ -418,6 +418,21 @@ impl Run {
 
     /// The generation id of `node`'s result in this run: of its `variant`th variation (#81),
     /// the first having the id a step of one variation has.
+    /// The jobs of `node`'s variation `variant` (#81); none for a step without variations.
+    fn variation_of(&self, node: NodeId, variant: usize) -> Vec<JobId> {
+        self.steps
+            .get(&node)
+            .map_or_else(Vec::new, |state| state.jobs.iter().zip(&state.job_variants).filter(|(_, v)| **v == variant).map(|(job, _)| *job).collect())
+    }
+
+    /// The jobs `node`'s result `generation` was made from, when it is one of several
+    /// variations (#81): recording it uses those jobs' results and no other variation's.
+    pub fn variation_jobs(&self, node: NodeId, generation: GenerationId) -> Option<BTreeSet<JobId>> {
+        let count = self.steps.get(&node)?.job_variants.last()?.saturating_add(1);
+        let variant = (0..count).find(|variant| self.generation_id(node, *variant) == generation)?;
+        Some(self.variation_of(node, variant).into_iter().collect())
+    }
+
     fn generation_id(&self, node: NodeId, variant: usize) -> GenerationId {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"nodecraft.run.generation");
@@ -674,7 +689,16 @@ impl Run {
                 None => {
                     let variations = state.step.variations;
                     self.resume_deferred(kinds, node);
-                    self.materialise(kinds, node).map(|(jobs, counts)| (crate::variations::repeat(jobs, variations), counts))
+                    let before = self.run_bytes;
+                    self.materialise(kinds, node).and_then(|(jobs, counts)| {
+                        // Each further variation copies the inputs again: charged as the planner does.
+                        let copy = self.run_bytes.saturating_sub(before);
+                        self.run_bytes = self.run_bytes.saturating_add(copy.saturating_mul(variations.saturating_sub(1)));
+                        if self.run_bytes > self.limits.run_bytes {
+                            return Err(format!("the run's inputs are larger than {} bytes", self.limits.run_bytes));
+                        }
+                        Ok((crate::variations::repeat(jobs, variations), counts))
+                    })
                 }
             },
             None => return (Progress::default(), Vec::new()),
@@ -1052,7 +1076,9 @@ impl Run {
         if finished.is_empty() {
             return (self.fail(node, first_reason(&lost)), Vec::new());
         }
-        let mut progress = Progress { finished, ..Progress::default() };
+        // A lost variation's paid results, if any came in, are let go to be held, not recorded.
+        let dropped = lost.keys().flat_map(|variant| self.variation_of(node, *variant)).collect();
+        let mut progress = Progress { finished, dropped, ..Progress::default() };
         if !lost.is_empty() {
             let reason = if lost.values().all(|(why, _)| *why == Missing::Cancelled) {
                 first_reason(&lost)
