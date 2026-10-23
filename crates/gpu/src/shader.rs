@@ -104,6 +104,21 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 ";
 
+/// A compiler report with its box-drawing frame in ASCII, which every font and terminal shows.
+fn plain(report: &str) -> ShaderError {
+    ShaderError(
+        report
+            .chars()
+            .map(|c| match c {
+                '─' | '━' | '═' | '┄' | '┅' | '┈' | '┉' | '╌' | '╍' => '-',
+                '│' | '┃' | '║' | '┆' | '┇' | '┊' | '┋' | '╎' | '╏' => '|',
+                '\u{2500}'..='\u{257f}' => '+',
+                c => c,
+            })
+            .collect(),
+    )
+}
+
 fn valid_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     matches!(bytes.next(), Some(b'a'..=b'z')) && name.len() <= 32 && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
@@ -136,10 +151,10 @@ pub fn validate(spec: &ShaderSpec) -> Result<ValidShader, ShaderError> {
     }
     // The person's source comes first, so the line numbers in errors are theirs.
     let module_text = format!("{}\n{accessors}{PRELUDE}", spec.source);
-    let module = naga::front::wgsl::parse_str(&module_text).map_err(|e| ShaderError(e.emit_to_string(&module_text)))?;
+    let module = naga::front::wgsl::parse_str(&module_text).map_err(|e| plain(&e.emit_to_string(&module_text)))?;
     naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
         .validate(&module)
-        .map_err(|e| ShaderError(e.emit_to_string(&module_text)))?;
+        .map_err(|e| plain(&e.emit_to_string(&module_text)))?;
     if module.global_variables.len() != 3 || !module.overrides.is_empty() {
         return refuse("a shader may not declare bindings, globals or overrides");
     }
