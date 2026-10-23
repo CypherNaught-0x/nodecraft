@@ -95,6 +95,15 @@ pub struct ModelDescriptor {
     /// exactly when a mode outputs or takes a style.
     #[serde(default)]
     pub style_family: Option<String>,
+    /// Whether model pickers and model selection offer it (default `true`). `false` for a model
+    /// only one card kind runs, like the ComfyUI workflow card's (#9): it is still priced and
+    /// admitted for that card, never offered on others.
+    #[serde(default = "offered")]
+    pub cards: bool,
+}
+
+fn offered() -> bool {
+    true
 }
 
 impl ModelDescriptor {

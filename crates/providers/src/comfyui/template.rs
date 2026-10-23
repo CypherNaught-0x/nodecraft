@@ -114,9 +114,25 @@ fn seed(job: &ProviderJob) -> Result<u64, ProviderError> {
     Ok(u64::from_le_bytes(bytes) & ((1u64 << 53) - 1))
 }
 
-/// Whether the job runs a built-in workflow rather than one it carries.
+/// The job input carrying a workflow card's API workflow as JSON text (#9).
+pub(crate) const CARD_WORKFLOW: &str = "comfy.workflow";
+/// The job input carrying a workflow card's values, as JSON text of `{"<node>.<input>": value}`.
+pub(crate) const CARD_VALUES: &str = "comfy.values";
+/// The job input naming a workflow card's output nodes, as JSON text of `["<node>", …]`.
+pub(crate) const CARD_OUTPUTS: &str = "comfy.outputs";
+
+/// The text of the job's `role` input, if it has one.
+pub(crate) fn card_text<'a>(job: &'a ProviderJob, role: &str) -> Option<&'a str> {
+    job.inputs.iter().find_map(|input| match input {
+        JobInput::Text { role: r, text } if r == role => Some(text.as_str()),
+        _ => None,
+    })
+}
+
+/// Whether the job runs a built-in workflow rather than one it carries (in `params.workflow`,
+/// or a workflow card's text input).
 pub(crate) fn is_templated(job: &ProviderJob) -> bool {
-    !job.params.contains_key("workflow")
+    !job.params.contains_key("workflow") && card_text(job, CARD_WORKFLOW).is_none()
 }
 
 /// The job with the workflow of its catalog model: `params.workflow` set and its media inputs

@@ -67,6 +67,11 @@ default = { type = "unsigned", value = "1" }
   base-model family a trainer trains for or an inference model takes, and only such models may
   set it. A style trained for one family is refused, before anything is sent, by a model of
   another (`docs/decisions/2026-10-21-trained-styles.md`).
+- **Models no card offers (#9).** `cards = false` keeps a model out of model pickers, model
+  selection and the Generate cards' model lists. It is still priced, quoted and admitted for
+  the one card kind that names it. `comfyui.workflow` is the only such model: the ComfyUI
+  workflow card runs the workflow imported onto it, takes its settings from that workflow, and
+  so has no parameters and no input roles. Without the key, cards offer the model.
 - **Parameters** use the node parameter schema (`ParamControl` in `crates/types`): resolutions,
   aspect ratios and durations are `choice` or numeric controls. Integer values are written as
   strings (`"28"`) so 64-bit values survive JSON.

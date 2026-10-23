@@ -72,7 +72,7 @@ impl ModelPicker {
         let mut choices = Vec::new();
         choices.try_reserve_exact(catalog.len()).map_err(|_| allocation())?;
         let mut text_bytes = 0usize;
-        for model in catalog.models() {
+        for model in catalog.card_models() {
             let unavailable = compatibility(model).err();
             if unavailable.as_ref().is_some_and(|reason| reason.len() > MAX_TEXT) {
                 return Err(invalid("model compatibility reason exceeds catalog text limit"));

@@ -336,5 +336,5 @@ fn the_builtin_catalog_selects_deterministically() {
     let first = ids(&catalog.select(&request).ranked);
     assert_eq!(ids(&catalog.select(&request).ranked), first);
     let selection = catalog.select(&request);
-    assert_eq!(selection.ranked.len() + selection.rejected.len(), catalog.len());
+    assert_eq!(selection.ranked.len() + selection.rejected.len(), catalog.card_models().count());
 }

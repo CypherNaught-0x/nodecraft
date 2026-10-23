@@ -7,6 +7,7 @@
 pub mod action;
 pub mod audio;
 pub mod batch;
+pub mod comfy_workflow;
 mod contract;
 pub mod deck;
 mod descriptor;

@@ -37,8 +37,9 @@ fn wires(pairs: &[(&'static str, usize)]) -> BTreeMap<&'static str, usize> {
 #[test]
 fn every_builtin_kind_has_a_valid_contract_matching_its_schema() {
     let registry = Registry::builtins().unwrap();
-    // A technique node has no ports or parameters until it pins a version; its own tests cover it.
-    for descriptor in registry.descriptors().filter(|d| d.id != crate::technique::ID) {
+    // A technique node has no ports or parameters until it pins a version, nor a ComfyUI
+    // workflow card until it stores a workflow; their own tests cover them.
+    for descriptor in registry.descriptors().filter(|d| d.id != crate::technique::ID && d.id != crate::comfy_workflow::ID) {
         let contract = registry.contract(&descriptor.id).unwrap();
         assert_eq!(contract.kind, descriptor.id);
         // The contract adds rules but resolves defaults exactly as the schema does.

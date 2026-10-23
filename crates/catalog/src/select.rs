@@ -211,7 +211,7 @@ impl Catalog {
         let none = ParamValues::new();
         let given = request.params.unwrap_or(&none);
         let mut selection = Selection::default();
-        for model in self.models() {
+        for model in self.card_models() {
             let mode = match request.wiring.fit(model) {
                 Ok(mode) => mode,
                 Err(mismatch) => {

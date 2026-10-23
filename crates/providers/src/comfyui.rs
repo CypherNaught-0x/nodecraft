@@ -240,11 +240,33 @@ impl ComfyProvider {
         } else {
             job
         };
-        let raw = job.params.get("workflow").ok_or_else(|| plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job has no ComfyUI workflow")))?;
-        let bytes = serde_json::to_vec(raw).map_err(|e| plain(ProviderError::new(ErrorKind::UnsupportedInput, e.to_string())))?;
-        let mut workflow = ApiWorkflow::parse(&bytes, Some(catalog)).map_err(from_catalog)?;
         let empty = Map::new();
-        let values = job.params.get("values").and_then(Value::as_object).unwrap_or(&empty);
+        let carried: Map<String, Value>;
+        let (mut workflow, values) = match (job.params.get("workflow"), template::card_text(job, template::CARD_WORKFLOW)) {
+            (Some(raw), None) => {
+                if template::card_text(job, template::CARD_VALUES).is_some() || template::card_text(job, template::CARD_OUTPUTS).is_some() {
+                    return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job mixes a workflow card's inputs into another workflow")));
+                }
+                let bytes = serde_json::to_vec(raw).map_err(|e| plain(ProviderError::new(ErrorKind::UnsupportedInput, e.to_string())))?;
+                let workflow = ApiWorkflow::parse(&bytes, Some(catalog)).map_err(from_catalog)?;
+                (workflow, job.params.get("values").and_then(Value::as_object).unwrap_or(&empty))
+            }
+            // A workflow card (#9) carries its workflow and values as text inputs.
+            (None, Some(text)) => {
+                if job.params.contains_key("values") {
+                    return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "a workflow card's job carries its values as an input")));
+                }
+                carried = card_values(job).map_err(plain)?;
+                if text.len() > MAX_CARD_TEXT_BYTES {
+                    return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the card's ComfyUI workflow is too large")));
+                }
+                let mut workflow = ApiWorkflow::parse(text.as_bytes(), Some(catalog)).map_err(from_catalog)?;
+                keep_card_outputs(&mut workflow, job, catalog).map_err(plain)?;
+                (workflow, &carried)
+            }
+            (Some(_), Some(_)) => return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job carries two ComfyUI workflows"))),
+            (None, None) => return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job has no ComfyUI workflow"))),
+        };
         for (target, value) in values {
             let (node, input) = split_target(target).map_err(plain)?;
             workflow.set_input(catalog, node, input, value.clone()).map_err(from_catalog)?;
@@ -405,6 +427,71 @@ impl ComfyProvider {
 fn looks_textual(name: &str) -> bool {
     let ext = name.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
     matches!(ext.as_str(), "txt" | "json" | "srt" | "vtt" | "csv" | "md" | "obj" | "gltf" | "svg")
+}
+
+/// Most bytes of a workflow card's workflow or values text: one text input's limit.
+const MAX_CARD_TEXT_BYTES: usize = 1024 * 1024;
+/// Most values one workflow card sets.
+const MAX_CARD_VALUES: usize = 1024;
+
+/// A workflow card's values (#9): a JSON object of `"<node>.<input>"` to a string, number or
+/// boolean, bounded before it is parsed. No values input means none.
+fn card_values(job: &ProviderJob) -> Result<Map<String, Value>, ProviderError> {
+    let refused = |message: &str| ProviderError::new(ErrorKind::UnsupportedInput, format!("the card's ComfyUI values {message}"));
+    let Some(text) = template::card_text(job, template::CARD_VALUES) else { return Ok(Map::new()) };
+    if text.len() > MAX_CARD_TEXT_BYTES {
+        return Err(refused("are too large"));
+    }
+    // Only scalars are accepted, so serde_json's own nesting limit bounds the parse.
+    let Ok(Value::Object(values)) = serde_json::from_str::<Value>(text) else { return Err(refused("are not a JSON object")) };
+    if values.len() > MAX_CARD_VALUES {
+        return Err(refused("set too many inputs"));
+    }
+    if values.values().any(|v| !(v.is_string() || v.is_number() || v.is_boolean())) {
+        return Err(refused("must be strings, numbers or booleans"));
+    }
+    Ok(values)
+}
+
+/// Keeps only a workflow card's output nodes (#9), named by its outputs input as a JSON list of
+/// node ids: the workflow's other output nodes are dropped before it is queued, so the server
+/// never runs them and no file comes back that the card has no port for. A node another node
+/// reads from is kept. No outputs input keeps every node.
+fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, catalog: &NodeCatalog) -> Result<(), ProviderError> {
+    let refused = |message: String| ProviderError::new(ErrorKind::UnsupportedInput, format!("the card's ComfyUI outputs {message}"));
+    let Some(text) = template::card_text(job, template::CARD_OUTPUTS) else { return Ok(()) };
+    if text.len() > MAX_CARD_TEXT_BYTES {
+        return Err(refused("are too large".into()));
+    }
+    let Ok(kept) = serde_json::from_str::<std::collections::BTreeSet<String>>(text) else {
+        return Err(refused("are not a list of node ids".into()));
+    };
+    if kept.is_empty() {
+        return Err(refused("name no node".into()));
+    }
+    if let Some(missing) = kept.iter().find(|id| !workflow.nodes.contains_key(id.as_str())) {
+        let shown: String = missing.chars().take(64).collect();
+        return Err(refused(format!("name node {shown}, which the workflow doesn't have")));
+    }
+    let read: std::collections::BTreeSet<&str> = workflow
+        .nodes
+        .values()
+        .flat_map(|node| node.inputs.values())
+        .filter_map(|value| match value {
+            comfy::InputValue::Link { node, .. } => Some(node.as_str()),
+            comfy::InputValue::Value(_) => None,
+        })
+        .collect();
+    let dropped: Vec<String> = workflow
+        .nodes
+        .iter()
+        .filter(|(id, node)| !kept.contains(*id) && !read.contains(id.as_str()) && catalog.get(&node.class_type).is_some_and(|info| info.output_node))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in dropped {
+        workflow.nodes.remove(&id);
+    }
+    Ok(())
 }
 
 pub(crate) fn split_target(target: &str) -> Result<(&str, &str), ProviderError> {
@@ -760,6 +847,125 @@ mod tests {
         block_on(p.submit(&sdxl)).unwrap();
         assert_eq!(server.object_info_calls.load(Ordering::SeqCst), 2);
         assert!(server.paths().iter().any(|path| path == "/prompt"));
+    }
+
+    /// A workflow card's job (#9): no parameters, the workflow and values as text inputs.
+    fn card_job(values: &str) -> ProviderJob {
+        let workflow = r#"{
+            "1": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "old"}},
+            "3": {"class_type": "SaveImage", "inputs": {"images": ["1", 0], "filename_prefix": "NodeCraft"}}
+        }"#;
+        ProviderJob {
+            model: "workflow".into(),
+            params: Map::new(),
+            inputs: vec![
+                JobInput::Text { role: template::CARD_WORKFLOW.into(), text: workflow.into() },
+                JobInput::Text { role: template::CARD_VALUES.into(), text: values.into() },
+                JobInput::Media { role: "1.image".into(), mime: "image/png".into(), bytes: Arc::from(PNG_BYTES) },
+            ],
+            idempotency_key: "nodecraft:run-uuid:9".into(),
+        }
+    }
+
+    #[test]
+    fn a_workflow_card_runs_the_workflow_it_carries() {
+        let server = FakeServer::new();
+        let p = provider(server.clone());
+        let card = card_job(r#"{"2.text": "a red fox"}"#);
+        assert!(!template::is_templated(&card), "a card's workflow is never replaced by a built-in one");
+        block_on(p.submit(&card)).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let prompt = seen.iter().find(|r| r.url.ends_with("/prompt")).unwrap();
+        let body: Value = serde_json::from_slice(&prompt.body).unwrap();
+        assert_eq!(body["prompt"]["2"]["inputs"]["text"], "a red fox", "the card's value is set");
+        assert_eq!(body["prompt"]["1"]["inputs"]["image"], "in/stored.png", "the wired file is uploaded and set");
+        assert_eq!(body["prompt"]["3"]["class_type"], "SaveImage");
+        drop(seen);
+        // Without values the workflow keeps its own.
+        let server = FakeServer::new();
+        let mut plain = card_job("");
+        plain.inputs.retain(|i| !matches!(i, JobInput::Text { role, .. } if role == template::CARD_VALUES));
+        block_on(provider(server.clone()).submit(&plain)).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let body: Value = serde_json::from_slice(&seen.iter().find(|r| r.url.ends_with("/prompt")).unwrap().body).unwrap();
+        assert_eq!(body["prompt"]["2"]["inputs"]["text"], "old");
+    }
+
+    #[test]
+    fn a_workflow_card_with_bad_values_or_workflow_uploads_nothing() {
+        let deep = format!("{{\"2.text\": {}1{}}}", "[".repeat(200), "]".repeat(200));
+        let huge = format!("{{\"2.text\": \"{}\"}}", "x".repeat(MAX_CARD_TEXT_BYTES));
+        let many = format!("{{{}}}", (0..=MAX_CARD_VALUES).map(|n| format!("\"2.t{n}\": 1")).collect::<Vec<_>>().join(","));
+        let bad = [
+            "not json".to_owned(),
+            "[1, 2]".to_owned(),
+            r#"{"2.text": {"nested": 1}}"#.to_owned(),
+            r#"{"nodot": "x"}"#.to_owned(),
+            r#"{"2.missing": "x"}"#.to_owned(),
+            r#"{"9.text": "x"}"#.to_owned(),
+            deep,
+            huge,
+            many,
+        ];
+        for values in bad {
+            let server = FakeServer::new();
+            let e = block_on(provider(server.clone()).submit(&card_job(&values))).unwrap_err();
+            assert_eq!(e.kind, ErrorKind::UnsupportedInput, "{e}");
+            assert!(!server.paths().iter().any(|p| p == "/upload/image" || p == "/prompt"), "nothing uploaded for {}", &values[..values.len().min(40)]);
+        }
+        let mut broken = card_job("{}");
+        broken.inputs[0] = JobInput::Text { role: template::CARD_WORKFLOW.into(), text: "{\"1\": [".into() };
+        let server = FakeServer::new();
+        assert!(block_on(provider(server.clone()).submit(&broken)).is_err());
+        assert!(!server.paths().iter().any(|p| p == "/upload/image"));
+        let mut oversized = card_job("{}");
+        oversized.inputs[0] = JobInput::Text { role: template::CARD_WORKFLOW.into(), text: " ".repeat(MAX_CARD_TEXT_BYTES + 1) };
+        let server = FakeServer::new();
+        assert!(block_on(provider(server.clone()).submit(&oversized)).unwrap_err().message.contains("too large"));
+        assert!(!server.paths().iter().any(|p| p == "/upload/image"));
+        // A job carrying a workflow both ways is ambiguous.
+        let mut both = card_job("{}");
+        both.params = job().params;
+        let server = FakeServer::new();
+        assert!(block_on(provider(server.clone()).submit(&both)).unwrap_err().message.contains("two"));
+        assert!(!server.paths().iter().any(|p| p == "/upload/image"));
+    }
+
+    #[test]
+    fn a_workflow_card_queues_only_the_outputs_it_keeps() {
+        let workflow = r#"{
+            "1": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+            "3": {"class_type": "SaveImage", "inputs": {"images": ["1", 0], "filename_prefix": "kept"}},
+            "4": {"class_type": "SaveImage", "inputs": {"images": ["1", 0], "filename_prefix": "dropped"}}
+        }"#;
+        let with_outputs = |outputs: &str| {
+            let mut job = card_job("{}");
+            job.inputs[0] = JobInput::Text { role: template::CARD_WORKFLOW.into(), text: workflow.into() };
+            job.inputs.push(JobInput::Text { role: template::CARD_OUTPUTS.into(), text: outputs.into() });
+            job
+        };
+        let server = FakeServer::new();
+        block_on(provider(server.clone()).submit(&with_outputs(r#"["3"]"#))).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let body: Value = serde_json::from_slice(&seen.iter().find(|r| r.url.ends_with("/prompt")).unwrap().body).unwrap();
+        assert_eq!(body["prompt"]["3"]["inputs"]["filename_prefix"], "kept");
+        assert!(body["prompt"].get("4").is_none(), "an output the card has no port for never runs");
+        assert!(body["prompt"].get("1").is_some(), "nodes that aren't outputs stay");
+        drop(seen);
+        for bad in ["[]", r#"["9"]"#, "nope", r#"{"3": 1}"#] {
+            let server = FakeServer::new();
+            let e = block_on(provider(server.clone()).submit(&with_outputs(bad))).unwrap_err();
+            assert!(e.message.contains("outputs"), "{bad}: {e}");
+            assert!(!server.paths().iter().any(|p| p == "/upload/image" || p == "/prompt"), "nothing uploaded for {bad}");
+        }
+        // A card's inputs never mix with a workflow carried in the parameters, or the other way.
+        let mut mixed = job();
+        mixed.inputs.push(JobInput::Text { role: template::CARD_OUTPUTS.into(), text: r#"["3"]"#.into() });
+        assert!(block_on(provider(FakeServer::new()).submit(&mixed)).unwrap_err().message.contains("mixes"));
+        let mut mixed = card_job("{}");
+        mixed.params.insert("values".into(), serde_json::json!({"2.text": "x"}));
+        assert!(block_on(provider(FakeServer::new()).submit(&mixed)).unwrap_err().message.contains("as an input"));
     }
 
     #[test]

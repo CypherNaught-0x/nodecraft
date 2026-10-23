@@ -85,7 +85,7 @@ pub fn interface(node: &Node) -> Result<Interface, Error> {
 }
 
 /// A port or parameter name for `label`: lowercase letters, digits and `_`, unique among `taken`.
-fn slug(label: &str, taken: &mut BTreeSet<String>) -> String {
+pub(crate) fn slug(label: &str, taken: &mut BTreeSet<String>) -> String {
     let mut base = String::new();
     for c in label.chars().flat_map(char::to_lowercase) {
         if c.is_ascii_lowercase() || c.is_ascii_digit() {

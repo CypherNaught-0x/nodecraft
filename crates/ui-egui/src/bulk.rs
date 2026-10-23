@@ -253,6 +253,8 @@ impl Panel {
                             ui.add_enabled_ui(enabled, |ui| {
                                 for spec in &snapshot.descriptor.params.params {
                                     let Some(shared) = snapshot.fields.get(&spec.name) else { continue };
+                                    // A workflow card's model is fixed: it runs the workflow it holds.
+                                    if snapshot.descriptor.id == nodecraft_nodes::comfy_workflow::ID && spec.name == nodecraft_nodes::comfy_workflow::MODEL { continue; }
                                     let row_enabled = snapshot.enabled.contains(&spec.name) && text_owner.is_none_or(|id| self.editor.field_owns_focus(&spec.name, id));
                                     ui.add_enabled_ui(row_enabled, |ui| { ui.push_id(&spec.name, |ui| {
                                         let label = ui.label(&spec.label);

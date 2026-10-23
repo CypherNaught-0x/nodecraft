@@ -114,6 +114,8 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
             }
             // A technique node (#94) needs the version it pins, and runs only once that is inlined.
             "structure.technique" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
+            // A ComfyUI workflow card (#9) runs only the workflow imported into it.
+            "generation.comfy_workflow" => assert!(result.is_err(), "a card without a workflow never plans"),
             // The layer editor (#101) draws text and shapes with nothing connected.
             "image.layers" => assert!(matches!(result.unwrap().as_slice(), [JobSpec::Action { inputs, .. }] if inputs.is_empty())),
             // Action kinds (#410) need a connected input before they can be planned.

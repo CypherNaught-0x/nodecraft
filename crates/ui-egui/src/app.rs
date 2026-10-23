@@ -3023,6 +3023,8 @@ mod audio672_tests;
 #[cfg(test)]
 mod audio_tests;
 #[cfg(test)]
+mod comfy_workflow9_tests;
+#[cfg(test)]
 mod deck_editor_tests;
 #[cfg(test)]
 mod deck_presenter_tests;
