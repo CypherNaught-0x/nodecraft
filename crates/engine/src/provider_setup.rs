@@ -82,6 +82,9 @@ pub struct HostEnv<'a> {
     pub settings: &'a ProviderSettings,
     /// Milliseconds on a monotonic clock (ComfyUI's prompt bookkeeping).
     pub now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// Opens ComfyUI's progress socket; `None` where runs report progress by polling only (the
+    /// browser, tests, hosts that never run).
+    pub progress: Option<Arc<dyn nodecraft_providers::comfyui::progress::Feeds>>,
 }
 
 fn read_key_error(error: SecretError) -> Readiness {
@@ -130,7 +133,12 @@ pub fn comfyui(env: &HostEnv<'_>) -> Result<nodecraft_providers::comfyui::ComfyP
         Err(error) => return Err(read_key_error(error)),
     };
     let auth = stored.map(|key| ("Authorization".to_owned(), format!("Bearer {}", key.expose())));
-    nodecraft_providers::comfyui::ComfyProvider::new(url, auth, &env.settings.install_salt, env.http.clone(), env.now_ms.clone()).map_err(adapter_error)
+    let provider =
+        nodecraft_providers::comfyui::ComfyProvider::new(url, auth, &env.settings.install_salt, env.http.clone(), env.now_ms.clone()).map_err(adapter_error)?;
+    Ok(match &env.progress {
+        Some(feeds) => provider.with_progress(feeds.clone()),
+        None => provider,
+    })
 }
 
 /// The Higgsfield adapter from its stored key. Runs and the restyle preset fetch (#179) both

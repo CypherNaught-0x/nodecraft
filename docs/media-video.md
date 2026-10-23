@@ -294,10 +294,16 @@ buffer that the device's callback resamples from; it plays silence, rather than 
 decoding falls behind. One card plays at a time: playing another pauses the first where it was.
 Playback stops when its card is deleted, when the sound device goes away (the card says so; play
 again to reopen it) and when the app quits. Without an output device the card says "No sound
-output device found". The browser build says playback needs the desktop app. The next stretch
-is asked for from the app's frames, so a minimized window falls silent once its buffer runs out
-and carries on when it's shown again (#666). Waveforms are made one at a time, leaving the
-service's other worker free for sound.
+output device found". The browser build says playback needs the desktop app. A bounded worker
+opens the output device and requests the next stretch independently of app frames, so playback
+continues when the window is minimized. Seek drags replace one pending target without decoding
+until release; committed seeks wait 75 ms before decoding. If frames stop before a drag release,
+the worker resumes its last target after two seconds without updates. Three seconds without
+device callbacks stops playback with guidance to retry.
+The same worker is reused for later plays and settings changes; a blocked native device call
+never holds an app-frame or request-mailbox lock. Waveforms are made one at a time, leaving the
+service's other worker free for sound. Decoded EOF determines playback length when a container's
+duration hint is inaccurate, within the existing one-hour audio limit; this is view state.
 
 On Linux the desktop app links ALSA (`libasound.so.2`): the deb and rpm packages depend on it,
 the AppImage uses the host's, and the Flatpak gets it from the freedesktop runtime and reaches

@@ -214,6 +214,8 @@ pub struct AudioMetadata {
     /// 1..=8.
     pub channels: u32,
 }
+/// Maximum accepted/replayed sound duration, including decoding beyond a container's hint.
+pub const MAX_AUDIO_DURATION_US: u64 = 3_600_000_000;
 /// The most slices a [`Waveform`] may have.
 pub const MAX_WAVEFORM_BUCKETS: usize = 4096;
 /// The longest sound a [`Waveform`] is made for: a few hours.

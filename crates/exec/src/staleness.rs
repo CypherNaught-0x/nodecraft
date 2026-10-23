@@ -28,6 +28,7 @@
 //! changed: it is reported **stale** (re-running refreshes it). Deliberately conservative: a
 //! result is never shown as fresh when we can't vouch for it.
 
+use crate::variations::VARIATIONS_CONFIG;
 use nodecraft_graph::{Canvas, Node};
 use nodecraft_nodes::{Category, Registry, mention};
 use nodecraft_types::{Blake3, Error, ErrorKind, NodeId, ParamValues, Value};
@@ -405,11 +406,13 @@ impl InputHasher {
         charge_stored(&mut self.meter, node)?;
         let mut w = Writer::new();
         w.text(&node.kind);
-        // Whether a node reuses cached results (#91) doesn't change what it makes: leave the
-        // switch out, so turning it on or off never makes a result stale.
-        if node.config.contains_key(CACHE_CONFIG) {
+        // Whether a node reuses cached results (#91), and how many variations a run makes
+        // (#81), don't change what it makes: leave them out, so changing them never makes a
+        // result stale.
+        if node.config.contains_key(CACHE_CONFIG) || node.config.contains_key(VARIATIONS_CONFIG) {
             let mut config = node.config.clone();
             config.remove(CACHE_CONFIG);
+            config.remove(VARIATIONS_CONFIG);
             w.params(&config)?;
         } else {
             w.params(&node.config)?;

@@ -25,7 +25,7 @@ fn fetcher(checkpoints: Option<&'static [&'static str]>) -> Fetch {
         let fixture = ProviderSettings { comfyui_url: Some("http://127.0.0.1:8188".into()), install_salt: "salt".into() };
         let settings = if checkpoints.is_some() { &fixture } else { settings };
         let keys = nodecraft_engine::secrets::MemoryStore::default();
-        let env = HostEnv { keys: &keys, http: http.clone(), settings, now_ms: Arc::new(|| 0) };
+        let env = HostEnv { keys: &keys, http: http.clone(), settings, now_ms: Arc::new(|| 0), progress: None };
         runtime.block_on(option_fetch::fetch(&env, sources))
     })
 }

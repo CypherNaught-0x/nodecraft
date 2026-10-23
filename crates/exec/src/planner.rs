@@ -75,6 +75,9 @@ pub struct Step {
     pub jobs: Option<Vec<JobSpec>>,
     /// Set when batches fan this step out (#92); `inputs` is then empty.
     pub fanout: Option<Fanout>,
+    /// How many variations it makes (#81): 1, or more for a generation node asked for several.
+    /// Its `jobs` are then one variation's jobs repeated this many times, in variation order.
+    pub variations: usize,
 }
 
 /// A step that runs once per batch item combination (#92).
@@ -300,6 +303,24 @@ pub fn plan_expanded(
     targets: &nodecraft_types::TargetSelection,
     options: &dyn nodecraft_types::OptionLookup,
 ) -> Result<Planned, Error> {
+    plan_settled(expanded, kinds, mode, requested, &BTreeSet::new(), stale, targets, options)
+}
+
+/// [`plan_expanded`], leaving out the `settled` nodes: ones that already hold the result this run
+/// would make (a cached result, #91). They don't run, a settled technique node's inlined nodes
+/// don't either, and the nodes they feed read their results like any other node outside the run.
+/// With every node settled the plan is empty.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_settled(
+    expanded: &Expanded<'_>,
+    kinds: &Registry,
+    mode: &RunMode,
+    requested: &BTreeSet<NodeId>,
+    settled: &BTreeSet<NodeId>,
+    stale: &BTreeSet<NodeId>,
+    targets: &nodecraft_types::TargetSelection,
+    options: &dyn nodecraft_types::OptionLookup,
+) -> Result<Planned, Error> {
     let canvas: &Canvas = &expanded.canvas;
     let graph = Graph::new(canvas, kinds, targets, &expanded.collects, &expanded.inner, options)?;
     let run: BTreeSet<NodeId> = match mode {
@@ -315,10 +336,12 @@ pub fn plan_expanded(
         RunMode::Field(field) => canvas.nodes().values().filter(|n| n.field == Some(*field)).map(|n| n.id).collect(),
         RunMode::AllStale => graph.with_upstream(&stale.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect(), stale),
     };
-    let run = graph.with_inlined(run, stale, &expanded.inner);
     // Routers and batches never run: they are resolved into their consumers' inputs.
     let resolved_away = |id: &NodeId| crate::routing::is_router(canvas, *id) || is_batch(canvas, *id);
+    // Decided before settled nodes are left out: a request whose other nodes all reuse a result
+    // is a run with nothing left to do, not a request for routers alone.
     let requested_only_routers = matches!(mode, RunMode::Selected | RunMode::WithUpstream) && !run.is_empty() && run.iter().all(resolved_away);
+    let run = graph.with_inlined(run.into_iter().filter(|id| !settled.contains(id)).collect(), stale, &expanded.inner);
     let run: BTreeSet<NodeId> = run.into_iter().filter(|id| !resolved_away(id)).collect();
     if requested_only_routers {
         return Err(Error::new(ErrorKind::InvalidInput, "routers and batches pass inputs through and have nothing to run"));
@@ -885,9 +908,29 @@ impl<'a> Graph<'a> {
             Ok(Some(jobs))
         };
         let after = after.into_iter().collect();
+        // Variations (#81) are for generation nodes on the canvas: a step inlined from a
+        // technique makes its technique node's one result.
+        let variations = match kind.descriptor().category {
+            Category::Generation if !self.inner.contains_key(&id) => crate::variations::requested(node),
+            _ => 1,
+        };
         if fanned.is_empty() {
-            let jobs = plan_jobs(&inputs)?;
-            return Ok(Step { node: id, kind: node.kind.clone(), mode, after, inputs, jobs, fanout: None });
+            // Each variation copies the step's inputs: charge the extra copies before making them.
+            state.plan_bytes = state.plan_bytes.saturating_add(bytes.saturating_mul(variations.saturating_sub(1)));
+            if state.plan_bytes > MAX_PLAN_INPUT_BYTES {
+                return Err(vec![blocker(None, None, Reason::Invalid("the inputs of this run are too large to plan at once".into()))]);
+            }
+            let jobs = plan_jobs(&inputs)?.map(|jobs| crate::variations::repeat(jobs, variations));
+            // A single result's own job count is the run's to refuse (`MAX_STEP_JOBS`), as without variations.
+            if variations > 1 && jobs.as_ref().is_some_and(|jobs| jobs.len() > crate::run::MAX_STEP_JOBS) {
+                let reason = format!("its variations would run more than {} jobs", crate::run::MAX_STEP_JOBS);
+                return Err(vec![blocker(None, None, Reason::Invalid(reason))]);
+            }
+            return Ok(Step { node: id, kind: node.kind.clone(), mode, after, inputs, jobs, fanout: None, variations });
+        }
+        if variations > 1 {
+            let reason = "it makes one result per batch item: set its variations to 1 to run it over a list";
+            return Err(vec![blocker(None, None, Reason::Invalid(reason.into()))]);
         }
         let invalid = |message: String| vec![blocker(None, None, Reason::PublicInvalid(message))];
         let relations: Vec<&[ItemTag]> = fanned.iter().map(|f| f.tags.as_slice()).collect();
@@ -944,7 +987,16 @@ impl<'a> Graph<'a> {
                 }
             }
         }
-        Ok(Step { node: id, kind: node.kind.clone(), mode, after, inputs: Vec::new(), jobs, fanout: Some(Fanout { items, cells, jobs: counts, resume: None }) })
+        Ok(Step {
+            node: id,
+            kind: node.kind.clone(),
+            mode,
+            after,
+            inputs: Vec::new(),
+            jobs,
+            fanout: Some(Fanout { items, cells, jobs: counts, resume: None }),
+            variations: 1,
+        })
     }
 
     /// Where one output of a technique node comes from: the inlined node's step in this run, or

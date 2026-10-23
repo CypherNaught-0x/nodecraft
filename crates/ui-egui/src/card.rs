@@ -73,6 +73,8 @@ pub enum Intent {
     Audio(crate::audio::AudioIntent),
     /// Bring a plugin card to its plugin's current version (#173).
     Migrate,
+    /// Make this many variations a run (#81).
+    Variations(u64),
 }
 pub struct CardResponse {
     pub response: egui::Response,
@@ -652,7 +654,12 @@ fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, in
     response.widget_info(|| egui::WidgetInfo::slider(true, seconds, format!("Sound, {}", clock(duration))));
     let moved = response.clicked() || response.drag_started() || (response.dragged() && response.drag_delta().x != 0.0);
     if let Some(at) = response.interact_pointer_pos().filter(|_| moved) {
-        intents.push(Intent::Audio(AudioIntent::Seek(time_at(at.x, bars.left(), bars.width(), duration))));
+        let target = time_at(at.x, bars.left(), bars.width(), duration);
+        let intent = if response.clicked() { AudioIntent::Seek(target) } else { AudioIntent::PreviewSeek(target) };
+        intents.push(Intent::Audio(intent));
+    }
+    if response.drag_stopped() {
+        intents.push(Intent::Audio(AudioIntent::FinishSeek));
     }
     let along = if duration == 0 { 0.0 } else { (position as f64 / duration as f64).clamp(0.0, 1.0) as f32 };
     let playhead = bars.left() + bars.width() * along;
@@ -1029,6 +1036,9 @@ impl EditorState {
         self.error = Some((target, message));
     }
 }
+
+#[cfg(test)]
+mod audio_tests;
 
 #[cfg(test)]
 mod tests {

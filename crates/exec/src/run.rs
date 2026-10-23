@@ -124,6 +124,10 @@ struct StepState {
     gaps: BTreeMap<usize, (Missing, String)>,
     /// The items of `missing` copied from an earlier step's gaps, whose reason already names it.
     inherited: BTreeSet<usize>,
+    /// For a step of several variations (#81): the variation each of `jobs` is for.
+    job_variants: Vec<usize>,
+    /// For a step of several variations: the variations that won't finish in this run, and why.
+    lost: BTreeMap<usize, (Missing, String)>,
     /// The input hash taken when the step began (#518), recorded with its result as compared.
     hashed: Option<nodecraft_types::Blake3>,
     /// Steps that come after this one.
@@ -333,6 +337,8 @@ impl Run {
                     status: Status::Waiting(waiting),
                     jobs: Vec::new(),
                     job_items: Vec::new(),
+                    job_variants: Vec::new(),
+                    lost: BTreeMap::new(),
                     missing: BTreeMap::new(),
                     gaps: BTreeMap::new(),
                     inherited: BTreeSet::new(),
@@ -410,12 +416,31 @@ impl Run {
         }
     }
 
-    /// The generation id of `node`'s result in this run.
-    fn generation_id(&self, node: NodeId) -> GenerationId {
+    /// The generation id of `node`'s result in this run: of its `variant`th variation (#81),
+    /// the first having the id a step of one variation has.
+    /// The jobs of `node`'s variation `variant` (#81); none for a step without variations.
+    fn variation_of(&self, node: NodeId, variant: usize) -> Vec<JobId> {
+        self.steps
+            .get(&node)
+            .map_or_else(Vec::new, |state| state.jobs.iter().zip(&state.job_variants).filter(|(_, v)| **v == variant).map(|(job, _)| *job).collect())
+    }
+
+    /// The jobs `node`'s result `generation` was made from, when it is one of several
+    /// variations (#81): recording it uses those jobs' results and no other variation's.
+    pub fn variation_jobs(&self, node: NodeId, generation: GenerationId) -> Option<BTreeSet<JobId>> {
+        let count = self.steps.get(&node)?.job_variants.last()?.saturating_add(1);
+        let variant = (0..count).find(|variant| self.generation_id(node, *variant) == generation)?;
+        Some(self.variation_of(node, variant).into_iter().collect())
+    }
+
+    fn generation_id(&self, node: NodeId, variant: usize) -> GenerationId {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"nodecraft.run.generation");
         hasher.update(&self.id);
         hasher.update(node.as_bytes());
+        if variant > 0 {
+            hasher.update(&u64::try_from(variant).unwrap_or(u64::MAX).to_le_bytes());
+        }
         let mut bytes = [0u8; 16];
         if let Some(head) = hasher.finalize().as_bytes().get(..16) {
             bytes.copy_from_slice(head);
@@ -470,6 +495,10 @@ impl Run {
                 let cell_of = |n: usize| step.job_items.get(n).copied();
                 let cell = step.jobs.iter().position(|j| *j == job).and_then(cell_of).ok_or("the job's item is unknown")?;
                 step.job_items.iter().filter(|c| **c == cell).count() == 1
+            }
+            None if !step.job_variants.is_empty() => {
+                let variant = step.jobs.iter().position(|j| *j == job).and_then(|n| step.job_variants.get(n)).ok_or("the job's variation is unknown")?;
+                step.job_variants.iter().filter(|v| *v == variant).count() == 1
             }
             None => step.jobs.len() == 1,
         };
@@ -591,27 +620,19 @@ impl Run {
         if !matches!(step.status, Status::Running(_)) {
             return Progress::default();
         }
-        let item = step.jobs.iter().position(|j| *j == job).and_then(|n| step.job_items.get(n).copied());
-        let (Some(item), Some(_)) = (item, &step.step.fanout) else { return self.fail(node, error.to_owned()) };
-        step.missing.entry(item).or_insert_with(|| (why, error.to_owned()));
-        // The item's other jobs can't make it whole any more.
+        let position = step.jobs.iter().position(|j| *j == job);
         let mut progress = Progress::default();
-        let mut ended = 1usize;
-        for (other, of) in step.jobs.iter().zip(&step.job_items) {
-            if *of != item || *other == job {
-                continue;
-            }
-            if let Some(state) = self.jobs.get_mut(other) {
-                if !std::mem::take(&mut state.outputs).is_empty() {
-                    progress.dropped.push(*other);
-                }
-                if !state.done {
-                    state.done = true;
-                    progress.cancel.push(*other);
-                    ended = ended.saturating_add(1);
-                }
-            }
-        }
+        let ended = if let Some(variant) = position.and_then(|n| step.job_variants.get(n).copied()) {
+            // Only this variation fails (#81): the others carry on.
+            step.lost.entry(variant).or_insert_with(|| (why, error.to_owned()));
+            end_group(&mut self.jobs, &step.jobs, &step.job_variants, variant, job, &mut progress)
+        } else {
+            let item = position.and_then(|n| step.job_items.get(n).copied());
+            let (Some(item), Some(_)) = (item, &step.step.fanout) else { return self.fail(node, error.to_owned()) };
+            step.missing.entry(item).or_insert_with(|| (why, error.to_owned()));
+            // The item's other jobs can't make it whole any more.
+            end_group(&mut self.jobs, &step.jobs, &step.job_items, item, job, &mut progress)
+        };
         let Status::Running(left) = &mut step.status else { return progress };
         *left = left.saturating_sub(ended);
         if *left > 0 {
@@ -666,8 +687,18 @@ impl Run {
             Some(state) => match state.step.jobs.take() {
                 Some(jobs) => Ok((jobs, state.step.fanout.as_ref().map(|f| f.jobs.clone()).unwrap_or_default())),
                 None => {
+                    let variations = state.step.variations;
                     self.resume_deferred(kinds, node);
-                    self.materialise(kinds, node)
+                    let before = self.run_bytes;
+                    self.materialise(kinds, node).and_then(|(jobs, counts)| {
+                        // Each further variation copies the inputs again: charged as the planner does.
+                        let copy = self.run_bytes.saturating_sub(before);
+                        self.run_bytes = self.run_bytes.saturating_add(copy.saturating_mul(variations.saturating_sub(1)));
+                        if self.run_bytes > self.limits.run_bytes {
+                            return Err(format!("the run's inputs are larger than {} bytes", self.limits.run_bytes));
+                        }
+                        Ok((crate::variations::repeat(jobs, variations), counts))
+                    })
                 }
             },
             None => return (Progress::default(), Vec::new()),
@@ -678,6 +709,11 @@ impl Run {
         };
         let job_items = match item_of_jobs(&counts, planned.as_ref().map_or(0, Vec::len)) {
             Ok(items) => items,
+            Err(reason) => return (self.fail(node, reason), Vec::new()),
+        };
+        let variations = self.steps.get(&node).map_or(1, |s| s.step.variations);
+        let job_variants = match crate::variations::of_jobs(variations, planned.as_ref().map_or(0, Vec::len)) {
+            Ok(variants) => variants,
             Err(reason) => return (self.fail(node, reason), Vec::new()),
         };
         let jobs = match planned {
@@ -735,6 +771,7 @@ impl Run {
         if let Some(state) = self.steps.get_mut(&node) {
             state.jobs = ids;
             state.job_items = job_items;
+            state.job_variants = job_variants;
             state.status = Status::Running(left);
         }
         if left == 0 {
@@ -978,13 +1015,16 @@ impl Run {
     /// A step whose jobs are all done: its result, and the steps it makes ready (for the caller
     /// to start).
     fn finish(&mut self, kinds: &Registry, node: NodeId) -> (Progress, Vec<NodeId>) {
+        if self.steps.get(&node).is_some_and(|s| !s.job_variants.is_empty()) {
+            return self.finish_variations(kinds, node);
+        }
         let missing = self.steps.get_mut(&node).map(|s| std::mem::take(&mut s.missing)).unwrap_or_default();
         let items = self.steps.get(&node).and_then(|s| s.step.fanout.as_ref()).map_or(0, |f| f.items.len());
         if !missing.is_empty() && missing.len() >= items {
             // Nothing finished: the step fails as a whole.
             return (self.fail(node, first_reason(&missing)), Vec::new());
         }
-        let result = match self.assemble(kinds, node, &missing) {
+        let result = match self.assemble(kinds, node, &missing, None) {
             Ok(result) => result,
             Err(reason) => return (self.fail(node, reason), Vec::new()),
         };
@@ -1010,6 +1050,44 @@ impl Run {
             return (progress, Vec::new());
         }
         self.done(node, Progress { finished: vec![result], ..Progress::default() })
+    }
+
+    /// A step of several variations whose jobs are all done (#81): a result per variation that
+    /// finished, the last becoming the active one. It fails only when none did; otherwise what
+    /// comes after it carries on from the last, and the variations that didn't finish are
+    /// reported on the node.
+    fn finish_variations(&mut self, kinds: &Registry, node: NodeId) -> (Progress, Vec<NodeId>) {
+        let (count, mut lost) = match self.steps.get_mut(&node) {
+            Some(state) => (state.job_variants.last().map_or(0, |v| v.saturating_add(1)), std::mem::take(&mut state.lost)),
+            None => return (Progress::default(), Vec::new()),
+        };
+        let mut finished = Vec::new();
+        for variant in 0..count {
+            if lost.contains_key(&variant) {
+                continue;
+            }
+            match self.assemble(kinds, node, &BTreeMap::new(), Some(variant)) {
+                Ok(result) => finished.push(result),
+                Err(reason) => {
+                    lost.insert(variant, (Missing::Failed, reason));
+                }
+            }
+        }
+        if finished.is_empty() {
+            return (self.fail(node, first_reason(&lost)), Vec::new());
+        }
+        // A lost variation's paid results, if any came in, are let go to be held, not recorded.
+        let dropped = lost.keys().flat_map(|variant| self.variation_of(node, *variant)).collect();
+        let mut progress = Progress { finished, dropped, ..Progress::default() };
+        if !lost.is_empty() {
+            let reason = if lost.values().all(|(why, _)| *why == Missing::Cancelled) {
+                first_reason(&lost)
+            } else {
+                format!("{} of {count} variations didn't finish: {}", lost.len(), first_reason(&lost))
+            };
+            progress.failed.push(StepFailure { node, reason });
+        }
+        self.done(node, progress)
     }
 
     /// Marks `node` done: the steps that makes ready, with `progress`.
@@ -1073,12 +1151,17 @@ impl Run {
     /// item as a step of its own, and each output becomes a list with one value per item.
     /// Items in `missing` (#480) get an empty list on every output; a step completing a partial
     /// result copies the items it kept from it.
-    fn assemble(&mut self, kinds: &Registry, node: NodeId, missing: &BTreeMap<usize, (Missing, String)>) -> Result<StepResult, String> {
+    /// A step of several variations (#81) assembles one `variant` at a time, from its own jobs.
+    fn assemble(&mut self, kinds: &Registry, node: NodeId, missing: &BTreeMap<usize, (Missing, String)>, variant: Option<usize>) -> Result<StepResult, String> {
         let target = self.canvas.nodes().get(&node).ok_or("the node is gone")?;
         let (job_ids, job_items, items, resume) = match self.steps.get(&node) {
             Some(state) => {
                 let fanout = state.step.fanout.as_ref();
-                (state.jobs.clone(), state.job_items.clone(), fanout.map(|f| f.items.clone()), fanout.and_then(|f| f.resume.clone()))
+                let jobs = match variant {
+                    Some(variant) => state.jobs.iter().zip(&state.job_variants).filter(|(_, v)| **v == variant).map(|(job, _)| *job).collect(),
+                    None => state.jobs.clone(),
+                };
+                (jobs, state.job_items.clone(), fanout.map(|f| f.items.clone()), fanout.and_then(|f| f.resume.clone()))
             }
             None => (Vec::new(), Vec::new(), None, None),
         };
@@ -1178,7 +1261,14 @@ impl Run {
         let hashed = self.steps.get(&node).and_then(|state| state.hashed);
         let input_hash = match hashed {
             Some(hash) => Some(hash),
-            None => self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten(),
+            None => {
+                let hash = self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten();
+                // The next variation is made from the same inputs: hash them once.
+                if let Some(state) = self.steps.get_mut(&node).filter(|_| variant.is_some()) {
+                    state.hashed = hash;
+                }
+                hash
+            }
         };
         let incomplete = if missing.is_empty() {
             None
@@ -1194,7 +1284,8 @@ impl Run {
             Some(Incomplete { missing: items })
         };
         let settings = settings.into_iter().flatten().collect();
-        let generation = Generation { id: self.generation_id(node), outputs, input_hash, items: items.unwrap_or_default(), settings, incomplete };
+        let generation =
+            Generation { id: self.generation_id(node, variant.unwrap_or(0)), outputs, input_hash, items: items.unwrap_or_default(), settings, incomplete };
         let generation = recordable(generation)?;
         if generation.incomplete.is_none() {
             self.produced.insert(node, generation.outputs.clone());
@@ -1218,6 +1309,29 @@ impl Run {
         }
         keys
     }
+}
+
+/// Ends the jobs of `group` (a fanned item, or a variation) other than `job`, which just failed:
+/// they can't make it whole any more. Unfinished ones are cancelled, results already in are let
+/// go. Returns how many jobs ended, `job` included.
+fn end_group(states: &mut BTreeMap<JobId, JobState>, jobs: &[JobId], groups: &[usize], group: usize, job: JobId, progress: &mut Progress) -> usize {
+    let mut ended = 1usize;
+    for (other, of) in jobs.iter().zip(groups) {
+        if *of != group || *other == job {
+            continue;
+        }
+        if let Some(state) = states.get_mut(other) {
+            if !std::mem::take(&mut state.outputs).is_empty() {
+                progress.dropped.push(*other);
+            }
+            if !state.done {
+                state.done = true;
+                progress.cancel.push(*other);
+                ended = ended.saturating_add(1);
+            }
+        }
+    }
+    ended
 }
 
 /// For a step completing a partial result (#517): by index into its planned jobs, the key each
@@ -1396,6 +1510,9 @@ mod tests;
 
 #[cfg(test)]
 mod partial_tests;
+
+#[cfg(test)]
+mod variation_tests;
 
 #[cfg(test)]
 mod output_contract_tests;
