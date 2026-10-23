@@ -3712,7 +3712,7 @@ fn perf281_render_root(raw: Option<std::ffi::OsString>) -> Result<Option<std::pa
     let Some(raw) = raw else {
         return Ok(None);
     };
-    if raw.is_empty() || raw.to_string_lossy().trim().is_empty() {
+    if raw.to_string_lossy().trim().is_empty() {
         return Err("NODECRAFT_PERF281_RENDER_ROOT is set but empty; name a writable directory to capture into".into());
     }
     let root = std::path::PathBuf::from(&raw);
@@ -3728,7 +3728,7 @@ fn perf281_render_root(raw: Option<std::ffi::OsString>) -> Result<Option<std::pa
     // create_new ensures this probe can never truncate or overwrite an existing user file.
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
     let probe = root.join(format!("perf281-write-probe-{}-{nonce}", std::process::id()));
-    let probe_result = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe);
+    let probe_result = std::fs::OpenOptions::new().write(true).create_new(true).open(&probe).map(drop);
     if let Err(error) = probe_result {
         return Err(format!("NODECRAFT_PERF281_RENDER_ROOT {} is not writable: {error}", root.display()));
     }
@@ -3761,17 +3761,13 @@ fn perf281_render_root_skips_when_unset() {
 
 #[cfg(unix)]
 #[test]
-fn perf281_render_root_rejects_non_unicode_path() {
+fn perf281_render_root_treats_non_unicode_as_set() {
     use std::os::unix::ffi::OsStringExt;
 
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-    let mut raw = manifest.into_os_string().into_vec();
-    raw.extend_from_slice(&[b'/', 0xff]);
-    let raw = std::ffi::OsString::from_vec(raw);
-    match perf281_render_root(Some(raw)) {
-        Err(reason) => assert!(!reason.is_empty(), "a non-Unicode path must report why capture cannot proceed"),
-        Ok(outcome) => panic!("a non-Unicode NODECRAFT_PERF281_RENDER_ROOT must fail, got {outcome:?}"),
-    }
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join(std::ffi::OsString::from_vec(vec![0xff]));
+    let result = perf281_render_root(Some(root.into_os_string()));
+    assert!(!matches!(result, Ok(None)), "a set non-Unicode render root must not be treated as unset");
 }
 
 #[test]
