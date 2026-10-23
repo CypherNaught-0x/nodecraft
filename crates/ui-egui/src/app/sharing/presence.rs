@@ -37,6 +37,10 @@ fn initial(name: &str) -> String {
 impl NodeCraftApp {
     /// Where this person is: the open canvas, the pointer if it is over it, and the selection.
     fn presence_here(&self, ctx: &egui::Context) -> Presence {
+        // A private canvas isn't shared, nor is anything about being on it.
+        if self.session.document().canvases().get(&self.canvas).is_none_or(|canvas| canvas.is_private()) {
+            return Presence::default();
+        }
         let cursor = ctx
             .pointer_hover_pos()
             .filter(|pointer| self.viewport.contains(*pointer))
@@ -73,7 +77,10 @@ impl NodeCraftApp {
     /// The others on this canvas: an outline round each card they have selected, and their
     /// pointer with their name, above the cards.
     pub(in crate::app) fn draw_people(&self, ui: &egui::Ui, viewport: Rect, t: &Tokens) {
-        let Some(live) = self.sharing.as_ref().and_then(|sharing| sharing.live.as_ref()) else { return };
+        // While reconnecting, where the others were is out of date: nobody is drawn until then.
+        let Some(live) = self.sharing.as_ref().and_then(|sharing| sharing.live.as_ref()).filter(|live| matches!(live.state, State::Connected(_))) else {
+            return;
+        };
         let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("people"))).with_clip_rect(viewport);
         let here = live.status.people.iter().filter(|person| person.presence.canvas == Some(self.canvas));
         for person in here {
@@ -91,7 +98,7 @@ impl NodeCraftApp {
             }
             let size = t.presence_pointer;
             let arrow = vec![tip, tip + egui::vec2(0.0, size), tip + egui::vec2(size * 0.66, size * 0.66)];
-            painter.add(egui::Shape::convex_polygon(arrow, color, egui::Stroke::new(1.0, t.presence_ink)));
+            painter.add(egui::Shape::convex_polygon(arrow, color, egui::Stroke::new(t.presence_outline, t.presence_ink)));
             let galley = painter.layout_no_wrap(short(&person.name), egui::FontId::proportional(t.label_size), t.presence_ink);
             let pad = egui::vec2(t.label_gap * 2.0, t.label_gap);
             let pill = Rect::from_min_size(tip + egui::vec2(size * 0.6, size * 0.8), galley.size() + pad * 2.0);
@@ -102,7 +109,9 @@ impl NodeCraftApp {
 
     /// Each other person's initial, beside the Share chip; clicking one goes to where they are.
     pub(super) fn people_avatars(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        let Some(live) = self.sharing.as_ref().and_then(|sharing| sharing.live.as_ref()) else { return };
+        let Some(live) = self.sharing.as_ref().and_then(|sharing| sharing.live.as_ref()).filter(|live| matches!(live.state, State::Connected(_))) else {
+            return;
+        };
         let people = &live.status.people;
         let mut go = None;
         for person in people.iter().take(MAX_AVATARS) {
@@ -134,10 +143,14 @@ impl NodeCraftApp {
     /// Opens the canvas another person is on and centres where they point, or the first card
     /// they have selected.
     fn go_to(&mut self, presence: &Presence) {
-        let Some(canvas) = presence.canvas.filter(|canvas| self.session.document().canvases().contains_key(canvas)) else {
-            self.notice = Some("They're on a canvas you can't see.".into());
+        let Some(canvas) = presence.canvas else {
+            self.notice = Some("They aren't on a canvas.".into());
             return;
         };
+        if !self.session.document().canvases().contains_key(&canvas) {
+            self.notice = Some("They're on a canvas you can't see.".into());
+            return;
+        }
         self.open_canvas(canvas);
         let at =
             presence.cursor.map(|[x, y]| egui::pos2(x, y)).or_else(|| presence.selection.iter().find_map(|id| self.painted.get(id)).map(|rect| rect.center()));

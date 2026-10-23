@@ -65,6 +65,8 @@ pub struct Tokens {
     pub presence_pointer: f32,
     /// The outline round a card another person has selected.
     pub presence_ring: f32,
+    /// The outline round another person's pointer, in `presence_ink`.
+    pub presence_outline: f32,
     /// The size of a person's initial beside the Share chip.
     pub presence_avatar: f32,
     pub tag_marker_width: f32,
@@ -215,6 +217,7 @@ pub const DARK: Tokens = Tokens {
     presence_ink: Color32::from_rgb(0x16, 0x16, 0x1a),
     presence_pointer: 20.0,
     presence_ring: 2.0,
+    presence_outline: 1.0,
     presence_avatar: 20.0,
     tag_colors: [
         Color32::from_rgb(238, 112, 122),
@@ -346,6 +349,7 @@ pub const LIGHT: Tokens = Tokens {
     presence_ink: Color32::WHITE,
     presence_pointer: 20.0,
     presence_ring: 2.0,
+    presence_outline: 1.0,
     presence_avatar: 20.0,
     tag_colors: [
         Color32::from_rgb(163, 45, 59),

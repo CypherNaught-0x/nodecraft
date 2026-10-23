@@ -296,9 +296,20 @@ fn refuse(socket: &mut WebSocket<TcpStream>, message: &str) -> bool {
 }
 
 fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, waiting: &AtomicUsize, rooms: &Mutex<Rooms>) {
-    // When the peer last said where it is: more often than PRESENCE_EVERY is dropped.
+    // When the peer last said where it is, and the latest it said too soon after: that one is
+    // passed on once PRESENCE_EVERY is up, so the others see where it stopped.
     let mut moved: Option<Instant> = None;
+    let mut held: Option<Frame> = None;
     loop {
+        if !moved.is_some_and(|at| at.elapsed() < PRESENCE_EVERY)
+            && let Some(frame) = held.take()
+        {
+            moved = Some(Instant::now());
+            let mut rooms = lock(rooms);
+            let Some(room) = rooms.peers.get(&peer).map(|inbox| inbox.room.clone()) else { return };
+            let outs = rooms.rooms.get_mut(&room).map(|state| state.handle(peer, frame)).unwrap_or_default();
+            rooms.deliver(outs);
+        }
         loop {
             let push = match inbox.try_recv() {
                 Ok(push) => push,
@@ -332,7 +343,12 @@ fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, 
                     rooms.settle();
                 }
                 let outs = match frame {
-                    Ok(Frame::Presence(_)) if moved.is_some_and(|at| at.elapsed() < PRESENCE_EVERY) => Vec::new(),
+                    Ok(frame @ Frame::Presence(_)) if moved.is_some_and(|at| at.elapsed() < PRESENCE_EVERY) => {
+                        held = Some(frame);
+                        Vec::new()
+                    }
+                    // A presence replaces the one the room holds for this peer, so it isn't
+                    // weighed against MAX_RELAY_BYTES.
                     Ok(frame @ Frame::Presence(_)) => {
                         moved = Some(Instant::now());
                         rooms.rooms.get_mut(&room).map(|state| state.handle(peer, frame)).unwrap_or_default()

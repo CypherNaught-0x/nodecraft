@@ -189,7 +189,7 @@ fn three_people_end_with_one_project_and_its_images() {
     assert!(net.session(1).can_undo());
 
     // Someone who comes later gets all of it, the image too, even with its sharer gone.
-    net.room.leave(1);
+    let _ = net.room.leave(1);
     net.people.retain(|p| p.id != 1);
     net.enter(Person { id: 3, collab: Collab::join(room_id()), session: None });
     let second = net.session(2).document().clone();
@@ -848,4 +848,32 @@ fn each_person_hears_where_the_others_are_until_they_go() {
     net.drop_out(1);
     net.settle();
     assert_eq!(net.collab(2).people().count(), 0);
+}
+
+#[test]
+fn a_place_said_after_a_reconnect_isnt_undone_by_the_one_queued_for_it() {
+    let (session, _) = sharer();
+    let mut collab = Collab::share(&session, room_id()).unwrap();
+    collab.set_presence(here(3.0)).unwrap();
+    collab.hello();
+    let frame = collab.set_presence(here(4.0)).unwrap();
+    assert_eq!(frame, Some(Frame::Presence(here(4.0))));
+    let next = collab.publish(&session).unwrap();
+    assert!(!next.iter().any(|frame| matches!(frame, Frame::Presence(_))), "{next:?}");
+}
+
+#[test]
+fn only_so_many_people_are_kept_and_one_who_goes_makes_room() {
+    let mut collab = Collab::join(room_id());
+    let person = |peer| Frame::Person(Box::new(nodecraft_sync::Person { peer, name: format!("P{peer}"), role: Role::View, presence: here(1.0) }));
+    for peer in 0..super::MAX_PEOPLE as u64 + 10 {
+        collab.receive(person(peer)).unwrap();
+    }
+    assert_eq!(collab.people().count(), super::MAX_PEOPLE);
+    // Those already kept still move.
+    collab.receive(Frame::Person(Box::new(nodecraft_sync::Person { peer: 0, name: "P0".into(), role: Role::View, presence: here(2.0) }))).unwrap();
+    assert_eq!(collab.people().next().map(|p| p.presence.clone()), Some(here(2.0)));
+    collab.receive(Frame::Gone(0)).unwrap();
+    collab.receive(person(1000)).unwrap();
+    assert!(collab.people().any(|p| p.peer == 1000));
 }

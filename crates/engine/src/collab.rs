@@ -374,6 +374,8 @@ impl Collab {
             return Ok(None);
         }
         self.presence = Some(presence.clone());
+        // One queued by a reconnect is older: sent after this one, it would undo it.
+        self.outbox.retain(|frame| !matches!(frame, Frame::Presence(_)));
         Ok(Some(Frame::Presence(presence)))
     }
 

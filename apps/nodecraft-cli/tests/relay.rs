@@ -171,8 +171,10 @@ fn where_each_person_is_reaches_the_others_through_the_relay_until_they_go() {
     let mut people = vec![sharer, joiner];
     until(&mut people, |p| same(p, 0));
     let here = Presence { canvas: Some(canvas()), cursor: Some([10.0, 20.0]), selection: Vec::new() };
-    let frame = people[0].collab.set_presence(here.clone()).unwrap().unwrap();
-    people[0].send(vec![frame]);
+    // Said twice at once: the relay holds the second back, but still passes on where it stopped.
+    let first = Presence { cursor: Some([0.0, 0.0]), ..here.clone() };
+    let frames = vec![people[0].collab.set_presence(first).unwrap().unwrap(), people[0].collab.set_presence(here.clone()).unwrap().unwrap()];
+    people[0].send(frames);
     until(&mut people, |p| p[1].collab.people().any(|person| person.presence == here && person.name == "Owner"));
     // Once the sharer has gone, the joiner no longer sees them.
     let sharer = people.remove(0);

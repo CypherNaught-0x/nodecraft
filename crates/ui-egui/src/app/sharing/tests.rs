@@ -366,8 +366,12 @@ fn each_person_sees_where_the_others_are_until_they_leave() {
     let seen = joiner.session.dispatch("share.status", &json!({})).unwrap()["people"].clone();
     assert_eq!(seen, json!([{"peer": seen[0]["peer"], "name": "Owner", "role": "owner", "canvas": owner.canvas, "cursor": null, "selected": 1}]));
     // And the owner sees the joiner, on the canvas it opened.
-    until(&mut [&mut owner, &mut joiner], |apps| people(apps[0]).len() == 1);
-    assert_eq!(people(&owner)[0].presence.canvas, Some(joiner.canvas));
+    let canvas = joiner.canvas;
+    until(&mut [&mut owner, &mut joiner], |apps| people(apps[0]).first().is_some_and(|person| person.presence.canvas == Some(canvas)));
+    assert_eq!(people(&owner).len(), 1);
+    // On a canvas made private, nothing more is said about where the owner is.
+    owner.session.dispatch("canvas.set_private", &json!({"canvas": owner.canvas, "private": true})).unwrap();
+    until(&mut [&mut owner, &mut joiner], |apps| people(apps[1]).first().is_some_and(|person| person.presence == nodecraft_sync::Presence::default()));
     // Once the joiner leaves, it is gone for the owner.
     joiner.session.dispatch("share.stop", &json!({})).unwrap();
     until(&mut [&mut owner, &mut joiner], |apps| people(apps[0]).is_empty());

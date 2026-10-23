@@ -88,7 +88,7 @@ fn a_newcomer_is_asked_for_what_someone_still_waits_on() {
     let hash = *blake3::hash(&bytes).as_bytes();
     // Peer 2 asks; peer 1, who had it, leaves without answering.
     room.handle(2, Frame::AssetGet(vec![hash]));
-    room.leave(1);
+    let _ = room.leave(1);
     // Peer 3 comes with it, is asked, and it goes on to peer 2.
     let out = room.join(3);
     assert!(out.contains(&Out::Send(3, Frame::AssetGet(vec![hash]))), "{out:?}");
@@ -422,4 +422,14 @@ fn a_revoked_link_holder_who_was_shown_is_gone_for_the_rest() {
     room.handle(10, Frame::Presence(here(2.0)));
     let out = room.handle(1, Frame::LinkRevoke([1; 32]));
     assert_eq!(out, vec![Out::Close(10, Frame::Refused("the share link was revoked".into())), Out::Send(1, Frame::Gone(10))]);
+}
+
+#[test]
+fn a_link_holder_who_was_shown_is_gone_for_the_rest_when_the_link_runs_out() {
+    let (mut room, _) = shared();
+    room.handle(1, Frame::LinkPut { hash: [4; 32], grant: Grant { expires: Some(100), ..grant(Role::View, "Late") } });
+    room.join_link(10, [4; 32], 0);
+    room.handle(10, Frame::Presence(here(2.0)));
+    let out = room.expire(100);
+    assert_eq!(out, vec![Out::Close(10, Frame::Refused("the share link has expired".into())), Out::Send(1, Frame::Gone(10))]);
 }

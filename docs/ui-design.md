@@ -335,10 +335,11 @@ Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_
 
 Other people in a shared project (#120) are drawn in `Tokens::presence_colors` (eight per
 palette, picked by their place in the room), above the cards and clipped to the canvas: a pointer
-`presence_pointer` tall with a pill holding their name in `presence_ink`, and a `presence_ring`
+`presence_pointer` tall, outlined `presence_outline` in `presence_ink`, with a pill holding their name in `presence_ink`, and a `presence_ring`
 outline round each card they have selected. Their initials sit beside the Share chip, each a
 `presence_avatar` circle; hovering one says who and what they may do, and clicking it opens their
-canvas centred on their pointer.
+canvas centred on their pointer. Nobody is drawn while the connection is being made again, and
+nothing is said about where you are while a private canvas is open.
 
 ### Fields
 
