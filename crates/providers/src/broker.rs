@@ -8,13 +8,18 @@
 //! - [`template`]: decodes and validates a template against the host's ceilings.
 //! - [`plan`]: turns a job into the requests the template allows, and reads only the response
 //!   fields it declares.
+//! - [`adapter`]: the [`Broker`] provider, which sends them: no redirects, the credential only to
+//!   the API origin, outputs fetched without it, and every failure after the paid request treated
+//!   as possibly billed.
 //!
 //! A template is untrusted input from a package: every rule here is checked before anything is
 //! sent, and a template that breaks one is refused whole.
 
+pub mod adapter;
 pub mod plan;
 pub mod template;
 
+pub use adapter::Broker;
 pub use plan::{authorize, plan_cancel, plan_poll, plan_submit, read_poll, read_submit};
 pub use template::{Credential, Origin, Template, TemplateError};
 

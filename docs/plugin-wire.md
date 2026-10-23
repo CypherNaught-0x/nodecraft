@@ -126,6 +126,17 @@ origin or one of its output origins, with no user name. Nothing else in a reply 
 failure's message is cut to 300 bytes. The credential goes only to the API origin, never to an
 output origin.
 
+The broker's provider (`broker::Broker`) sends these requests without following a redirect: a
+`3xx` reply is an error, on the API origin and on a download alike. Outputs of kind `url` are
+fetched by the host without the credential, up to 256 MiB each, and typed by their bytes, not by
+the template's `mime`. A job id, output or link that carries the credential is refused, and the
+credential is taken out of every error. The service is unknown to the host, so no reply proves a
+submit created nothing: from the moment the submit is sent, every failure may have been billed.
+The quote is the model's template price. On the desktop the transport resolves names only to
+public unicast addresses (no loopback, private, link-local, carrier-NAT, documentation or
+multicast ones, including IPv4 addresses inside IPv6), refuses a name with any other address among
+its records, and uses no proxy. The browser build refuses to run plugin providers.
+
 ## Grants (#174)
 
 A grant records the package digest it was given for and its rights: the capabilities granted and,
