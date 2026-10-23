@@ -155,8 +155,23 @@ fn a_pending_export_keeps_canvas_keys_live_and_its_real_cancel_button_preserves_
             let name = if theme == crate::theme::ThemeKind::Dark { "dark" } else { "light" };
             h.render().unwrap().save(root.join(format!("after-export-progress-{name}.png"))).unwrap();
         }
-        h.get_by_label("Cancel export").click();
+        let cancel = h.get_by_label("Cancel export").rect().center();
+        h.input_mut().events.extend([
+            egui::Event::PointerMoved(cancel),
+            egui::Event::PointerButton { pos: cancel, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+        ]);
+        // A busy frame's motion events must not silently discard an owned Cancel click.
+        for _ in 0..96 {
+            h.input_mut().events.push(egui::Event::PointerMoved(cancel));
+        }
+        h.input_mut().events.push(egui::Event::PointerButton {
+            pos: cancel,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
         h.step();
+        assert!(h.ctx.input(|i| i.events.len()) > 64, "the regression must exercise an actual busy input frame");
         assert!(!h.state().session.export_status().unwrap().cancellable);
         assert!(h.state().export_pending(), "cancel waits for a terminal worker outcome");
         runner.0.lock().unwrap().take().unwrap().run();

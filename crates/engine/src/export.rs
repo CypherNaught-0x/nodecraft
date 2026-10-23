@@ -76,10 +76,35 @@ fn write_controlled(assets: &AssetStore, what: &Exported, path: &Path, overwrite
         return Err(io_error(std::io::ErrorKind::AlreadyExists));
     }
     let cancel = control.map(|control| control.cancel.clone()).unwrap_or_default();
+    // Background authentication must not monopolize the live asset context or its staging
+    // pool. Scratch ownership lasts through the pinned reader and is bounded by the one
+    // process-wide export slot and the 8 GiB single-asset limit.
+    let scratch = if control.is_some() && matches!(what, Exported::Asset(_)) {
+        Some(tempfile::tempdir().map_err(|_| Error::new(ErrorKind::Internal, "private export storage couldn't be created"))?)
+    } else {
+        None
+    };
+    let lease = if let (Some(scratch), Exported::Asset(asset)) = (&scratch, what) {
+        let workspace = nodecraft_format::NativeAssetWorkspace::new(scratch.path(), Default::default())?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        Some(loop {
+            cancel.check()?;
+            match assets.open_export_verified(asset, &workspace, &cancel, &StreamMetrics::default()) {
+                Ok(lease) => break lease,
+                Err(error) if error.kind == ErrorKind::Busy && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => return Err(error),
+            }
+        })
+    } else {
+        None
+    };
     // Checked before the file appears. The archive checks each asset as it copies it, into a
     // staged file, so a missing or damaged asset leaves nothing behind either way.
     match what {
-        Exported::Asset(asset) => drop(assets.open_verified(asset, &cancel, &StreamMetrics::default())?),
+        Exported::Asset(asset) if lease.is_none() => drop(assets.open_verified(asset, &cancel, &StreamMetrics::default())?),
+        Exported::Asset(_) => {}
         Exported::Bundle(bundle) => bundle.check()?,
     }
     if let Some(control) = control {
@@ -90,6 +115,10 @@ fn write_controlled(assets: &AssetStore, what: &Exported, path: &Path, overwrite
     let fill = |file: &mut std::fs::File| {
         let mut out = Recording { file, failed: &mut failed };
         copied = match what {
+            Exported::Asset(_) if lease.is_some() => lease
+                .as_ref()
+                .ok_or_else(|| Error::new(ErrorKind::Internal, "the verified export reader is unavailable"))
+                .and_then(|lease| lease.copy_to(&mut out, &cancel, &StreamMetrics::default())),
             Exported::Asset(asset) => assets.copy_verified_to(asset, &mut out, &cancel, &StreamMetrics::default()),
             Exported::Bundle(bundle) => bundle
                 .write_to(assets, &mut out, &cancel)

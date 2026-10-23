@@ -6,9 +6,14 @@
   addresses that exact id. File writes and cancellation remain human-only in MCP.
 - Admission checks path syntax, retained descriptors and the requested history value without
   authenticating indexed bodies. A job clones the bounded AssetStore metadata and retains its
-  immutable source leases. Both the first indexed verification/staging and the streamed export
-  happen on the executor. This state is independent of project saves: edits never wait for an
-  export, and accepted result bytes remain pinned while the document changes.
+  immutable source leases. The worker captures a source under a short live-context gate,
+  then releases that gate before hashing or probing. Already-verified leases are reused;
+  indexed bytes are sealed in a separate private workspace, never the live session's staging
+  pool or verified cache. One export can retain at most one 8 GiB scratch body plus its staged
+  destination. Scratch and its directory are dropped on every outcome. The worker retries a
+  busy source capture for at most 30 seconds, checking cancellation between 20 ms waits.
+  Saves, imports and arriving run results can use the live context during export verification;
+  accepted result bytes remain pinned while the document changes.
 - Reuse the existing SaveRunner executor contract without lending project storage. Rejected,
   dropped and panicking jobs produce terminal failures; a rejected export never falls back to
   inline I/O. One process-wide export slot remains occupied until the job finishes or is

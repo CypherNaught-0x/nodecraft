@@ -117,6 +117,32 @@ fn a_missing_folder_and_a_dropped_job_are_terminal_path_free_failures() {
     assert!(!path.exists());
 }
 
+#[test]
+fn a_dropped_job_releases_its_process_slot_before_publishing_completion() {
+    let _serial = SERIAL.lock().unwrap();
+    let (mut exports, runner, assets, what) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    exports.start(&assets, what, dir.path().join("result.txt"), false).unwrap();
+    let control = exports.current.as_ref().unwrap().clone();
+    let state = control.state.lock().unwrap();
+    let job = runner.take();
+    let worker = std::thread::spawn(move || drop(job));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let acquired = loop {
+        if let Ok(lease) = Lease::acquire() {
+            break Some(lease);
+        }
+        if std::time::Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    drop(state);
+    worker.join().unwrap();
+    assert!(acquired.is_some(), "the lease must be released even while terminal publication is waiting");
+    assert!(exports.status().unwrap().result.is_some());
+}
+
 struct Reject;
 impl SaveRunner for Reject {
     fn spawn(&self, job: SaveJob) -> Result<(), SaveJob> {
@@ -131,7 +157,7 @@ impl SaveRunner for Panic {
 }
 
 #[test]
-fn cancelling_a_blocked_first_indexed_verification_never_publishes_output() {
+fn a_blocked_export_verifier_keeps_live_import_save_and_cancellation_available() {
     use nodecraft_format::{
         ProjectStorage,
         asset_source::{AssetRange, AssetSource, StreamMetrics},
@@ -180,26 +206,35 @@ fn cancelling_a_blocked_first_indexed_verification_never_publishes_output() {
     let dir = tempfile::tempdir().unwrap();
     let storage = nodecraft_format::NativeStorage::new(dir.path().join("recovery")).unwrap();
     let snapshot = nodecraft_format::decode_indexed(&index, storage.asset_context().unwrap()).unwrap();
+    let mut session = crate::Session::with_storage(snapshot, Box::new(storage)).unwrap();
     let runner = Arc::new(Held::default());
     let mut exports = Exports::default();
     exports.set_runner(runner.clone());
     let path = dir.path().join("result.txt");
     source.armed.store(true, Ordering::Release);
     let id = exports
-        .start(&snapshot.assets, Exported::Asset(AssetRef { hash, mime: "text/plain".parse().unwrap(), meta: Default::default() }), path.clone(), false)
+        .start(session.assets(), Exported::Asset(AssetRef { hash, mime: "text/plain".parse().unwrap(), meta: Default::default() }), path.clone(), false)
         .unwrap();
-    assert_eq!(snapshot.assets.context().storage_usage().unwrap().verified, 0);
+    assert_eq!(session.assets().context().storage_usage().unwrap().verified, 0);
     let job = runner.take();
     let worker = std::thread::spawn(move || job.run());
     waiting.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert_eq!(exports.status().unwrap().phase, ExportPhase::Checking);
+    // These previously returned Busy while the export held the shared context operation
+    // and staging gates. The first export source read is still blocked throughout.
+    let imported = session.import_asset(b"another accepted result").unwrap();
+    assert!(session.assets().contains(&imported));
+    session.dispatch("file.save_as", &serde_json::json!({"location":dir.path().join("live.ncraft")})).unwrap();
+    session.dispatch("file.save", &serde_json::json!({})).unwrap();
+    assert!(dir.path().join("live.ncraft").is_file());
+    let retained = session.assets().context().storage_usage().unwrap().verified;
     exports.cancel(id).unwrap(); // Must return while the source read remains blocked.
     assert!(!path.exists());
     release.send(()).unwrap();
     worker.join().unwrap();
     assert_eq!(exports.status().unwrap().result, Some(ExportResult::Cancelled));
     assert!(!path.exists());
-    assert_eq!(snapshot.assets.context().storage_usage().unwrap().verified, 0);
+    assert_eq!(session.assets().context().storage_usage().unwrap().verified, retained, "export scratch never publishes into live storage");
 }
 #[test]
 fn a_refused_or_panicking_runner_never_falls_back_to_inline_io() {

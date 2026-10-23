@@ -128,6 +128,7 @@ impl Completion {
 impl Drop for Completion {
     fn drop(&mut self) {
         if !self.finished {
+            self.lease = None;
             self.control.finish(
                 self.control.cancel.check().and_then(|()| Err(Error::new(ErrorKind::Internal, "the export worker stopped before finishing; export again"))),
             );

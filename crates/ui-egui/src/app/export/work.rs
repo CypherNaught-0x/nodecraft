@@ -112,7 +112,7 @@ impl NodeCraftApp {
         if !Arc::ptr_eq(&work.session, &self.session.view_identity()) {
             // Dropping the old Session cancels its retained job. Never cancel a receipt in
             // a replacement Session, whose local sequence may happen to have the same id.
-            self.notice = Some("Another project opened; the previous export was cancelled before finishing if possible.".into());
+            self.notice = Some("Another project opened; the previous export was cancelled if possible. Its last file may already have been written.".into());
             return;
         }
         let project_changed = work.project != self.session.document().id();
@@ -214,14 +214,18 @@ impl NodeCraftApp {
                     };
                     ui.label(phase);
                     ui.label(format!("{} ({} of {})", current.name, work.written.saturating_add(1), work.total));
-                    let button = ui.add_enabled(status.cancellable && !other_owner, egui::Button::new("Cancel export"));
+                    let button =
+                        ui.add_enabled(status.cancellable && !other_owner, egui::Button::new("Cancel export")).on_disabled_hover_text(if status.cancellable {
+                            "Finish the current text edit, menu or canvas gesture before cancelling."
+                        } else {
+                            "The export is finishing or has completed; it can no longer be cancelled."
+                        });
                     cancel = button.clicked()
                         && ui.input(|i| {
-                            i.events.len() <= 64
-                                && i.events.iter().all(|event| {
-                                    !matches!(event,
+                            i.events.iter().all(|event| {
+                                !matches!(event,
                     egui::Event::PointerButton {pos,button:egui::PointerButton::Primary,pressed:false,..} if !button.rect.contains(*pos))
-                                })
+                            })
                         });
                     if status.phase == ExportPhase::Finishing {
                         ui.label("Finishing cannot be cancelled.");
