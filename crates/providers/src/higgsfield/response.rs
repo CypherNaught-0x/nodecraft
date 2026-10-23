@@ -15,9 +15,12 @@ pub(super) fn detail(body: &[u8]) -> Option<String> {
         _ => None,
     }
 }
-/// Higgsfield's message, cleaned and shortened, unless it echoes the key.
+/// Higgsfield's message, cleaned and shortened, unless it echoes a credential or URL.
 pub(super) fn said(text: &str, leaks: impl Fn(&str) -> bool) -> String {
-    if leaks(text) {
+    // Provider detail, training failures and job status are untrusted. Withhold the entire
+    // message rather than attempt to trim query parameters (which may contain signed tokens).
+    let lower = text.to_ascii_lowercase();
+    if leaks(text) || lower.contains("http://") || lower.contains("https://") || lower.contains("www.") {
         return "(message withheld)".into();
     }
     text.chars().filter(|c| !c.is_control()).take(300).collect()

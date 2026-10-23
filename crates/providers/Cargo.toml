@@ -91,6 +91,8 @@ reqwest = { workspace = true, optional = true }
 # rsa's rand_core can still reach getrandom 0.2 through feature unification (ed25519 turns on
 # `signature/std`), and 0.2 only builds for the browser with its `js` backend. Never called.
 getrandom02 = { package = "getrandom", version = "=0.2.17", optional = true, features = ["js"] }
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = ["Window", "Performance"] }
 
 [dev-dependencies]
 # The local cfg(test) mock also compiles without the opt-in testkit feature.
