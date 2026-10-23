@@ -492,7 +492,7 @@ pub(crate) fn run(assets: &nodecraft_format::AssetStore, plan: &ExportPlan, host
     #[cfg(not(unix))]
     {
         let _ = (assets, plan, host);
-        return Err(unsupported("secure folder export requires descriptor-relative no-follow file operations on this platform"));
+        Err(unsupported("secure folder export requires descriptor-relative no-follow file operations on this platform"))
     }
     #[cfg(unix)]
     run_pinned(assets, plan, host.cancel(), &destination)

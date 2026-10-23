@@ -111,7 +111,10 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
 /// Copy one asset into a *held* file descriptor using the same verifying copy as history.export.
 /// Folder-granted exports provide their own descriptor-relative publication; they cannot use
 /// `write`'s path-based publication because a folder can be renamed concurrently.
-#[cfg(not(target_arch = "wasm32"))]
+///
+/// Unix only, like its only caller: the descriptor-relative writer in `local_export::secure` is
+/// the sole user, and elsewhere folder export is refused rather than done by a weaker path.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
 pub(crate) fn copy_asset_to(assets: &AssetStore, asset: &AssetRef, file: &mut std::fs::File) -> Result<u64, Error> {
     use nodecraft_format::asset_source::{StreamMetrics, TransferCancel};
     let cancel = TransferCancel::default();
