@@ -19,5 +19,6 @@ fn source_versions_are_bounded_unique_and_belong_to_their_result_item() {
     generation.source_versions = vec![source.clone()];
     assert!(generation.validate().is_err(), "fanned versions name their item");
     generation.source_versions = vec![source; MAX_SOURCE_VERSIONS + 1];
-    assert!(generation.validate().is_err(), "count rejected before inspecting/serializing records");
+    let refusal = generation.validate().unwrap_err();
+    assert!(refusal.message.contains("render fewer batch items or Timeline clips"), "count refused before inspecting/serializing records, with a remedy");
 }

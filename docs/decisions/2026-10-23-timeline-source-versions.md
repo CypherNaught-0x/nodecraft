@@ -23,6 +23,10 @@
   discard this evidence on resave; the frozen version-1 writer/reader refuses it, as it already
   refuses input hashes, item tags and provider settings. Equivalent cached outputs keep caching:
   cross-node copies re-plan only the recipient to bind the same content to its own clip ids.
+  The editor's current input listing is flattened, so it shows recorded per-item versions
+  without comparing them to that single current hash. The existing output staleness badge
+  remains the freshness indicator for a fanned result; differing item recipes alone must not
+  claim that a source changed.
 - **Warn without changing stored edits.** Before any run, the editor marks enabled, wired video
   or sound clips whose stored start/end exceed the current known source duration. It uses asset
   metadata while waiting for the existing video probe, then prefers the actual measured length

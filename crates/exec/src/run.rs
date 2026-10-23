@@ -1300,7 +1300,13 @@ impl Run {
         let settings = settings.into_iter().flatten().collect();
         let source_versions = source_versions.into_iter().flatten().collect();
         let generation = Generation {
-            id: self.generation_id(node, variant.unwrap_or(0)), outputs, input_hash, items: items.unwrap_or_default(), settings, source_versions, incomplete
+            id: self.generation_id(node, variant.unwrap_or(0)),
+            outputs,
+            input_hash,
+            items: items.unwrap_or_default(),
+            settings,
+            source_versions,
+            incomplete,
         };
         let generation = recordable(generation)?;
         if generation.incomplete.is_none() {

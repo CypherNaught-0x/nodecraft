@@ -90,7 +90,10 @@ impl Shown {
     }
 
     fn source_changed(&self) -> bool {
-        self.source_hash.is_some_and(|hash| self.rendered_sources.iter().any(|source| source.hash != hash))
+        // The current listing flattens inputs, whereas a fanned render records each item's
+        // recipe. Without the same item binding those hashes cannot be compared reliably.
+        !self.rendered_sources.iter().any(|source| source.item.is_some())
+            && self.source_hash.is_some_and(|hash| self.rendered_sources.iter().any(|source| source.hash != hash))
     }
 
     fn measured_length(&mut self, actual: Option<u64>) {
@@ -1319,6 +1322,21 @@ mod tests {
     fn shown(id: &str, in_us: u64, out_us: Option<u64>, video_us: Option<u64>, transition_us: u64) -> Shown {
         let clip = Clip { in_us, out_us, transition_us, ..Clip::whole(id.into(), "n".into(), 0) };
         Shown { clip, wired: true, media_us: video_us, video: None, source_hash: None, rendered_sources: Vec::new() }
+    }
+
+    #[test]
+    fn flattened_current_sources_do_not_claim_that_distinct_fanned_items_changed() {
+        let old = nodecraft_types::Blake3::from_bytes([1; 32]);
+        let current = nodecraft_types::Blake3::from_bytes([2; 32]);
+        let mut clip = shown("a", 0, None, Some(1_000_000), 0);
+        clip.source_hash = Some(current);
+        clip.rendered_sources.push(nodecraft_graph::SourceVersion { role: "a".into(), hash: old, item: None });
+        assert!(clip.source_changed(), "an ordinary changed source is still reported");
+        clip.rendered_sources[0].item = Some(0);
+        assert!(!clip.source_changed(), "one surviving batch item is still item-scoped");
+        clip.rendered_sources.push(nodecraft_graph::SourceVersion { role: "a".into(), hash: current, item: Some(1) });
+        assert!(!clip.source_changed(), "different batch recipes do not imply a source edit");
+        assert_eq!(clip.rendered_sources.len(), 2, "the per-item provenance remains visible");
     }
 
     #[test]

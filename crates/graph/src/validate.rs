@@ -94,7 +94,7 @@ fn generation_values(generation: &Generation) -> Result<(), Error> {
     }
     settings(generation)?;
     if generation.source_versions.len() > crate::MAX_SOURCE_VERSIONS {
-        return Err(invalid("generation exceeds source version limit"));
+        return Err(invalid("generation exceeds source version limit; render fewer batch items or Timeline clips"));
     }
     let mut roles = BTreeSet::new();
     for source in &generation.source_versions {
