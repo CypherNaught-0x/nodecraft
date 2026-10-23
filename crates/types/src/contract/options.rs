@@ -96,6 +96,8 @@ impl<'a> OptionList<'a> {
 
 struct List {
     choices: Vec<Choice>,
+    // The text budget includes the duplicate value strings. Row indices add one usize each,
+    // separately bounded by MAX_OPTIONS per list and MAX_OPTION_LISTS across the resource.
     values: BTreeMap<String, usize>,
     bytes: usize,
     identity: OptionListId,

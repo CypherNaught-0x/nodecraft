@@ -105,7 +105,7 @@ fn default_clears_a_stale_override_and_the_same_parameter_edit_is_undoable() {
     let mut h = harness(scene(Some("removed.safetensors"), choices()));
     let before = h.state().session.document().clone();
     open(&mut h);
-    h.get_by_label("Default").click();
+    h.get_by_label("Use default").click();
     h.run();
     assert_eq!(stored(h.state()), None, "clearing restores the optional parameter's default");
     assert_eq!(h.get_by_role_and_label(Role::ComboBox, "Checkpoint").accesskit_node().value().as_deref(), Some("Choose…"));
@@ -149,7 +149,31 @@ fn a_long_newly_visible_label_does_not_change_popup_width() {
 fn an_empty_known_list_can_clear_a_stale_value() {
     let mut h = harness(scene(Some("removed.safetensors"), Vec::new()));
     open(&mut h);
+    h.get_by_label("Use default").click();
+    h.run();
+    assert_eq!(stored(h.state()), None);
+}
+
+#[test]
+fn default_without_an_override_is_disabled_and_a_choice_named_default_is_distinct() {
+    let mut h = harness(scene(None, vec![Choice { value: "provider-default".into(), label: "Default".into() }]));
+    let before = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let can_undo = h.state().session.can_undo();
+    open(&mut h);
+    let reset = h.get_by_label("Use default");
+    assert!(reset.accesskit_node().is_disabled());
+    reset.click();
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().session.revision(), revision, "a disabled reset never dirties the document");
+    assert_eq!(h.state().session.can_undo(), can_undo, "no empty undo step");
     h.get_by_label("Default").click();
+    h.run();
+    assert_eq!(stored(h.state()), Some(Value::Text("provider-default".into())));
+    open(&mut h);
+    assert!(!h.get_by_label("Use default").accesskit_node().is_disabled());
+    h.get_by_label("Use default").click();
     h.run();
     assert_eq!(stored(h.state()), None);
 }

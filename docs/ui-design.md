@@ -113,9 +113,9 @@ message. Asset controls display/remove existing references; OS file drop and des
 
 Fetched option pickers open at the current choice. Their filter matches labels and stored
 values without editing the document, and shows progress while scanning a large list. Popup
-width stays fixed and long rows truncate. Default clears the stored override through the
+width stays fixed and long rows truncate. Use default clears the stored override through the
 same undoable parameter edit, including when the old value is no longer listed. Unknown lists
-keep the editable text control and Refresh guidance.
+keep the editable text control and Refresh guidance. Reset is disabled without a stored override.
 
 ## Level of detail and performance
 

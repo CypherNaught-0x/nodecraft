@@ -16,6 +16,7 @@ This bounds filtering work without claiming a frame rate across hardware or work
 The popup keeps the card control's width, truncates long rows, virtualizes its scroll area and
 starts at the current choice. Opening a different picker clears the query; refreshing the
 same list keeps the query and rebuilds its results. Filtering changes only view state.
-Choosing Default clears the stored override through the existing parameter edit, including
-undo. It remains available for stale values and known-empty lists. Unknown lists retain the
+Choosing Use default clears the stored override through the existing parameter edit, including
+undo. It is disabled when no override is stored, avoiding an empty undo step, and remains
+available for stale values and known-empty lists. Unknown lists retain the
 existing editable text and Refresh guidance described in the option-source decisions.

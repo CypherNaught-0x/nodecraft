@@ -55,7 +55,7 @@ pub const UNFETCHED_HINT: &str = "Type a value, or run Refresh option lists to p
 
 /// A combo box over `choices`. A stored value off the list is shown as it is and marked, never
 /// replaced; only picking a choice edits the parameter.
-pub fn picker(ui: &mut egui::Ui, choices: OptionList<'_>, value: Option<&Value>, label: egui::Id, t: &Tokens) -> Option<Option<Value>> {
+pub fn picker(ui: &mut egui::Ui, choices: OptionList<'_>, value: Option<&Value>, overridden: bool, label: egui::Id, t: &Tokens) -> Option<Option<Value>> {
     let current = match value {
         Some(Value::Text(text)) => text.as_str(),
         _ => "",
@@ -70,7 +70,7 @@ pub fn picker(ui: &mut egui::Ui, choices: OptionList<'_>, value: Option<&Value>,
     };
     let text = if stale { egui::RichText::new(shown).color(t.danger) } else { egui::RichText::new(shown) };
     let mut edited = None;
-    // ComboBox stores an IdSalt before deriving its button id; use the same salt here.
+    // egui 0.36.2 ComboBox stores an IdSalt before deriving its button id; use the same salt here.
     let id = ui.make_persistent_id(egui::IdSalt::new("option_list"));
     let was_open = egui::ComboBox::is_open(ui.ctx(), id);
     let width = ui.available_width();
@@ -115,7 +115,11 @@ pub fn picker(ui: &mut egui::Ui, choices: OptionList<'_>, value: Option<&Value>,
                 state.filter.query_changed();
             }
             state.filter.advance(choices);
-            if ui.add_sized([ui.available_width(), row], egui::Button::new("Default")).on_hover_text("Use the parameter's default").clicked() {
+            if ui
+                .add_enabled(overridden, egui::Button::new("Use default").min_size(egui::vec2(ui.available_width(), row)))
+                .on_hover_text("Use the parameter's default")
+                .clicked()
+            {
                 edited = Some(None);
                 ui.close();
             }

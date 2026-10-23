@@ -475,7 +475,10 @@ pub fn show(
                                 let text = value.is_none_or(|value| matches!(value, Value::Text(_)));
                                 let choices = list.filter(|_| text).and_then(|list| list.choices(lists));
                                 let changed = match choices {
-                                    Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, label.id, t)).inner,
+                                    Some(choices) => {
+                                        ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, node.params.contains_key(&spec.name), label.id, t))
+                                            .inner
+                                    }
                                     None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
                                     None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
                                 };
