@@ -24,7 +24,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18) | 19/30 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 7/12 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 4/8 |
-| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence pending | 6/14 |
+| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120) | 7/14 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial | 1/27 |
 
 ## What works today
@@ -153,8 +153,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   #121), and canvases kept private (`canvas.set_private`) stay out of the room. The app's Share
   chip shares a project and shows its join link on request; Join opens a shared project in a new
   window, and a dropped connection reconnects on its own (`share.start`, `share.join`,
-  `share.stop`, `share.status`, #698). The relay is reached over `ws://` only, the browser build
-  has no transport yet, and there is no presence.
+  `share.stop`, `share.status`, #698). Everyone in a shared project sees the others' pointers
+  with their names, outlines round the cards they have selected, and their initials beside the
+  Share chip, which take you to them (#120). The relay is reached over `ws://` only, and the
+  browser build has no transport yet.
 - **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,
   the Layer Editor, Elements and PDF cards have shipped in some form. The first signed release
   (#100), typed nested descriptor records/lists (#528), and browser option-list parity (#721)

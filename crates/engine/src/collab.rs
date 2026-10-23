@@ -20,6 +20,9 @@
 //! An asset too large for one frame comes in parts into a [`Spool`] (#700): a host that can
 //! write files gives the session one that keeps them on disk ([`Collab::with_spool`]).
 //!
+//! Each peer also says where it is ([`Collab::set_presence`], #120), and hears where the others
+//! are ([`Collab::people`]); none of that touches the session.
+//!
 //! A canvas marked private stays out of the shared document: the room sees the project
 //! without it ([`shared`]), each settle keeps it as the session has it, and no asset is given
 //! out that only it uses.
@@ -27,7 +30,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use nodecraft_graph::{CanvasKind, Change, Changeset, Node, Project, diff};
-use nodecraft_sync::{CommentChange, Frame, LinkKey, Materialized, Mirror, PROTOCOL, Role, RoomId};
+use nodecraft_sync::{CommentChange, Frame, LinkKey, Materialized, Mirror, PROTOCOL, Person, Presence, Role, RoomId};
 use nodecraft_types::{Blake3, CanvasId, Error, ErrorKind, ProjectId};
 
 use crate::access::Access;
@@ -51,6 +54,8 @@ const MAX_WANTED: usize = 4096;
 const ANSWERED_PER_PUBLISH: usize = 2;
 /// The most discussion changes waiting for the relay before the commenter's next ones wait too.
 const MAX_PENDING: usize = 256;
+/// The most other people kept track of; a relay lets fewer into a room.
+const MAX_PEOPLE: usize = 64;
 /// The most of a relay's reason shown to the person.
 const MAX_REASON_BYTES: usize = 200;
 
@@ -105,6 +110,10 @@ pub struct Collab {
     /// What the last plan kept back of a private canvas the shared document still held, for
     /// [`Collab::taken`] to take out of it again.
     lingering: Vec<nodecraft_graph::Canvas>,
+    /// Where this session last said it is, said again on each new connection.
+    presence: Option<Presence>,
+    /// Where the others in the room are, by peer.
+    people: BTreeMap<u64, Person>,
 }
 
 /// What [`Collab::plan`] reads of a session: its document at `revision`, and which assets it
@@ -269,6 +278,8 @@ impl Collab {
             clash: None,
             clash_said: None,
             lingering: Vec::new(),
+            presence: None,
+            people: BTreeMap::new(),
         }
     }
 
@@ -330,11 +341,14 @@ impl Collab {
     /// The first frame on each new connection. Assets asked for on an earlier one are asked
     /// for again, the owner's links are sent again, and a commenter's unanswered changes go
     /// again once the relay has welcomed it.
+    /// Where this session last said it is goes again too; who else was there is forgotten
+    /// until the relay says again.
     pub fn hello(&mut self) -> Frame {
         self.asked.clear();
         self.unsettled = true;
         self.sent_pending = false;
-        match &self.entry {
+        self.people.clear();
+        let hello = match &self.entry {
             Entry::Room(room) => {
                 self.outbox = self.links.again();
                 Frame::Hello { protocol: PROTOCOL, room: room.clone() }
@@ -344,7 +358,28 @@ impl Collab {
                 self.role = None;
                 Frame::HelloLink { protocol: PROTOCOL, link: link.clone() }
             }
+        };
+        self.outbox.retain(|frame| !matches!(frame, Frame::Presence(_)));
+        if let Some(presence) = &self.presence {
+            self.outbox.push(Frame::Presence(presence.clone()));
         }
+        hello
+    }
+
+    /// Says where this session is: the frame to send, or `None` when it hasn't moved. A
+    /// presence that wouldn't pass the relay's checks is refused here.
+    pub fn set_presence(&mut self, presence: Presence) -> Result<Option<Frame>, Error> {
+        presence.validate()?;
+        if self.presence.as_ref() == Some(&presence) {
+            return Ok(None);
+        }
+        self.presence = Some(presence.clone());
+        Ok(Some(Frame::Presence(presence)))
+    }
+
+    /// The others in the room who have said where they are, by peer.
+    pub fn people(&self) -> impl Iterator<Item = &Person> {
+        self.people.values()
     }
 
     /// The project shared in the room, once its first update has arrived.
@@ -474,6 +509,16 @@ impl Collab {
                 self.unsettled = true;
                 Ok(Vec::new())
             }
+            Frame::Person(person) => {
+                if self.people.len() < MAX_PEOPLE || self.people.contains_key(&person.peer) {
+                    self.people.insert(person.peer, *person);
+                }
+                Ok(Vec::new())
+            }
+            Frame::Gone(peer) => {
+                self.people.remove(&peer);
+                Ok(Vec::new())
+            }
             Frame::Refused(reason) => Err(Error::new(ErrorKind::Conflict, format!("the relay ended the shared session: {}", shown(&reason)))),
             Frame::Step1(_)
             | Frame::Step2(_)
@@ -484,7 +529,8 @@ impl Collab {
             | Frame::HelloLink { .. }
             | Frame::LinkPut { .. }
             | Frame::LinkRevoke(_)
-            | Frame::CommentPut { .. } => Err(Error::new(ErrorKind::InvalidInput, "the relay sent a frame it doesn't send")),
+            | Frame::CommentPut { .. }
+            | Frame::Presence(_) => Err(Error::new(ErrorKind::InvalidInput, "the relay sent a frame it doesn't send")),
         }
     }
 

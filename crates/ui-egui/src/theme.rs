@@ -56,6 +56,17 @@ pub struct Tokens {
     pub waveform: Color32,
 
     pub tag_colors: [Color32; 8],
+    /// Each other person in a shared project (#120): their pointer, name and selection, picked
+    /// by their place in the room.
+    pub presence_colors: [Color32; 8],
+    /// The name on a person's pointer, over their colour.
+    pub presence_ink: Color32,
+    /// How tall another person's pointer is drawn, in screen points.
+    pub presence_pointer: f32,
+    /// The outline round a card another person has selected.
+    pub presence_ring: f32,
+    /// The size of a person's initial beside the Share chip.
+    pub presence_avatar: f32,
     pub tag_marker_width: f32,
     pub tag_panel_width: f32,
     pub tag_panel_height: f32,
@@ -191,6 +202,20 @@ pub const DARK: Tokens = Tokens {
     wire_document: Color32::from_rgb(0xa0, 0xa0, 0xa8),
     wire_style: Color32::from_rgb(0xe0, 0x6f, 0xa8),
     waveform: Color32::from_rgb(0x5c, 0x5c, 0x66),
+    presence_colors: [
+        Color32::from_rgb(255, 122, 104),
+        Color32::from_rgb(255, 184, 77),
+        Color32::from_rgb(120, 214, 120),
+        Color32::from_rgb(77, 208, 225),
+        Color32::from_rgb(130, 160, 255),
+        Color32::from_rgb(200, 130, 255),
+        Color32::from_rgb(255, 128, 196),
+        Color32::from_rgb(220, 220, 110),
+    ],
+    presence_ink: Color32::from_rgb(0x16, 0x16, 0x1a),
+    presence_pointer: 20.0,
+    presence_ring: 2.0,
+    presence_avatar: 20.0,
     tag_colors: [
         Color32::from_rgb(238, 112, 122),
         Color32::from_rgb(235, 162, 94),
@@ -308,6 +333,20 @@ pub const LIGHT: Tokens = Tokens {
     wire_document: Color32::from_rgb(0x6b, 0x6b, 0x74),
     wire_style: Color32::from_rgb(0xa8, 0x2f, 0x6c),
     waveform: Color32::from_rgb(0xa8, 0xa8, 0xb2),
+    presence_colors: [
+        Color32::from_rgb(196, 52, 40),
+        Color32::from_rgb(168, 92, 0),
+        Color32::from_rgb(30, 122, 40),
+        Color32::from_rgb(0, 112, 132),
+        Color32::from_rgb(52, 82, 196),
+        Color32::from_rgb(124, 52, 186),
+        Color32::from_rgb(178, 36, 120),
+        Color32::from_rgb(110, 104, 0),
+    ],
+    presence_ink: Color32::WHITE,
+    presence_pointer: 20.0,
+    presence_ring: 2.0,
+    presence_avatar: 20.0,
     tag_colors: [
         Color32::from_rgb(163, 45, 59),
         Color32::from_rgb(151, 79, 20),

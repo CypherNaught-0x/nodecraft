@@ -70,8 +70,9 @@ fn serve(peer: Peer, stream: TcpStream, peers: &Peers) {
             Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
             Err(_) => {
                 let mut peers = peers.lock().unwrap();
-                peers.1.remove(&peer);
-                peers.0.leave(peer);
+                let (room, to) = &mut *peers;
+                to.remove(&peer);
+                deliver(room.leave(peer), to);
                 return;
             }
         }
@@ -337,6 +338,91 @@ fn share698_visual() {
             .with_max_steps(60)
             .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), owner);
         crate::theme::apply(&shot.ctx, theme);
+        shot.run();
+        shot.render().unwrap().save(dir.join(name)).unwrap();
+        owner = shot.into_state();
+    }
+}
+
+fn people(app: &NodeCraftApp) -> Vec<nodecraft_sync::Person> {
+    app.sharing.as_ref().and_then(|sharing| sharing.live.as_ref()).map(|live| live.status.people.clone()).unwrap_or_default()
+}
+
+#[test]
+fn each_person_sees_where_the_others_are_until_they_leave() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let relay = relay();
+    let mut owner = app(&opened);
+    owner.session.dispatch("share.start", &json!({"relay": relay})).unwrap();
+    until(&mut [&mut owner], |apps| chip(apps[0]) == "Live");
+    let note = NodeId::from_bytes([0x6a; 16]);
+    text_note(&mut owner, note);
+    let mut joiner = app(&opened);
+    joiner.join_live(&egui::Context::default(), &link(&owner)).unwrap();
+    until(&mut [&mut owner, &mut joiner], |apps| holds(apps[1], note) && chip(apps[1]) == "Live");
+    // The owner selects the note: the joiner sees it, under the name the relay gives.
+    owner.selection.only(note);
+    until(&mut [&mut owner, &mut joiner], |apps| people(apps[1]).first().is_some_and(|person| person.presence.selection == vec![note]));
+    let seen = joiner.session.dispatch("share.status", &json!({})).unwrap()["people"].clone();
+    assert_eq!(seen, json!([{"peer": seen[0]["peer"], "name": "Owner", "role": "owner", "canvas": owner.canvas, "cursor": null, "selected": 1}]));
+    // And the owner sees the joiner, on the canvas it opened.
+    until(&mut [&mut owner, &mut joiner], |apps| people(apps[0]).len() == 1);
+    assert_eq!(people(&owner)[0].presence.canvas, Some(joiner.canvas));
+    // Once the joiner leaves, it is gone for the owner.
+    joiner.session.dispatch("share.stop", &json!({})).unwrap();
+    until(&mut [&mut owner, &mut joiner], |apps| people(apps[0]).is_empty());
+}
+
+/// An owner sharing live, seeing a person called Robin pointing at `at` with `note` selected.
+fn seen_by_owner(opened: &Rc<RefCell<Vec<String>>>, note: NodeId, at: [f32; 2]) -> NodeCraftApp {
+    let mut owner = app(opened);
+    owner.session.dispatch("share.start", &json!({"relay": relay()})).unwrap();
+    until(&mut [&mut owner], |apps| chip(apps[0]) == "Live");
+    text_note(&mut owner, note);
+    let presence = nodecraft_sync::Presence { canvas: Some(owner.canvas), cursor: Some(at), selection: vec![note] };
+    // The harness doesn't tick sharing, so nothing reported replaces this.
+    live(&mut owner).status.people = vec![nodecraft_sync::Person { peer: 3, name: "Robin".into(), role: Role::Edit, presence }];
+    owner
+}
+
+#[test]
+fn another_persons_initial_takes_you_to_their_pointer() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let at = [4000.0, -2500.0];
+    let owner = seen_by_owner(&opened, NodeId::from_bytes([0x6b; 16]), at);
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1200.0, 800.0))
+        .with_max_steps(60)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), owner);
+    h.run();
+    use egui_kittest::kittest::Queryable;
+    h.get_by_label("Robin").click();
+    h.run();
+    let app = h.state();
+    let centre = app.view.to_screen(app.viewport.min, egui::pos2(at[0], at[1]));
+    assert!((centre - app.viewport.center()).length() < 1.0, "{centre:?} isn't the middle of {:?}", app.viewport);
+}
+
+#[test]
+#[ignore = "manual public-safe capture; PRESENCE120_RENDER_DIR"]
+fn presence120_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("PRESENCE120_RENDER_DIR").unwrap());
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let note = NodeId::from_bytes([0x6c; 16]);
+    let mut owner = seen_by_owner(&opened, note, [0.0, 0.0]);
+    for (theme, name) in [(crate::theme::ThemeKind::Dark, "presence120-dark.png"), (crate::theme::ThemeKind::Light, "presence120-light.png")] {
+        owner.theme = theme;
+        let mut shot = egui_kittest::Harness::builder()
+            .wgpu()
+            .with_size(Vec2::new(1200.0, 800.0))
+            .with_max_steps(60)
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), owner);
+        crate::theme::apply(&shot.ctx, theme);
+        shot.run();
+        // Robin points just past the note's corner.
+        let card = shot.state().painted.get(&note).copied().unwrap();
+        let people = &mut live(shot.state_mut()).status.people;
+        people[0].presence.cursor = Some([card.max.x + 30.0, card.center().y]);
         shot.run();
         shot.render().unwrap().save(dir.join(name)).unwrap();
         owner = shot.into_state();

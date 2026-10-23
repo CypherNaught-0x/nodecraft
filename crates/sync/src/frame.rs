@@ -8,11 +8,12 @@ use nodecraft_graph::Comment;
 use nodecraft_types::{CanvasId, CommentId, Error, ErrorKind};
 use serde::{Deserialize, Serialize};
 
+use crate::presence::{Person, Presence};
 use crate::role::{Grant, Role};
 
 /// The protocol version a hello names; a relay refuses any other. 2 added share links (#121),
-/// 3 assets in parts (#700).
-pub const PROTOCOL: u32 = 3;
+/// 3 assets in parts (#700), 4 presence (#120).
+pub const PROTOCOL: u32 = 4;
 /// The largest update a frame carries: a whole shared project, as a late joiner receives it.
 pub const MAX_UPDATE_BYTES: usize = 64 << 20;
 /// The largest asset a frame carries, the same as the project's own asset limit.
@@ -47,6 +48,9 @@ const COMMENT_PUT: u8 = 11;
 const COMMENT_DONE: u8 = 12;
 const ASSET_PART: u8 = 13;
 const ASSET_FROM: u8 = 14;
+const PRESENCE: u8 = 15;
+const PERSON: u8 = 16;
+const GONE: u8 = 17;
 
 /// A room's name, which is also what lets a peer in: 32 random bytes, shared only with the people
 /// invited, so it can't be guessed.
@@ -208,6 +212,12 @@ pub enum Frame {
     /// the update holding them came first. `refused` says why the put `seq` wasn't the
     /// commenter's to make: it is dropped, and they stay in the room.
     CommentDone { seq: u64, refused: Option<String> },
+    /// Where this peer is now (#120); the relay passes it on to the others as a [`Frame::Person`].
+    Presence(Presence),
+    /// The relay to a peer: someone else in the room, and where they are.
+    Person(Box<Person>),
+    /// The relay to a peer: this one has left.
+    Gone(u64),
 }
 
 impl Frame {
@@ -262,6 +272,9 @@ impl Frame {
                 body.extend_from_slice(checked(refused.as_deref().unwrap_or_default().as_bytes(), MAX_SMALL_BYTES, "reason")?);
                 (COMMENT_DONE, body)
             }
+            Self::Presence(presence) => (PRESENCE, checked(&body(presence)?, MAX_PRESENCE_BYTES, "presence")?.to_vec()),
+            Self::Person(person) => (PERSON, checked(&body(person)?, MAX_PRESENCE_BYTES, "presence")?.to_vec()),
+            Self::Gone(peer) => (GONE, peer.to_le_bytes().to_vec()),
         };
         let mut frame = Vec::with_capacity(body.len().saturating_add(1));
         frame.push(tag);
@@ -340,6 +353,22 @@ impl Frame {
                 let refused = (!reason.is_empty()).then(|| String::from_utf8_lossy(reason).into_owned());
                 Self::CommentDone { seq, refused }
             }
+            PRESENCE => {
+                let presence: Presence =
+                    serde_json::from_slice(checked(body, MAX_PRESENCE_BYTES, "presence")?).map_err(|_| invalid("the presence isn't readable"))?;
+                presence.validate()?;
+                Self::Presence(presence)
+            }
+            PERSON => {
+                let person: Person =
+                    serde_json::from_slice(checked(body, MAX_PRESENCE_BYTES, "presence")?).map_err(|_| invalid("the presence isn't readable"))?;
+                person.presence.validate()?;
+                if person.name.trim().is_empty() || person.name.chars().count() > MAX_NAME_CHARS {
+                    return Err(invalid("the person's name isn't readable"));
+                }
+                Self::Person(Box::new(person))
+            }
+            GONE => Self::Gone(u64::from_le_bytes(body.try_into().map_err(|_| invalid("the departure isn't readable"))?)),
             _ => return Err(invalid("a frame of an unknown kind")),
         })
     }
@@ -350,6 +379,10 @@ impl Frame {
 const MAX_COMMENT_FRAME_BYTES: usize = 16 << 20;
 /// The largest hello, welcome or link frame.
 const MAX_SMALL_BYTES: usize = 4096;
+/// The largest presence: a full selection of ids, written as JSON.
+const MAX_PRESENCE_BYTES: usize = 16 << 10;
+/// The longest name a person is shown by.
+const MAX_NAME_CHARS: usize = 200;
 
 /// A part's hash, total and offset.
 const PART_HEAD: usize = HASH + 16;
@@ -447,6 +480,18 @@ mod tests {
             },
             Frame::CommentDone { seq: 4, refused: None },
             Frame::CommentDone { seq: 5, refused: Some("not yours".into()) },
+            Frame::Presence(Presence::default()),
+            Frame::Person(Box::new(Person {
+                peer: 3,
+                name: "Ana".into(),
+                role: Role::Edit,
+                presence: Presence {
+                    canvas: Some(CanvasId::from_bytes([1; 16])),
+                    cursor: Some([1.5, -2.0]),
+                    selection: vec![nodecraft_types::NodeId::from_bytes([2; 16]); crate::presence::MAX_SELECTION],
+                },
+            })),
+            Frame::Gone(3),
         ] {
             assert_eq!(Frame::decode(&frame.encode().unwrap()).unwrap(), frame);
         }
@@ -504,6 +549,20 @@ mod tests {
             frame.extend(serde_json::to_vec(&LinkPut { hash: hex(&[1; 32]), grant }).unwrap());
             assert!(Frame::decode(&frame).is_err());
         }
+    }
+
+    #[test]
+    fn a_presence_that_isnt_on_a_canvas_or_a_nameless_person_doesnt_decode() {
+        for body in [r#"{"cursor":[1.0,2.0]}"#, r#"{"canvas":"01010101-0101-0101-0101-010101010101","cursor":[1e30,0.0]}"#, r#"{"canvas":null,"extra":1}"#] {
+            let mut frame = vec![PRESENCE];
+            frame.extend_from_slice(body.as_bytes());
+            assert!(Frame::decode(&frame).is_err(), "{body}");
+        }
+        let person = Person { peer: 1, name: "  ".into(), role: Role::View, presence: Presence::default() };
+        let mut frame = vec![PERSON];
+        frame.extend(serde_json::to_vec(&person).unwrap());
+        assert!(Frame::decode(&frame).is_err());
+        assert!(Frame::decode(&[GONE, 1, 2]).is_err());
     }
 
     proptest! {

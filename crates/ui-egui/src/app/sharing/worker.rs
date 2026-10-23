@@ -11,7 +11,7 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use nodecraft_engine::collab::{Collab, Out, Plan, Stretch, View};
 use nodecraft_graph::Project;
-use nodecraft_sync::{Frame, Role};
+use nodecraft_sync::{Frame, Person, Presence, Role};
 use nodecraft_types::{Blake3, Error, ErrorKind, ProjectId};
 
 use super::Event;
@@ -33,6 +33,8 @@ enum Ask {
         document: Option<Project>,
         applied: bool,
     },
+    /// Where this person is now (#120).
+    Presence(Presence),
     /// The window let go: the thread ends, and the connection with it.
     #[cfg(not(target_arch = "wasm32"))]
     Stop,
@@ -56,6 +58,8 @@ pub(super) struct Status {
     pub(super) unusable_assets: usize,
     pub(super) caught_up: bool,
     pub(super) project_id: Option<ProjectId>,
+    /// The others who have said where they are.
+    pub(super) people: Vec<Person>,
 }
 
 /// What the thread tells the window.
@@ -74,6 +78,8 @@ pub(super) struct Report {
     pub(super) ended: Option<String>,
     /// Something came in that the next turn settles.
     pub(super) dirty: bool,
+    /// Someone moved, came or went: only what is drawn changes.
+    pub(super) moved: bool,
 }
 
 /// The window's end. Dropping it ends the thread, and with it the connection.
@@ -227,6 +233,11 @@ impl Worker {
         if frames.is_empty() { Ok(()) } else { self.ask(Ask::Queue(frames)) }
     }
 
+    /// Says where this person is; the thread sends it only if it changed.
+    pub(super) fn presence(&self, presence: Presence) -> Result<(), String> {
+        self.ask(Ask::Presence(presence))
+    }
+
     /// Frames for connection `n` now, if it is still the open one.
     pub(super) fn send(&self, n: u64, frames: Vec<Frame>) -> Result<(), String> {
         if frames.is_empty() { Ok(()) } else { self.ask(Ask::Send(n, frames)) }
@@ -268,7 +279,7 @@ fn work(thread: &mut Thread, collab: &mut Collab, asks: Vec<Ask>) -> (Option<Rep
     let mut report = Report::default();
     let mut quiet = true;
     for ask in asks {
-        quiet &= matches!(ask, Ask::Wake);
+        quiet &= matches!(ask, Ask::Wake | Ask::Presence(_));
         if let Err(error) = thread.handle(collab, ask, &mut report) {
             report.ended = Some(error.message);
             break;
@@ -282,7 +293,7 @@ fn work(thread: &mut Thread, collab: &mut Collab, asks: Vec<Ask>) -> (Option<Rep
     report.notices.extend(collab.take_refusal().map(|why| format!("The relay didn't take a change to a discussion: {why}")));
     report.notices.extend(collab.take_clash());
     // A wake that brought nothing needn't wake the window.
-    let news = !quiet || report.dirty || !report.events.is_empty() || report.ended.is_some() || !report.notices.is_empty();
+    let news = !quiet || report.dirty || report.moved || !report.events.is_empty() || report.ended.is_some() || !report.notices.is_empty();
     (news.then_some(report), ended)
 }
 
@@ -310,9 +321,16 @@ impl Thread {
                             if self.n.is_none() {
                                 continue;
                             }
-                            let replies = Frame::decode(&bytes).and_then(|frame| collab.receive(frame))?;
+                            let frame = Frame::decode(&bytes)?;
+                            // Where the others are changes nothing to settle.
+                            let moved = matches!(frame, Frame::Person(_) | Frame::Gone(_));
+                            let replies = collab.receive(frame)?;
                             self.send(replies)?;
-                            report.dirty = true;
+                            if moved {
+                                report.moved = true;
+                            } else {
+                                report.dirty = true;
+                            }
                         }
                         Event::Dropped { why, retry } => {
                             self.n = None;
@@ -328,6 +346,12 @@ impl Thread {
             Ask::Send(n, frames) => {
                 for frame in frames {
                     self.connection.send(n, frame.encode()?);
+                }
+            }
+            Ask::Presence(presence) => {
+                // The window checks it first; one that still doesn't pass just isn't said.
+                if let Ok(Some(frame)) = collab.set_presence(presence) {
+                    self.send(vec![frame])?;
                 }
             }
             // Handled before it gets here.
@@ -387,5 +411,6 @@ fn status(collab: &mut Collab) -> Result<Status, Error> {
         unusable_assets: collab.unusable_assets(),
         caught_up: collab.caught_up(),
         project_id: collab.project_id()?,
+        people: collab.people().cloned().collect(),
     })
 }
