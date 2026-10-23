@@ -130,6 +130,24 @@ pub struct PlanCtx<'a> {
     pub targets: &'a nodecraft_types::TargetSelection,
 }
 
+/// Already-budgeted facts about one connected input whose upstream steps may still be running.
+/// `known` borrows the top-level values the fully folded input will contain. Counts describe
+/// that input's elements: an unresolved scalar contributes one, an unresolved list zero or more.
+#[derive(Debug)]
+pub struct InputFacts<'a> {
+    pub port: &'a str,
+    pub port_type: PortType,
+    pub known: Vec<&'a Value>,
+    pub min_count: usize,
+    pub max_count: Option<usize>,
+}
+
+#[derive(Debug)]
+pub struct PreflightCtx<'a> {
+    pub node: &'a Node,
+    pub inputs: &'a [InputFacts<'a>],
+}
+
 /// Pure job descriptions consumed by the run planner. Source jobs emit existing values/assets;
 /// they perform no decoding, filesystem access or paid provider calls. Generate jobs call a model
 /// through a provider adapter (#79): the host uses the authorized captured target binding,
@@ -278,6 +296,12 @@ pub trait NodeKind: Send + Sync {
     fn instance_mode(&self, node: &Node, inputs: &[PortType]) -> Result<Option<ModeId>, Error> {
         self.resolve_instance(node)?;
         Ok(self.mode(inputs))
+    }
+    /// Refuse an input problem already proven before upstream work is admitted. This is pure
+    /// and conservative: unavailable values must not be treated as absent. The complete plan
+    /// still runs after all inputs arrive. Legacy kinds need no partial-input implementation.
+    fn check_known_inputs(&self, _ctx: &PreflightCtx<'_>) -> Result<(), Error> {
+        Ok(())
     }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error>;
 }

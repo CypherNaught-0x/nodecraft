@@ -111,6 +111,13 @@ and schema values. An unconfigured media source can exist on the canvas but retu
 when planned. The source graph fixture verifies each output and graph serialization/undo.
 Actual graph-card rendering and generated controls are wired by the canvas issues.
 
+When an input is deferred, `NodeKind::check_known_inputs` can refuse an already-proven problem
+from borrowed `InputFacts`, without constructing a partial job. Generation considers every mode
+whose counts still fit those facts and shares its media-bound validators with complete planning.
+Unknown list cardinality remains unknown; every fanout cell is checked. The default hook does
+nothing, and complete planning still validates all inputs once they arrive. See the
+[known-media admission decision](decisions/2026-10-23-known-media-before-upstream-runs.md).
+
 The shared `ParamSchema` lives in `types` and is re-exported by `nodes`, allowing the model
 catalog to reuse it without a same-layer dependency. Its controls describe text, choice, toggle,
 slider, integer, colour, model, seed and asset fields. `resolve(values, ready)` validates supplied
