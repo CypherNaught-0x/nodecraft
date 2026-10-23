@@ -19,7 +19,12 @@
   canvas asks for cards. After a restart a variation can land after its later siblings; with
   `later` it is inserted before the first one already in the history and doesn't take over the
   active result, so the order and the active result are the same as an uninterrupted run. In card
-  mode such a variation goes on a card instead.
+  mode such a variation goes on a card instead. A restart only knows which variations come
+  later, not whether they will finish: if the last one fails after a restart, the ones before it
+  still go on cards (or, in history mode, the last to land is active). Nothing is lost; the
+  layout differs from an uninterrupted run only then.
+- **A card copies the source as it is when the result is recorded**, not as it was when the run
+  started; a source edited mid-run gives a card that is stale at once, like the source itself.
 - **A fixed seed is a warning, not a refusal.** A seed parameter that is set (or defaults to a
   fixed value) is sent unchanged to every variation, so a deterministic model returns the same
   result N times at N times the price. The card shows "same seed" once the count is above one,

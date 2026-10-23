@@ -371,6 +371,7 @@ fn alike(catalog: &Catalog, canvas: &nodecraft_graph::Canvas, steps: &[StepQuote
                 return None;
             }
             let mut seeds: Vec<String> = step.models.iter().filter_map(|id| catalog.get(id)?.pinned_seeds(&node.params, false).ok()).flatten().collect();
+            seeds.sort();
             seeds.dedup();
             (!seeds.is_empty()).then(|| json!({"node": step.node, "variations": variations, "seeds": seeds}))
         })
@@ -787,6 +788,7 @@ fn run_record(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
     let mut seen = BTreeSet::new();
     let mut changes = Vec::new();
+    let mut placed = Vec::new();
     for result in p.results {
         if !seen.insert(result.node) {
             return Err(invalid("a node is recorded twice"));
@@ -800,7 +802,7 @@ fn run_record(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
                 if result.keep || !seen.insert(card) {
                     return Err(invalid("a variation's card is recorded once, and not kept by hand"));
                 }
-                crate::variation_cmds::card_changes(p.canvas, canvas, node, card, result.generation)?
+                crate::variation_cmds::card_changes(p.canvas, canvas, node, card, result.generation, &mut placed)?
             }
             None if result.keep => keep_changes(p.canvas, node, result.generation)?,
             None if !result.later.is_empty() => record_before_changes(p.canvas, node, result.generation, &result.later)?,

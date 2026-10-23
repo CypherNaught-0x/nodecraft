@@ -835,3 +835,32 @@ fn variations_with_a_pinned_seed_are_flagged_on_the_card_and_in_the_quote() {
     frames_until(&mut h, |app| app.run_confirm.is_some());
     assert!(h.query_by_label(super::generate::ALIKE).is_some(), "the quote warns before anything is spent");
 }
+
+/// The same app, drawn by wgpu in the dark theme, for a screenshot.
+fn drawn(h: Harness<'static, NodeCraftApp>) -> Harness<'static, NodeCraftApp> {
+    let app = h.into_state();
+    let mut h = Harness::builder().wgpu().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run();
+    h
+}
+
+#[test]
+#[ignore = "manual public-safe capture; VARIATIONS808_RENDER_DIR"]
+fn variations808_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("VARIATIONS808_RENDER_DIR").unwrap());
+    let mut h = drawn(three_variations(true));
+    press(&mut h, Role::Button, "Fit all");
+    h.run();
+    h.render().unwrap().save(dir.join("variations808-cards.png")).unwrap();
+    let mut h = scene_in(SEEDED, "mock-seeded", making(image(MockModel::new(MockOutput::Image))), |_, _| {});
+    press(&mut h, Role::Button, "More variations");
+    press(&mut h, Role::Button, "More variations");
+    let mut h = drawn(h);
+    h.state_mut().selection.only(N);
+    h.run();
+    h.render().unwrap().save(dir.join("variations808-same-seed.png")).unwrap();
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    h.render().unwrap().save(dir.join("variations808-quote.png")).unwrap();
+}

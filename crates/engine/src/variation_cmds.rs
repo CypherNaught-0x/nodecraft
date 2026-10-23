@@ -56,16 +56,18 @@ fn variations_set(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 
 /// How far right of its source a variation's card goes, and how far down each taken spot moves it.
 const CARD_STEP_X: f32 = 360.0;
-const CARD_STEP_Y: f32 = 280.0;
+/// Taller than the tallest card (a media card with its prompt), so stacked cards never overlap.
+const CARD_STEP_Y: f32 = 600.0;
 /// Spots tried below the first before a card goes on the last one anyway.
 const MAX_CARD_TRIES: u16 = 64;
 /// The canvas extent positions may use (as `node.move`).
 const MAX_COORDINATE: f32 = 10_000_000.0;
 
 /// The first spot right of `source` that no card takes, stepping down past taken ones.
-fn free_spot(canvas: &Canvas, source: &Node) -> Position {
+fn free_spot(canvas: &Canvas, source: &Node, placed: &[Position]) -> Position {
     let x = (source.pos.x + CARD_STEP_X).clamp(-MAX_COORDINATE, MAX_COORDINATE);
-    let taken = |y: f32| canvas.nodes().values().any(|n| (n.pos.x - x).abs() < CARD_STEP_X && (n.pos.y - y).abs() < CARD_STEP_Y);
+    let near = |pos: &Position, y: f32| (pos.x - x).abs() < CARD_STEP_X && (pos.y - y).abs() < CARD_STEP_Y;
+    let taken = |y: f32| canvas.nodes().values().any(|n| near(&n.pos, y)) || placed.iter().any(|pos| near(pos, y));
     let mut y = source.pos.y.clamp(-MAX_COORDINATE, MAX_COORDINATE);
     for _ in 0..MAX_CARD_TRIES {
         if !taken(y) {
@@ -116,13 +118,23 @@ fn edge_id(card: NodeId, edge: EdgeId) -> EdgeId {
 /// The changes that put `generation`, a variation of `source`, on a new card `card` beside it
 /// (#808): a copy of `source` that makes one result a run, wired to the same inputs, holding just
 /// that result. One undo step with the run's record.
-pub(crate) fn card_changes(canvas_id: CanvasId, canvas: &Canvas, source: &Node, card: NodeId, generation: Generation) -> Result<Vec<Change>, Error> {
+/// `placed` holds the cards placed earlier in the same record, which aren't on `canvas` yet; this
+/// card's spot is added to it.
+pub(crate) fn card_changes(
+    canvas_id: CanvasId,
+    canvas: &Canvas,
+    source: &Node,
+    card: NodeId,
+    generation: Generation,
+    placed: &mut Vec<Position>,
+) -> Result<Vec<Change>, Error> {
     if canvas.nodes().contains_key(&card) {
         return Err(Error::new(ErrorKind::Conflict, "a variation's card id is already on the canvas"));
     }
     let mut node = source.clone();
     node.id = card;
-    node.pos = free_spot(canvas, source);
+    node.pos = free_spot(canvas, source, placed);
+    placed.push(node.pos);
     node.config.remove(VARIATIONS_CONFIG);
     node.history = Vec::new();
     node.active = None;

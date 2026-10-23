@@ -126,3 +126,17 @@ fn a_variation_recorded_late_goes_before_the_later_ones_and_keeps_the_active_res
     assert_eq!(node.history.iter().map(|g| g.id).collect::<Vec<_>>(), vec![first, last], "in variant order");
     assert_eq!(node.active, Some(last), "the last variation stays active");
 }
+
+#[test]
+fn cards_recorded_together_take_separate_spots() {
+    let mut s = session();
+    // A second image card just under the first: their cards would land on one spot.
+    let below = NodeId::from_bytes([7; 16]);
+    s.dispatch("node.create", &json!({"canvas": CANVAS, "id": below, "kind": "generation.image", "pos": {"x": 0, "y": 100}})).unwrap();
+    let (a, b) = (super::card_id(nodecraft_types::GenerationId::from_bytes([30; 16])), super::card_id(nodecraft_types::GenerationId::from_bytes([31; 16])));
+    let results = json!([{"node": IMAGE, "generation": result(30), "card": a}, {"node": below, "generation": result(31), "card": b}]);
+    s.dispatch("run.record", &json!({"canvas": CANVAS, "results": results})).unwrap();
+    let c = canvas(&s);
+    let (a, b) = (c.nodes().get(&a).unwrap().pos, c.nodes().get(&b).unwrap().pos);
+    assert!((a.x - b.x).abs() >= 360.0 || (a.y - b.y).abs() >= 600.0, "{a:?} {b:?}");
+}
