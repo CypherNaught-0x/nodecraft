@@ -12,7 +12,11 @@ catalog:
 
 A card made by a newer NodeCraft is refused as unsupported rather than guessed at.
 `nodecraft_nodes::comfy_workflow::propose` builds this config from `nodecraft_comfy::discover`.
-The import command and its editor build on it.
+`comfy.workflow.import` places a workflow file as a card. It reads the file against the
+server's node list, which the host fetches with `comfy.nodes.refresh` and the session keeps. A
+failed read keeps the list from before. By default it exposes the workflow's prompts and seeds
+as parameters; `params` names others. A workflow that uses a node the server lacks is refused,
+with those nodes named.
 
 The card runs through the existing run path, not a new one. It has a `model` parameter that
 defaults to the catalog model `comfyui.workflow` (provider `comfyui`, `provider_model =

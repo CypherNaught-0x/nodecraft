@@ -3291,6 +3291,7 @@ dependencies = [
  "keyring",
  "nodecraft-actions",
  "nodecraft-catalog",
+ "nodecraft-comfy",
  "nodecraft-exec",
  "nodecraft-format",
  "nodecraft-gpu",

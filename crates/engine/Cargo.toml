@@ -17,6 +17,7 @@ nodecraft-catalog = { workspace = true }
 nodecraft-plugin = { workspace = true }
 nodecraft-plugin-store = { workspace = true }
 nodecraft-nodes = { workspace = true }
+nodecraft-comfy = { workspace = true }
 # Adapters the catalog names (#409); the host builds them in `provider_setup`.
 nodecraft-providers = { workspace = true, features = ["openai-images", "replicate", "seedream", "gemini-images", "gemini-video", "google-veo", "google-tts", "seedance", "fal", "tripo", "meshy", "higgsfield", "kling", "elevenlabs", "comfy-cloud"] }
 nodecraft-gpu = { workspace = true }

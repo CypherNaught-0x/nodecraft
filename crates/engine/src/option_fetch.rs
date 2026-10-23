@@ -271,7 +271,7 @@ async fn higgsfield_lists(env: &HostEnv<'_>, wanted: &[&String]) -> Result<Vec<(
     }
 }
 
-fn provider_kind(kind: nodecraft_providers::ErrorKind) -> ErrorKind {
+pub(crate) fn provider_kind(kind: nodecraft_providers::ErrorKind) -> ErrorKind {
     use nodecraft_providers::ErrorKind as P;
     match kind {
         P::Auth => ErrorKind::Authentication,

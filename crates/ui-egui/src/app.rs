@@ -331,6 +331,8 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
 pub(crate) mod admission;
 
 mod app_mode;
+#[cfg(not(target_arch = "wasm32"))]
+mod comfy_nodes;
 mod comments;
 mod deck_editor;
 mod deck_presenter;
@@ -535,6 +537,9 @@ pub struct NodeCraftApp {
     /// Fetches the option lists `options.refresh` asks for (#529).
     #[cfg(not(target_arch = "wasm32"))]
     option_fetch: Option<option_fetch::OptionFetcher>,
+    /// Reads the ComfyUI server's nodes `comfy.nodes.refresh` asks for (#9).
+    #[cfg(not(target_arch = "wasm32"))]
+    comfy_nodes: Option<comfy_nodes::ComfyNodesFetcher>,
     /// Checks for a newer release (#123).
     #[cfg(not(target_arch = "wasm32"))]
     updates: Option<updates::UpdateChecker>,
@@ -641,6 +646,13 @@ impl NodeCraftApp {
                 None
             }
         };
+        let comfy_nodes = match comfy_nodes::ComfyNodesFetcher::new(&mut services) {
+            Ok(fetcher) => Some(fetcher),
+            Err(e) => {
+                log::warn!("ComfyUI workflows can't be imported: {}", e.message);
+                None
+            }
+        };
         // Updates are staged in, and their outcome recorded in, the settings folder (#540).
         let mut updates = match updates::UpdateChecker::new(&mut services, store.dir().map(|d| d.join("updates"))) {
             Ok(checker) => Some(checker),
@@ -704,6 +716,7 @@ impl NodeCraftApp {
         }
         app.runs = runs;
         app.option_fetch = option_fetch;
+        app.comfy_nodes = comfy_nodes;
         // The technique library every project shares (#96), beside the plugins; in memory when
         // settings aren't kept on disk.
         let library: Box<dyn nodecraft_engine::library::LibraryStore> = match store.dir() {
@@ -1080,6 +1093,8 @@ impl NodeCraftApp {
             runs: None,
             #[cfg(not(target_arch = "wasm32"))]
             option_fetch: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            comfy_nodes: None,
             #[cfg(not(target_arch = "wasm32"))]
             updates: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2981,6 +2996,8 @@ impl eframe::App for NodeCraftApp {
         self.tick_runs(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_option_fetch(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_comfy_nodes(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_updates(ctx);
         #[cfg(not(target_arch = "wasm32"))]

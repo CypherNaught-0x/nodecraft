@@ -383,6 +383,12 @@ fn template(id: &str) -> (Session, Value) {
             session.dispatch("technique.place", &place).unwrap();
         }
     }
+    if id == "comfy.workflow.import" {
+        // The server's nodes as comfy.nodes.refresh installs them, so the import succeeds.
+        let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {}]}}, "output": ["IMAGE"]}, "SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
+        let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
+        nodecraft_engine::comfy_workflow_cmds::finish(&mut session, 1, Ok(std::sync::Arc::new(catalog)));
+    }
     let plugin_old =
         if id.starts_with("plugins.") && !matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register(&mut session)) } else { None };
     let pending = if matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register_results(&mut session)) } else { None };
@@ -471,6 +477,10 @@ fn template(id: &str) -> (Session, Value) {
         "node.describe" => json!({"canvas":canvas(),"id":node_id(1)}),
         "node.options" => json!({"canvas":canvas(),"id":node_id(1),"param":"text"}),
         "options.refresh" | "options.status" => json!({}),
+        // No fetch service here: the refresh must be refused cleanly.
+        "comfy.nodes.refresh" | "comfy.nodes.status" => json!({}),
+        "comfy.workflow.import" => json!({"canvas":canvas(),"id":node_id(0x69),"pos":{"x":0,"y":0},"workflow":
+            r#"{"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a fox"}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}"#}),
         // The updates service isn't registered here: the check must be refused cleanly.
         "app.check_updates" | "app.update_status" | "app.install_update" | "app.restart_to_update" => json!({}),
         "edge.rewire" => {
@@ -746,6 +756,8 @@ fn typed_template_panic_hunt() {
                             | "node.options"
                             | "options.refresh"
                             | "options.status"
+                            | "comfy.nodes.refresh"
+                            | "comfy.nodes.status"
                             | "app.check_updates"
                             | "app.update_status"
                             | "app.install_update"
