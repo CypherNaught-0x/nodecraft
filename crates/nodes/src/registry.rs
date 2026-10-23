@@ -48,6 +48,7 @@ impl Registry {
         registry.register(Box::new(crate::mesh::convert_kind()))?;
         registry.register(Box::new(crate::mesh::photo_kind()?))?;
         registry.register(Box::new(crate::mesh::views_kind()?))?;
+        registry.register(Box::new(crate::mesh::turntable::kind()?))?;
         registry.register(Box::new(crate::document::pages_kind()))?;
         registry.register(Box::new(crate::document::text_kind()))?;
         registry.register(Box::new(crate::layers::kind()))?;

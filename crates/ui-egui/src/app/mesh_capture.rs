@@ -50,7 +50,7 @@ impl NodeCraftApp {
         let params = json!({
             "canvas": self.canvas,
             "from": Endpoint { node, port: port.into() },
-            "shot": if capture == Capture::Photo { "photo" } else { "views" },
+            "shot": match capture { Capture::Photo => "photo", Capture::Views => "views", Capture::Turntable => "turntable" },
             "id": id,
             "edge": edge,
             "pos": mask_cmds::beside(source.pos, 1.0),

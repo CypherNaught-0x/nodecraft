@@ -343,6 +343,7 @@ mod document;
 pub(crate) mod layers;
 mod mesh;
 mod mesh_capture;
+mod mesh_turntable;
 mod shader_state;
 pub(crate) mod timeline;
 mod video;
@@ -399,6 +400,7 @@ impl ActionExecutor for LocalActions {
     fn long_running(&self, action: &str) -> bool {
         action == nodecraft_nodes::mesh::PHOTO
             || action == nodecraft_nodes::mesh::VIEWS
+            || action == nodecraft_nodes::mesh::TURNTABLE
             || action == nodecraft_nodes::timeline::ID
             || nodecraft_nodes::video_edit::IDS.contains(&action)
             || nodecraft_nodes::video_frames::IDS.contains(&action)
@@ -407,6 +409,9 @@ impl ActionExecutor for LocalActions {
     }
 
     fn execute_cancellable(&self, action: &str, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
+        if action == nodecraft_nodes::mesh::TURNTABLE {
+            return self.turntable(params, inputs, &|| cancelled() || self.capture_cancel.load(Ordering::Acquire));
+        }
         if action == nodecraft_nodes::mesh::PHOTO || action == nodecraft_nodes::mesh::VIEWS {
             return self.capture_mesh(action, params, inputs, &|| cancelled() || self.capture_cancel.load(Ordering::Acquire));
         }
@@ -452,6 +457,9 @@ impl ActionExecutor for LocalActions {
         }
         if action == nodecraft_nodes::mesh::CONVERT {
             return self.convert_mesh(params, inputs);
+        }
+        if action == nodecraft_nodes::mesh::TURNTABLE {
+            return self.turntable(params, inputs, &|| self.capture_cancel.load(Ordering::Acquire));
         }
         if action == nodecraft_nodes::mesh::PHOTO || action == nodecraft_nodes::mesh::VIEWS {
             return self.capture_mesh(action, params, inputs, &|| self.capture_cancel.load(Ordering::Acquire));

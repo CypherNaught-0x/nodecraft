@@ -40,7 +40,14 @@ fn every_action_kind_runs_with_its_defaults() {
     let mut ran = 0;
     // The custom shader and 3D captures need a GPU, and the timeline and video actions ffmpeg:
     // their own tests run them. An Element plans source jobs, not an action.
-    let skipped = ["image.shader", nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS, nodecraft_nodes::element::ID, nodecraft_nodes::timeline::ID];
+    let skipped = [
+        "image.shader",
+        nodecraft_nodes::mesh::PHOTO,
+        nodecraft_nodes::mesh::VIEWS,
+        nodecraft_nodes::mesh::TURNTABLE,
+        nodecraft_nodes::element::ID,
+        nodecraft_nodes::timeline::ID,
+    ];
     let runs = |id: &str| {
         !skipped.contains(&id)
             && !nodecraft_nodes::video_edit::IDS.contains(&id)
@@ -703,12 +710,12 @@ fn a_text_layer_draws_with_the_font_its_node_holds() {
 fn explicit_capture_jobs_and_live_actions_observe_cancellation_before_gpu_work() {
     let actions = LocalActions::new(AssetStore::default());
     let params = ParamValues::default();
-    for action in [nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS] {
+    for action in [nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS, nodecraft_nodes::mesh::TURNTABLE] {
         assert!(actions.long_running(action));
         assert!(actions.execute_cancellable(action, &params, &[], &|| true).unwrap_err().contains("cancelled"));
     }
     actions.cancel_captures();
-    for action in [nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS] {
+    for action in [nodecraft_nodes::mesh::PHOTO, nodecraft_nodes::mesh::VIEWS, nodecraft_nodes::mesh::TURNTABLE] {
         assert!(actions.execute(action, &params, &[]).unwrap_err().contains("cancelled"));
     }
 }

@@ -161,6 +161,8 @@ pub enum Capture {
     Photo,
     /// A sheet of views round the model, the first from this angle.
     Views,
+    /// A video orbit around the model, starting from this angle.
+    Turntable,
 }
 
 type Done = (Blake3, Result<Model, Failure>);
@@ -479,9 +481,11 @@ fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens) {
     let views_rect =
         Rect::from_min_size(area.right_bottom() + Vec2::new(-t.control_gap - capture_width, -t.control_gap - height), Vec2::new(capture_width, height));
     let photo_rect = views_rect.translate(Vec2::new(-capture_width - t.control_gap, 0.0));
+    let turntable_rect = Rect::from_min_size(views_rect.right_top() + Vec2::new(-width * 1.2, -height - t.control_gap), Vec2::new(width * 1.2, height));
     let buttons = [
         (photo_rect, "Photo", "Add a 3D photo card that draws the model from this view", Capture::Photo),
         (views_rect, "Views", "Add a 3D view sheet card: views round the model, starting from this one", Capture::Views),
+        (turntable_rect, "Turntable", "Add a 3D turntable video card starting from this view", Capture::Turntable),
     ];
     for (rect, label, hover, capture) in buttons {
         if ui.put(rect, egui::Button::new(font(label)).small()).on_hover_text(hover).clicked() {
