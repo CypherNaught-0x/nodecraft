@@ -83,7 +83,12 @@ pub struct Room {
     doc: Doc,
     peers: BTreeMap<Peer, Member>,
     links: BTreeMap<[u8; 32], Grant>,
+    /// The bytes the document holds, as last measured, plus what was merged since.
     merged: usize,
+    /// `merged` when the document was last measured.
+    measured: usize,
+    /// The most the document may hold ([`MAX_ROOM_UPDATE_BYTES`]).
+    limit: usize,
     assets: BTreeMap<[u8; 32], Vec<u8>>,
     asset_bytes: usize,
     /// Who waits for an asset, and how far each has got with one coming in parts.
@@ -104,6 +109,8 @@ impl Room {
             peers: BTreeMap::new(),
             links: BTreeMap::new(),
             merged: 0,
+            measured: 0,
+            limit: MAX_ROOM_UPDATE_BYTES,
             assets: BTreeMap::new(),
             asset_bytes: 0,
             wanted: BTreeMap::new(),
@@ -250,7 +257,7 @@ impl Room {
             },
             Frame::Step2(_) | Frame::Update(_) if !member.role.edits() => self.refuse(from, READ_ONLY),
             Frame::Step2(update) | Frame::Update(update) => {
-                if self.merged.saturating_add(update.len()) > MAX_ROOM_UPDATE_BYTES {
+                if !self.fits(update.len()) {
                     return self.refuse(from, "the room has grown too large");
                 }
                 if let Err(message) = self.merge(&update) {
@@ -412,7 +419,7 @@ impl Room {
         }
         let Some(next) = discussion::merge(name, now.as_ref(), base, made)? else { return Ok(None) };
         let size = next.as_ref().map_or(0, |c| c.text.len().saturating_add(c.replies.iter().map(|r| r.text.len()).sum()));
-        if self.merged.saturating_add(size) > MAX_ROOM_UPDATE_BYTES {
+        if !self.fits(size) {
             return Err("the room has grown too large");
         }
         let doc = &self.doc;
@@ -427,6 +434,31 @@ impl Room {
         })?;
         self.merged = self.merged.saturating_add(update.len());
         Ok(Some(update))
+    }
+
+    /// Whether `more` bytes fit in the document. What was merged counts in full until the room
+    /// measures what the document really holds: content replaced or removed is collected as it
+    /// goes, so a long session of edits needn't fill the room (#701).
+    fn fits(&mut self, more: usize) -> bool {
+        if self.merged.saturating_add(more) <= self.limit {
+            return true;
+        }
+        // Measuring is a pass over the whole document: only after a fair share came in since.
+        if self.merged.saturating_sub(self.measured) < self.limit / 8 {
+            return false;
+        }
+        let Some(size) = self.size() else { return false };
+        self.merged = size;
+        self.measured = size;
+        size.saturating_add(more) <= self.limit
+    }
+
+    /// The bytes of the document as one update.
+    fn size(&self) -> Option<usize> {
+        if self.damaged {
+            return None;
+        }
+        Some(self.doc.try_transact().ok()?.encode_state_as_update_v1(&StateVector::default()).len())
     }
 
     fn others(&self, from: Peer) -> impl Iterator<Item = Peer> + '_ {

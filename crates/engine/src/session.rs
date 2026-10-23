@@ -59,6 +59,8 @@ struct Entry {
     inverse: Changeset,
     bytes: usize,
     state: u64,
+    /// A peer's edit came after this step, so it may no longer fit the document (#701).
+    shared: bool,
 }
 
 #[derive(Default)]
@@ -723,7 +725,7 @@ impl Session {
             if let (true, Ok(bytes)) = (fits, history_bytes(&inverse)) {
                 let total = self.undo.bytes.saturating_sub(below.bytes).saturating_add(bytes);
                 if total <= MAX_HISTORY_BYTES {
-                    prepared.inverse = Entry { inverse, bytes, state: below.state };
+                    prepared.inverse = Entry { inverse, bytes, state: below.state, shared: below.shared };
                     prepared.direction = Direction::Amend;
                 }
             }
@@ -1066,13 +1068,40 @@ impl Session {
             document_effect => document_effect,
         };
         let mut stage = None;
+        let step = match effect {
+            Effect::Undo => Some(Direction::Undo),
+            Effect::Redo => Some(Direction::Redo),
+            _ => None,
+        };
         let prepared = guard(|| self.prepare_observed(effect, Some(&mut stage)));
         // Preserve completed staging observations even if later admission fails. A stage
         // that unwinds cannot finish its observation and contributes no fabricated sample.
         if let Some(stage) = stage {
             stage.record(&mut self.perf);
         }
+        if prepared.is_err()
+            && let Some(step) = step
+            && let Some(dropped) = self.drop_stale_step(&step)
+        {
+            return Err(dropped);
+        }
         self.commit_prepared(prepared?, spec.id)
+    }
+    /// Takes the step `step` would replay off its history when a peer's edit since means it no
+    /// longer fits the document, so it doesn't block the steps below it (#701); `None` when the
+    /// step fails for another reason, and stays.
+    fn drop_stale_step(&mut self, step: &Direction) -> Option<Error> {
+        let (history, message) = match step {
+            Direction::Undo => (&mut self.undo, "someone else changed what this step needs, so it can't be undone; it was taken off the undo history"),
+            _ => (&mut self.redo, "someone else changed what this step needs, so it can't be redone; it was taken off the redo history"),
+        };
+        let entry = history.entries.back().filter(|entry| entry.shared)?;
+        if guard(|| Ok(entry.inverse.stage_certified(&self.document).is_err())).unwrap_or(false) {
+            history.pop();
+            Some(Error::new(ErrorKind::Conflict, message))
+        } else {
+            None
+        }
     }
     fn commit_prepared(&mut self, mut prepared: Prepared, command: &'static str) -> Result<Value, Error> {
         if !prepared.source.matches(self) {
@@ -1127,6 +1156,7 @@ impl Session {
             Direction::Remote => {
                 for entry in self.undo.entries.iter_mut().chain(self.redo.entries.iter_mut()) {
                     entry.state = NEVER_SAVED;
+                    entry.shared = true;
                 }
             }
         }
@@ -1307,7 +1337,7 @@ impl Session {
         };
         Ok(Prepared {
             document,
-            inverse: Entry { inverse, bytes, state: source_state },
+            inverse: Entry { inverse, bytes, state: source_state, shared: false },
             direction,
             gesture,
             result,

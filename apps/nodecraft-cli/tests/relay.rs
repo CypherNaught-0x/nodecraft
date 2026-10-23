@@ -235,6 +235,23 @@ fn a_large_message_before_the_hello_ends_the_connection() {
 }
 
 #[test]
+fn connections_from_one_address_that_say_nothing_cant_take_every_slot() {
+    let relay = relay();
+    let addr = relay.url.trim_start_matches("ws://").trim_end_matches('/').to_string();
+    // Sixteen connections that never say a word hold every slot their address may wait in.
+    let mut silent: Vec<TcpStream> = (0..16).map(|_| TcpStream::connect(&addr).unwrap()).collect();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(tungstenite::connect(&relay.url).is_err(), "a seventeenth got in");
+    // Once one goes, there is room again.
+    drop(silent.pop());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while tungstenite::connect(&relay.url).is_err() {
+        assert!(Instant::now() < deadline, "no room came free");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn relay_takes_only_listen() {
     let out = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).args(["relay", "--listen", "not an address"]).output().unwrap();
     assert!(!out.status.success());

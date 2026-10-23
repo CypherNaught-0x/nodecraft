@@ -225,6 +225,7 @@ mod tests {
             inverse: nodecraft_graph::Changeset::new(vec![nodecraft_graph::Change::AddNode { canvas: nodecraft_types::CanvasId::from_bytes([6; 16]), node }]),
             bytes: 1,
             state: 0,
+            shared: false,
         });
         assert_eq!(session.collect_assets().unwrap_err().kind, ErrorKind::InvalidInput);
         assert!(session.assets.contains(&orphan));
