@@ -96,7 +96,9 @@ or revoking it (`plugins.grant`, `plugins.revoke`, #173), is the person's yes or
 digest, capabilities and origins `plugins.rights` showed (#174), which agents may read to explain a
 grant before a person gives it. Worker-backed hosts return an opaque pending
 ID; agents may read its retained envelope with `plugins.result` and acknowledge a terminal result
-with `plugins.forget`. These two commands do not acquire files or mutate packages.
+with `plugins.forget`. These two commands do not acquire files or mutate packages. In the browser
+(#823) `plugins.list` also answers `session_only: true`: packages last only for the session, are
+imported from a file the person picked, and none of them can be granted or run.
 `share.link_create` and `share.link_update` decide who may come into a shared project, so only
 a person runs them; agents can list links with `share.links` and take one back with
 `share.link_revoke` (#121). `canvas.set_private` is human only too: a canvas made shared again

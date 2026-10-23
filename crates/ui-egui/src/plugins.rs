@@ -9,10 +9,14 @@
 //! and shows who signed the package, its licence and notice text, the IDs it registers and the
 //! rights it asks for; only "Install" (or "Update") then imports it, disabled. Granting shows the
 //! capabilities and origins being agreed to, and required ones can't be left out.
+//!
+//! In the browser (#823) there are no paths: the person picks a file, its bytes are held as the
+//! host's [`PickedPackage`], and the store lasts only for the session, which the panel says.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use nodecraft_engine::Session;
+use nodecraft_engine::plugin_cmds::PickedPackage;
 use nodecraft_types::{Error, ErrorKind};
 use serde_json::{Value, json};
 
@@ -111,8 +115,13 @@ pub struct PluginsPanel {
     /// The last failure, and the last thing done.
     pub notice: Option<String>,
     pub status: Option<String>,
-    #[cfg(not(target_arch = "wasm32"))]
     picking: Option<pick::Picking>,
+    /// Where a session-only host holds a picked file (the browser); then there are no paths.
+    pub picked_files: Option<PickedPackage>,
+    /// The name of the file picked, when `location` is one.
+    chosen: Option<String>,
+    /// The host's store lasts only for this session.
+    session_only: bool,
 }
 
 /// The strings in a JSON array, at most [`MAX_ITEMS`].
@@ -228,6 +237,7 @@ impl PluginsPanel {
         };
         match ask {
             Ask::List => {
+                self.session_only = answer.get("session_only").and_then(Value::as_bool) == Some(true);
                 self.rows =
                     answer.get("packages").and_then(Value::as_array).map(|p| p.iter().take(MAX_ROWS).filter_map(Row::parse).collect()).unwrap_or_default();
                 // A package changed elsewhere (another window, the CLI) isn't what the consent showed.
@@ -254,6 +264,7 @@ impl PluginsPanel {
                 // A consent shown for the digest this replaced no longer applies.
                 self.consent = None;
                 self.location.clear();
+                self.chosen = None;
                 self.list(session);
             }
             Ask::Rights => {
@@ -300,6 +311,24 @@ impl PluginsPanel {
         self.preview = None;
         let (id, update) = if self.update { ("plugins.update", true) } else { ("plugins.import", false) };
         self.send(session, id, json!({"location": location, "dry_run": true}), Ask::Check { update, location });
+    }
+
+    /// Holds a file picked as `name` as the package to check; only a session-only host can.
+    pub fn choose_bytes(&mut self, name: &str, bytes: Vec<u8>) {
+        let Some(files) = &self.picked_files else {
+            self.notice = Some("This window installs packages from a path.".into());
+            return;
+        };
+        match files.put(name, bytes) {
+            Ok(location) => {
+                // The name as `put` kept it: shortened, without control characters.
+                self.chosen = location.rsplit('/').next().map(str::to_owned);
+                self.location = location;
+                self.preview = None;
+                self.notice = None;
+            }
+            Err(e) => self.notice = Some(e.message),
+        }
     }
 
     /// Installs what the preview showed.
@@ -352,7 +381,6 @@ impl PluginsPanel {
         if !self.pending.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
-        #[cfg(not(target_arch = "wasm32"))]
         self.poll_pick(ctx);
         if !self.open {
             self.listed = false;
@@ -378,6 +406,13 @@ impl PluginsPanel {
                     )
                     .color(t.text_muted),
                 );
+                if self.session_only || self.picked_files.is_some() {
+                    ui.label(
+                        egui::RichText::new("Packages last only for this session: closing or reloading the page removes them, and plugins can't run here yet.")
+                            .color(t.text)
+                            .strong(),
+                    );
+                }
                 ui.add_space(t.control_gap);
                 self.add_section(ui, session, t);
                 ui.separator();
@@ -406,15 +441,19 @@ impl PluginsPanel {
         ui.label(egui::RichText::new("Install a package").color(t.text));
         ui.horizontal(|ui| {
             let label = ui.label(egui::RichText::new("Package file").color(t.text_muted));
-            let typed = ui
-                .add(egui::TextEdit::singleline(&mut self.location).hint_text("path to a .ncraft-plugin file").desired_width(t.card_width * 1.5))
-                .labelled_by(label.id);
-            // A preview is of the file checked, not of the one now named.
-            if typed.changed() {
-                self.preview = None;
+            if self.picked_files.is_none() {
+                let typed = ui
+                    .add(egui::TextEdit::singleline(&mut self.location).hint_text("path to a .ncraft-plugin file").desired_width(t.card_width * 1.5))
+                    .labelled_by(label.id);
+                // A preview is of the file checked, not of the one now named.
+                if typed.changed() {
+                    self.preview = None;
+                }
+            } else {
+                ui.label(egui::RichText::new(self.chosen.as_deref().unwrap_or("none chosen")).color(t.text));
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            if ui.add_enabled(self.picking.is_none(), egui::Button::new("Choose…")).clicked() {
+            // A browser that never reports a cancelled pick leaves it waiting; another replaces it.
+            if ui.add_enabled(cfg!(target_arch = "wasm32") || self.picking.is_none(), egui::Button::new("Choose…")).clicked() {
                 self.picking = Some(pick::Picking::start());
             }
         });
@@ -478,6 +517,8 @@ impl PluginsPanel {
                                 self.change(session, "plugins.revoke", json!({"grant_id": grant_id}), format!("{id} may no longer run."));
                             }
                         }
+                        // Nothing can run in a session-only store, so there is nothing to consent to.
+                        None if self.session_only => {}
                         None => {
                             if ui.button("Grant…").on_hover_text("See what it asks for, then let it run").clicked() {
                                 self.ask_rights(session, id);
@@ -557,15 +598,16 @@ impl PluginsPanel {
         });
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn poll_pick(&mut self, ctx: &egui::Context) {
         let Some(picking) = self.picking.take() else { return };
         match picking.poll(ctx) {
             pick::Polled::Waiting(picking) => self.picking = Some(picking),
             pick::Polled::Cancelled => {}
-            pick::Polled::Chosen(path) => match path.to_str() {
+            pick::Polled::Chosen(pick::Chosen::File(name, bytes)) => self.choose_bytes(&name, bytes),
+            pick::Polled::Chosen(pick::Chosen::Path(path)) => match path.to_str() {
                 Some(path) => {
                     self.location = path.to_owned();
+                    self.chosen = None;
                     self.preview = None;
                 }
                 None => self.notice = Some("That file's path isn't valid UTF-8; move it somewhere with a plainer name.".into()),
@@ -637,7 +679,6 @@ fn preview_body(ui: &mut egui::Ui, report: &Value, t: &Tokens) {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 mod pick {
     use std::{
         future::Future,
@@ -647,7 +688,15 @@ mod pick {
         task::{Context, Poll, Wake, Waker},
     };
 
-    type Pick = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
+    /// A file on disk (the desktop), or one read in the browser.
+    pub(super) enum Chosen {
+        #[cfg_attr(any(test, target_arch = "wasm32"), allow(dead_code, reason = "the browser has no paths; tests pick none"))]
+        Path(PathBuf),
+        #[cfg_attr(any(test, not(target_arch = "wasm32")), allow(dead_code, reason = "only the browser reads a picked file"))]
+        File(String, Vec<u8>),
+    }
+
+    type Pick = Pin<Box<dyn Future<Output = Result<Option<Chosen>, String>>>>;
 
     /// A package file being chosen; the dialog never blocks the frame.
     pub(super) struct Picking(Pick);
@@ -655,21 +704,30 @@ mod pick {
     pub(super) enum Polled {
         Waiting(Picking),
         Cancelled,
-        Chosen(PathBuf),
+        Chosen(Chosen),
         Failed(String),
     }
 
-    #[cfg(not(test))]
+    #[cfg(all(not(test), not(target_arch = "wasm32")))]
     fn choose() -> Pick {
         // Built on the UI thread: AppKit finds its window here.
         let future = rfd::AsyncFileDialog::new().set_title("Choose a plugin package").add_filter("NodeCraft plugin", &["ncraft-plugin"]).pick_file();
-        Box::pin(async move { future.await.map(|file| file.path().to_path_buf()) })
+        Box::pin(async move { Ok(future.await.map(|file| Chosen::Path(file.path().to_path_buf()))) })
+    }
+
+    /// The browser reads the file it is given, refusing one over the package limit unread.
+    #[cfg(all(not(test), target_arch = "wasm32"))]
+    fn choose() -> Pick {
+        Box::pin(async move {
+            let picked = crate::app::pick_package(nodecraft_engine::plugin_cmds::package_limit()).await?;
+            Ok(picked.map(|(name, bytes)| Chosen::File(name, bytes)))
+        })
     }
 
     /// Tests never open a real dialog: the pick is cancelled.
     #[cfg(test)]
     fn choose() -> Pick {
-        Box::pin(std::future::ready(None))
+        Box::pin(std::future::ready(Ok(None)))
     }
 
     struct Repaint(egui::Context);
@@ -692,8 +750,9 @@ mod pick {
             let mut cx = Context::from_waker(&waker);
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.0.as_mut().poll(&mut cx))) {
                 Ok(Poll::Pending) => Polled::Waiting(self),
-                Ok(Poll::Ready(None)) => Polled::Cancelled,
-                Ok(Poll::Ready(Some(path))) => Polled::Chosen(path),
+                Ok(Poll::Ready(Ok(None))) => Polled::Cancelled,
+                Ok(Poll::Ready(Ok(Some(chosen)))) => Polled::Chosen(chosen),
+                Ok(Poll::Ready(Err(message))) => Polled::Failed(message),
                 Err(_) => Polled::Failed("The file picker failed; nothing was changed.".into()),
             }
         }

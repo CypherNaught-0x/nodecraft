@@ -25,6 +25,8 @@ use std::task::{Context, Poll, Wake, Waker};
 mod browser;
 #[cfg(target_arch = "wasm32")]
 pub(super) use browser::guard_unload;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use browser::pick_package;
 
 pub(super) type PickFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>>>>;
 

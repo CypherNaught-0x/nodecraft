@@ -2,7 +2,7 @@ use super::*;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use nodecraft_engine::commands::Services;
-use nodecraft_engine::plugin_cmds::{PluginHost, PluginWorker, register_plugin_service, register_plugin_worker};
+use nodecraft_engine::plugin_cmds::{PluginHost, PluginWorker, register_plugin_service, register_plugin_worker, register_session_plugins};
 use nodecraft_graph::Project;
 use nodecraft_plugin::json::{self, Json};
 use nodecraft_plugin_store::{MemoryBackend, Store, archive};
@@ -313,4 +313,40 @@ fn updating_a_granted_package_says_its_grant_is_removed() {
     h.get_by_label("Update").click();
     settle(&mut h);
     assert!(h.state().panel.status.as_deref().is_some_and(|s| s.contains("Its grant was removed")), "{:?}", h.state().panel.status);
+}
+
+/// The browser's panel (#823): no path field; a picked file is checked, installed and listed, and
+/// the panel says the store lasts only for the session and that nothing runs.
+#[test]
+fn a_picked_file_is_installed_into_a_session_only_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut services = Services::default();
+    let picked = register_session_plugins(&mut services, Store::open(MemoryBackend::default()).unwrap(), host()).unwrap();
+    let mut h = harness(session(services));
+    h.state_mut().panel.picked_files = Some(picked);
+    settle(&mut h);
+    h.get_by_label_contains("Packages last only for this session");
+    h.get_by_label("none chosen");
+    let bytes = std::fs::read(package(dir.path(), "text_actions", "MIT\n")).unwrap();
+    h.state_mut().panel.choose_bytes("shout.ncraft-plugin", bytes);
+    h.run();
+    h.get_by_label("shout.ncraft-plugin");
+    h.get_by_label("Check").click();
+    settle(&mut h);
+    h.get_by_label("io.example.text 1.0.0");
+    h.get_by_label("Install").click();
+    settle(&mut h);
+    assert_eq!(h.state().panel.rows().first().map(|r| r.package_id.as_str()), Some("io.example.text"));
+    assert!(h.query_by_label("Grant…").is_none(), "nothing runs here, so nothing is offered to consent to");
+    h.get_by_label("Enable").click();
+    settle(&mut h);
+    assert!(!h.state().panel.rows()[0].enabled);
+    assert!(h.state().panel.notice.as_deref().is_some_and(|n| n.contains("can't run in the browser")), "{:?}", h.state().panel.notice);
+}
+
+#[test]
+fn a_pick_needs_a_host_that_holds_picked_files() {
+    let mut panel = PluginsPanel::default();
+    panel.choose_bytes("x.ncraft-plugin", vec![1]);
+    assert!(panel.location.is_empty() && panel.notice.is_some());
 }

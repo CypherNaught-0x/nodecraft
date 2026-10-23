@@ -30,6 +30,8 @@ pub const MAX_PENDING_ID: usize = 53;
 pub mod worker;
 #[cfg(not(target_arch = "wasm32"))]
 pub use worker::{PluginWorker, register_plugin_worker};
+mod session_store;
+pub use session_store::{PickedPackage, register_session_plugins};
 /// Largest trust file read.
 const MAX_TRUST_BYTES: u64 = 256 * 1024;
 /// Most notice text an import report carries for one licence or notice file, and in all.
@@ -87,7 +89,7 @@ fn forget(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
 fn file_schema() -> Value {
     object(
         &["location"],
-        json!({"location": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Path of the .ncraft-plugin file (UTF-8)."},
+        json!({"location": {"type": "string", "minLength": 1, "maxLength": 4096, "description": "Absolute path of the .ncraft-plugin file (UTF-8); in the browser, the location a picked file was given."},
                "dry_run": {"type": "boolean", "description": "Only verify and report; install nothing."},
                "digest": {"type": "string", "pattern": "^blake3:[0-9a-f]{64}$", "description": "The digest a dry run showed; a file that no longer has it is refused."}}),
     )
@@ -322,21 +324,21 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.list",
             "List plugin packages",
             none_schema,
-            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch, capabilities, origins}|null}]}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch, capabilities, origins}|null}], session_only?: true (the browser: packages last until the page closes)}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             list,
         ),
         spec(
             "plugins.import",
             "Import plugin package",
             file_schema,
-            "{location: string, dry_run?: bool, digest?: string}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only; digest: refuse unless the file still has the digest a dry run showed). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run, rights: {required, optional, origins}|{error}, rights_delta (update): {added_capabilities, removed_capabilities, added_origins, removed_origins}}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
+            "{location: string (a path; in the browser, a picked file's location), dry_run?: bool, digest?: string}; verifies a .ncraft-plugin and installs it disabled (dry_run: reports only; digest: refuse unless the file still has the digest a dry run showed). Direct result: {package_id, version, digest, provenance, key_id, signed_by, license, notices, registrations, replaced, dry_run, rights: {required, optional, origins}|{error}, rights_delta (update): {added_capabilities, removed_capabilities, added_origins, removed_origins}}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget. No dialog.",
             import,
         ),
         spec(
             "plugins.update",
             "Update plugin package",
             file_schema,
-            "{location: string, dry_run?: bool, digest?: string}; installs a disabled package version (digest: as for plugins.import), keeping the previous digest for rollback. Direct result: import report with replaced. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{location: string, dry_run?: bool, digest?: string}; installs a disabled package version (digest: as for plugins.import), keeping the previous digest for rollback. Direct result: import report with replaced (and session_only: true in the browser). Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             update,
         ),
         spec(
@@ -557,6 +559,14 @@ fn package_id(request: &Value) -> Result<PackageId, Error> {
 
 /// Runs one `plugins` request against `store`.
 pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request: &Value) -> Result<Value, Error> {
+    handle_reading(store, host, request, &mut |location| read_capped(std::path::Path::new(location), package_limit(), "package file").map(std::rc::Rc::new))
+}
+
+/// Reads the package file at a request's location.
+pub(crate) type ReadPackage<'a> = dyn FnMut(&str) -> Result<std::rc::Rc<Vec<u8>>, Error> + 'a;
+
+/// [`handle`], with package files read by `read` (given the request's location).
+pub(crate) fn handle_reading<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request: &Value, read: &mut ReadPackage) -> Result<Value, Error> {
     // Another window or the CLI may have changed the store since the last request.
     store.refresh()?;
     let referenced = referenced_of(request)?;
@@ -584,29 +594,8 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
         }
         Some(op @ ("import" | "update")) => {
             let location = request.get("location").and_then(Value::as_str).unwrap_or_default();
-            let dry_run = request.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
-            let limit = u64::try_from(nodecraft_plugin_store::ArchiveLimits::DEFAULT.archive_bytes).unwrap_or(u64::MAX);
-            let bytes = read_capped(std::path::Path::new(location), limit, "package file")?;
-            let trust = trust(host)?;
-            let incoming = store.inspect(&bytes, &trust)?;
-            // The person agreed to what a dry run showed; a file changed since is another package.
-            if let Some(shown) = request.get("digest").and_then(Value::as_str)
-                && shown != incoming.digest.to_string()
-            {
-                return Err(Error::new(ErrorKind::Conflict, "the package file changed since it was checked; check it again before installing"));
-            }
-            let before = (op == "update").then(|| store.load(&incoming.manifest.package_id)).transpose()?;
-            let report = if op == "import" { store.import(&bytes, &trust, dry_run)? } else { store.update(&bytes, &trust, dry_run)? };
-            let mut out = report_json(&report, dry_run);
-            if let Some(o) = out.as_object_mut() {
-                o.insert("rights".into(), crate::plugin_rights::asks_json(&incoming));
-                o.insert("notice_texts".into(), notice_texts(&incoming));
-                // A delta against a version whose asks can't be read would claim everything is new.
-                if let Some((Ok(old), Ok(new))) = before.as_ref().map(|b| (crate::plugin_rights::asks(b), crate::plugin_rights::asks(&incoming))) {
-                    o.insert("rights_delta".into(), crate::plugin_rights::delta(&old, &new));
-                }
-            }
-            Ok(out)
+            let bytes = read(location)?;
+            import_bytes(store, host, request, op, &bytes)
         }
         Some("enable") => {
             let id = package_id(request)?;
@@ -670,6 +659,36 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
         Some("prune") => Ok(json!({"removed": store.prune(&referenced)?.iter().map(|d| d.to_string()).collect::<Vec<_>>()})),
         _ => Err(Error::new(ErrorKind::InvalidInput, "unknown plugins request")),
     }
+}
+
+/// Most bytes a package file may have.
+pub fn package_limit() -> u64 {
+    u64::try_from(nodecraft_plugin_store::ArchiveLimits::DEFAULT.archive_bytes).unwrap_or(u64::MAX)
+}
+
+/// Verifies `bytes` and imports or updates them (`op`), as `request` asks.
+fn import_bytes<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request: &Value, op: &str, bytes: &[u8]) -> Result<Value, Error> {
+    let dry_run = request.get("dry_run").and_then(Value::as_bool).unwrap_or(false);
+    let trust = trust(host)?;
+    let incoming = store.inspect(bytes, &trust)?;
+    // The person agreed to what a dry run showed; a file changed since is another package.
+    if let Some(shown) = request.get("digest").and_then(Value::as_str)
+        && shown != incoming.digest.to_string()
+    {
+        return Err(Error::new(ErrorKind::Conflict, "the package file changed since it was checked; check it again before installing"));
+    }
+    let before = (op == "update").then(|| store.load(&incoming.manifest.package_id)).transpose()?;
+    let report = if op == "import" { store.import(bytes, &trust, dry_run)? } else { store.update(bytes, &trust, dry_run)? };
+    let mut out = report_json(&report, dry_run);
+    if let Some(o) = out.as_object_mut() {
+        o.insert("rights".into(), crate::plugin_rights::asks_json(&incoming));
+        o.insert("notice_texts".into(), notice_texts(&incoming));
+        // A delta against a version whose asks can't be read would claim everything is new.
+        if let Some((Ok(old), Ok(new))) = before.as_ref().map(|b| (crate::plugin_rights::asks(b), crate::plugin_rights::asks(&incoming))) {
+            o.insert("rights_delta".into(), crate::plugin_rights::delta(&old, &new));
+        }
+    }
+    Ok(out)
 }
 
 /// Registers the `plugins` service over `store`.
