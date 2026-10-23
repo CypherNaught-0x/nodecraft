@@ -1,6 +1,6 @@
 //! Sealing a large shared asset holds its project's storage for a while (#855): small imports
 //! wait in memory meanwhile, an ask the storage is too busy for is answered later, and a seal
-//! stops when asked to.
+//! stops when asked to, or once no card uses its asset any more (#880).
 use super::*;
 use nodecraft_format::asset_source::{AssetRange, AssetSource, MemorySource};
 use std::sync::Arc;
@@ -13,6 +13,16 @@ struct Slow {
     bytes: Arc<[u8]>,
     open: Arc<AtomicBool>,
     started: Arc<AtomicBool>,
+    _gone: Option<SetOnDrop>,
+}
+
+/// Sets its flag once dropped: says a spool's asset was let go.
+struct SetOnDrop(Arc<AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 impl AssetSource for Slow {
@@ -39,7 +49,7 @@ impl AssetSource for Slow {
 fn seal_held(store: nodecraft_format::AssetStore, len: usize, cancel: TransferCancel) -> (Arc<AtomicBool>, std::thread::JoinHandle<Result<Blake3, Error>>) {
     let open = Arc::new(AtomicBool::new(false));
     let started = Arc::new(AtomicBool::new(false));
-    let source = Slow { bytes: noise(len).into(), open: open.clone(), started: started.clone() };
+    let source = Slow { bytes: noise(len).into(), open: open.clone(), started: started.clone(), _gone: None };
     let range = AssetRange::new(Arc::new(source), 0, len as u64).unwrap();
     let sealing = std::thread::spawn(move || store.seal(&range, &cancel, &StreamMetrics::default()).map(|sealed| sealed.hash()));
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -168,4 +178,250 @@ fn one_large_asset_is_sealed_a_turn_and_a_stopped_seal_waits() {
     for hash in &hashes {
         assert!(net.session(2).assets().contains(hash));
     }
+}
+
+/// A spool in memory whose assets, once whole, trickle out as [`Slow`] does, so a seal of one
+/// is under way for as long as a test needs; `gone` is set once the last is let go.
+struct SlowSpool {
+    kept: BTreeMap<Blake3, Vec<u8>>,
+    started: Arc<AtomicBool>,
+    gone: Arc<AtomicBool>,
+}
+
+impl SlowSpool {
+    fn new() -> (Self, Arc<AtomicBool>, Arc<AtomicBool>) {
+        let (started, gone) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        (Self { kept: BTreeMap::new(), started: started.clone(), gone: gone.clone() }, started, gone)
+    }
+}
+
+impl Spool for SlowSpool {
+    fn limit(&self) -> u64 {
+        64 << 20
+    }
+
+    fn budget(&self) -> u64 {
+        64 << 20
+    }
+
+    fn begin(&mut self, hash: Blake3, _total: u64) -> Result<(), Error> {
+        self.kept.insert(hash, Vec::new());
+        Ok(())
+    }
+
+    fn append(&mut self, hash: &Blake3, bytes: &[u8]) -> Result<(), Error> {
+        self.kept.get_mut(hash).unwrap().extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn finish(&mut self, hash: &Blake3) -> Result<AssetRange, Error> {
+        let bytes: Arc<[u8]> = self.kept.remove(hash).unwrap().into();
+        let len = bytes.len() as u64;
+        let gone = Some(SetOnDrop(self.gone.clone()));
+        let source = Slow { bytes, open: Arc::new(AtomicBool::new(false)), started: self.started.clone(), _gone: gone };
+        AssetRange::new(Arc::new(source), 0, len)
+    }
+
+    fn discard(&mut self, hash: &Blake3) {
+        self.kept.remove(hash);
+    }
+}
+
+/// A card on the shared canvas showing `hash`.
+fn showing(n: u8, hash: Blake3) -> Node {
+    let mut card = Node::new(nid(n), "text");
+    card.params.insert("image".into(), Value::Media(AssetRef { hash, mime: "application/octet-stream".parse().unwrap(), meta: MediaMeta::default() }));
+    card
+}
+
+/// Imports a large asset of noise into `session`.
+fn large(session: &mut Session, seed: usize) -> Blake3 {
+    let bytes: Arc<[u8]> = noise(nodecraft_sync::WINDOW_BYTES as usize + seed).into();
+    let len = bytes.len() as u64;
+    let range = AssetRange::new(Arc::new(MemorySource::new(bytes)), 0, len).unwrap();
+    session.import_asset_from(&range, &Default::default(), &Default::default()).unwrap()
+}
+
+/// A sharer whose one card shows a large asset, and a joiner whose spool holds it, whole and
+/// waiting to be sealed: its seal starts, on another thread, and has begun when this returns.
+fn sealing_for_a_card(dir: &std::path::Path) -> (Net, Blake3, Arc<AtomicBool>, std::thread::JoinHandle<Result<SealedAsset, Error>>) {
+    let mut session = on_disk(empty(), &dir.join("sharer"));
+    let hash = large(&mut session, 7);
+    session.apply_remote(Changeset::new(vec![Change::AddNode { canvas: canvas(), node: showing(1, hash) }])).unwrap();
+    let mut net = Net::new();
+    net.disk = Some(dir.join("joiners"));
+    net.enter(Person { id: 1, collab: Collab::share(&session, room_id()).unwrap(), session: Some(session) });
+    let (spool, started, gone) = SlowSpool::new();
+    net.enter(Person { id: 2, collab: Collab::join(room_id()).with_spool(Box::new(spool)).sealing(), session: None });
+    let (seal, assets) = start_seal(&mut net, hash, &started);
+    let sealing = std::thread::spawn(move || seal.run(&assets));
+    wait_started(&started);
+    (net, hash, gone, sealing)
+}
+
+/// The joiner's next seal, of `hash`, and the store it seals into, once it can begin.
+fn start_seal(net: &mut Net, hash: Blake3, started: &AtomicBool) -> (Seal, nodecraft_format::AssetStore) {
+    assert!(net.person(2).collab.seals_pending());
+    let seal = net.collab(2).next_seal().unwrap();
+    assert_eq!(seal.hash(), hash);
+    assert!(net.collab(2).next_seal().is_none(), "one at a time");
+    assert!(!net.person(2).collab.seals_pending(), "none waits to start while one is under way");
+    assert!(!started.load(Ordering::Acquire));
+    (seal, net.session(2).assets().clone())
+}
+
+/// Waits for the seal to read its asset.
+fn wait_started(started: &AtomicBool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !started.load(Ordering::Acquire) {
+        assert!(Instant::now() < deadline, "the seal never began");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn deleting_the_only_card_that_uses_an_asset_stops_its_seal_and_frees_its_spool() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut net, hash, gone, sealing) = sealing_for_a_card(dir.path());
+
+    // The sharer deletes the card while the joiner seals what it shows.
+    net.session(1).dispatch("node.remove", &json!({"canvas": canvas(), "id": nid(1)})).unwrap();
+    let deleted = Instant::now();
+    net.settle();
+    let result = sealing.join().unwrap();
+    assert!(deleted.elapsed() < Duration::from_secs(1), "{:?}", deleted.elapsed());
+    assert!(result.as_ref().is_err_and(TransferCancel::is_cancellation), "{result:?}");
+    assert!(gone.load(Ordering::Acquire), "the spool let go of it");
+
+    assert!(net.collab(2).sealed(hash, result), "another may start at once");
+    let collab = &net.person(2).collab;
+    assert_eq!((collab.waiting_for_assets(), collab.unusable_assets()), (0, 0));
+    assert!(!collab.seals_pending());
+    assert!(net.collab(2).next_seal().is_none(), "nothing is left to seal");
+    assert!(!net.session(2).assets().contains(&hash));
+    // The storage is free again at once.
+    let later = net.session(2).import_asset(b"after the seal stopped").unwrap();
+    assert!(net.session(2).assets().get(&later).is_none(), "on disk, not waiting in memory");
+}
+
+#[test]
+fn a_joiner_deleting_the_card_that_waits_for_an_asset_lets_it_go_before_it_is_sealed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = on_disk(empty(), &dir.path().join("sharer"));
+    let small = session.import_asset(&noise(100)).unwrap();
+    session.apply_remote(Changeset::new(vec![Change::AddNode { canvas: canvas(), node: showing(1, small) }])).unwrap();
+    let mut net = Net::new();
+    net.disk = Some(dir.path().join("joiners"));
+    net.enter(Person { id: 1, collab: Collab::share(&session, room_id()).unwrap(), session: Some(session) });
+    let (spool, _, gone) = SlowSpool::new();
+    net.enter(Person { id: 2, collab: Collab::join(room_id()).with_spool(Box::new(spool)).sealing(), session: None });
+    assert!(net.session(2).document().canvases()[&canvas()].nodes().contains_key(&nid(1)));
+
+    // The sharer shows a large asset on the card; the joiner keeps the card as it was meanwhile.
+    let hash = large(net.session(1), 9);
+    let changes = vec![Change::RemoveNode { canvas: canvas(), id: nid(1) }, Change::AddNode { canvas: canvas(), node: showing(1, hash) }];
+    net.session(1).apply_remote(Changeset::new(changes)).unwrap();
+    net.settle();
+    assert!(net.person(2).collab.seals_pending());
+
+    // The joiner deletes the card itself before the seal starts: its edit goes out, and the
+    // asset is let go rather than sealed.
+    net.session(2).dispatch("node.remove", &json!({"canvas": canvas(), "id": nid(1)})).unwrap();
+    net.settle();
+    assert!(!net.person(2).collab.seals_pending());
+    assert!(net.collab(2).next_seal().is_none());
+    assert_eq!(net.person(2).collab.waiting_for_assets(), 0);
+    assert!(gone.load(Ordering::Acquire), "the spool let go of it");
+    assert!(!net.session(1).document().canvases()[&canvas()].nodes().contains_key(&nid(1)), "the sharer took the deletion");
+}
+
+#[test]
+fn letting_go_of_a_collab_stops_its_seal_under_way() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut net, _, gone, sealing) = sealing_for_a_card(dir.path());
+    // Still used: the seal goes on through a settle.
+    net.settle();
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(!sealing.is_finished());
+    assert!(!gone.load(Ordering::Acquire));
+
+    let stopped = Instant::now();
+    drop(net.drop_out(2));
+    let result = sealing.join().unwrap();
+    assert!(stopped.elapsed() < Duration::from_secs(1), "{:?}", stopped.elapsed());
+    assert!(result.is_err_and(|error| TransferCancel::is_cancellation(&error)));
+    assert!(gone.load(Ordering::Acquire));
+}
+
+#[test]
+fn a_seal_stopped_while_its_card_is_still_used_waits_to_start_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = on_disk(empty(), &dir.path().join("sharer"));
+    let hash = large(&mut session, 11);
+    session.apply_remote(Changeset::new(vec![Change::AddNode { canvas: canvas(), node: showing(1, hash) }])).unwrap();
+    let mut net = Net::new();
+    net.disk = Some(dir.path().join("joiners"));
+    net.enter(Person { id: 1, collab: Collab::share(&session, room_id()).unwrap(), session: Some(session) });
+    net.enter(Person { id: 2, collab: Collab::join(room_id()).with_spool(Box::new(MemorySpool::new(64 << 20))).sealing(), session: None });
+    let seal = net.collab(2).next_seal().unwrap();
+    let stopped = TransferCancel::default();
+    stopped.cancel();
+    let result = net.session(2).assets().clone().seal(&seal.range, &stopped, &Default::default());
+    assert!(result.as_ref().is_err_and(TransferCancel::is_cancellation));
+    assert!(!net.collab(2).sealed(hash, result));
+    assert!(net.person(2).collab.seals_pending());
+    // Started again, it seals, and the card comes in.
+    let assets = net.session(2).assets().clone();
+    let seal = net.collab(2).next_seal().unwrap();
+    let result = seal.run(&assets);
+    assert!(net.collab(2).sealed(hash, result));
+    net.settle();
+    assert!(net.session(2).document().canvases()[&canvas()].nodes().contains_key(&nid(1)));
+    assert!(net.session(2).assets().contains(&hash));
+}
+
+#[test]
+fn a_seal_let_go_whose_card_comes_back_starts_again_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut net, hash, _, sealing) = sealing_for_a_card(dir.path());
+    // The card goes, and comes back before the stopped seal says so: the asset comes again.
+    net.session(1).dispatch("node.remove", &json!({"canvas": canvas(), "id": nid(1)})).unwrap();
+    net.settle();
+    net.session(1).apply_remote(Changeset::new(vec![Change::AddNode { canvas: canvas(), node: showing(2, hash) }])).unwrap();
+    net.settle();
+    assert!(net.collab(2).next_seal().is_none(), "the stopped seal hasn't said so yet");
+    let result = sealing.join().unwrap();
+    assert!(result.as_ref().is_err_and(TransferCancel::is_cancellation), "{result:?}");
+    // No wait for a retry: the next seal starts at once.
+    assert!(net.collab(2).sealed(hash, result));
+    assert_eq!(net.collab(2).next_seal().map(|seal| seal.hash()), Some(hash));
+}
+
+#[test]
+fn a_seal_that_failed_unexpectedly_lets_the_next_one_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = on_disk(empty(), &dir.path().join("sharer"));
+    let first = large(&mut session, 13);
+    let second = large(&mut session, 17);
+    let cards = vec![Change::AddNode { canvas: canvas(), node: showing(1, first) }, Change::AddNode { canvas: canvas(), node: showing(2, second) }];
+    session.apply_remote(Changeset::new(cards)).unwrap();
+    let mut net = Net::new();
+    net.disk = Some(dir.path().join("joiners"));
+    net.enter(Person { id: 1, collab: Collab::share(&session, room_id()).unwrap(), session: Some(session) });
+    net.enter(Person { id: 2, collab: Collab::join(room_id()).with_spool(Box::new(MemorySpool::new(64 << 20))).sealing(), session: None });
+    // A seal whose thread died says so as a failure (the desktop's worker sends it).
+    let seal = net.collab(2).next_seal().unwrap();
+    let dead = seal.hash();
+    drop(seal);
+    assert!(net.collab(2).sealed(dead, Err(Error::new(ErrorKind::Internal, "sealing stopped unexpectedly"))));
+    assert_eq!(net.person(2).collab.unusable_assets(), 1);
+    // The other still seals, and its card comes in.
+    let assets = net.session(2).assets().clone();
+    let seal = net.collab(2).next_seal().unwrap();
+    let other = seal.hash();
+    assert_ne!(other, dead);
+    let result = seal.run(&assets);
+    assert!(net.collab(2).sealed(other, result));
+    net.settle();
+    assert!(net.session(2).assets().contains(&other));
 }
