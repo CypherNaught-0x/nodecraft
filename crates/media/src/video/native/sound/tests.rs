@@ -164,3 +164,108 @@ fn actual_pcm_seeks_exactly_and_stops_at_the_end() {
     let mut job = service.pcm(&sound, u64::MAX, MAX_PCM_US).unwrap();
     assert!(wait(&mut job).unwrap().samples().is_empty());
 }
+
+#[test]
+#[ignore = "explicit installed tools only"]
+fn actual_pcm_reads_past_an_underestimated_duration_hint() {
+    let service = service();
+    let mut job = service.import_audio(Arc::from(pattern())).ok().unwrap();
+    let mut sound = wait(&mut job).unwrap();
+    // Model the underestimated duration reported for a VBR MP3 without a duration header.
+    // Force the hint so this regression does not depend on a particular ffprobe estimator.
+    Arc::make_mut(&mut sound.metadata).duration_us = 1_000_000;
+    let mut job = service.pcm(&sound, 2_000_000, 1_000_000).unwrap();
+    let chunk = wait(&mut job).unwrap();
+    assert_eq!(chunk.frames(), 48_000);
+    assert!(peak(chunk.samples()) > 15_000);
+    let mut job = service.pcm(&sound, MAX_AUDIO_DURATION_US, 1_000_000).unwrap();
+    assert!(wait(&mut job).unwrap().samples().is_empty(), "the one-hour bound still applies");
+}
+
+/// A headerless VBR MP3 whose initial noisy section is much more expensive than its silence.
+fn vbr_without_duration_header() -> Vec<u8> {
+    let id = SERVICE_ID.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("nodecraft-vbr666-{}-{id}", std::process::id()));
+    fs::create_dir(&dir).unwrap();
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(dir.clone());
+    let mut wave = b"RIFF".to_vec();
+    let data = 12u32 * 48_000 * 2;
+    wave.extend_from_slice(&(36 + data).to_le_bytes());
+    wave.extend_from_slice(b"WAVEfmt ");
+    wave.extend_from_slice(&16u32.to_le_bytes());
+    wave.extend_from_slice(&1u16.to_le_bytes());
+    wave.extend_from_slice(&1u16.to_le_bytes());
+    wave.extend_from_slice(&48_000u32.to_le_bytes());
+    wave.extend_from_slice(&96_000u32.to_le_bytes());
+    wave.extend_from_slice(&2u16.to_le_bytes());
+    wave.extend_from_slice(&16u16.to_le_bytes());
+    wave.extend_from_slice(b"data");
+    wave.extend_from_slice(&data.to_le_bytes());
+    let mut seed = 666u32;
+    for frame in 0..12 * 48_000 {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let sample = if frame < 96_000 { ((seed >> 16) as i16) / 2 } else { 0 };
+        wave.extend_from_slice(&sample.to_le_bytes());
+    }
+    let input = dir.join("noise-and-silence.wav");
+    let output = dir.join("no-duration-header.mp3");
+    fs::write(&input, wave).unwrap();
+    let mut child = std::process::Command::new(PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap()))
+        .args(["-v", "error", "-nostdin", "-y", "-i"])
+        .arg(input)
+        .args(["-c:a", "libmp3lame", "-q:a", "0", "-write_xing", "0", "-id3v2_version", "0"])
+        .arg(&output)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                assert!(status.success(), "installed ffmpeg must provide libmp3lame");
+                break;
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            outcome => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("VBR fixture creation failed or exceeded its deadline: {outcome:?}");
+            }
+        }
+    }
+    fs::read(output).unwrap()
+}
+
+#[test]
+#[ignore = "explicit installed tools with libmp3lame only"]
+fn actual_headerless_vbr_pcm_reaches_decoded_eof_beyond_its_duration_hint() {
+    let service = service();
+    let mut job = service.import_audio(Arc::from(vbr_without_duration_header())).ok().unwrap();
+    let mut sound = wait(&mut job).unwrap();
+    eprintln!("headerless VBR duration hint: {} us", sound.metadata.duration_us);
+    // ffprobe estimators vary. Retain a deterministic underestimate even if a future version
+    // learns the precise length; this remains an actual headerless VBR MP3 decoder path.
+    Arc::make_mut(&mut sound.metadata).duration_us = sound.metadata.duration_us.min(4_000_000);
+    let mut frames = 0u64;
+    for _ in 0..8 {
+        let from_us = frames * 1_000_000 / 48_000;
+        let mut job = service.pcm(&sound, from_us, 2_000_000).unwrap();
+        let chunk = wait(&mut job).unwrap();
+        frames += chunk.frames() as u64;
+        if chunk.frames() < 96_000 {
+            break;
+        }
+    }
+    let decoded_us = frames * 1_000_000 / 48_000;
+    eprintln!("headerless VBR decoded EOF: {decoded_us} us");
+    assert!((12_000_000..12_100_000).contains(&decoded_us), "decoded EOF: {decoded_us} us");
+    assert!(decoded_us > sound.metadata.duration_us);
+}

@@ -189,3 +189,71 @@ fn render_audio_card_review_evidence() {
         h.render().unwrap().save(folder.join(name)).unwrap();
     }
 }
+
+/// The minimized-window condition: no app frames for longer than the complete ring capacity.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+#[ignore = "needs installed tools and a real default output device"]
+fn actual_sound_keeps_playing_without_ui_frames() {
+    let ffmpeg = std::path::PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let ffprobe = std::path::PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFPROBE").unwrap());
+    // Authored silent 12 s PCM WAV: no subprocess, download or audible test tone.
+    let frames = 12u32 * 48_000;
+    let data = frames * 4;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&48_000u32.to_le_bytes());
+    bytes.extend_from_slice(&192_000u32.to_le_bytes());
+    bytes.extend_from_slice(&4u16.to_le_bytes());
+    bytes.extend_from_slice(&16u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data.to_le_bytes());
+    bytes.resize(44 + data as usize, 0);
+
+    let folder = std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").map(std::path::PathBuf::from);
+    let builder = Harness::builder().with_step_dt(1.0 / 30.0).with_max_steps(120).with_size(Vec2::new(1000.0, 700.0));
+    let builder = if folder.is_some() { builder.wgpu() } else { builder };
+    let mut h = builder.build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap());
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.state_mut().theme = crate::theme::ThemeKind::Dark;
+    let mut settings = NodeCraftSettings::default();
+    settings.media.ffmpeg = Some(ffmpeg);
+    settings.media.ffprobe = Some(ffprobe);
+    let ctx = h.ctx.clone();
+    h.state_mut().apply_settings(&ctx, &settings);
+    let id = add_sound(&mut h, &bytes);
+    assert!(wait_for(&mut h, "Sound, 0:12", 1000));
+    assert!(wait_until(&mut h, 1000, |h| h.state().audios.test_counts().1 == 1));
+    let asset = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&id).unwrap().params.get("asset").unwrap().clone();
+    let nodecraft_types::Value::Media(asset) = asset else { panic!("sound asset") };
+    h.get_by_label("Play sound").click();
+    h.step();
+    if let Some(folder) = &folder {
+        std::fs::create_dir_all(folder).unwrap();
+        h.render().unwrap().save(folder.join("before-frame-gap.png")).unwrap();
+    }
+    let revision = h.state().session.revision();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        // Reading view state does not pump PCM jobs or an app frame.
+        let view = h.state_mut().audios.view(&ctx, id, &asset, || panic!("the ready source must remain cached"));
+        let crate::audio::AudioView::Sound { position_us, notice, .. } = view else { panic!("ready sound") };
+        assert!(notice.is_none(), "real sound device required for this opt-in proof: {notice:?}");
+        if position_us >= 9_000_000 {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "playback depended on an app frame: {position_us} us");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    h.step();
+    assert_eq!(h.state().session.revision(), revision);
+    if let Some(folder) = &folder {
+        h.render().unwrap().save(folder.join("after-frame-gap.png")).unwrap();
+    }
+    h.state_mut().audios.stop();
+}

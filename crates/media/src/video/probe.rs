@@ -254,7 +254,7 @@ pub(super) fn parse_audio(bytes: &[u8]) -> Result<AudioMetadata> {
             micros(text(format, "duration").ok_or(VideoError::Unsupported)?)?.checked_sub(offset).ok_or(VideoError::InvalidMetadata)?
         }
     };
-    if duration <= 0 || duration > 3_600_000_000 {
+    if duration <= 0 || duration > i128::from(MAX_AUDIO_DURATION_US) {
         return Err(VideoError::Unsupported);
     }
     Ok(AudioMetadata {
