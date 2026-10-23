@@ -918,7 +918,7 @@ fn a_run_a_budget_blocks_says_which_cap_and_opens_the_budgets_to_change_it() {
     h.run();
     click(&mut h, "Save");
     assert_eq!(h.state().budget_caps().per_call_usd_cents, Some(100));
-    h.get_by_label("Saved. Runs are checked against these caps from now on.");
+    h.get_by_label_contains("Runs are checked against these caps");
     press(&mut h, Role::Button, "Generate");
     frames_until(&mut h, |app| app.run_confirm.is_some());
     accept(&mut h);

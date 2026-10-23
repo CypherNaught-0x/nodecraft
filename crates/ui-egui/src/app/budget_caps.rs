@@ -20,8 +20,16 @@ impl NodeCraftApp {
         let spent = self.runs.as_ref().map(|runs| runs.spent());
         let Some(caps) = self.budgets.show(ctx, &self.budget_caps, spent.as_ref(), t) else { return };
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(store) = &mut self.store {
+        let kept = if let Some(store) = &mut self.store {
             store.update(|settings| settings.budgets = caps.clone());
+            true
+        } else {
+            false
+        };
+        #[cfg(target_arch = "wasm32")]
+        let kept = false;
+        if !kept {
+            self.budgets.status = Some("Runs are checked against these caps until this window closes; there is no settings file to keep them in.".into());
         }
         self.set_budget_caps(caps);
     }

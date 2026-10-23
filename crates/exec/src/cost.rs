@@ -142,7 +142,8 @@ impl Block {
         let name = |scope: &Scope| match scope {
             Scope::PerCall => "per-call",
             Scope::Session => "session",
-            Scope::Project => "project",
+            // The cap is on everything the spending log records, in every project (#201).
+            Scope::Project => "total",
         };
         match self {
             Self::Over { scope, limit, would_be, .. } => {

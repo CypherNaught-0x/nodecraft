@@ -2569,7 +2569,7 @@ impl NodeCraftApp {
                         self.share_button(ui, t);
                         if ui
                             .add(egui::Button::new(egui::RichText::new("Budgets").color(t.text_muted)).frame(false))
-                            .on_hover_text("The most runs may spend per call, per session and per project")
+                            .on_hover_text("The most runs may spend per call, per session and in total")
                             .clicked()
                         {
                             if self.budgets.open {

@@ -1,5 +1,5 @@
-//! The Budgets panel (#201): the most runs may spend per call, per session and per project, in
-//! US dollars. An empty field means no cap. The caps are the person's settings (`[budgets]`), not
+//! The Budgets panel (#201): the most runs may spend per call, per session and in total, in US
+//! dollars. An empty field means no cap. The caps are the person's settings (`[budgets]`), not
 //! a command: no agent or script can raise them. A run a cap blocks says which one, and its
 //! confirmation opens this panel.
 
@@ -15,7 +15,7 @@ const MAX_FIELD_CHARS: usize = 16;
 const CAPS: [(&str, &str); 3] = [
     ("Per call", "The most one provider job may cost."),
     ("This session", "The most runs may spend until NodeCraft closes."),
-    ("This project", "The most runs in this project may spend."),
+    ("In total", "The most every run NodeCraft has recorded may spend together, in every project and session."),
 ];
 
 #[derive(Default)]
@@ -43,7 +43,7 @@ impl BudgetsPanel {
             return None;
         }
         let fields = self.fields.get_or_insert_with(|| {
-            [settings.per_call_usd_cents, settings.session_usd_cents, settings.project_usd_cents].map(|cents| cents.map(dollars).unwrap_or_default())
+            [settings.per_call_usd_cents, settings.session_usd_cents, settings.total_usd_cents].map(|cents| cents.map(dollars).unwrap_or_default())
         });
         let mut save = None;
         let mut open = self.open;
@@ -75,17 +75,14 @@ impl BudgetsPanel {
                     let listed: Vec<String> = amounts.values().copied().map(format_money).collect();
                     if listed.is_empty() { "nothing".to_owned() } else { listed.join(", ") }
                 };
-                ui.label(
-                    egui::RichText::new(format!("Spent this session: {}. In this project: {}.", text(&spent.session), text(&spent.project)))
-                        .color(t.text_muted),
-                );
+                ui.label(egui::RichText::new(format!("Spent this session: {}. In total: {}.", text(&spent.session), text(&spent.project))).color(t.text_muted));
             }
             ui.horizontal(|ui| {
                 if ui.button("Save").clicked() {
                     match parse(fields) {
                         Ok(caps) => {
                             self.notice = None;
-                            self.status = Some("Saved. Runs are checked against these caps from now on.".into());
+                            self.status = Some("Runs are checked against these caps from now on.".into());
                             save = Some(caps);
                         }
                         Err(why) => self.notice = Some(why),
@@ -110,18 +107,22 @@ fn parse(fields: &[String; 3]) -> Result<BudgetSettings, String> {
     for ((slot, field), (label, _)) in cents.iter_mut().zip(fields).zip(CAPS) {
         *slot = cents_of(field).map_err(|why| format!("{label}: {why}"))?;
     }
-    let [per_call_usd_cents, session_usd_cents, project_usd_cents] = cents;
-    Ok(BudgetSettings { per_call_usd_cents, session_usd_cents, project_usd_cents })
+    let [per_call_usd_cents, session_usd_cents, total_usd_cents] = cents;
+    Ok(BudgetSettings { per_call_usd_cents, session_usd_cents, total_usd_cents })
 }
 
 /// An amount in dollars, such as `5`, `0.25` or `$12.50`, as cents; empty is no cap.
 pub fn cents_of(text: &str) -> Result<Option<u64>, String> {
+    let bad = || "type an amount in dollars, such as 5 or 0.25, or leave it empty".to_owned();
     let text = text.trim();
-    let text = text.strip_prefix('$').unwrap_or(text).trim();
     if text.is_empty() {
         return Ok(None);
     }
-    let bad = || "type an amount in dollars, such as 5 or 0.25, or leave it empty".to_owned();
+    // A lone `$` is a typo, not "no cap".
+    let text = text.strip_prefix('$').unwrap_or(text).trim();
+    if text.is_empty() {
+        return Err(bad());
+    }
     let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
     let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
     if (whole.is_empty() && fraction.is_empty()) || !digits(whole) || !digits(fraction) || fraction.len() > 2 || whole.len() > 9 {
@@ -155,13 +156,13 @@ mod tests {
         assert_eq!(cents_of(".5"), Ok(Some(50)));
         assert_eq!(cents_of("12.50"), Ok(Some(1250)));
         assert_eq!(cents_of("100000"), Ok(Some(10_000_000)));
-        for bad in ["-1", "1.234", "1e3", "abc", ".", "1.2.3", "99999999999999", "100000.01", "５", "NaN"] {
+        for bad in ["$", " $ ", "-1", "1.234", "1e3", "abc", ".", "1.2.3", "99999999999999", "100000.01", "５", "NaN"] {
             assert!(cents_of(bad).is_err(), "{bad}");
         }
         for cents in [0, 5, 25, 50, 1250, 10_000_000] {
             assert_eq!(cents_of(&dollars(cents)), Ok(Some(cents)));
         }
         let fields = ["0.5".to_owned(), String::new(), "x".to_owned()];
-        assert!(parse(&fields).is_err_and(|why| why.starts_with("This project:")));
+        assert!(parse(&fields).is_err_and(|why| why.starts_with("In total:")));
     }
 }

@@ -1,20 +1,41 @@
-//! Spending caps for runs (#201): per call, per session and per project, in US cents. Only the
+//! Spending caps for runs (#201): per call, per session and in total, in US cents. Only the
 //! person changes them, in the app's Budgets section; no command raises them, so an agent can't
 //! lift its own limit. Read the hostile fields through [`BudgetSettings::budgets`].
+//!
+//! A cap the file holds but that isn't a whole number of cents (`500.0`, `"5"`, `-1`) reads as 0,
+//! which blocks every paid run until it is set again: a typo must not lift every cap, as failing
+//! the whole section would.
 use nodecraft_exec::cost::Budgets;
 use nodecraft_types::{Currency, Money};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// No cap unless one is set; an unset cap is `None`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct BudgetSettings {
     /// Most one job may cost.
+    #[serde(deserialize_with = "cap")]
     pub per_call_usd_cents: Option<u64>,
     /// Most this session may spend.
+    #[serde(deserialize_with = "cap")]
     pub session_usd_cents: Option<u64>,
-    /// Most the project open in this window may spend.
-    pub project_usd_cents: Option<u64>,
+    /// Most every run the spending log records may spend together, in every project and session.
+    #[serde(deserialize_with = "cap")]
+    pub total_usd_cents: Option<u64>,
+}
+
+/// A cap as the file holds it: cents, or anything else, which blocks paid runs (0).
+fn cap<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Cents(u64),
+        Unreadable(serde::de::IgnoredAny),
+    }
+    Ok(Option::<Raw>::deserialize(deserializer)?.map(|raw| match raw {
+        Raw::Cents(cents) => cents,
+        Raw::Unreadable(_) => 0,
+    }))
 }
 
 impl BudgetSettings {
@@ -24,7 +45,8 @@ impl BudgetSettings {
     /// The caps the run host checks, each capped at [`Self::MAX_USD_CENTS`].
     pub fn budgets(&self) -> Budgets {
         let usd = |cents: Option<u64>| cents.map(|c| Money::new(Currency::USD, c.min(Self::MAX_USD_CENTS).saturating_mul(10_000)));
-        Budgets { per_call: usd(self.per_call_usd_cents), session: usd(self.session_usd_cents), project: usd(self.project_usd_cents) }
+        // The run host's "project" total is the whole spending log's.
+        Budgets { per_call: usd(self.per_call_usd_cents), session: usd(self.session_usd_cents), project: usd(self.total_usd_cents) }
     }
 }
 
@@ -34,7 +56,7 @@ mod tests {
 
     #[test]
     fn caps_from_the_file_are_bounded_and_in_dollars() {
-        let settings = BudgetSettings { per_call_usd_cents: Some(25), session_usd_cents: Some(u64::MAX), project_usd_cents: None };
+        let settings = BudgetSettings { per_call_usd_cents: Some(25), session_usd_cents: Some(u64::MAX), total_usd_cents: None };
         let budgets = settings.budgets();
         assert_eq!(budgets.per_call, Some(Money::new(Currency::USD, 250_000)));
         assert_eq!(budgets.session, Some(Money::new(Currency::USD, 100_000_000_000)));
@@ -42,5 +64,17 @@ mod tests {
         assert_eq!(BudgetSettings::default().budgets(), Budgets::default(), "nothing is capped until the person sets a cap");
         let parsed: BudgetSettings = serde_json::from_value(serde_json::json!({"session_usd_cents": 500})).unwrap();
         assert_eq!(parsed.budgets().session, Some(Money::new(Currency::USD, 5_000_000)));
+    }
+
+    #[test]
+    fn a_cap_that_cant_be_read_blocks_paid_runs_and_leaves_the_others() {
+        for bad in [serde_json::json!(500.0), serde_json::json!("500"), serde_json::json!(-1), serde_json::json!([1]), serde_json::json!({"a": 1})] {
+            let parsed: BudgetSettings = serde_json::from_value(serde_json::json!({"per_call_usd_cents": bad, "session_usd_cents": 700})).unwrap();
+            assert_eq!(parsed.per_call_usd_cents, Some(0), "{bad}");
+            assert_eq!(parsed.session_usd_cents, Some(700), "{bad}: the other caps stay");
+            assert_eq!(parsed.total_usd_cents, None);
+        }
+        let parsed: BudgetSettings = serde_json::from_value(serde_json::json!({"total_usd_cents": null})).unwrap();
+        assert_eq!(parsed.total_usd_cents, None);
     }
 }

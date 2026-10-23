@@ -333,6 +333,15 @@ mod tests {
     }
 
     #[test]
+    fn a_mistyped_budget_cap_in_the_file_blocks_rather_than_lifting_every_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "[budgets]\nper_call_usd_cents = 50.0\nsession_usd_cents = 700\ntotal_usd_cents = \"9\"\n");
+        let (store, _) = open_in(dir.path());
+        let caps = &store.get().budgets;
+        assert_eq!((caps.per_call_usd_cents, caps.session_usd_cents, caps.total_usd_cents), (Some(0), Some(700), Some(0)));
+    }
+
+    #[test]
     fn peek_reads_without_touching_the_folder() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("absent");
