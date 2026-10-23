@@ -54,3 +54,25 @@ fn the_prompt_carries_the_contract_the_shader_the_message_and_the_request() {
     // The shader shown to the model reads back as the same shader.
     assert_eq!(parse_reply(&fix).unwrap(), current);
 }
+
+#[test]
+fn a_wgsl_block_wins_over_others_and_a_cut_off_block_runs_to_the_end() {
+    let shader =
+        parse_reply("Try this:\n```text\nnot code\n```\n```wgsl\nfn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { return color; }\n```").unwrap();
+    assert!(shader.source.starts_with("fn effect"), "{}", shader.source);
+    let cut = parse_reply("```wgsl\nfn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {\n    return col").unwrap();
+    assert!(cut.source.starts_with("fn effect") && !cut.source.contains("```"), "{}", cut.source);
+    // Without a wgsl tag, the first block is read.
+    assert_eq!(parse_reply("```\nfn a\n```\n```rust\nfn b\n```").unwrap().source, "fn a\n");
+}
+
+#[test]
+fn a_bar_in_a_label_still_reads_back_as_one_parameter() {
+    let mut current = StoredShader::default();
+    if let Some(param) = current.params.first_mut() {
+        param.label = "Dark | Light".into();
+    }
+    let back = parse_reply(&compose(&current, Some("x"), None)).unwrap();
+    assert_eq!(back.params.len(), 1);
+    assert_eq!(back.params.first().unwrap().label, "Dark / Light");
+}

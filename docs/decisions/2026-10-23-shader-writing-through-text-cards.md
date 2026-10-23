@@ -20,7 +20,10 @@
   with `nodecraft_gpu::shader::validate` as it's typed, and stores it with Apply. Write/Fix with a
   model calls `shader.write` and then asks to run the new card (the price confirmation shows
   first); when that card's active answer changes, the editor calls `shader.apply` and shows the
-  stored shader or the refusal, with Fix offered again.
+  stored shader or the refusal, with Fix offered again. A refused answer that still reads as a
+  shader becomes the draft, and `shader.write` takes the draft (`shader`) to show the model, so a
+  fix is always about the code the message describes. A request card's answer can also be stored
+  later from its own menu (Use as shader), e.g. after it was run by hand.
 - **Compiler reports use ASCII framing.** naga's box-drawing characters are mapped to `- | +`,
   since the UI font and many terminals lack them.
 - **Not yet**: saving shaders to the library and versioning saved actions; shaders with more than

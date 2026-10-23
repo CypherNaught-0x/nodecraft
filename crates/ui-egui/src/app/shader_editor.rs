@@ -7,7 +7,7 @@ use super::NodeCraftApp;
 use super::generate::RunKind;
 use crate::ids;
 use crate::theme::Tokens;
-use nodecraft_engine::shader_assist_cmds::{MAX_ERROR_BYTES, MAX_REQUEST_BYTES};
+use nodecraft_engine::shader_assist_cmds::{MAX_ERROR_BYTES, MAX_REQUEST_BYTES, answer, parse_reply};
 use nodecraft_gpu::shader::{MAX_PARAMS, MAX_SOURCE, ShaderParam, ShaderSpec, validate};
 use nodecraft_nodes::shader::{StoredParam, StoredShader, stored};
 use nodecraft_types::{CanvasId, GenerationId, NodeId};
@@ -24,13 +24,15 @@ pub(super) struct ShaderEditor {
     pub(super) request: String,
     /// A request card waiting for its answer, and the answer it had when asked.
     pub(super) pending: Option<(NodeId, Option<GenerationId>)>,
-    /// Why the last store or answer was refused.
+    /// Why a model's answer was refused, for a fix request to carry when the draft itself checks.
+    pub(super) refusal: Option<String>,
+    /// Why the last store or request failed.
     pub(super) error: Option<String>,
 }
 
 impl ShaderEditor {
     fn new(canvas: CanvasId, node: NodeId, shader: StoredShader) -> Self {
-        let mut editor = Self { canvas, node, draft: shader, check: None, request: String::new(), pending: None, error: None };
+        let mut editor = Self { canvas, node, draft: shader, check: None, request: String::new(), pending: None, refusal: None, error: None };
         editor.recheck();
         editor
     }
@@ -48,11 +50,12 @@ impl ShaderEditor {
         self.check = Some(validate(&spec).map(|_| ()).map_err(|e| e.0));
     }
 
-    /// The compiler's message for the draft, cut to what a fix request carries.
+    /// What a fix request carries: the compiler's message for the draft, else why the model's
+    /// last answer was refused. Cut to the request's limit.
     fn message(&self) -> Option<String> {
         match &self.check {
             Some(Err(message)) => Some(clip(message, MAX_ERROR_BYTES)),
-            _ => self.error.as_ref().map(|message| clip(message, MAX_ERROR_BYTES)),
+            _ => self.refusal.as_ref().map(|message| clip(message, MAX_ERROR_BYTES)),
         }
     }
 }
@@ -92,7 +95,10 @@ impl NodeCraftApp {
         }
         self.shader_answered();
         let busy = self.run_confirm.is_some();
+        let Some(editor) = &self.shader_editor else { return };
+        let on_card = self.session.document().canvases().get(&editor.canvas).and_then(|c| c.nodes().get(&editor.node)).and_then(|n| stored(n).ok());
         let Some(editor) = &mut self.shader_editor else { return };
+        let applied = on_card.as_ref() == Some(&editor.draft);
         let mut open = true;
         let mut action = None;
         let frame =
@@ -128,6 +134,7 @@ impl NodeCraftApp {
                 changed |= params(ui, &mut editor.draft.params, t);
                 if changed {
                     editor.recheck();
+                    editor.refusal = None;
                     editor.error = None;
                 }
                 match &editor.check {
@@ -142,6 +149,11 @@ impl NodeCraftApp {
                     }
                     None => {}
                 }
+                if let Some(refusal) = &editor.refusal {
+                    egui::ScrollArea::vertical().id_salt("shader-refusal").max_height(t.shader_message_height).show(ui, |ui| {
+                        ui.colored_label(t.danger, refusal);
+                    });
+                }
                 if let Some(error) = &editor.error {
                     egui::ScrollArea::vertical().id_salt("shader-error").max_height(t.shader_message_height).show(ui, |ui| {
                         ui.colored_label(t.danger, error);
@@ -155,6 +167,9 @@ impl NodeCraftApp {
                     if ui.button("Revert").on_hover_text("Go back to the card's shader").clicked() {
                         action = Some(Action::Revert);
                     }
+                    if !applied {
+                        ui.label(egui::RichText::new("Not applied yet").color(t.text_muted));
+                    }
                 });
                 ui.separator();
                 let label = ui.label("Ask a model");
@@ -166,11 +181,13 @@ impl NodeCraftApp {
                         .hint_text("Describe the filter, or how to change it"),
                 )
                 .labelled_by(label.id);
+                // Asking again isn't blocked by a request still waiting: its run may have been
+                // declined or failed, and the newest request is the one waited for.
                 let waiting = editor.pending.is_some();
                 ui.horizontal(|ui| {
                     let asked = !editor.request.trim().is_empty();
                     if ui
-                        .add_enabled(asked && !waiting && !busy, egui::Button::new("Write with a model"))
+                        .add_enabled(asked && !busy, egui::Button::new("Write with a model"))
                         .on_hover_text("Add a text card asked for this shader; you see its price before it runs")
                         .clicked()
                     {
@@ -178,7 +195,7 @@ impl NodeCraftApp {
                     }
                     if editor.message().is_some()
                         && ui
-                            .add_enabled(!waiting && !busy, egui::Button::new("Fix with a model"))
+                            .add_enabled(!busy, egui::Button::new("Fix with a model"))
                             .on_hover_text("Add a text card asked to fix the shader for this message; you see its price before it runs")
                             .clicked()
                     {
@@ -215,7 +232,8 @@ impl NodeCraftApp {
         let Some(editor) = &self.shader_editor else { return };
         let (canvas, node) = (editor.canvas, editor.node);
         let request = editor.request.trim();
-        let mut params = json!({"canvas": canvas, "node": node});
+        // The model sees the draft, which is what the message is about, not the stored shader.
+        let mut params = json!({"canvas": canvas, "node": node, "shader": {"source": editor.draft.source, "params": editor.draft.params}});
         if !request.is_empty() {
             params["request"] = json!(clip(request, MAX_REQUEST_BYTES));
         }
@@ -232,6 +250,7 @@ impl NodeCraftApp {
         match result {
             Ok(()) => {
                 editor.pending = Some((card, None));
+                editor.refusal = None;
                 editor.error = None;
             }
             Err(error) => editor.error = Some(error.message),
@@ -242,7 +261,7 @@ impl NodeCraftApp {
     fn shader_answered(&mut self) {
         let Some(editor) = &self.shader_editor else { return };
         let Some((card, before)) = editor.pending else { return };
-        let (canvas, node) = (editor.canvas, editor.node);
+        let canvas = editor.canvas;
         let Some(answering) = self.session.document().canvases().get(&canvas).and_then(|c| c.nodes().get(&card)) else {
             // The card went (undone or deleted): nothing to wait for.
             if let Some(editor) = &mut self.shader_editor {
@@ -253,18 +272,51 @@ impl NodeCraftApp {
         if answering.active.is_none() || answering.active == before {
             return;
         }
+        if let Some(editor) = &mut self.shader_editor {
+            editor.pending = None;
+        }
+        self.take_answer(card);
+    }
+
+    /// Card menu → Use as shader: stores a request card's answer on the shader card it was
+    /// written for, and opens the editor there to show the result or why it was refused.
+    pub(super) fn use_shader_answer(&mut self, card: NodeId, target: NodeId) {
+        self.open_shader_editor(target);
+        if self.shader_editor.as_ref().is_some_and(|editor| editor.node == target) {
+            self.take_answer(card);
+        }
+    }
+
+    /// Stores `card`'s answer as the editor's shader. A refused answer that still reads as a
+    /// shader becomes the draft, so the compiler's message and a fix are about what the model
+    /// wrote.
+    fn take_answer(&mut self, card: NodeId) {
+        let Some(editor) = &self.shader_editor else { return };
+        let (canvas, node) = (editor.canvas, editor.node);
         let result = self.session.dispatch("shader.apply", &json!({"canvas": canvas, "id": node, "from": card}));
-        let shader = self.session.document().canvases().get(&canvas).and_then(|c| c.nodes().get(&node)).map(stored);
+        let nodes = self.session.document().canvases().get(&canvas).map(|c| c.nodes());
+        let shader = nodes.and_then(|nodes| nodes.get(&node)).map(stored);
+        let reply = nodes.and_then(|nodes| nodes.get(&card)).and_then(|card| answer(card).ok()).map(parse_reply);
         let Some(editor) = &mut self.shader_editor else { return };
-        editor.pending = None;
+        editor.error = None;
+        editor.refusal = None;
         match (result, shader) {
             (Ok(_), Some(Ok(shader))) => {
                 editor.draft = shader;
                 editor.recheck();
-                editor.error = None;
             }
-            (Err(error), _) => editor.error = Some(error.message),
             (Ok(_), _) => editor.error = Some("The answer was stored, but the card's shader can't be read back.".into()),
+            (Err(error), _) => {
+                let parsed = matches!(reply, Some(Ok(_)));
+                if let Some(Ok(written)) = reply {
+                    editor.draft = written;
+                    editor.recheck();
+                }
+                // A written draft that fails its check already shows the compiler's message.
+                if !(parsed && matches!(editor.check, Some(Err(_)))) {
+                    editor.refusal = Some(error.message);
+                }
+            }
         }
     }
 }

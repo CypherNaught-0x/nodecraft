@@ -141,12 +141,14 @@ fn typing_checks_the_shader_and_apply_stores_it_as_one_undo_step() {
     assert!(h.query_by_label("The shader is valid.").is_none(), "the draft is checked as it's typed");
     assert!(apply_disabled(&h));
     assert!(h.query_by_role_and_label(Role::Button, "Fix with a model").is_some(), "a refused shader can be sent for a fix");
+    assert!(h.query_by_label("Not applied yet").is_some(), "the draft differs from the card");
     assert_eq!(card_shader(&h), before, "nothing is stored while typing");
     shot(&mut h, "shader90-refused.png");
 
     press(&mut h, "Revert");
     assert_eq!(h.state().shader_editor.as_ref().unwrap().draft, before);
     assert!(!apply_disabled(&h));
+    assert!(h.query_by_label("Not applied yet").is_none());
 
     press(&mut h, "Add parameter");
     assert_eq!(h.state().shader_editor.as_ref().unwrap().draft.params.len(), before.params.len() + 1);
@@ -192,22 +194,106 @@ fn a_model_writes_the_shader_after_its_price_is_accepted_and_its_answer_is_store
     shot(&mut h, "shader90-written.png");
 }
 
-#[test]
-fn an_answer_that_isnt_a_shader_says_why_and_offers_a_fix() {
-    let (mut h, _) = opened();
-    let before = card_shader(&h);
-    type_into(&mut h, "Ask a model", "Blur it");
-    press(&mut h, "Write with a model");
+fn prompt_of(h: &Harness<'static, NodeCraftApp>, card: NodeId) -> String {
+    match h.state().session.document().canvases().get(&C).unwrap().nodes().get(&card).unwrap().params.get("prompt") {
+        Some(Value::Text(text)) => text.clone(),
+        other => panic!("no typed prompt: {other:?}"),
+    }
+}
+
+/// Asks a model to write the shader and declines the price: the request card stays, unrun.
+fn asked(h: &mut Harness<'static, NodeCraftApp>, request: &str) -> NodeId {
+    type_into(h, "Ask a model", request);
+    press(h, "Write with a model");
     let (card, _) = h.state().shader_editor.as_ref().unwrap().pending.unwrap();
-    press(&mut h, "Cancel");
-    let answer = json!({"id": GenerationId::from_bytes([94; 16]), "outputs": [{"type": "text", "value": "```wgsl\nfn effect(color: vec4<f32>) -> f32 { return 1.0; }\n```"}]});
+    press(h, "Cancel");
+    card
+}
+
+fn record(h: &mut Harness<'static, NodeCraftApp>, card: NodeId, id: u8, text: &str) {
+    let answer = json!({"id": GenerationId::from_bytes([id; 16]), "outputs": [{"type": "text", "value": text}]});
     h.state_mut().session.dispatch("run.record", &json!({"canvas": C, "results": [{"node": card, "generation": answer}]})).unwrap();
     h.run();
-    let error = h.state().shader_editor.as_ref().unwrap().error.clone().unwrap();
-    assert!(error.contains("isn't a shader") || error.contains("isn't valid"), "{error}");
+}
+
+#[test]
+fn an_answer_that_doesnt_compile_becomes_the_draft_so_its_message_and_fix_are_about_it() {
+    let (mut h, _) = opened();
+    let before = card_shader(&h);
+    let card = asked(&mut h, "Blur it");
+    record(&mut h, card, 94, "```wgsl\nfn effect(color: vec4<f32>) -> f32 { return 1.0; }\n```");
+    let editor = h.state().shader_editor.as_ref().unwrap();
+    assert!(editor.draft.source.contains("-> f32"), "the refused answer is shown: {}", editor.draft.source);
     assert_eq!(card_shader(&h), before, "a refused answer stores nothing");
-    assert!(h.query_by_label(&error).is_some(), "the message is shown");
+    assert!(apply_disabled(&h));
+    assert!(h.query_by_label("Not applied yet").is_some());
     assert!(!h.get_by_role_and_label(Role::Button, "Fix with a model").accesskit_node().is_disabled());
+
+    // The fix shows the model the shader it wrote, not the card's.
+    press(&mut h, "Fix with a model");
+    let (fix, _) = h.state().shader_editor.as_ref().unwrap().pending.unwrap();
+    assert_ne!(fix, card);
+    let asked = prompt_of(&h, fix);
+    assert!(asked.contains("-> f32 { return 1.0; }"), "{asked}");
+}
+
+#[test]
+fn an_answer_with_no_shader_says_why_and_offers_a_fix() {
+    let (mut h, _) = opened();
+    let before = card_shader(&h);
+    let card = asked(&mut h, "Blur it");
+    record(&mut h, card, 95, "```wgsl\n// param: tone | Tone | 0 | 1\n```");
+    let refusal = h.state().shader_editor.as_ref().unwrap().refusal.clone().unwrap();
+    assert!(refusal.contains("param"), "{refusal}");
+    assert_eq!(h.state().shader_editor.as_ref().unwrap().draft, before, "nothing readable replaces the draft");
+    assert!(h.query_by_label(&refusal).is_some(), "the message is shown");
+    press(&mut h, "Fix with a model");
+    let (fix, _) = h.state().shader_editor.as_ref().unwrap().pending.unwrap();
+    assert!(prompt_of(&h, fix).contains(&refusal), "the fix carries why the answer was refused");
+}
+
+#[test]
+fn a_fix_shows_the_model_the_draft_being_edited() {
+    let (mut h, _) = opened();
+    type_into(&mut h, "WGSL source", "oops");
+    press(&mut h, "Fix with a model");
+    let (card, _) = h.state().shader_editor.as_ref().unwrap().pending.unwrap();
+    assert!(prompt_of(&h, card).contains("oops"), "the typed mistake is what the model sees");
+}
+
+#[test]
+fn a_declined_request_doesnt_block_asking_again() {
+    let (mut h, _) = opened();
+    let first = asked(&mut h, "Make it sepia");
+    assert!(!h.get_by_role_and_label(Role::Button, "Write with a model").accesskit_node().is_disabled());
+    press(&mut h, "Write with a model");
+    let (second, _) = h.state().shader_editor.as_ref().unwrap().pending.unwrap();
+    assert_ne!(second, first, "a new request card is waited for");
+}
+
+#[test]
+fn a_request_cards_answer_can_be_used_later_from_its_menu() {
+    let (mut h, _) = opened();
+    let card = asked(&mut h, "Make it sepia");
+    // The editor is closed before the answer arrives, so nothing applies it on its own.
+    h.state_mut().shader_editor = None;
+    record(&mut h, card, 96, SEPIA);
+    assert!(card_shader(&h).params.iter().all(|p| p.name != "tone"), "nothing is stored until asked");
+    for _ in 0..20 {
+        if h.query_by_label("Use as shader").is_none() {
+            right_click(&mut h, card);
+        }
+        h.get_by_label("Use as shader").click();
+        h.run();
+        if h.state().shader_editor.is_some() {
+            break;
+        }
+    }
+    let editor = h.state().shader_editor.as_ref().unwrap();
+    assert_eq!(editor.node, SHADER, "the editor opens on the shader card the answer was for");
+    assert_eq!(editor.refusal, None);
+    assert_eq!(card_shader(&h).params.first().unwrap().name, "tone");
+    assert_eq!(editor.draft, card_shader(&h));
 }
 
 #[test]

@@ -1885,6 +1885,16 @@ impl NodeCraftApp {
                                 layers_request = Some(node.id);
                                 ui.close();
                             }
+                            if nodecraft_engine::shader_assist_cmds::written_for(node).is_some()
+                                && ui
+                                    .add_enabled(node.active.is_some(), egui::Button::new("Use as shader"))
+                                    .on_hover_text("Store this answer as the shader of the card it was written for; one undo step")
+                                    .on_disabled_hover_text("Run the card first")
+                                    .clicked()
+                            {
+                                layers_request = Some(node.id);
+                                ui.close();
+                            }
                             if node.kind == nodecraft_nodes::deck::ID {
                                 if ui.button("Edit slides…").clicked() {
                                     layers_request = Some(node.id);
@@ -2164,10 +2174,13 @@ impl NodeCraftApp {
             self.open_reader(node);
         }
         if let Some(node) = layers_after {
-            let kind = self.session.document().canvases().get(&self.canvas).and_then(|c| c.nodes().get(&node)).map(|n| n.kind.clone());
-            match kind.as_deref() {
-                Some(nodecraft_nodes::deck::ID) => self.open_deck_editor(node),
-                Some(nodecraft_nodes::shader::ID) => self.open_shader_editor(node),
+            let found = self.session.document().canvases().get(&self.canvas).and_then(|c| c.nodes().get(&node));
+            let kind = found.map(|n| n.kind.clone());
+            let shader_for = found.and_then(nodecraft_engine::shader_assist_cmds::written_for);
+            match (kind.as_deref(), shader_for) {
+                (Some(nodecraft_nodes::deck::ID), _) => self.open_deck_editor(node),
+                (Some(nodecraft_nodes::shader::ID), _) => self.open_shader_editor(node),
+                (_, Some(target)) => self.use_shader_answer(node, target),
                 _ => self.open_layer_editor(node),
             }
         }

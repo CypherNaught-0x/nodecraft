@@ -125,6 +125,20 @@ fn a_fix_passes_on_the_compiler_message() {
 }
 
 #[test]
+fn a_fix_shows_the_shader_the_message_is_about_not_the_stored_one() {
+    let mut s = session();
+    let draft = json!({"source": "fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {\n    return tint;\n}\n", "params": []});
+    let error = "wgsl:2:12 unknown identifier `tint`";
+    s.dispatch("shader.write", &json!({"canvas":C,"node":SHADER,"id":CARD,"error":error,"shader":draft})).unwrap();
+    let asked = prompt(&node(&s, CARD).unwrap());
+    assert!(asked.contains("```wgsl\nfn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> {\n    return tint;\n}\n```"), "line 2 is the draft's: {asked}");
+    assert!(!asked.contains("amount()"), "the stored shader isn't shown: {asked}");
+    let huge = json!({"source": "a".repeat(nodecraft_gpu::shader::MAX_SOURCE + 1), "params": []});
+    let refusal = refused(&mut s, "shader.write", &json!({"canvas":C,"node":SHADER,"id":OTHER,"error":error,"shader":huge}));
+    assert_eq!(refusal.kind, ErrorKind::InvalidInput);
+}
+
+#[test]
 fn bad_writes_are_refused() {
     let mut s = session();
     let neither = refused(&mut s, "shader.write", &json!({"canvas":C,"node":SHADER,"id":CARD}));

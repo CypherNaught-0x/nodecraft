@@ -33,6 +33,8 @@ const OFFSET_X: f32 = -400.0;
 const MAX_COORDINATE: f32 = 10_000_000.0;
 /// How a parameter declaration line starts.
 const PARAM_LINE: &str = "// param:";
+/// Longest parameter name or label in a shader shown to the model, in bytes.
+const MAX_NAME_BYTES: usize = 256;
 
 const CONTRACT: &str = "You write image filters for NodeCraft's custom shader node, in WGSL.
 
@@ -76,6 +78,10 @@ struct WriteParams {
     /// The text model; by default one a text card on this canvas uses, or the first installed.
     #[serde(default)]
     model: Option<String>,
+    /// The shader to show the model instead of the stored one: an editor's unsaved draft, or the
+    /// answer `error` refused. Need not be valid; it is what the message is about.
+    #[serde(default)]
+    shader: Option<StoredShader>,
 }
 
 #[derive(Deserialize)]
@@ -115,9 +121,29 @@ fn compose(current: &StoredShader, request: Option<&str>, error: Option<&str>) -
     prompt
 }
 
-/// `params` as declaration lines, each ending in a newline.
+/// `params` as declaration lines, each ending in a newline. A `|` in a label would read as a
+/// field separator, so it is shown as `/`.
 fn declarations(params: &[StoredParam]) -> String {
-    params.iter().map(|p| format!("{PARAM_LINE} {} | {} | {} | {} | {}\n", p.name, p.label, p.min, p.max, p.default)).collect()
+    params.iter().map(|p| format!("{PARAM_LINE} {} | {} | {} | {} | {}\n", p.name, p.label.replace('|', "/"), p.min, p.max, p.default)).collect()
+}
+
+/// A caller's shader for the prompt, within the limits of a stored one. It needn't validate.
+fn shown(shader: StoredShader) -> Result<StoredShader, Error> {
+    let too_long = |text: &str| text.len() > MAX_NAME_BYTES || text.contains('\n');
+    if shader.source.len() > nodecraft_gpu::shader::MAX_SOURCE
+        || shader.params.len() > nodecraft_gpu::shader::MAX_PARAMS
+        || shader.params.iter().any(|p| too_long(&p.name) || too_long(&p.label))
+    {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "a shader to show the model is at most {} KiB with at most {} parameters, each name and label one line of at most {MAX_NAME_BYTES} bytes",
+                nodecraft_gpu::shader::MAX_SOURCE / 1024,
+                nodecraft_gpu::shader::MAX_PARAMS
+            ),
+        ));
+    }
+    Ok(shader)
 }
 
 fn write(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
@@ -133,7 +159,10 @@ fn write(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         return Err(invalid("only a custom shader node has a shader to write"));
     }
     // A damaged stored shader is written afresh rather than shown to the model.
-    let current = stored(target).unwrap_or_default();
+    let current = match p.shader {
+        Some(shader) => shown(shader)?,
+        None => stored(target).unwrap_or_default(),
+    };
     if canvas.nodes().contains_key(&p.id) {
         return Err(Error::new(ErrorKind::Conflict, "that node id is taken"));
     }
@@ -192,14 +221,41 @@ pub fn parse_reply(reply: &str) -> Result<StoredShader, String> {
     Ok(StoredShader { source: format!("{source}\n"), params })
 }
 
-/// The text of the first fenced block in `reply`, without its fences or language tag.
+/// The text of the first fenced block tagged `wgsl` in `reply`, else of its first fenced block,
+/// without fences or tag. A block left open (an answer cut off) runs to the end.
 fn fenced(reply: &str) -> Option<&str> {
-    let open = reply.find("```")?;
-    let after = reply.get(open.saturating_add(3)..)?;
-    // The rest of the opening line is a language tag.
-    let body = after.get(after.find('\n')?.saturating_add(1)..)?;
-    let close = body.find("```")?;
-    body.get(..close)
+    let mut first = None;
+    let mut rest = reply;
+    while let Some(open) = rest.find("```") {
+        let after = rest.get(open.saturating_add(3)..)?;
+        // The rest of the opening line is a language tag.
+        let Some(end) = after.find('\n') else { break };
+        let tag = after.get(..end)?.trim();
+        let body = after.get(end.saturating_add(1)..)?;
+        let (code, next) = match body.find("```") {
+            Some(close) => (body.get(..close)?, body.get(close.saturating_add(3)..)?),
+            None => (body, ""),
+        };
+        if tag.eq_ignore_ascii_case("wgsl") {
+            return Some(code);
+        }
+        first.get_or_insert(code);
+        rest = next;
+    }
+    first
+}
+
+/// The text of `card`'s active answer.
+pub fn answer(card: &nodecraft_graph::Node) -> Result<&str, Error> {
+    let answer = card
+        .active
+        .and_then(|active| card.history.iter().find(|generation| generation.id == active))
+        .and_then(|generation| generation.outputs.first())
+        .ok_or_else(|| Error::new(ErrorKind::NotFound, "the card has no answer yet; run it first"))?;
+    match answer {
+        Value::Text(answer) => Ok(answer),
+        _ => Err(invalid("the card's answer isn't text")),
+    }
 }
 
 fn parameter(declaration: &str) -> Result<StoredParam, String> {
@@ -227,15 +283,7 @@ fn apply(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         return Err(invalid("only a custom shader node takes a shader"));
     }
     let from = canvas.nodes().get(&p.from).ok_or_else(|| Error::new(ErrorKind::NotFound, "the answering card does not exist"))?;
-    let answer = from
-        .active
-        .and_then(|active| from.history.iter().find(|generation| generation.id == active))
-        .and_then(|generation| generation.outputs.first())
-        .ok_or_else(|| Error::new(ErrorKind::NotFound, "the card has no answer yet; run it first"))?;
-    let Value::Text(answer) = answer else {
-        return Err(invalid("the card's answer isn't text"));
-    };
-    let shader = parse_reply(answer).map_err(|message| Error::new(ErrorKind::InvalidInput, format!("the answer isn't a shader: {message}")))?;
+    let shader = parse_reply(answer(from)?).map_err(|message| Error::new(ErrorKind::InvalidInput, format!("the answer isn't a shader: {message}")))?;
     crate::shader_cmds::set_shader(c, p.canvas, p.id, shader)
 }
 
@@ -255,7 +303,11 @@ fn write_schema() -> Json {
         "properties": {"canvas": uuid, "node": uuid, "id": uuid,
             "request": {"type": "string", "minLength": 1, "maxLength": MAX_REQUEST_BYTES, "description": "what the shader should do; at most this many UTF-8 bytes"},
             "error": {"type": "string", "minLength": 1, "maxLength": MAX_ERROR_BYTES, "description": "the message the current shader was refused with, to fix"},
-            "model": {"type": "string", "maxLength": 256}}})
+            "model": {"type": "string", "maxLength": 256},
+            "shader": {"type": "object", "additionalProperties": false, "required": ["source", "params"], "description": "the shader to show instead of the stored one (a draft, or a refused answer); need not be valid",
+                "properties": {"source": {"type": "string", "maxLength": nodecraft_gpu::shader::MAX_SOURCE},
+                    "params": {"type": "array", "maxItems": nodecraft_gpu::shader::MAX_PARAMS, "items": {"type": "object", "required": ["name", "label", "min", "max", "default"],
+                        "properties": {"name": {"type": "string"}, "label": {"type": "string"}, "min": {"type": "number"}, "max": {"type": "number"}, "default": {"type": "number"}}}}}}}})
 }
 
 fn apply_schema() -> Json {
@@ -272,7 +324,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: write_schema,
-            params_doc: "{canvas, node: a custom shader node, id: new NodeId, request?: text of at most 4096 bytes, error?: the message its shader was refused with, model?: text model id} -> {id, model}; adds a text Generate card left of `node`, asked to write a shader that does `request` (or to fix the current one for `error`), as one undo step. Give `request`, `error` or both. Nothing runs: quote and run the new card with run.quote/run.start, then store its answer with shader.apply. `model` defaults to a text model already used on this canvas, else the first installed.",
+            params_doc: "{canvas, node: a custom shader node, id: new NodeId, request?: text of at most 4096 bytes, error?: the message its shader was refused with, model?: text model id, shader?: {source, params} to show instead of the stored shader (an unsaved draft, or the answer `error` refused; need not be valid)} -> {id, model}; adds a text Generate card left of `node`, asked to write a shader that does `request` (or to fix the current one for `error`), as one undo step. Give `request`, `error` or both. Nothing runs: quote and run the new card with run.quote/run.start, then store its answer with shader.apply. `model` defaults to a text model already used on this canvas, else the first installed.",
             enabled: enabled_write,
             run: write,
         },
@@ -282,7 +334,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: apply_schema,
-            params_doc: "{canvas, id: a custom shader node, from: a card with a text answer} -> {changed}; reads the shader from `from`'s active answer (one fenced WGSL block, parameters declared as `// param: name | Label | min | max | default` lines), validates it as node.shader_set does and stores it, as one undo step. Refused with the compiler's message when it isn't valid; pass that to shader.write as `error` to have it fixed.",
+            params_doc: "{canvas, id: a custom shader node, from: a card with a text answer (usually the card shader.write added; any text card is read)} -> {changed}; reads the shader from `from`'s active answer (one fenced WGSL block, parameters declared as `// param: name | Label | min | max | default` lines), validates it as node.shader_set does and stores it, as one undo step. Refused with the compiler's message when it isn't valid; pass that to shader.write as `error` to have it fixed.",
             enabled: enabled_apply,
             run: apply,
         },
