@@ -175,13 +175,53 @@ fn wide_valid_four_k_geometry_is_not_clamped_to_4096_after_payment() {
         let Output::Bytes { bytes, .. } = &c.outputs[0] else { panic!() };
         assert_eq!(bytes.as_ref(), jpg);
     }
-    for (w, h) in [(16385, 1024), (16384, 1025), (16384, 1023), (0, 16), (u32::MAX, u32::MAX)] {
+    for (w, h) in [(16385u16, 1024u16), (16384, 1025), (16384, 1023), (0, 16), (u16::MAX, u16::MAX)] {
+        let mut bytes = jpeg(16, 16);
+        let sof = bytes.windows(2).position(|pair| pair == [255, 192]).unwrap();
+        bytes[sof + 5..sof + 7].copy_from_slice(&h.to_be_bytes());
+        bytes[sof + 7..sof + 9].copy_from_slice(&w.to_be_bytes());
         reset();
-        let (r, _) = run(&job(), body(&jpeg(16, 16), w, h), Limits::HARD);
+        let (r, _) = run(&job(), body(&bytes, 16, 16), Limits::HARD);
         assert!(r.is_err());
-        assert_eq!(counts()[2], 0, "declared impossible geometry refuses before output allocation");
+        assert_eq!(counts()[3], 0, "actual impossible JPEG geometry refuses before full pixel decoding");
     }
 }
+
+#[test]
+fn advisory_size_metadata_never_discards_an_otherwise_valid_paid_jpeg() {
+    let bytes = jpeg(16, 16);
+    let good: Value = serde_json::from_slice(&body(&bytes, 16, 16)).unwrap();
+    let mut cases = vec![good.clone()];
+    cases[0]["data"][0].as_object_mut().unwrap().remove("size");
+    for size in [
+        Value::Null,
+        json!(17),
+        json!([]),
+        json!({"width": 16}),
+        json!("+16x16"),
+        json!("16x0"),
+        json!("16x16x1"),
+        json!("16X16"),
+        json!(" 16x16"),
+        json!("4294967296x16"),
+        json!("17x16"),
+        json!("x".repeat(1024)),
+    ] {
+        let mut value = good.clone();
+        value["data"][0]["size"] = size;
+        cases.push(value);
+    }
+    let mut replies: Vec<_> = cases.iter().map(|value| serde_json::to_vec(value).unwrap()).collect();
+    let raw = String::from_utf8(serde_json::to_vec(&good).unwrap()).unwrap();
+    replies.push(raw.replacen("\"size\":", "\"size\":\"wrong\",\"size\":", 1).into_bytes());
+    for reply in replies {
+        let done = done(run(&job(), reply, Limits::HARD).0);
+        let [Output::Bytes { bytes: actual, .. }] = done.outputs.as_slice() else { panic!("the full paid image must survive") };
+        assert_eq!(actual.as_ref(), bytes);
+        assert_eq!(done.usage.output_tokens, Some(7));
+    }
+}
+
 #[test]
 fn every_required_record_is_map_only_and_all_required_fields_unique() {
     let good: Value = serde_json::from_slice(&body(&jpeg(16, 16), 16, 16)).unwrap();
@@ -197,16 +237,9 @@ fn every_required_record_is_map_only_and_all_required_fields_unique() {
     let mut v = good.clone();
     v["data"] = json!([[good["data"][0]["b64_json"], "16x16"]]);
     cases.push(v);
-    for key in ["size", "b64_json"] {
-        let mut v = good.clone();
-        v["data"][0].as_object_mut().unwrap().remove(key);
-        cases.push(v);
-    }
-    for size in ["+16x16", "16x0", "16x16x1", "16X16", " 16x16", "4294967296x16", "17x16"] {
-        let mut v = good.clone();
-        v["data"][0]["size"] = json!(size);
-        cases.push(v);
-    }
+    let mut v = good.clone();
+    v["data"][0].as_object_mut().unwrap().remove("b64_json");
+    cases.push(v);
     for key in ["error", "url"] {
         let mut v = good.clone();
         v["data"][0][key] = json!(null);
@@ -222,11 +255,7 @@ fn every_required_record_is_map_only_and_all_required_fields_unique() {
         assert!(run(&job(), serde_json::to_vec(&v).unwrap(), Limits::HARD).0.is_err());
     }
     let raw = String::from_utf8(serde_json::to_vec(&good).unwrap()).unwrap();
-    for (s, t) in [
-        ("\"model\":", format!("\"model\":\"{MODEL}\",\"model\":")),
-        ("\"size\":", "\"size\":\"16x16\",\"size\":".into()),
-        ("\"b64_json\":", "\"b64_json\":\"abcd\",\"b64_json\":".into()),
-    ] {
+    for (s, t) in [("\"model\":", format!("\"model\":\"{MODEL}\",\"model\":")), ("\"b64_json\":", "\"b64_json\":\"abcd\",\"b64_json\":".into())] {
         assert!(run(&job(), raw.replacen(s, &t, 1).into_bytes(), Limits::HARD).0.is_err());
     }
 }

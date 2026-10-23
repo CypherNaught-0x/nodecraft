@@ -25,4 +25,7 @@ Paid output keeps the reviewed strict contract: exact dated model, required size
 actual JPEG dimensions, single full JPEG and no trailing bytes. We do not infer undocumented
 model aliases or discard a tail to preserve a decoder prefix. A schema change can therefore
 cause a post-send possibly billed refusal; bad optional usage alone preserves a valid image.
+The required-size policy is superseded by
+[paid image output admission (#421)](2026-10-22-paid-image-output-admission.md): the JPEG itself
+is authoritative, while dated model and complete framing checks remain strict.
 See [provider setup and limits](../providers.md#seedream-bounds-and-billing).

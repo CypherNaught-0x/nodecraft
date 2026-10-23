@@ -323,16 +323,6 @@ fn object(raw: &str) -> Result<Object<'_>, ProviderError> {
 fn text(raw: &RawValue) -> Result<&str, ProviderError> {
     serde_json::from_str(raw.get()).map_err(|_| malformed("Seedream field must be an unescaped string"))
 }
-fn dimensions(s: &str, l: Limits) -> Result<(u32, u32), ProviderError> {
-    if s.len() > 32 {
-        return Err(malformed("Seedream size spelling exceeds limit"));
-    }
-    let (w, h) = s.split_once('x').ok_or_else(|| malformed("Seedream size needs widthxheight"))?;
-    let parse = |s: &str| if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) { s.parse::<u32>().ok() } else { None };
-    let pair = (parse(w).ok_or_else(|| malformed("invalid Seedream width"))?, parse(h).ok_or_else(|| malformed("invalid Seedream height"))?);
-    geometry(pair.0, pair.1, l, false).map_err(|_| malformed("Seedream declared geometry exceeds limits"))?;
-    Ok(pair)
-}
 fn usage(raw: Option<&RawValue>) -> Option<Usage> {
     let o = object(raw?.get()).ok()?;
     let num = |key| -> Option<Option<u64>> { o.optional(key).ok()?.map(|r| serde_json::from_str::<u64>(r.get()).ok()).map_or(Some(None), |n| n.map(Some)) };
@@ -387,7 +377,8 @@ pub(super) fn parse(reply: HttpResponse, l: Limits) -> Result<Completed, Provide
     if item.optional("error")?.is_some() || item.optional("url")?.is_some() {
         return Err(malformed("Seedream image error or unexpected URL"));
     }
-    let size = dimensions(text(item.required("size")?)?, l)?;
+    // `size` is advisory metadata. The bounded JPEG bytes below determine actual geometry;
+    // omitted, malformed or stale dimensions must not discard an otherwise valid paid image.
     if let Some(f) = item.optional("output_format")?
         && text(f)? != "jpeg"
     {
@@ -409,12 +400,13 @@ pub(super) fn parse(reply: HttpResponse, l: Limits) -> Result<Completed, Provide
     }
     jpeg_extent(&bytes)?;
     let meta = nodecraft_media::probe_image(&bytes, &l.image(false)).map_err(|_| malformed("Seedream output exceeds codec bounds"))?;
-    if meta.mime != "image/jpeg" || (meta.width, meta.height) != size {
-        return Err(malformed("Seedream output MIME or dimensions disagree"));
+    if meta.mime != "image/jpeg" {
+        return Err(malformed("Seedream output MIME disagrees"));
     }
     geometry(meta.width, meta.height, l, false).map_err(|_| malformed("Seedream output geometry exceeds limits"))?;
-    let _ = nodecraft_media::decode_image(&bytes, &l.image(false)).map_err(|_| malformed("Seedream output is corrupt"))?;
+    // Count attempts, including decoder errors, so tests prove geometry refuses before entry.
     observe(3);
+    let _ = nodecraft_media::decode_image(&bytes, &l.image(false)).map_err(|_| malformed("Seedream output is corrupt"))?;
     Ok(Completed { outputs: vec![Output::Bytes { mime: "image/jpeg".into(), bytes: Arc::from(bytes) }], usage })
 }
 

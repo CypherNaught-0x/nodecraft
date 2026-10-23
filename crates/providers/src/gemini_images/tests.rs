@@ -1,6 +1,7 @@
 use super::*;
 use crate::{HttpResponse, JobInput, ProviderJob};
 use serde_json::json;
+mod large_outputs;
 fn job() -> ProviderJob {
     ProviderJob {
         model: LITE.into(),

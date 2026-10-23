@@ -54,6 +54,7 @@ admission still requires partial-price consent plus an explicit unknown-job coun
 budgets refuse unknown estimates. This adds neither a paid-run host nor a media-input resolver.
 
 Loopback native transport controls pin the request path, secret header, generic User-Agent and
-redirect refusal without paid calls. A direct non-UTF8 fixture refuses before completion. The
-8 MiB encoded-output cap and exact documented pixel envelope remain unchanged; byte-cap and
-headroom policy follow-up #421 and host result retention/routing #369 remain separate.
+redirect refusal without paid calls. A direct non-UTF8 fixture refuses before completion.
+The encoded-output and pixel policies above were superseded by
+[paid image output admission (#421)](2026-10-22-paid-image-output-admission.md), which also
+corrects the historical response-phase total and records the shipping asset-resolver regression.
