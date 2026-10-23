@@ -318,6 +318,65 @@ fn a_relaunch_keeps_control_and_the_project() {
 }
 
 #[test]
+fn windows_second_hop_drops_vanished_grant_but_forwards_valid_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let granted = dir.path().join("granted");
+    let read_only = dir.path().join("reference materials");
+    std::fs::create_dir(&granted).unwrap();
+    std::fs::create_dir(&read_only).unwrap();
+    // Startup and the first hop have already captured these canonical folders.
+    let write = vec![std::fs::canonicalize(&granted).unwrap()];
+    let read = vec![std::fs::canonicalize(&read_only).unwrap()];
+    let args = |command: std::process::Command| command.get_args().map(|arg| arg.to_os_string()).collect::<Vec<_>>();
+    let project = Path::new("open.ncraft");
+    let valid = args(second_hop_command(Path::new("NodeCraft.exe"), Some(project), true, &read, &write));
+    assert_eq!(
+        valid,
+        [
+            std::ffi::OsString::from("--control"),
+            "--root".into(),
+            write[0].as_os_str().into(),
+            "--read-root".into(),
+            read[0].as_os_str().into(),
+            "open.ncraft".into()
+        ]
+    );
+
+    std::fs::remove_dir(&granted).unwrap();
+    assert_eq!(
+        args(second_hop_command(Path::new("NodeCraft.exe"), Some(project), true, &read, &write)),
+        ["open.ncraft"],
+        "a grant removed while the MSI runs must not reach the installed copy"
+    );
+}
+
+#[test]
+fn windows_second_hop_drops_redirected_grant_but_forwards_valid_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let granted = dir.path().join("granted");
+    let substitute = dir.path().join("substitute");
+    std::fs::create_dir(&granted).unwrap();
+    std::fs::create_dir(&substitute).unwrap();
+    let write = vec![std::fs::canonicalize(&granted).unwrap()];
+    let args = |command: std::process::Command| command.get_args().map(|arg| arg.to_os_string()).collect::<Vec<_>>();
+    assert_eq!(
+        args(second_hop_command(Path::new("NodeCraft.exe"), None, true, &[], &write)),
+        [std::ffi::OsString::from("--control"), "--root".into(), write[0].as_os_str().into()],
+        "a still-valid grant must be forwarded unchanged"
+    );
+    std::fs::remove_dir(&granted).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&substitute, &granted).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&substitute, &granted).unwrap();
+    assert_eq!(
+        args(second_hop_command(Path::new("NodeCraft.exe"), None, true, &[], &write)),
+        Vec::<std::ffi::OsString>::new(),
+        "a substituted link must not reach the installed copy, even as the original path"
+    );
+}
+
+#[test]
 fn relaunch_refuses_a_missing_or_redirected_grant() {
     let dir = tempfile::tempdir().unwrap();
     let granted = dir.path().join("granted");

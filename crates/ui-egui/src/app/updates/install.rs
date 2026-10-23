@@ -11,9 +11,10 @@
 //!   of this executable runs as a helper (`--finish-update`): it waits for the app to exit, runs
 //!   the MSI (whose `MajorUpgrade` replaces the old version), then starts NodeCraft again.
 //!
-//! Every new process is started with `--wait-for <pid>`, so it opens the project only after this
-//! one has closed it, and with `--control` and its allowed folders when this one had them. What happened is written to
-//! `last-update.json` in the updates folder, and the next start says so.
+//! The immediate relaunch (or Windows helper) gets `--wait-for <pid>` so it opens the project only
+//! after this copy closes it. The helper then starts the installed app, forwarding `--control` and
+//! its allowed folders only while they remain valid. The outcome is written to `last-update.json`
+//! in the updates folder, and the next start says so.
 //!
 //! A staged update can wait days for the restart, in a folder the person can write to, so it is
 //! checked again just before it is used (#567): the bundle's code signature, or the AppImage's or
@@ -695,17 +696,21 @@ pub fn finish_update(msi: &Path, blake3: &str, exe: &Path, pid: &str, project: O
     if let Some(updates) = msi.parent().filter(|_| error.is_some()) {
         write_last(updates, &LastUpdate { from: VERSION.into(), to, error });
     }
-    // The helper runs later than the first relaunch; never let a newly replaced symlink
-    // silently redirect a grant. Start the app without control in that case.
+    if let Err(e) = second_hop_command(exe, project, control, read, write).spawn() {
+        log::error!("NodeCraft couldn't start after updating: {e}");
+    }
+}
+
+/// The Windows helper's second hop: recheck after MSI runs, not just before the helper starts.
+/// Never forward a grant whose canonical folder disappeared or became a link elsewhere.
+fn second_hop_command(exe: &Path, project: Option<&Path>, control: bool, read: &[PathBuf], write: &[PathBuf]) -> std::process::Command {
     let control = if control && check_relaunch_roots(read, write).is_err() {
         log::error!("allowed folders changed during the update; restarting without control access; relaunch manually with the folders you want to allow");
         false
     } else {
         control
     };
-    if let Err(e) = installed_command(exe, project, control, read, write).spawn() {
-        log::error!("NodeCraft couldn't start after updating: {e}");
-    }
+    installed_command(exe, project, control, read, write)
 }
 
 /// The installed Windows copy's command line after the helper has finished.
