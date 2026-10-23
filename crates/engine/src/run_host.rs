@@ -393,6 +393,12 @@ impl RunHost {
         self.parked.iter().filter(|entry| entry.project == project).map(|entry| entry.target.adapter().to_owned()).collect()
     }
 
+    /// The endpoints (adapter and instance, such as one ComfyUI server, #864) restored jobs of
+    /// `project` wait for.
+    pub fn waiting_targets(&self, project: ProjectId) -> BTreeSet<nodecraft_types::ProviderTarget> {
+        self.parked.iter().filter(|entry| entry.project == project).map(|entry| entry.target.clone()).collect()
+    }
+
     /// Follows the restored jobs of the open project that ran on `binding`'s endpoint. A job that
     /// can't be followed is reported and its charge settled as unresolved.
     pub fn resume(&mut self, session: &Session, binding: &RegisteredProvider) {
@@ -776,6 +782,8 @@ impl RunHost {
         let options = RunOptions { id, first_job: 1, limits: Default::default(), retry: self.retry };
         let (run, progress) = session.authorize_prepared_run(prepared, options)?;
         let canvas = run.canvas_id();
+        // Per run: a server's cap on jobs at once holds within each run (#864).
+        let lane_limits = run.lane_limits().unwrap_or_default();
         let mailbox: Arc<Mutex<Mailbox>> = Arc::default();
         let sink = Arc::clone(&mailbox);
         let reports = Arc::clone(&mailbox);
@@ -805,7 +813,7 @@ impl RunHost {
         let routed = crate::plugin_runtime::Routed { local: actions.clone(), plugins: plugins.clone() };
         let sources = SourceRunner::default().with_actions(Arc::new(routed));
         let runner = Arc::new(Either { provider: Arc::new(provider), sources, local: Mutex::default() });
-        let (driver, handle) = driver(Scheduler::new(Default::default()));
+        let (driver, handle) = driver(Scheduler::new(lane_limits));
         let mut active = Active {
             seq,
             canvas,

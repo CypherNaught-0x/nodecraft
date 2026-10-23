@@ -420,14 +420,13 @@ fn a_server_change_while_the_provider_is_set_up_builds_it_for_the_new_server() {
     let inner = making(image(MockModel::new(MockOutput::Image)));
     let mut h = scene(Box::new(move |adapter, settings| {
         let _ = gate.lock().unwrap().recv();
-        seen.lock().unwrap().push(settings.comfyui_url.clone());
+        seen.lock().unwrap().push(settings.default_comfy().map(|server| server.url.clone()));
         inner(adapter, settings)
     }));
     press(&mut h, Role::Button, "Generate");
     let app = h.state_mut();
-    let mut settings = app.provider_settings();
-    settings.comfyui_url = Some("http://other:8188".into());
-    app.runs.as_mut().unwrap().forget_adapters_for(&mut app.session, &settings).unwrap();
+    let settings = nodecraft_engine::settings::ProviderSettings::with_comfyui("http://other:8188", "salt");
+    app.runs.as_mut().unwrap().forget_comfy_server(&mut app.session, "other:8188", &settings).unwrap();
     open.send(()).unwrap();
     open.send(()).unwrap();
     frames_until(&mut h, |app| app.run_confirm.is_some());

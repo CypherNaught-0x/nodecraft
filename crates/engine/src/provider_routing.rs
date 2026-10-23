@@ -14,6 +14,8 @@ struct Binding {
     target: ProviderTarget,
     provider: Arc<dyn Provider>,
     serial: [u8; 32],
+    /// Most of a run's jobs sent to this target at once; `None` keeps the scheduler's default.
+    limit: Option<usize>,
 }
 /// Captured immutable physical adapter and its typed logical identity.
 #[derive(Clone)]
@@ -28,7 +30,18 @@ impl RegisteredProvider {
     fn new(provider: Arc<dyn Provider>, instance: Option<ProviderInstanceId>) -> Result<Self, Error> {
         let target = ProviderTarget::new(provider.id(), instance)?;
         let serial = crate::execution_identity::nonce()?;
-        Ok(Self(Arc::new(Binding { target, provider, serial })))
+        Ok(Self(Arc::new(Binding { target, provider, serial, limit: None })))
+    }
+    /// A named instance that runs at most `limit` of a run's jobs at once (#864), such as a
+    /// ComfyUI server with one GPU.
+    pub fn named_with_limit(provider: Arc<dyn Provider>, instance: ProviderInstanceId, limit: Option<usize>) -> Result<Self, Error> {
+        let target = ProviderTarget::new(provider.id(), Some(instance))?;
+        let serial = crate::execution_identity::nonce()?;
+        Ok(Self(Arc::new(Binding { target, provider, serial, limit: limit.map(|n| n.max(1)) })))
+    }
+    /// Most of a run's jobs sent to this target at once, when it sets its own.
+    pub fn limit(&self) -> Option<usize> {
+        self.0.limit
     }
     pub fn target(&self) -> &ProviderTarget {
         &self.0.target
@@ -98,6 +111,15 @@ impl ProviderRouting {
     }
     pub fn bind_named(&mut self, provider: Arc<dyn Provider>, instance: ProviderInstanceId) -> Result<RegisteredProvider, Error> {
         self.bind(RegisteredProvider::named(provider, instance)?)
+    }
+    /// [`Self::bind_named`] with a cap on the jobs a run sends it at once.
+    pub fn bind_named_with_limit(
+        &mut self,
+        provider: Arc<dyn Provider>,
+        instance: ProviderInstanceId,
+        limit: Option<usize>,
+    ) -> Result<RegisteredProvider, Error> {
+        self.bind(RegisteredProvider::named_with_limit(provider, instance, limit)?)
     }
     pub fn select(&mut self, node: NodeId, adapter: &str, target: &ProviderTarget) -> Result<(), Error> {
         if adapter != target.adapter() || self.find_parts(target.adapter(), target.instance()).is_err() {

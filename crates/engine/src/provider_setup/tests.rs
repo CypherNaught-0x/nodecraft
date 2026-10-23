@@ -66,7 +66,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     assert_eq!(setup.readiness("meshy"), Some(&Readiness::NeedsKey { account: "meshy".into() }));
     assert_eq!(setup.readiness("higgsfield"), Some(&Readiness::NeedsKey { account: "higgsfield".into() }));
     assert_eq!(setup.readiness("kling"), Some(&Readiness::NeedsKey { account: "kling".into() }));
-    assert!(matches!(setup.readiness("comfyui"), Some(Readiness::NotSetUp(why)) if why.contains("comfyui_url")));
+    assert!(matches!(setup.readiness("comfyui"), Some(Readiness::NotSetUp(why)) if why.contains("[[providers.comfyui]]")));
     let error = setup.routing([(NODE, "openai-images")]).err().unwrap();
     assert_eq!(error.kind, ErrorKind::Unsupported);
     assert_eq!(error.message, "openai-images needs an API key: add one for “openai” in API keys.");
@@ -85,7 +85,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     }
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
     let http = Arc::new(Wire::default());
-    let settings = ProviderSettings { comfyui_url: Some("http://gpu-box:8188".into()), install_salt: "salt".into() };
+    let settings = ProviderSettings::with_comfyui("http://gpu-box:8188", "salt");
     let env = env(&keys, &http, &settings);
     let setup = build(&catalog, |adapter| make(adapter, &env));
     for (adapter, readiness) in setup.adapters() {
@@ -126,11 +126,11 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
 fn comfyui_needs_an_address_and_a_salt_and_its_key_is_optional() {
     let keys = MemoryStore::default();
     let http = Arc::new(Wire::default());
-    let mut settings = ProviderSettings { comfyui_url: Some("http://127.0.0.1:8188".into()), install_salt: String::new() };
+    let mut settings = ProviderSettings::with_comfyui("http://127.0.0.1:8188", "");
     assert!(matches!(make("comfyui", &env(&keys, &http, &settings)), Err(Readiness::NotSetUp(why)) if why.contains("salt")));
     settings.install_salt = "s".into();
     assert!(make("comfyui", &env(&keys, &http, &settings)).is_ok(), "a local server needs no key");
-    settings.comfyui_url = Some("not a url".into());
+    settings.comfyui[0].url = "not a url".into();
     assert!(matches!(make("comfyui", &env(&keys, &http, &settings)), Err(Readiness::NotSetUp(_))));
     assert!(matches!(make("not-a-provider", &env(&keys, &http, &settings)), Err(Readiness::NotSetUp(_))));
 }
@@ -158,7 +158,7 @@ fn a_locked_keychain_is_reported_not_retried_or_mistaken_for_a_missing_key() {
     let Err(Readiness::Failed(why)) = make("replicate", &env) else { panic!("refused") };
     assert!(why.contains("unlock the keychain"));
     // ComfyUI's token is optional: a refused keychain means no token, not no ComfyUI.
-    let settings = ProviderSettings { comfyui_url: Some("http://127.0.0.1:8188".into()), install_salt: "s".into() };
+    let settings = ProviderSettings::with_comfyui("http://127.0.0.1:8188", "s");
     let env = HostEnv { keys: &keys, http: Arc::new(Wire::default()), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
     assert!(make("comfyui", &env).is_ok());
 }
@@ -169,7 +169,7 @@ fn comfyui_sends_its_stored_token_as_a_bearer_header_and_never_shows_it() {
     let keys = MemoryStore::default();
     keys.set(&Account::new("comfyui:gpu-box:8188").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
     let http = Arc::new(Wire::default());
-    let settings = ProviderSettings { comfyui_url: Some("http://gpu-box:8188".into()), install_salt: "s".into() };
+    let settings = ProviderSettings::with_comfyui("http://gpu-box:8188", "s");
     let provider = make("comfyui", &env(&keys, &http, &settings)).unwrap();
     let job = ProviderJob { model: "w".into(), params: Default::default(), inputs: vec![], idempotency_key: "k".into() };
     let _ = futures::executor::block_on(provider.submit(&job));
@@ -180,7 +180,7 @@ fn comfyui_sends_its_stored_token_as_a_bearer_header_and_never_shows_it() {
         assert!(!format!("{request:?}").contains(KEY), "never in Debug output");
     }
     // Credentials in the address are refused before the keychain is read.
-    let with_user = ProviderSettings { comfyui_url: Some("http://me:pw@gpu-box:8188".into()), install_salt: "s".into() };
+    let with_user = ProviderSettings::with_comfyui("http://me:pw@gpu-box:8188", "s");
     assert!(matches!(make("comfyui", &env(&keys, &http, &with_user)), Err(Readiness::NotSetUp(why)) if !why.contains("pw")));
 }
 
@@ -239,4 +239,55 @@ fn a_damaged_google_cloud_key_fails_veo_and_tts_without_quoting_it_or_sending_an
         assert!(why.contains("paste the service-account key file again") && !why.contains("zzz"), "{adapter}: {why}");
     }
     assert_eq!(http.0.load(Ordering::SeqCst), 0);
+}
+
+/// Two servers, `studio` (two jobs at once) the default and `laptop` with no cap.
+fn two_servers() -> ProviderSettings {
+    let mut settings = ProviderSettings::with_comfyui("http://10.0.0.2:8188", "salt");
+    settings.comfyui[0].name = "studio".into();
+    settings.comfyui[0].max_jobs = Some(2);
+    settings.comfyui_default = Some("studio".into());
+    settings.comfyui.push(crate::settings::ComfyServer::new("laptop", "http://127.0.0.1:8188"));
+    settings
+}
+
+#[test]
+fn a_card_runs_on_the_server_it_names_else_the_default() {
+    let settings = two_servers();
+    let kinds = crate::generation_catalog::default_registry().unwrap().0;
+    let values = [("model".into(), nodecraft_types::Value::Text("comfyui.sdxl".into()))].into();
+    let mut card = kinds.get(nodecraft_nodes::generation::KIND).unwrap().instantiate_instance(NODE, Default::default(), &values).unwrap();
+    assert_eq!(slot_for("comfyui", &card, &settings), "comfyui@studio", "no choice follows the default");
+    assert_eq!(slot_for("replicate", &card, &settings), "replicate", "other adapters are their own key");
+    card.config.insert(COMFY_SERVER_CONFIG.into(), nodecraft_types::Value::Text("laptop".into()));
+    assert_eq!(slot_for("comfyui", &card, &settings), "comfyui@laptop");
+    card.config.insert(COMFY_SERVER_CONFIG.into(), nodecraft_types::Value::Text("gone".into()));
+    assert_eq!(slot_for("comfyui", &card, &settings), "comfyui@studio", "a removed server falls back to the default");
+    assert_eq!(slot_for("comfyui", &card, &ProviderSettings::default()), "comfyui", "no server at all");
+    assert_eq!(slot_adapter("comfyui@laptop"), "comfyui");
+    assert_eq!(comfy_slot_server("comfyui@laptop"), Some("laptop"));
+    assert_eq!(comfy_slot_server("comfyui"), None);
+    assert_ne!(comfy_instance("studio"), comfy_instance("laptop"));
+    assert_eq!(comfy_instance("studio"), comfy_instance("studio"), "stable, so restored jobs find their server");
+}
+
+#[test]
+fn each_server_is_its_own_instance_with_its_own_cap() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = two_servers();
+    let mut setup = ProviderSetup::default();
+    for slot in ["comfyui@studio", "comfyui@laptop"] {
+        assert_eq!(setup.ensure(slot, |slot| make(slot, &env(&keys, &http, &settings))), &Readiness::Ready);
+    }
+    const OTHER: NodeId = NodeId::from_bytes([10; 16]);
+    let routing = setup.routing_for([(NODE, "comfyui@studio"), (OTHER, "comfyui@laptop")], &settings).unwrap();
+    let studio = routing.targets().get(NODE, "comfyui").unwrap();
+    let laptop = routing.targets().get(OTHER, "comfyui").unwrap();
+    assert_eq!(studio.instance(), comfy_instance("studio"));
+    assert_eq!(laptop.instance(), comfy_instance("laptop"));
+    assert_eq!(routing.find_parts("comfyui", studio.instance()).unwrap().limit(), Some(2));
+    assert_eq!(routing.find_parts("comfyui", laptop.instance()).unwrap().limit(), None);
+    assert!(setup.routing_for([(NODE, "comfyui@elsewhere")], &settings).is_err(), "a slot not set up isn't routed");
+    assert_eq!(http.0.load(Ordering::SeqCst), 0, "building sends nothing");
 }

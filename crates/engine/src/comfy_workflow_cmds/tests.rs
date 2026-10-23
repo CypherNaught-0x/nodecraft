@@ -215,7 +215,7 @@ impl nodecraft_providers::http::Http for Server {
 }
 
 fn fetch_from(healthy: bool) -> Result<Fetched, Error> {
-    let settings = crate::settings::ProviderSettings { comfyui_url: Some("http://127.0.0.1:8188".into()), install_salt: "salt".into() };
+    let settings = crate::settings::ProviderSettings::with_comfyui("http://127.0.0.1:8188", "salt");
     let keys = crate::secrets::MemoryStore::default();
     let env = HostEnv { keys: &keys, http: Arc::new(Server { healthy }), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
     futures::executor::block_on(fetch(&env))

@@ -110,13 +110,71 @@ fn adapter_error(error: nodecraft_providers::ProviderError) -> Readiness {
     Readiness::Failed(error.message)
 }
 
-/// The ComfyUI adapter from `[providers] comfyui_url`, the install salt and the server's optional
-/// bearer token. Runs and option fetches (#529) both build it here, so they read the settings alike.
-pub fn comfyui(env: &HostEnv<'_>) -> Result<nodecraft_providers::comfyui::ComfyProvider, Readiness> {
-    let url = env.settings.comfyui_url.as_deref().map(str::trim).filter(|u| !u.is_empty());
-    let Some(url) = url else {
-        return Err(Readiness::NotSetUp("add the ComfyUI server's address with the toolbar's ComfyUI button, or in settings ([providers] comfyui_url)".into()));
+/// Where adapters for one ComfyUI server are kept (#864): `comfyui@<name>`. A setup holds one
+/// adapter per server under these keys; each is routed as its own provider instance.
+pub fn comfy_slot(name: &str) -> String {
+    format!("{COMFY_SLOT}{name}")
+}
+
+const COMFY_SLOT: &str = "comfyui@";
+
+/// The server a [`comfy_slot`] key names, or `None` for any other key.
+pub fn comfy_slot_server(slot: &str) -> Option<&str> {
+    slot.strip_prefix(COMFY_SLOT)
+}
+
+/// The adapter a setup key builds: `comfyui` for a server's slot, else the key itself.
+pub fn slot_adapter(slot: &str) -> &str {
+    if comfy_slot_server(slot).is_some() { "comfyui" } else { slot }
+}
+
+/// The node config key naming the ComfyUI server a card runs on (#864); without it the card
+/// follows the default server.
+pub const COMFY_SERVER_CONFIG: &str = "comfyui.server";
+
+/// The setup key a card whose model runs on `adapter` uses: for ComfyUI, the slot of the server
+/// it names (when that server exists) or of the default server, else plain `comfyui`, whose
+/// readiness says to add one. Other adapters are their own key.
+pub fn slot_for(adapter: &str, node: &nodecraft_graph::Node, settings: &crate::settings::ProviderSettings) -> String {
+    if adapter != "comfyui" {
+        return adapter.to_owned();
+    }
+    let named = match node.config.get(COMFY_SERVER_CONFIG) {
+        Some(nodecraft_types::Value::Text(name)) => settings.comfy_server(name),
+        _ => None,
     };
+    named.or_else(|| settings.default_comfy()).map_or_else(|| adapter.to_owned(), |server| comfy_slot(&server.name))
+}
+
+/// The provider instance a ComfyUI server's jobs run as (#864), from its name: each server gets
+/// its own lane, and a job restored after a restart goes back to the server it was sent to.
+pub fn comfy_instance(name: &str) -> Option<nodecraft_types::ProviderInstanceId> {
+    let hash = blake3::Hasher::new().update(b"nodecraft.comfyui.server\0").update(name.as_bytes()).finalize();
+    hash.as_bytes().first_chunk::<16>().map(|bytes| nodecraft_types::ProviderInstanceId::from_bytes(*bytes))
+}
+
+/// The ComfyUI adapter for the default server (`[[providers.comfyui]]`, #864), with the install
+/// salt and the server's optional bearer token. Option fetches (#529) and the node list read it.
+pub fn comfyui(env: &HostEnv<'_>) -> Result<nodecraft_providers::comfyui::ComfyProvider, Readiness> {
+    let Some(server) = env.settings.default_comfy() else {
+        return Err(Readiness::NotSetUp("add a ComfyUI server with the toolbar's ComfyUI button, or in settings ([[providers.comfyui]])".into()));
+    };
+    comfyui_server(env, server)
+}
+
+/// The ComfyUI adapter for the server called `name`; runs build theirs here.
+pub fn comfyui_named(env: &HostEnv<'_>, name: &str) -> Result<nodecraft_providers::comfyui::ComfyProvider, Readiness> {
+    let Some(server) = env.settings.comfy_server(name) else {
+        return Err(Readiness::NotSetUp(format!("there's no ComfyUI server called “{name}”; add it with the toolbar's ComfyUI button, or pick another")));
+    };
+    comfyui_server(env, server)
+}
+
+fn comfyui_server(env: &HostEnv<'_>, server: &crate::settings::ComfyServer) -> Result<nodecraft_providers::comfyui::ComfyProvider, Readiness> {
+    let url = server.url.trim();
+    if url.is_empty() {
+        return Err(Readiness::NotSetUp("the ComfyUI server has no address".into()));
+    }
     if env.settings.install_salt.trim().is_empty() {
         return Err(Readiness::NotSetUp("the install salt isn't set ([providers] install_salt), and the settings can't be saved to make one".into()));
     }
@@ -168,8 +226,13 @@ fn llm(endpoint: Endpoint, env: &HostEnv<'_>) -> LlmClient {
     LlmClient::new(endpoint, env.http.clone())
 }
 
-/// The host's maker: the adapter for `adapter`, built from its key and settings.
-pub fn make(adapter: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readiness> {
+/// The host's maker: the adapter for setup key `slot` (an adapter id, or a ComfyUI server's
+/// [`comfy_slot`]), built from its key and settings.
+pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readiness> {
+    if let Some(name) = comfy_slot_server(slot) {
+        return Ok(Arc::new(comfyui_named(env, name)?));
+    }
+    let adapter = slot;
     let provider: Arc<dyn Provider> = match adapter {
         // Chat models (#503): the LLM client, keyed by its endpoint id.
         "openai" => Arc::new(llm(Endpoint::openai(ApiKey::from(&needs_key(env.keys, "openai")?)), env)),
@@ -221,7 +284,7 @@ impl ProviderSetup {
     pub fn ensure(&mut self, adapter: &str, maker: impl FnOnce(&str) -> Result<Arc<dyn Provider>, Readiness>) -> &Readiness {
         if !self.readiness.contains_key(adapter) {
             let ready = match maker(adapter) {
-                Ok(provider) if provider.id() == adapter => {
+                Ok(provider) if provider.id() == slot_adapter(adapter) => {
                     self.adapters.insert(adapter.to_owned(), provider);
                     Readiness::Ready
                 }
@@ -259,25 +322,43 @@ impl ProviderSetup {
     /// node to its adapter. An adapter that isn't ready refuses the whole routing, saying what to
     /// do, so no request is sent for it; one not tried yet is refused too (ensure it first).
     pub fn routing<'a>(&self, selections: impl IntoIterator<Item = (NodeId, &'a str)>) -> Result<ProviderRouting, Error> {
+        self.routing_for(selections, &crate::settings::ProviderSettings::default())
+    }
+
+    /// [`Self::routing`], where a selection may be a ComfyUI server's [`comfy_slot`]: each server
+    /// is its own provider instance, capped at the jobs at once `settings` gives it (#864).
+    pub fn routing_for<'a>(
+        &self,
+        selections: impl IntoIterator<Item = (NodeId, &'a str)>,
+        settings: &crate::settings::ProviderSettings,
+    ) -> Result<ProviderRouting, Error> {
         let mut chosen: BTreeMap<NodeId, &str> = BTreeMap::new();
-        for (node, adapter) in selections {
-            if chosen.insert(node, adapter).is_some_and(|before| before != adapter) {
+        for (node, slot) in selections {
+            if chosen.insert(node, slot).is_some_and(|before| before != slot) {
                 return Err(Error::new(ErrorKind::InvalidInput, "a node is routed to two providers"));
             }
         }
         let mut routing = ProviderRouting::new();
         let mut bound = BTreeMap::new();
-        for (node, adapter) in chosen {
-            if !bound.contains_key(adapter) {
-                let provider = match self.readiness.get(adapter) {
-                    Some(Readiness::Ready) => self.adapters.get(adapter).ok_or_else(|| Error::new(ErrorKind::Internal, "a ready adapter is missing"))?,
-                    Some(other) => return Err(Error::new(ErrorKind::Unsupported, other.message(adapter).unwrap_or_default())),
-                    None => return Err(Error::new(ErrorKind::NotFound, format!("{adapter} hasn't been set up in this session"))),
+        for (node, slot) in chosen {
+            if !bound.contains_key(slot) {
+                let provider = match self.readiness.get(slot) {
+                    Some(Readiness::Ready) => self.adapters.get(slot).ok_or_else(|| Error::new(ErrorKind::Internal, "a ready adapter is missing"))?,
+                    Some(other) => return Err(Error::new(ErrorKind::Unsupported, other.message(slot_adapter(slot)).unwrap_or_default())),
+                    None => return Err(Error::new(ErrorKind::NotFound, format!("{slot} hasn't been set up in this session"))),
                 };
-                bound.insert(adapter, routing.bind_default(provider.clone())?);
+                let binding = match comfy_slot_server(slot) {
+                    Some(name) => {
+                        let instance = comfy_instance(name).ok_or_else(|| Error::new(ErrorKind::Internal, "a server's instance id can't be made"))?;
+                        let limit = settings.comfy_server(name).and_then(crate::settings::ComfyServer::max_jobs);
+                        routing.bind_named_with_limit(provider.clone(), instance, limit)?
+                    }
+                    None => routing.bind_default(provider.clone())?,
+                };
+                bound.insert(slot, binding);
             }
-            if let Some(binding) = bound.get(adapter) {
-                routing.select(node, adapter, binding.target())?;
+            if let Some(binding) = bound.get(slot) {
+                routing.select(node, slot_adapter(slot), binding.target())?;
             }
         }
         Ok(routing)

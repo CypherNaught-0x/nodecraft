@@ -269,6 +269,7 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "comfy.nodes.refresh",
         "comfy.nodes.status",
         "comfy.workflow.import",
+        "comfy.server.use",
         "app.check_updates",
         "app.update_status",
         "app.install_update",

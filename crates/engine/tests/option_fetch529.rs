@@ -71,7 +71,7 @@ fn server(checkpoints: &[&str]) -> Arc<Server> {
 }
 
 fn settings() -> ProviderSettings {
-    ProviderSettings { comfyui_url: Some("http://127.0.0.1:8188".into()), install_salt: "fixture-salt".into() }
+    ProviderSettings::with_comfyui("http://127.0.0.1:8188", "fixture-salt")
 }
 
 fn fetch(http: Arc<Server>, settings: &ProviderSettings, sources: &[String]) -> Result<option_fetch::Fetched, Error> {
@@ -200,7 +200,7 @@ fn a_failed_or_refused_fetch_keeps_the_list_installed_before() {
 fn without_a_server_or_a_fetching_host_the_error_says_what_to_do() {
     let error = fetch(server(&[]), &ProviderSettings::default(), &["comfyui.checkpoints".into()]).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Unsupported);
-    assert!(error.message.contains("comfyui_url"), "{}", error.message);
+    assert!(error.message.contains("[[providers.comfyui]]"), "{}", error.message);
     // A host that registers no fetch service (the CLI) refuses before anything is asked.
     let mut project = Project::new(ProjectId::from_bytes([54; 16]), "No host").unwrap();
     Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
@@ -257,7 +257,7 @@ fn restyle_presets_come_from_higgsfield_with_their_names_as_labels_even_without_
     let refused: Vec<(&str, &str)> =
         report.refused.iter().filter(|r| r.source.starts_with("higgsfield.")).map(|r| (r.source.as_str(), r.reason.as_str())).collect();
     assert_eq!(refused, [("higgsfield.soul_ids", "not part of this fetch; refresh again")], "{report:?}");
-    assert!(report.unavailable.iter().any(|r| r.source == "comfyui.checkpoints" && r.reason.contains("comfyui_url")), "{report:?}");
+    assert!(report.unavailable.iter().any(|r| r.source == "comfyui.checkpoints" && r.reason.contains("[[providers.comfyui]]")), "{report:?}");
     // The restyle card offers the presets by name; the id is what it keeps and sends.
     let listed = session.dispatch("node.options", &json!({"canvas": C, "id": RESTYLE, "param": "preset_id"})).unwrap();
     assert_eq!(
@@ -291,7 +291,7 @@ fn when_nothing_could_be_fetched_a_provider_that_failed_says_more_than_one_not_s
     let sources = ["comfyui.checkpoints".to_owned(), "higgsfield.restyle_presets".to_owned()];
     let error = block_on(option_fetch::fetch(&env, &sources)).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Network, "{}", error.message);
-    assert!(error.message.contains("comfyui_url") && error.message.contains("restyle presets"), "{}", error.message);
+    assert!(error.message.contains("[[providers.comfyui]]") && error.message.contains("restyle presets"), "{}", error.message);
 }
 
 /// Answers Higgsfield's Soul ID list; the preset list fails.

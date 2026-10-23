@@ -1570,6 +1570,10 @@ impl NodeCraftApp {
         let mut style_after = None;
         let mut tag_action = None;
         let mut field_action = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        let comfy_choices = comfy_server::ServerChoices::of(&self.provider_settings());
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut comfy_server_request = None;
         let mut refresh = None;
         self.refresh_stale_badges();
         self.refresh_mask_badges();
@@ -1884,6 +1888,10 @@ impl NodeCraftApp {
                                     }
                                 });
                             }
+                            #[cfg(not(target_arch = "wasm32"))]
+                            if let Some(server) = comfy_server::card_menu(ui, node, self.session.generation_catalog().ok(), &comfy_choices) {
+                                comfy_server_request = Some((node.id, server));
+                            }
                             if node.kind == nodecraft_nodes::document::SOURCE && ui.button("Read PDF…").clicked() {
                                 reader_request = Some(node.id);
                                 ui.close();
@@ -2181,6 +2189,12 @@ impl NodeCraftApp {
         if let Some(action) = field_action {
             self.field_card_action(action);
             ui.ctx().request_repaint();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((id, server)) = comfy_server_request
+            && let Err(error) = self.use_comfy_server(id, server)
+        {
+            self.notice = Some(error.message);
         }
         // Cards were painted before this frame's selection changes; show them without waiting for input.
         if self.selection != selected_before {

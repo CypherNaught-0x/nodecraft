@@ -178,6 +178,12 @@ fn template(id: &str) -> (Session, Value) {
         let node = seed.kinds().get("generation.image").unwrap().instantiate_instance(node_id(7), Default::default(), &supplied).unwrap();
         nodecraft_graph::Change::AddNode { canvas: canvas(), node }.apply(&mut document).unwrap();
     }
+    if id == "comfy.server.use" {
+        let seed = Session::new(document.clone()).unwrap();
+        let supplied = [("model".into(), nodecraft_types::Value::Text("comfyui.sdxl".into()))].into();
+        let node = seed.kinds().get("generation.image").unwrap().instantiate_instance(node_id(7), Default::default(), &supplied).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node }.apply(&mut document).unwrap();
+    }
     if id.starts_with("field.") && id != "field.create" || id == "node.field_set" {
         let field = nodecraft_graph::Field::new(nodecraft_types::FieldId::from_bytes([8; 16]), "Before");
         nodecraft_graph::Change::PutField { canvas: canvas(), field }.apply(&mut document).unwrap();
@@ -497,6 +503,7 @@ fn template(id: &str) -> (Session, Value) {
         "options.refresh" | "options.status" => json!({}),
         // No fetch service here: the refresh must be refused cleanly.
         "comfy.nodes.refresh" | "comfy.nodes.status" => json!({}),
+        "comfy.server.use" => json!({"canvas":canvas(),"id":node_id(7),"server":"studio"}),
         "comfy.workflow.import" => json!({"canvas":canvas(),"id":node_id(0x69),"pos":{"x":0,"y":0},"workflow":
             r#"{"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a fox"}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}"#}),
         // The updates service isn't registered here: the check must be refused cleanly.
