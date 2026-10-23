@@ -901,7 +901,8 @@ impl<'a> Graph<'a> {
                 return Err(vec![blocker(None, None, Reason::Invalid("the inputs of this run are too large to plan at once".into()))]);
             }
             let jobs = plan_jobs(&inputs)?.map(|jobs| crate::variations::repeat(jobs, variations));
-            if jobs.as_ref().is_some_and(|jobs| jobs.len() > crate::run::MAX_STEP_JOBS) {
+            // A single result's own job count is the run's to refuse (`MAX_STEP_JOBS`), as without variations.
+            if variations > 1 && jobs.as_ref().is_some_and(|jobs| jobs.len() > crate::run::MAX_STEP_JOBS) {
                 let reason = format!("its variations would run more than {} jobs", crate::run::MAX_STEP_JOBS);
                 return Err(vec![blocker(None, None, Reason::Invalid(reason))]);
             }
