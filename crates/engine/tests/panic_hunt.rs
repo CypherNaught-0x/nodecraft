@@ -663,6 +663,10 @@ fn template(id: &str) -> (Session, Value) {
         "library.remove_shader" => json!({"name":"Glow","version":1}),
         "library.remove_element" => json!({"name":"hero"}),
         "library.rename_element" => json!({"name":"hero","to":"villain"}),
+        "library.share_element" => json!({"name":"hero","shared":true}),
+        // In a folder that doesn't exist, so nothing is written or read.
+        "library.export_element" => json!({"name":"hero","path":std::env::temp_dir().join("nodecraft-hunt-absent").join("hero.ncelement")}),
+        "library.import_element" => json!({"path":std::env::temp_dir().join("nodecraft-hunt-absent").join("hero.ncelement"),"rename":"villain"}),
         "style.list" => json!({"canvas":canvas(),"for":node_id(5)}),
         "style.card" => {
             json!({"canvas":canvas(),"style":node_id(6),"id":node_id(7),"edge":nodecraft_types::EdgeId::from_bytes([0x79; 16]),"pos":{"x":1,"y":2}})
