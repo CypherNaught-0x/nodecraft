@@ -58,13 +58,14 @@ fn lists_every_tool_in_menu_order_with_what_the_catalog_can_do() {
     assert_eq!(entry(&tools, "expand")["command"], "mask.create");
     assert_eq!(entry(&tools, "element")["command"], "element.create");
     assert_eq!(entry(&tools, "split_grid")["command"], Json::Null);
-    // The builtin catalog has no background removal or layer split yet: listed, with why not.
-    for id in ["remove_background", "split_layers"] {
-        let t = entry(&tools, id);
-        assert_eq!(t["available"], false, "{t}");
-        assert!(t["reason"].as_str().unwrap().starts_with("no model that can"), "{t}");
-        assert_eq!(t["models"], json!([]));
-    }
+    let cutout = entry(&tools, "remove_background");
+    assert_eq!(cutout["available"], true, "{cutout}");
+    assert!(cutout["models"].as_array().unwrap().contains(&json!("fal.bria-rmbg")), "{cutout}");
+    // The builtin catalog has no layer split yet: listed, with why not.
+    let t = entry(&tools, "split_layers");
+    assert_eq!(t["available"], false, "{t}");
+    assert!(t["reason"].as_str().unwrap().starts_with("no model that can"), "{t}");
+    assert_eq!(t["models"], json!([]));
 }
 
 #[test]
@@ -260,7 +261,9 @@ fn split_into_layers_adds_the_card_and_a_layer_editor_fed_by_it_as_one_step() {
 #[test]
 fn remove_background_adds_a_card_with_the_cutout_model() {
     let mut s = session_with_tools();
-    assert_eq!(s.dispatch("image.tool", &use_tool("remove_background", IMAGE, "out")).unwrap(), json!({"id": NEW, "model": "test.cutout"}));
+    let mut p = use_tool("remove_background", IMAGE, "out");
+    p["model"] = json!("test.cutout");
+    assert_eq!(s.dispatch("image.tool", &p).unwrap(), json!({"id": NEW, "model": "test.cutout"}));
     assert_eq!(node(&s, NEW).kind, KIND);
     assert_eq!(wires(&s), [(IMAGE, "out".to_owned(), NEW, "image".to_owned())]);
 }
