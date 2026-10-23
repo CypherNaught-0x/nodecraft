@@ -182,8 +182,19 @@ pub fn check_url(url: &str) -> Result<Option<String>, Error> {
 #[serde(deny_unknown_fields)]
 struct NoParams {}
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RefreshParams {
+    /// The server to check (#864); the default server when absent.
+    #[serde(default)]
+    server: Option<String>,
+}
+
 fn enabled_refresh(c: &Context<'_>, value: &Value) -> Result<(), Error> {
-    let _: NoParams = params(value)?;
+    let p: RefreshParams = params(value)?;
+    if let Some(name) = &p.server {
+        crate::settings::check_server_name(name).map_err(crate::commands::invalid)?;
+    }
     if !c.services.contains(NODES_SERVICE) {
         return Err(Error::new(ErrorKind::Unsupported, "this host can't read the ComfyUI server's nodes; the desktop app can"));
     }
@@ -192,7 +203,9 @@ fn enabled_refresh(c: &Context<'_>, value: &Value) -> Result<(), Error> {
 
 fn refresh(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     enabled_refresh(c, value)?;
-    Ok(Effect::Service { capability: NODES_SERVICE, request: json!({}) })
+    let p: RefreshParams = params(value)?;
+    let request = p.server.map_or_else(|| json!({}), |server| json!({"server": server}));
+    Ok(Effect::Service { capability: NODES_SERVICE, request })
 }
 
 fn enabled_status(_: &Context<'_>, value: &Value) -> Result<(), Error> {
@@ -207,7 +220,7 @@ fn status(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     }
     let last = c.resources.get::<LastFetch>().map(|last| &last.0);
     let nodes = c.resources.get::<ComfyNodes>().map(|nodes| nodes.0.len());
-    Ok(Effect::None { result: json!({"last": last, "nodes": nodes}) })
+    Ok(Effect::None { result: json!({"last": last, "nodes": nodes, "servers": crate::comfy_server_cmds::reports(c)}) })
 }
 
 #[derive(Deserialize)]
@@ -374,6 +387,11 @@ fn bounded(text: &str, max: usize) -> String {
     text.get(..end).unwrap_or_default().to_owned()
 }
 
+fn refresh_schema() -> Value {
+    json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": [],
+        "properties": {"server": {"type": "string", "minLength": 1, "maxLength": crate::settings::MAX_SERVER_NAME}}})
+}
+
 fn empty_schema() -> Value {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "properties": {}, "required": []})
 }
@@ -397,8 +415,8 @@ pub fn specs() -> Vec<CommandSpec> {
             label: "Read ComfyUI server nodes",
             shortcut: None,
             alternate_shortcuts: &[],
-            input_schema: empty_schema,
-            params_doc: "{} -> {pending: id}; reads the node list (/object_info) of the ComfyUI server in settings, which comfy.workflow.import needs, and checks the server's health (/system_stats, /queue). The host answers later: read the outcome with comfy.nodes.status. A list that can't be read keeps the one read before. Refused when the host can't fetch (the CLI).",
+            input_schema: refresh_schema,
+            params_doc: "{server?: name} -> {pending: id}; checks a ComfyUI server in settings (the default when server is absent): its node list (/object_info) and health (/system_stats, /queue). The default server's node list is the one comfy.workflow.import reads. The host answers later: read the outcome with comfy.nodes.status. A list that can't be read keeps the one read before. Refused when the host can't fetch (the CLI).",
             enabled: enabled_refresh,
             run: refresh,
         },
@@ -408,7 +426,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{} -> {last: {id, nodes, error, server: {version, device, running, pending} | null} | null, nodes: number | null}; the outcome of the last comfy.nodes.refresh (server is the health it found: ComfyUI version, first device and free VRAM, queue lengths), and how many node classes the list in use has (null before one was read). Read-only.",
+            params_doc: "{} -> {last: {id, nodes, error, server: {version, device, running, pending} | null} | null, nodes: number | null, servers: {name: last}}; the outcome of the last check of the default server (server is the health it found: ComfyUI version, first device and free VRAM, queue lengths), how many node classes the list in use has (null before one was read), and each server's last check by name. Read-only.",
             enabled: enabled_status,
             run: status,
         },

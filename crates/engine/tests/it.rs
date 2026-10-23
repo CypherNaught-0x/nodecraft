@@ -21,6 +21,8 @@ mod background_save;
 mod batch_keys517;
 #[path = "bulk_edits.rs"]
 mod bulk_edits;
+#[path = "comfy_servers864.rs"]
+mod comfy_servers864;
 #[path = "comfy_workflow9.rs"]
 mod comfy_workflow9;
 #[path = "commands.rs"]

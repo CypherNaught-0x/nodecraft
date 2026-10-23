@@ -1009,6 +1009,17 @@ impl std::ops::Deref for AuthorizedRun {
     }
 }
 impl AuthorizedRun {
+    /// The scheduler limits for this run: the defaults, with each bound target that sets its own
+    /// cap on jobs at once (#864).
+    pub fn lane_limits(&self) -> Result<nodecraft_exec::scheduler::Limits, Error> {
+        let mut limits = nodecraft_exec::scheduler::Limits::default();
+        for (_, binding) in &self.bindings {
+            if let Some(limit) = binding.limit() {
+                limits.set_target_limit(binding.target(), limit)?;
+            }
+        }
+        Ok(limits)
+    }
     pub fn binding(&self, job: nodecraft_exec::scheduler::JobId) -> Result<&crate::provider_routing::RegisteredProvider, Error> {
         let Some(nodecraft_nodes::JobSpec::Generate { node, provider, instance, .. }) = self.run.work(job) else {
             return Err(invalid("job has no provider binding"));

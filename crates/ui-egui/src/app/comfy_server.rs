@@ -1,12 +1,15 @@
-//! The ComfyUI server panel in the desktop app (#9): where the server is, and a check that reads
-//! its nodes and health with `comfy.nodes.refresh`.
+//! The ComfyUI servers panel in the desktop app (#9, #864): every server with its address, how
+//! many of a run's jobs it takes at once and its health, one of them the default; a check reads a
+//! server's nodes and health with `comfy.nodes.refresh {server}`.
 //!
-//! The address is kept in settings (`[providers] comfyui_url`). Saving a new one drops the
-//! adapters built for the old server and the node list read from it, then checks the new one.
+//! Servers are kept in settings (`[[providers.comfyui]]`, `comfyui_default`). Changing or
+//! removing one drops only that server's adapter and what was read from it (the node list too
+//! when it was the default), then checks it again.
 use super::NodeCraftApp;
 use crate::theme::Tokens;
-use nodecraft_engine::comfy_workflow_cmds;
 use nodecraft_engine::secrets::Account;
+use nodecraft_engine::settings::{ComfyServer, MAX_COMFY_SERVERS, MAX_SERVER_JOBS, ProviderSettings, check_server_name, server_name_for};
+use nodecraft_engine::{comfy_server_cmds, comfy_workflow_cmds};
 use nodecraft_types::{Error, ErrorKind};
 use serde_json::json;
 
@@ -16,18 +19,45 @@ const HINT: &str = "http://127.0.0.1:8188";
 #[derive(Default)]
 pub(super) struct ComfyServerPanel {
     pub(super) open: bool,
-    /// The address being edited; filled from settings when the panel opens.
-    pub(super) url: String,
+    /// Each saved server's fields being edited, filled from settings when the panel opens.
+    rows: Vec<Row>,
+    /// The server being added.
+    pub(super) new_name: String,
+    pub(super) new_url: String,
     loaded: bool,
 }
 
+/// One server's fields as edited.
+#[derive(Clone, Default)]
+struct Row {
+    name: String,
+    url: String,
+    /// Jobs at once, as typed; empty for the scheduler's default.
+    jobs: String,
+}
+
+impl Row {
+    fn of(server: &ComfyServer) -> Self {
+        Self { name: server.name.clone(), url: server.url.clone(), jobs: server.max_jobs.map(|n| n.to_string()).unwrap_or_default() }
+    }
+}
+
+/// What a click in the panel asks for.
+enum Asked {
+    Save(Row),
+    Check(String),
+    Default(String),
+    Remove(String),
+    Add,
+}
+
 impl NodeCraftApp {
-    /// The toolbar button that opens the panel, where the server's nodes can be read.
+    /// The toolbar button that opens the panel, where the servers' nodes can be read.
     pub(super) fn comfy_server_button(&mut self, ui: &mut egui::Ui, t: &Tokens) {
         if self.comfy_nodes.is_some()
             && ui
                 .add(egui::Button::new(egui::RichText::new("ComfyUI").color(t.text_muted)).frame(false))
-                .on_hover_text("Set the ComfyUI server, check it and read its nodes")
+                .on_hover_text("Set up ComfyUI servers, check them and read their nodes")
                 .clicked()
         {
             self.comfy_server.open = !self.comfy_server.open;
@@ -39,21 +69,21 @@ impl NodeCraftApp {
             self.comfy_server.loaded = false;
             return;
         }
-        let saved = self.provider_settings().comfyui_url.unwrap_or_default();
+        let settings = self.provider_settings();
+        let saved: Vec<Row> = settings.comfy_servers().into_iter().map(Row::of).collect();
         if !self.comfy_server.loaded {
-            self.comfy_server.url = saved.clone();
+            self.comfy_server.rows = saved.clone();
             self.comfy_server.loaded = true;
         }
+        let default = settings.default_comfy().map(|server| server.name.clone());
         let waiting = self.comfy_nodes.as_ref().is_some_and(|fetcher| fetcher.is_waiting());
-        let edited = self.comfy_server.url.trim() != saved.trim();
-        let (report, nodes) = comfy_workflow_cmds::last(&self.session);
-        let (report, nodes) = (report.cloned(), nodes);
+        let nodes = comfy_workflow_cmds::last(&self.session).1;
         let mut open = true;
-        let mut check = false;
+        let mut asked = None;
         let anchor = [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap];
         let frame =
             egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("ComfyUI server")
+        egui::Window::new("ComfyUI servers")
             .id(egui::Id::new("nodecraft.comfy_server"))
             .open(&mut open)
             .constrain_to(self.viewport)
@@ -63,96 +93,285 @@ impl NodeCraftApp {
             .frame(frame)
             .show(ctx, |ui| {
                 ui.set_max_width(t.search_width);
-                ui.label(egui::RichText::new("ComfyUI models run on this server, and workflows are imported against its nodes.").color(t.text_muted));
-                ui.horizontal(|ui| {
-                    let label = ui.label("Address");
-                    ui.add(egui::TextEdit::singleline(&mut self.comfy_server.url).hint_text(HINT).desired_width(f32::INFINITY)).labelled_by(label.id);
-                });
-                let label = if edited {
-                    "Save and check"
-                } else if waiting {
-                    "Checking…"
-                } else {
-                    "Check"
-                };
-                // A new address can be saved while the old one is still being checked.
-                let can = edited || (!waiting && !saved.trim().is_empty());
-                check = ui.add_enabled(can, egui::Button::new(label)).clicked();
+                ui.label(
+                    egui::RichText::new(
+                        "ComfyUI models run on the default server unless a card picks another. Workflows are imported against the default's nodes.",
+                    )
+                    .color(t.text_muted),
+                );
+                if saved.is_empty() {
+                    ui.label(egui::RichText::new("No server yet. Add one, such as a local ComfyUI, then check it.").color(t.text_muted));
+                }
+                let session = &self.session;
+                for (row, kept) in self.comfy_server.rows.iter_mut().zip(&saved) {
+                    let is_default = default.as_deref() == Some(row.name.as_str());
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&row.name).strong());
+                        if is_default {
+                            ui.label(egui::RichText::new("default").color(t.text_muted));
+                        } else if ui.small_button("Make default").clicked() {
+                            asked = Some(Asked::Default(row.name.clone()));
+                        }
+                        if ui.small_button("Remove").on_hover_text(format!("Remove {}", row.name)).clicked() {
+                            asked = Some(Asked::Remove(row.name.clone()));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        let label = ui.label("Address");
+                        ui.add(egui::TextEdit::singleline(&mut row.url).hint_text(HINT).desired_width(f32::INFINITY)).labelled_by(label.id);
+                    });
+                    ui.horizontal(|ui| {
+                        let label = ui.label("Jobs at once");
+                        ui.add(egui::TextEdit::singleline(&mut row.jobs).hint_text("4").desired_width(48.0))
+                            .labelled_by(label.id)
+                            .on_hover_text("How many of a run's jobs this server takes at once; one for a single GPU");
+                        let edited = row.url.trim() != kept.url.trim() || row.jobs.trim() != kept.jobs.trim();
+                        let label = if edited {
+                            "Save and check"
+                        } else if waiting {
+                            "Checking…"
+                        } else {
+                            "Check"
+                        };
+                        if ui.add_enabled(edited || !waiting, egui::Button::new(label)).on_hover_text(format!("Check {}", row.name)).clicked() {
+                            asked = Some(if edited { Asked::Save(row.clone()) } else { Asked::Check(row.name.clone()) });
+                        }
+                    });
+                    let report = comfy_server_cmds::report(session, &row.name);
+                    status(ui, t, report, is_default.then_some(nodes).flatten());
+                    if let Ok(account) = Account::server("comfyui", kept.url.trim()) {
+                        ui.label(egui::RichText::new(format!("A token, if it asks for one: API keys, {}.", account.as_str())).color(t.text_muted));
+                    }
+                }
                 ui.separator();
-                status(ui, t, report.as_ref(), nodes, saved.trim().is_empty());
-                if let Ok(account) = Account::server("comfyui", saved.trim()) {
-                    ui.label(
-                        egui::RichText::new(format!("A server that asks for a token: add it under API keys as {}.", account.as_str())).color(t.text_muted),
-                    );
+                if saved.len() < MAX_COMFY_SERVERS {
+                    ui.horizontal(|ui| {
+                        let label = ui.label("New server");
+                        ui.add(egui::TextEdit::singleline(&mut self.comfy_server.new_url).hint_text(HINT).desired_width(f32::INFINITY)).labelled_by(label.id);
+                    });
+                    ui.horizontal(|ui| {
+                        let label = ui.label("Name");
+                        let hint = server_name_for(&self.comfy_server.new_url);
+                        ui.add(egui::TextEdit::singleline(&mut self.comfy_server.new_name).hint_text(hint).desired_width(160.0)).labelled_by(label.id);
+                        if ui.add_enabled(!self.comfy_server.new_url.trim().is_empty(), egui::Button::new("Add and check")).clicked() {
+                            asked = Some(Asked::Add);
+                        }
+                    });
                 }
             });
         self.comfy_server.open &= open;
-        if check {
-            let typed = self.comfy_server.url.clone();
-            if let Err(error) = self.check_comfy_server(&typed) {
-                self.notice = Some(error.message);
+        let done = match asked {
+            Some(Asked::Save(row)) => self.save_comfy_server(&row.name, &row.url, &row.jobs),
+            Some(Asked::Check(name)) => self.check_comfy_server(&name),
+            Some(Asked::Default(name)) => self.default_comfy_server(&name),
+            Some(Asked::Remove(name)) => self.remove_comfy_server(&name),
+            Some(Asked::Add) => {
+                let url = self.comfy_server.new_url.clone();
+                let typed = self.comfy_server.new_name.trim().to_owned();
+                let name = if typed.is_empty() { server_name_for(&url) } else { typed };
+                self.add_comfy_server(&name, &url, "")
             }
+            None => Ok(()),
+        };
+        if let Err(error) = done {
+            self.notice = Some(error.message);
         }
     }
 
-    /// Saves `typed` as the server when it changed, then reads the server's nodes and health.
-    pub(super) fn check_comfy_server(&mut self, typed: &str) -> Result<(), Error> {
-        let url = comfy_workflow_cmds::check_url(typed)?;
+    /// Adds the server `name` at `url`, taking `jobs` at once (empty for the default), and checks
+    /// it. The first server added is the default.
+    pub(super) fn add_comfy_server(&mut self, name: &str, url: &str, jobs: &str) -> Result<(), Error> {
+        let server = server_from(name, url, jobs)?;
         let mut settings = self.provider_settings();
-        if url != settings.comfyui_url.as_deref().map(str::trim).filter(|saved| !saved.is_empty()).map(str::to_owned) {
-            let Some(store) = &self.store else {
-                return Err(Error::new(ErrorKind::Unsupported, "settings can't be saved here, so the ComfyUI server can't be changed"));
-            };
-            if store.is_read_only() {
-                return Err(Error::new(ErrorKind::Unsupported, "the settings file is read-only, so the ComfyUI server can't be changed"));
-            }
-            settings.comfyui_url = url.clone();
-            // Forgotten before the save, so a failure here leaves the old address to retry from;
-            // a card waiting for its adapter is built for the new server.
-            if let Some(runs) = &mut self.runs {
-                runs.forget_adapters_for(&mut self.session, &settings)?;
-            }
-            if let Some(store) = &mut self.store {
-                store.update(|saved| saved.providers.comfyui_url = url.clone());
-            }
-            // A read still running is the old server's: its answer is dropped.
-            if let Some(fetcher) = &mut self.comfy_nodes {
-                fetcher.abandon();
-            }
-            comfy_workflow_cmds::forget(&mut self.session);
+        if settings.comfy_server(name).is_some() || settings.comfyui.iter().any(|kept| kept.name == name) {
+            return Err(Error::new(ErrorKind::Conflict, format!("there's already a ComfyUI server called “{name}”")));
         }
-        self.comfy_server.url = url.clone().unwrap_or_default();
-        if url.is_none() {
-            self.notice = Some("ComfyUI isn't set up: no server address.".into());
-            return Ok(());
+        if settings.comfyui.len() >= MAX_COMFY_SERVERS {
+            return Err(Error::new(ErrorKind::Budget, format!("NodeCraft keeps at most {MAX_COMFY_SERVERS} ComfyUI servers")));
         }
-        self.session.dispatch("comfy.nodes.refresh", &json!({})).map(|_| ())
+        let was_default = settings.default_comfy().map(|server| server.name.clone());
+        settings.comfyui.push(server);
+        if was_default.is_none() {
+            settings.comfyui_default = Some(name.to_owned());
+        }
+        self.keep_comfy_servers(&settings, name, false)?;
+        self.comfy_server.new_name.clear();
+        self.comfy_server.new_url.clear();
+        self.check_comfy_server(name)
+    }
+
+    /// Saves a changed address or job cap for the server `name`, then checks it. Only its own
+    /// adapter and what was read from it are dropped.
+    pub(super) fn save_comfy_server(&mut self, name: &str, url: &str, jobs: &str) -> Result<(), Error> {
+        let server = server_from(name, url, jobs)?;
+        let mut settings = self.provider_settings();
+        let was_default = settings.default_comfy().is_some_and(|kept| kept.name == name);
+        let Some(kept) = settings.comfyui.iter_mut().find(|kept| kept.name == name) else {
+            return Err(Error::new(ErrorKind::NotFound, format!("there's no ComfyUI server called “{name}”")));
+        };
+        *kept = server;
+        self.keep_comfy_servers(&settings, name, was_default)?;
+        self.check_comfy_server(name)
+    }
+
+    /// Makes `name` the default server, and reads its nodes, which workflows are imported against.
+    pub(super) fn default_comfy_server(&mut self, name: &str) -> Result<(), Error> {
+        let mut settings = self.provider_settings();
+        if settings.comfy_server(name).is_none() {
+            return Err(Error::new(ErrorKind::NotFound, format!("there's no ComfyUI server called “{name}”")));
+        }
+        settings.comfyui_default = Some(name.to_owned());
+        self.save_providers(&settings)?;
+        // Cards that follow the default are routed again, a waiting one included.
+        if let Some(runs) = &mut self.runs {
+            runs.forget_comfy_server(&mut self.session, name, &settings)?;
+        }
+        // The node list was the old default's; its health stays in its row.
+        comfy_workflow_cmds::forget(&mut self.session);
+        if let Some(fetcher) = &mut self.comfy_nodes {
+            fetcher.abandon();
+        }
+        self.check_comfy_server(name)
+    }
+
+    /// Removes the server `name`; cards that picked it follow the default.
+    pub(super) fn remove_comfy_server(&mut self, name: &str) -> Result<(), Error> {
+        let mut settings = self.provider_settings();
+        let was_default = settings.default_comfy().is_some_and(|kept| kept.name == name);
+        settings.comfyui.retain(|kept| kept.name != name);
+        if was_default {
+            settings.comfyui_default = settings.comfy_servers().first().map(|server| server.name.clone());
+        }
+        self.keep_comfy_servers(&settings, name, was_default)?;
+        if was_default && settings.default_comfy().is_some() {
+            return self.session.dispatch("comfy.nodes.refresh", &json!({})).map(|_| ());
+        }
+        Ok(())
+    }
+
+    /// Reads the nodes and health of the server `name`.
+    pub(super) fn check_comfy_server(&mut self, name: &str) -> Result<(), Error> {
+        self.session.dispatch("comfy.nodes.refresh", &json!({"server": name})).map(|_| ())
+    }
+
+    /// Saves `settings`, in which the server `changed` was added, edited or removed, and drops
+    /// that server's adapter and what was read from it.
+    fn keep_comfy_servers(&mut self, settings: &ProviderSettings, changed: &str, was_default: bool) -> Result<(), Error> {
+        self.save_providers(settings)?;
+        if let Some(runs) = &mut self.runs {
+            runs.forget_comfy_server(&mut self.session, changed, settings)?;
+        }
+        // A read of the old server still running is dropped; another server's carries on.
+        if let Some(fetcher) = &mut self.comfy_nodes {
+            fetcher.abandon_for(changed, was_default);
+        }
+        comfy_server_cmds::forget(&mut self.session, changed, was_default);
+        self.comfy_server.loaded = false;
+        Ok(())
+    }
+
+    /// Writes the ComfyUI servers of `settings` to the settings file.
+    fn save_providers(&mut self, settings: &ProviderSettings) -> Result<(), Error> {
+        let Some(store) = &mut self.store else {
+            return Err(Error::new(ErrorKind::Unsupported, "settings can't be saved here, so ComfyUI servers can't be changed"));
+        };
+        if store.is_read_only() {
+            return Err(Error::new(ErrorKind::Unsupported, "the settings file is read-only, so ComfyUI servers can't be changed"));
+        }
+        store.update(|saved| {
+            saved.providers.comfyui = settings.comfyui.clone();
+            saved.providers.comfyui_default = settings.comfyui_default.clone();
+        });
+        Ok(())
     }
 }
 
-/// What the last check found.
-fn status(ui: &mut egui::Ui, t: &Tokens, report: Option<&comfy_workflow_cmds::Report>, nodes: Option<usize>, unset: bool) {
-    match report {
-        _ if unset => {
-            ui.label(egui::RichText::new("No server yet. Add its address, such as a local ComfyUI's, then check it.").color(t.text_muted));
+/// The ComfyUI servers a card menu offers: every server's name, and the default's.
+pub(super) struct ServerChoices {
+    names: Vec<String>,
+    default: Option<String>,
+}
+
+impl ServerChoices {
+    pub(super) fn of(settings: &ProviderSettings) -> Self {
+        Self {
+            names: settings.comfy_servers().into_iter().map(|server| server.name.clone()).collect(),
+            default: settings.default_comfy().map(|server| server.name.clone()),
         }
-        None => {
-            ui.label(egui::RichText::new("Not checked yet.").color(t.text_muted));
+    }
+}
+
+/// The "ComfyUI server" submenu of a card whose model runs on ComfyUI, when there's a server to
+/// pick: returns the choice clicked, a server's name or `None` to follow the default.
+pub(super) fn card_menu(
+    ui: &mut egui::Ui,
+    node: &nodecraft_graph::Node,
+    catalog: Option<&nodecraft_engine::generation_catalog::GenerationCatalog>,
+    choices: &ServerChoices,
+) -> Option<Option<String>> {
+    if choices.names.is_empty() || !catalog.is_some_and(|catalog| comfy_server_cmds::runs_on_comfy(catalog, node)) {
+        return None;
+    }
+    let picked = match node.config.get(nodecraft_engine::provider_setup::COMFY_SERVER_CONFIG) {
+        Some(nodecraft_types::Value::Text(name)) if choices.names.contains(name) => Some(name.as_str()),
+        _ => None,
+    };
+    let mut chosen = None;
+    ui.menu_button("ComfyUI server", |ui| {
+        let default = choices.default.as_deref().map_or_else(|| "Default server".to_owned(), |name| format!("Default ({name})"));
+        if ui.radio(picked.is_none(), default).on_hover_text("Run on whichever server is the default").clicked() {
+            chosen = Some(None);
+            ui.close();
         }
-        Some(report) => {
-            if let Some(error) = &report.error {
-                ui.label(egui::RichText::new(format!("Check failed: {error}")).color(t.danger));
-            } else if let Some(health) = &report.server {
-                ui.label(health.summary());
-            } else {
-                ui.label(egui::RichText::new("Reached; it didn't report its version or devices.").color(t.text_muted));
+        for name in &choices.names {
+            if ui.radio(picked == Some(name.as_str()), name).clicked() {
+                chosen = Some(Some(name.clone()));
+                ui.close();
             }
-            if let Some(nodes) = nodes {
-                ui.label(
-                    egui::RichText::new(format!("{nodes} node type{} read; workflows can be imported.", if nodes == 1 { "" } else { "s" })).color(t.text_muted),
-                );
-            }
         }
+    });
+    chosen
+}
+
+impl NodeCraftApp {
+    /// Runs the card `id` on the ComfyUI server `server`, or the default with `None`.
+    pub(super) fn use_comfy_server(&mut self, id: nodecraft_types::NodeId, server: Option<String>) -> Result<(), Error> {
+        self.session.dispatch("comfy.server.use", &json!({"canvas": self.canvas, "id": id, "server": server})).map(|_| ())
+    }
+}
+
+/// A server from what was typed: a good name, an address, and a job cap that's empty or 1–16.
+fn server_from(name: &str, url: &str, jobs: &str) -> Result<ComfyServer, Error> {
+    check_server_name(name).map_err(|why| Error::new(ErrorKind::InvalidInput, why))?;
+    let Some(url) = comfy_workflow_cmds::check_url(url)? else {
+        return Err(Error::new(ErrorKind::InvalidInput, "a ComfyUI server needs an address"));
+    };
+    let max_jobs = match jobs.trim() {
+        "" => None,
+        typed => match typed.parse::<u32>() {
+            Ok(n) if (1..=MAX_SERVER_JOBS).contains(&n) => Some(n),
+            _ => return Err(Error::new(ErrorKind::InvalidInput, format!("jobs at once is a whole number from 1 to {MAX_SERVER_JOBS}"))),
+        },
+    };
+    Ok(ComfyServer { max_jobs, ..ComfyServer::new(name, &url) })
+}
+
+/// What the last check of a server found; `nodes` is the default's node list.
+fn status(ui: &mut egui::Ui, t: &Tokens, report: Option<&comfy_workflow_cmds::Report>, nodes: Option<usize>) {
+    let Some(report) = report else {
+        ui.label(egui::RichText::new("Not checked yet.").color(t.text_muted));
+        return;
+    };
+    if let Some(error) = &report.error {
+        ui.label(egui::RichText::new(format!("Check failed: {error}")).color(t.danger));
+    } else if let Some(health) = &report.server {
+        ui.label(health.summary());
+    } else {
+        ui.label(egui::RichText::new("Reached; it didn't report its version or devices.").color(t.text_muted));
+    }
+    if let Some(nodes) = nodes {
+        ui.label(egui::RichText::new(format!("{nodes} node type{} read; workflows can be imported.", if nodes == 1 { "" } else { "s" })).color(t.text_muted));
     }
 }
 

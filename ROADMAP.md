@@ -17,7 +17,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 0 | **Skeleton** — workspace, CI, release pipeline, themed canvas | ✅ feature work done | 10/10 |
 | 1 | **Canvas core** — graph, undo, commands, canvas, `.ncraft` | ✅ done | 36/37 |
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done (close-out #373) | 13/14 |
-| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9) | 39/44 |
+| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), several ComfyUI servers per install (#864) | 39/44 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | 🟡 partial; action nodes work in app | 8/12 |
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 16/27 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 8/11 |

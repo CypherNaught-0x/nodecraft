@@ -22,7 +22,7 @@ fn fetcher(checkpoints: Option<&'static [&'static str]>) -> Fetch {
     let http: Arc<dyn Http> = Arc::new(Fixture(serde_json::to_vec(&info).unwrap()));
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     Box::new(move |sources, settings| {
-        let fixture = ProviderSettings { comfyui_url: Some("http://127.0.0.1:8188".into()), install_salt: "salt".into() };
+        let fixture = ProviderSettings::with_comfyui("http://127.0.0.1:8188", "salt");
         let settings = if checkpoints.is_some() { &fixture } else { settings };
         let keys = nodecraft_engine::secrets::MemoryStore::default();
         let env = HostEnv { keys: &keys, http: http.clone(), settings, now_ms: Arc::new(|| 0), progress: None };
@@ -76,7 +76,7 @@ fn without_a_server_in_settings_the_notice_says_what_to_add() {
     h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
     let notice = answered(&mut h);
     assert!(notice.starts_with("Option lists weren't fetched: ComfyUI isn't set up"), "{notice}");
-    assert!(notice.contains("comfyui_url"), "{notice}");
+    assert!(notice.contains("[[providers.comfyui]]"), "{notice}");
 }
 
 #[test]

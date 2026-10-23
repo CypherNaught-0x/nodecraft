@@ -151,7 +151,11 @@ format, passed as text) as one card: its file inputs become ports, its prompts a
 `node.input` names in `params`) become parameters, and its save nodes become results (#9). It
 reads the workflow against the ComfyUI server's node list, so call `comfy.nodes.refresh` first
 (`{pending: id}`) and check `comfy.nodes.status`, whose `last.server` also gives the server's
-ComfyUI version, first device with free VRAM, and queue lengths. As with option lists, only a host with a fetch
+ComfyUI version, first device with free VRAM, and queue lengths. With several servers set up
+(#864), `comfy.nodes.refresh {server}` checks one by name and `comfy.nodes.status` gives each
+server's last check under `servers`; only the default's node list is used for imports.
+`comfy.server.use {canvas, id, server}` picks the server a ComfyUI card runs on (`null` follows
+the default). As with option lists, only a host with a fetch
 service reads the list: the bridge to the desktop app does, the standalone CLI reports it
 unavailable.
 

@@ -18,7 +18,7 @@ fn with_image() -> Harness<'static, NodeCraftApp> {
 }
 
 /// Right-clicks just inside node `id`'s card.
-fn right_click(h: &mut Harness<'static, NodeCraftApp>, id: NodeId) {
+pub(super) fn right_click(h: &mut Harness<'static, NodeCraftApp>, id: NodeId) {
     let pos = {
         let app = h.state();
         let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&id).unwrap();

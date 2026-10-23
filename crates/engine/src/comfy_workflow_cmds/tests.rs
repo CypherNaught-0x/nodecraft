@@ -167,7 +167,7 @@ fn refresh_asks_the_host_and_is_refused_without_one() {
     let error = s.dispatch("comfy.nodes.refresh", &json!({})).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Unsupported);
     let status = s.dispatch("comfy.nodes.status", &json!({})).unwrap();
-    assert_eq!(status, json!({"last": null, "nodes": null}));
+    assert_eq!(status, json!({"last": null, "nodes": null, "servers": {}}));
 
     let mut s = session();
     s.register_host_service(NODES_SERVICE, |_| Ok(json!({"pending": 1}))).unwrap();
@@ -215,7 +215,7 @@ impl nodecraft_providers::http::Http for Server {
 }
 
 fn fetch_from(healthy: bool) -> Result<Fetched, Error> {
-    let settings = crate::settings::ProviderSettings { comfyui_url: Some("http://127.0.0.1:8188".into()), install_salt: "salt".into() };
+    let settings = crate::settings::ProviderSettings::with_comfyui("http://127.0.0.1:8188", "salt");
     let keys = crate::secrets::MemoryStore::default();
     let env = HostEnv { keys: &keys, http: Arc::new(Server { healthy }), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
     futures::executor::block_on(fetch(&env))
@@ -249,7 +249,7 @@ fn forgetting_the_server_drops_its_nodes() {
     let mut s = ready();
     forget(&mut s);
     assert_eq!(last(&s), (None, None));
-    assert_eq!(s.dispatch("comfy.nodes.status", &json!({})).unwrap(), json!({"last": null, "nodes": null}));
+    assert_eq!(s.dispatch("comfy.nodes.status", &json!({})).unwrap(), json!({"last": null, "nodes": null, "servers": {}}));
     assert!(s.dispatch("comfy.workflow.import", &import_params(FOX)).is_err());
 }
 

@@ -90,6 +90,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "comfy.nodes.refresh",
     "comfy.nodes.status",
     "comfy.workflow.import",
+    "comfy.server.use",
     "app.check_updates",
     "app.update_status",
     "history.select",

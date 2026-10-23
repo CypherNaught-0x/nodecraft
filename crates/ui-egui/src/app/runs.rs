@@ -428,7 +428,8 @@ impl Runs {
             return;
         }
         let project = session.document().id();
-        for adapter in self.host.waiting_adapters(project) {
+        for target in self.host.waiting_targets(project) {
+            let adapter = target.adapter().to_owned();
             if is_plugin(&adapter) {
                 // A plugin's broker is built from its grant, which is known once the store is read.
                 if !self.plugins_known {
@@ -440,9 +441,23 @@ impl Runs {
                     continue;
                 }
             }
-            match self.setup.readiness(&adapter) {
+            // A ComfyUI job goes back to the server it was sent to (#864); one sent before servers
+            // had names, to the default server. A server since removed leaves its jobs waiting.
+            let slot = match (adapter.as_str(), target.instance()) {
+                ("comfyui", Some(instance)) => {
+                    let server = settings.comfy_servers().into_iter().find(|server| provider_setup::comfy_instance(&server.name) == Some(instance));
+                    let Some(server) = server else { continue };
+                    provider_setup::comfy_slot(&server.name)
+                }
+                ("comfyui", None) => settings.default_comfy().map_or_else(|| adapter.clone(), |server| provider_setup::comfy_slot(&server.name)),
+                _ => adapter.clone(),
+            };
+            match self.setup.readiness(&slot) {
                 Some(Readiness::Ready) => {
-                    let binding = self.setup.provider(&adapter).map(|provider| RegisteredProvider::default_instance(Arc::clone(provider)));
+                    let binding = self.setup.provider(&slot).map(|provider| match target.instance() {
+                        Some(instance) => RegisteredProvider::named(Arc::clone(provider), instance),
+                        None => RegisteredProvider::default_instance(Arc::clone(provider)),
+                    });
                     match binding {
                         Some(Ok(binding)) => self.host.resume(session, &binding),
                         Some(Err(error)) => log::warn!("can't resume jobs on {adapter}: {}", error.message),
@@ -452,7 +467,7 @@ impl Runs {
                 Some(_) => {}
                 None => {
                     // Asked again on a later frame if the thread is busy.
-                    let _ = self.ask(&adapter, settings);
+                    let _ = self.ask(&slot, settings);
                 }
             }
         }
@@ -487,7 +502,7 @@ impl Runs {
         stale: &BTreeSet<NodeId>,
         settings: &ProviderSettings,
     ) -> Result<Route, Error> {
-        let (adapters, inner) = adapters_of(session, canvas);
+        let (adapters, inner) = adapters_of(session, canvas, settings);
         let mut reached: BTreeSet<NodeId> = match kind {
             RunKind::Generate => ids.iter().copied().collect(),
             RunKind::Refresh => with_upstream(session, canvas, ids, stale),
@@ -501,7 +516,7 @@ impl Runs {
             match self.setup.readiness(&adapter) {
                 Some(Readiness::Ready) => {}
                 Some(other) => {
-                    unready.push(other.message(&adapter).unwrap_or_default());
+                    unready.push(other.message(provider_setup::slot_adapter(&adapter)).unwrap_or_default());
                     // Tried afresh next time: the person may add the key or the server meanwhile.
                     self.setup.forget(&adapter);
                 }
@@ -522,7 +537,7 @@ impl Runs {
         // Every card whose provider is ready, so a run of more than these cards reaches its
         // providers too.
         let ready = adapters.iter().filter(|(_, a)| self.setup.readiness(a) == Some(&Readiness::Ready)).map(|(node, a)| (*node, a.as_str()));
-        session.set_provider_routing(self.setup.routing(ready)?)?;
+        session.set_provider_routing(self.setup.routing_for(ready, settings)?)?;
         Ok(Route::Ready)
     }
 
@@ -550,6 +565,25 @@ impl Runs {
         for adapter in adapters {
             self.setup.forget(&adapter);
         }
+        self.rebuild(session)
+    }
+
+    /// Forgets the adapter of the ComfyUI server called `name` alone, after it changed or was
+    /// removed (#864): other servers and providers keep theirs. Builds in flight are asked again
+    /// with `settings`, since they read the old ones.
+    pub(super) fn forget_comfy_server(&mut self, session: &mut Session, name: &str, settings: &ProviderSettings) -> Result<(), Error> {
+        if let Some(waiting) = &mut self.waiting {
+            waiting.settings = settings.clone();
+        }
+        self.setup.forget(&provider_setup::comfy_slot(name));
+        // A card that found no server tries again.
+        self.setup.forget("comfyui");
+        self.rebuild(session)
+    }
+
+    /// Drops builds in flight and the session's routing, and asks again for what a waiting card
+    /// needs.
+    fn rebuild(&mut self, session: &mut Session) -> Result<(), Error> {
         self.epoch = self.epoch.wrapping_add(1);
         self.asked.clear();
         session.set_provider_routing(ProviderRouting::default())?;
@@ -562,15 +596,6 @@ impl Runs {
             }
         }
         Ok(())
-    }
-
-    /// [`Self::forget_adapters`] after the provider settings changed: a card waiting for its
-    /// provider is asked for again with `settings`, not the ones it was routed with.
-    pub(super) fn forget_adapters_for(&mut self, session: &mut Session, settings: &ProviderSettings) -> Result<(), Error> {
-        if let Some(waiting) = &mut self.waiting {
-            waiting.settings = settings.clone();
-        }
-        self.forget_adapters(session)
     }
 
     /// One frame: takes built adapters and pumps the host.
@@ -801,9 +826,9 @@ fn has_result(node: &nodecraft_graph::Node) -> bool {
     node.active.is_some_and(|active| node.history.iter().any(|generation| generation.id == active))
 }
 
-/// The adapter each card with a catalog model on `canvas` runs on, and the technique node each
-/// inlined one runs for.
-fn adapters_of(session: &Session, canvas: CanvasId) -> (BTreeMap<NodeId, String>, BTreeMap<NodeId, NodeId>) {
+/// The setup key each card with a catalog model on `canvas` runs on (its adapter, or the slot of
+/// the ComfyUI server it uses, #864), and the technique node each inlined one runs for.
+fn adapters_of(session: &Session, canvas: CanvasId, settings: &ProviderSettings) -> (BTreeMap<NodeId, String>, BTreeMap<NodeId, NodeId>) {
     let (Some(canvas), Ok(catalog)) = (session.document().canvases().get(&canvas), session.generation_catalog()) else {
         return Default::default();
     };
@@ -818,7 +843,9 @@ fn adapters_of(session: &Session, canvas: CanvasId) -> (BTreeMap<NodeId, String>
         .nodes()
         .iter()
         .filter_map(|(id, node)| match node.params.get(nodecraft_nodes::generation::MODEL) {
-            Some(nodecraft_types::Value::Text(model)) => catalog.catalog().get(model).map(|descriptor| (*id, descriptor.provider.clone())),
+            Some(nodecraft_types::Value::Text(model)) => {
+                catalog.catalog().get(model).map(|descriptor| (*id, provider_setup::slot_for(&descriptor.provider, node, settings)))
+            }
             _ => None,
         })
         .collect();
