@@ -408,7 +408,7 @@ impl Thread {
                 let document = self.document.as_ref().ok_or_else(|| Error::new(ErrorKind::Internal, "live sharing was asked to settle no document"))?;
                 // Slow for a large asset, so done here rather than in the window (#842), one a
                 // turn (#855).
-                let sealed = collab.seal_arrivals(&turn.assets, &self.cancel);
+                let progressed = collab.seal_arrivals(&turn.assets, &self.cancel);
                 let has = |hash: &Blake3| turn.assets.contains(hash);
                 let (out, plan) = collab.plan(&View { revision: turn.revision, document, has: &has })?;
                 let frames = collab.frames(out, &turn.assets);
@@ -417,7 +417,7 @@ impl Thread {
                 // Asks not answered this turn are, the next, and so is the next asset to seal.
                 // Assets and asks the storage was too busy for wait a while instead, so the
                 // window isn't asked for turn after turn.
-                report.dirty |= collab.owes_assets() || (sealed && collab.seals_pending());
+                report.dirty |= collab.owes_assets() || (progressed && collab.seals_pending());
             }
         }
         Ok(())
@@ -444,4 +444,19 @@ fn status(collab: &mut Collab) -> Result<Status, Error> {
         project_id: collab.project_id()?,
         people: collab.people().cloned().collect(),
     })
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn letting_go_of_the_worker_stops_a_seal_under_way() {
+        let worker = Worker::spawn("ws://127.0.0.1:9".into(), || Err(Error::new(ErrorKind::Unsupported, "no project")), || {}).unwrap();
+        // The thread seals with a clone of this (#855).
+        let seals = worker.cancel.clone();
+        assert!(seals.check().is_ok());
+        drop(worker);
+        assert!(seals.check().is_err_and(|error| TransferCancel::is_cancellation(&error)));
+    }
 }

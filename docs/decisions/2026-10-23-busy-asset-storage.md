@@ -13,14 +13,19 @@ worker do while storage is busy changed.
 kept in memory instead, as a browser session keeps every asset. At most 48 MiB is kept like this
 in all; past that the insert is Busy as before. The staging pool reports Busy too, not Conflict,
 since it is the same condition. Packing the store after an import is skipped while busy and done
-at a later import. An asset over 16 MiB still needs the storage.
+at a later import. The next insert that finds the storage free moves what waited in memory to
+disk, so the 48 MiB is room for one busy spell, not for the session. A store with private storage
+reads what waits in memory from memory each time rather than caching it, since packing counts
+only the cache's disk backings. Still needing the storage: an asset over 16 MiB, and one whose
+bytes the project already holds, which is checked against the stored copy before it is reused.
 
 **A busy ask waits.** An ask for an asset this session can't read because the storage is busy
 is kept (bounded like other asks) and asked again on the worker's two-second retry, rather than
 dropped. Other read errors still drop it, as before.
 
-**One seal a turn, and Stop cancels it.** The worker seals the first finished arrival each turn
-and asks for another turn while more remain, so edits are published and taken in between. Its
+**One seal a turn, and Stop cancels it.** The worker seals one finished arrival each turn,
+starting after the last one that had to wait so one can't hold up the rest, and asks for another
+turn while more remain, so edits are published and taken in between. Its
 seals carry a `TransferCancel` that dropping the worker trips, so a Stop ends a seal under way
 within a read, and the arrival is left as it was.
 

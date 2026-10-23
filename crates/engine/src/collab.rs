@@ -95,6 +95,9 @@ pub struct Collab {
     seals: bool,
     /// How often sealing each failed for a reason that may pass.
     seal_tries: BTreeMap<Blake3, u32>,
+    /// The last arrival that couldn't be sealed yet: the next call starts after it, so one that
+    /// waits doesn't hold up the others (#855).
+    seal_waited: Option<Blake3>,
     /// Assets the spool had no room or no file for: asked for again only at
     /// [`Collab::retry_put_off`], so asking doesn't spin.
     put_off: BTreeSet<Blake3>,
@@ -296,6 +299,7 @@ impl Collab {
             spool: Box::new(MemorySpool::default()),
             seals: false,
             seal_tries: BTreeMap::new(),
+            seal_waited: None,
             put_off: BTreeSet::new(),
             room_for: BTreeMap::new(),
             spool_tries: BTreeMap::new(),
@@ -340,16 +344,20 @@ impl Collab {
     /// once a turn so a few large assets don't hold up the others' edits (#855). `cancel` stops
     /// it, leaving the asset to seal later. One the storage is too busy or too full for is
     /// sealed at a later call ([`Self::seals_pending`]), which the host makes after a while
-    /// rather than at once; one it can't keep is given up. Whether it sealed one.
+    /// rather than at once; one it can't keep is given up. Whether it sealed or gave up one, so
+    /// another may be tried at once.
     pub fn seal_arrivals(&mut self, assets: &AssetStore, cancel: &TransferCancel) -> bool {
         // One that doesn't seal takes them in with the plan.
         if !self.seals {
             return false;
         }
-        let Some((hash, range)) = self.arrived.iter().find_map(|(hash, arrival)| match arrival {
+        let range = |(hash, arrival): (&Blake3, &Arrival)| match arrival {
             Arrival::Range(range) => Some((*hash, range.clone())),
             _ => None,
-        }) else {
+        };
+        let after = self.seal_waited.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
+        let next = self.arrived.range((after, std::ops::Bound::Unbounded)).find_map(range).or_else(|| self.arrived.iter().find_map(range));
+        let Some((hash, range)) = next else {
             return false;
         };
         match assets.seal(&range, cancel, &StreamMetrics::default()) {
@@ -366,11 +374,14 @@ impl Collab {
                     let tries = self.seal_tries.entry(hash).or_insert(0);
                     *tries = tries.saturating_add(1);
                 }
+                self.seal_waited = Some(hash);
             }
+            // Given up: the next is tried at once.
             Ok(_) | Err(_) => {
                 self.arrived.remove(&hash);
                 self.seal_tries.remove(&hash);
                 self.unusable.insert(hash);
+                return true;
             }
         }
         false
@@ -1090,8 +1101,8 @@ pub fn joining(id: ProjectId) -> Result<Project, Error> {
 }
 
 /// Whether sealing an asset that failed with `kind`, `tries` times already for a reason that
-/// may pass, is tried again: always while the storage is busy, for a while while it is full or
-/// another transfer holds it; never when the asset can't be kept.
+/// may pass, is tried again: always while the storage is busy (another transfer holds it), for a
+/// while when it conflicts; never when the asset can't be kept.
 fn seal_waits(kind: ErrorKind, tries: u32) -> bool {
     match kind {
         ErrorKind::Busy => true,
