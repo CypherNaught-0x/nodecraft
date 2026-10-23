@@ -150,6 +150,11 @@ with `share.stop` (#698). A new
 command stays hidden until it is added to one of the
 lists, and a test fails until then.
 
+`export.local_plan` and `export.local_run` publish a batch of results into a folder outside the
+project and outside undo, so both are human-only (#98). An agent can still see what such a run
+would write with `export.local_plan`, which touches no disk. Until the desktop app injects an
+authorized folder (#746), both report that no host has authorized one.
+
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
 server waits until the prompt is answered.

@@ -117,6 +117,19 @@ fn gen_id(n: u8) -> nodecraft_types::GenerationId {
     nodecraft_types::GenerationId::from_bytes([n; 16])
 }
 
+/// The folder `export.*` templates write into: one directory in the system temporary folder per
+/// test process, so a hunt that reaches the real write path stays out of the repository. It is
+/// left where a leaked `TempDir` would be, for the OS to sweep.
+fn export_destination() -> std::path::PathBuf {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let path = std::env::temp_dir().join(format!("nodecraft-panic-hunt-export-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&path);
+        std::fs::canonicalize(&path).unwrap_or(path)
+    })
+    .clone()
+}
+
 fn template(id: &str) -> (Session, Value) {
     use common::*;
     let mut document = project();
@@ -303,6 +316,11 @@ fn template(id: &str) -> (Session, Value) {
             blocked: false,
         }));
         session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
+    if id.starts_with("export.local_") {
+        // A real destination, so the hunt reaches name rendering and the write path rather than
+        // stopping at the host check. It is in the system temporary folder, never the repository.
+        session.swap_resource(Some(nodecraft_engine::local_export::ExportHost::authorize(&export_destination()).unwrap()));
     }
     if id.starts_with("run.") || id == "usage.export_csv" {
         use nodecraft_engine::run_cmds::*;
@@ -539,6 +557,16 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
         }
         "usage.export_csv" => json!({}),
+        // A real folder plus the fixture's own node, so a hunt reaches name rendering, collision
+        // and per-entry failure rather than stopping at the host check.
+        "export.local_plan" | "export.local_run" => json!({
+            "canvas":canvas(),
+            "sources":[{"node":node_id(1),"port":"out"},{"node":node_id(2),"port":"out","item":0}],
+            "destination":export_destination().display().to_string(),
+            "template":"{title}-{index}",
+            "on_collision":"numbered",
+            "format":{"mode":"original"}
+        }),
         "perf.start" | "perf.clear" | "perf.report" => json!({}),
         // Stop needs a running capture; the hunt checks the refusal never panics.
         "perf.stop" => json!({}),
@@ -859,7 +887,8 @@ fn typed_template_panic_hunt() {
                         assert_ne!(after, before, "a successful paste is a document edit");
                         assert_eq!(session.revision(), revision + 1);
                     }
-                    if id.starts_with("file.") {
+                    if id.starts_with("file.") || id.starts_with("export.") {
+                        // File and export commands write outside the project; neither edits it.
                         assert_eq!(after, before);
                         continue;
                     }
