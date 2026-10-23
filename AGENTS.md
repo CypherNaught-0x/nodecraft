@@ -49,7 +49,8 @@ building the same thing.
    empty commit is fine to start: `git commit --allow-empty -m "claim: #N"`. Without a PR in time
    the claim lapses.
 5. **Push at least every 14 days**; a claim whose PR has had no pushes for 14 days is released by
-   the daily sweep. Prefer pushing work in progress daily.
+   the daily sweep. Both deadlines apply to everyone, including the owner and maintainers.
+   Prefer pushing work in progress daily.
 6. A draft PR is a claim on its own. If two PRs race for one issue, **the lowest-numbered open PR
    wins**; close yours if it lost, or offer to help on the winner.
 7. **`/unclaim`** releases an issue early (claimant or maintainer only).

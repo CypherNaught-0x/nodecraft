@@ -114,7 +114,8 @@ async function claimStatus(github, context, issue, now) {
   }
   let newest = 0;
   for (const pr of pulls) newest = Math.max(newest, await lastPush(github, context, pr));
-  const expires = newest + PR_IDLE_DAYS * 24 * HOUR;
+  // An expired PR from a previous claimant must not erase a new claim's first day.
+  const expires = Math.max(since + CLAIM_HOURS * HOUR, newest + PR_IDLE_DAYS * 24 * HOUR);
   return { pulls, since, expires, release: now >= expires, reason: 'idle PR' };
 }
 
@@ -161,7 +162,6 @@ async function claim(github, context, now) {
   const issue = context.payload.issue;
   const user = context.payload.comment.user.login;
   const n = issue.number;
-  const cache = new Map();
   const assignees = (issue.assignees || []).map((a) => a.login);
 
   if (assignees.includes(user)) {
@@ -169,20 +169,19 @@ async function claim(github, context, now) {
     return;
   }
 
-  // Someone else is assigned: theirs unless the claim has lapsed (never for a maintainer).
+  // Every claimant has the same deadline, including owners and maintainers.
   let held = assignees.length > 0 || hasLabel(issue);
-  let status = null;
+  let takeover = false;
   if (held) {
-    let maintained = false;
-    for (const a of assignees) maintained = maintained || (await isMaintainer(github, context, a, cache));
-    if (!maintained) {
-      status = await claimStatus(github, context, issue, now);
-      if (status.release) held = false;
+    const status = await claimStatus(github, context, issue, now);
+    if (status.release) {
+      held = false;
+      takeover = true;
     }
     if (held) {
       await react(github, context, 'eyes');
       const who = assignees.length ? assignees.map((a) => '@' + a).join(', ') + ' has' : 'Someone has';
-      const when = maintained || !status ? '' : ` The claim lapses on ${fmt(status.expires)} unless there's progress.`;
+      const when = ` The claim lapses on ${fmt(status.expires)} unless there's progress.`;
       await reply(github, context, `${who} claimed this already.${when}`);
       return;
     }
@@ -213,9 +212,8 @@ async function claim(github, context, now) {
   }
 
   // Free (or lapsed): hand it to the commenter. Clear a lapsed claimant first.
-  if (assignees.length) {
-    await github.rest.issues.removeAssignees({ ...repoArgs(context), issue_number: n, assignees });
-  }
+  // Removing and re-adding the label records the new claimant's start in the timeline.
+  if (takeover) await release(github, context, issue, assignees);
   await ensureLabel(github, context);
   await github.rest.issues.addLabels({ ...repoArgs(context), issue_number: n, labels: [LABEL] });
   try {
@@ -279,14 +277,10 @@ async function sweep({ github, context, now = Date.now() }) {
     labels: LABEL,
     per_page: 100,
   });
-  const cache = new Map();
   const released = [];
   for (const issue of issues) {
     if (issue.pull_request || issue.locked) continue;
     const assignees = (issue.assignees || []).map((a) => a.login);
-    let skip = false;
-    for (const a of assignees) skip = skip || (await isMaintainer(github, context, a, cache));
-    if (skip) continue;
     const status = await claimStatus(github, context, issue, now);
     if (!status.release) continue;
     await release(github, context, issue, assignees);
