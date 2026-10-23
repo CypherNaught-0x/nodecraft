@@ -17,7 +17,9 @@
 //!   than lost, and the store reloads.
 //! - **Running needs a grant.** A text action package (#173) installs and enables like a data
 //!   package, but enabling it also needs the user's grant for its exact digest; updating, rolling
-//!   back or uninstalling revokes the package's grants, and revoking one disables the package.
+//!   back or uninstalling revokes the package's grants. Revoking an already-revoked grant changes
+//!   nothing; revoking the last live grant for the active digest disables an enabled package and
+//!   its dependents. A package never runs without a live grant for its active digest.
 //! - **Trust is checked when it matters.** A package's signature is checked against the trust
 //!   file at import and again at enable, so a key revoked since import stops it being enabled.
 //! - **Only what this host speaks.** A package's protocol range, descriptor contract and required
@@ -158,9 +160,10 @@ pub struct EnableReport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RevokeReport {
     pub grant: Grant,
-    /// Whether the package was enabled under it, and is now disabled.
+    /// True only when revocation leaves no live grant for the enabled package's active digest
+    /// and disables that package; an already-revoked grant changes nothing.
     pub disabled: bool,
-    /// Enabled packages depending on it, disabled with it.
+    /// Enabled packages depending on a newly disabled package, disabled with it.
     pub dependents: Vec<PackageId>,
 }
 
