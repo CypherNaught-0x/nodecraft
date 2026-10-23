@@ -307,6 +307,10 @@ pub const HUMAN_ONLY: &[&str] = &[
     "app.restart_to_update",
     "keys.set",
     "keys.remove",
+    // Human-only like keys.set/remove (#237): in the app it answers {pending: id} and no command
+    // reads the verdict back, and each test sends the person's key out and holds the one keychain
+    // thread for up to 25 s, so an agent could stall the person's own key operations.
+    "keys.test",
     // Writing files on this machine is the person's call, as saving the project is (#557).
     "history.export",
     "timeline.export_interchange",

@@ -44,6 +44,7 @@ pub mod image_tool_cmds;
 pub mod impact;
 pub mod import;
 pub mod jobs;
+pub mod key_test;
 pub mod keys_cmds;
 pub mod layer_cmds;
 pub mod layout_cmds;

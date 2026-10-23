@@ -10,6 +10,10 @@
 //! Accounts are listed from settings (`[keys] accounts`) and never read at startup, since each
 //! keychain read can show a prompt; "Check" reads one on request. The browser build also lists
 //! the accounts it finds in the site's storage at startup (names only; no key is read).
+//!
+//! "Test" (desktop only) asks the provider whether it accepts the stored key, with a request that
+//! costs nothing (`keys.test`, #237): the row says it works, can't be verified (and why), or the
+//! error, such as the provider rejecting it.
 
 use std::collections::BTreeMap;
 
@@ -45,6 +49,12 @@ pub enum KeyStatus {
     /// A key is stored; its masked tail (`…abcd` or `…`).
     Stored(String),
     Missing,
+    /// A `keys.test` check is with the provider.
+    Testing,
+    /// The provider accepted the key; its masked tail.
+    Verified(String),
+    /// The key (its masked tail) can't be checked for free; why.
+    Unverifiable(String, String),
     Failed(String),
 }
 
@@ -53,6 +63,7 @@ enum Op {
     Set,
     Remove,
     Status,
+    Test,
 }
 
 /// A change to the remembered account list, for the host to save in settings.
@@ -131,13 +142,14 @@ impl KeysPanel {
             Op::Set => "keys.set",
             Op::Remove => "keys.remove",
             Op::Status => "keys.status",
+            Op::Test => "keys.test",
         };
         match session.dispatch(id, &params) {
             Ok(answer) => match answer.get("pending").and_then(Value::as_u64) {
                 Some(request) => {
                     self.notice = None;
                     self.pending.insert(request, (account.clone(), op, self.now));
-                    self.set_status(account, KeyStatus::Waiting);
+                    self.set_status(account, if op == Op::Test { KeyStatus::Testing } else { KeyStatus::Waiting });
                     None
                 }
                 None => {
@@ -174,6 +186,14 @@ impl KeysPanel {
             Op::Status => {
                 let stored = answer.get("stored").and_then(Value::as_bool).unwrap_or(false);
                 self.set_status(account, if stored { KeyStatus::Stored(masked()) } else { KeyStatus::Missing });
+                None
+            }
+            Op::Test => {
+                let status = match answer.get("result").and_then(Value::as_str) {
+                    Some("verified") => KeyStatus::Verified(masked()),
+                    _ => KeyStatus::Unverifiable(masked(), answer.get("reason").and_then(Value::as_str).unwrap_or("no free check").to_owned()),
+                };
+                self.set_status(account, status);
                 None
             }
         }
@@ -228,13 +248,25 @@ impl KeysPanel {
                         KeyStatus::Waiting => ("Waiting for the keychain…".to_owned(), t.text_muted),
                         KeyStatus::Stored(masked) => (format!("Stored {masked}"), t.text),
                         KeyStatus::Missing => ("No key".to_owned(), t.text_muted),
+                        KeyStatus::Testing => ("Asking the provider…".to_owned(), t.text_muted),
+                        KeyStatus::Verified(masked) => (format!("Stored {masked}, works: the provider accepted it"), t.accent),
+                        KeyStatus::Unverifiable(masked, why) => (format!("Stored {masked}, can't verify: {why}"), t.text_muted),
                         KeyStatus::Failed(why) => (why.clone(), t.danger),
                     };
                     ui.label(egui::RichText::new(text).color(color));
                     ui.horizontal(|ui| {
-                        let waiting = *status == KeyStatus::Waiting;
+                        let waiting = matches!(status, KeyStatus::Waiting | KeyStatus::Testing);
                         if ui.add_enabled(!waiting, egui::Button::new("Check")).clicked() {
                             changes.extend(self.send(session, Op::Status, account, json!({"account": account.as_str()})));
+                        }
+                        // The browser can't send the check (keys.test is unsupported there).
+                        if cfg!(not(target_arch = "wasm32"))
+                            && ui
+                                .add_enabled(!waiting, egui::Button::new("Test"))
+                                .on_hover_text("Ask the provider whether it accepts this key (free)")
+                                .clicked()
+                        {
+                            changes.extend(self.send(session, Op::Test, account, json!({"account": account.as_str()})));
                         }
                         let confirming = self.confirm_remove.as_ref() == Some(account);
                         let label = if confirming { "Confirm remove" } else { "Remove" };

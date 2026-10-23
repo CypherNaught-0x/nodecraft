@@ -105,7 +105,9 @@ act on. Protocol mistakes (an unknown tool, malformed arguments) are JSON-RPC er
 
 **Every command is classified.** Commands in `mcp::AGENT_COMMANDS` are listed and run. Commands
 in `mcp::HUMAN_ONLY` are neither: `keys.set` would pass an API key through the agent's context,
-and `keys.remove` deletes a key with no undo. `file.open`, `file.save`, `file.save_as` and
+and `keys.remove` deletes a key with no undo. `keys.test` is human-only too (#237): in the app it
+answers `{pending: id}` with no command to read the verdict back, and each test sends the stored key
+out and holds the keychain thread for up to 25 seconds. `file.open`, `file.save`, `file.save_as` and
 `file.cancel` are agent commands, admitted only inside allowed folders (see the bridge section
 above, #423). `history.export` writes a result to a file anywhere on the
 machine, so it is human-only for the same reason (#557), as are `timeline.export_interchange` and

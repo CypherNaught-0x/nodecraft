@@ -203,6 +203,7 @@ fn tool_failures_are_results_the_model_can_read() {
     for (args, says) in [
         (json!({"id": "keys.set", "params": {"account": "openai", "key": "sk-secret-1234567890"}}), "only be run by a person"),
         (json!({"id": "keys.remove", "params": {"account": "openai"}}), "only be run by a person"),
+        (json!({"id": "keys.test", "params": {"account": "openai"}}), "only be run by a person"),
         (json!({"id": "nope.nope"}), "unknown command"),
         (json!({"id": "node.add", "params": {"canvas": CANVAS}}), "node"),
         (json!({}), "needs the command `id`"),
