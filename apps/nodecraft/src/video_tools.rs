@@ -12,6 +12,7 @@ pub fn discover(settings: &MediaSettings) -> Result<MediaSettings, &'static str>
         std::env::var_os("NODECRAFT_FFMPEG").as_deref(),
         std::env::var_os("NODECRAFT_FFPROBE").as_deref(),
         std::env::var_os("PATH").as_deref(),
+        cfg!(target_os = "macos"),
         executable,
     )
 }
@@ -21,6 +22,7 @@ fn resolve(
     ffmpeg: Option<&OsStr>,
     ffprobe: Option<&OsStr>,
     path: Option<&OsStr>,
+    macos: bool,
     mut executable: impl FnMut(&std::path::Path) -> bool,
 ) -> Result<MediaSettings, &'static str> {
     let mut choose = |name: &str, override_path: Option<&OsStr>, configured: Option<&std::path::Path>| {
@@ -31,21 +33,33 @@ fn resolve(
             }
             return Ok(Some(selected.to_path_buf()));
         }
-        let Some(path) = path else { return Ok(None) };
-        if path.as_encoded_bytes().len() > MAX_PATH_BYTES {
-            return Err("PATH is too long to search for FFmpeg; set absolute [media] paths or NODECRAFT_FFMPEG and NODECRAFT_FFPROBE");
+        let filename = if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
+        if let Some(path) = path {
+            if path.as_encoded_bytes().len() > MAX_PATH_BYTES {
+                return Err("PATH is too long to search for FFmpeg; set absolute [media] paths or NODECRAFT_FFMPEG and NODECRAFT_FFPROBE");
+            }
+            for (index, directory) in std::env::split_paths(path).enumerate() {
+                if index >= MAX_DIRECTORIES {
+                    return Err("PATH has too many entries to search for FFmpeg; set absolute [media] paths or NODECRAFT_FFMPEG and NODECRAFT_FFPROBE");
+                }
+                // Relative and empty PATH entries could resolve inside an untrusted project folder.
+                if !directory.is_absolute() {
+                    continue;
+                }
+                let candidate = directory.join(&filename);
+                if executable(&candidate) {
+                    return Ok(Some(candidate));
+                }
+            }
         }
-        for (index, directory) in std::env::split_paths(path).enumerate() {
-            if index >= MAX_DIRECTORIES {
-                return Err("PATH has too many entries to search for FFmpeg; set absolute [media] paths or NODECRAFT_FFMPEG and NODECRAFT_FFPROBE");
-            }
-            // Relative and empty PATH entries could resolve inside an untrusted project folder.
-            if !directory.is_absolute() {
-                continue;
-            }
-            let candidate = directory.join(if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() });
-            if executable(&candidate) {
-                return Ok(Some(candidate));
+        // Finder/Dock launches usually omit Homebrew from launchd's PATH. These fixed absolute
+        // locations are searched only after PATH, never after an explicit tool choice.
+        if macos {
+            for directory in ["/opt/homebrew/bin", "/usr/local/bin"] {
+                let candidate = std::path::Path::new(directory).join(&filename);
+                if executable(&candidate) {
+                    return Ok(Some(candidate));
+                }
             }
         }
         Ok(None)

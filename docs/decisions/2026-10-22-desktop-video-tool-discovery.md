@@ -4,7 +4,9 @@ The desktop app already compiles the native video feature through `ui-egui`'s na
 It now resolves each tool once before the frame loop: an absolute environment override
 (`NODECRAFT_FFMPEG` or `NODECRAFT_FFPROBE`), then its absolute `[media]` setting, then the first
 executable `ffmpeg` / `ffprobe` on `PATH` (`.exe` on Windows). The two tools may come from
-different sources. An invalid explicit path refuses discovery rather than falling back.
+different sources. On macOS, the fixed absolute directories `/opt/homebrew/bin` and
+`/usr/local/bin` follow PATH, covering Finder/Dock launches without the shell environment.
+An invalid explicit path refuses discovery rather than falling back.
 The media worker still checks existence and capabilities before admitting work.
 
 This completes the discovery deferred by [video on cards](2026-10-21-video-on-cards.md).

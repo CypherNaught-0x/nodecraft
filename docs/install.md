@@ -129,6 +129,8 @@ The desktop app plays videos on cards with a user-installed FFmpeg and ffprobe; 
 bundle or install them. At startup it resolves each tool in this order: an absolute
 `NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` environment override, an absolute path in `[media]`
 settings, then the first executable `ffmpeg` / `ffprobe` on `PATH` (`.exe` on Windows).
+On macOS it then checks `/opt/homebrew/bin` and `/usr/local/bin`, so Homebrew tools are found
+when Finder or the Dock starts the app without the shell’s `PATH`.
 For explicit settings:
 
 ```toml

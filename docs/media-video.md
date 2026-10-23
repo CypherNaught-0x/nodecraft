@@ -13,6 +13,8 @@ The desktop host discovers installed **ffmpeg** and **ffprobe** once at startup:
 `NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` override takes precedence over its absolute `[media]`
 setting, followed by the first executable on `PATH` (`.exe` on Windows). Empty and relative
 `PATH` directories are skipped; at most 256 entries and 64 KiB of path data are searched.
+On macOS, two fixed absolute directories follow `PATH`: `/opt/homebrew/bin` and `/usr/local/bin`.
+This also works for Finder/Dock launches, whose environment often omits Homebrew.
 An invalid explicit choice never falls back silently. Discovery is not persisted. The low-level
 service still receives explicit absolute paths plus a trusted private scratch parent.
 NodeCraft does not download, package or redistribute either tool. Their build

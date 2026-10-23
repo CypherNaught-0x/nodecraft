@@ -128,7 +128,10 @@ fn main() -> ExitCode {
                 Ok(tools) => app.set_media_tools(tools.tools()),
                 Err(problem) => {
                     app.set_media_tools(None);
-                    app.notice = Some(problem.into());
+                    app.notice = Some(match app.notice.take() {
+                        Some(previous) => format!("{previous} {problem}"),
+                        None => problem.into(),
+                    });
                     log::warn!("{problem}");
                 }
             }
