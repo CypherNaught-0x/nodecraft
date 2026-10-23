@@ -329,7 +329,9 @@ impl PluginSnapshot {
         let mut providers = BTreeMap::new();
         for (id, (digest, state)) in &store.index().active {
             let Some(grant) = (*state == State::Enabled).then(|| grants.live(id, digest)).flatten() else { continue };
-            let Ok(package) = store.load(id).and_then(|package| nodecraft_plugin_store::store::compatible(&package.manifest).map(|()| package)) else { continue };
+            let Ok(package) = store.load(id).and_then(|package| nodecraft_plugin_store::store::compatible(&package.manifest).map(|()| package)) else {
+                continue;
+            };
             let stamp = PluginStamp { grant_id: grant.grant_id.clone(), package: id.clone(), digest: *digest, epoch: grant.epoch };
             for (provider_id, provider) in crate::plugin_providers::of(&package, grant, &stamp) {
                 providers.insert(provider_id, Arc::new(provider));
