@@ -74,7 +74,12 @@ Add `--json` for machine-readable output.
   has no binding for, and dependencies to install first. Lint keeps nothing and runs nothing.
 
 Lint in CI uses the same command. Freeze the digest of each package you publish in a test, so a
-change you didn't mean to make shows up in review.
+change you didn't mean to make shows up in review. Files are packed byte for byte, so a checkout
+that rewrites line endings gives a different digest: mark package folders `-text` in
+`.gitattributes` (`examples/plugins/** -text`).
+
+`lint` also refuses a package that needs a right this NodeCraft can't grant (today only provider
+packages can be granted `network` and `secret`), and warns about an optional one it can't.
 
 ## Installing and trying it
 
@@ -114,17 +119,18 @@ update like any other.
 
 ## Dependencies
 
-A package may depend only on data packages. A dependency is locked to an exact `version` and
-`digest`, there is no version resolver, and nothing is fetched. Lint warns about each dependency.
-The dependent package can't be enabled until each dependency is installed and enabled.
+A package may depend only on data packages; this NodeCraft doesn't check that rule yet, so keep to
+it yourself. A dependency is locked to an exact `version` and `digest`, there is no version
+resolver, and nothing is fetched. Lint warns about each dependency. The dependent package can't be
+enabled until each dependency is installed, enabled and at the locked version.
 
 ## Updates, rollback and migration
 
 - **Update** installs the new version beside the old one and swaps them in one step. The package
   must be disabled first. If the update fails (full disk, corrupt file, failed check), the old
   version stays exactly as it was.
-- **Grants** are checked again on update. A grant covers one digest, so a new version that asks
-  for more rights asks for consent again, and the package stays disabled until it is granted.
+- **Grants** cover one digest, so every update, even one that asks for no new rights, asks for
+  consent again, and the package stays disabled until it is granted.
 - **Rollback** (`plugins.rollback` with a kept digest, or **Roll back to …** in the panel) brings back an
   earlier version still kept in the store. It never brings back a grant that was revoked.
 - **Projects**: a card made from a plugin records the package ID, version and digest it was made

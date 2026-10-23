@@ -70,8 +70,13 @@ fn packing_twice_gives_the_same_bytes() {
     let (a, b) = (out.path().join("a.ncraft-plugin"), out.path().join("b.ncraft-plugin"));
     pack(&example("shout"), &a);
     pack(&example("shout"), &b);
-    assert_eq!(std::fs::read(a).unwrap(), std::fs::read(b).unwrap());
+    let bytes = std::fs::read(a).unwrap();
+    assert_eq!(bytes, std::fs::read(b).unwrap());
+    // Not just the digest: the archive bytes are frozen too, so no clock or file mode gets in.
+    assert_eq!(blake3::hash(&bytes).to_hex().as_str(), SHOUT_BYTES);
 }
+
+const SHOUT_BYTES: &str = "d02d8fd116b13afca3a5f247f598669656a45bcb3587a48c34d3844d778d269d";
 
 /// Copies an example into a fresh folder, changed by `edit`.
 fn changed(name: &str, edit: impl FnOnce(&Path)) -> tempfile::TempDir {
@@ -92,15 +97,23 @@ fn changed(name: &str, edit: impl FnOnce(&Path)) -> tempfile::TempDir {
     dir
 }
 
+type Edit = Box<dyn FnOnce(&Path)>;
+
 #[test]
 fn a_folder_that_cant_be_a_package_is_refused_before_anything_is_written() {
     let out = tempfile::tempdir().unwrap();
     let file = out.path().join("p.ncraft-plugin");
-    let cases: Vec<(&str, Box<dyn FnOnce(&Path)>, &str)> = vec![
+    let cases: Vec<(&str, Edit, &str)> = vec![
         ("no manifest", Box::new(|d: &Path| std::fs::remove_file(d.join("manifest.json")).unwrap()), "manifest.json"),
         ("no license", Box::new(|d: &Path| std::fs::remove_file(d.join("LICENSE")).unwrap()), "LICENSE"),
         ("reserved name", Box::new(|d: &Path| std::fs::write(d.join("inventory.json"), "{}").unwrap()), "inventory.json"),
         ("broken manifest", Box::new(|d: &Path| std::fs::write(d.join("manifest.json"), "{oops").unwrap()), "manifest.json"),
+        (
+            "too many files",
+            Box::new(|d: &Path| (0..1025).for_each(|i| std::fs::write(d.join(format!("data/f{i}.json")), "{}").unwrap())),
+            "more than 1024 files",
+        ),
+        ("nested too deep", Box::new(|d: &Path| std::fs::create_dir_all(d.join("a/b/c/d/e/f/g/h")).unwrap()), "nests too deep"),
     ];
     for (what, edit, mentions) in cases {
         let dir = changed("palette", edit);
@@ -158,6 +171,37 @@ fn lint_refuses_what_install_grant_or_enable_would() {
     let trust = out.path().join("trust.json");
     std::fs::write(&trust, b"{oops").unwrap();
     assert!(stderr(&cli(&["plugin", "lint", s(&file), "--trust", s(&trust)])).contains("trust"));
+    // A trust file named but missing is an error, and a relative one is read.
+    assert!(stderr(&cli(&["plugin", "lint", s(&file), "--trust", s(&out.path().join("absent.json"))])).contains("doesn't exist"));
+    let relative =
+        Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).args(["plugin", "lint", s(&file), "--trust", "trust.json"]).current_dir(out.path()).output().unwrap();
+    assert!(String::from_utf8_lossy(&relative.stderr).contains("trust"), "the relative trust file is the one read");
+}
+
+/// Rewrites the palette example's manifest with `edit`.
+fn manifest(edit: impl FnOnce(String) -> String) -> tempfile::TempDir {
+    changed("palette", |d| {
+        let m = std::fs::read_to_string(d.join("manifest.json")).unwrap();
+        std::fs::write(d.join("manifest.json"), edit(m)).unwrap();
+    })
+}
+
+#[test]
+fn lint_refuses_reserved_names_and_rights_this_build_cant_grant() {
+    let out = tempfile::tempdir().unwrap();
+    let file = out.path().join("p.ncraft-plugin");
+    let reserved = manifest(|m| m.replace("io.example.palette", "nodecraft.example.palette"));
+    pack(reserved.path(), &file);
+    let error = stderr(&cli(&["plugin", "lint", s(&file)]));
+    assert!(error.contains("doesn't pass") && error.contains("nodecraft"), "{error}");
+    // A data package can't be granted the GPU: needing it isn't even a package, wanting it is a warning.
+    let needs = manifest(|m| m.replace(r#""required": [], "optional": []"#, r#""required": ["gpu"], "optional": []"#));
+    let error = stderr(&cli(&["plugin", "pack", s(needs.path()), "--out", s(&file)]));
+    assert!(error.contains("capabilities"), "{error}");
+    let wants = manifest(|m| m.replace(r#""required": [], "optional": []"#, r#""required": [], "optional": ["gpu"]"#));
+    pack(wants.path(), &file);
+    let lint = json(&cli(&["plugin", "lint", s(&file), "--json"]));
+    assert!(lint["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("optional gpu")), "{lint}");
 }
 
 #[test]

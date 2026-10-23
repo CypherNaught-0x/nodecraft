@@ -7,17 +7,17 @@
 use std::path::{Path, PathBuf};
 
 use nodecraft_engine::plugin_cmds::{PluginHost, host_ids, lint};
+use nodecraft_plugin::inventory::{MAX_FILES, MAX_SEGMENTS};
 use nodecraft_plugin_store::ArchiveLimits;
 use nodecraft_plugin_store::author::{self, Packed};
 use nodecraft_types::{Error, ErrorKind};
 use serde_json::{Value, json};
 
-/// Most files read from a folder: the inventory's limit.
-const MAX_FILES: usize = 1024;
-/// Most bytes read from a folder in all: the package's expanded limit.
-const MAX_FOLDER_BYTES: u64 = 128 * 1024 * 1024;
-/// Deepest folder read: the inventory's path segment limit.
-const MAX_DEPTH: usize = 8;
+/// Most bytes read from a folder in all: a package is stored uncompressed, so its files must fit
+/// in the archive limit.
+const MAX_FOLDER_BYTES: usize = ArchiveLimits::DEFAULT.archive_bytes;
+/// Most folders walked: as many as there may be files.
+const MAX_FOLDERS: usize = MAX_FILES;
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
@@ -29,6 +29,7 @@ fn invalid(message: impl Into<String>) -> Error {
 pub fn read_folder(folder: &Path) -> Result<Vec<(String, Vec<u8>)>, Error> {
     let mut out = Vec::new();
     let mut total: u64 = 0;
+    let mut folders = 0usize;
     let mut pending = vec![(folder.to_path_buf(), String::new(), 0usize)];
     while let Some((dir, prefix, depth)) = pending.pop() {
         let entries = std::fs::read_dir(&dir).map_err(|e| Error::new(ErrorKind::NotFound, format!("{} can't be read ({e})", dir.display())))?;
@@ -43,16 +44,22 @@ pub fn read_folder(folder: &Path) -> Result<Vec<(String, Vec<u8>)>, Error> {
             if kind.is_symlink() {
                 return Err(invalid(format!("{path} is a link; a package holds only regular files")));
             } else if kind.is_dir() {
-                if depth.saturating_add(1) >= MAX_DEPTH {
-                    return Err(invalid(format!("{path} nests deeper than {MAX_DEPTH} folders")));
+                // A file in this folder would have one more path segment than the folder.
+                if depth.saturating_add(2) > MAX_SEGMENTS {
+                    return Err(invalid(format!("{path} nests too deep: a package path has at most {MAX_SEGMENTS} segments")));
+                }
+                folders = folders.saturating_add(1);
+                if folders > MAX_FOLDERS {
+                    return Err(invalid(format!("the folder holds more than {MAX_FOLDERS} folders")));
                 }
                 pending.push((entry.path(), path, depth.saturating_add(1)));
             } else if kind.is_file() {
                 if out.len() >= MAX_FILES {
                     return Err(invalid(format!("the folder holds more than {MAX_FILES} files")));
                 }
-                let left = MAX_FOLDER_BYTES.saturating_sub(total);
-                let bytes = read_capped(&entry.path(), left).map_err(|e| invalid(format!("{path}: {}", e.message)))?;
+                let cap = u64::try_from(MAX_FOLDER_BYTES).unwrap_or(u64::MAX);
+                let bytes = read_capped(&entry.path(), cap.saturating_sub(total))
+                    .map_err(|e| if e.kind == ErrorKind::InvalidInput { too_big() } else { invalid(format!("{path}: {}", e.message)) })?;
                 total = total.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
                 out.push((path, bytes));
             } else {
@@ -64,14 +71,18 @@ pub fn read_folder(folder: &Path) -> Result<Vec<(String, Vec<u8>)>, Error> {
     Ok(out)
 }
 
-/// Reads at most `cap` bytes of `path`; a longer file is refused.
+fn too_big() -> Error {
+    invalid(format!("the folder's files add up to more than {} MiB, the most a package holds", MAX_FOLDER_BYTES / (1024 * 1024)))
+}
+
+/// Reads at most `cap` bytes of `path`; a longer file is refused with `InvalidInput`.
 fn read_capped(path: &Path, cap: u64) -> Result<Vec<u8>, Error> {
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|e| Error::new(ErrorKind::NotFound, format!("it can't be opened ({e})")))?;
     let mut bytes = Vec::new();
     file.take(cap.saturating_add(1)).read_to_end(&mut bytes).map_err(|e| Error::new(ErrorKind::Internal, format!("it can't be read ({e})")))?;
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > cap {
-        return Err(invalid(format!("it is larger than {} MiB", cap / (1024 * 1024))));
+        return Err(invalid(format!("it is larger than {} MiB", cap.div_ceil(1024 * 1024))));
     }
     Ok(bytes)
 }
@@ -85,8 +96,17 @@ pub fn pack(folder: &Path, out: &Path) -> Result<(Packed, Value), Error> {
     if out_dir.starts_with(&folder_abs) {
         return Err(invalid("write the package outside the folder it is packed from"));
     }
+    if std::fs::symlink_metadata(out).is_ok_and(|m| !m.is_file()) {
+        return Err(invalid(format!("{} is a link or a folder; name a new or regular file", out.display())));
+    }
     let packed = author::pack(read_folder(folder)?, None)?;
-    std::fs::write(out, &packed.bytes).map_err(|e| Error::new(ErrorKind::Internal, format!("{} can't be written ({e})", out.display())))?;
+    // Written beside the output and moved into place, so a full disk never leaves half a package.
+    let partial = out_dir.join(format!(".{}.partial", out.file_name().and_then(|n| n.to_str()).unwrap_or("package")));
+    let written = std::fs::write(&partial, &packed.bytes).and_then(|()| std::fs::rename(&partial, out));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&partial);
+        return Err(Error::new(ErrorKind::Internal, format!("{} can't be written ({e})", out.display())));
+    }
     let report = json!({"file": out.display().to_string(), "digest": packed.digest.to_string(), "bytes": packed.bytes.len()});
     Ok((packed, report))
 }
@@ -101,6 +121,18 @@ pub fn inventory(folder: &Path) -> Result<Value, Error> {
 /// `plugin lint <file> [--trust <trust.json>]`: checks the package as this NodeCraft would install
 /// it, trusting only the keys in the trust file (none without it).
 pub fn lint_file(file: &Path, trust: Option<PathBuf>) -> Result<Value, Error> {
+    // The store reads a trust file only by absolute path; a named one that is missing is an
+    // error here, not "no keys trusted".
+    let trust = match trust {
+        Some(path) => {
+            let path = std::path::absolute(&path).map_err(|e| invalid(format!("the trust file {} can't be found ({e})", path.display())))?;
+            if !path.is_file() {
+                return Err(Error::new(ErrorKind::NotFound, format!("the trust file {} doesn't exist", path.display())));
+            }
+            Some(path)
+        }
+        None => None,
+    };
     let limit = u64::try_from(ArchiveLimits::DEFAULT.archive_bytes).unwrap_or(u64::MAX);
     let bytes = read_capped(file, limit).map_err(|e| Error::new(e.kind, format!("{}: {}", file.display(), e.message)))?;
     lint(&bytes, &PluginHost { trust, taken: host_ids()?, bindings: Default::default() })

@@ -758,6 +758,29 @@ fn executable(runtime: &Runtime) -> bool {
 /// used only through the host's broker. Files, processes and the GPU stay denied (#174).
 const GRANTABLE: [Capability; 2] = [Capability::Network, Capability::Secret];
 
+/// Whether this build can grant `capability` to a package with `runtime`.
+fn grantable(capability: Capability, runtime: &Runtime) -> bool {
+    GRANTABLE.contains(&capability) && matches!(runtime, Runtime::ProviderOperations { .. })
+}
+
+/// Whether `manifest` could ever be granted and enabled by this build: an error names a required
+/// capability it can't grant. The optional capabilities it can't grant are returned; they stay
+/// off. Authors' lint uses the same rule as [`Store::grant`].
+pub fn grantable_by_this_build(manifest: &nodecraft_plugin::Manifest) -> Result<Vec<Capability>, Error> {
+    let caps = &manifest.capabilities;
+    if let Some(c) = caps.required.iter().find(|c| !grantable(**c, &manifest.runtime)) {
+        return Err(Error::new(ErrorKind::Unsupported, format!("it requires the {} capability, which this build can't grant to this package", c.as_str())));
+    }
+    Ok(caps
+        .optional
+        .iter()
+        .filter_map(|c| match c {
+            Optional::Known(c) if !grantable(*c, &manifest.runtime) => Some(*c),
+            _ => None,
+        })
+        .collect())
+}
+
 /// Whether `rights` are exactly what `manifest` may be granted: every required capability, only
 /// capabilities it asks for and this build grants, and origins exactly with network.
 fn admissible(manifest: &nodecraft_plugin::Manifest, rights: &Rights) -> Result<(), Error> {
@@ -769,7 +792,7 @@ fn admissible(manifest: &nodecraft_plugin::Manifest, rights: &Rights) -> Result<
         if !caps.required.contains(c) && !caps.optional.contains(&Optional::Known(*c)) {
             return Err(Error::new(ErrorKind::InvalidInput, format!("this package doesn't ask for the {} capability", c.as_str())));
         }
-        if !GRANTABLE.contains(c) || !matches!(manifest.runtime, Runtime::ProviderOperations { .. }) {
+        if !grantable(*c, &manifest.runtime) {
             return Err(Error::new(ErrorKind::Unsupported, format!("this build can't grant the {} capability to this package", c.as_str())));
         }
     }

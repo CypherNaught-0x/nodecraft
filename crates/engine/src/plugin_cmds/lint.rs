@@ -25,6 +25,8 @@ pub fn lint(bytes: &[u8], host: &PluginHost) -> Result<Value, Error> {
     nodecraft_plugin::register::stage(&package.manifest, &host.taken)
         .map_err(|e| Error::new(ErrorKind::Conflict, format!("one of its IDs is already NodeCraft's ({e})")))?;
     crate::plugin_rights::asks(&package)?;
+    // Granting refuses a required capability this build can't grant, so enabling never could.
+    let withheld = nodecraft_plugin_store::grantable_by_this_build(&package.manifest)?;
     let runtime = match &package.manifest.runtime {
         Runtime::Data => "data",
         Runtime::TextActions { .. } => {
@@ -48,6 +50,9 @@ pub fn lint(bytes: &[u8], host: &PluginHost) -> Result<Value, Error> {
                 None => warnings.push(format!("{} binds to nothing: it stays unbound", r.id)),
             }
         }
+    }
+    for capability in withheld {
+        warnings.push(format!("this build can't grant the optional {} capability: the package runs without it", capability.as_str()));
     }
     for dep in &package.manifest.dependencies {
         warnings.push(format!("it needs {} {} ({}) installed and enabled first", dep.package_id, dep.version, dep.digest));
