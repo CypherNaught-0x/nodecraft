@@ -371,7 +371,6 @@ mod reader;
 mod recovery;
 mod runs;
 mod search;
-#[cfg(not(target_arch = "wasm32"))]
 mod sharing;
 mod sheet_view;
 mod split;
@@ -538,8 +537,7 @@ pub struct NodeCraftApp {
     /// Checks for a newer release (#123).
     #[cfg(not(target_arch = "wasm32"))]
     updates: Option<updates::UpdateChecker>,
-    /// Shares the project live through a relay, or joins one (#698).
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Shares the project live through a relay, or joins one (#698), in the browser too (#699).
     sharing: Option<sharing::Sharing>,
     /// The plugin worker, and the change of what may run the session last took from it (#173).
     #[cfg(not(target_arch = "wasm32"))]
@@ -754,9 +752,9 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             self.files.projects = nodecraft_engine::settings::ProjectSettings { recent: settings.projects.recent() };
-            if let Some(sharing) = self.sharing.as_mut() {
-                sharing.set_relay(settings.share.relay.clone());
-            }
+        }
+        if let Some(sharing) = self.sharing.as_mut() {
+            sharing.set_relay(settings.share.relay.clone());
         }
         theme::apply(ctx, self.theme);
     }
@@ -810,7 +808,10 @@ impl NodeCraftApp {
             .inspect_err(|e| log::warn!("runs unavailable: {}", e.message))
             .ok();
         let recovery = web_journal::WebRecovery::new(Box::<web_journal::IndexedDb>::default(), web_journal::fresh_slot());
+        // Live sharing through a relay over the page's WebSocket (#699).
+        let sharing = Self::register_sharing(&mut services, Box::new(sharing::open_window));
         let mut app = Self::with_web_files(services, web_files::WebFiles::browser(), Some(recovery))?;
+        app.sharing = sharing;
         if let Some(runs) = &runs {
             runs.install(&mut app.session);
         }
@@ -1082,7 +1083,6 @@ impl NodeCraftApp {
             option_fetch: None,
             #[cfg(not(target_arch = "wasm32"))]
             updates: None,
-            #[cfg(not(target_arch = "wasm32"))]
             sharing: None,
             #[cfg(not(target_arch = "wasm32"))]
             plugins: None,
@@ -2320,7 +2320,6 @@ impl NodeCraftApp {
         self.save_accounts(changes);
         self.plugin_panel.show(ui.ctx(), &mut self.session, t);
         self.queue_panel(ui.ctx(), t);
-        #[cfg(not(target_arch = "wasm32"))]
         self.share_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
         self.ownership_panel(ui.ctx(), t);
@@ -2482,7 +2481,6 @@ impl NodeCraftApp {
                         {
                             self.queue_open = !self.queue_open;
                         }
-                        #[cfg(not(target_arch = "wasm32"))]
                         self.share_button(ui, t);
                         if ui
                             .add(egui::Button::new(egui::RichText::new("API keys").color(t.text_muted)).frame(false))
@@ -2985,7 +2983,6 @@ impl eframe::App for NodeCraftApp {
         self.tick_updates(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_plugins(ctx);
-        #[cfg(not(target_arch = "wasm32"))]
         self.tick_sharing(ctx);
         // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
         craft_quit::on_close_request(ctx);

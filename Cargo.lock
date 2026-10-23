@@ -3533,6 +3533,7 @@ dependencies = [
  "tungstenite",
  "wasm-bindgen-futures",
  "web-sys",
+ "web-time",
  "zip",
 ]
 

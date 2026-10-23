@@ -15,6 +15,8 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket};
 
+use super::Event;
+
 /// The longest wait between tries.
 pub(super) const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// How long connecting and the WebSocket handshake may take.
@@ -46,19 +48,6 @@ impl Default for Keepalive {
     }
 }
 
-/// What the thread tells the app.
-#[derive(Debug, PartialEq)]
-pub(super) enum Event {
-    /// Connection `n` is open; its first frame is the app's hello.
-    Connected(u64),
-    Frame(Vec<u8>),
-    /// The connection closed or couldn't open; the next try is in `retry`.
-    Dropped {
-        why: String,
-        retry: Duration,
-    },
-}
-
 enum Out {
     Frame(u64, Vec<u8>),
 }
@@ -72,13 +61,17 @@ pub(super) struct Connection {
 }
 
 impl Connection {
-    /// Connects to `relay` (a checked `ws://` address); `wake` asks for a frame when something
+    /// Connects to `relay` (a checked `ws://` address; `wss://` is refused); `wake` asks for a frame when something
     /// comes in.
     pub(super) fn open(relay: String, wake: impl Fn() + Send + Sync + 'static) -> Result<Self, Error> {
         Self::open_with(relay, wake, Keepalive::default())
     }
 
     pub(super) fn open_with(relay: String, wake: impl Fn() + Send + Sync + 'static, keepalive: Keepalive) -> Result<Self, Error> {
+        // The browser reaches one through its own TLS; the desktop speaks plain WebSocket only.
+        if relay.starts_with("wss://") {
+            return Err(Error::new(ErrorKind::Unsupported, "the desktop app can't reach a relay over wss:// yet; use a ws:// address"));
+        }
         let (out, outbox) = channel();
         let (inbox, events) = channel();
         let queued = Arc::new(AtomicUsize::new(0));

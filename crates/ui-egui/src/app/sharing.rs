@@ -1,9 +1,11 @@
-//! Sharing a project live from the desktop (#698), through a relay (`nodecraft-cli relay`).
+//! Sharing a project live (#698), through a relay (`nodecraft-cli relay`), from the desktop or
+//! the browser (#699).
 //!
 //! `share.start` asks the `share.session` service, which only queues the request; each frame
 //! [`NodeCraftApp::tick_sharing`] takes it up: it names a new room, shares the session in it
-//! ([`Collab`]) and hands both to a [`Worker`] thread, which opens a [`connection::Connection`] to the relay
-//! on a thread of its own. The worker takes in what came and works out what the session must
+//! ([`Collab`]) and hands both to a [`Worker`] thread, which opens a `Connection` to the relay
+//! on a thread of its own. The browser has no threads: there the connection is the page's
+//! `WebSocket`, and the worker's work is done a batch at a time in the frames it is asked for. The worker takes in what came and works out what the session must
 //! take to match the room (#714); each frame hands it a copy of the document if that changed,
 //! and applies the changesets that come back if nothing was edited meanwhile. A dropped
 //! connection leaves the project open and editable; the thread reconnects, and the next hello
@@ -12,7 +14,8 @@
 //! `share.join` opens a new window ([`OpenWindow`]) and hands it the join link on its standard
 //! input, never its command line, where other people on the machine could read it. That window
 //! joins at startup ([`NodeCraftApp::join_live`]) and takes up the shared project once the first
-//! update says which it is.
+//! update says which it is. The browser joins in the tab it was asked in, once that has no
+//! changes of its own to lose.
 //!
 //! The Share chip beside API keys opens the panel: how the session is doing, the join link
 //! (hidden until asked for), and Stop. The room id never reaches a log, a notice or a command's
@@ -24,16 +27,51 @@ use nodecraft_engine::live_cmds::LIVE_SERVICE;
 use nodecraft_engine::session::DocumentLineage;
 use nodecraft_sync::Role;
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+// `std`'s clock isn't there in the browser.
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
+#[cfg(target_arch = "wasm32")]
+mod browser;
+#[cfg(not(target_arch = "wasm32"))]
 mod connection;
+#[cfg(not(target_arch = "wasm32"))]
 mod spool;
+#[cfg(target_arch = "wasm32")]
+use browser as connection;
 mod worker;
 
-use connection::Event;
 use worker::{Status, Turn, Worker};
 
-/// Opens a join link in a new window; the app's starts NodeCraft again, tests record it.
+/// `Send` on the desktop, where the work runs on a thread of its own; nothing in the browser,
+/// where it runs in the frame and what it holds needn't cross threads.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSend for T {}
+#[cfg(target_arch = "wasm32")]
+pub(super) trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSend for T {}
+
+/// What the connection tells the app.
+#[derive(Debug, PartialEq)]
+enum Event {
+    /// Connection `n` is open; its first frame is the app's hello.
+    Connected(u64),
+    Frame(Vec<u8>),
+    /// The connection closed or couldn't open; the next try is in `retry`.
+    Dropped {
+        why: String,
+        retry: Duration,
+    },
+}
+
+/// Opens a join link in a new window; the app's starts NodeCraft again, tests record it. The
+/// browser joins in place instead.
 pub(crate) type OpenWindow = Box<dyn FnMut(&str) -> Result<(), Error>>;
 
 /// A host service handler, for the caller to register.
@@ -107,6 +145,7 @@ pub(crate) struct Sharing {
     shared: Rc<RefCell<Shared>>,
     desk: Rc<RefCell<Desk>>,
     live: Option<Live>,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     open_window: OpenWindow,
     pub(crate) panel: Panel,
 }
@@ -138,7 +177,7 @@ impl Sharing {
         &mut self,
         ctx: &egui::Context,
         link: JoinLink,
-        make: impl FnOnce() -> Result<Collab, Error> + Send + 'static,
+        make: impl FnOnce() -> Result<Collab, Error> + MaybeSend + 'static,
         joining: bool,
         large: bool,
     ) -> Result<(), Error> {
@@ -147,7 +186,11 @@ impl Sharing {
         // Who comes in by the room id owns it; a link's role comes from the relay.
         let status = Status { role: matches!(link.key(), Key::Room(_)).then_some(Role::Owner), ..Status::default() };
         // Assets too large for one frame come in parts, kept in files until imported (#700).
+        #[cfg(not(target_arch = "wasm32"))]
         let make = move || make().map(|collab| if large { collab.with_spool(Box::new(spool::FileSpool::default())) } else { collab });
+        // The browser has no files to keep them in: it takes only what fits in memory.
+        #[cfg(target_arch = "wasm32")]
+        let _ = large;
         let worker = Worker::spawn(link.relay().to_owned(), make, move || wake.request_repaint())?;
         *desk = Desk { links: Links::default(), role: status.role, live: true };
         drop(desk);
@@ -231,6 +274,7 @@ fn ask(shared: &Rc<RefCell<Shared>>, request: &serde_json::Value) -> Result<serd
                     .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "no relay to share through: give one, or set `[share] relay` in settings"))?,
             };
             let relay = relay_address(&relay)?;
+            reachable(&relay)?;
             shared.live = true;
             shared.status = json!({"state": "connecting"});
             shared.asks.push_back(Ask::Start(relay));
@@ -238,6 +282,7 @@ fn ask(shared: &Rc<RefCell<Shared>>, request: &serde_json::Value) -> Result<serd
         }
         Some("join") => {
             let link = request.get("link").and_then(serde_json::Value::as_str).unwrap_or_default().parse::<JoinLink>()?;
+            reachable(link.relay())?;
             shared.asks.push_back(Ask::Join(link));
             Ok(json!({"opening": true}))
         }
@@ -252,12 +297,60 @@ fn ask(shared: &Rc<RefCell<Shared>>, request: &serde_json::Value) -> Result<serd
     }
 }
 
+/// Whether this build can reach `relay`, told when asked rather than after: the desktop has no
+/// TLS, so no `wss://`; a page served over https may open only `wss://`, or `ws://` to this
+/// machine.
+fn reachable(relay: &str) -> Result<(), Error> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let (browser, secure_page) = (false, false);
+    #[cfg(target_arch = "wasm32")]
+    let (browser, secure_page) = (true, web_sys::window().and_then(|w| w.location().protocol().ok()).is_some_and(|p| p == "https:"));
+    can_reach(relay, browser, secure_page)
+}
+
+fn can_reach(relay: &str, browser: bool, secure_page: bool) -> Result<(), Error> {
+    if !browser && relay.starts_with("wss://") {
+        return Err(Error::new(ErrorKind::Unsupported, "the desktop app can't reach a relay over wss:// yet; use a ws:// address"));
+    }
+    if browser && secure_page && !relay.starts_with("wss://") && !on_this_machine(relay) {
+        return Err(Error::new(ErrorKind::Unsupported, "this page is served over https, so it can only reach a relay over wss://"));
+    }
+    Ok(())
+}
+
+/// Whether `relay` is a `ws://` address on this machine, which browsers let an https page open.
+fn on_this_machine(relay: &str) -> bool {
+    let Some(rest) = relay.strip_prefix("ws://") else { return false };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    let host = host.to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost") || host == "::1" || host.split('.').next() == Some("127")
+}
+
 /// Seconds since 1970, by this machine's clock: when share links run out.
+#[cfg(not(target_arch = "wasm32"))]
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs())
 }
 
+/// Seconds since 1970, by the browser's clock; one before 1970 reads as 0, as on the desktop.
+#[cfg(target_arch = "wasm32")]
+fn now() -> u64 {
+    // A float cast saturates: no clock reading panics.
+    (js_sys::Date::now() / 1000.0) as u64
+}
+
+/// The browser has one window: it joins in place ([`NodeCraftApp::join_here`]).
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn open_window(_link: &str) -> Result<(), Error> {
+    Err(Error::new(ErrorKind::Unsupported, "the browser joins in the tab it was asked in"))
+}
+
 /// Starts NodeCraft again with `--join`, and writes `link` to its standard input.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn open_window(link: &str) -> Result<(), Error> {
     use std::io::Write;
     let exe = std::env::current_exe().map_err(|_| Error::new(ErrorKind::Unsupported, "NodeCraft can't tell where it is installed"))?;
@@ -310,6 +403,16 @@ impl NodeCraftApp {
         Ok(())
     }
 
+    /// Joins the project `link` shares in this tab, which must have nothing of its own to lose:
+    /// the browser has no other window to open it in.
+    #[cfg(target_arch = "wasm32")]
+    fn join_here(&mut self, ctx: &egui::Context, link: JoinLink) -> Result<(), Error> {
+        if self.session.can_undo() || self.session.can_redo() || self.web_unsaved() {
+            return Err(Error::new(ErrorKind::Conflict, "this tab has changes of its own; save them, or join in a new tab"));
+        }
+        self.join_live(ctx, &link.reveal())
+    }
+
     fn start_sharing(&mut self, ctx: &egui::Context, relay: &str) -> Result<(), Error> {
         let link = JoinLink::new_room(relay)?;
         let sharing = self.sharing.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "this window can't share live"))?;
@@ -326,6 +429,7 @@ impl NodeCraftApp {
         }
         // The relay someone shared through is the one they'll want next time.
         sharing.set_relay(Some(relay.to_owned()));
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &mut self.store {
             store.update(|settings| settings.share.relay = Some(relay.to_owned()));
         }
@@ -369,7 +473,10 @@ impl NodeCraftApp {
                     }
                 }
                 Ask::Join(link) => {
+                    #[cfg(not(target_arch = "wasm32"))]
                     let result = self.sharing.as_mut().map_or(Ok(()), |sharing| (sharing.open_window)(&link.reveal()));
+                    #[cfg(target_arch = "wasm32")]
+                    let result = self.join_here(ctx, link);
                     if let Err(error) = result {
                         self.notice = Some(format!("Couldn't join: {}", error.message));
                     }
@@ -550,18 +657,27 @@ impl Live {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+const RELAY_HINT: &str = "ws://relay.example:7070";
+#[cfg(target_arch = "wasm32")]
+const RELAY_HINT: &str = "wss://relay.example";
+#[cfg(not(target_arch = "wasm32"))]
+const JOIN_LABEL: &str = "Join a shared project in a new window";
+#[cfg(target_arch = "wasm32")]
+const JOIN_LABEL: &str = "Join a shared project in this tab";
+
 /// Nothing shared: share through a relay, or join with a link.
 fn idle(ui: &mut egui::Ui, t: &Tokens, panel: &mut Panel, command: &mut Option<(&'static str, serde_json::Value)>) {
     ui.label(egui::RichText::new("Share this project with others through a relay. Everyone with the join link can edit it.").color(t.text_muted));
     ui.horizontal(|ui| {
         ui.label("Relay");
-        ui.add(egui::TextEdit::singleline(&mut panel.relay).hint_text("ws://relay.example:7070").desired_width(t.minimap_height * 1.5));
+        ui.add(egui::TextEdit::singleline(&mut panel.relay).hint_text(RELAY_HINT).desired_width(t.minimap_height * 1.5));
     });
     if ui.add_enabled(!panel.relay.trim().is_empty(), egui::Button::new("Share")).clicked() {
         *command = Some(("share.start", json!({"relay": panel.relay.trim()})));
     }
     ui.separator();
-    ui.label(egui::RichText::new("Join a shared project in a new window").color(t.text_muted));
+    ui.label(egui::RichText::new(JOIN_LABEL).color(t.text_muted));
     ui.horizontal(|ui| {
         // Masked: whoever sees a join link can use it.
         ui.add(egui::TextEdit::singleline(&mut panel.join).password(true).hint_text("Paste a join link").desired_width(t.minimap_height * 1.5));

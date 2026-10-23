@@ -82,6 +82,19 @@ site-local keys work (#118), and supported cloud cards can run when the provider
 browser requests. Local endpoints, option lists (#721) and clipboard image paste remain desktop-only;
 see [`../ROADMAP.md`](../ROADMAP.md).
 
+### Live sharing in the browser
+
+The browser can share a project live, or join one, through the same relay as the desktop app
+(`nodecraft-cli relay`). The relay speaks plain WebSocket (`ws://`). A page served over `http://`,
+such as `python3 -m http.server` on your own machine, reaches it directly. A page served over
+`https://` may only open `wss://` connections, so put a TLS proxy (Caddy, nginx, a hosted
+tunnel) in front of the relay and share through its `wss://` address, for example
+`wss://relay.example/`. The desktop app can't reach a `wss://` relay yet: someone joining from
+the desktop needs a `ws://` address for the same relay.
+
+The browser has a single window, so joining replaces the project in the current tab. It is refused
+while that tab has changes of its own; save them first, or join in a new tab.
+
 ## Building from source
 
 See [`development.md`](development.md): `cargo run --release -p nodecraft`.

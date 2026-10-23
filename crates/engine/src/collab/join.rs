@@ -107,22 +107,21 @@ impl fmt::Debug for JoinLink {
     }
 }
 
-/// A relay address as NodeCraft connects to it: `ws://`, a host, at most [`MAX_RELAY_BYTES`],
-/// and nothing but visible ASCII. Errors don't repeat the address.
+/// A relay address as NodeCraft connects to it: `ws://` or `wss://`, a host, at most
+/// [`MAX_RELAY_BYTES`], and nothing but visible ASCII. Errors don't repeat the address. The
+/// browser reaches a `wss://` relay (#699), through a TLS proxy in front of it; the desktop app
+/// refuses one when it connects.
 pub fn relay_address(value: &str) -> Result<String, Error> {
     let value = value.trim();
     if value.len() > MAX_RELAY_BYTES {
         return Err(Error::new(ErrorKind::InvalidInput, format!("a relay address is at most {MAX_RELAY_BYTES} bytes")));
     }
-    if value.starts_with("wss://") {
-        return Err(Error::new(ErrorKind::Unsupported, "NodeCraft can't reach a relay over wss:// yet; use a ws:// address"));
-    }
-    let Some(rest) = value.strip_prefix("ws://") else {
-        return Err(Error::new(ErrorKind::InvalidInput, "a relay address starts with ws://"));
+    let Some(rest) = value.strip_prefix("ws://").or_else(|| value.strip_prefix("wss://")) else {
+        return Err(Error::new(ErrorKind::InvalidInput, "a relay address starts with ws:// or wss://"));
     };
     let host = rest.split('/').next().unwrap_or_default();
     if host.is_empty() || host.contains('@') || !value.bytes().all(|b| b.is_ascii_graphic() && b != b'#') {
-        return Err(Error::new(ErrorKind::InvalidInput, "a relay address is ws:// and a host, with an optional port and path"));
+        return Err(Error::new(ErrorKind::InvalidInput, "a relay address is ws:// or wss:// and a host, with an optional port and path"));
     }
     Ok(value.to_owned())
 }
@@ -135,7 +134,9 @@ mod tests {
 
     #[test]
     fn a_link_reads_back_as_it_was_written() {
-        for text in [format!("ws://relay.example:7070/#room={HEX}"), format!("ws://127.0.0.1:9/rooms#link={HEX}")] {
+        for text in
+            [format!("ws://relay.example:7070/#room={HEX}"), format!("ws://127.0.0.1:9/rooms#link={HEX}"), format!("wss://relay.example/share#room={HEX}")]
+        {
             let link: JoinLink = text.parse().unwrap();
             assert_eq!(link.reveal(), text);
         }
@@ -154,11 +155,15 @@ mod tests {
             format!("ws://relay/#door={HEX}"),
             format!("ws://re lay/#room={HEX}"),
             format!("ws://{}/#room={HEX}", "r".repeat(MAX_RELAY_BYTES)),
+            format!("wss://#room={HEX}"),
+            format!("wss://me@relay/#room={HEX}"),
+            format!("https://relay/#room={HEX}"),
         ] {
             let error = text.parse::<JoinLink>().unwrap_err();
             assert!(!error.message.contains(&HEX[8..40]), "{text}: {}", error.message);
         }
-        assert_eq!(relay_address("wss://relay").unwrap_err().kind, ErrorKind::Unsupported);
+        assert_eq!(relay_address(" wss://relay.example:443/share ").unwrap(), "wss://relay.example:443/share");
+        assert_eq!(relay_address("wss:/relay").unwrap_err().kind, ErrorKind::InvalidInput);
     }
 
     #[test]

@@ -62,12 +62,17 @@ tungstenite = { workspace = true }
 # reached through `js-sys` reflection since `web-sys` gates them, a file field and a download.
 # Recovery (#717): IndexedDB for unsaved work, Web Locks (reflected too) to tell tabs apart.
 # Runs (#118): spawned on the page's queue, timed by `setTimeout` and `performance.now()`.
+# Live sharing (#699): the page's `WebSocket` to the relay, and `web-time`'s clock (egui's own),
+# since `std`'s isn't there.
 wasm-bindgen-futures = "0.4.79"
+web-time = "1.1.0"
 js-sys = "0.3.106"
 web-sys = { version = "0.3.106", features = [
     "BeforeUnloadEvent",
+    "BinaryType",
     "Blob",
     "BlobPropertyBag",
+    "CloseEvent",
     "Document",
     "DomException",
     "DomStringList",
@@ -89,10 +94,13 @@ web-sys = { version = "0.3.106", features = [
     "IdbRequest",
     "IdbTransaction",
     "IdbTransactionMode",
+    "Location",
+    "MessageEvent",
     "Navigator",
     "Performance",
     "Storage",
     "Url",
+    "WebSocket",
     "Window",
 ] }
 
