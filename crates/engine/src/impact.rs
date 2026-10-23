@@ -45,6 +45,7 @@ impl Impact {
             | Effect::Save { .. }
             | Effect::Service { .. }
             | Effect::Export { .. }
+            | Effect::Copy { .. }
             | Effect::Perf { .. }
             | Effect::Elements { .. } => Self::Host,
         })

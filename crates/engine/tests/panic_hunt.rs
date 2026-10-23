@@ -293,6 +293,9 @@ fn template(id: &str) -> (Session, Value) {
         session.swap_resource(Some(UsageSnapshot(std::sync::Arc::new(Default::default()))));
         session.register_run_host(|_| Ok(json!({"run":"accepted"}))).unwrap();
     }
+    if id == "history.copy" {
+        session.register_clipboard_host(|_| Ok(())).unwrap();
+    }
     if id == "usage.unsettled" || id == "usage.resolve_charge" {
         use nodecraft_engine::resolve_cmds::*;
         // One reconciled open charge, so adversarial params reach the token and amount checks.
@@ -530,6 +533,7 @@ fn template(id: &str) -> (Session, Value) {
         "history.extract" => {
             json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"node":node_id(7),"pos":{"x":1,"y":2}})
         }
+        "history.copy" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         // A text result never writes, so the hunt leaves no files behind.
         "history.export" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"path":"/nodecraft-panic-hunt/out.png"}),
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),

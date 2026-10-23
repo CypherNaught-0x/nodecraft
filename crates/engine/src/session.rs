@@ -393,6 +393,10 @@ impl Session {
     pub fn register_host_service(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
         self.services.register(id, handler)
     }
+    /// The OS clipboard `history.copy` writes to (#831); without one the command is refused.
+    pub fn register_clipboard_host(&mut self, handler: impl FnMut(crate::copy_cmds::Clip) -> Result<(), Error> + 'static) -> Result<(), Error> {
+        self.services.register_clipboard(handler)
+    }
     /// Receives/enqueues typed work. Authorize outside dispatch before scheduling.
     pub fn register_run_host(&mut self, handler: impl FnMut(crate::run_cmds::PreparedRun) -> Result<Value, Error> + 'static) -> Result<(), Error> {
         self.services.register_run_host(handler)
@@ -799,9 +803,13 @@ impl Session {
             // Handlers describe effects without I/O. Preview custom edits through the same
             // admission boundary as dispatch; services and file I/O are never invoked here.
             match (spec.run)(&context, params)? {
-                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile | Effect::Elements { .. } => {
-                    Ok(())
-                }
+                Effect::None { .. }
+                | Effect::Perf { .. }
+                | Effect::Service { .. }
+                | Effect::Export { .. }
+                | Effect::Copy { .. }
+                | Effect::CancelFile
+                | Effect::Elements { .. } => Ok(()),
                 // Dispatch refuses everything else until the open settles.
                 _ if matches!(self.pending, Some(PendingFile::Open(_))) => Err(opening()),
                 effect @ (Effect::Edit { .. } | Effect::Undo | Effect::Redo) => self.prepare(effect).map(|_| ()),
@@ -827,7 +835,13 @@ impl Session {
         if matches!(self.pending, Some(PendingFile::Open(_)))
             && !matches!(
                 effect,
-                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile | Effect::Elements { .. }
+                Effect::None { .. }
+                    | Effect::Perf { .. }
+                    | Effect::Service { .. }
+                    | Effect::Export { .. }
+                    | Effect::Copy { .. }
+                    | Effect::CancelFile
+                    | Effect::Elements { .. }
             )
         {
             return Err(opening());
@@ -950,7 +964,13 @@ impl Session {
             Effect::PreparedRun { prepared } => !prepared.reuses(),
             effect => matches!(
                 effect,
-                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile | Effect::Elements { .. }
+                Effect::None { .. }
+                    | Effect::Perf { .. }
+                    | Effect::Service { .. }
+                    | Effect::Export { .. }
+                    | Effect::Copy { .. }
+                    | Effect::CancelFile
+                    | Effect::Elements { .. }
             ),
         };
         // A run would start on the project being replaced, so only pure reads, and the Elements
@@ -958,7 +978,13 @@ impl Session {
         if matches!(self.pending, Some(PendingFile::Open(_)))
             && !matches!(
                 effect,
-                Effect::None { .. } | Effect::Perf { .. } | Effect::Service { .. } | Effect::Export { .. } | Effect::CancelFile | Effect::Elements { .. }
+                Effect::None { .. }
+                    | Effect::Perf { .. }
+                    | Effect::Service { .. }
+                    | Effect::Export { .. }
+                    | Effect::Copy { .. }
+                    | Effect::CancelFile
+                    | Effect::Elements { .. }
             )
         {
             return Err(opening());
@@ -1015,6 +1041,12 @@ impl Session {
             Effect::Export { what, path, overwrite } => {
                 let bytes = guard(|| crate::export::write(&self.assets, &what, &path, overwrite))?;
                 return Ok(serde_json::json!({"bytes": bytes}));
+            }
+            Effect::Copy { what } => {
+                let clip = guard(|| crate::copy_cmds::read(&self.assets, what))?;
+                let result = crate::copy_cmds::summary(&clip);
+                guard(|| self.services.invoke_clipboard(clip))?;
+                return Ok(result);
             }
             Effect::Elements { request } => {
                 let shelf = self.resources.require::<crate::element_library::ElementShelf>()?.clone();
@@ -1308,6 +1340,7 @@ impl Session {
             | Effect::PreparedRun { .. }
             | Effect::Service { .. }
             | Effect::Export { .. }
+            | Effect::Copy { .. }
             | Effect::Open { .. }
             | Effect::Save { .. }
             | Effect::Perf { .. }
