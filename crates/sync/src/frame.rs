@@ -195,6 +195,7 @@ pub enum Frame {
     AssetFrom { hash: [u8; HASH], offset: u64, len: u64 },
     /// "The parts of this asset I was sent don't make it": the relay no longer passes this
     /// asker the parts of whoever sent them, and asks everyone else for the asset from the start.
+    /// Sent back by the relay when there is nobody else to ask.
     AssetBad([u8; HASH]),
     /// The relay won't go on, and why.
     Refused(String),

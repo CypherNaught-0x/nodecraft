@@ -106,8 +106,8 @@ pub struct Collab {
     /// Assets this session can't take: too large for its spool, or not what they were named.
     /// They aren't asked for again; the cards that use them wait.
     unusable: BTreeSet<Blake3>,
-    /// Assets whose first copy wasn't what it was named or said it was too large: the relay
-    /// was told, and the next copy comes from someone else. A second such copy makes it unusable.
+    /// Assets whose copy on this connection wasn't what it was named: the relay was told, and
+    /// the next copy comes from someone else. A second bad copy makes it unusable.
     reported: BTreeSet<Blake3>,
     /// What the others asked for, answered at the next publish.
     wanted: BTreeSet<(Blake3, Stretch)>,
@@ -461,6 +461,8 @@ impl Collab {
     /// until the relay says again.
     pub fn hello(&mut self) -> Frame {
         self.asked.clear();
+        // The relay knows only this connection's reports.
+        self.reported.clear();
         self.unsettled = true;
         self.sent_pending = false;
         self.people.clear();
@@ -600,6 +602,14 @@ impl Collab {
                 }
                 Ok(Vec::new())
             }
+            // Nobody else has the asset this session said came bad.
+            Frame::AssetBad(hash) => {
+                let hash = Blake3::from_bytes(hash);
+                if self.reported.remove(&hash) && self.asked.contains(&hash) {
+                    self.give_up(hash);
+                }
+                Ok(Vec::new())
+            }
             Frame::AssetFrom { hash, offset, len } => {
                 if self.role.is_some_and(Role::edits) {
                     self.want(Blake3::from_bytes(hash), Stretch::From { offset, len });
@@ -648,8 +658,7 @@ impl Collab {
             | Frame::LinkPut { .. }
             | Frame::LinkRevoke(_)
             | Frame::CommentPut { .. }
-            | Frame::Presence(_)
-            | Frame::AssetBad(_) => Err(Error::new(ErrorKind::InvalidInput, "the relay sent a frame it doesn't send")),
+            | Frame::Presence(_) => Err(Error::new(ErrorKind::InvalidInput, "the relay sent a frame it doesn't send")),
         }
     }
 
@@ -671,8 +680,11 @@ impl Collab {
                 return Ok(Vec::new());
             }
             let spooled = self.spooled();
+            // One larger than this session takes can't come from anyone; a frame can't say an
+            // asset is larger than any shared one.
             if total > self.spool.limit() {
-                return Ok(self.bad_copy(hash));
+                self.give_up(hash);
+                return Ok(Vec::new());
             }
             // Over budget, it waits for the others to be taken and is asked for again.
             if spooled.saturating_add(total) > self.spool.budget() {
@@ -719,9 +731,9 @@ impl Collab {
         Ok(Vec::new())
     }
 
-    /// A copy of an asset that can't be the one named: the first time, the relay is told and
-    /// sends it from someone else (a peer with a damaged file, or a hostile one, doesn't stop
-    /// the asset from coming); the second time, it is given up.
+    /// A copy of an asset that isn't the one named: the first time, the relay is told and asks
+    /// someone else for it (a peer with a damaged file, or a hostile one, doesn't stop the asset
+    /// from coming), or says nobody else has it; the second time, it is given up.
     fn bad_copy(&mut self, hash: Blake3) -> Vec<Frame> {
         if !self.reported.insert(hash) {
             self.reported.remove(&hash);
@@ -864,6 +876,7 @@ impl Collab {
         self.room_for.retain(|hash, _| missing.contains(hash));
         self.spool_tries.retain(|hash, _| missing.contains(hash));
         self.seal_tries.retain(|hash, _| missing.contains(hash));
+        self.reported.retain(|hash| missing.contains(hash));
         let unneeded: Vec<Blake3> = self.incoming.keys().filter(|hash| !missing.contains(hash)).copied().collect();
         for hash in unneeded {
             self.incoming.remove(&hash);

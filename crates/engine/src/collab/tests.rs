@@ -812,24 +812,75 @@ fn parts_are_taken_in_order_and_a_new_connection_asks_for_the_rest() {
 }
 
 #[test]
-fn an_asset_not_as_named_or_too_large_is_asked_of_someone_else_then_given_up_and_its_card_waits() {
-    for total in [16, 64 << 20] {
+fn an_asset_not_as_named_is_asked_of_someone_else_then_given_up_and_its_card_waits() {
+    let bad = |b: &mut Collab, hash| b.receive(part(hash, 16, 0, b"not really a gif")).unwrap();
+    // A second bad copy, or the relay saying nobody else has it, gives it up.
+    for nobody_else in [false, true] {
         let (_, mut b, mut joined, hash) = asking();
-        let bad = |b: &mut Collab| {
-            let mut out = b.receive(part(hash, total, 0, b"not really")).unwrap();
-            out.extend(b.receive(part(hash, total, 10, b" a gif")).unwrap());
-            out.into_iter().filter(|frame| matches!(frame, Frame::AssetBad(_))).collect::<Vec<_>>()
-        };
-        // The first bad copy is reported, so the relay sends the next from someone else.
-        assert_eq!(bad(&mut b), vec![Frame::AssetBad(*hash.as_bytes())], "{total}");
-        assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (0, 1), "{total}");
-        // The second is given up.
-        assert!(bad(&mut b).is_empty(), "{total}");
-        assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (1, 0), "{total}");
+        // The first is reported, so the relay asks someone else.
+        assert_eq!(bad(&mut b, hash), vec![Frame::AssetBad(*hash.as_bytes())]);
+        assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (0, 1));
+        if nobody_else {
+            assert!(b.receive(Frame::AssetBad(*hash.as_bytes())).unwrap().is_empty());
+        } else {
+            assert!(bad(&mut b, hash).is_empty());
+        }
+        assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (1, 0), "{nobody_else}");
         // Not asked for again; the card stays out.
         assert!(b.settle(&mut joined).unwrap().is_empty());
         assert!(!joined.document().canvases()[&canvas()].nodes().contains_key(&nid(1)));
     }
+}
+
+#[test]
+fn an_asset_larger_than_the_session_takes_is_given_up_at_once() {
+    let (_, mut b, mut joined, hash) = asking();
+    assert!(b.receive(part(hash, 64 << 20, 0, b"not really")).unwrap().is_empty());
+    assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (1, 0));
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+}
+
+#[test]
+fn a_reconnect_reports_a_bad_copy_again() {
+    let (_, mut b, mut joined, hash) = asking();
+    assert_eq!(b.receive(part(hash, 16, 0, b"not really a gif")).unwrap(), vec![Frame::AssetBad(*hash.as_bytes())]);
+    // The new connection's relay doesn't know of the first report.
+    let _ = b.hello();
+    assert_eq!(b.settle(&mut joined).unwrap(), vec![Frame::AssetGet(vec![*hash.as_bytes()])]);
+    assert_eq!(b.receive(part(hash, 16, 0, b"not really a gif")).unwrap(), vec![Frame::AssetBad(*hash.as_bytes())]);
+}
+
+#[test]
+fn a_hostile_editors_copy_doesnt_stop_an_honest_ones_from_arriving() {
+    let (session, mut b, mut joined, hash) = asking();
+    let hash_bytes = *hash.as_bytes();
+    let (hostile, honest, asker) = (1, 3, 2);
+    let mut room = Room::new();
+    for peer in [hostile, honest, asker] {
+        let _ = room.join(peer);
+    }
+    let pass = |b: &mut Collab, out: Vec<Out>| -> Vec<Frame> {
+        let mut replies = Vec::new();
+        for Out::Send(to, frame) | Out::Close(to, frame) in out {
+            if to == asker {
+                replies.extend(b.receive(frame).unwrap());
+            }
+        }
+        replies
+    };
+    assert_eq!(room.handle(asker, Frame::AssetGet(vec![hash_bytes])).len(), 2);
+    // The hostile editor answers first, with the wrong bytes; the asker reports them.
+    let out = room.handle(hostile, part(hash, 16, 0, b"not really a gif"));
+    let report = pass(&mut b, out);
+    assert_eq!(report, vec![Frame::AssetBad(hash_bytes)]);
+    assert_eq!(room.handle(asker, Frame::AssetBad(hash_bytes)), vec![Out::Send(honest, Frame::AssetGet(vec![hash_bytes]))]);
+    // It sends them again, unheard; the honest editor's copy arrives.
+    assert!(room.handle(hostile, part(hash, 16, 0, b"not really a gif")).is_empty());
+    let out = room.handle(honest, part(hash, 16, 0, b"not really a png"));
+    assert!(pass(&mut b, out).is_empty());
+    assert!(b.settle(&mut joined).unwrap().is_empty());
+    assert_eq!(joined.document(), session.document());
+    assert_eq!((b.unusable_assets(), b.waiting_for_assets()), (0, 0));
 }
 
 #[test]

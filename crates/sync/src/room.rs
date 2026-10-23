@@ -104,8 +104,10 @@ pub struct Room {
     /// Who waits for an asset, and how far each has got with one coming in parts.
     wanted: BTreeMap<[u8; 32], BTreeMap<Peer, Want>>,
     /// Who sent each asker the whole of an asset that came in parts, so that a copy the asker
-    /// says is bad ([`Frame::AssetBad`]) is asked of the others. At most [`MAX_WANTED`].
-    sent: BTreeMap<([u8; 32], Peer), Peer>,
+    /// says is bad ([`Frame::AssetBad`]) is asked of the others; numbered in the order they came,
+    /// so past [`MAX_WANTED`] the oldest goes.
+    sent: BTreeMap<([u8; 32], Peer), (u64, Peer)>,
+    sent_seq: u64,
     damaged: bool,
 }
 
@@ -128,6 +130,7 @@ impl Room {
             asset_bytes: 0,
             wanted: BTreeMap::new(),
             sent: BTreeMap::new(),
+            sent_seq: 0,
             damaged: false,
         }
     }
@@ -365,20 +368,25 @@ impl Room {
                 }
             }
             Frame::AssetBad(hash) => {
-                let shunned = match self.wanted.get(&hash).and_then(|askers| askers.get(&from)) {
-                    // Only a copy this asker took from someone can have been bad.
-                    Some(Want { source: None, .. }) => return Vec::new(),
-                    Some(want) => want.source,
-                    // One that came whole; if who sent it has been forgotten, it is asked of
-                    // everyone, and the asker gives up on a second bad copy.
-                    None => self.sent.remove(&(hash, from)),
-                };
-                if self.wanted.len() >= MAX_WANTED && !self.wanted.contains_key(&hash) {
-                    return Vec::new();
+                // Who sent the copy: the sender of the parts being taken, or of the whole that
+                // came. One that has left, or been forgotten, can't be told apart from the rest:
+                // everyone is asked, and the asker gives up on a second bad copy.
+                let taking = self.wanted.get(&hash).and_then(|askers| askers.get(&from)).and_then(|want| want.source);
+                let shunned = taking.or(self.sent.remove(&(hash, from)).map(|(_, source)| source));
+                let others: Vec<Peer> = self.editors_but(from).into_iter().filter(|peer| Some(*peer) != shunned).collect();
+                if others.is_empty() || (self.wanted.len() >= MAX_WANTED && !self.wanted.contains_key(&hash)) {
+                    // Nobody else to ask: the asker is told, and gives the asset up.
+                    if let Some(askers) = self.wanted.get_mut(&hash) {
+                        askers.remove(&from);
+                        if askers.is_empty() {
+                            self.wanted.remove(&hash);
+                        }
+                    }
+                    return vec![Out::Send(from, Frame::AssetBad(hash))];
                 }
                 self.wanted.entry(hash).or_default().insert(from, Want { until: PART_BYTES as u64, shunned, ..Want::default() });
                 // The asset again from the start, from everyone else who may have it.
-                self.editors_but(from).into_iter().filter(|peer| Some(*peer) != shunned).map(|peer| Out::Send(peer, Frame::AssetGet(vec![hash]))).collect()
+                others.into_iter().map(|peer| Out::Send(peer, Frame::AssetGet(vec![hash]))).collect()
             }
             Frame::AssetPart { .. } if !member.role.edits() => Vec::new(),
             Frame::AssetPart { hash, total, offset, bytes } => {
@@ -409,11 +417,13 @@ impl Room {
                     }
                 }
                 for asker in whole {
-                    // Past the most kept, one goes; a bad copy whose sender is forgotten is asked of all.
-                    if self.sent.len() >= MAX_WANTED {
-                        self.sent.pop_first();
+                    if self.sent.len() >= MAX_WANTED
+                        && let Some(oldest) = self.sent.iter().min_by_key(|(_, (seq, _))| *seq).map(|(key, _)| *key)
+                    {
+                        self.sent.remove(&oldest);
                     }
-                    self.sent.insert((hash, asker), from);
+                    self.sent_seq = self.sent_seq.saturating_add(1);
+                    self.sent.insert((hash, asker), (self.sent_seq, from));
                 }
                 out
             }

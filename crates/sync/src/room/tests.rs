@@ -179,9 +179,7 @@ fn a_bad_copy_is_asked_of_everyone_else_and_its_sender_is_not_heard_again() {
     for peer in 1..=4 {
         room.join(peer);
     }
-    // Before anything came, there is no copy to be bad.
     room.handle(4, Frame::AssetGet(vec![[3; 32]]));
-    assert!(room.handle(4, Frame::AssetBad([3; 32])).is_empty());
     room.handle(1, part(100, 0, 40));
     room.handle(1, part(100, 40, 60));
     // Peer 4 says the copy it took from peer 1 is bad: the others are asked from the start.
@@ -203,6 +201,32 @@ fn a_bad_copy_is_asked_of_everyone_else_and_its_sender_is_not_heard_again() {
     room.sent.clear();
     room.wanted.clear();
     assert_eq!(room.handle(4, Frame::AssetBad([3; 32])), vec![Out::Send(1, Frame::AssetGet(vec![[3; 32]])), Out::Send(3, Frame::AssetGet(vec![[3; 32]]))]);
+}
+
+#[test]
+fn a_bad_copy_whose_sender_left_is_asked_of_the_rest_from_the_start() {
+    let mut room = Room::new();
+    for peer in 1..=3 {
+        room.join(peer);
+    }
+    room.handle(3, Frame::AssetGet(vec![[3; 32]]));
+    room.handle(1, part(100, 0, 40));
+    // The sender leaves before the asker's report: the rest was asked of peer 2, but the asker
+    // has dropped what it had, so the report starts it over.
+    assert_eq!(room.leave(1), vec![Out::Send(2, Frame::AssetFrom { hash: [3; 32], offset: 40, len: 60 })]);
+    assert_eq!(room.handle(3, Frame::AssetBad([3; 32])), vec![Out::Send(2, Frame::AssetGet(vec![[3; 32]]))]);
+    assert_eq!(room.handle(2, part(100, 0, 40)), vec![Out::Send(3, part(100, 0, 40))]);
+}
+
+#[test]
+fn with_nobody_else_to_ask_a_bad_copy_is_given_up() {
+    let mut room = Room::new();
+    room.join(1);
+    room.join(2);
+    room.handle(2, Frame::AssetGet(vec![[3; 32]]));
+    room.handle(1, part(100, 0, 100));
+    assert_eq!(room.handle(2, Frame::AssetBad([3; 32])), vec![Out::Send(2, Frame::AssetBad([3; 32]))]);
+    assert!(room.wanted.is_empty());
 }
 
 #[test]
