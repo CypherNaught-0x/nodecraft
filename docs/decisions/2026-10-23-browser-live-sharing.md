@@ -14,8 +14,10 @@ takes them, at most one frame's worth of bytes per app frame.
   the way the desktop does. A connection that dies quietly is noticed only when the browser
   closes it.
 - It can't stop reading, so it can't push back on a busy relay. A relay that sends more than
-  four frames' worth before the app takes them is dropped and connected to again, so a flood
-  can't fill memory.
+  two frames' worth before the app takes them (the desktop's limit) is dropped and connected to
+  again, so a flood can't fill memory.
+- A hidden tab gets no frames, so it couldn't take in what comes. The connection is closed while
+  the tab is hidden and opened again, at once, when it is shown.
 - The socket's handlers hold only a weak reference to the connection's state. A socket that is
   given up is closed and detached at once, and dropped at the next try, once its handlers can no
   longer be running.
@@ -37,10 +39,11 @@ steps themselves incremental.
 `relay_address` now accepts `wss://` as well as `ws://`, and join links carry either. Behind a
 TLS proxy the relay itself still speaks plain `ws://`; see `docs/install.md`.
 
-- The desktop's client has no TLS. It refuses a `wss://` relay when it connects, with an error
-  that says so, rather than at parse time, so a `wss://` link still reads.
-- The browser refuses a `ws://` relay from an https page before trying, since the browser would
-  block it anyway.
+- The desktop's client has no TLS. `share.start` and `share.join` refuse a `wss://` relay when
+  asked, with an error that says so; parsing still accepts it, so a `wss://` link still reads.
+- The browser refuses a `ws://` relay from an https page when asked, since the browser would
+  block it anyway, except one on this machine (`localhost`, `127.*`, `[::1]`), which browsers
+  allow.
 
 **Joining happens in the tab.** The desktop opens a new window for a join link. The browser has
 one window, so it joins in place, and refuses while the tab has changes of its own (history, or
