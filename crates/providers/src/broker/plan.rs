@@ -223,8 +223,9 @@ pub fn read_submit(template: &Template, model: &str, body: &[u8]) -> Result<Subm
     }
 }
 
-/// Reads a successful poll reply.
-pub fn read_poll(template: &Template, body: &[u8]) -> Result<JobProgress, ProviderError> {
+/// Reads a successful poll reply. A failure message that holds `secret` (the credential; empty
+/// for none) isn't quoted: an excerpt could cut it and keep only its start.
+pub fn read_poll(template: &Template, body: &[u8], secret: &str) -> Result<JobProgress, ProviderError> {
     let poll = template.poll.as_ref().ok_or_else(|| unsupported("this plugin provider's jobs finish in their reply"))?;
     let reply = parse(template, body)?;
     let status = reply.pointer(&poll.status).and_then(Value::as_str).ok_or_else(|| malformed("the provider's reply has no status where its template says"))?;
@@ -232,7 +233,13 @@ pub fn read_poll(template: &Template, body: &[u8]) -> Result<JobProgress, Provid
     Ok(if s.done.contains(status) {
         JobProgress::Done(Completed::new(outputs(template, &reply, &poll.outputs)?))
     } else if s.failed.contains(status) {
-        let said = poll.error.as_ref().and_then(|p| reply.pointer(p)).and_then(Value::as_str).map(|m| excerpt(m.as_bytes()));
+        let said = poll
+            .error
+            .as_ref()
+            .and_then(|p| reply.pointer(p))
+            .and_then(Value::as_str)
+            .filter(|m| secret.is_empty() || !m.contains(secret))
+            .map(|m| excerpt(m.as_bytes()));
         JobProgress::Failed(ProviderError::new(ErrorKind::JobFailed, said.unwrap_or_else(|| "the provider says the job failed".into())))
     } else if s.queued.contains(status) {
         JobProgress::Queued { position: None }
