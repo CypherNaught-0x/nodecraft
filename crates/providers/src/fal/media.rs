@@ -253,7 +253,7 @@ fn glb(b: &[u8], l: Limits) -> Result<(), ProviderError> {
 }
 pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Result<&'static str, ProviderError> {
     match r.model {
-        Model::Image | Model::Styled | Model::Upscale => {
+        Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => {
             png_extent(b)?;
             let m = nodecraft_media::probe_image(b, &l.image(false)).map_err(|_| bad())?;
             if m.mime != "image/png" {
@@ -261,7 +261,7 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             }
             let n = u64::from(m.width).checked_mul(u64::from(m.height)).ok_or_else(bad)?;
             *pixels = pixels.checked_add(n).filter(|n| *n <= l.total_pixels).ok_or_else(bad)?;
-            if r.model == Model::Upscale && (m.width != r.width || m.height != r.height) {
+            if matches!(r.model, Model::Upscale | Model::RemoveBackground) && (m.width != r.width || m.height != r.height) {
                 return Err(bad());
             }
             observe(2);

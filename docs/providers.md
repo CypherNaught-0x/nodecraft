@@ -20,7 +20,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | Jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Progress is queue position and completion until the WebSocket lands. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
-| **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image, Wan text/image/speech to video, Kokoro audio, Trellis 3D, ESRGAN upscale | Seven explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Unknown usage quotes except fixed-512 Trellis estimate. |
+| **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Wan text/image/speech to video, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Ten explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Trellis, style training and image-only Bria; other quotes are by usage. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; direct-adapter ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
@@ -518,17 +518,17 @@ Contract checked 2026-10-22: [Omni guide](https://ai.google.dev/gemini-api/docs/
 
 ## fal.ai queue models
 
-The optional `fal` feature supports nine explicit live aliases, checked against official HTTP
+The optional `fal` feature supports ten explicit live aliases, checked against official HTTP
 schemas on 2026-10-18 (the two Wan image and speech aliases and the two style models on
-2026-10-21): `fal-ai/flux/schnell`, `fal-ai/wan/v2.2-a14b/text-to-video`,
+2026-10-21, Bria on 2026-10-22): `fal-ai/flux/schnell`, `fal-ai/wan/v2.2-a14b/text-to-video`,
 `fal-ai/wan/v2.2-a14b/image-to-video`, `fal-ai/wan/v2.2-14b/speech-to-video`,
 `fal-ai/kokoro/american-english`, `fal-ai/trellis-2`, `fal-ai/esrgan`,
-`fal-ai/flux-lora-fast-training` and `fal-ai/flux-lora`. These names are not
+`fal-ai/flux-lora-fast-training`, `fal-ai/flux-lora` and `fal-ai/bria/background/remove`. These names are not
 immutable weight versions; upstream schema/model availability can change. Hosts inject a Secret
 and HTTP transport. The adapter never reads credentials, project keys or live-test variables.
 The existing host provider factory reads the `fal` keychain account and constructs the adapter
 off the UI thread, following the same readiness/routing path as other catalog providers.
-It does not supply a desktop paid-run service or production canvas media-input resolver.
+The offline Bria fixture below exercises the shipping RunHost and stored-image resolver with this adapter; it does not call fal.
 
 FLUX requests 512–1024 dimensions in multiples of 64, one to four PNG outputs, one to four steps
 and optional u32 seed. Wan selects 480p/16fps, 17–81 frames and three aspect ratios, explicitly
@@ -543,7 +543,25 @@ counts as undeclared and is still sniffed as MP4 (#607). Kokoro selects af_heart
 Trellis selects resolution 512 and one inline image, returning GLB2. ESRGAN selects scale2,
 RealESRGAN_x4plus, face=false and PNG. Advanced/unknown parameters and extra roles refuse
 before HTTP. Image-to-3D/upscale input contracts are direct-adapter capabilities; their engine
-fixtures use an explicitly test-only immutable asset resolver. No shipping resolver is implied.
+fixtures use an explicitly test-only immutable asset resolver. Those older fixtures do not prove
+shipping input resolution; the separate Bria fixture exercises the shipping resolver.
+
+Bria background removal (#749) exposes `fal.bria-rmbg` with mode `remove-background`,
+one required `image` input and one PNG output. Its image-only estimate is 0.018 USD per call,
+checked 2026-10-22 against [official pricing](https://fal.ai/models/fal-ai/bria/background/remove)
+and the [HTTP schema](https://fal.ai/models/fal-ai/bria/background/remove/api). The request
+contains only `image_url` and `sync_mode=false`. Prompts are refused: the provider prices
+guided removal separately at 0.03 USD. The existing 1 MiB / 1024 px input limit applies,
+and the expected output geometry is checked against configured limits before paid dispatch.
+The result must be one complete PNG with the input dimensions; transparent pixels are retained.
+Inputs requiring an EXIF rotation or reflection are refused before codecs, encoding or paid
+dispatch: apply the orientation and save the upright image first. The service's EXIF policy is
+unverified. The first opt-in live check must confirm that this endpoint preserves input dimensions
+without resizing or padding; the exact-size rule is a conservative offline contract.
+Offline fixtures cover the catalog-generated card, the 0.018 USD quote and explicit consent,
+the real adapter behind RunHost, stored input resolution and importing the distinct PNG result.
+No live availability or invoice is claimed. The dedicated Image Tool menu is tracked separately
+by #740; this addition supplies the catalog mode and execution path without depending on that PR.
 
 The catalog uses ByUsage USD for FLUX, the Wan models, Kokoro and ESRGAN: unknown is not
 zero/free. Every finite budget cap refuses an unknown paid quote before invocation; an uncapped
@@ -584,7 +602,7 @@ when it does not, it reads as absent.
 Accepted receipts publish a versioned handle before polling, even for already-completed work.
 Persist it to resume after restart without another create. Model-specific operation roots are
 explicitly allowlisted: FLUX uses fal-ai/flux, Wan fal-ai/wan, Kokoro fal-ai/kokoro, Trellis and
-ESRGAN their complete model names. Request IDs are one ASCII alphanumeric/hyphen/underscore
+ESRGAN their complete model names, and Bria fal-ai/bria. Request IDs are one ASCII alphanumeric/hyphen/underscore
 segment, up to 128 bytes; percent escapes, slashes, dots and URL normalization aliases refuse.
 Only FLUX additionally accepts the full-root status/result(/response)/cancel family printed
 in the [generic queue contract](https://fal.ai/docs/documentation/model-apis/inference/queue).

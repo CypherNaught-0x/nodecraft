@@ -221,7 +221,9 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
                     continue;
                 }
                 let target = match (model, role.as_str()) {
-                    (Model::Mesh | Model::Upscale, "image") | (Model::Frames, "first_frame") | (Model::Speech, "portrait") => &mut image,
+                    (Model::Mesh | Model::Upscale | Model::RemoveBackground, "image") | (Model::Frames, "first_frame") | (Model::Speech, "portrait") => {
+                        &mut image
+                    }
                     (Model::Frames, "last_frame") => &mut end,
                     (Model::Speech, "speech") => &mut audio,
                     (Model::Styled, "style") => &mut style,
@@ -247,7 +249,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             Model::Speech => matches!(k.as_str(), "num_frames" | "resolution" | "seed"),
             Model::Audio => matches!(k.as_str(), "voice" | "speed"),
             Model::Mesh => k == "seed",
-            Model::Upscale => false,
+            Model::Upscale | Model::RemoveBackground => false,
         };
         if !ok {
             return Err(invalid("fal unsupported parameter"));
@@ -263,7 +265,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     if model == Model::Audio && prompt.is_some_and(|s| s.len() > 4096) {
         return Err(invalid("fal audio prompt exceeds 4096 bytes"));
     }
-    if matches!(model, Model::Mesh | Model::Upscale | Model::Frames | Model::Speech) && image.is_none() {
+    if matches!(model, Model::Mesh | Model::Upscale | Model::RemoveBackground | Model::Frames | Model::Speech) && image.is_none() {
         return Err(invalid("fal image required"));
     }
     if model == Model::Speech && audio.is_none() {
@@ -372,6 +374,9 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             body.face = Some(false);
             body.output_format = Some("png");
         }
+        // Prompt-guided removal is a different price. This image-only mode accepts no text
+        // roles or parameters, and keeps URL delivery through the ordinary bounded queue.
+        Model::RemoveBackground => body.sync_mode = Some(false),
     }
     // Count the complete escaped JSON and base64 extent BEFORE codecs or owned encodings.
     body.image_url = image.map(|_| "");
@@ -417,10 +422,20 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         if model == Model::Upscale {
             record.width = m.width.checked_mul(2).ok_or_else(|| invalid("fal width overflow"))?;
             record.height = m.height.checked_mul(2).ok_or_else(|| invalid("fal height overflow"))?;
+        } else if model == Model::RemoveBackground {
+            // The service receives the original bytes; its treatment of EXIF is unverified.
+            // Refuse before payment rather than risk rejecting a charged result's dimensions.
+            if nodecraft_media::image_requires_orientation(bytes, &l.image(true)).map_err(|_| invalid("fal input image orientation refused"))? {
+                return Err(invalid("Bria needs an upright image: apply its EXIF rotation or reflection and save it before removing the background"));
+            }
+            record.width = m.width;
+            record.height = m.height;
         }
         let pixels = u64::from(record.width).checked_mul(u64::from(record.height)).ok_or_else(|| invalid("fal geometry overflow"))?;
-        if model == Model::Upscale && (record.width > l.output_width || record.height > l.output_height || pixels > l.total_pixels) {
-            return Err(invalid("fal upscale exceeds output geometry before submit"));
+        if matches!(model, Model::Upscale | Model::RemoveBackground)
+            && (record.width > l.output_width || record.height > l.output_height || pixels > l.total_pixels)
+        {
+            return Err(invalid("fal image operation exceeds output geometry before submit"));
         }
         observe(0);
         let decoded = nodecraft_media::decode_image(bytes, &l.image(true)).map_err(|_| invalid("fal input image codec refused"))?;

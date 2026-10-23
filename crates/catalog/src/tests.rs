@@ -55,6 +55,9 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::zero(Currency::USD)));
         } else if model.id == "fal.trellis2" {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if model.id == "fal.bria-rmbg" {
+            assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 18_000)));
         } else if model.id == "fal.flux-lora-trainer" {
             // 2 USD per 1000 training steps, checked 2026-10-21; 1000 steps by default.
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 2_000_000)));
@@ -226,6 +229,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("elevenlabs.voice-changer", false),
             ("elevenlabs.flash-v2-5", false),
             ("fal.flux-lora", false),
+            ("fal.bria-rmbg", false),
             ("fal.esrgan", false),
             ("fal.flux-lora-trainer", false),
             ("fal.kokoro", false),
@@ -273,6 +277,11 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     );
     // Wiring an image narrows it to image-to-image models.
     let edit = Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 1);
+    let bria = catalog.get("fal.bria-rmbg").unwrap();
+    assert_eq!(Wiring::new(Modality::Image).with(Modality::Image, 1).fit(bria).map(|mode| mode.id.as_str()), Ok("remove-background"));
+    assert!(Wiring::new(Modality::Image).fit(bria).is_err(), "one image is required");
+    assert!(Wiring::new(Modality::Image).with(Modality::Image, 2).fit(bria).is_err(), "extra images are refused");
+    assert!(edit.fit(bria).is_err(), "a wired prompt cannot select the differently priced guided operation");
     let groups = catalog.by_provider(&edit);
     let comfy: Vec<(&str, bool)> = groups.get("comfyui").unwrap().iter().map(|c| (c.model.id.as_str(), c.fit.is_ok())).collect();
     assert_eq!(comfy, vec![("comfyui.flux-dev", true), ("comfyui.sdxl", false)]);

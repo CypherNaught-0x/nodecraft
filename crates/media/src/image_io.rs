@@ -107,6 +107,13 @@ pub fn probe_image(bytes: &[u8], limits: &Limits) -> Result<ImageMeta, MediaErro
     Ok(meta)
 }
 
+/// Whether displaying an image requires an EXIF rotation or reflection. Reads bounded headers
+/// without decoding pixels, so hosts forwarding the original bytes can refuse ambiguous geometry.
+pub fn image_requires_orientation(bytes: &[u8], limits: &Limits) -> Result<bool, MediaError> {
+    let (_, orientation, _) = open(bytes, limits)?;
+    Ok(orientation != Orientation::NoTransforms)
+}
+
 /// Decodes an image (the first frame of an animation) within `limits`, upright: the file's EXIF
 /// orientation is applied.
 pub fn decode_image(bytes: &[u8], limits: &Limits) -> Result<(ImageMeta, DynamicImage), MediaError> {
@@ -338,6 +345,8 @@ pub(crate) mod tests {
         tagged.extend_from_slice(&plain[2..]);
         let meta = probe_image(&tagged, &Limits::default()).unwrap();
         assert_eq!((meta.width, meta.height), (2, 4));
+        assert!(image_requires_orientation(&tagged, &Limits::default()).unwrap());
+        assert!(!image_requires_orientation(&plain, &Limits::default()).unwrap());
         let (_, decoded) = decode_image(&tagged, &Limits::default()).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (2, 4));
     }

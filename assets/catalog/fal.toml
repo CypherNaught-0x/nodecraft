@@ -210,6 +210,24 @@ id="upscale"
 output="image"
 inputs=[{role="image",modality="image",min=1,max=1}]
 
+# Bria image-only removal, checked 2026-10-22:
+# https://fal.ai/models/fal-ai/bria/background/remove and /api
+# No prompt: the guided variant costs more and is not exposed by this mode.
+[[model]]
+id="fal.bria-rmbg"
+provider="fal"
+provider_model="fal-ai/bria/background/remove"
+label="Bria RMBG 2.0 (fal)"
+description="Removes a background from one image up to 1 MiB and 1024 px. Image-only, dated 0.018 USD estimate; live model alias."
+latency_s=30
+quality=3
+pricing={type="per_call",price="0.018 USD"}
+
+[[model.modes]]
+id="remove-background"
+output="image"
+inputs=[{role="image",modality="image",min=1,max=1}]
+
 # Style training and styled images (#167), checked 2026-10-21:
 # https://fal.ai/models/fal-ai/flux-lora-fast-training/api and https://fal.ai/models/fal-ai/flux-lora/api
 [[model]]

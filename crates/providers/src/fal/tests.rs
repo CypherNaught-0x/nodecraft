@@ -2,6 +2,7 @@ use super::*;
 use futures::executor::block_on;
 use serde_json::json;
 use std::{cell::RefCell, collections::VecDeque, sync::Mutex};
+mod background;
 thread_local! {static STAGES:RefCell<[usize;3]>=const{RefCell::new([0;3])};}
 pub(super) fn observe(n: usize) {
     STAGES.with(|s| {
@@ -55,7 +56,7 @@ pub(super) fn job(model: &str) -> ProviderJob {
         model: model.into(),
         params: Default::default(),
         inputs: match model {
-            TRELLIS | ESRGAN => vec![crate::JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(png(2, 2)) }],
+            TRELLIS | ESRGAN | BRIA_REMOVE => vec![crate::JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(png(2, 2)) }],
             WAN_I2V => vec![
                 crate::JobInput::Text { role: "prompt".into(), text: "A blue circle".into() },
                 crate::JobInput::Media { role: "first_frame".into(), mime: "image/png".into(), bytes: Arc::from(png(2, 2)) },
@@ -77,7 +78,14 @@ pub(super) fn receipt(model: &str) -> serde_json::Value {
 }
 pub(super) fn handle(model: &str) -> JobHandle {
     let o = receipt(model);
-    Record { model: Model::read(model).unwrap(), requested: 1, width: if model == ESRGAN { 4 } else { 0 }, height: if model == ESRGAN { 4 } else { 0 } }.handle(
+    let side = if model == ESRGAN {
+        4
+    } else if model == BRIA_REMOVE {
+        2
+    } else {
+        0
+    };
+    Record { model: Model::read(model).unwrap(), requested: 1, width: side, height: side }.handle(
         "r_1",
         &Routes {
             status: o["status_url"].as_str().unwrap().into(),
