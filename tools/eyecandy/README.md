@@ -14,15 +14,20 @@ window, no display server).
 
 ```sh
 # from the repository root; writes into assets/readme/
-cargo run --manifest-path tools/eyecandy/Cargo.toml --release -- --shots all
+# Use a task-owned target when sharing a checkout; no incremental cache.
+export CARGO_INCREMENTAL=0
+export CARGO_TARGET_DIR="$PWD/target/agent-readme-showcase"
+cargo run --offline --manifest-path tools/eyecandy/Cargo.toml -- --shots all --out assets/readme
 
 cargo run --manifest-path tools/eyecandy/Cargo.toml -- --list           # what the shots are
 cargo run --manifest-path tools/eyecandy/Cargo.toml -- --shots hero,tags # a subset
 cargo run --manifest-path tools/eyecandy/Cargo.toml -- --out /tmp/art --scale 3 --max-width 3200
 ```
 
-That first command, with its defaults, is what produced the frames in
+That first command, with default scale and maximum width, produced the frames in
 [`assets/readme`](../../assets/readme); if you re-run it, look at every image before you commit it.
+Omit `--offline` when first fetching dependencies. `--release` is optional for faster renders after
+an optimised build; the documented capture used the debug binary.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -42,30 +47,67 @@ kittest snapshot tests run. It never draws a substitute picture.
 | File | Role |
 |---|---|
 | `src/art.rs` | Three procedural plates (dawn, aurora, bloom), painted in code: value noise, fbm, tonemap. No third-party image, no provider call. |
-| `src/scene.rs` | Builds the showcase document **through engine commands only** — `node.create`, `node.add`, `node.param_set`, `node.title`, `edge.connect`, `tag.put`, `node.tag_set`, `comment.create`, `comment.reply` — plus `engine::import::import_files` for the image card, which is the same path an OS file drop takes. Ids are deterministic. |
+| `src/scene.rs` | Builds the showcase document **through engine commands only** — `node.create`, `node.add`, `node.param_set`, `node.title`, `edge.connect`, `tag.put`, `node.tag_set`, `comment.create`, `comment.reply` — plus `field.create` for persistent coloured zones and `engine::import::import_files` for the image cards, which is the same path an OS file drop takes. Ids are deterministic. |
 | `src/shots.rs` | The cameras and panels, and the render pass. Frame one is spent letting the app centre itself; then the camera is set from card rects (`card::world_rect`) or an art-directed world rect. |
 | `src/main.rs` | Argument parsing and the shot loop. |
 
 Three properties are worth keeping if you edit this:
 
-- **No invented results.** The graded, softened and cropped previews are what the app's live
-  action pass (#88) computed from the imported plate, on its own worker thread. `settle()` waits
-  for those results and for the preview decode instead of guessing a delay, and says so on stderr
-  when they do not land.
+- **No invented results.** The grade, blur, aspect, noir filter, tint, mirror, two overlays and
+  resize previews are the app's live action pass computing from three original imported plates.
+  Dawn fans out into soft and noir paths; noir and tinted aurora recombine, then a mirrored bloom
+  joins the look board. `settle_results()` waits for required results before fitting the camera,
+  because previews and history strips change card bounds. `settle_previews()` then checks every
+  framed image's decoded-image widget inside that node's projected card, using dimensions from
+  its real asset, including imported sources and the resized result. Same-size widgets on other
+  cards cannot substitute for one another. Every shot rechecks its own image widgets at capture.
+  The palette gesture starts on empty canvas, never a field header (which double-click collapses),
+  and the shot requires the actual focused query and expected result button before capture.
+  Missing results, failed decodes and timeouts fail rather than write placeholders. No providers
+  or paid models are involved.
 - **Cards have a minimum zoom.** Below `card::BODY_MIN_ZOOM` the shell paints a card as an
-  outline: no controls, no preview. Any shot that is supposed to show content prints a warning if
-  its camera is under that. `check_composition` then names any framed card the frame edge cuts or
-  the navigation overlay covers, counts the context cards the edge crops, and the camera pans framed
+  outline: no controls, no preview. Shots fail unless their camera exceeds that threshold.
+  `check_composition` also fails if a framed card is cut by the frame edge or covered by the
+  navigation overlay, counts the context cards the edge crops, and the camera pans framed
   cards clear of the overlay using `navigation::layout` before it is called.
 - **The tool is a consumer of the public API.** It touches `NodeCraftApp`'s public fields and
   `pub` helpers (`theme::apply`, `CanvasView::fit`, `card::world_rect`) and nothing private, so it
   can be dropped or moved without the product noticing.
 
+## Shot guide
+
+All eleven original shot names remain available. `hero` and `light` now frame twelve image cards
+in three coloured workflow fields, without opening a shared-parameter panel; the taller canvas
+keeps real card bodies readable. `detail-grade` and `detail-chain` focus the original dawn look,
+`detail-ports` the ordered text inputs, and `palette`, `tags`, `comments`, `notes` and `chrome`
+show their actual app features. `modality` is an honest typed text/image routing example with
+real sources, not empty video/audio/3D placeholders advertised as computed media.
+
+Two additional closeups:
+
+- `detail-fields`: the blue aurora field, violet screen tint, parallel noir result and their
+  two-input overlay, with the cross-field dawn branch entering above.
+- `detail-composite`: the pink bloom field, visibly mirrored interference plate, the second
+  two-input overlay and its half-resolution review output.
+
+Run structural tests without rendering or a GPU:
+
+```sh
+cargo fmt --manifest-path tools/eyecandy/Cargo.toml --check
+cargo clippy --manifest-path tools/eyecandy/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path tools/eyecandy/Cargo.toml
+```
+
+The tests protect imported plate diversity, branch/recombination edges, field membership, honest
+local-only sources, shot-name compatibility and readable hero framing. They complement, rather
+than replace, visual inspection of every rendered image.
+
 ## House rules
 
 - Keep the manifest standalone (`[workspace]` in it) and keep it out of the root workspace and
   `xtask/src/layers.rs`. It uses egui/eframe/wgpu, which only `ui-egui` and the apps may use, and
-  it is not shipped code.
+  it is not shipped code. Its standalone `[patch.crates-io]` backends must match the root
+  [manifest](../../Cargo.toml): Cargo does not inherit those patches through path dependencies.
 - Keep `#![forbid(unsafe_code)]` and the deny lints in `Cargo.toml`: same no-panic rules as the
   product, because a broken render should print a reason, not abort.
 - After editing, `cargo clippy --manifest-path tools/eyecandy/Cargo.toml --all-targets -- -D warnings`
