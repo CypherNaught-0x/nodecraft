@@ -44,7 +44,7 @@ pub(crate) fn of_jobs(count: usize, jobs: usize) -> Result<Vec<usize>, String> {
     if count <= 1 || jobs == 0 {
         return Ok(Vec::new());
     }
-    if jobs % count != 0 {
+    if !jobs.is_multiple_of(count) {
         return Err("its variations' jobs don't add up".into());
     }
     let each = jobs / count;

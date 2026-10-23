@@ -364,6 +364,42 @@ fn a_counter_steps_through_a_choice_of_counts() {
     assert!(runs.lock().unwrap().is_empty());
 }
 
+#[test]
+fn the_variations_counter_sets_the_count_and_the_quote_prices_every_variation() {
+    let (mut h, runs) = scene("mock-square");
+    assert!(h.get_by_label("Fewer variations").accesskit_node().is_disabled(), "one is the fewest");
+    press(&mut h, Role::Button, "More variations");
+    press(&mut h, Role::Button, "More variations");
+    let stored = node(h.state()).config.get(nodecraft_exec::variations::VARIATIONS_CONFIG).cloned();
+    assert_eq!(stored, Some(Value::Unsigned(nodecraft_types::Unsigned(3))));
+    assert!(h.query_by_label("3×").is_some());
+    press(&mut h, Role::Button, "Generate");
+    let accept = h.get_by_label_contains("Generate for").accesskit_node().label().unwrap_or_default();
+    assert!(accept.contains("0.12"), "three variations cost three requests: {accept}");
+    press(&mut h, Role::Button, "Cancel");
+    press(&mut h, Role::Button, "Fewer variations");
+    press(&mut h, Role::Button, "Fewer variations");
+    assert_eq!(node(h.state()).config.get(nodecraft_exec::variations::VARIATIONS_CONFIG), None, "one is stored as nothing");
+    assert!(runs.lock().unwrap().is_empty());
+}
+
+#[test]
+#[ignore = "manual public-safe capture; VARIATIONS81_RENDER_DIR"]
+fn variations81_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("VARIATIONS81_RENDER_DIR").unwrap());
+    let (mut h, _) = scene("mock-square");
+    press(&mut h, Role::Button, "More variations");
+    press(&mut h, Role::Button, "More variations");
+    let app = h.into_state();
+    let mut h = Harness::builder().wgpu().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.state_mut().selection.only(N);
+    h.run();
+    h.render().unwrap().save(dir.join("variations81-card.png")).unwrap();
+    press(&mut h, Role::Button, "Generate");
+    h.render().unwrap().save(dir.join("variations81-confirm.png")).unwrap();
+}
+
 fn toolbar_slider(h: &Harness<'static, NodeCraftApp>) -> egui::Rect {
     h.get_all_by_role(Role::Slider)
         .filter(|node| node.accesskit_node().label().as_deref() == Some("Strength"))
