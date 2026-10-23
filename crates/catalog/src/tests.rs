@@ -130,6 +130,26 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             // Priced per source second (#179): no quote until the source's length is known.
             assert!(matches!(&model.pricing, Pricing::PerSourceSecond { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
+        } else if model.provider == "google-tts" {
+            // Cloud Text-to-Speech pricing page, checked 2026-10-23.
+            if model.provider_model.starts_with("gemini-") {
+                // Text tokens in, audio tokens out, and the reply reports neither.
+                assert!(matches!(&model.pricing, Pricing::ByUsage { .. }), "{}", model.id);
+            } else {
+                // Per character sent, known only once the text is: no quote before the run.
+                let Pricing::PerUnit { unit: Unit::ThousandCharacters, price, count: None, default_count: None } = &model.pricing else {
+                    panic!("{}: {:?}", model.id, model.pricing)
+                };
+                let micros = match model.id.as_str() {
+                    "google-tts.chirp3-hd" => 30_000,
+                    "google-tts.neural2" => 16_000,
+                    "google-tts.wavenet" | "google-tts.standard" => 4_000,
+                    "google-tts.studio" => 160_000,
+                    other => panic!("{other}: no verified price in this test"),
+                };
+                assert_eq!(price.0, Money::new(Currency::USD, micros), "{}", model.id);
+            }
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{}", model.id);
         } else if model.provider == "google-veo" {
             // Per second by resolution (#742); quoted in veo_on_google_cloud_is_quoted_by_length_and_resolution.
             assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
@@ -210,6 +230,15 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.wan22-i2v", false),
             ("fal.wan22-s2v", false),
             ("gemini-video.omni-flash", false),
+            ("google-tts.gemini-2.5-pro", false),
+            ("google-tts.chirp3-hd", false),
+            ("google-tts.gemini-2.5-flash", false),
+            ("google-tts.gemini-3.1-flash", false),
+            ("google-tts.neural2", false),
+            ("google-tts.studio", false),
+            ("google-tts.gemini-2.5-flash-lite", false),
+            ("google-tts.wavenet", false),
+            ("google-tts.standard", false),
             ("google-veo.veo-3.1", false),
             ("google-veo.veo-3.1-fast", false),
             ("google-veo.veo-3.1-lite", false),
