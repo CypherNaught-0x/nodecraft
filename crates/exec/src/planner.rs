@@ -300,6 +300,24 @@ pub fn plan_expanded(
     targets: &nodecraft_types::TargetSelection,
     options: &dyn nodecraft_types::OptionLookup,
 ) -> Result<Planned, Error> {
+    plan_settled(expanded, kinds, mode, requested, &BTreeSet::new(), stale, targets, options)
+}
+
+/// [`plan_expanded`], leaving out the `settled` nodes: ones that already hold the result this run
+/// would make (a cached result, #91). They don't run, a settled technique node's inlined nodes
+/// don't either, and the nodes they feed read their results like any other node outside the run.
+/// With every node settled the plan is empty.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_settled(
+    expanded: &Expanded<'_>,
+    kinds: &Registry,
+    mode: &RunMode,
+    requested: &BTreeSet<NodeId>,
+    settled: &BTreeSet<NodeId>,
+    stale: &BTreeSet<NodeId>,
+    targets: &nodecraft_types::TargetSelection,
+    options: &dyn nodecraft_types::OptionLookup,
+) -> Result<Planned, Error> {
     let canvas: &Canvas = &expanded.canvas;
     let graph = Graph::new(canvas, kinds, targets, &expanded.collects, &expanded.inner, options)?;
     let run: BTreeSet<NodeId> = match mode {
@@ -315,10 +333,12 @@ pub fn plan_expanded(
         RunMode::Field(field) => canvas.nodes().values().filter(|n| n.field == Some(*field)).map(|n| n.id).collect(),
         RunMode::AllStale => graph.with_upstream(&stale.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect(), stale),
     };
-    let run = graph.with_inlined(run, stale, &expanded.inner);
     // Routers and batches never run: they are resolved into their consumers' inputs.
     let resolved_away = |id: &NodeId| crate::routing::is_router(canvas, *id) || is_batch(canvas, *id);
+    // Decided before settled nodes are left out: a request whose other nodes all reuse a result
+    // is a run with nothing left to do, not a request for routers alone.
     let requested_only_routers = matches!(mode, RunMode::Selected | RunMode::WithUpstream) && !run.is_empty() && run.iter().all(resolved_away);
+    let run = graph.with_inlined(run.into_iter().filter(|id| !settled.contains(id)).collect(), stale, &expanded.inner);
     let run: BTreeSet<NodeId> = run.into_iter().filter(|id| !resolved_away(id)).collect();
     if requested_only_routers {
         return Err(Error::new(ErrorKind::InvalidInput, "routers and batches pass inputs through and have nothing to run"));

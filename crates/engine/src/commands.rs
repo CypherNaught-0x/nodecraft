@@ -47,6 +47,8 @@ type ServiceHandler = Box<dyn FnMut(&Value) -> Result<Value, Error>>;
 #[derive(Default)]
 pub struct Services {
     run_host: Option<RunHandler>,
+    /// Whether the run host has no accepted run waiting to start; a host without it never holds one.
+    run_host_idle: Option<Box<dyn Fn() -> bool>>,
     handlers: BTreeMap<&'static str, ServiceHandler>,
 }
 impl Services {
@@ -67,6 +69,19 @@ impl Services {
         }
         self.run_host = Some(Box::new(handler));
         Ok(())
+    }
+    /// Tells the session whether the run host has accepted runs still waiting to start: a run
+    /// that applies reused results first (#91) waits for them, since they are bound to the
+    /// document as it was.
+    pub fn register_run_host_idle(&mut self, idle: impl Fn() -> bool + 'static) -> Result<(), Error> {
+        if self.run_host_idle.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "run host idle check already registered"));
+        }
+        self.run_host_idle = Some(Box::new(idle));
+        Ok(())
+    }
+    pub(crate) fn run_host_idle(&self) -> bool {
+        self.run_host_idle.as_ref().is_none_or(|idle| idle())
     }
     pub fn contains_run_host(&self) -> bool {
         self.run_host.is_some()

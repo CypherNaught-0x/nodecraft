@@ -182,8 +182,10 @@ impl Runner {
         } else {
             json!({"canvas": canvas, "mode": "with_upstream", "nodes": targets, "accept": accept})
         };
-        session.dispatch("run.start", &params)?;
-        let mut steps = Vec::new();
+        let started = session.dispatch("run.start", &params)?;
+        // Nodes given a result already made for the same inputs (#91) don't run.
+        let mut steps: Vec<Value> =
+            started.get("reused").and_then(Value::as_array).into_iter().flatten().map(|node| json!({"node": node, "status": "reused"})).collect();
         let mut finished = false;
         loop {
             for notice in self.host.pump(session) {
