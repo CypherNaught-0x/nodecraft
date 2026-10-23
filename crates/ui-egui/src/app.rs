@@ -350,6 +350,8 @@ mod file_dialogs;
 mod generate;
 mod host;
 mod image_tools;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod key_changes;
 mod layer_editor;
 mod layer_fonts;
 mod layout;
@@ -545,6 +547,9 @@ pub struct NodeCraftApp {
     /// Answers from the keychain thread (the app's `keys.store` service).
     #[cfg(not(target_arch = "wasm32"))]
     key_results: Option<nodecraft_engine::secrets::KeyResults>,
+    /// Successful synchronous browser key writes (including non-panel commands).
+    #[cfg(any(test, target_arch = "wasm32"))]
+    key_changes: Option<Arc<key_changes::KeyChanges>>,
     /// The runs `run.start` hands over, and the providers they use (#409).
     runs: Option<runs::Runs>,
     /// Fetches the option lists `options.refresh` asks for (#529).
@@ -837,7 +842,8 @@ impl NodeCraftApp {
         use nodecraft_engine::secrets::{OriginStore, SecretStore, register_key_service};
         let store = std::sync::Arc::new(OriginStore::new(crate::web_storage::LocalStorage));
         let mut services = nodecraft_engine::commands::Services::default();
-        register_key_service(&mut services, std::sync::Arc::clone(&store) as std::sync::Arc<dyn SecretStore>)?;
+        let changed = Arc::new(key_changes::KeyChanges::default());
+        register_key_service(&mut services, Arc::new(key_changes::ObservedStore::new(Arc::clone(&store) as Arc<dyn SecretStore>, Arc::clone(&changed))))?;
         let accounts = store.accounts().unwrap_or_else(|e| {
             log::warn!("API keys unavailable: {e}");
             Vec::new()
@@ -859,6 +865,7 @@ impl NodeCraftApp {
             runs.install(&mut app.session);
         }
         app.runs = runs;
+        app.key_changes = Some(changed);
         // Recovery is a safety net, not a save: leaving with unsaved work still asks first.
         web_files::guard_unload(Rc::clone(&app.web_files.unsaved));
         Ok((app, accounts))
@@ -1136,6 +1143,8 @@ impl NodeCraftApp {
             budget_caps: nodecraft_engine::settings::BudgetSettings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             key_results: None,
+            #[cfg(any(test, target_arch = "wasm32"))]
+            key_changes: None,
             runs: None,
             #[cfg(not(target_arch = "wasm32"))]
             option_fetch: None,
@@ -2630,6 +2639,44 @@ impl NodeCraftApp {
             });
     }
 
+    /// Stops new quotes and runs using an adapter that captured the previous key.
+    fn forget_key_adapters(&mut self) {
+        if let Some(runs) = &mut self.runs
+            && let Err(error) = runs.forget_adapters(&mut self.session)
+        {
+            self.notice = Some(error.message);
+        }
+    }
+
+    /// Processes host-service completions from every caller, including commands dispatched
+    /// outside the keys panel. The keychain answers asynchronously; browser storage answers at once.
+    fn tick_keys(&mut self, ctx: &egui::Context) {
+        #[cfg(target_arch = "wasm32")]
+        let _ = ctx;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(results) = &self.key_results {
+            self.keys.tick(ctx.input(|i| i.time));
+            let (changes, others) = self.keys.receive(results.drain());
+            let changed_elsewhere = others.iter().any(|outcome| {
+                use nodecraft_engine::secrets::KeyOperation;
+                outcome.result.is_ok() && matches!(outcome.operation, KeyOperation::Set | KeyOperation::Remove)
+            });
+            // The panel owns its rows, but a command from another caller also changes the
+            // keychain. Never inspect or log a key, only the success and operation kind.
+            self.save_accounts(changes);
+            if changed_elsewhere {
+                self.forget_key_adapters();
+            }
+            if self.keys.is_waiting() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
+        #[cfg(any(test, target_arch = "wasm32"))]
+        if self.key_changes.as_ref().is_some_and(|changed| changed.take()) {
+            self.forget_key_adapters();
+        }
+    }
+
     /// Keeps the remembered account names in settings in step with the keychain.
     /// Records keys saved or deleted, from the keychain's answers or the browser's at once (from
     /// any view's panel); adapters read their keys again.
@@ -2637,11 +2684,7 @@ impl NodeCraftApp {
         if changes.is_empty() {
             return;
         }
-        if let Some(runs) = &mut self.runs
-            && let Err(error) = runs.forget_adapters(&mut self.session)
-        {
-            self.notice = Some(error.message);
-        }
+        self.forget_key_adapters();
         let apply = |keys: &mut nodecraft_engine::settings::KeySettings| {
             for change in &changes {
                 match change {
@@ -3080,25 +3123,13 @@ impl NodeCraftApp {
 
 impl eframe::App for NodeCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.tick_keys(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         {
             let title = self.window_title();
             if title != self.title {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
                 self.title = title;
-            }
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(results) = &self.key_results {
-            self.keys.tick(ctx.input(|i| i.time));
-            let (changes, others) = self.keys.receive(results.drain());
-            // Nothing else asks the keychain yet; answers to other requests are logged, not lost.
-            for outcome in others {
-                log::info!("keychain answered request {} for {}", outcome.id, outcome.account);
-            }
-            self.save_accounts(changes);
-            if self.keys.is_waiting() {
-                ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
         #[cfg(not(target_arch = "wasm32"))]

@@ -190,6 +190,11 @@ impl NodeCraftApp {
             return Ok(());
         }
         if self.runs.is_some() {
+            // A synchronous browser key command can finish later in this same UI frame.
+            #[cfg(any(test, target_arch = "wasm32"))]
+            if self.key_changes.as_ref().is_some_and(|changed| changed.take()) {
+                self.forget_key_adapters();
+            }
             if kind == RunKind::Refresh {
                 self.refresh_stale_badges();
             }

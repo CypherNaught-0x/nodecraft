@@ -563,6 +563,11 @@ impl Runs {
         self.waiting.is_some()
     }
 
+    #[cfg(test)]
+    pub(super) fn has_cached_adapters(&self) -> bool {
+        self.setup.adapters().next().is_some()
+    }
+
     /// Forgets every adapter, so the next run reads keys again (after one was saved or deleted).
     /// The session's routing goes too, so nothing quotes or starts on an adapter holding the old
     /// key, and one still being built with it is dropped when it arrives. A card waiting for its

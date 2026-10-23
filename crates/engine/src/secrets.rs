@@ -217,7 +217,7 @@ impl<S: OriginStorage> SecretStore for OriginStore<S> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use worker::{KeyOutcome, KeyResults, KeyWorker, register_key_worker};
+pub use worker::{KeyOperation, KeyOutcome, KeyResults, KeyWorker, register_key_worker};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod worker {
@@ -234,12 +234,21 @@ mod worker {
         op: KeyOp,
     }
 
+    /// The kind of keychain request, without its secret or any other request payload.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum KeyOperation {
+        Set,
+        Remove,
+        Status,
+    }
+
     /// The result of a request handed to the [`KeyWorker`].
     #[derive(Debug, Clone, PartialEq)]
     pub struct KeyOutcome {
         /// The `pending` id the service returned.
         pub id: u64,
         pub account: String,
+        pub operation: KeyOperation,
         /// Same shape as the synchronous service's result; errors never contain the key.
         pub result: Result<Value, Error>,
     }
@@ -286,7 +295,12 @@ mod worker {
                         // A keychain backend that panics fails this request, not the worker.
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(store.as_ref(), &job.account, &job.op)))
                             .unwrap_or_else(|_| Err(Error::new(ErrorKind::Internal, "the keychain call failed unexpectedly")));
-                        if outbox.send(KeyOutcome { id: job.id, account: job.account.as_str().to_owned(), result }).is_err() {
+                        let operation = match job.op {
+                            KeyOp::Set(_) => KeyOperation::Set,
+                            KeyOp::Remove => KeyOperation::Remove,
+                            KeyOp::Status => KeyOperation::Status,
+                        };
+                        if outbox.send(KeyOutcome { id: job.id, account: job.account.as_str().to_owned(), operation, result }).is_err() {
                             break;
                         }
                     }
