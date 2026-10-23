@@ -38,17 +38,20 @@ pub(super) type Service = Box<dyn FnMut(&serde_json::Value) -> Result<serde_json
 struct Asked {
     next: u64,
     /// A fetch asked for, with the server it names (`None` for the default).
-    queued: VecDeque<(u64, Option<String>)>,
-    running: Option<(u64, Aim)>,
+    queued: VecDeque<(Vec<u64>, Option<String>)>,
+    running: Option<(Vec<u64>, Aim)>,
     /// A running check may be abandoned without losing any later queued id.
     abandoned: Option<u64>,
     /// Only the panel's follow-up checks may queue behind a running check.
     followup: bool,
+    #[cfg(test)]
+    completed: Vec<u64>,
 }
 
 impl Asked {
     fn is_waiting(&self) -> bool {
-        !self.queued.is_empty() || self.running.as_ref().is_some_and(|(id, _)| self.abandoned != Some(*id))
+        // Even an abandoned fetch must be drained and reported, so keep repainting.
+        !self.queued.is_empty() || self.running.is_some()
     }
 }
 
@@ -98,6 +101,15 @@ impl ComfyNodesFetcher {
         let service = move |request: &serde_json::Value| {
             let server = request.get("server").and_then(serde_json::Value::as_str).map(str::to_owned);
             let mut asked = queue.borrow_mut();
+            // Reuse the pending id for repeated panel saves of this server: every
+            // caller waits on the SAME terminal answer, and no additional queue
+            // slots or network reads are consumed by edits made before the read.
+            if asked.followup
+                && let Some((ids, _)) = asked.queued.iter().find(|(_, queued_server)| *queued_server == server)
+                && let Some(id) = ids.first()
+            {
+                return Ok(json!({"pending": id}));
+            }
             if asked.queued.len() >= 64 || asked.next == u64::MAX {
                 return Err(Error::new(ErrorKind::Busy, "too many ComfyUI node checks are waiting; try again after the queued checks finish"));
             }
@@ -106,17 +118,23 @@ impl ComfyNodesFetcher {
             }
             asked.next += 1;
             let id = asked.next;
-            asked.queued.push_back((id, server));
+            // The settings are read when this queued fetch actually starts.
+            asked.queued.push_back((vec![id], server));
             Ok(json!({"pending": id}))
         };
         Ok((Self { asked, asks, done }, Box::new(service)))
+    }
+
+    #[cfg(test)]
+    pub(super) fn completed_ids(&self) -> Vec<u64> {
+        self.asked.borrow().completed.clone()
     }
 
     /// Abandons only the running fetch. Queued checks have their own accepted pending ids and
     /// must be answered, even when they belong to a different server.
     pub(super) fn abandon(&mut self) {
         let mut asked = self.asked.borrow_mut();
-        asked.abandoned = asked.running.as_ref().map(|(id, _)| *id);
+        asked.abandoned = asked.running.as_ref().and_then(|(ids, _)| ids.first().copied());
     }
 
     /// Temporarily permit a panel action to enqueue its follow-up check.
@@ -152,36 +170,58 @@ impl ComfyNodesFetcher {
             Ok((id, result)) => {
                 let mut asked = self.asked.borrow_mut();
                 let running = asked.running.take();
-                let abandoned = asked.abandoned == Some(id);
-                if abandoned {
-                    asked.abandoned = None;
-                }
+                let abandoned = asked.abandoned.take() == Some(id);
                 drop(asked);
-                if abandoned { None } else { running.filter(|(running, _)| *running == id).map(|(_, aim)| self.settle(session, id, aim, result)) }
+                running.filter(|(ids, _)| ids.first() == Some(&id)).map(|(ids, aim)| {
+                    if abandoned { self.settle_all(session, ids, aim, Err(abandoned_error())) } else { self.settle_all(session, ids, aim, result) }
+                })
             }
             Err(TryRecvError::Empty) => None,
             Err(TryRecvError::Disconnected) => {
-                let running = self.asked.borrow_mut().running.take();
-                let abandoned = self.asked.borrow().abandoned;
-                running.and_then(|(id, aim)| (abandoned != Some(id)).then(|| self.settle(session, id, aim, Err(stopped()))))
+                let mut asked = self.asked.borrow_mut();
+                let running = asked.running.take();
+                let abandoned = asked.abandoned.take();
+                drop(asked);
+                running.map(|(ids, aim)| {
+                    let error = if abandoned == ids.first().copied() { abandoned_error() } else { stopped() };
+                    self.settle_all(session, ids, aim, Err(error))
+                })
             }
         };
         if self.asked.borrow().running.is_some() {
             return notice;
         }
         let queued = self.asked.borrow_mut().queued.pop_front();
-        if let Some((id, server)) = queued {
+        if let Some((ids, server)) = queued {
             let Some((settings, aim)) = aimed(settings(), server.as_deref()) else {
                 // Every accepted id gets a status, even if its server was removed while waiting.
                 let message = format!("There's no ComfyUI server called {}.", server.unwrap_or_default());
-                self.settle(session, id, None, Err(Error::new(ErrorKind::NotFound, message.clone())));
+                self.settle_all(session, ids, None, Err(Error::new(ErrorKind::NotFound, message.clone())));
                 return Some(message);
             };
+            let Some(&id) = ids.first() else {
+                return notice;
+            };
             match self.asks.try_send((id, settings)) {
-                Ok(()) => self.asked.borrow_mut().running = Some((id, aim)),
-                Err(TrySendError::Full(_)) => self.asked.borrow_mut().queued.push_front((id, server)),
-                Err(TrySendError::Disconnected(_)) => return Some(self.settle(session, id, aim, Err(stopped()))),
+                Ok(()) => self.asked.borrow_mut().running = Some((ids, aim)),
+                Err(TrySendError::Full(_)) => self.asked.borrow_mut().queued.push_front((ids, server)),
+                Err(TrySendError::Disconnected(_)) => return Some(self.settle_all(session, ids, aim, Err(stopped()))),
             }
+        }
+        notice
+    }
+
+    /// Complete each accepted id exactly once, sharing one network outcome without another read.
+    fn settle_all(&mut self, session: &mut Session, ids: Vec<u64>, aim: Aim, result: Result<Fetched, Error>) -> String {
+        let mut notice = String::new();
+        for id in ids {
+            let shared = match &result {
+                Ok(fetched) => Ok(Fetched { nodes: fetched.nodes.clone(), health: fetched.health.clone() }),
+                Err(error) => Err(error.clone()),
+            };
+            notice = self.settle(session, id, aim.clone(), shared);
+            #[cfg(test)]
+            self.asked.borrow_mut().completed.push(id);
         }
         notice
     }
@@ -210,6 +250,10 @@ fn aimed(mut settings: ProviderSettings, server: Option<&str>) -> Option<(Provid
         Some(_) => None,
         None => Some((settings, default.map(|name| (name, true)))),
     }
+}
+
+fn abandoned_error() -> Error {
+    Error::new(ErrorKind::Conflict, "the ComfyUI node check was abandoned because the server changed; check the updated server's result")
 }
 
 fn stopped() -> Error {

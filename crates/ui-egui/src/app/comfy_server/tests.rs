@@ -288,9 +288,64 @@ fn abandoning_a_running_server_preserves_another_servers_accepted_pending_id() {
     h.state_mut().comfy_nodes.as_mut().unwrap().allow_followup(false);
     h.state_mut().comfy_nodes.as_mut().unwrap().abandon();
     drop(held);
+    // Observe the abandoned id's terminal report BEFORE the queued id can replace the
+    // latest per-server status. Checking only the queued id missed this regression.
+    let mut abandoned = false;
+    for _ in 0..500 {
+        h.state_mut().tick_comfy_nodes(&ctx);
+        if let Some(report) = comfy_server_cmds::report(&h.state().session, "b")
+            && report.id == pending - 1
+        {
+            assert!(report.error.as_deref().unwrap_or_default().contains("abandoned"), "{report:?}");
+            abandoned = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(abandoned, "the abandoned accepted id never received its terminal report");
     answered(&mut h);
     assert_eq!(comfy_server_cmds::report(&h.state().session, "a").unwrap().id, pending);
     assert!(comfy_server_cmds::report(&h.state().session, "a").unwrap().error.is_none());
+}
+
+#[test]
+fn rapid_saves_of_one_server_share_one_pending_id_and_one_fetch() {
+    let dir = tempfile::tempdir().unwrap();
+    let gate = Arc::new(Mutex::new(()));
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let mut h = gated_app(dir.path(), asked.clone(), gate.clone());
+    h.state_mut().add_comfy_server("a", "http://a:8188", "").unwrap();
+    answered(&mut h);
+    h.state_mut().add_comfy_server("b", "http://b:8188", "").unwrap();
+    answered(&mut h);
+    h.state_mut().comfy_server.open = true;
+    h.run();
+    let held = gate.lock().unwrap();
+    h.state_mut().check_comfy_server("b").unwrap();
+    let ctx = h.ctx.clone();
+    h.state_mut().tick_comfy_nodes(&ctx);
+    edit_address(&mut h, 0, "http://a:8189");
+    h.get_by_label("Save and check").click();
+    h.run();
+    edit_address(&mut h, 0, "http://a:8190");
+    h.get_by_label("Save and check").click();
+    h.run();
+    assert_eq!(servers(&h)[0].1, "http://a:8190");
+    // Additional saves/checks of the same queued server reuse the accepted id rather
+    // than exhausting the bounded queue or promising reports nobody can observe.
+    h.state_mut().comfy_nodes.as_mut().unwrap().allow_followup(true);
+    for _ in 0..100 {
+        let pending = h.state_mut().session.dispatch("comfy.nodes.refresh", &json!({"server": "a"})).unwrap()["pending"].as_u64();
+        assert_eq!(pending, Some(4));
+    }
+    h.state_mut().comfy_nodes.as_mut().unwrap().allow_followup(false);
+    drop(held);
+    answered(&mut h);
+    assert_eq!(comfy_server_cmds::report(&h.state().session, "b").unwrap().id, 3, "cross-server check is independent");
+    assert_eq!(comfy_server_cmds::report(&h.state().session, "a").unwrap().id, 4, "all same-server callers share the accepted id's terminal report");
+    assert_eq!(h.state().comfy_nodes.as_ref().unwrap().completed_ids(), [1, 2, 3, 4], "every distinct accepted id is completed exactly once");
+    assert_eq!(asked.lock().unwrap().iter().filter(|url| url.ends_with("/object_info") && url.starts_with("http://a:8190/")).count(), 1);
+    assert!(!asked.lock().unwrap().iter().any(|url| url.starts_with("http://a:8189/")), "the queued check uses the latest saved settings");
 }
 
 #[test]
