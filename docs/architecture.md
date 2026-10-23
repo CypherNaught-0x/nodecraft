@@ -26,11 +26,11 @@ every CI run, and fails on an unregistered crate.
 | L1 | `graph` | the document: Project, Canvas, Node, Edge, Field, Comment, Tag, Element, Generation, TechniqueDef; `Changeset` apply/invert/validate | types, media |
 | L2 | `nodes` | `NodeKind` trait, registry, built-in descriptors and parameter schemas | graph, comfy |
 | L2 | `catalog` | provider and model descriptors, capability matching, pricing, auto-select rules | graph, types |
-| L2 | `actions` | deterministic image/video/text actions (CPU reference, rayon) | graph, media |
+| L2 | `actions` | deterministic image and text actions (CPU reference, rayon), text expressions, layer compositing, masks, decks; video actions run in `engine` over the FFmpeg sidecar | graph, media |
 | L2 | `sync` | live sharing: the yrs mirror of a project, sync frames, relay rooms ([decision](decisions/2026-10-22-crdt-sync.md)) | graph, types |
 | L3 | `exec` | planner (routers, batches, techniques → job DAG), run executor, scheduler, queue, cancellation, staleness, quotes, budgets | nodes, catalog, actions |
 | L3 | `providers` | `Provider` trait and adapters, one Cargo feature each | catalog, comfy |
-| L3 | `gpu` | wgpu actions, custom WGSL actions, 3D preview renderer | actions |
+| L3 | `gpu` | wgpu image actions (a tested library the app doesn't call yet), custom WGSL shader actions, 3D preview renderer and capture | actions |
 | L3 | `format` | `.ncraft` files, content-addressed asset store, atomic saves, migrations | graph |
 | L4 | `engine` | `Session`, command registry, undo stack, event bus, settings, library, skills; `build_info` | exec, providers, gpu, format |
 | L5 | `agent` | in-canvas agent: sans-IO LLM tool loop over engine commands, assist and auto modes | engine, providers, types |
@@ -325,13 +325,17 @@ in from `NODECRAFT_BUILD_SHA` and `NODECRAFT_BUILD_DATE` (set by the packaging s
 ## Plugin planning
 
 The [plugin RFC](plugins-rfc.md) proposes data-only packages first and a gated executable
-feasibility phase. It is a delivery/contract plan, not a currently implemented plugin runtime.
+feasibility phase. Text-action packages (#173) were the first runnable kind: their actions are
+bounded text expressions (#165) the engine evaluates itself, run only under a grant for the
+package's exact digest. Provider-template packages, whose requests the host's broker sends
+itself, are M5 work tracked in #174. Module (`rust_wasm`) packages are refused at install.
 Its phase A, the package and wire contract, is the standalone `plugin` crate
 ([specification and limits](plugin-wire.md)): pure decoding and checking, no I/O, no runtime.
-Phase B's verifier and local store are `plugin-store`; data packages install disabled and
-nothing in them executes. The engine's `plugins.*` commands reach the store through the host's
+Phase B's verifier and local store are `plugin-store`; packages install disabled and nothing
+in them executes during lint, install or project open. The engine's `plugins.*` commands reach the store through the host's
 `plugins.store` service; the desktop app keeps it in `<settings>/plugins/store` with the trust file
-`<settings>/plugins/trust.json`, and refuses any package ID the app itself registers.
+`<settings>/plugins/trust.json`, and refuses any package ID the app itself registers. The
+browser keeps the store in memory for the session and never runs packages (#823).
 The native app initializes and accesses the store on a dedicated bounded worker, not its egui
 thread. Every lifecycle request returns `{pending: string}`; `plugins.result` reads a retained
 queued/running/completed/failed envelope, and `plugins.forget` explicitly releases a terminal
@@ -345,7 +349,8 @@ Future integration must preserve the existing layers, engine mutation path and w
 ## CPU text actions
 
 `actions::text` provides bounded split, replace, concat and named-template algorithms with typed
-serde requests and stable action IDs. They do not mutate graph state; live adapters remain #88.
+serde requests and stable action IDs. They do not mutate graph state; the action node kinds
+(#410) and live recompute (#88) call them from `engine::action_exec`.
 See [text action contracts and limits](text-actions.md).
 
 ### Canvas instance consumption

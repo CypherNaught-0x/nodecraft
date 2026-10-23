@@ -1,31 +1,33 @@
 # Roadmap
 
-**Now: M0, M1 and M2 (Organise) are complete; the later milestones are in progress.** The
-desktop can edit, organise, save and run projects, while milestone exit criteria for generation,
-reuse and sharing still have open work. Details and exit criteria: [`docs/plan.md`](docs/plan.md) §7. Work is tracked as
+**Now: M0, M1, M2 (Organise) and M4 (Actions) are complete; the other milestones are in
+progress.** The desktop can edit, organise, save and run projects, and its local image and text
+actions recompute as you edit, while milestone exit criteria for generation, reuse and sharing
+still have open work. Details and exit criteria: [`docs/plan.md`](docs/plan.md) §7. Work is tracked as
 GitHub issues in milestones; comment `/claim` to take one.
 
 As of 2026-10-23, **Done** counts only issues closed as *completed* (not `not planned`); the
 denominator is all filed issues, including open and declined issues. M1 is 36 completed and one
-`not planned` (#135). M2's feature work is done, including Fit all framing collapsed fields by
-their header (#739); its count includes #739 and leaves only this documentation close-out (#373),
-which GitHub closes when it lands. Other rows reflect GitHub's live issue state, not a
+`not planned` (#135). M2 closed with its documentation close-out (#373). M4's feature work is
+done, including result caching (#91), custom WGSL shaders (#90) and the plugin store (#172,
+#173, #823, #824); its count leaves only this documentation close-out (#375), which GitHub closes
+when it lands. Other rows reflect GitHub's live issue state, not a
 declaration that all milestone exit criteria have passed. Status distinguishes tested library capabilities from what someone can use in the app.
 
 | M | Name | Status | Done |
 |---|---|---|---|
 | 0 | **Skeleton** — workspace, CI, release pipeline, themed canvas | ✅ feature work done | 10/10 |
 | 1 | **Canvas core** — graph, undo, commands, canvas, `.ncraft` | ✅ done | 36/37 |
-| 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done (close-out #373) | 13/14 |
-| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), several ComfyUI servers per install (#864) | 39/44 |
-| 4 | **Actions** — image/text actions, GPU, live recompute | 🟡 partial; action nodes work in app | 8/12 |
-| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 16/27 |
+| 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done | 14/14 |
+| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), variations (#81), cost and budget checks (#201) | 43/46 |
+| 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done (close-out #375) | 13/14 |
+| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 17/30 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 8/11 |
-| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18) | 19/30 |
+| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 26/31 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 7/12 |
-| 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 4/8 |
-| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120) | 8/14 |
-| — | **Future providers** — separately tracked adapters | 🟡 partial | 1/27 |
+| 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 5/8 |
+| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 11/17 |
+| — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 2/29 |
 
 ## What works today
 
@@ -96,6 +98,20 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   keep their package identity, migrate with their package, and survive uninstall (#173). Plugin
   authors pack reproducible packages and lint them with the install verifier
   (`nodecraft-cli plugin pack|inventory|lint`, [`docs/plugin-authoring.md`](docs/plugin-authoring.md), #175).
+- **Actions** (M4): image action cards (blur, grade, filter, tint, flip, rotate, crop, key,
+  replace colour, aspect, overlay, duplicate, resize, expand) and text action cards (split,
+  replace, template, concat) come from quick-add and the palette (#85, #87, #410). After an edit
+  they recompute on a worker, and while a slider drags they preview on smaller images before the
+  full-size render on release (#88); video actions and the Timeline run only when asked. Split
+  into grid cuts an image into tiles as new Image cards (#86). A card that would compute a result
+  the project already holds for the same kind, settings and inputs reuses it: on by default for
+  cards that don't call a model, opt-in per card with `node.cache_set` for those that do, and a
+  run neither quotes nor pays for what it reuses (#91); the app has no button for that switch
+  yet. Custom shader cards run their WGSL on the GPU (#90). The Plugins panel checks a
+  `.ncraft-plugin` package, installs it disabled and, once granted and enabled, a text-action
+  package's actions become cards that stop running when the grant is revoked (#172, #173); in
+  the browser, packages last only for the session and never run (#823). Built-in image actions
+  run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
@@ -116,10 +132,14 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   is not proof that every provider, modality or input mode runs in every host. The text card's
   chat-style turn UI remains open (#84), and browser provider settings/option lists differ from
   desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
-- **Local actions work in the app.** Image/text action node kinds (#410) recompute on a worker
-  after edits (#88); slider drags preview with smaller images before full-size rendering. The
-  browser has no equivalent worker threads and runs rounds in the frame. This is not evidence
-  that all paid provider operations or video/audio actions work in every host.
+- **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
+  a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
+  The browser has no equivalent worker threads and runs rounds in the frame. Built-in image
+  actions don't use the GPU path (#89) yet, and custom shaders need a GPU. Result caching for
+  model cards is a per-card command (`node.cache_set`) with no button yet (#91). Module
+  (`rust_wasm`) plugin packages are refused at install; provider-template plugins are M5 work
+  whose tracker (#174) is still open. This is not evidence that all paid provider operations or
+  video/audio actions work in every host.
 - **The in-canvas agent works in the desktop app.** Cmd+/ opens the agent sidebar (#114): ask in
   words, with the selection and @-mentioned nodes as context. `crates/agent` runs the model's tool
   calls over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
@@ -153,7 +173,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   each picture clip can be placed, sized, cropped, turned and faded in the frame, clips can play
   faster or slower, and the render has a quality (#577). Its filter graph is staged in a script
   and input paths stay short, keeping full timelines within Windows' command limit (#642).
-- **Live sharing works from the desktop app.** Sessions are shared through `nodecraft-cli relay`
+- **Live sharing works from the desktop app and the browser.** Sessions are shared through `nodecraft-cli relay`
   (#119), with every edit merged and images passed along. Share links let someone view, comment
   on or edit a shared project, with signed discussions and expiry and revocation (`share.link_*`,
   #121), and canvases kept private (`canvas.set_private`) stay out of the room. The app's Share
@@ -161,8 +181,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   window, and a dropped connection reconnects on its own (`share.start`, `share.join`,
   `share.stop`, `share.status`, #698). Everyone in a shared project sees the others' pointers
   with their names, outlines round the cards they have selected, and their initials beside the
-  Share chip, which take you to them (#120). The relay is reached over `ws://` only, and the
-  browser build has no transport yet.
+  Share chip, which take you to them (#120). The browser shares and joins through the page's
+  WebSocket, joining in the same tab (#699). The relay speaks plain `ws://`; the desktop client
+  has no TLS, and a browser page served over https reaches it only as `wss://` through a TLS proxy.
 - **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,
   the Layer Editor, Elements and PDF cards have shipped in some form. The first signed release
   (#100), typed nested descriptor records/lists (#528), and browser option-list parity (#721)
@@ -171,8 +192,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   Provider availability and modes vary by adapter and host: Google Gemini Omni Flash video
   replaces the shut-down Veo API (#17), and Veo 3.1, Fast and Lite run on Google Cloud with a
   service account (#742), as do Google TTS's classic and Gemini voices (#21); Seedance 2.5 and
-  2.0 make video on BytePlus ModelArk (#18); Kling and most `future` adapters remain tracked
-  separately. ElevenLabs speech (v3,
+  2.0 make video on BytePlus ModelArk (#18); Kling's own task API makes video and images with a
+  Kling key (#19); most `future` adapters remain tracked separately. ElevenLabs speech (v3,
   Multilingual v2, Flash v2.5), effects, music and voice changer models (#20) have a Generate
   audio card (#672); 3D has Tripo text/image/multiview and fal Trellis (#22), plus Meshy
   text/image/multi-image/retexture/remesh (#23). Consult [`docs/providers.md`](docs/providers.md)
@@ -183,11 +204,15 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
-1. **Finish M3 generation**: the chat-style text-card turn UI (#84), generation history and
-   variations (#81), and the remaining keychain issue (#80); do not mistake a tested adapter for a working mode in every host.
+1. **Finish M3 generation**: the chat-style text-card turn UI (#84) and the remaining keychain
+   issue (#80); do not mistake a tested adapter for a working mode in every host.
 2. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
-   then browser option-list parity (#721), verification/closure of HTTP serve's still-open
-   tracker (#117), and later milestone gaps.
+   including provider plugins (#174), then browser option-list parity (#721),
+   verification/closure of HTTP serve's still-open tracker (#117), and later milestone gaps.
+   M4's open follow-ups sit outside a milestone: the Generate confirmation should say which nodes
+   reuse a cached result (#811), and a superseded live action should be cancelled and its work
+   bounded (#596). Using the wgpu path (#89) for built-in image actions, and a button for result
+   caching on model cards, have no issue yet.
    For the changing priority order, use the [open milestone issues](https://github.com/CypherNaught-0x/nodecraft/milestones).
 
 ## Milestone log
@@ -257,3 +282,14 @@ The near-term order follows the remaining open issues, not an already-finished w
 - **2026-10-23** — rendered videos and extracted sound share a per-run staging budget (#584):
   1 GiB and 4,096 results, including read-backs in flight. Failure and cancellation return their
   reservations; chained actions retain access to earlier completed outputs.
+- **2026-10-23** — M4 (Actions) feature work finished. Fourteen image and four text action kinds
+  run as cards (#410) and recompute live on a worker, previewing on smaller images while a slider
+  drags (#88); results are reused by input hash, on by default for local cards and opt-in for
+  model cards, and runs neither quote nor pay for reused nodes (#91); custom WGSL shader cards
+  can be written by a text model through an ordinary priced card and kept in a versioned shader
+  library (#90). The plugin store verifies, installs, grants and revokes packages, and granted
+  text-action packages run as cards (#172, #173), with session-only packages in the browser
+  (#823) and structured property tests over hostile archives and failing operations (#824). The
+  wgpu image path (#89) remains a tested library the app doesn't use for built-in actions. The M4
+  close-out (#375) refreshed README, ROADMAP and docs. Elsewhere, Kling's own task API (#19),
+  browser live sharing (#699) and several ComfyUI servers per install (#864) landed.

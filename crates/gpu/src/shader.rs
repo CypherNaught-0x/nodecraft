@@ -1,4 +1,4 @@
-//! Custom WGSL shader actions (#90): a person (or, later, a model) writes one function,
+//! Custom WGSL shader actions (#90): a person (or a model, through a text card) writes one function,
 //!
 //! ```wgsl
 //! fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32> { ... }

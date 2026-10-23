@@ -14,7 +14,7 @@
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
   <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-native-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: M2 Organise done, later milestones in progress" src="https://img.shields.io/badge/status-M2%20done%20%C2%B7%20later%20milestones%20in%20progress-d69e2e?style=flat-square">
+  <img alt="Status: M4 Actions done, other milestones in progress" src="https://img.shields.io/badge/status-M4%20done%20%C2%B7%20other%20milestones%20in%20progress-d69e2e?style=flat-square">
 </p>
 
 <p align="center">
@@ -24,10 +24,11 @@
 ---
 
 > [!NOTE]
-> NodeCraft is being built in the open. The M1 canvas core and the M2 organisation tools
-> (fields, tags, comments, search, auto-format, bulk editing, routers) are complete. The
-> desktop saves and opens `.ncraft` projects and can run supported generation cards through
-> its wired host. That does **not** mean every catalog model or provider works on every
+> NodeCraft is being built in the open. The M1 canvas core, the M2 organisation tools
+> (fields, tags, comments, search, auto-format, bulk editing, routers) and the M4 local actions
+> (image and text actions that recompute as you edit, result reuse, custom shaders, text-action
+> plugins) are complete. The desktop saves and opens `.ncraft` projects and can run supported
+> generation cards through its wired host. That does **not** mean every catalog model or provider works on every
 > platform. See
 > [`ROADMAP.md`](ROADMAP.md) for current limitations and next steps.
 
@@ -44,8 +45,15 @@
   formatting, router nodes as cable ties, a bulk parameter panel, named colour tags with a
   bounded highlight filter and tag navigation, and fields: named, coloured zones that move with
   their members and collapse to a header that search, tag navigation, the minimap and Fit all
-  respect. Save/open `.ncraft` projects and recover unsaved work on desktop; image and text actions
-  recompute locally, and supported generation cards can run through the desktop host.
+  respect. Save/open `.ncraft` projects and recover unsaved work on desktop; supported generation
+  cards can run through the desktop host.
+- **Act locally**: image actions (grade, blur, crop, aspect, key, overlay and more) and text
+  actions (split, replace, template, concat) are cards that recompute on a worker as you edit,
+  with smaller previews while a slider drags. A card whose identical result is already in the
+  project reuses it instead of computing or paying again; model cards opt in per card with
+  `node.cache_set`. Custom shader cards run WGSL with declared sliders on the GPU, and a text
+  model can write or fix one through an ordinary priced card. The Plugins panel checks, installs
+  and grants `.ncraft-plugin` packages; a granted text-action package adds its actions as cards.
 - **Never lose work**: every edit is an invertible changeset, so undo/redo covers everything, and
   command dispatch runs under a panic guard. No `unsafe` and no `unwrap` outside tests.
 - **Keep your keys yours**: an API keys panel over the OS keychain.
@@ -164,13 +172,15 @@ The following are goals or partial capabilities, **not** a promise that every mo
 - **Providers**: LLM endpoints (OpenAI-compatible, Anthropic, LiteLLM, Ollama), OpenAI Images,
   Replicate, Seedream, Tripo, Meshy, Higgsfield, Gemini images, Gemini Omni Flash video, and Veo
   3.1 and Google TTS on Google Cloud have adapters. ComfyUI now accepts video/audio workflows;
-  fal.ai, ElevenLabs and Seedance (BytePlus ModelArk) also have adapters, while a direct Kling
-  adapter remains separately tracked. Adapters and
+  fal.ai, ElevenLabs, Seedance (BytePlus ModelArk) and Kling's own task API also have adapters.
+  Adapters and
   catalog entries are not proof of usable workflows in every host. Consult
   [`docs/providers.md`](docs/providers.md) for per-adapter modes, authentication and limitations;
   desktop and browser support differ.
-- **Deterministic actions** — colour grading, blur, crop, aspect ratio, split into grid, text and
-  video operations, PDF pages and text — recompute live, with custom actions authored as GPU shaders.
+- **Deterministic actions** — colour grading, blur, crop, aspect ratio, split into grid, text
+  operations, PDF pages and text — recompute live, with custom actions authored as GPU shaders;
+  video actions run when asked. Built-in image actions run on the CPU today; their tested wgpu
+  path is not yet used by the app.
 - **Editors inside nodes**: a Layer Editor, a Timeline, Mask/Inpaint, and a 3D viewer that captures
   photos, turntables and multi-view sheets.
 - **Reuse**: Batch and Router nodes, Elements, Techniques and app mode have shipped in part; the
@@ -236,7 +246,8 @@ and checklists for adding commands, node kinds and providers.
 | M0 | Workspace skeleton, lints, CI, empty canvas | done |
 | M1–M2 | Canvas core, organisation tools | done |
 | M3 | Generation engine, providers, history, cost | desktop host wired; remaining modes and issues open |
-| M4–M5 | Actions, Batch, Techniques, CLI | local action nodes work; reuse and first signed release partial |
+| M4 | Actions, live recompute, custom shaders | done: local actions, result reuse, shader cards and text-action plugins work |
+| M5 | Batch, Techniques, CLI, first release | partial; reuse surfaces shipped in part, first signed release open |
 | M6–M8 | Layer/Timeline/Mask editors, video, audio, 3D, PDF | partial, with working desktop surfaces and open gaps |
 | M9–M10 | Agent, MCP, browser build, collaboration | agent, control and sync work on desktop; other surfaces partial |
 
