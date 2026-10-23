@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nodecraft_automation::control::{self, Call, Listener, Request, Token, TokenFile};
+use nodecraft_automation::roots::FileRoots;
 use nodecraft_ui_egui::NodeCraftApp;
 
 /// Requests answered per frame, so a busy client can't stall drawing.
@@ -28,13 +29,15 @@ pub struct Channel {
     /// When the pending screenshot was requested.
     shot_since: Option<std::time::Instant>,
     token_file: Option<(PathBuf, TokenFile)>,
+    /// The folders clients may open projects from and save them to (`--root`, #423).
+    roots: FileRoots,
 }
 
 impl Channel {
     /// Starts listening and writes the token file into `dir` (`control.json`).
-    pub fn start(ctx: &egui::Context, dir: Option<PathBuf>) -> Result<Self, nodecraft_types::Error> {
+    pub fn start(ctx: &egui::Context, dir: Option<PathBuf>, roots: FileRoots) -> Result<Self, nodecraft_types::Error> {
         let (listener, token_file) = Self::listen(ctx, dir)?;
-        Ok(Self { listener, shots: Vec::new(), shot_since: None, token_file })
+        Ok(Self { listener, shots: Vec::new(), shot_since: None, token_file, roots })
     }
 
     /// Removes the token file, if this app wrote it.
@@ -117,7 +120,7 @@ impl Channel {
             if call.expired() {
                 continue;
             }
-            match answer(app, ctx, &call.request) {
+            match answer(app, ctx, &self.roots, &call.request) {
                 Some(result) => call.reply(result),
                 None if call.request == Request::Screenshot && self.shots.len() < MAX_PENDING_SHOTS => {
                     if self.shots.is_empty() {
@@ -138,13 +141,15 @@ impl Channel {
 }
 
 // Keep the production UI-thread dispatch independently testable without a native window.
-fn answer(app: &mut NodeCraftApp, ctx: &egui::Context, request: &Request) -> Option<Result<serde_json::Value, nodecraft_types::Error>> {
-    control::answer_with(&mut LiveCommands { app, ctx }, request)
+fn answer(app: &mut NodeCraftApp, ctx: &egui::Context, roots: &FileRoots, request: &Request) -> Option<Result<serde_json::Value, nodecraft_types::Error>> {
+    control::answer_with(&mut LiveCommands { app, ctx, roots: Some(roots) }, request)
 }
 /// The window's session as a command host: commands that act on the view reach it (#360).
 pub(crate) struct LiveCommands<'a> {
     pub(crate) app: &'a mut NodeCraftApp,
     pub(crate) ctx: &'a egui::Context,
+    /// The folders file commands may use; the in-canvas agent has none.
+    pub(crate) roots: Option<&'a FileRoots>,
 }
 impl LiveCommands<'_> {
     fn navigation_idle(&self) -> Result<(), nodecraft_types::Error> {
@@ -186,6 +191,9 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
     }
     fn live(&self) -> bool {
         true
+    }
+    fn file_roots(&self) -> Option<&FileRoots> {
+        self.roots
     }
 }
 

@@ -16,11 +16,17 @@ mod video_tools;
 /// file name (packaging/linux) so the desktop finds the icon; also the macOS bundle id.
 const APP_ID: &str = "io.github.cyphernaught0x.nodecraft";
 
-/// The command line: `[--control] [--version] [--wait-for <pid>] [--finish-update <msi> <blake3> <exe>] [--perf-run <out.json>] [--join] [project]`.
+/// The command line: `[--control [--root <folder>]… [--read-root <folder>]…] [--version] [--wait-for <pid>] [--finish-update <msi> <blake3> <exe>] [--perf-run <out.json>] [--join] [project]`.
 #[derive(Debug, Default, PartialEq)]
 struct Args {
     /// `--control`: accept local automation clients (see `control.rs`).
     control: bool,
+    /// `--root <folder>`: a folder control clients may open projects from and save them to;
+    /// `--read-root <folder>` one they may only open from (#423). Repeatable.
+    roots: Vec<std::path::PathBuf>,
+    read_roots: Vec<std::path::PathBuf>,
+    /// `--root` or `--read-root` came without a folder after it.
+    root_missing: bool,
     version: bool,
     /// `--wait-for <pid>`: the copy that updated this one, which must exit first.
     wait_for: Option<String>,
@@ -46,6 +52,11 @@ impl Args {
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--control") => parsed.control = true,
+                Some(flag @ ("--root" | "--read-root")) => match args.next().filter(|folder| !folder.to_string_lossy().starts_with("--")) {
+                    Some(folder) if flag == "--root" => parsed.roots.push(absolute(folder)),
+                    Some(folder) => parsed.read_roots.push(absolute(folder)),
+                    None => parsed.root_missing = true,
+                },
                 Some("--version" | "-V") => parsed.version = true,
                 Some("--join") => parsed.join = true,
                 Some("--wait-for") => parsed.wait_for = args.next().map(|pid| pid.to_string_lossy().into_owned()),
@@ -58,15 +69,18 @@ impl Args {
                         .map(|((msi, blake3), exe)| (msi.into(), blake3.to_string_lossy().into_owned(), exe.into()))
                 }
                 _ if arg.to_string_lossy().starts_with('-') => {}
-                _ if parsed.project.is_none() => {
-                    let path = std::path::PathBuf::from(arg);
-                    parsed.project = Some(if path.is_absolute() { path } else { std::env::current_dir().map(|dir| dir.join(&path)).unwrap_or(path) });
-                }
+                _ if parsed.project.is_none() => parsed.project = Some(absolute(arg)),
                 _ => {}
             }
         }
         parsed
     }
+}
+
+/// `arg` as a path made absolute against the launcher's working directory.
+fn absolute(arg: std::ffi::OsString) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(arg);
+    if path.is_absolute() { path } else { std::env::current_dir().map(|dir| dir.join(&path)).unwrap_or(path) }
 }
 
 fn main() -> ExitCode {
@@ -87,6 +101,23 @@ fn main() -> ExitCode {
         return perf_run(out);
     }
     let (control, project) = (args.control, args.project);
+    // Folders that don't exist are refused here, so a typo never leaves agents unable to save
+    // without saying why.
+    if args.root_missing {
+        eprintln!("error: --root and --read-root each take a folder");
+        return ExitCode::FAILURE;
+    }
+    let roots = match nodecraft_automation::roots::FileRoots::new(&args.read_roots, &args.roots) {
+        Ok(roots) if !roots.is_empty() && !control => {
+            eprintln!("error: --root and --read-root are for control clients; add --control");
+            return ExitCode::FAILURE;
+        }
+        Ok(roots) => roots,
+        Err(e) => {
+            eprintln!("error: {}", e.message);
+            return ExitCode::FAILURE;
+        }
+    };
     let join = args.join.then(read_join_link);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -152,7 +183,7 @@ fn main() -> ExitCode {
             }
             // Without the channel the app still opens; the log says why.
             let channel = control
-                .then(|| control::Channel::start(&cc.egui_ctx, dir).map_err(|e| log::error!("control channel not started: {}", e.message)).ok())
+                .then(|| control::Channel::start(&cc.egui_ctx, dir, roots).map_err(|e| log::error!("control channel not started: {}", e.message)).ok())
                 .flatten();
             let agent = agent_panel::AgentPanel::live(&cc.egui_ctx, app.agent_settings());
             Ok(Box::new(shell::Shell { app, agent, channel }))
@@ -256,5 +287,16 @@ mod tests {
         assert_eq!(parse(&["--perf-run"]), Args::default());
         assert!(parse(&["-V"]).version);
         assert!(parse(&["--join"]).join);
+    }
+
+    #[test]
+    fn allowed_folders_repeat_and_a_missing_one_is_noticed() {
+        let (work, refs) = if cfg!(windows) { (r"C:\work", r"C:\refs") } else { ("/work", "/refs") };
+        let args = parse(&["--control", "--root", work, "--read-root", refs, "--root", refs]);
+        assert_eq!(args.roots, [std::path::PathBuf::from(work), refs.into()]);
+        assert_eq!(args.read_roots, [std::path::PathBuf::from(refs)]);
+        assert!(!args.root_missing);
+        assert!(parse(&["--control", "--root"]).root_missing);
+        assert!(parse(&["--read-root", "--control"]).root_missing, "a flag isn't a folder");
     }
 }

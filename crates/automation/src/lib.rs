@@ -8,6 +8,7 @@ pub mod commands;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod control;
 pub mod mcp;
+pub mod roots;
 pub mod tools;
 
 use nodecraft_engine::Session;

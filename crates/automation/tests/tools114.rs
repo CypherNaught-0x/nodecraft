@@ -46,7 +46,7 @@ fn reads_are_reads_and_commands_are_what_they_would_do() {
 #[test]
 fn what_the_server_refuses_is_refused_before_and_when_called() {
     let mut session = blank_session(ProjectId::from_bytes([1; 16]), CANVAS).unwrap();
-    let human = json!({"id": "file.save"});
+    let human = json!({"id": "keys.set"});
     for err in [tools::impact(&mut session, "command_run", &human).unwrap_err(), tools::call(&mut session, "command_run", &human, &mut ids()).unwrap_err()] {
         assert_eq!(err.kind, ErrorKind::Unsupported);
         assert!(err.message.contains("person"), "{err:?}");

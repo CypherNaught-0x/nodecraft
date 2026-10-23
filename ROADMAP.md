@@ -117,7 +117,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
   running app, `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
   screenshots), plus `nodecraft-cli serve` for a project's published Techniques over a local
-  authenticated HTTP API with optional signed webhooks. See [`docs/mcp.md`](docs/mcp.md),
+  authenticated HTTP API with optional signed webhooks. Agents open and save projects only inside
+  the folders the person allows with `--root`/`--read-root` (#423). See [`docs/mcp.md`](docs/mcp.md),
   [`docs/control.md`](docs/control.md) and [`docs/serve.md`](docs/serve.md).
 - **Headless**: the planner, scheduler, driver, run executor, cost quotes, budgets, usage ledger,
   staleness hashing and router resolution exist and are tested end to end against the mock
