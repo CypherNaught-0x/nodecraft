@@ -98,6 +98,8 @@ separate from the real local Source/Action lane. Configure endpoint concurrency 
 Scoped usage CSV adds `provider_instance`: an empty value is the legacy/default endpoint,
 while a named value identifies its endpoint UUID. This column does not imply old records
 contained a named instance or that a lane string is restoration authority.
+Both usage CSVs end with a `project` column: the project a charge was made for, empty for
+charges recorded before projects were (#847).
 
 Authorized runs derive each queued job's known, unknown or free price from their retained
 admitted quote; a host cannot replace it with an unbudgeted price argument. The accepted

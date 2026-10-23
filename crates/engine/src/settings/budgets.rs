@@ -1,5 +1,5 @@
-//! Spending caps for runs (#201): per call, per session and in total, in US cents. Only the
-//! person changes them, in the app's Budgets section; no command raises them, so an agent can't
+//! Spending caps for runs (#201): per call, per session, per project (#847) and in total, in US
+//! cents. Only the person changes them, in the app's Budgets section; no command raises them, so an agent can't
 //! lift its own limit. Read the hostile fields through [`BudgetSettings::budgets`].
 //!
 //! A cap the file holds but that isn't a whole number of cents (`500.0`, `"5"`, `-1`) reads as 0,
@@ -19,6 +19,9 @@ pub struct BudgetSettings {
     /// Most this session may spend.
     #[serde(deserialize_with = "cap")]
     pub session_usd_cents: Option<u64>,
+    /// Most the open project's runs may spend together, in every session (#847).
+    #[serde(deserialize_with = "cap")]
+    pub project_usd_cents: Option<u64>,
     /// Most every run the spending log records may spend together, in every project and session.
     #[serde(deserialize_with = "cap")]
     pub total_usd_cents: Option<u64>,
@@ -45,8 +48,14 @@ impl BudgetSettings {
     /// The caps the run host checks, each capped at [`Self::MAX_USD_CENTS`].
     pub fn budgets(&self) -> Budgets {
         let usd = |cents: Option<u64>| cents.map(|c| Money::new(Currency::USD, c.min(Self::MAX_USD_CENTS).saturating_mul(10_000)));
-        // The run host's "project" total is the whole spending log's.
-        Budgets { per_call: usd(self.per_call_usd_cents), session: usd(self.session_usd_cents), project: usd(self.total_usd_cents) }
+        // The run host's "project" total is the whole spending log's; the open project's own cap is
+        // `this_project`.
+        Budgets {
+            per_call: usd(self.per_call_usd_cents),
+            session: usd(self.session_usd_cents),
+            project: usd(self.total_usd_cents),
+            this_project: usd(self.project_usd_cents),
+        }
     }
 }
 
@@ -56,8 +65,9 @@ mod tests {
 
     #[test]
     fn caps_from_the_file_are_bounded_and_in_dollars() {
-        let settings = BudgetSettings { per_call_usd_cents: Some(25), session_usd_cents: Some(u64::MAX), total_usd_cents: None };
+        let settings = BudgetSettings { per_call_usd_cents: Some(25), session_usd_cents: Some(u64::MAX), project_usd_cents: Some(300), total_usd_cents: None };
         let budgets = settings.budgets();
+        assert_eq!(budgets.this_project, Some(Money::new(Currency::USD, 3_000_000)));
         assert_eq!(budgets.per_call, Some(Money::new(Currency::USD, 250_000)));
         assert_eq!(budgets.session, Some(Money::new(Currency::USD, 100_000_000_000)));
         assert_eq!(budgets.project, None);

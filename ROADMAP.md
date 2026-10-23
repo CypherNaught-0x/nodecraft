@@ -252,6 +252,8 @@ The near-term order follows the remaining open issues, not an already-finished w
 - **2026-10-23** — spending caps per call, session and project are settings the Budgets panel
   edits (#201); a run a cap blocks names it and its confirmation opens the panel. No command can
   raise a cap.
+- **2026-10-23** — the spending log records each charge's project, so the open project has its
+  own cap beside the total (#847); the CSV export gains a `project` column.
 - **2026-10-23** — rendered videos and extracted sound share a per-run staging budget (#584):
   1 GiB and 4,096 results, including read-backs in flight. Failure and cancellation return their
   reservations; chained actions retain access to earlier completed outputs.

@@ -13,6 +13,8 @@ pub const MAX_METADATA_SHELLS: usize = 10_000;
 pub struct UsageMetadata<'a> {
     pub at_ms: u64,
     pub session: &'a str,
+    /// The project the charge is for (#847).
+    pub project: Option<nodecraft_types::ProjectId>,
     pub node: NodeId,
     pub provider: &'a str,
     pub instance: Option<nodecraft_types::ProviderInstanceId>,
@@ -24,6 +26,7 @@ pub struct UsageMetadata<'a> {
 struct OwnedMetadata {
     at_ms: u64,
     session: String,
+    project: Option<nodecraft_types::ProjectId>,
     node: NodeId,
     provider: String,
     instance: Option<nodecraft_types::ProviderInstanceId>,
@@ -322,6 +325,7 @@ impl UsageLog {
         let owned = OwnedMetadata {
             at_ms: m.at_ms,
             session: copy_text(m.session)?,
+            project: m.project,
             node: m.node,
             provider: copy_text(m.provider)?,
             instance: m.instance,
@@ -403,6 +407,7 @@ impl UsageLog {
         shell.payload = Payload::Actual(UsageEntry {
             at_ms: m.at_ms,
             session: m.session,
+            project: m.project,
             node: m.node,
             provider: m.provider,
             instance: m.instance,
@@ -443,9 +448,14 @@ impl UsageLog {
         order.try_reserve_exact(count.saturating_add(1)).map_err(|_| Error::new(ErrorKind::Busy, "cannot materialize accounting sequence"))?;
         let mut project = self.project.clone();
         let mut sessions = self.sessions.clone();
+        let mut projects = self.projects.clone();
         for (_, e) in self.metadata.actuals() {
             add_to(&mut project, e.cost)?;
             add_to(sessions.entry(e.session.clone()).or_default(), e.cost)?;
+            if let Some(id) = e.project {
+                add_to(projects.entry(id).or_default(), e.cost)?;
+                self.project_clock.insert(id, self.clock);
+            }
         }
         // Build replacement key nodes BEFORE touching existing storage.
         let keys: BTreeMap<_, _> =
@@ -472,6 +482,8 @@ impl UsageLog {
         self.text_bytes = self.entries.iter().fold(0usize, |n, e| n.saturating_add(entry_text(e)));
         self.project = project;
         self.sessions = sessions;
+        self.projects = projects;
+        self.trim_projects(None);
         Ok(())
     }
 }
@@ -489,7 +501,16 @@ impl Metadata {
 mod allocation_tests {
     use super::*;
     fn m(key: &str) -> UsageMetadata<'_> {
-        UsageMetadata { instance: None, at_ms: 1, session: "s", provider: "p", model: "m", idempotency_key: key, node: NodeId::from_bytes([1; 16]) }
+        UsageMetadata {
+            project: None,
+            instance: None,
+            at_ms: 1,
+            session: "s",
+            provider: "p",
+            model: "m",
+            idempotency_key: key,
+            node: NodeId::from_bytes([1; 16]),
+        }
     }
     fn checked(f: impl FnOnce() -> Result<(), MetadataFinalizeError>, expected: Result<(), MetadataFinalizeError>) {
         let mut result = None;

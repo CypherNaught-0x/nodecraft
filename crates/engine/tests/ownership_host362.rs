@@ -161,6 +161,7 @@ fn a_running_job_still_records_its_charge_after_a_decision() {
         .lock()
         .unwrap()
         .reserve_metadata(nodecraft_exec::cost::UsageMetadata {
+            project: None,
             at_ms: 1,
             session: "now",
             node: nodecraft_types::NodeId::from_bytes([9; 16]),

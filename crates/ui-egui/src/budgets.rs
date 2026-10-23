@@ -1,5 +1,5 @@
-//! The Budgets panel (#201): the most runs may spend per call, per session and in total, in US
-//! dollars. An empty field means no cap. The caps are the person's settings (`[budgets]`), not
+//! The Budgets panel (#201): the most runs may spend per call, per session, in the open project
+//! (#847) and in total, in US dollars. An empty field means no cap. The caps are the person's settings (`[budgets]`), not
 //! a command: no agent or script can raise them. A run a cap blocks says which one, and its
 //! confirmation opens this panel.
 
@@ -12,9 +12,10 @@ use crate::theme::Tokens;
 const MAX_FIELD_CHARS: usize = 16;
 
 /// Each cap's field: its label, and what it limits.
-const CAPS: [(&str, &str); 3] = [
+const CAPS: [(&str, &str); 4] = [
     ("Per call", "The most one provider job may cost."),
     ("This session", "The most runs may spend until NodeCraft closes."),
+    ("This project", "The most the open project's runs may spend together, in every session."),
     ("In total", "The most every run NodeCraft has recorded may spend together, in every project and session."),
 ];
 
@@ -22,7 +23,7 @@ const CAPS: [(&str, &str); 3] = [
 pub struct BudgetsPanel {
     pub open: bool,
     /// What the fields show, filled from the settings each time the panel opens.
-    fields: Option<[String; 3]>,
+    fields: Option<[String; 4]>,
     /// Why the typed amounts weren't saved.
     pub notice: Option<String>,
     /// Said after a save, until the next edit.
@@ -51,7 +52,8 @@ impl BudgetsPanel {
             return None;
         }
         let fields = self.fields.get_or_insert_with(|| {
-            [settings.per_call_usd_cents, settings.session_usd_cents, settings.total_usd_cents].map(|cents| cents.map(dollars).unwrap_or_default())
+            [settings.per_call_usd_cents, settings.session_usd_cents, settings.project_usd_cents, settings.total_usd_cents]
+                .map(|cents| cents.map(dollars).unwrap_or_default())
         });
         let mut save = None;
         let mut open = self.open;
@@ -92,7 +94,13 @@ impl BudgetsPanel {
                         if listed.is_empty() { "nothing".to_owned() } else { listed.join(", ") }
                     };
                     ui.label(
-                        egui::RichText::new(format!("Spent this session: {}. In total: {}.", text(&spent.session), text(&spent.project))).color(t.text_muted),
+                        egui::RichText::new(format!(
+                            "Spent this session: {}. In this project: {}. In total: {}.",
+                            text(&spent.session),
+                            text(&spent.this_project),
+                            text(&spent.project)
+                        ))
+                        .color(t.text_muted),
                     );
                 }
                 ui.horizontal(|ui| {
@@ -119,14 +127,14 @@ impl BudgetsPanel {
     }
 }
 
-/// The three fields as caps, or what is wrong with one of them.
-fn parse(fields: &[String; 3]) -> Result<BudgetSettings, String> {
-    let mut cents = [None; 3];
+/// The four fields as caps, or what is wrong with one of them.
+fn parse(fields: &[String; 4]) -> Result<BudgetSettings, String> {
+    let mut cents = [None; 4];
     for ((slot, field), (label, _)) in cents.iter_mut().zip(fields).zip(CAPS) {
         *slot = cents_of(field).map_err(|why| format!("{label}: {why}"))?;
     }
-    let [per_call_usd_cents, session_usd_cents, total_usd_cents] = cents;
-    Ok(BudgetSettings { per_call_usd_cents, session_usd_cents, total_usd_cents })
+    let [per_call_usd_cents, session_usd_cents, project_usd_cents, total_usd_cents] = cents;
+    Ok(BudgetSettings { per_call_usd_cents, session_usd_cents, project_usd_cents, total_usd_cents })
 }
 
 /// An amount in dollars, such as `5`, `0.25` or `$12.50`, as cents; empty is no cap.
@@ -180,7 +188,11 @@ mod tests {
         for cents in [0, 5, 25, 50, 1250, 10_000_000] {
             assert_eq!(cents_of(&dollars(cents)), Ok(Some(cents)));
         }
-        let fields = ["0.5".to_owned(), String::new(), "x".to_owned()];
+        let fields = ["0.5".to_owned(), String::new(), "x".to_owned(), String::new()];
+        assert!(parse(&fields).is_err_and(|why| why.starts_with("This project:")));
+        let fields = ["0.5".to_owned(), String::new(), "3".to_owned(), "x".to_owned()];
         assert!(parse(&fields).is_err_and(|why| why.starts_with("In total:")));
+        let fields = [String::new(), String::new(), "3".to_owned(), "10".to_owned()];
+        assert_eq!(parse(&fields).map(|caps| (caps.project_usd_cents, caps.total_usd_cents)), Ok((Some(300), Some(1000))));
     }
 }

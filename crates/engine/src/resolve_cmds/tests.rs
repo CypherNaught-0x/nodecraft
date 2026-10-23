@@ -17,6 +17,7 @@ fn reconciled() -> UsageLog {
     let mut file = UsageLogFile::default();
     for (key, cost) in [("one", 2), ("two", 3), ("three", 4)] {
         file.entries.push(UsageEntry {
+            project: None,
             at_ms: 0,
             session: "a".into(),
             node: nodecraft_types::NodeId::from_bytes([2; 16]),

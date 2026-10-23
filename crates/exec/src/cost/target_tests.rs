@@ -8,6 +8,7 @@ fn target(n: u8) -> ProviderTarget {
 }
 fn entry(target: &ProviderTarget, key: &str) -> UsageEntry {
     UsageEntry {
+        project: None,
         at_ms: 1,
         session: "a".into(),
         node: NodeId::from_bytes([1; 16]),
@@ -21,6 +22,7 @@ fn entry(target: &ProviderTarget, key: &str) -> UsageEntry {
 }
 fn metadata<'a>(target: &'a ProviderTarget, key: &'a str) -> UsageMetadata<'a> {
     UsageMetadata {
+        project: None,
         at_ms: 1,
         session: "a",
         node: NodeId::from_bytes([1; 16]),

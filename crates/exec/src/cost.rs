@@ -12,7 +12,7 @@ use crate::planner::RunPlan;
 use nodecraft_catalog::{Catalog, ModelDescriptor};
 use nodecraft_graph::{Canvas, Node};
 use nodecraft_nodes::Registry;
-use nodecraft_types::{Currency, Error, ErrorKind, Money, NodeId, ParamValues};
+use nodecraft_types::{Currency, Error, ErrorKind, Money, NodeId, ParamValues, ProjectId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -115,15 +115,27 @@ pub struct Budgets {
     pub per_call: Option<Money>,
     /// Most this session may spend in total.
     pub session: Option<Money>,
-    /// Most this project may spend in total.
+    /// Most every run the log has recorded may spend together, in every project and session.
     pub project: Option<Money>,
+    /// Most the open project may spend (#847): the charges the log records for it.
+    pub this_project: Option<Money>,
+}
+
+impl Budgets {
+    /// Whether any cap is set.
+    pub fn any(&self) -> bool {
+        self.per_call.is_some() || self.session.is_some() || self.project.is_some() || self.this_project.is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     PerCall,
     Session,
+    /// Everything the log records ([`Budgets::project`]).
     Project,
+    /// The open project's charges ([`Budgets::this_project`]).
+    ThisProject,
 }
 
 /// Why a run can't start under the caps.
@@ -144,6 +156,7 @@ impl Block {
             Scope::Session => "session",
             // The cap is on everything the spending log records, in every project (#201).
             Scope::Project => "total",
+            Scope::ThisProject => "project",
         };
         match self {
             Self::Over { scope, limit, would_be, .. } => {
@@ -210,7 +223,11 @@ pub fn check(quote: &Quote, budgets: &Budgets, spent: &Spent) -> Result<Admissio
             }
         }
     }
-    for (scope, limit, already) in [(Scope::Session, budgets.session, &spent.session), (Scope::Project, budgets.project, &spent.project)] {
+    for (scope, limit, already) in [
+        (Scope::Session, budgets.session, &spent.session),
+        (Scope::Project, budgets.project, &spent.project),
+        (Scope::ThisProject, budgets.this_project, &spent.this_project),
+    ] {
         let Some(limit) = limit else { continue };
         if let Some((node, _)) = quote.unpriced().next() {
             blocks.push(Block::Unknown { scope, node });
@@ -231,15 +248,19 @@ pub fn check(quote: &Quote, budgets: &Budgets, spent: &Spent) -> Result<Admissio
             blocks.push(Block::Over { scope, node: None, limit, would_be });
         }
     }
-    let provisional = if budgets.session.is_some() || budgets.project.is_some() { quote.estimated().collect() } else { Vec::new() };
+    let provisional =
+        if budgets.session.is_some() || budgets.project.is_some() || budgets.this_project.is_some() { quote.estimated().collect() } else { Vec::new() };
     Ok(Admission { blocks, provisional })
 }
 
-/// What has been spent, per currency, in a session and in the project.
+/// What has been spent, per currency: in a session, in total, and in one project.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Spent {
     pub session: BTreeMap<Currency, Money>,
+    /// Everything the log records, in every project and session.
     pub project: BTreeMap<Currency, Money>,
+    /// The charges recorded for the project asked about (#847); empty when none was named.
+    pub this_project: BTreeMap<Currency, Money>,
 }
 
 /// Explicit separation of descriptive bucket totals and conservative budget admission.
@@ -286,6 +307,10 @@ pub struct UsageEntry {
     pub provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<nodecraft_types::ProviderInstanceId>,
+    /// The project the charge was made for (#847). Charges recorded before projects were
+    /// recorded have none and count only towards the total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectId>,
     pub model: String,
     pub cost: Money,
     /// The idempotency key the provider was charged under, so a retry shows as one charge.
@@ -329,6 +354,11 @@ pub const MAX_PENDING: usize = 10_000;
 pub const MAX_SESSIONS: usize = 1024;
 /// The session name the folded totals of earlier sessions are kept under.
 pub const EARLIER_SESSIONS: &str = "";
+/// Most projects with their own totals (#847). Past it, the least recently charged project's
+/// total is forgotten (its charges still count in the overall total), so a project not charged
+/// while this many others were starts its project total afresh: the documented boundary. A
+/// settle or release of a charge whose project total was forgotten takes nothing from it.
+pub const MAX_PROJECTS: usize = 4096;
 
 type Totals = BTreeMap<Currency, Money>;
 
@@ -345,6 +375,11 @@ pub struct UsageLog {
     first_seq: u64,
     project: Totals,
     sessions: BTreeMap<String, Totals>,
+    /// Each project's own total (#847), within [`MAX_PROJECTS`].
+    projects: BTreeMap<ProjectId, Totals>,
+    /// When each project last charged (on the session clock; not saved: rebuilt from the
+    /// listed entries), so the least recently charged one is forgotten first.
+    project_clock: BTreeMap<ProjectId, u64>,
     /// Identities of charges that left the list, oldest first (see [`MAX_RETIRED_KEYS`]).
     retired: retirement::Store,
     /// Open charges that left the list, by `(provider, key)` (see [`MAX_PENDING`]).
@@ -448,6 +483,7 @@ impl PartialEq for UsageLog {
         self.entries().eq(other.entries())
             && self.reported_spent("") == other.reported_spent("")
             && self.merged_sessions() == other.merged_sessions()
+            && self.merged_projects() == other.merged_projects()
             && self.retired.fifo == other.retired.fifo
             && self.provider_identity_version == other.provider_identity_version
             && self.pending == other.pending
@@ -482,6 +518,9 @@ pub struct UsageLogFile {
     pub project: Totals,
     #[serde(default)]
     pub sessions: BTreeMap<String, Totals>,
+    /// Each project's own total (#847). Logs written before projects were recorded have none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub projects: BTreeMap<ProjectId, Totals>,
     /// Identities (hex) of charges that left the list, oldest first.
     #[serde(default)]
     pub retired: Vec<String>,
@@ -541,6 +580,14 @@ fn sub_from(map: &mut Totals, amount: Money) -> Result<(), Error> {
     Ok(())
 }
 
+/// `map` less `amount`, floored at nothing: a project's total may have been forgotten (see
+/// [`MAX_PROJECTS`]) while its charges stayed open.
+fn sub_floor(map: &mut Totals, amount: Money) {
+    if let Some(total) = map.get_mut(&amount.currency) {
+        total.micros = total.micros.saturating_sub(amount.micros);
+    }
+}
+
 fn check_entry(entry: &UsageEntry) -> Result<(), Error> {
     let bad = |m: &str| Err(Error::new(ErrorKind::InvalidInput, m.to_owned()));
     if entry.idempotency_key.is_empty() {
@@ -597,6 +644,14 @@ impl UsageLog {
         add_to(&mut project, entry.cost)?;
         let mut session = self.reported_spent(&entry.session).session;
         add_to(&mut session, entry.cost)?;
+        let this_project = match entry.project {
+            Some(id) => {
+                let mut totals = self.reported_spent_in(&entry.session, Some(id)).this_project;
+                add_to(&mut totals, entry.cost)?;
+                Some((id, totals))
+            }
+            None => None,
+        };
         // The same ceiling a saved log is held to, so every log that records can be reloaded.
         if project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
             return Err(Error::new(ErrorKind::Overflow, "the project's recorded spend is at its limit"));
@@ -638,6 +693,7 @@ impl UsageLog {
         self.sessions.insert(entry.session.clone(), session);
         self.clock = self.clock.saturating_add(1);
         self.session_clock.insert(entry.session.clone(), self.clock);
+        self.put_project(this_project, true);
         self.keys.insert(key, seq);
         self.text_bytes = self.text_bytes.saturating_add(text);
         let entry_instance_named = entry.instance.is_some();
@@ -720,6 +776,45 @@ impl UsageLog {
             }
         }
         Ok(Some(sessions))
+    }
+
+    /// `project`'s own total after it loses `sub` and gains `add`, for [`Self::put_project`];
+    /// `None` when there is no project, or nothing to take from a total already forgotten.
+    fn moved_project(&self, project: Option<ProjectId>, sub: Money, add: Option<Money>) -> Result<Option<(ProjectId, Totals)>, Error> {
+        let Some(id) = project else { return Ok(None) };
+        let Some(mut totals) = self.projects.get(&id).cloned().or_else(|| add.map(|_| Totals::new())) else { return Ok(None) };
+        sub_floor(&mut totals, sub);
+        if let Some(add) = add {
+            add_to(&mut totals, add)?;
+        }
+        Ok(Some((id, totals)))
+    }
+
+    /// Commits a project total; `charged` marks the project as just charged. Past
+    /// [`MAX_PROJECTS`] the least recently charged others are forgotten.
+    fn put_project(&mut self, moved: Option<(ProjectId, Totals)>, charged: bool) {
+        let Some((id, totals)) = moved else { return };
+        self.projects.insert(id, totals);
+        if charged {
+            self.project_clock.insert(id, self.clock);
+        }
+        self.trim_projects(Some(id));
+    }
+
+    /// Forgets the least recently charged project totals other than `keep` until at most
+    /// [`MAX_PROJECTS`] remain.
+    fn trim_projects(&mut self, keep: Option<ProjectId>) {
+        if self.projects.len() <= MAX_PROJECTS {
+            return;
+        }
+        let mut oldest: Vec<(u64, ProjectId)> =
+            self.projects.keys().filter(|id| Some(**id) != keep).map(|id| (self.project_clock.get(id).copied().unwrap_or(0), *id)).collect();
+        oldest.sort_unstable();
+        let excess = self.projects.len().saturating_sub(MAX_PROJECTS);
+        for (_, id) in oldest.into_iter().take(excess) {
+            self.projects.remove(&id);
+            self.project_clock.remove(&id);
+        }
     }
 
     /// The listed, unsettled entry for a key and its index.
@@ -805,12 +900,14 @@ impl UsageLog {
         let mut sessions = touched_sessions(&self.sessions, &entry.session);
         take_from_session(&mut sessions, &entry.session, entry.cost)?;
         give_to_session(&mut sessions, &entry.session, cost)?;
+        let moved = self.moved_project(entry.project, entry.cost, Some(cost))?;
         let retired = self.retired.prepare(
             if matches!(location, Location::Pending) && status == Charge::Actual { Some(retired_target_id(provider, instance, idempotency_key)) } else { None }
                 .into_iter(),
         )?;
         self.project = project;
         self.sessions.extend(sessions);
+        self.put_project(moved, false);
         match location {
             Location::Listed(index) => {
                 if let Some(entry) = self.entries.get_mut(index) {
@@ -867,8 +964,10 @@ impl UsageLog {
         sub_from(&mut project, entry.cost)?;
         let mut sessions = touched_sessions(&self.sessions, &entry.session);
         take_from_session(&mut sessions, &entry.session, entry.cost)?;
+        let moved = self.moved_project(entry.project, entry.cost, None)?;
         self.project = project;
         self.sessions.extend(sessions);
+        self.put_project(moved, false);
         let index = match location {
             Location::Listed(index) => index,
             Location::Pending => {
@@ -938,7 +1037,12 @@ impl UsageLog {
     /// Totals per currency for `session` and for the whole project, including entries that have
     /// left the list.
     pub fn spent(&self, session: &str) -> Spent {
-        let mut spent = self.reported_spent(session);
+        self.spent_in(session, None)
+    }
+
+    /// [`Self::spent`], with [`Spent::this_project`] for `project` (#847).
+    pub fn spent_in(&self, session: &str, project: Option<ProjectId>) -> Spent {
+        let mut spent = self.reported_spent_in(session, project);
         for group in self.ownership.groups.get(session).into_iter().flat_map(|groups| groups.values()) {
             let currency = group.original_open.currency;
             let named = spent.session.get(&currency).map_or(0, |m| m.micros);
@@ -951,8 +1055,21 @@ impl UsageLog {
 
     /// Exact declared bucket totals; use `spent` for conservative budget admission.
     pub fn reported_spent(&self, session: &str) -> Spent {
-        let mut spent = Spent { session: self.sessions.get(session).cloned().unwrap_or_default(), project: self.project.clone() };
+        self.reported_spent_in(session, None)
+    }
+
+    /// [`Self::reported_spent`], with [`Spent::this_project`] for `project` (#847).
+    pub fn reported_spent_in(&self, session: &str, project: Option<ProjectId>) -> Spent {
+        let mut spent = Spent {
+            session: self.sessions.get(session).cloned().unwrap_or_default(),
+            project: self.project.clone(),
+            this_project: project.and_then(|id| self.projects.get(&id)).cloned().unwrap_or_default(),
+        };
         for (_, e) in self.metadata.actuals() {
+            if project.is_some() && e.project == project {
+                let p = spent.this_project.entry(e.cost.currency).or_insert(Money::zero(e.cost.currency));
+                p.micros = p.micros.saturating_add(e.cost.micros);
+            }
             // Finalization proved every combined total below the fixed ceiling.
             let p = spent.project.entry(e.cost.currency).or_insert(Money::zero(e.cost.currency));
             p.micros = p.micros.saturating_add(e.cost.micros);
@@ -970,6 +1087,17 @@ impl UsageLog {
             admission: self.spent(session),
             has_uncertain_session_charges: self.ownership.groups.contains_key(session),
         }
+    }
+
+    fn merged_projects(&self) -> BTreeMap<ProjectId, Totals> {
+        let mut projects = self.projects.clone();
+        for (_, e) in self.metadata.actuals() {
+            if let Some(id) = e.project {
+                let value = projects.entry(id).or_default().entry(e.cost.currency).or_insert(Money::zero(e.cost.currency));
+                value.micros = value.micros.saturating_add(e.cost.micros);
+            }
+        }
+        projects
     }
 
     fn merged_sessions(&self) -> BTreeMap<String, Totals> {
@@ -1099,9 +1227,9 @@ impl UsageLog {
         scoped: bool,
     ) -> std::io::Result<usize> {
         out.write_all(if scoped {
-            b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key,provider_instance\r\n"
+            b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key,provider_instance,project\r\n"
         } else {
-            b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key\r\n"
+            b"time_ms,session,node,provider,model,amount,currency,status,idempotency_key,project\r\n"
         })?;
         let mut written = 0;
         for e in self.entries().skip(offset).take(limit) {
@@ -1124,6 +1252,10 @@ impl UsageLog {
                 if let Some(instance) = e.instance {
                     row.push_str(&instance.to_string());
                 }
+            }
+            row.push(',');
+            if let Some(project) = e.project {
+                row.push_str(&project.to_string());
             }
             let body_len = row.len();
             row.push_str("\r\n");
@@ -1177,6 +1309,7 @@ impl From<UsageLog> for UsageLogFile {
         let entries = log.entries().cloned().collect();
         let project = log.reported_spent("").project;
         let sessions = log.merged_sessions();
+        let projects = log.merged_projects();
         Self {
             provider_identity_version: log.provider_identity_version,
             open_session_ownership: if !log.ownership.resolutions.is_empty() {
@@ -1197,6 +1330,7 @@ impl From<UsageLog> for UsageLogFile {
             entries,
             project,
             sessions,
+            projects,
             retired: if log.provider_identity_version == 0 { log.retired.fifo.iter().map(hex).collect() } else { Vec::new() },
             retired_targets: if log.provider_identity_version == 1 {
                 log.retired.fifo.iter().map(retired_wire).collect::<Vec<_>>().into_boxed_slice().into_vec()
@@ -1245,6 +1379,7 @@ impl TryFrom<UsageLogFile> for UsageLog {
         let retired = retirement::Store::admit(file.retired.iter().filter_map(|s| unhex(s)).chain(file.retired_targets.iter().filter_map(parse_retired_wire)))?;
         let mut listed = Totals::new();
         let mut listed_sessions: BTreeMap<&str, Totals> = BTreeMap::new();
+        let mut listed_projects: BTreeMap<ProjectId, Totals> = BTreeMap::new();
         let mut keys = BTreeMap::new();
         for (seq, entry) in file.entries.iter().enumerate() {
             check_entry(entry)?;
@@ -1253,6 +1388,9 @@ impl TryFrom<UsageLogFile> for UsageLog {
             }
             add_to(&mut listed, entry.cost)?;
             add_to(listed_sessions.entry(entry.session.as_str()).or_default(), entry.cost)?;
+            if let Some(id) = entry.project {
+                add_to(listed_projects.entry(id).or_default(), entry.cost)?;
+            }
         }
         let mut pending = BTreeMap::new();
         for entry in &file.pending {
@@ -1266,6 +1404,9 @@ impl TryFrom<UsageLogFile> for UsageLog {
             }
             add_to(&mut listed, entry.cost)?;
             add_to(listed_sessions.entry(entry.session.as_str()).or_default(), entry.cost)?;
+            if let Some(id) = entry.project {
+                add_to(listed_projects.entry(id).or_default(), entry.cost)?;
+            }
         }
         let mut quarantine_keys = BTreeSet::new();
         for entry in &file.quarantined {
@@ -1279,6 +1420,9 @@ impl TryFrom<UsageLogFile> for UsageLog {
             }
             add_to(&mut listed, entry.cost)?;
             add_to(listed_sessions.entry(entry.session.as_str()).or_default(), entry.cost)?;
+            if let Some(id) = entry.project {
+                add_to(listed_projects.entry(id).or_default(), entry.cost)?;
+            }
         }
         let covers = |totals: Option<&Totals>, sums: &Totals| {
             sums.iter().all(|(currency, sum)| sum.micros == 0 || totals.and_then(|t| t.get(currency)).is_some_and(|t| t.micros >= sum.micros))
@@ -1328,10 +1472,32 @@ impl TryFrom<UsageLogFile> for UsageLog {
         if file.project.values().any(|m| m.micros > MAX_TOTAL_MICROS) {
             return Err(bad("a total is larger than any project could spend"));
         }
+        // A project's own total is part of the overall total. One that doesn't cover its listed
+        // charges was forgotten and charged again (see `MAX_PROJECTS`): it is raised to cover them,
+        // which never loosens a cap.
+        if file.projects.len() > MAX_PROJECTS {
+            return Err(bad("too many projects"));
+        }
+        let within = |totals: &Totals| totals.values().all(|m| file.project.get(&m.currency).is_some_and(|t| t.micros >= m.micros) || m.micros == 0);
+        if !file.projects.values().all(|t| consistent(t) && within(t)) {
+            return Err(bad("a project's total is larger than the total"));
+        }
+        let mut projects = std::mem::take(&mut file.projects);
+        for (id, sums) in listed_projects {
+            let totals = projects.entry(id).or_default();
+            for (currency, sum) in sums {
+                let total = totals.entry(currency).or_insert(Money::zero(currency));
+                total.micros = total.micros.max(sum.micros);
+            }
+        }
         let ownership = Ownership::admit(&mut file)?;
         let mut session_clock = BTreeMap::new();
+        let mut project_clock = BTreeMap::new();
         for (seq, entry) in file.entries.iter().enumerate() {
             session_clock.insert(entry.session.clone(), (seq as u64).saturating_add(1));
+            if let Some(id) = entry.project {
+                project_clock.insert(id, (seq as u64).saturating_add(1));
+            }
         }
         let clock = file.entries.len() as u64;
         let entry_order = (0..clock).collect();
@@ -1353,13 +1519,15 @@ impl TryFrom<UsageLogFile> for UsageLog {
             .into_iter()
             .map(|(name, totals)| metadata::compact_session(&name).map(|name| (name, totals)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        Ok(Self {
+        let mut log = Self {
             provider_identity_version: file.provider_identity_version,
             entries: listed_entries,
             keys: keys.into_iter().map(|((p, instance, k), seq)| (ownership::identity_target(&p, instance, &k), seq)).collect(),
             first_seq: 0,
             project: file.project,
             sessions,
+            projects,
+            project_clock,
             retired,
             pending_identities: pending.values().map(|e| ownership::identity_target(&e.provider, e.instance, &e.idempotency_key)).collect(),
             pending,
@@ -1370,7 +1538,9 @@ impl TryFrom<UsageLogFile> for UsageLog {
             metadata: Metadata::default(),
             entry_order,
             next_order: clock,
-        })
+        };
+        log.trim_projects(None);
+        Ok(log)
     }
 }
 

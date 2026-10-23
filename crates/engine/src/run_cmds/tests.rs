@@ -344,6 +344,7 @@ fn usage_exports_in_pages() {
     let mut log = UsageLog::default();
     for n in 0..(MAX_EXPORT_ROWS + 5) {
         let entry = nodecraft_exec::cost::UsageEntry {
+            project: None,
             instance: None,
             at_ms: 0,
             session: "s".into(),
@@ -371,14 +372,15 @@ fn usage_exports_in_pages() {
 fn usage_snapshot_pagination_observes_finalized_actuals_and_conservative_budget_constructor() {
     use nodecraft_exec::cost::{Charge, UsageMetadata};
     let mut log = UsageLog::default();
-    let metadata = |key| UsageMetadata { instance: None, at_ms: 1, session: "s", node: id(2), provider: "test", model: "m", idempotency_key: key };
+    let metadata =
+        |key| UsageMetadata { project: None, instance: None, at_ms: 1, session: "s", node: id(2), provider: "test", model: "m", idempotency_key: key };
     let mut first = log.reserve_metadata(metadata("first")).unwrap();
     let mut second = log.reserve_metadata(metadata("second")).unwrap();
     let _held = log.reserve_metadata(metadata("held")).unwrap();
     log.finalize_metadata(&mut second, usd(3)).unwrap();
     log.finalize_metadata(&mut first, usd(2)).unwrap();
     assert_eq!(log.metadata_statistics().finalized, 2);
-    let budget = BudgetState::from_usage(Budgets::default(), &log, "s");
+    let budget = BudgetState::from_usage(Budgets::default(), &log, "s", None);
     assert_eq!(budget.spent.session.get(&Currency::USD), Some(&usd(5)));
     assert_eq!(log.charge("test", "first").unwrap().status, Charge::Actual);
     let mut resources = Resources::default();
@@ -393,7 +395,7 @@ fn usage_snapshot_pagination_observes_finalized_actuals_and_conservative_budget_
     assert!(two["csv"].as_str().unwrap().contains(",actual,second"));
 
     let uncertain: UsageLog = serde_json::from_str(include_str!("../../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
-    let state = BudgetState::from_usage(Budgets::default(), &uncertain, "a");
+    let state = BudgetState::from_usage(Budgets::default(), &uncertain, "a", None);
     assert_eq!(state.spent.session, uncertain.budget_view("a").admission.session);
     assert_eq!(state.spent.project, uncertain.budget_view("a").admission.project);
     assert_ne!(state.spent.session, uncertain.reported_spent("a").session);
@@ -406,7 +408,7 @@ fn run_quote_consumes_conservative_usage_state_without_changing_reporting() {
     // 120000 quoted + raw5 fits120007; conservative10 does not.
     let mut resources = Resources::default();
     resources.insert(RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap());
-    resources.insert(BudgetState::from_usage(Budgets { session: Some(usd(120007)), ..Budgets::default() }, &uncertain, "a"));
+    resources.insert(BudgetState::from_usage(Budgets { session: Some(usd(120007)), ..Budgets::default() }, &uncertain, "a", None));
     let before = serde_json::to_string(&uncertain).unwrap();
     let retained = Arc::new(uncertain);
     resources.insert(UsageSnapshot(Arc::clone(&retained)));
@@ -416,11 +418,49 @@ fn run_quote_consumes_conservative_usage_state_without_changing_reporting() {
     assert_eq!(serde_json::to_string(retained.as_ref()).unwrap(), before);
 }
 
+/// The project cap is checked against the open project's spending even when the budget was last
+/// installed for another project (#847).
+#[test]
+fn run_quote_checks_the_open_projects_own_spending() {
+    let open = project().id();
+    let other = ProjectId::from_bytes([9; 16]);
+    let quote_with = |charges: &[(ProjectId, u64)]| {
+        let mut log = UsageLog::default();
+        for (n, (project, micros)) in charges.iter().enumerate() {
+            log.record(nodecraft_exec::cost::UsageEntry {
+                project: Some(*project),
+                instance: None,
+                at_ms: 1,
+                session: "s".into(),
+                node: id(2),
+                provider: "test".into(),
+                model: "test.img".into(),
+                cost: usd(*micros),
+                idempotency_key: format!("k{n}"),
+                status: nodecraft_exec::cost::Charge::Actual,
+            })
+            .unwrap();
+        }
+        let (mut session, _) = session(Budgets::default(), false);
+        // Installed while `other` was open.
+        session.swap_resource(Some(BudgetState::from_usage(Budgets { this_project: Some(usd(150_000)), ..Budgets::default() }, &log, "s", Some(other))));
+        session.swap_resource(Some(UsageSnapshot(Arc::new(log))));
+        session.dispatch("run.quote", &request(&[2])).unwrap()
+    };
+    // 0.12 quoted: the open project's 0.10 takes it past 0.15; the other project's 0.50 doesn't count.
+    let over = quote_with(&[(open, 100_000)]);
+    assert_eq!(over["allowed"], false, "{over}");
+    assert!(over["blocks"].to_string().contains("project budget"), "{over}");
+    let fine = quote_with(&[(other, 500_000)]);
+    assert_eq!(fine["allowed"], true, "{fine}");
+}
+
 fn hostile_usage_session() -> (Session, String) {
     let mut log = UsageLog::default();
     let text = "\"\\\n\r\t\u{0000}é".repeat(50);
     for n in 0..MAX_EXPORT_ROWS {
         log.record(nodecraft_exec::cost::UsageEntry {
+            project: None,
             instance: None,
             at_ms: n as u64,
             session: text.clone(),
@@ -485,6 +525,7 @@ fn csv_small_injected_ceiling_admits_exact_rows_and_never_stalls() {
     let mut log = UsageLog::default();
     for n in 0..3 {
         log.record(nodecraft_exec::cost::UsageEntry {
+            project: None,
             instance: None,
             at_ms: n,
             session: "s".into(),
@@ -792,6 +833,7 @@ fn byte_bounded_command_pages_merge_actual_overlays_without_exposing_held_shells
     let heavy = "\u{1}".repeat(500);
     let add = |log: &mut UsageLog, n: usize| {
         log.record(UsageEntry {
+            project: None,
             instance: None,
             at_ms: n as u64,
             session: heavy.clone(),
@@ -807,7 +849,8 @@ fn byte_bounded_command_pages_merge_actual_overlays_without_exposing_held_shells
     for n in 0..100 {
         add(&mut log, n)
     }
-    let metadata = |key| UsageMetadata { instance: None, at_ms: 101, session: "s", node: id(2), provider: "overlay", model: "m", idempotency_key: key };
+    let metadata =
+        |key| UsageMetadata { project: None, instance: None, at_ms: 101, session: "s", node: id(2), provider: "overlay", model: "m", idempotency_key: key };
     let mut first = log.reserve_metadata(metadata("first-overlay")).unwrap();
     let mut second = log.reserve_metadata(metadata("second-overlay")).unwrap();
     let _held = log.reserve_metadata(metadata("held-not-listed")).unwrap();
@@ -1163,6 +1206,7 @@ fn scoped_csv_paging_preserves_identity_beyond_first_page() {
     let mut log = UsageLog::default();
     for n in 0..=MAX_EXPORT_ROWS {
         log.record(UsageEntry {
+            project: None,
             at_ms: n as u64,
             session: "s".into(),
             node: id(2),
