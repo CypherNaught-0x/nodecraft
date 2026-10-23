@@ -1093,11 +1093,16 @@ impl Session {
     fn drop_stale_step(&mut self, step: &Direction) -> Option<Error> {
         let (history, message) = match step {
             Direction::Undo => (&mut self.undo, "someone else changed what this step needs, so it can't be undone; it was taken off the undo history"),
-            _ => (&mut self.redo, "someone else changed what this step needs, so it can't be redone; it was taken off the redo history"),
+            Direction::Redo => (&mut self.redo, "someone else changed what this step needs, so it can't be redone; it was taken off the redo history"),
+            _ => return None,
         };
         let entry = history.entries.back().filter(|entry| entry.shared)?;
         if guard(|| Ok(entry.inverse.stage_certified(&self.document).is_err())).unwrap_or(false) {
             history.pop();
+            if matches!(step, Direction::Undo) {
+                // A gesture under way amended the step just dropped: what follows starts its own.
+                self.gesture = None;
+            }
             Some(Error::new(ErrorKind::Conflict, message))
         } else {
             None

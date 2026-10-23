@@ -443,14 +443,24 @@ impl Room {
         if self.merged.saturating_add(more) <= self.limit {
             return true;
         }
-        // Measuring is a pass over the whole document: only after a fair share came in since.
-        if self.merged.saturating_sub(self.measured) < self.limit / 8 {
+        self.settle();
+        self.merged.saturating_add(more) <= self.limit
+    }
+
+    /// Measures what the document really holds, if enough came in since it was last measured:
+    /// an eighth of the limit, or half of what was left then, so a room measured close to full
+    /// is measured again before it refuses. Measuring is a pass over the whole document, as
+    /// catching up a newcomer is. Returns whether the count went down.
+    pub fn settle(&mut self) -> bool {
+        let headroom = self.limit.saturating_sub(self.measured);
+        if self.merged.saturating_sub(self.measured) < (self.limit / 8).min(headroom / 2).max(1) {
             return false;
         }
         let Some(size) = self.size() else { return false };
+        let shrank = size < self.merged;
         self.merged = size;
         self.measured = size;
-        size.saturating_add(more) <= self.limit
+        shrank
     }
 
     /// The bytes of the document as one update.

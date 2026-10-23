@@ -81,6 +81,22 @@ mod tests {
     }
 
     #[test]
+    fn a_redo_that_a_peer_made_needless_is_dropped() {
+        let mut session = session();
+        let canvas = CanvasId::from_bytes([2; 16]);
+        let node = Node::new(NodeId::from_bytes([3; 16]), "text");
+        session.dispatch("node.add", &json!({"canvas": canvas, "node": node})).unwrap();
+        session.dispatch("edit.undo", &json!({})).unwrap();
+        // Another person adds the same card back, so redoing the add can't apply.
+        session.apply_remote(Changeset::new(vec![Change::AddNode { canvas, node }])).unwrap();
+        let error = session.dispatch("edit.redo", &json!({})).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        assert!(error.to_string().contains("taken off the redo history"), "{error}");
+        assert!(session.dispatch("edit.redo", &json!({})).is_err());
+        assert!(session.redo.entries.is_empty());
+    }
+
+    #[test]
     fn an_undo_that_fails_with_no_peer_edit_since_stays() {
         let mut session = session();
         let canvas = CanvasId::from_bytes([2; 16]);

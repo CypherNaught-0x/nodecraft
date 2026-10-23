@@ -111,6 +111,13 @@ impl Rooms {
         self.rooms.values().map(Room::held).fold(0, usize::saturating_add)
     }
 
+    /// Has every room that took in enough since it last measured measure what it holds.
+    fn settle(&mut self) {
+        for room in self.rooms.values_mut() {
+            room.settle();
+        }
+    }
+
     fn leave(&mut self, peer: Peer) {
         if let Some(Inbox { room, .. }) = self.peers.remove(&peer)
             && let Some(state) = self.rooms.get_mut(&room)
@@ -312,7 +319,13 @@ fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, 
             Ok(Message::Binary(bytes)) => {
                 let mut rooms = lock(rooms);
                 let Some(room) = rooms.peers.get(&peer).map(|inbox| inbox.room.clone()) else { return };
-                let outs = match Frame::decode(&bytes) {
+                let frame = Frame::decode(&bytes);
+                let grows = matches!(frame, Ok(Frame::Update(_) | Frame::Step2(_) | Frame::AssetPut { .. } | Frame::CommentPut { .. }));
+                if grows && rooms.held() > MAX_RELAY_BYTES {
+                    // Rooms count what they merged until they measure: measure before refusing.
+                    rooms.settle();
+                }
+                let outs = match frame {
                     // What would add to what the relay holds waits until there is room for it.
                     Ok(Frame::Update(_) | Frame::Step2(_) | Frame::AssetPut { .. } | Frame::CommentPut { .. }) if rooms.held() > MAX_RELAY_BYTES => {
                         vec![Out::Close(peer, Frame::Refused("the relay is full".into()))]
