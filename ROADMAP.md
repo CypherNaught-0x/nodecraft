@@ -22,7 +22,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 16/27 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 8/11 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18) | 19/30 |
-| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 6/12 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 7/12 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 4/8 |
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence pending | 6/14 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial | 1/27 |
@@ -71,7 +71,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   the text the pages draw (#113). A PDF reader pages through a PDF, sets a node's page range, and extracts a page or
   its text into new nodes (#590). Scanned pages are recognised by a vision-capable text model: PDF to
   text headings mark pages that draw no text, PDF to images can draw only those, and the built-in
-  chat models take up to 16 images on a text card (#592).
+  chat models take up to 16 images on a text card (#592). They also read up to 5 wired PDFs
+  directly, up to 100 pages a request, refused before sending when longer and with the pages'
+  input tokens in the quote; a model that can't read PDFs points to PDF to text (#591).
   Improve prompt on the generation toolbar puts a text card, which rewrites the card's typed
   prompt, in front of it and wires the rewrite in; it runs, and is priced, like any other card (#582).
   The builtin catalog lists chat models on the OpenAI and Anthropic endpoints (GPT-6.1 Sol,

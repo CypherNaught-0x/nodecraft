@@ -20,7 +20,7 @@ fn model(id: &str, mode: &str, inputs: Vec<GenerationRole>) -> GenerationModel {
         provider: "tripo".into(),
         remote: id.into(),
         parameters: Contract::from_schema(id, ParamOwner::Model, ParamSchema::default()),
-        modes: vec![GenerationMode { id: ModeId::new(mode).unwrap(), inputs, params: None, audio: None, edit: None }],
+        modes: vec![GenerationMode { id: ModeId::new(mode).unwrap(), inputs, params: None, audio: None, edit: None, document: None }],
     }
 }
 fn kind() -> GenerationKind {
@@ -107,6 +107,7 @@ fn the_image_card_plans_an_image_only_mode_too() {
             params: None,
             audio: None,
             edit: None,
+            document: None,
         }],
         ..model("esrgan", "upscale", vec![])
     };

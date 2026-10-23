@@ -27,7 +27,7 @@ fn model(id: &str, mode: &str, inputs: Vec<GenerationRole>) -> GenerationModel {
         provider: "mock".into(),
         remote: format!("mock-{id}"),
         parameters: Contract::from_schema(id, ParamOwner::Model, schema),
-        modes: vec![GenerationMode { id: ModeId::new(mode).unwrap(), inputs, params: None, audio: None, edit: None }],
+        modes: vec![GenerationMode { id: ModeId::new(mode).unwrap(), inputs, params: None, audio: None, edit: None, document: None }],
     }
 }
 fn kind() -> GenerationKind {

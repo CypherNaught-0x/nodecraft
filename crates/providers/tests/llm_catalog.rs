@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::executor::block_on;
 use nodecraft_catalog::{Catalog, ModelDescriptor};
-use nodecraft_providers::llm::{ApiKey, Endpoint, LlmClient, MAX_IMAGES};
+use nodecraft_providers::llm::{ApiKey, Endpoint, LlmClient, MAX_DOCUMENTS, MAX_IMAGES};
 use nodecraft_providers::{BoxFuture, Http, HttpRequest, HttpResponse, JobInput, Output, Provider, ProviderError, ProviderJob, Submission};
 use nodecraft_types::{Modality, Number, ParamValues, Unsigned, Value};
 use serde_json::{Value as Json, json};
@@ -93,9 +93,16 @@ fn every_builtin_chat_model_builds_a_request_the_adapter_sends() {
         ]
     );
     for model in models {
-        // A text-to-text mode with an inline prompt, so a generation.text card runs it unwired, and
-        // an image-to-text mode reading up to the adapter's image cap beside the prompt (#592).
-        let [mode, vision] = model.modes.as_slice() else { panic!("{}: two modes", model.id) };
+        // A text-to-text mode with an inline prompt, so a generation.text card runs it unwired,
+        // an image-to-text mode reading up to the adapter's image cap beside the prompt (#592),
+        // and a document-to-text mode reading PDFs within the adapter's caps (#591).
+        let [mode, vision, reading] = model.modes.as_slice() else { panic!("{}: three modes", model.id) };
+        assert_eq!((reading.id.as_str(), reading.output), ("document-to-text", Modality::Text), "{}", model.id);
+        let [_, document] = reading.inputs.as_slice() else { panic!("{}: a prompt and a document role", model.id) };
+        assert_eq!((document.role.as_str(), document.modality, document.min), ("document", Modality::Document, 1), "{}", model.id);
+        assert!(usize::from(document.max) <= MAX_DOCUMENTS, "{}: no more PDFs than the adapter sends", model.id);
+        let reads = reading.document.as_ref().unwrap_or_else(|| panic!("{}: says how it reads PDFs", model.id));
+        assert_eq!((reads.role.as_str(), reads.max_pages), ("document", 100), "{}: both APIs read 100 pages a request", model.id);
         assert_eq!((mode.id.as_str(), mode.output), ("text-to-text", Modality::Text), "{}", model.id);
         let [prompt] = mode.inputs.as_slice() else { panic!("{}: one input role", model.id) };
         assert_eq!((prompt.role.as_str(), prompt.modality, prompt.min, prompt.max, prompt.inline), ("prompt", Modality::Text, 1, 1, true));
@@ -178,5 +185,31 @@ fn every_builtin_chat_model_sends_the_prompt_and_its_images_in_one_message() {
         let kinds: Vec<&str> = content.iter().map(|p| p["type"].as_str().unwrap()).collect();
         let expected = if model.provider == "openai" { ["text", "image_url"] } else { ["text", "image"] };
         assert_eq!(kinds, expected, "{}", model.id);
+    }
+}
+
+#[test]
+fn every_builtin_chat_model_sends_a_wired_pdf_as_a_document() {
+    let catalog = Catalog::builtin().unwrap();
+    for model in chat_models(&catalog) {
+        let mut job = job(model, &ParamValues::new());
+        // The engine sends the prompt first, then the wired PDFs (#591).
+        for _ in 0..2 {
+            job.inputs.push(JobInput::Media { role: "document".into(), mime: "application/pdf".into(), bytes: Arc::from(&b"%PDF-1.7"[..]) });
+        }
+        let (request, done) = send(model, &job);
+        let body: Json = serde_json::from_slice(&request.body).unwrap();
+        let content = body["messages"][0]["content"].as_array().unwrap_or_else(|| panic!("{}: parts", model.id));
+        let kinds: Vec<&str> = content.iter().map(|p| p["type"].as_str().unwrap()).collect();
+        if model.provider == "openai" {
+            assert_eq!(kinds, ["text", "file", "file"], "{}", model.id);
+            assert_eq!(content[1]["file"]["file_data"], "data:application/pdf;base64,JVBERi0xLjc=");
+            assert_ne!(content[1]["file"]["filename"], content[2]["file"]["filename"], "{}: each file is named", model.id);
+        } else {
+            assert_eq!(kinds, ["text", "document", "document"], "{}", model.id);
+            assert_eq!(content[1]["source"], json!({"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjc="}));
+        }
+        let Submission::Finished(done) = done else { panic!("{}: chat replies finish at submit", model.id) };
+        assert_eq!(done.outputs, vec![Output::Text("A quiet harbour at dawn.".into())]);
     }
 }

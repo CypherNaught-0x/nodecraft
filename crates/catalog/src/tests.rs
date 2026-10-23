@@ -873,3 +873,79 @@ default = { type = "text", value = "720p" }
         assert!(error.message.contains(why), "{why}: {}", error.message);
     }
 }
+
+/// A text model reading PDFs, with `document` spliced into its document mode.
+fn reader(document: &str) -> Result<Catalog, nodecraft_types::Error> {
+    Catalog::from_toml(&format!(
+        r#"
+[[model]]
+id = "test.reader"
+provider = "test"
+provider_model = "reader-v1"
+label = "Test Reader"
+description = "Reads PDFs."
+latency_s = 10
+quality = 3
+pricing = {{ type = "per_unit", unit = "thousand_tokens", price = "0.02 USD", count = "max_tokens" }}
+usage = {{ input = "0.004 USD", output = "0.02 USD", long = {{ above = 100000, input = "0.008 USD", output = "0.04 USD" }} }}
+
+[[model.modes]]
+id = "document-to-text"
+output = "text"
+inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }}, {{ role = "document", modality = "document", min = 1, max = 5 }}]
+{document}
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max tokens"
+control = {{ type = "unsigned", min = "1", max = "64000" }}
+default = {{ type = "unsigned", value = "1000" }}
+"#
+    ))
+}
+
+#[test]
+fn pdf_pages_add_their_input_tokens_to_the_quote() {
+    let catalog = reader(r#"document = { role = "document", max_pages = 100, tokens_per_page = 3000 }"#).unwrap();
+    let model = catalog.get("test.reader").unwrap();
+    let document = model.mode("document-to-text").and_then(|mode| mode.document.as_ref()).unwrap();
+    let params = ParamValues::new();
+    // 1000 output tokens at 0.02 USD per 1000.
+    let base = Money::new(Currency::USD, 20_000);
+    assert_eq!(model.quote_inputs(&params, None, 0).unwrap(), Some(base), "no PDF, the output-only quote");
+    // 10 pages × 3000 tokens = 30000 input tokens at 0.004 USD per 1000 = 0.12 USD.
+    assert_eq!(model.quote_inputs(&params, None, document.tokens(10)).unwrap(), Some(Money::new(Currency::USD, 140_000)));
+    // 100 pages = 300000 tokens: over the long-prompt threshold, so the long rate applies.
+    assert_eq!(model.quote_inputs(&params, None, document.tokens(100)).unwrap(), Some(Money::new(Currency::USD, 20_000 + 2_400_000)));
+    assert!(model.quote_inputs(&params, None, u64::MAX).is_err(), "a hostile token count is refused, not wrapped");
+}
+
+#[test]
+fn a_mode_taking_pdfs_must_say_how_it_reads_them() {
+    for (document, reason) in [
+        ("", "says how it reads them"),
+        (r#"document = { role = "prompt", max_pages = 100, tokens_per_page = 3000 }"#, "isn't its one document input"),
+        (r#"document = { role = "document", max_pages = 0, tokens_per_page = 3000 }"#, "max_pages"),
+        (r#"document = { role = "document", max_pages = 100, tokens_per_page = 0 }"#, "tokens_per_page"),
+        (r#"document = { role = "document", max_pages = 100, tokens_per_page = 3000, pages = 2 }"#, ""),
+    ] {
+        let error = reader(document).unwrap_err();
+        assert!(error.message.contains(reason), "{document}: {}", error.message);
+    }
+}
+
+#[test]
+fn builtin_chat_models_read_pdfs_and_quote_their_pages() {
+    let catalog = Catalog::builtin().unwrap();
+    let chat: Vec<_> = catalog.models().filter(|model| model.provider == "anthropic" || model.provider == "openai").collect();
+    assert!(!chat.is_empty());
+    for model in chat {
+        let id = &model.id;
+        let document = model.mode("document-to-text").and_then(|mode| mode.document.as_ref()).unwrap_or_else(|| panic!("{id} reads PDFs"));
+        assert_eq!((document.role.as_str(), document.max_pages), ("document", 100), "{id}");
+        let params = ParamValues::new();
+        let base = model.quote_inputs(&params, None, 0).unwrap().unwrap();
+        let read = model.quote_inputs(&params, None, document.tokens(10)).unwrap().unwrap();
+        assert_eq!(base.checked_cmp(read).unwrap(), std::cmp::Ordering::Less, "{id}: pages cost input tokens");
+    }
+}
