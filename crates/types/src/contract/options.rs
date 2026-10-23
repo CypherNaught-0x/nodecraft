@@ -3,7 +3,8 @@
 
 use crate::{Choice, Error, ErrorKind, schema::invalid};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// The most values one list may hold.
 pub const MAX_OPTIONS: usize = 16_384;
@@ -57,10 +58,49 @@ impl OptionLookup for NoOptions {
 
 type OwnedKey = (String, String, Option<String>);
 
+/// An opaque installation identity, for invalidating transient view caches without scanning
+/// the list. Accepted replacements and new resources receive different identities, even when
+/// their text is identical; retaining an identity retains no choices or label/value text.
+#[derive(Clone, Debug)]
+pub struct OptionListId(Arc<()>);
+
+impl PartialEq for OptionListId {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for OptionListId {}
+
+/// Borrowed installed choices, with an index into their original host order.
+#[derive(Clone, Copy)]
+pub struct OptionList<'a> {
+    list: &'a List,
+}
+
+impl<'a> OptionList<'a> {
+    /// All choices in the host's order.
+    pub fn choices(self) -> &'a [Choice] {
+        &self.list.choices
+    }
+
+    /// The position of an exact stored value, without a linear label scan.
+    pub fn index(self, value: &str) -> Option<usize> {
+        self.list.values.get(value).copied()
+    }
+
+    /// The identity of this accepted installation, independent of document revisions.
+    pub fn identity(self) -> OptionListId {
+        self.list.identity.clone()
+    }
+}
+
 struct List {
     choices: Vec<Choice>,
-    values: BTreeSet<String>,
+    // The text budget includes the duplicate value strings. Row indices add one usize each,
+    // separately bounded by MAX_OPTIONS per list and MAX_OPTION_LISTS across the resource.
+    values: BTreeMap<String, usize>,
     bytes: usize,
+    identity: OptionListId,
 }
 
 /// A bounded set of fetched lists, which a host installs as a session resource. Setting a
@@ -82,13 +122,13 @@ impl OptionLists {
             return Err(invalid("an option list exceeds 16,384 values"));
         }
         let mut bytes = key.owner.len().saturating_add(key.source.len()).saturating_add(key.scope.map_or(0, str::len));
-        let mut values = BTreeSet::new();
-        for choice in &choices {
+        let mut values = BTreeMap::new();
+        for (index, choice) in choices.iter().enumerate() {
             if choice.value.is_empty()
                 || choice.value.len() > MAX_OPTION_TEXT
                 || choice.label.trim().is_empty()
                 || choice.label.len() > MAX_OPTION_TEXT
-                || values.contains(choice.value.as_str())
+                || values.contains_key(choice.value.as_str())
             {
                 return Err(invalid("option values must be unique and bounded, with nonempty labels"));
             }
@@ -96,7 +136,7 @@ impl OptionLists {
             if bytes > MAX_OPTION_BYTES {
                 return Err(Error::new(ErrorKind::InvalidInput, "too many fetched option lists; clear some first"));
             }
-            values.insert(choice.value.clone());
+            values.insert(choice.value.clone(), index);
         }
         let owned = owned(key);
         let replaced = self.lists.get(&owned).map_or(0, |list| list.bytes);
@@ -105,7 +145,7 @@ impl OptionLists {
             return Err(Error::new(ErrorKind::InvalidInput, "too many fetched option lists; clear some first"));
         }
         self.bytes = total;
-        self.lists.insert(owned, List { choices, values, bytes });
+        self.lists.insert(owned, List { choices, values, bytes, identity: OptionListId(Arc::new(())) });
         Ok(())
     }
 
@@ -135,6 +175,11 @@ impl OptionLists {
         self.lists.get(&owned(key)).map(|list| list.choices.as_slice())
     }
 
+    /// A borrowed indexed view, or `None` while the list is unknown.
+    pub fn view(&self, key: OptionKey<'_>) -> Option<OptionList<'_>> {
+        self.lists.get(&owned(key)).map(|list| OptionList { list })
+    }
+
     pub fn len(&self) -> usize {
         self.lists.len()
     }
@@ -149,7 +194,7 @@ impl OptionLookup for OptionLists {
         self.lists.contains_key(&owned(key))
     }
     fn contains(&self, key: OptionKey<'_>, value: &str) -> Option<bool> {
-        self.lists.get(&owned(key)).map(|list| list.values.contains(value))
+        self.lists.get(&owned(key)).map(|list| list.values.contains_key(value))
     }
 }
 

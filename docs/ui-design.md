@@ -111,6 +111,12 @@ once on release. Titles default to the first nonempty prompt/text line, or the k
 clipped to 64 Unicode characters. Unknown node kinds retain their title and show an unavailable
 message. Asset controls display/remove existing references; OS file drop and desktop clipboard image import create source nodes (#197, #63).
 
+Fetched option pickers open at the current choice. Their filter matches labels and stored
+values without editing the document, and shows progress while scanning a large list. Popup
+width stays fixed and long rows truncate. Use default clears the stored override through the
+same undoable parameter edit, including when the old value is no longer listed. Unknown lists
+keep the editable text control and Refresh guidance. Reset is disabled without a stored override.
+
 ## Level of detail and performance
 
 - **Frame budget (#65).** `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`

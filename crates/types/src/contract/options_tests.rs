@@ -161,3 +161,45 @@ fn option_lists_are_bounded_and_keep_the_old_list_on_refusal() {
     assert_eq!(mixed.len(), 1);
     assert!(mixed.get(key("fal.voices", None)).is_some(), "other providers' lists stay");
 }
+
+#[test]
+fn indexed_views_keep_host_order_and_follow_replacement_refusal_and_clear() {
+    let mut lists = OptionLists::default();
+    let k = key("comfyui.checkpoints", None);
+    lists.set(k, choices(&["z", "a", "m"])).unwrap();
+    let view = lists.view(k).unwrap();
+    assert_eq!(view.choices(), lists.get(k).unwrap());
+    assert_eq!(view.index("a"), Some(1));
+    assert_eq!(view.index("missing"), None);
+    let original = view.identity();
+    assert_eq!(original, lists.view(k).unwrap().identity());
+    assert!(lists.set(k, choices(&["z", "z"])).is_err());
+    assert_eq!(original, lists.view(k).unwrap().identity(), "a refused replacement preserves the view identity");
+    lists.set(k, choices(&["m", "z"])).unwrap();
+    let replacement = lists.view(k).unwrap();
+    assert_ne!(original, replacement.identity());
+    assert_eq!(replacement.index("m"), Some(0));
+    assert_eq!(replacement.index("z"), Some(1));
+    assert_eq!(replacement.index("a"), None);
+    assert_eq!(lists.contains(k, "a"), Some(false));
+    lists.clear(k);
+    assert!(lists.view(k).is_none());
+    assert_eq!(lists.contains(k, "m"), None);
+}
+
+#[test]
+fn maximum_lists_are_indexed_and_a_new_resource_never_reuses_the_old_identity() {
+    let k = key("comfyui.checkpoints", None);
+    let values = || (0..MAX_OPTIONS).rev().map(|n| Choice { value: n.to_string(), label: format!("Model {n}") }).collect();
+    let mut first = OptionLists::default();
+    first.set(k, values()).unwrap();
+    let old = first.view(k).unwrap().identity();
+    assert_eq!(first.view(k).unwrap().index("0"), Some(MAX_OPTIONS - 1));
+    let mut next = OptionLists::default();
+    next.set(k, values()).unwrap();
+    assert_ne!(old, next.view(k).unwrap().identity());
+    next.set(k, Vec::new()).unwrap();
+    let empty = next.view(k).unwrap();
+    assert!(empty.choices().is_empty());
+    assert_eq!(empty.index("0"), None);
+}

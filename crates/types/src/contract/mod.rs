@@ -17,7 +17,7 @@ mod tests;
 
 pub use condition::{Comparison, Condition};
 pub use merge::{ConnectedText, DropReason, Dropped, Migration, Shared, TextPrecedence, compose_text, overlay, shared_value};
-pub use options::{MAX_OPTION_BYTES, MAX_OPTION_LISTS, MAX_OPTIONS, NoOptions, OptionKey, OptionLists, OptionLookup, OptionSource};
+pub use options::{MAX_OPTION_BYTES, MAX_OPTION_LISTS, MAX_OPTIONS, NoOptions, OptionKey, OptionList, OptionListId, OptionLists, OptionLookup, OptionSource};
 pub use resolve::{Effective, Issue, IssueCode, ParamOptions, ParamState, Resolution};
 
 use crate::{Error, ErrorKind, ParamControl, ParamSchema, ParamSpec, schema::invalid};

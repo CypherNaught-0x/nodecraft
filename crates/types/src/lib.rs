@@ -22,8 +22,9 @@ pub use asset::{AssetRef, Blake3, ColorSpace, MediaMeta, Mime};
 pub use audio_use::{AudioDuration, AudioOverrun, AudioSound, AudioUse, MAX_AUDIO_MS, seconds};
 pub use contract::{
     Affects, Check, Comparison, Condition, ConnectedText, Contract, ContractVersion, DefaultPolicy, DropReason, Dropped, Effective, HiddenPolicy, Issue,
-    IssueCode, MAX_OPTION_BYTES, MAX_OPTION_LISTS, MAX_OPTIONS, Migration, NoOptions, OptionKey, OptionLists, OptionLookup, OptionSource, ParamOptions,
-    ParamOwner, ParamRule, ParamState, Resolution, Shared, TextPrecedence, Unit, compose_text, model_namespace, overlay, shared_value,
+    IssueCode, MAX_OPTION_BYTES, MAX_OPTION_LISTS, MAX_OPTIONS, Migration, NoOptions, OptionKey, OptionList, OptionListId, OptionLists, OptionLookup,
+    OptionSource, ParamOptions, ParamOwner, ParamRule, ParamState, Resolution, Shared, TextPrecedence, Unit, compose_text, model_namespace, overlay,
+    shared_value,
 };
 pub use document_use::{DocumentUse, MAX_DOCUMENT_PAGES, MAX_TOKENS_PER_PAGE};
 pub use error::{Error, ErrorKind};

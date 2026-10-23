@@ -474,8 +474,10 @@ pub fn show(
                                 // ordinary control, which shows it as it is.
                                 let text = value.is_none_or(|value| matches!(value, Value::Text(_)));
                                 let choices = list.filter(|_| text).and_then(|list| list.choices(lists));
+                                // A stored copy of the default (a new card stores its defaults) is not an override.
+                                let overridden = node.params.get(&spec.name).is_some_and(|stored| spec.default.as_ref() != Some(stored));
                                 let changed = match choices {
-                                    Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, label.id, t)).inner,
+                                    Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, overridden, label.id, t)).inner,
                                     None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
                                     None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
                                 };

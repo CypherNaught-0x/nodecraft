@@ -3,7 +3,19 @@
 //! picker showing each choice's label and storing its value, through the same parameter edit as
 //! every other control; until then it stays a text field with a hint to fetch the lists.
 use crate::theme::Tokens;
-use nodecraft_types::{Choice, OptionKey, OptionLists, Value};
+use nodecraft_types::{OptionKey, OptionList, OptionListId, OptionLists, Value};
+
+mod filter;
+use filter::Filter;
+
+// There is one active option popup per context. Keeping just its state bounds the cached
+// indices independently of how many cards have been opened, removed or refreshed.
+#[derive(Clone)]
+struct PickerState {
+    owner: egui::Id,
+    list: OptionListId,
+    filter: Filter,
+}
 
 /// Which fetched list an enabled parameter draws from: the key [`OptionLists`] files it under.
 /// Whether the host has the list is read live, never cached.
@@ -20,11 +32,11 @@ pub struct Listed {
 
 impl Listed {
     /// The fetched choices, while the host has them.
-    pub fn choices<'a>(&self, lists: Option<&'a OptionLists>) -> Option<&'a [Choice]> {
+    pub fn choices<'a>(&self, lists: Option<&'a OptionLists>) -> Option<OptionList<'a>> {
         let key = OptionKey { owner: &self.owner, source: &self.source, scope: self.scope.as_deref() };
         // A scoped source whose scope has no value must not fall back to the unscoped list of
         // the same name.
-        lists.filter(|_| !self.scoped || self.scope.is_some()).and_then(|lists| lists.get(key))
+        lists.filter(|_| !self.scoped || self.scope.is_some()).and_then(|lists| lists.view(key))
     }
     /// What an entry retains, for the view cache's budget.
     pub fn bytes(&self) -> usize {
@@ -43,12 +55,13 @@ pub const UNFETCHED_HINT: &str = "Type a value, or run Refresh option lists to p
 
 /// A combo box over `choices`. A stored value off the list is shown as it is and marked, never
 /// replaced; only picking a choice edits the parameter.
-pub fn picker(ui: &mut egui::Ui, choices: &[Choice], value: Option<&Value>, label: egui::Id, t: &Tokens) -> Option<Option<Value>> {
+pub fn picker(ui: &mut egui::Ui, choices: OptionList<'_>, value: Option<&Value>, overridden: bool, label: egui::Id, t: &Tokens) -> Option<Option<Value>> {
     let current = match value {
         Some(Value::Text(text)) => text.as_str(),
         _ => "",
     };
-    let listed = choices.iter().find(|choice| choice.value == current);
+    let selected = choices.index(current);
+    let listed = selected.and_then(|index| choices.choices().get(index));
     let stale = !current.is_empty() && listed.is_none();
     let shown: String = match listed {
         Some(choice) => choice.label.chars().take(t.preview_chars).collect(),
@@ -56,38 +69,120 @@ pub fn picker(ui: &mut egui::Ui, choices: &[Choice], value: Option<&Value>, labe
         None => format!("{} (not an option)", current.chars().take(t.preview_chars).collect::<String>()),
     };
     let text = if stale { egui::RichText::new(shown).color(t.danger) } else { egui::RichText::new(shown) };
-    let mut picked = None;
+    let mut edited = None;
+    // egui 0.36.2 ComboBox stores an IdSalt before deriving its button id; use the same salt here.
+    let id = ui.make_persistent_id(egui::IdSalt::new("option_list"));
+    let was_open = egui::ComboBox::is_open(ui.ctx(), id);
+    let width = ui.available_width();
     let row = ui.spacing().interact_size.y;
     let rows = (row + ui.spacing().item_spacing.y) * 12.0;
-    // The popup is tall enough for the rows' own scroll area, so it never scrolls as well.
-    let popup = rows + ui.spacing().menu_margin.sum().y + ui.spacing().item_spacing.y * 2.0;
+    // Leave room for the query, Default row and status above the rows' own scroll area.
+    let popup = rows + row * 4.0 + ui.spacing().menu_margin.sum().y + ui.spacing().item_spacing.y * 8.0;
     let response = egui::ComboBox::from_id_salt("option_list")
         .selected_text(text)
-        .width(ui.available_width())
+        .width(width)
+        .truncate()
         .height(popup)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show_ui(ui, |ui| {
-            // A list may hold thousands of values: lay out only the rows on screen.
-            egui::ScrollArea::vertical().id_salt("option_rows").max_height(rows).show_rows(ui, row, choices.len(), |ui, range| {
-                for choice in choices.get(range).unwrap_or_default() {
-                    let response = ui.selectable_label(choice.value == current, &choice.label);
+            let slot = egui::Id::new("nodecraft.option_picker.filter");
+            // Move the state out while drawing: neither clone a large index vector nor hold
+            // the context data lock while widgets access the context themselves.
+            let saved = ui.ctx().data_mut(|data| data.get_temp_mut_or_default::<Option<PickerState>>(slot).take());
+            let identity = choices.identity();
+            let mut state = saved.unwrap_or_else(|| PickerState { owner: id, list: identity.clone(), filter: Filter::default() });
+            let opening = !was_open || state.owner != id;
+            let replaced = state.list != identity;
+            if opening {
+                state.owner = id;
+                state.list = identity;
+                state.filter = Filter::default();
+            } else if replaced {
+                state.list = identity;
+                state.filter.restart();
+            }
+
+            // Truncated rows cannot widen the menu when a new, longer label scrolls into view.
+            ui.set_width((width - ui.spacing().menu_margin.sum().x).max(row));
+            let filter_label = ui.label(egui::RichText::new("Filter options").color(t.text_muted).small());
+            let query = ui
+                .add(egui::TextEdit::singleline(&mut state.filter.query).id_salt("query").desired_width(f32::INFINITY).char_limit(filter::MAX_QUERY_CHARS))
+                .labelled_by(filter_label.id);
+            if opening {
+                query.request_focus();
+            }
+            if query.changed() {
+                state.filter.query_changed();
+            }
+            state.filter.advance(choices);
+            if ui
+                .add_enabled(overridden, egui::Button::new("Use default").min_size(egui::vec2(ui.available_width(), row)))
+                .on_hover_text("Use the parameter's default")
+                .clicked()
+            {
+                edited = Some(None);
+                ui.close();
+            }
+            ui.separator();
+            let total = choices.choices().len();
+            let count = state.filter.rows(total);
+            let complete = state.filter.complete(total);
+            let status = if !complete {
+                "Filtering…".to_owned()
+            } else if state.filter.is_empty() {
+                format!("{total} options")
+            } else if count == 1 {
+                "1 match".to_owned()
+            } else {
+                format!("{count} matches")
+            };
+            ui.label(egui::RichText::new(status).color(t.text_muted).small());
+            if !complete {
+                ui.ctx().request_repaint();
+            }
+            if count == 0 && complete {
+                ui.label("No matches");
+            }
+            // Keep the virtual viewport when an incremental scan briefly has no matches;
+            // otherwise the surrounding combo's scroll area can collapse it to zero height.
+            let mut scroll = egui::ScrollArea::vertical().id_salt("option_rows").max_height(rows).min_scrolled_height(rows).auto_shrink([false, false]);
+            if opening || replaced || query.changed() {
+                // Installed indices are bounded by MAX_OPTIONS, so this offset stays finite.
+                let offset = if state.filter.is_empty() {
+                    selected.map_or(0.0, |index| (index as f32 * (row + ui.spacing().item_spacing.y) - rows * 0.5).max(0.0))
+                } else {
+                    0.0
+                };
+                scroll = scroll.vertical_scroll_offset(offset);
+            }
+            scroll.show_rows(ui, row, count, |ui, range| {
+                for position in range {
+                    let Some(index) = state.filter.choice_index(position) else { continue };
+                    let Some(choice) = choices.choices().get(index) else { continue };
+                    let response = ui.add_sized([ui.available_width(), row], egui::Button::selectable(Some(index) == selected, &choice.label).truncate());
                     let response = if choice.label != choice.value { response.on_hover_text(&choice.value) } else { response };
                     if response.clicked() {
-                        picked = Some(choice.value.clone());
+                        if choice.value != current {
+                            edited = Some(Some(Value::Text(choice.value.clone())));
+                        }
+                        ui.close();
                     }
                 }
             });
+            ui.ctx().data_mut(|data| data.insert_temp(slot, Some(state)));
         })
         .response
         .labelled_by(label);
     if stale {
         response.on_hover_text("This value isn't on the fetched list. Pick one, or run Refresh option lists.");
     }
-    picked.filter(|value| value != current).map(|value| Some(Value::Text(value)))
+    edited
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nodecraft_types::Choice;
 
     fn listed(scope: Option<&str>, scoped: bool) -> Listed {
         Listed { owner: "owner".into(), source: "src".into(), scope: scope.map(str::to_owned), scoped }
@@ -98,13 +193,13 @@ mod tests {
         let mut lists = OptionLists::default();
         let choice = Choice { value: "v".into(), label: "Label".into() };
         assert!(lists.set(OptionKey { owner: "owner", source: "src", scope: None }, vec![choice.clone()]).is_ok());
-        assert_eq!(listed(None, false).choices(Some(&lists)), Some(&[choice][..]));
+        assert_eq!(listed(None, false).choices(Some(&lists)).map(|list| list.choices()), Some(&[choice][..]));
         assert_eq!(listed(None, false).hint(), Some(UNFETCHED_HINT));
         // A scoped source without its scope's value never falls back to the unscoped list,
         // and refreshing can't fill it, so it gets no hint.
-        assert_eq!(listed(None, true).choices(Some(&lists)), None);
+        assert!(listed(None, true).choices(Some(&lists)).is_none());
         assert_eq!(listed(None, true).hint(), None);
-        assert_eq!(listed(Some("other"), true).choices(Some(&lists)), None);
-        assert_eq!(listed(None, false).choices(None), None);
+        assert!(listed(Some("other"), true).choices(Some(&lists)).is_none());
+        assert!(listed(None, false).choices(None).is_none());
     }
 }

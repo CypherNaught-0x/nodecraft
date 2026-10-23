@@ -3241,6 +3241,8 @@ mod layer_editor_tests;
 #[cfg(test)]
 mod library_view_tests;
 #[cfg(test)]
+mod listed_picker_tests;
+#[cfg(test)]
 mod mask_editor_tests;
 #[cfg(test)]
 mod mentions_tests;
