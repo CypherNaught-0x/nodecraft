@@ -319,3 +319,24 @@ fn a_withdrawn_grant_sends_nothing() {
     assert!(scope.finish_error().is_some(), "nothing was sent, so nothing was billed");
     assert!(http.requests().is_empty());
 }
+
+#[test]
+fn a_withdrawn_grant_stops_following_a_job_it_sent() {
+    let http = Transport::new(vec![]);
+    let b = broker(template(), http.clone()).granted(Arc::new(|| false));
+    for error in [block_on(b.poll(&handle())).unwrap_err(), block_on(b.cancel(&handle())).unwrap_err()] {
+        assert_eq!(error.kind, ErrorKind::Auth, "{error:?}");
+    }
+    assert!(http.requests().is_empty(), "nothing reached the service");
+
+    // Withdrawn while the finished job was read: its output isn't fetched.
+    let http = Transport::new(vec![reply(200, json!({"status": "succeeded", "output": {"images": [PNG_LINK]}})), file(png())]);
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = asked.clone();
+    let b = broker(template(), http.clone()).granted(Arc::new(move || count.fetch_add(1, std::sync::atomic::Ordering::AcqRel) == 0));
+    let error = block_on(b.poll(&handle())).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Auth, "{error:?}");
+    let sent = http.requests();
+    assert_eq!(sent.len(), 1, "only the poll went out");
+    assert!(sent.iter().all(|r| r.url != PNG_LINK));
+}

@@ -868,9 +868,7 @@ impl NodeCraftApp {
         if *seen == Some(changes) {
             return;
         }
-        // Read first: plugins read after a load are the loaded ones.
-        let loaded = worker.loaded();
-        let (changes, plugins) = worker.plugins();
+        let (changes, loaded, plugins) = worker.published();
         *seen = Some(changes);
         let before = Arc::clone(self.session.plugins());
         let published = self.session.set_plugins(plugins);
@@ -881,7 +879,7 @@ impl NodeCraftApp {
             self.plugins_changed();
         }
         // Even when nothing changed: an empty store, once read, tells restored jobs their plugin
-        // is gone. Plugins that couldn't be published aren't known.
+        // is gone. Plugins read in part, or that couldn't be published, aren't known.
         if let Some(Err(error)) = self.runs.as_mut().map(|runs| runs.set_plugins(&mut self.session, loaded && published.is_ok())) {
             log::warn!("plugin providers unavailable: {}", error.message);
         }

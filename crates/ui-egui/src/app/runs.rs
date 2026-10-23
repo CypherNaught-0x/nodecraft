@@ -310,9 +310,10 @@ impl Runs {
     /// Publishes the session's plugin providers to the provider thread (#174). When they
     /// changed, every adapter is forgotten, so no run goes to a broker built under a grant that
     /// is gone (it would refuse anyway) and a new provider is built afresh. `loaded` says the
-    /// plugin store has been read, so restored jobs of a plugin that isn't there can be given up.
+    /// plugin store was just read in full and published, so restored jobs of a plugin that isn't
+    /// there can be given up; until the next such read, they wait.
     pub(super) fn set_plugins(&mut self, session: &mut Session, loaded: bool) -> Result<(), Error> {
-        self.plugins_known |= loaded;
+        self.plugins_known = loaded;
         let next = Arc::clone(session.plugins());
         let changed = {
             let mut board = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -893,6 +894,12 @@ mod plugin_maker_tests {
         runs.resume_waiting(&session, &settings);
         runs.tick(&mut session, C);
         assert!(runs.has_waiting(), "kept until the store is read");
+        // A full read followed by one that wasn't (or whose plugins couldn't be published)
+        // knows nothing again.
+        runs.set_plugins(&mut session, true).unwrap();
+        runs.set_plugins(&mut session, false).unwrap();
+        runs.resume_waiting(&session, &settings);
+        assert!(runs.has_waiting(), "kept while the last read is partial");
         // Read, and the plugin isn't there.
         runs.set_plugins(&mut session, true).unwrap();
         runs.resume_waiting(&session, &settings);
