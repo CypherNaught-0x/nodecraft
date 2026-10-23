@@ -215,8 +215,11 @@ JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.
 (`nodecraft --control`). They are navigation (`canvas.fit_all`, `canvas.fit_selection`,
 `canvas.minimap_toggle`, `canvas.pan_to`), search (`canvas.search_*`), the tag filter
 (`canvas.tag_filter_*`), the discussions panel (`canvas.comments_toggle`, `comment.open`) and
-Format selection (`canvas.auto_format`). Format selection takes an optional `nodes` list, so an
-agent can arrange cards without touching the person's selection; it moves cards in one undoable
+Format selection (`canvas.auto_format`). `canvas.fit_selection` also accepts an optional `nodes`
+list (2..=MAX_CHANGES unique IDs on the shown canvas); it frames those cards, using collapsed
+field headers for hidden cards, without changing the person's selection. Without it, the command
+frames the selection. Format selection takes an optional `nodes` list, so an agent can arrange
+cards without touching the person's selection; it moves cards in one undoable
 step. A standalone stdio session lists these commands as not ready, says where they run, and
 refuses them without opening a window or changing the document. `mcp::LIVE_ONLY` lists them, and
 a test checks the app routes exactly those (#360). `comment.compose` stays human-only: it opens an

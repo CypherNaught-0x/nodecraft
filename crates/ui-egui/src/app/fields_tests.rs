@@ -576,6 +576,25 @@ fn fit_selection_frames_only_hidden_cards_by_their_header() {
 }
 
 #[test]
+fn named_fit_frames_hidden_header_without_selecting_its_card() {
+    let mut h = harness();
+    let (id, node, card) = selected_card_in_distant_collapsed_field(&mut h);
+    h.hover_at(Pos2::new(60.0, 590.0));
+    h.key_press(egui::Key::T);
+    h.run();
+    let other = *canvas(&h).nodes().keys().find(|candidate| **candidate != node).unwrap();
+    let canvas_id = h.state().canvas;
+    h.state_mut().session.dispatch("node.move", &json!({"canvas":canvas_id,"id":other,"pos":{"x":card.min.x + 1000.0,"y":card.min.y - 2900.0}})).unwrap();
+    h.run();
+    let selection = h.state().selection.clone();
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_selection", &json!({"nodes":[node,other]})).unwrap();
+    h.run();
+    assert_fit_frames_header_not_card(&h, id, card);
+    assert_eq!(h.state().selection, selection, "named framing does not select hidden cards");
+}
+
+#[test]
 fn fit_selection_command_frames_visible_card_and_hidden_field_header() {
     let mut h = harness();
     let (id, hidden, card) = selected_card_in_distant_collapsed_field(&mut h);
