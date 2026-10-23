@@ -39,7 +39,13 @@ impl<'a> GenerationWiring<'a> {
             if *count == 0 {
                 continue;
             }
-            let next = descriptor.inputs.iter().find(|p| p.name == prior.name).ok_or_else(|| invalid("model swap removes a connected input role"))?;
+            let Some(next) = descriptor.inputs.iter().find(|p| p.name == prior.name) else {
+                // Say what to use instead (#591).
+                if prior.port_type.modality == nodecraft_types::Modality::Document {
+                    return Err(invalid("this model can't read PDFs: wire the PDF through PDF to text, or choose a model that reads PDFs"));
+                }
+                return Err(invalid("model swap removes a connected input role"));
+            };
             if next.port_type != prior.port_type {
                 return Err(invalid("model swap changes a connected input modality or collection"));
             }

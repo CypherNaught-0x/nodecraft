@@ -12,12 +12,18 @@ fn content(parts: &[&Part]) -> Value {
     if parts.iter().all(|p| matches!(p, Part::Text(_))) {
         return Value::String(parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None }).collect::<Vec<_>>().join("\n\n"));
     }
+    let mut files = 0usize;
     Value::Array(
         parts
             .iter()
             .filter_map(|p| match p {
                 Part::Text(t) => Some(json!({ "type": "text", "text": t })),
                 Part::Image { mime, bytes } => Some(json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{}", base64(bytes)) } })),
+                // The API wants a file name with inline file data; numbered, so several differ.
+                Part::Document { mime, bytes } => {
+                    files += 1;
+                    Some(json!({ "type": "file", "file": { "filename": format!("document-{files}.pdf"), "file_data": format!("data:{mime};base64,{}", base64(bytes)) } }))
+                }
                 _ => None,
             })
             .collect(),
@@ -42,7 +48,7 @@ pub(super) fn body(req: &ChatRequest, stream: bool, openai: bool) -> Value {
                         messages.push(json!({ "role": "tool", "tool_call_id": id, "content": content }));
                     }
                 }
-                let rest: Vec<&Part> = m.parts.iter().filter(|p| matches!(p, Part::Text(_) | Part::Image { .. })).collect();
+                let rest: Vec<&Part> = m.parts.iter().filter(|p| matches!(p, Part::Text(_) | Part::Image { .. } | Part::Document { .. })).collect();
                 if !rest.is_empty() {
                     messages.push(json!({ "role": "user", "content": content(&rest) }));
                 }

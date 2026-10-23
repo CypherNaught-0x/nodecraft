@@ -9,8 +9,8 @@ use crate::{
 };
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{
-    AudioOverrun, AudioUse, ConnectedText, Contract, Error, ErrorKind, Modality, NodeId, ParamControl, ParamOwner, ParamSchema, ParamSpec, ParamValues,
-    PortType, ResolvedParams, TextPrecedence, Value, VideoEdit, compose_text,
+    AudioOverrun, AudioUse, ConnectedText, Contract, DocumentUse, Error, ErrorKind, Modality, NodeId, ParamControl, ParamOwner, ParamSchema, ParamSpec,
+    ParamValues, PortType, ResolvedParams, TextPrecedence, Value, VideoEdit, compose_text,
 };
 use std::{
     borrow::Cow,
@@ -72,6 +72,8 @@ pub struct GenerationMode {
     pub audio: Option<AudioUse>,
     /// The source video edit it makes, when it edits one (#179).
     pub edit: Option<VideoEdit>,
+    /// How it reads wired PDFs, when it takes them (#591).
+    pub document: Option<DocumentUse>,
 }
 impl GenerationMode {
     /// Whether this mode sends the model setting `name`.
@@ -265,6 +267,11 @@ impl GenerationKind {
                         || audio.max_ms.is_some_and(|ms| ms == 0 || ms > nodecraft_types::MAX_AUDIO_MS)
                 }) {
                     return Err(bad(output, "a {noun} mode describes audio it doesn't take"));
+                }
+                if mode.document.as_ref().is_some_and(|document| {
+                    !mode.inputs.iter().any(|role| role.role == document.role && role.modality == Modality::Document) || document.validate().is_err()
+                }) {
+                    return Err(bad(output, "a {noun} mode describes PDFs it doesn't take"));
                 }
                 if mode.edit.as_ref().is_some_and(|edit| {
                     output != Modality::Video
@@ -562,6 +569,9 @@ impl NodeKind for GenerationKind {
         if let Some(edit) = &mode.edit {
             edit_fits(edit, &media)?;
         }
+        if let Some(document) = &mode.document {
+            document_fits(document, &media)?;
+        }
         let prompt = match mode.inputs.iter().find(|r| r.role == PROMPT && r.modality == Modality::Text) {
             Some(role) => Some(self.prompt(role, ctx, &inputs, &mentioned)?).filter(|prompt| !prompt.is_empty()),
             // A mode without a prompt (image to 3D) takes its media alone; its declared counts
@@ -690,6 +700,16 @@ fn audio_fits(audio: &AudioUse, media: &[GenerateInput]) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// Refuses PDFs with more pages than the mode reads at once, before anything is sent (#591).
+fn document_fits(document: &DocumentUse, media: &[GenerateInput]) -> Result<(), Error> {
+    // `media` holds one asset per input.
+    let pages = media.iter().filter(|input| input.role == document.role).filter_map(|input| match &input.value {
+        Value::Media(asset) => Some(asset.meta.page_count),
+        _ => None,
+    });
+    document.pages(pages).map(|_| ())
 }
 
 /// Refuses a source video the edit won't take (too short, frames too small), before anything is

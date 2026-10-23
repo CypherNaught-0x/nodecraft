@@ -36,6 +36,7 @@ fn kind() -> GenerationKind {
         params: None,
         audio: None,
         edit: Some(edit),
+        document: None,
     };
     let model = GenerationModel {
         style_family: None,

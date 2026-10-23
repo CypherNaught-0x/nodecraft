@@ -411,6 +411,36 @@ fn source_ms(step: &crate::planner::Step, role: &str) -> Option<u64> {
     }
     longest
 }
+/// The PDF pages a quote counts for `document`'s role (#591), the most across a fanned step's
+/// items; a PDF made earlier in the run, or never counted, counts as the most the mode reads.
+fn document_pages(step: &crate::planner::Step, document: &nodecraft_types::DocumentUse) -> u32 {
+    let cells: Vec<&[crate::planner::PlannedInput]> = match &step.fanout {
+        Some(fanout) => fanout.cells.iter().map(Vec::as_slice).collect(),
+        None => vec![step.inputs.as_slice()],
+    };
+    let mut most = 0u32;
+    for inputs in cells {
+        let mut counts = Vec::new();
+        for input in inputs.iter().filter(|input| input.port == document.role) {
+            for source in &input.from {
+                let crate::planner::InputSource::Value(value) = source else {
+                    counts.push(None);
+                    continue;
+                };
+                let items = match value {
+                    Value::List(items) => items.as_slice(),
+                    value => std::slice::from_ref(value),
+                };
+                counts.extend(items.iter().map(|item| match item {
+                    Value::Media(asset) => asset.meta.page_count,
+                    _ => None,
+                }));
+            }
+        }
+        most = most.max(document.quoted_pages(counts));
+    }
+    most
+}
 fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, Error> {
     quote_bound(plan, selected)?;
     let mut result = Quote::default();
@@ -441,7 +471,10 @@ fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, E
                 continue;
             }
             let source_ms = model.edit().and_then(|edit| source_ms(step, &edit.role));
-            match model.quote_source(&s.source.params, source_ms) {
+            // The PDFs' prompt tokens, read by the mode this step runs.
+            let document = model.mode(step.mode.as_str()).and_then(|mode| mode.document.as_ref());
+            let input_tokens = document.map_or(0, |document| document.tokens(document_pages(step, document)));
+            match model.quote_inputs(&s.source.params, source_ms, input_tokens) {
                 Ok(Some(m)) => match total {
                     Some(t) => match t.checked_add(m) {
                         Ok(sum) => total = Some(sum),

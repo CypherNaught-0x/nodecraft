@@ -37,6 +37,10 @@ pub const MAX_IMAGES: usize = 16;
 pub const MAX_IMAGE_BYTES_TOTAL: usize = 20 * 1024 * 1024;
 /// Anthropic refuses an image over 10 MB once base64-encoded: about 7.5 MB of raw bytes (#592).
 pub const ANTHROPIC_MAX_IMAGE_BYTES: usize = 7_500_000;
+/// Most PDFs one request carries (#591).
+pub const MAX_DOCUMENTS: usize = 5;
+/// Most PDF bytes one request carries: both APIs take requests up to 32 MB, and base64 adds a third.
+pub const MAX_DOCUMENT_BYTES_TOTAL: usize = 22 * 1024 * 1024;
 /// Default reply length when the job doesn't say.
 pub const DEFAULT_MAX_TOKENS: u32 = 16_000;
 /// Cap on a whole (non-streamed) reply.
@@ -164,6 +168,11 @@ pub enum Part {
     Text(String),
     /// PNG, JPEG, GIF or WebP (user messages only).
     Image {
+        mime: String,
+        bytes: Arc<[u8]>,
+    },
+    /// A PDF the model reads as a document, its text and its page pictures (user messages only).
+    Document {
         mime: String,
         bytes: Arc<[u8]>,
     },
@@ -320,13 +329,14 @@ impl ChatRequest {
         for m in &self.messages {
             for p in &m.parts {
                 let ok = match p {
-                    Part::Image { .. } | Part::ToolResult { .. } => m.role == Role::User,
+                    Part::Image { .. } | Part::Document { .. } | Part::ToolResult { .. } => m.role == Role::User,
                     Part::ToolUse { .. } => m.role == Role::Assistant,
                     Part::Text(_) | Part::Opaque { .. } => true,
                 };
                 if !ok {
                     let what = match p {
                         Part::Image { .. } => "only user messages can carry images",
+                        Part::Document { .. } => "only user messages can carry PDFs",
                         Part::ToolResult { .. } => "only user messages can carry tool results",
                         _ => "only assistant messages can carry tool calls",
                     };
@@ -371,6 +381,27 @@ impl ChatRequest {
         let total: usize = images.iter().map(|(_, n)| *n).fold(0, usize::saturating_add);
         if total > MAX_IMAGE_BYTES_TOTAL {
             return bad(format!("the images add up to {total} bytes, more than {MAX_IMAGE_BYTES_TOTAL}"));
+        }
+        let documents: Vec<(&String, usize)> = self
+            .messages
+            .iter()
+            .flat_map(|m| &m.parts)
+            .filter_map(|p| match p {
+                Part::Document { mime, bytes } => Some((mime, bytes.len())),
+                _ => None,
+            })
+            .collect();
+        if documents.len() > MAX_DOCUMENTS {
+            return bad(format!("{} PDFs is more than the {MAX_DOCUMENTS} a request may carry", documents.len()));
+        }
+        if let Some((mime, _)) = documents.iter().find(|(m, _)| m.as_str() != "application/pdf") {
+            return bad(format!("{mime} documents can't be sent to chat models; only PDFs"));
+        }
+        let total: usize = documents.iter().map(|(_, n)| *n).fold(0, usize::saturating_add);
+        if total > MAX_DOCUMENT_BYTES_TOTAL {
+            return bad(format!(
+                "the PDFs add up to {total} bytes, more than the {MAX_DOCUMENT_BYTES_TOTAL} a request may carry; use PDF to text, or send fewer pages"
+            ));
         }
         Ok(())
     }
@@ -737,10 +768,15 @@ pub fn chat_request(job: &ProviderJob) -> Result<ChatRequest, ProviderError> {
             JobInput::Text { role, text } if role == "assistant" => (Role::Assistant, Part::Text(text.clone())),
             JobInput::Text { text, .. } => (Role::User, Part::Text(text.clone())),
             JobInput::Media { mime, bytes, .. } if mime.starts_with("image/") => (Role::User, Part::Image { mime: mime.clone(), bytes: bytes.clone() }),
-            // Chat models here read images only; audio, video, meshes and documents aren't sent
-            // as if they were one.
+            // PDFs go as documents (#591); the catalog lets only models that read them take one.
+            JobInput::Media { mime, bytes, .. } if mime == "application/pdf" => (Role::User, Part::Document { mime: mime.clone(), bytes: bytes.clone() }),
+            // Chat models here read images and PDFs only; audio, video and meshes aren't sent as
+            // if they were one.
             JobInput::Media { role, mime, .. } => {
-                return Err(ProviderError::new(ErrorKind::UnsupportedInput, format!("chat models can't take {mime} media (input {role}); only images")));
+                return Err(ProviderError::new(
+                    ErrorKind::UnsupportedInput,
+                    format!("chat models can't take {mime} media (input {role}); only images and PDFs"),
+                ));
             }
         };
         // Consecutive inputs of one role make one message.
@@ -871,6 +907,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn pdfs_are_bounded_and_sent_as_documents() {
+        let pdf = |n: usize| Part::Document { mime: "application/pdf".into(), bytes: Arc::from(vec![b'%'; n]) };
+        for dialect in [Dialect::OpenAi, Dialect::Anthropic] {
+            let mut r = request();
+            r.messages[0].parts.push(pdf(1));
+            assert!(r.validate(dialect).is_ok());
+            r.messages[0].parts = (0..=MAX_DOCUMENTS).map(|_| pdf(1)).collect();
+            assert!(r.validate(dialect).unwrap_err().message.contains("PDFs"), "too many PDFs");
+            r.messages[0].parts = vec![pdf(MAX_DOCUMENT_BYTES_TOTAL / 2), pdf(MAX_DOCUMENT_BYTES_TOTAL / 2 + 1)];
+            assert!(r.validate(dialect).unwrap_err().message.contains("PDF to text"), "too many bytes");
+            r.messages[0].parts = vec![Part::Document { mime: "text/plain".into(), bytes: Arc::from(&b"x"[..]) }];
+            assert!(r.validate(dialect).is_err(), "only PDFs");
+            r.messages[0].parts = vec![Part::Text("hi".into())];
+            r.messages.push(Message { role: Role::Assistant, parts: vec![pdf(1)] });
+            r.messages.push(Message::user("and?"));
+            assert!(r.validate(dialect).unwrap_err().message.contains("only user messages"));
+        }
+        let mut r = request();
+        r.messages[0].parts = vec![Part::Text("read this".into()), pdf(3)];
+        let claude = anthropic::body(&r, false);
+        assert_eq!(
+            claude["messages"][0]["content"][1],
+            serde_json::json!({"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JSUl"}})
+        );
+        r.messages[0].parts.push(pdf(3));
+        let gpt = openai::body(&r, false, true);
+        assert_eq!(
+            gpt["messages"][1]["content"][1],
+            serde_json::json!({"type": "file", "file": {"filename": "document-1.pdf", "file_data": "data:application/pdf;base64,JSUl"}})
+        );
+        assert_eq!(gpt["messages"][1]["content"][2]["file"]["filename"], "document-2.pdf", "several PDFs get distinct names");
+    }
+
+    #[test]
     fn requests_are_validated() {
         let oa = Dialect::OpenAi;
         let mut r = request();
@@ -938,8 +1008,13 @@ pub(crate) mod tests {
         assert_eq!(r.messages[0].parts.len(), 2);
         assert_eq!(r.max_tokens, None, "a non-integer max_tokens is left to the endpoint");
         assert_eq!(r.temperature, Some(9.0), "range errors are reported at send time, per dialect");
-        // Media other than images is refused, not sent as if it were an image (#502).
-        for mime in ["audio/wav", "video/mp4", "application/pdf", "model/gltf-binary"] {
+        // A PDF goes as a document (#591).
+        let mut pdf = job.clone();
+        pdf.inputs.push(JobInput::Media { role: "document".into(), mime: "application/pdf".into(), bytes: Arc::from(&b"%PDF"[..]) });
+        let r = chat_request(&pdf).unwrap();
+        assert_eq!(r.messages[0].parts.last(), Some(&Part::Document { mime: "application/pdf".into(), bytes: Arc::from(&b"%PDF"[..]) }));
+        // Other media is refused, not sent as if it were an image (#502).
+        for mime in ["audio/wav", "video/mp4", "model/gltf-binary"] {
             let mut audio = job.clone();
             audio.inputs.push(JobInput::Media { role: "clip".into(), mime: mime.into(), bytes: Arc::from(&b"x"[..]) });
             let refused = chat_request(&audio).unwrap_err();

@@ -324,6 +324,9 @@ fn model_details(ui: &mut egui::Ui, model: &ModelDescriptor) {
         if let Some(edit) = &mode.edit {
             ui.label(edit.summary());
         }
+        if let Some(document) = &mode.document {
+            ui.label(document.summary());
+        }
         if let Some(params) = &mode.params {
             ui.label(if params.is_empty() { "Sends no settings".to_owned() } else { format!("Sends only: {}", params.join(", ")) });
         }

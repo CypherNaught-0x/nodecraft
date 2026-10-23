@@ -34,7 +34,15 @@ fn catalog(count: u64) -> Catalog {
         provider_model: "remote".into(),
         label: "Fixture".into(),
         description: "Fixture".into(),
-        modes: vec![nodecraft_catalog::ModeSpec { id: "generate".into(), output: Modality::Text, inputs: vec![], params: None, audio: None, edit: None }],
+        modes: vec![nodecraft_catalog::ModeSpec {
+            id: "generate".into(),
+            output: Modality::Text,
+            inputs: vec![],
+            params: None,
+            audio: None,
+            edit: None,
+            document: None,
+        }],
         params: schema(count),
         pricing: Pricing::PerUnit { unit: Unit::Image, price: Price(Money::new(Currency::USD, 10)), count: Some("count".into()), default_count: None },
         usage: None,
@@ -245,7 +253,15 @@ pub(crate) fn free_catalog(id: &str, provider: &str, remote: &str) -> Catalog {
         provider_model: remote.into(),
         label: "Fixture".into(),
         description: "Fixture".into(),
-        modes: vec![nodecraft_catalog::ModeSpec { id: "generate".into(), output: Modality::Text, inputs: vec![], params: None, audio: None, edit: None }],
+        modes: vec![nodecraft_catalog::ModeSpec {
+            id: "generate".into(),
+            output: Modality::Text,
+            inputs: vec![],
+            params: None,
+            audio: None,
+            edit: None,
+            document: None,
+        }],
         params: ParamSchema::default(),
         pricing: Pricing::Free,
         usage: None,
@@ -631,4 +647,34 @@ fn a_source_edit_is_quoted_at_its_longest_known_source() {
     assert_eq!(source_ms(&step, "source"), Some(31_000));
     step.fanout = Some(crate::planner::Fanout { items: vec![], cells: cells(&[Some(4_000), None]), jobs: vec![], resume: None });
     assert_eq!(source_ms(&step, "source"), None);
+}
+
+fn pdf(pages: Option<u32>) -> Value {
+    let meta = nodecraft_types::MediaMeta { page_count: pages, ..Default::default() };
+    Value::Media(nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([9; 32]), mime: "application/pdf".parse().unwrap(), meta })
+}
+fn document_input(from: Vec<InputSource>) -> Vec<PlannedInput> {
+    vec![PlannedInput { port: "document".into(), port_type: PortType { modality: Modality::Document, many: true }, from, origins: vec![id(2)] }]
+}
+
+#[test]
+fn wired_pdfs_are_quoted_at_their_counted_pages() {
+    let reads = |role: &str| nodecraft_types::DocumentUse { role: role.into(), max_pages: 100, tokens_per_page: 3000 };
+    let mut step = plan(None).steps.remove(0);
+    step.inputs = document_input(vec![InputSource::Value(pdf(Some(12))), InputSource::Value(Value::List(vec![pdf(Some(3)), pdf(Some(5))]))]);
+    assert_eq!(document_pages(&step, &reads("document")), 20, "every wired PDF's pages count");
+    assert_eq!(document_pages(&step, &reads("other")), 0);
+    // An uncounted PDF, or one made earlier in the run, is quoted at the most the mode reads.
+    step.inputs = document_input(vec![InputSource::Value(pdf(Some(12))), InputSource::Value(pdf(None))]);
+    assert_eq!(document_pages(&step, &reads("document")), 100);
+    step.inputs = document_input(vec![InputSource::Step { node: id(2), port: "out".into(), list: false }]);
+    assert_eq!(document_pages(&step, &reads("document")), 100);
+    step.inputs = document_input(vec![InputSource::Value(pdf(Some(u32::MAX))), InputSource::Value(pdf(Some(u32::MAX)))]);
+    assert_eq!(document_pages(&step, &reads("document")), 100, "hostile counts are capped");
+    // A fanned step is quoted at its longest item.
+    let cells = |pages: &[Option<u32>]| pages.iter().map(|p| document_input(vec![InputSource::Value(pdf(*p))])).collect();
+    step.fanout = Some(crate::planner::Fanout { items: vec![], cells: cells(&[Some(4), Some(40), Some(9)]), jobs: vec![], resume: None });
+    assert_eq!(document_pages(&step, &reads("document")), 40);
+    step.fanout = Some(crate::planner::Fanout { items: vec![], cells: cells(&[Some(4), None]), jobs: vec![], resume: None });
+    assert_eq!(document_pages(&step, &reads("document")), 100);
 }

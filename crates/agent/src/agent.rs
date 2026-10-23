@@ -525,7 +525,7 @@ fn sendable(message: &Message) -> Result<(), &'static str> {
             Part::ToolUse { id, .. } if id.is_empty() || id.len() > MAX_TOOL_ID || !ids.insert(id.as_str()) => {
                 return Err("The model's reply named its tool calls in a way that can't be answered; ask again.");
             }
-            Part::ToolResult { .. } | Part::Image { .. } => return Err("The model's reply carried parts only the person can send."),
+            Part::ToolResult { .. } | Part::Image { .. } | Part::Document { .. } => return Err("The model's reply carried parts only the person can send."),
             _ => {}
         }
     }
@@ -539,7 +539,7 @@ fn message_bytes(message: &Message) -> usize {
         .iter()
         .map(|p| match p {
             Part::Text(t) => t.len(),
-            Part::Image { bytes, .. } => bytes.len(),
+            Part::Image { bytes, .. } | Part::Document { bytes, .. } => bytes.len(),
             Part::ToolUse { id, name, input } => id.len().saturating_add(name.len()).saturating_add(input.to_string().len()),
             Part::ToolResult { id, content, .. } => id.len().saturating_add(content.len()),
             Part::Opaque { block, .. } => block.to_string().len(),

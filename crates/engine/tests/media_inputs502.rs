@@ -92,6 +92,7 @@ inputs = [
   { role = "shape", modality = "mesh", min = 0, max = 1 },
   { role = "brief", modality = "document", min = 0, max = 1 },
 ]
+document = { role = "brief", max_pages = 100, tokens_per_page = 3000 }
 "#,
     );
     let pair = model(

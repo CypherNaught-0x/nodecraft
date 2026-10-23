@@ -7,6 +7,7 @@
 mod asset;
 mod audio_use;
 mod contract;
+mod document_use;
 mod error;
 mod ids;
 mod money;
@@ -24,6 +25,7 @@ pub use contract::{
     IssueCode, MAX_OPTION_BYTES, MAX_OPTION_LISTS, MAX_OPTIONS, Migration, NoOptions, OptionKey, OptionLists, OptionLookup, OptionSource, ParamOptions,
     ParamOwner, ParamRule, ParamState, Resolution, Shared, TextPrecedence, Unit, compose_text, model_namespace, overlay, shared_value,
 };
+pub use document_use::{DocumentUse, MAX_DOCUMENT_PAGES, MAX_TOKENS_PER_PAGE};
 pub use error::{Error, ErrorKind};
 pub use ids::*;
 pub use money::{Currency, Money, Rounding};

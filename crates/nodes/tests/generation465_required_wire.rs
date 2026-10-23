@@ -20,6 +20,7 @@ fn non_inline_required_prompt_must_not_run_from_local_text_only() {
                 params: None,
                 audio: None,
                 edit: None,
+                document: None,
             }],
         }],
         [1; 32],

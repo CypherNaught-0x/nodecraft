@@ -174,7 +174,7 @@ fn role(name: &str, modality: Modality, min: u16, max: u16) -> GenerationRole {
 }
 
 fn mode(inputs: Vec<GenerationRole>) -> GenerationMode {
-    GenerationMode { id: ModeId::new("image-to-layers").unwrap(), inputs, params: None, audio: None, edit: None }
+    GenerationMode { id: ModeId::new("image-to-layers").unwrap(), inputs, params: None, audio: None, edit: None, document: None }
 }
 
 #[test]

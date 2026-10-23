@@ -1,7 +1,9 @@
 //! Model descriptors: what a model makes, from which inputs, with which parameters, at what
 //! price. Catalog files are untrusted data and every descriptor is validated before use.
 use crate::pricing::{Pricing, TokenRates, Unit};
-use nodecraft_types::{AudioDuration, AudioUse, Currency, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues, VideoEdit};
+use nodecraft_types::{
+    AudioDuration, AudioUse, Currency, DocumentUse, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues, VideoEdit,
+};
 use serde::Deserialize;
 
 pub const MAX_MODES: usize = 32;
@@ -56,6 +58,9 @@ pub struct ModeSpec {
     /// The source video edit it makes, when it edits one (#179).
     #[serde(default)]
     pub edit: Option<VideoEdit>,
+    /// How it reads wired PDFs, when it takes them (#591).
+    #[serde(default)]
+    pub document: Option<DocumentUse>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -158,6 +163,18 @@ impl ModelDescriptor {
                     ));
                 }
                 edit.validate().map_err(|why| invalid(id, &format!("mode `{}`: {why}", mode.id)))?;
+            }
+            // A mode that takes PDFs says how many pages it reads, so runs are bounded and quoted.
+            let documents = mode.inputs.iter().filter(|role| role.modality == Modality::Document).count();
+            match &mode.document {
+                Some(document) => {
+                    if documents != 1 || !mode.inputs.iter().any(|role| role.role == document.role && role.modality == Modality::Document) {
+                        return Err(invalid(id, &format!("mode `{}` describes PDFs for `{}`, which isn't its one document input", mode.id, document.role)));
+                    }
+                    document.validate().map_err(|why| invalid(id, &format!("mode `{}`: {}", mode.id, why.message)))?;
+                }
+                None if documents > 0 => return Err(invalid(id, &format!("mode `{}` takes PDFs, so it says how it reads them in `document`", mode.id))),
+                None => {}
             }
         }
         let styled = self.modes.iter().any(|mode| mode.output == Modality::Style || mode.inputs.iter().any(|role| role.modality == Modality::Style));
@@ -344,6 +361,18 @@ impl ModelDescriptor {
         let resolved = self.params.resolve_view(params, false, true)?;
         let get = |name: &str| if resolved.visible.contains(name) { resolved.values.get(name).copied() } else { None };
         self.pricing.quote_source(get, used, currency)
+    }
+
+    /// [`Self::quote_source`] plus `input_tokens` prompt tokens a request is known to send (a
+    /// wired PDF's pages, #591) at the model's input rate; the rest of the prompt is billed on top,
+    /// as before. A model priced only by usage stays unpriced.
+    pub fn quote_inputs(&self, params: &ParamValues, source_ms: Option<u64>, input_tokens: u64) -> Result<Option<Money>, Error> {
+        let quote = self.quote_source(params, source_ms)?;
+        let (Some(quote), Some(usage)) = (quote, &self.usage) else { return Ok(quote) };
+        if input_tokens == 0 {
+            return Ok(Some(quote));
+        }
+        Ok(Some(quote.checked_add(usage.cost(input_tokens, 0)?)?))
     }
 
     /// The source video edit its modes make (#179); every mode of a model priced per source
