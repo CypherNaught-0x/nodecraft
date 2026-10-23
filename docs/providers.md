@@ -1133,6 +1133,17 @@ quota as budget, rate limit and busy with `Retry-After`, input errors, server); 
 are cut short and withheld when they echo the key. Replies over 32 MiB are refused (ten minutes of
 music is about 10 MB). Limits can only be lowered.
 
+**Streamed speech previews (#671).** When the runner asks for previews
+(`RunLimits::stream_previews`), speech is sent to `POST /v1/text-to-speech/{voice}/stream`
+instead, with the same body, and the MP3 is reported as it arrives as
+`JobProgress::Running { partial }`: first once 64 KiB (about four seconds) has come, then each
+time the audio received doubles, at most ten times, so the previews together copy at most twice
+the reply. A preview is reported only once the audio sniffs as MP3. The reply is gathered whole,
+capped at the same 32 MiB and read exactly as the one sent at once, so the result is unchanged. It
+goes through the same no-redirect transport; a stream cut short is a lost reply, possibly billed,
+and keeps the previews already reported. Sound effects, music and the voice changer never stream.
+Nothing shows a partial audio result yet, so the app's runner leaves previews off.
+
 **Not wired yet:** there is no Generate audio card, so these models (like fal's Kokoro) are
 reachable through the catalog and the engine but not from a card on the canvas.
 

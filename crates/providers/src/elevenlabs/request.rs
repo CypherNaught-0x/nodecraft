@@ -3,10 +3,12 @@ use super::*;
 use crate::{HttpRequest, JobInput};
 use serde_json::{Map, Value, json};
 
-/// The paid request, and the characters it bills when the model is priced by them.
+/// The paid request, the characters it bills when the model is priced by them, and whether its
+/// reply streams.
 pub(super) struct Prepared {
     pub(super) request: HttpRequest,
     pub(super) characters: Option<u64>,
+    pub(super) streamed: bool,
 }
 
 /// Longest text each speech model takes in one request (ElevenLabs models page, 2026-10-21).
@@ -27,7 +29,9 @@ const MAX_SEED: u64 = 4_294_967_295;
 const RECORDINGS: &[(&str, &str)] =
     &[("audio/mpeg", "mp3"), ("audio/wav", "wav"), ("audio/ogg", "ogg"), ("audio/flac", "flac"), ("audio/mp4", "m4a"), ("audio/aac", "aac")];
 
-pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared, ProviderError> {
+/// The request for `job`. With `stream`, speech asks for its streaming endpoint (#671), whose
+/// reply is the same MP3 sent as it is made; the other models never stream.
+pub(super) fn prepare(job: &ProviderJob, l: Limits, stream: bool) -> Result<Prepared, ProviderError> {
     let p = &job.params;
     if let Some(max) = speech_chars(&job.model) {
         let text = prompt(job)?;
@@ -48,9 +52,11 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared, Provider
         {
             body.insert("language_code".into(), code.into());
         }
-        let url = format!("{API}/v1/text-to-speech/{}?output_format={OUTPUT_FORMAT}", voice(p)?);
+        let path = if stream { "/stream" } else { "" };
+        let url = format!("{API}/v1/text-to-speech/{}{path}?output_format={OUTPUT_FORMAT}", voice(p)?);
         let request = HttpRequest::post_json(url, &Value::Object(body))?.timeout_ms(SPEECH_TIMEOUT_MS);
-        return Ok(Prepared { request, characters: Some(u64::try_from(n).map_err(|_| invalid("ElevenLabs text is too long"))?) });
+        let characters = Some(u64::try_from(n).map_err(|_| invalid("ElevenLabs text is too long"))?);
+        return Ok(Prepared { request, characters, streamed: stream });
     }
     let request = match job.model.as_str() {
         SOUND_EFFECTS => {
@@ -92,7 +98,7 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared, Provider
         }
         _ => return Err(invalid("ElevenLabs has no such model in this adapter")),
     };
-    Ok(Prepared { request, characters: None })
+    Ok(Prepared { request, characters: None, streamed: false })
 }
 
 fn prompt(job: &ProviderJob) -> Result<&str, ProviderError> {

@@ -224,6 +224,21 @@ pub trait Http: MaybeSendSync {
         Box::pin(async { Err(ProviderError::new(ErrorKind::UnsupportedInput, "this transport cannot send without following redirects")) })
     }
 
+    /// [`Http::send_no_redirect`] with a successful (2xx) body handed to `on_chunk` as it
+    /// arrives, as [`Http::send_streaming`] does; an error status's body is returned whole. The
+    /// default waits for the whole body and hands it over at once, so it never follows a redirect
+    /// either.
+    fn send_streaming_no_redirect<'a>(&'a self, request: HttpRequest, on_chunk: &'a mut ChunkSink<'a>) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+        Box::pin(async move {
+            let mut response = self.send_no_redirect(request).await?;
+            if response.is_success() {
+                on_chunk(&response.body)?;
+                response.body.clear();
+            }
+            Ok(response)
+        })
+    }
+
     /// Request-local evidence. Legacy implementations are unknown before future construction.
     fn send_with_delivery<'a>(&'a self, request: HttpRequest, context: &'a crate::RequestContext) -> BoxFuture<'a, Result<HttpResponse, crate::HttpFailure>> {
         context.unknown();
@@ -448,29 +463,40 @@ mod reqwest_impl {
         ) -> Result<HttpResponse, ProviderError> {
             let cap = request.max_response_bytes;
             let (response, status, headers) = self.open(request, context).await?;
-            if !(200..300).contains(&status) {
-                let body = read_body(response, cap).await?;
-                return Ok(HttpResponse { status, headers, body });
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let mut response = response;
-                let mut total = 0usize;
-                while let Some(chunk) = response.chunk().await.map_err(|e| network(&e))? {
-                    total = total.saturating_add(chunk.len());
-                    if total > cap {
-                        return Err(too_large(cap));
-                    }
-                    on_chunk(&chunk)?;
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                let body = read_body(response, cap).await?;
-                on_chunk(&body)?;
-            }
-            Ok(HttpResponse { status, headers, body: Vec::new() })
+            stream_body(response, status, headers, cap, on_chunk).await
         }
+    }
+
+    /// A 2xx body to `on_chunk` as it arrives, refused past `cap`; any other status's body whole.
+    async fn stream_body(
+        response: reqwest::Response,
+        status: u16,
+        headers: Vec<(String, String)>,
+        cap: usize,
+        on_chunk: &mut ChunkSink<'_>,
+    ) -> Result<HttpResponse, ProviderError> {
+        if !(200..300).contains(&status) {
+            let body = read_body(response, cap).await?;
+            return Ok(HttpResponse { status, headers, body });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut response = response;
+            let mut total = 0usize;
+            while let Some(chunk) = response.chunk().await.map_err(|e| network(&e))? {
+                total = total.saturating_add(chunk.len());
+                if total > cap {
+                    return Err(too_large(cap));
+                }
+                on_chunk(&chunk)?;
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let body = read_body(response, cap).await?;
+            on_chunk(&body)?;
+        }
+        Ok(HttpResponse { status, headers, body: Vec::new() })
     }
     impl Http for ReqwestHttp {
         fn send_no_redirect(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
@@ -489,6 +515,28 @@ mod reqwest_impl {
             {
                 let _ = request;
                 Box::pin(async { Err(ProviderError::new(ErrorKind::UnsupportedInput, "no-redirect image requests need a native or audited host transport")) })
+            }
+        }
+        fn send_streaming_no_redirect<'a>(
+            &'a self,
+            request: HttpRequest,
+            on_chunk: &'a mut ChunkSink<'a>,
+        ) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+            #[cfg(not(target_arch = "wasm32"))]
+            return Box::pin(async move {
+                let cap = request.max_response_bytes;
+                let response = self.send_once(&request, None).await?;
+                let status = response.status().as_u16();
+                let headers = response.headers().iter().filter_map(|(n, v)| Some((n.as_str().to_ascii_lowercase(), v.to_str().ok()?.to_owned()))).collect();
+                drop(request);
+                stream_body(response, status, headers, cap, on_chunk).await
+            });
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = (request, on_chunk);
+                Box::pin(async {
+                    Err(ProviderError::new(ErrorKind::UnsupportedInput, "no-redirect streamed requests need a native or audited host transport"))
+                })
             }
         }
         fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {

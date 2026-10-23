@@ -27,11 +27,16 @@ pub struct RunLimits {
     /// Ask providers that answer in text to stream it, reported as [`RunUpdate::Text`] (#504).
     /// Off by default: only a host that shows the answer as it arrives needs it.
     pub stream_text: bool,
+    /// Ask providers that can to report a preview of a result while it arrives, as
+    /// [`JobProgress::Running`] with `partial` (#671): the speech audio received so far, say.
+    /// Off by default: each preview is a copy of what arrived, so only a host that shows them
+    /// needs it.
+    pub stream_previews: bool,
 }
 
 impl Default for RunLimits {
     fn default() -> Self {
-        Self { deadline_ms: DEFAULT_JOB_DEADLINE_MS, max_poll_interval_ms: 30_000, max_poll_errors: 5, stream_text: false }
+        Self { deadline_ms: DEFAULT_JOB_DEADLINE_MS, max_poll_interval_ms: 30_000, max_poll_errors: 5, stream_text: false, stream_previews: false }
     }
 }
 
@@ -154,6 +159,7 @@ async fn send(
         return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled before it started")));
     }
     let context = if limits.stream_text { crate::SubmitContext::streaming_text() } else { crate::SubmitContext::new() };
+    let context = context.with_previews(limits.stream_previews);
     let (context, job, staged) = match sending {
         Sending::Fresh(job, stager) => (context.with_stager(stager), job, None),
         Sending::Replay(job, staged) => (context, job, Some(staged)),
@@ -167,17 +173,13 @@ async fn send(
         // Each time the submit makes progress, report the text it streamed meanwhile.
         let streamed = futures::future::poll_fn(|cx| {
             let polled = submit.as_mut().poll(cx);
-            for piece in context.take_text() {
-                on_update(RunUpdate::Text(piece));
-            }
+            report_streamed(&context, on_update);
             polled
         });
         race(streamed, cancel).await
     };
     // What streamed just before a cancel won the race.
-    for piece in context.take_text() {
-        on_update(RunUpdate::Text(piece));
-    }
+    report_streamed(&context, &mut on_update);
     let handle = match submitted {
         // Cancelled while submitting: we can't know whether the provider accepted it.
         None => return Err(RunFailure::submit_failed(ProviderError::new(ErrorKind::Cancelled, "cancelled while submitting"), false)),
@@ -187,6 +189,16 @@ async fn send(
     };
     on_update(RunUpdate::Submitted(handle.clone()));
     resume(provider, &handle, cancel, clock, limits, on_update).await
+}
+
+/// Reports the text and the latest preview a submit streamed since the last call.
+fn report_streamed(context: &crate::SubmitContext, on_update: &mut impl FnMut(RunUpdate)) {
+    for piece in context.take_text() {
+        on_update(RunUpdate::Text(piece));
+    }
+    if let Some(partial) = context.take_preview() {
+        on_update(RunUpdate::Progress(JobProgress::Running { fraction: None, message: None, partial: Some(partial) }));
+    }
 }
 
 /// Polls an already submitted job to the end (after a restart, or a retry of a failed run that
