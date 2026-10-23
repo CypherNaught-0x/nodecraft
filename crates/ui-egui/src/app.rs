@@ -268,7 +268,13 @@ const NOODLE_HIT: f32 = 6.0;
 /// fixture can't drift apart (#267).
 pub(crate) const MAX_QUICK_ADD_AREAS: usize = 256;
 
-fn curves(canvas: &Canvas, painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> Vec<(EdgeId, [Pos2; 4], Modality)> {
+fn curves(
+    canvas: &Canvas,
+    painted: &BTreeMap<NodeId, Rect>,
+    kinds: &nodecraft_nodes::Registry,
+    t: &Tokens,
+    inputs: &input_ports::Cache,
+) -> Vec<(EdgeId, [Pos2; 4], Modality)> {
     canvas
         .edges()
         .values()
@@ -277,7 +283,9 @@ fn curves(canvas: &Canvas, painted: &BTreeMap<NodeId, Rect>, kinds: &nodecraft_n
             let to = canvas.nodes().get(&edge.to.node)?;
             let port = from.outputs.iter().find(|p| p.name == edge.from.port)?;
             let a = noodle::port_anchor(from, card_geometry(painted, kinds, from, t), Side::Output, &edge.from.port)?;
-            let b = noodle::port_anchor(to, card_geometry(painted, kinds, to, t), Side::Input, &edge.to.port)?;
+            let ports = inputs.get(to);
+            let index = ports.iter().position(|port| port.name == edge.to.port)?;
+            let b = noodle::anchor(card_geometry(painted, kinds, to, t), Side::Input, index, ports.len());
             Some((edge.id, noodle::bezier(a, b), port.port_type.modality))
         })
         .collect()
@@ -350,6 +358,7 @@ mod file_dialogs;
 mod generate;
 mod host;
 mod image_tools;
+mod input_ports;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod key_changes;
 mod layer_editor;
@@ -374,6 +383,8 @@ mod paste_image;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perf_run;
 mod plugin_cards;
+#[cfg(test)]
+mod ports638_tests;
 mod queue_panel;
 mod reader;
 #[cfg(not(target_arch = "wasm32"))]
@@ -456,6 +467,7 @@ pub struct NodeCraftApp {
     /// World rectangles painted this frame: authoritative for selection, noodle anchors,
     /// port drop targets and scoped host geometry, independent of schema-cache eviction.
     painted: BTreeMap<NodeId, Rect>,
+    input_ports: input_ports::Cache,
     wiring: Option<Wiring>,
     /// The input order badge being dragged: its list input and edge.
     reordering: Option<(crate::order::Input, EdgeId)>,
@@ -1086,6 +1098,7 @@ impl NodeCraftApp {
             marquee: None,
             fields: fields::Fields::default(),
             painted: BTreeMap::new(),
+            input_ports: input_ports::Cache::default(),
             wiring: None,
             reordering: None,
             palette: None,
@@ -1607,6 +1620,7 @@ impl NodeCraftApp {
         self.take_mesh_captures();
         // After `fields_show`, which may have collapsed or expanded a field this frame.
         let membership = self.membership();
+        self.input_ports.prepare(&mut self.session);
         if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
             let kinds = self.session.kinds();
             self.editors.retain(|id, _| canvas.nodes().contains_key(id));
@@ -1708,6 +1722,7 @@ impl NodeCraftApp {
                 let schema = if rejected { None } else { cached_schema(&mut self.schemas, &self.session, node, self.cache_clock) };
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
                 let outdated = plugin_cards::outdated(&self.session, node);
+                let inputs = self.input_ports.resolve(node, kinds);
                 let editor = self.editors.entry(node.id).or_default();
                 // Cards use their parent's max_rect origin as the canvas origin. A layout
                 // scope would advance that origin between cards; an independent disabled
@@ -1724,6 +1739,7 @@ impl NodeCraftApp {
                     node,
                     card::CardView {
                         descriptor,
+                        inputs,
                         visible: schema.map(|cached| &cached.visible),
                         enabled: schema.and_then(|cached| cached.enabled.as_ref()),
                         preview_pos: preview,
@@ -2044,11 +2060,11 @@ impl NodeCraftApp {
             // Noodles follow this frame's painted cards (drag previews, resolved heights). They are
             // painted on the canvas layer, which stays under the card layers.
             let curves = if hidden.is_empty() {
-                curves(canvas, &self.painted, kinds, t)
+                curves(canvas, &self.painted, kinds, t, &self.input_ports)
             } else {
                 let mut geometry = self.painted.clone();
                 geometry.extend(fields::stand_ins(canvas, hidden, t, self.view.zoom, field_shift));
-                let mut curves = curves(canvas, &geometry, kinds, t);
+                let mut curves = curves(canvas, &geometry, kinds, t, &self.input_ports);
                 curves.retain(|(id, _, _)| canvas.edges().get(id).is_none_or(|edge| !fields::inside_collapsed(canvas, hidden, edge.from.node, edge.to.node)));
                 curves
             };
@@ -2977,8 +2993,9 @@ impl NodeCraftApp {
         // The nearest accepting input within reach wins; failing that, the nearest input explains why.
         let mut best: Option<(bool, f32, &Node, &nodecraft_graph::Port, Pos2)> = None;
         for (node, rect) in drop_targets(canvas, &self.painted) {
-            for (index, input) in node.inputs.iter().enumerate() {
-                let at = noodle::anchor(rect, Side::Input, index, node.inputs.len());
+            let inputs = self.input_ports.get(node);
+            for (index, input) in inputs.iter().enumerate() {
+                let at = noodle::anchor(rect, Side::Input, index, inputs.len());
                 let ok = accepts(node, input).is_ok();
                 if ok {
                     let ring = t.port_radius * self.view.zoom + t.drop_ring_gap;

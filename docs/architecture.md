@@ -167,6 +167,9 @@ included in errors. A kind can implement `migrate` for its versioned config/sche
 `prepare_migration` to validate the original and proposed node, show its warnings and explicitly
 apply the proposed node through `SetNode`. A failed migration leaves the saved document intact.
 Never silently discard unknown overrides/config or apply migrations during pure planning.
+The canvas may preview warning-free additive input migrations without editing the graph; its
+card, noodle and drop geometry share that list. Connecting or rewiring onto a new input records
+the migration with the wire as one undoable changeset (see [legacy input previews](decisions/2026-10-23-legacy-input-previews.md)).
 
 Schema descriptions are optional tooltips for generated UI and MCP. Choice controls allow up to
 16,384 options with 4,096-byte values/labels, within a 1 MiB aggregate schema text budget that

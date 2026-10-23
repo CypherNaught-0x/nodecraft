@@ -93,7 +93,7 @@ fn connect(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 
 /// A card made before its kind gained `port` (a Timeline's sound and picture inputs, #576) takes
 /// the kind's migration in the same edit as the wire, so wiring it is all it takes.
-fn upgraded(c: &Context<'_>, canvas: CanvasId, id: NodeId, port: &str) -> Option<Node> {
+pub(crate) fn upgraded(c: &Context<'_>, canvas: CanvasId, id: NodeId, port: &str) -> Option<Node> {
     let node = c.document.canvases().get(&canvas)?.nodes().get(&id)?;
     if node.inputs.iter().any(|p| p.name == port) {
         return None;
