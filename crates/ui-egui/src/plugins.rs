@@ -84,6 +84,9 @@ enum Ask {
     },
     Install {
         digest: String,
+        update: bool,
+        /// The package had a grant, which an update drops.
+        granted: bool,
     },
     Rights,
     /// A change to an installed package; the text says what was done.
@@ -236,10 +239,14 @@ impl PluginsPanel {
                 self.status = None;
                 self.preview = Some(Preview { update, location, report: answer });
             }
-            Ask::Install { digest } => {
+            Ask::Install { digest, update, granted } => {
                 let id = answer.get("package_id").and_then(Value::as_str).unwrap_or_default();
                 let version = answer.get("version").and_then(Value::as_str).unwrap_or_default();
-                self.status = Some(format!("Installed {id} {version}. It stays disabled until you enable it."));
+                self.status = Some(match (update, granted) {
+                    (false, _) => format!("Installed {id} {version}. It stays disabled until you enable it."),
+                    (true, false) => format!("Updated {id} to {version}. It stays disabled until you enable it."),
+                    (true, true) => format!("Updated {id} to {version}. Its grant was removed: grant it again, then enable it."),
+                });
                 if answer.get("digest").and_then(Value::as_str) != Some(digest.as_str()) {
                     self.notice = Some("The file changed after it was checked: look at what was installed before you enable it.".into());
                 }
@@ -300,8 +307,15 @@ impl PluginsPanel {
         let Some(preview) = self.preview.clone() else { return };
         let digest = preview.report.get("digest").and_then(Value::as_str).unwrap_or_default().to_owned();
         let id = if preview.update { "plugins.update" } else { "plugins.import" };
+        let granted = preview.update && self.drops_grant(&preview);
         // The engine refuses a file that no longer has the digest the person looked at.
-        self.send(session, id, json!({"location": preview.location, "digest": digest}), Ask::Install { digest });
+        self.send(session, id, json!({"location": preview.location, "digest": digest}), Ask::Install { digest, update: preview.update, granted });
+    }
+
+    /// Whether installing `preview` updates a package that is granted now; every update drops it.
+    fn drops_grant(&self, preview: &Preview) -> bool {
+        let id = preview.report.get("package_id").and_then(Value::as_str);
+        preview.update && self.rows.iter().any(|r| Some(r.package_id.as_str()) == id && r.grant.is_some())
     }
 
     fn change(&mut self, session: &mut Session, id: &str, params: Value, done: String) {
@@ -392,8 +406,13 @@ impl PluginsPanel {
         ui.label(egui::RichText::new("Install a package").color(t.text));
         ui.horizontal(|ui| {
             let label = ui.label(egui::RichText::new("Package file").color(t.text_muted));
-            ui.add(egui::TextEdit::singleline(&mut self.location).hint_text("path to a .ncraft-plugin file").desired_width(t.card_width * 1.5))
+            let typed = ui
+                .add(egui::TextEdit::singleline(&mut self.location).hint_text("path to a .ncraft-plugin file").desired_width(t.card_width * 1.5))
                 .labelled_by(label.id);
+            // A preview is of the file checked, not of the one now named.
+            if typed.changed() {
+                self.preview = None;
+            }
             #[cfg(not(target_arch = "wasm32"))]
             if ui.add_enabled(self.picking.is_none(), egui::Button::new("Choose…")).clicked() {
                 self.picking = Some(pick::Picking::start());
@@ -409,6 +428,9 @@ impl PluginsPanel {
         let Some(preview) = self.preview.clone() else { return };
         egui::Frame::NONE.inner_margin(t.card_padding).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius).show(ui, |ui| {
             preview_body(ui, &preview.report, t);
+            if self.drops_grant(&preview) {
+                ui.label(egui::RichText::new("Updating removes its grant: it can't run until you grant it again.").color(t.danger));
+            }
             ui.horizontal(|ui| {
                 let label = if preview.update { "Update" } else { "Install" };
                 if ui.add_enabled(!self.checking(), egui::Button::new(label)).clicked() {

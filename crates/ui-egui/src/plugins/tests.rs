@@ -15,14 +15,19 @@ struct State {
 
 const SHOUT: &str = r#"{"id":"user.shout","inputs":[{"kind":"text","name":"words"}],"label":"Shout","outputs":[{"expr":"upper(words)","kind":"text","name":"out"}],"schema":1,"version":1}"#;
 
+const PROVIDER: &str = r#"{"credential":"bearer","label":"Acme","limits":{"concurrency":1,"response_bytes":65536,"timeout_ms":30000},"models":[{"id":"acme/v1","price":{"currency":"USD","micros":"40000"}}],"origin":"https://api.acme.example","output_origins":["https://cdn.acme.example"],"schema":1,"submit":{"body":{"prompt":"{text:prompt}"},"method":"POST","outputs":[{"at":"/url","kind":"url","mime":"image/png"}],"path":"/v1/{model}"}}"#;
+
 /// A text action package file in `dir`, with `license` as its LICENSE text; its path.
 fn package(dir: &std::path::Path, runtime: &str, license: &str) -> String {
     let s = |t: &str| Json::Str(t.to_owned());
     let obj = |f: Vec<(&str, Json)>| Json::Object(f.into_iter().map(|(k, v)| (k.to_owned(), v)).collect());
     let (runtime, kind) = match runtime {
         "data" => (obj(vec![("kind", s("data"))]), "catalog"),
+        "provider_operations" => (obj(vec![("kind", s("provider_operations")), ("schema", Json::Int(1))]), "provider"),
         _ => (obj(vec![("kind", s("text_actions")), ("schema", Json::Int(1))]), "action"),
     };
+    // A provider reaches the network; it may also be let use an API key.
+    let (required, optional) = if kind == "provider" { (vec![s("network")], vec![s("secret")]) } else { (vec![], vec![]) };
     let manifest = json::canonical(&obj(vec![
         ("manifest_version", Json::Int(1)),
         ("package_id", s("io.example.text")),
@@ -32,11 +37,15 @@ fn package(dir: &std::path::Path, runtime: &str, license: &str) -> String {
         ("license", s("MIT")),
         ("runtime", runtime),
         ("dependencies", Json::Array(vec![])),
-        ("capabilities", obj(vec![("required", Json::Array(vec![])), ("optional", Json::Array(vec![]))])),
+        ("capabilities", obj(vec![("required", Json::Array(required)), ("optional", Json::Array(optional))])),
         ("registrations", Json::Array(vec![obj(vec![("id", s("warm")), ("kind", s(kind)), ("descriptor", s("d/warm.json"))])])),
     ]))
     .unwrap();
-    let definition = if kind == "action" { SHOUT } else { "{}" };
+    let definition = match kind {
+        "action" => SHOUT,
+        "provider" => PROVIDER,
+        _ => "{}",
+    };
     let bytes =
         archive::build(&[("manifest.json", manifest.as_bytes()), ("LICENSE", license.as_bytes()), ("d/warm.json", definition.as_bytes())], None).unwrap();
     let path = dir.join(format!("text-{kind}.ncraft-plugin"));
@@ -246,4 +255,62 @@ fn an_update_closes_a_consent_shown_for_the_old_version() {
 fn an_unknown_capability_is_named() {
     assert!(capability_text("io.example.teleport").contains("io.example.teleport"));
     assert_eq!(capability_text("gpu"), "use the graphics card");
+}
+
+/// The consent grants exactly what its boxes show: the required capability always, the optional
+/// one only when ticked, and the addresses only with network.
+#[test]
+fn a_grant_gives_exactly_the_ticked_capabilities_and_their_addresses() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(direct());
+    settle(&mut h);
+    check(&mut h, &package(dir.path(), "provider_operations", "MIT\n"));
+    h.get_by_label("Install").click();
+    settle(&mut h);
+    let granted = |h: &mut Harness<'static, State>| {
+        let list = h.state_mut().session.dispatch("plugins.list", &json!({})).unwrap();
+        let grant = &list["packages"][0]["grant"];
+        (strings(grant.get("capabilities")), strings(grant.get("origins")))
+    };
+    let origins = vec!["https://api.acme.example".to_owned(), "https://cdn.acme.example".to_owned()];
+    h.get_by_label("Grant…").click();
+    settle(&mut h);
+    h.get_by_label("reach the internet, only at the addresses listed (required)");
+    h.get_by_label("Grant").click();
+    settle(&mut h);
+    assert_eq!(granted(&mut h), (vec!["network".to_owned()], origins.clone()), "the unticked optional capability isn't granted");
+    h.get_by_label("Revoke").click();
+    settle(&mut h);
+    h.get_by_label("Grant…").click();
+    settle(&mut h);
+    h.get_by_label("use one of your API keys").click();
+    h.run();
+    h.get_by_label("Grant").click();
+    settle(&mut h);
+    let (mut capabilities, reached) = granted(&mut h);
+    capabilities.sort();
+    assert_eq!((capabilities, reached), (vec!["network".to_owned(), "secret".to_owned()], origins));
+}
+
+/// Every update drops the grant, so a granted package's update preview and result say so.
+#[test]
+fn updating_a_granted_package_says_its_grant_is_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(direct());
+    settle(&mut h);
+    check(&mut h, &package(dir.path(), "text_actions", "MIT\n"));
+    h.get_by_label("Install").click();
+    settle(&mut h);
+    h.get_by_label("Grant…").click();
+    settle(&mut h);
+    h.get_by_label("Grant").click();
+    settle(&mut h);
+    assert!(h.state().panel.rows()[0].grant.is_some());
+    h.state_mut().panel.update = true;
+    check(&mut h, &package(dir.path(), "text_actions", "MIT\n\nThe same, again.\n"));
+    assert_eq!(h.state().panel.notice, None);
+    h.get_by_label("Updating removes its grant: it can't run until you grant it again.");
+    h.get_by_label("Update").click();
+    settle(&mut h);
+    assert!(h.state().panel.status.as_deref().is_some_and(|s| s.contains("Its grant was removed")), "{:?}", h.state().panel.status);
 }
