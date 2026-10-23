@@ -26,6 +26,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
 | **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video); Soul ID training (images → identity) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
+| **Kling** | `kling` (feature `kling`) | API key (`Authorization: Bearer`), or access key and secret key stored as `ak:sk`, which sign a 30-minute HS256 token per request | Kling 2.5 Turbo, 2.1 Master and 1.6 text → video and start frame (+ end frame) → video; Kling 1.6 up to four references → video; Kling Image 2.1 text → image | Billed in prepaid Kling units, so no quote before the run. One create per job carrying an `external_task_id` from the idempotency key; never replayed automatically; no remote cancellation. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
 
 ## Image facts on inputs and outputs
@@ -55,6 +56,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `tripo` | `tripo` | — |
 | `meshy` | `meshy` | — |
 | `higgsfield` | `higgsfield` (the key id and secret joined as `id:secret`) | — |
+| `kling` | `kling` (an API key, or the access key and secret key joined as `ak:sk`) | — |
 | `elevenlabs` | `elevenlabs` | — |
 | `google-veo` | `google-cloud` (paste the whole service-account key file; it is stored compactly) | the Vertex AI API enabled, and the Vertex AI User role on the account's project |
 | `google-tts` | `google-cloud` (the same key as `google-veo`) | the Cloud Text-to-Speech API enabled in the account's project; Gemini voices also need the Vertex AI User role |
@@ -515,6 +517,52 @@ keychain account, like Gemini Images. Catalog model `gemini-video.omni-flash`:
 Contract checked 2026-10-22: [Omni guide](https://ai.google.dev/gemini-api/docs/omni),
 [pricing](https://ai.google.dev/gemini-api/docs/pricing),
 [deprecations](https://ai.google.dev/gemini-api/docs/deprecations).
+
+## Kling (`kling` feature)
+
+`Kling` (#19) drives Kling's task API at the fixed base `https://api-singapore.klingai.com`. Four
+catalog models share it:
+
+| Catalog model | Kling model | Modes | Options |
+|---|---|---|---|
+| `kling.v2_5_turbo` | `kling-v2-5-turbo` | text → video; start frame, optional end frame → video | 5 or 10 s, Standard or Professional, aspect ratio (text only) |
+| `kling.v2_1_master` | `kling-v2-1-master` | text → video; start frame → video | 5 or 10 s, aspect ratio (text only) |
+| `kling.v1_6` | `kling-v1-6` | text → video; start frame, optional end frame → video; 1–4 references → video | 5 or 10 s, Standard or Professional, prompt adherence 0–1, aspect ratio |
+| `kling.image_v2_1` | `kling-v2-1` | text → one image | eight aspect ratios |
+
+- **Key.** Store the access key and secret key joined by a colon (`ak:sk`), as Kling's developer
+  console issues them; a single API key without a colon is sent as a bearer token as is. The pair signs an HS256 token for each request (issuer the access
+  key, valid from five seconds ago for 30 minutes); the secret key never travels. A key with more
+  than one colon, or an empty part, is refused before anything is sent.
+- **Inputs.** Prompts and negative prompts are at most 2,500 characters. Images are PNG or JPEG
+  whose bytes match their type, at most 10 MiB each and 40 MiB together, sent inline as base64. An
+  end frame needs a start frame and Professional mode; references and frames don't mix. A start
+  frame sets the clip's shape, so the aspect ratio isn't sent with one.
+- **Flow.** One `POST /v1/videos/text2video`, `/v1/videos/image2video`,
+  `/v1/videos/multi-image2video` or `/v1/images/generations` creates the task: the paid step,
+  never replayed. Video creates carry `external_task_id`, a BLAKE3 hash of the job's idempotency key,
+  so Kling refuses a second task for the same job. The task is polled every 5 s at the same path
+  plus its id; the result link is downloaded at once without the key (no redirects), must sniff as
+  MP4 (video) or PNG, JPEG or WebP (image) and stay under 512 MiB. A failed download is retried on
+  the next poll.
+- **Errors.** Kling's business codes map to what a person can do: 1000–1004, 1100, 1103 and
+  1304 a key or account problem, 1101/1102 the account balance, 1200–1202 the request, 1203 a
+  task Kling doesn't know, 1300/1301 content policy, 1302 rate limits, 1303 and 5001 busy, 5000 a
+  server error, 5002 a timeout. A message that echoes the key or a signed token is withheld. Such
+  a refusal of the create proves no task was made, unless it names an existing task; a server
+  error or lost reply after a create says the task may have been billed.
+- **Cost.** Kling bills prepaid resource units by model, mode and length, so the catalog lists
+  every model as by usage: no price before the run, and finite budgets refuse them.
+- **Cancel.** Kling has no cancel endpoint; a task runs to the end and is billed.
+- **Not verified live.** The official docs refuse scripted reads; the contract follows the
+  public mirrors linked below. Open: whether Kling 2.5 Turbo text to video takes Standard mode
+  (the default), whether a plain API key is accepted, and the code for a repeated
+  `external_task_id`. Run `NODECRAFT_LIVE_KLING=1 NODECRAFT_LIVE_KLING_ACKNOWLEDGE_COST=1
+  KLING_API_KEY=… cargo test -p nodecraft-providers --features http,kling --test live_kling --
+  --ignored` with authorization to spend.
+
+Contract checked 2026-10-23: [Kling developer docs](https://app.klingai.com/global/dev/document-api),
+[AI SDK Kling provider](https://ai-sdk.dev/providers/ai-sdk-providers/klingai).
 
 ## fal.ai queue models
 

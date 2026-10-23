@@ -65,6 +65,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     assert_eq!(setup.readiness("tripo"), Some(&Readiness::NeedsKey { account: "tripo".into() }));
     assert_eq!(setup.readiness("meshy"), Some(&Readiness::NeedsKey { account: "meshy".into() }));
     assert_eq!(setup.readiness("higgsfield"), Some(&Readiness::NeedsKey { account: "higgsfield".into() }));
+    assert_eq!(setup.readiness("kling"), Some(&Readiness::NeedsKey { account: "kling".into() }));
     assert!(matches!(setup.readiness("comfyui"), Some(Readiness::NotSetUp(why)) if why.contains("comfyui_url")));
     let error = setup.routing([(NODE, "openai-images")]).err().unwrap();
     assert_eq!(error.kind, ErrorKind::Unsupported);
@@ -77,7 +78,9 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
 fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     let catalog = Catalog::builtin().unwrap();
     let keys = MemoryStore::default();
-    for account in ["openai", "anthropic", "replicate", "seedream", "gemini", "fal", "tripo", "meshy", "higgsfield", "elevenlabs", "comfyui:gpu-box:8188"] {
+    for account in
+        ["openai", "anthropic", "replicate", "seedream", "gemini", "fal", "tripo", "meshy", "higgsfield", "kling", "elevenlabs", "comfyui:gpu-box:8188"]
+    {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
     }
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
@@ -103,6 +106,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "tripo",
         "meshy",
         "higgsfield",
+        "kling",
         "elevenlabs",
         "comfyui",
     ]
