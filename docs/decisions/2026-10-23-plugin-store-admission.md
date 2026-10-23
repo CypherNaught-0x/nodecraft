@@ -4,8 +4,11 @@
   this build's `HostVersions` on every incoming package (dry runs included) and on every enable.
   A package whose protocol major differs, whose minor range doesn't overlap, whose descriptor
   contract is newer or of another major, or which requires a feature this build lacks is refused
-  as `Unsupported`, never installed to fail later. Unknown *optional* features are ignored. The
-  check at enable covers a package a newer NodeCraft put into the shared store.
+  as `Unsupported`, never installed to fail later. Unknown *optional* features are ignored. A newer
+  NodeCraft may have put a package into the shared store: enable negotiates a disabled one again,
+  an enabled one is left out of what this build runs, and enable refuses a dependency it can't
+  use. The signature checked is the kept archive's when the digest is already kept, since the
+  digest doesn't cover `signature.json`.
 - **NodeCraft's namespaces need a trusted signature.** Package IDs equal to or under `nodecraft`
   or `io.github.cyphernaught0x` install and enable only when a key the trust file trusts signed
   them (`Forbidden` otherwise, also for a known-but-untrusted key). A DNS-looking name proves no

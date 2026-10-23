@@ -31,7 +31,7 @@ fn a_package_made_for_another_protocol_or_contract_is_refused_even_in_a_dry_run(
         for dry_run in [true, false] {
             let error = store().import(&bytes, &TrustStore::default(), dry_run).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Unsupported, "{to}: {}", error.message);
-            assert!(error.message.contains("another version"), "{}", error.message);
+            assert!(error.message.contains("newer NodeCraft"), "{}", error.message);
         }
     }
     // An overlapping minor range and an unknown optional feature are fine.
@@ -120,6 +120,18 @@ fn nodecraft_namespaces_need_a_trusted_signature() {
     st.enable(&pkg, &saved, &none(), &BTreeSet::new()).unwrap();
 }
 
+/// The digest doesn't cover the signature, so when it is already kept the kept archive's
+/// signature is the one checked: an unsigned copy of a kept signed package is the same package.
+#[test]
+fn the_namespace_is_checked_against_the_kept_archives_signature() {
+    let mut sp = spec("nodecraft.example.kept");
+    let (bytes, trust) = signed(&mut sp, "nc-key");
+    let mut st = store();
+    st.import(&bytes, &trust, false).unwrap();
+    let error = st.import(&package(&sp), &trust, true).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Conflict, "{}", error.message);
+}
+
 /// A real failed write under the folder backend: the folder made read-only. Skipped where the
 /// permission doesn't hold (running as root).
 #[cfg(unix)]
@@ -131,12 +143,22 @@ fn a_real_failed_write_leaves_the_folder_store_as_it_was() {
     let mut st = Store::open(crate::FolderBackend::new(root.clone()).unwrap()).unwrap();
     st.import(&package(&spec("io.example.first")), &TrustStore::default(), false).unwrap();
     let index = std::fs::read(root.join("index.json")).unwrap();
+    /// Makes the folder writable again however the test ends, so the temp dir can be removed.
+    struct Writable(std::path::PathBuf);
+    impl Drop for Writable {
+        fn drop(&mut self) {
+            for path in [self.0.join("objects"), self.0.clone()] {
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+    let _writable = Writable(root.clone());
     let set = |path: &std::path::Path, mode: u32| std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     let probe = |path: &std::path::Path| std::fs::write(path.join("probe"), b"").is_ok();
     // The archive can't be written: nothing changes.
     set(&root.join("objects"), 0o555);
     if probe(&root.join("objects")) {
-        set(&root.join("objects"), 0o755);
+        let _ = std::fs::remove_file(root.join("objects/probe"));
         eprintln!("skipped: permissions don't hold here");
         return;
     }
@@ -149,7 +171,8 @@ fn a_real_failed_write_leaves_the_folder_store_as_it_was() {
     set(&root, 0o555);
     let error = st.import(&package(&spec("io.example.second")), &TrustStore::default(), false).unwrap_err();
     set(&root, 0o755);
-    assert!(error.message.contains("disk full"), "{}", error.message);
+    assert_eq!(error.kind, ErrorKind::Forbidden, "{}", error.message);
+    assert!(error.message.contains("permissions"), "{}", error.message);
     assert_eq!(std::fs::read(root.join("index.json")).unwrap(), index);
     assert!(!st.index().active.contains_key(&id("io.example.second")));
     let mut st = Store::open(crate::FolderBackend::new(root.clone()).unwrap()).unwrap();

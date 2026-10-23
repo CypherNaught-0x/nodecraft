@@ -318,13 +318,17 @@ pub struct PluginSnapshot {
 
 impl PluginSnapshot {
     /// What `store` may run now: each enabled package with a live grant for its active digest.
-    /// A package that can't be loaded or compiled is left out; enabling it reported why.
+    /// A package that can't be loaded or compiled is left out; enabling it reported why. So is
+    /// one this build can't negotiate with, which a newer NodeCraft enabled in the shared store.
     pub fn of<B: StoreBackend>(store: &Store<B>) -> Self {
         let Ok(grants) = store.grants() else { return Self::default() };
         let mut actions = BTreeMap::new();
         for (id, (digest, state)) in &store.index().active {
             let Some(grant) = (*state == State::Enabled).then(|| grants.live(id, digest)).flatten() else { continue };
-            let Ok(compiled) = store.load(id).and_then(|package| compile(&package)) else { continue };
+            let Ok(compiled) = store.load(id).and_then(|package| nodecraft_plugin_store::store::compatible(&package.manifest).and_then(|()| compile(&package)))
+            else {
+                continue;
+            };
             let stamp = PluginStamp { grant_id: grant.grant_id.clone(), package: id.clone(), digest: *digest, epoch: grant.epoch };
             for PluginTextAction { id: action_id, action, lock } in compiled {
                 let action = PluginAction { stamp: stamp.clone(), lock, action, revoked: AtomicBool::new(false) };

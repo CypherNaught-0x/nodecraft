@@ -73,7 +73,13 @@ mod native {
     }
 
     fn io(detail: &'static str) -> impl Fn(std::io::Error) -> Error {
-        move |_| Error::new(ErrorKind::Internal, detail)
+        // A folder the user can't write isn't a full disk; say which it is.
+        move |e| match e.kind() {
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem => {
+                Error::new(ErrorKind::Forbidden, "NodeCraft isn't allowed to write the plugin store's folder; check its permissions")
+            }
+            _ => Error::new(ErrorKind::Internal, detail),
+        }
     }
 
     fn lock_error(error: std::fs::TryLockError) -> Error {

@@ -258,27 +258,26 @@ impl<B: StoreBackend> Store<B> {
         Ok((package, provenance))
     }
 
-    /// [`Store::verify`], and whether this host may install the package at all.
-    fn admissible_package(&self, bytes: &[u8], trust: &TrustStore) -> Result<(Package, Provenance), Error> {
-        let (package, provenance) = self.verify(bytes, trust)?;
-        compatible(&package.manifest)?;
-        namespace(&package.manifest.package_id, &provenance)?;
-        Ok((package, provenance))
-    }
-
     /// Verifies an incoming archive; when its digest is already kept, the kept archive is what
     /// counts (one digest can come from differently built archives), and nothing is written.
+    /// Either way the package must be one this host may install at all: one it can negotiate
+    /// with, and signed by a trusted key if its namespace is reserved. The signature checked is
+    /// that of the archive kept, since the digest doesn't cover it.
     fn incoming(&self, bytes: &[u8], trust: &TrustStore) -> Result<Incoming, Error> {
-        let (package, provenance) = self.admissible_package(bytes, trust)?;
-        if self.index.objects.contains_key(&package.digest) {
+        let (package, provenance) = self.verify(bytes, trust)?;
+        compatible(&package.manifest)?;
+        let incoming = if self.index.objects.contains_key(&package.digest) {
             let kept = self.backend.read_object(&package.digest)?;
             let (stored, provenance) = self.verify(&kept, trust)?;
             if stored.digest != package.digest {
                 return Err(Error::new(ErrorKind::Internal, "a stored package no longer matches its digest; import it again"));
             }
-            return Ok(Incoming { package: stored, provenance, write: None, size: kept.len() });
-        }
-        Ok(Incoming { package, provenance, write: Some(bytes.to_vec()), size: bytes.len() })
+            Incoming { package: stored, provenance, write: None, size: kept.len() }
+        } else {
+            Incoming { package, provenance, write: Some(bytes.to_vec()), size: bytes.len() }
+        };
+        namespace(&incoming.package.manifest.package_id, &incoming.provenance)?;
+        Ok(incoming)
     }
 
     /// IDs registered by installed packages other than `except` (enabled or not): no two
@@ -600,7 +599,9 @@ impl<B: StoreBackend> Store<B> {
                     return Err(conflict(format!("its dependencies aren't met ({} isn't installed at the locked version)", dep.package_id)));
                 }
                 Some((_, State::Disabled)) => return Err(conflict(format!("enable {} first", dep.package_id))),
-                Some((_, State::Enabled)) => {}
+                // A newer NodeCraft may have enabled it in the shared store.
+                Some((_, State::Enabled)) => compatible(&self.load(&dep.package_id)?.manifest)
+                    .map_err(|e| conflict(format!("its dependency {} can't be used here: {}", dep.package_id, e.message)))?,
                 None => return Err(conflict(format!("its dependencies aren't met ({} isn't installed)", dep.package_id))),
             }
         }
@@ -724,10 +725,12 @@ fn depth(index: &Index, digest: &PackageDigest) -> Result<usize, Error> {
 }
 
 /// Whether this build speaks the package's protocol, descriptor contract and required features.
-fn compatible(manifest: &Manifest) -> Result<(), Error> {
+/// This host speaks every version from the first, so a package it can't use was made for a
+/// newer NodeCraft.
+pub fn compatible(manifest: &Manifest) -> Result<(), Error> {
     negotiate(&HostVersions::current(), manifest.host_protocol, manifest.descriptor_contract, &manifest.features)
         .map(|_| ())
-        .map_err(|e| Error::new(ErrorKind::Unsupported, format!("this NodeCraft can't use the package, which was made for another version ({e})")))
+        .map_err(|e| Error::new(ErrorKind::Unsupported, format!("the package needs a newer NodeCraft; update NodeCraft to use it ({e})")))
 }
 
 /// Whether `id` is in one of the [`RESERVED_NAMESPACES`].
