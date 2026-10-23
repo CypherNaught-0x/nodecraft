@@ -566,12 +566,12 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
     handle_reading(store, host, request, &mut |location| read_capped(std::path::Path::new(location), package_limit(), "package file").map(std::rc::Rc::new))
 }
 
-/// Reads the package file at a request's location.
 /// The last component of a path, either separator: what a list shows instead of the folders.
 fn file_name(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
+/// Reads the package file at a request's location.
 pub(crate) type ReadPackage<'a> = dyn FnMut(&str) -> Result<std::rc::Rc<Vec<u8>>, Error> + 'a;
 
 /// [`handle`], with package files read by `read` (given the request's location).
