@@ -350,7 +350,16 @@ impl PluginSnapshot {
 
     /// The catalog models its providers serve.
     pub fn models(&self) -> Vec<nodecraft_catalog::ModelDescriptor> {
-        self.providers.iter().flat_map(|(id, p)| crate::plugin_providers::models(id, p)).collect()
+        self.packages().into_iter().flatten().collect()
+    }
+
+    /// The catalog models its providers serve, one list per package.
+    pub(crate) fn packages(&self) -> Vec<Vec<nodecraft_catalog::ModelDescriptor>> {
+        let mut packages: BTreeMap<&str, Vec<_>> = BTreeMap::new();
+        for (id, provider) in &self.providers {
+            packages.entry(provider.stamp.package.as_str()).or_default().extend(crate::plugin_providers::models(id, provider));
+        }
+        packages.into_values().collect()
     }
 
     /// Whether both hold the same providers under the same grants.

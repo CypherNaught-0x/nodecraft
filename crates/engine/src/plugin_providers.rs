@@ -25,6 +25,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const MODE: &str = "generate";
 /// The input a plugin model's card fills itself.
 const PROMPT: &str = "prompt";
+/// The most catalog models one package publishes; templates past it are left out.
+pub const MAX_PACKAGE_MODELS: usize = 256;
 
 /// One granted provider template.
 #[derive(Debug)]
@@ -66,6 +68,7 @@ pub(crate) fn of(package: &Package, grant: &Grant, stamp: &PluginStamp) -> Vec<(
     }
     let rights = &grant.rights;
     let mut out = Vec::new();
+    let mut models = 0usize;
     for (r, id) in package.manifest.registrations.iter().zip(package.manifest.registered_ids()) {
         if r.kind != RegistrationKind::Provider {
             continue;
@@ -73,8 +76,12 @@ pub(crate) fn of(package: &Package, grant: &Grant, stamp: &PluginStamp) -> Vec<(
         let Some(template) = package.files.get(&r.descriptor).and_then(|bytes| Template::decode(bytes).ok()) else { continue };
         let reaches = rights.capabilities.contains(&Capability::Network) && template.origins().all(|o| rights.origins.contains(o.as_str()));
         let keyed = template.credential.is_none() || rights.capabilities.contains(&Capability::Secret);
-        if reaches && keyed {
-            out.push((id.as_str().to_owned(), PluginProvider::new(stamp.clone(), template)));
+        let provider = PluginProvider::new(stamp.clone(), template);
+        // A credential with nowhere to be kept would list models that never run.
+        let kept = provider.template.credential.is_none() || provider.key_account().is_some();
+        models = models.saturating_add(provider.template.models.len());
+        if reaches && keyed && kept && models <= MAX_PACKAGE_MODELS {
+            out.push((id.as_str().to_owned(), provider));
         }
     }
     out

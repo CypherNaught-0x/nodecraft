@@ -313,9 +313,11 @@ impl Session {
     fn publish_plugins(&mut self, plugins: &crate::plugin_runtime::PluginSnapshot) -> Result<(), Error> {
         let prefix = nodecraft_plugin::id::PLUGIN_PREFIX;
         let changed = !self.plugins.same_providers(plugins);
-        let catalog = match crate::generation_catalog::GenerationCatalog::current(&self.resources) {
-            Ok(current) if changed => Some(current.with_plugin_models(plugins.models())?),
-            _ => None,
+        let catalog = match self.resources.get::<crate::generation_catalog::GenerationCatalog>() {
+            // A session built on its own registry has no catalog to publish models in.
+            None => None,
+            Some(_) if !changed => None,
+            Some(_) => Some(crate::generation_catalog::GenerationCatalog::current(&self.resources)?.with_plugin_models(plugins.packages())?),
         };
         let kinds = match &catalog {
             Some(catalog) => catalog.rebind(&self.kinds)?,

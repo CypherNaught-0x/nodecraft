@@ -16,8 +16,12 @@
   `plugin.<package>:<API host>` and is set with the existing `keys.set`; an update that moves the
   origin needs the key again.
 - **Revocation is checked at the last moment.** Each broker holds its provider's revoked flag and
-  checks it right before the paid request, after authorisation; a withdrawn grant sends nothing.
-  The app also forgets its built adapters whenever the published providers change.
+  checks it right before the paid request, after authorisation; a withdrawn grant submits
+  nothing new. A job already submitted is still polled and fetched, because it may be billed and
+  dropping it would lose a paid result. The app also forgets its built adapters whenever the
+  published providers change.
+- **One package can't take the others down.** A package publishes at most 256 models, and one
+  the catalog can't hold is left out alone rather than failing every plugin's publish.
 - **Desktop only.** The app builds brokers on the public-addresses-only transport; the browser
   build refuses plugin providers, and the CLI has no plugin store.
 - **Not yet:** a restarted app resuming a plugin job waiting on its provider, and settling parked

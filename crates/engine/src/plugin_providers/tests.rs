@@ -205,6 +205,25 @@ fn a_free_or_malformed_price_never_reaches_the_catalog() {
     assert!(matches!(models.first().map(|m| &m.pricing), Some(nodecraft_catalog::Pricing::PerCall { price }) if price.0 == money));
 }
 
+#[test]
+fn a_package_the_catalog_cannot_hold_leaves_the_others_published() {
+    let store = granted(&priced("40000"), &[ORIGIN, "https://cdn.acme.example"]);
+    let s = session(PluginSnapshot::default());
+    let good = PluginSnapshot::of(&store).models();
+    let model = good.first().cloned().unwrap();
+    let huge: Vec<_> = (0..nodecraft_catalog::MAX_MODELS)
+        .map(|i| nodecraft_catalog::ModelDescriptor {
+            id: format!("plugin.io.example.huge.x/m{i}"),
+            provider: "plugin.io.example.huge.x".into(),
+            ..model.clone()
+        })
+        .collect();
+    let catalog = s.generation_catalog().unwrap().with_plugin_models(vec![huge, good]).unwrap();
+    assert!(catalog.model(nodecraft_nodes::generation::KIND, MODEL).is_some(), "the other package stays");
+    assert!(catalog.model(nodecraft_nodes::generation::KIND, "plugin.io.example.huge.x/m0").is_none());
+    assert!(catalog.model(nodecraft_nodes::generation::KIND, "fal.flux-schnell").is_some(), "built-in models stay");
+}
+
 /// A transport that counts what it is asked to send and answers nothing.
 #[derive(Default)]
 struct Counting(Mutex<usize>);

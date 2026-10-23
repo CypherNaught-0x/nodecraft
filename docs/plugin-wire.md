@@ -150,7 +150,10 @@ template's price.
 The key is kept in the keychain under `plugin.<package id>:<API host>` (set it with `keys.set`),
 so neither another package nor an update that moves its origin reads it. When the grant is
 withdrawn or replaced, the models leave the catalog at once, and a broker built under the old
-grant refuses to send a paid request.
+grant refuses to send a paid request. A job submitted before that is still polled and its outputs
+fetched, since it may already be billed. A package publishes at most 256 models; templates past
+that are left out, and a package the catalog can't hold is left out on its own, without the
+others.
 
 ## Grants (#174)
 
