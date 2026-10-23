@@ -6,7 +6,8 @@
 //! A template is published only when its grant lets it do what it asks: network for its
 //! origins, and the secret capability when it places a credential. Like an action, a provider
 //! carries the grant it was published under and is flagged revoked once that grant is gone, and
-//! its broker refuses to send a paid request after that.
+//! its broker sends nothing after that: no paid request, and no poll, cancel or download of a
+//! job it sent before.
 use crate::plugin_runtime::PluginStamp;
 use crate::secrets::{Account, SecretStore};
 use nodecraft_catalog::{InputRole, ModeSpec, ModelDescriptor, Price, Pricing, model::is_id};

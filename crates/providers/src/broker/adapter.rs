@@ -106,10 +106,20 @@ impl Broker {
         self.scrub(error)
     }
 
-    /// Sends `request` to the API origin with the credential.
+    /// Sends `request` to the API origin with the credential, while the grant stands.
     async fn api(&self, request: HttpRequest) -> Result<HttpResponse, ProviderError> {
+        self.still_granted()?;
         let request = authorize(&self.template, request, self.key())?;
         self.http.send_no_redirect(request).await.map_err(|e| self.scrub(e))
+    }
+
+    /// Refuses once the grant is withdrawn: a job sent before then is no longer followed, so
+    /// the plugin reaches no origin, with or without the credential, after that.
+    fn still_granted(&self) -> Result<(), ProviderError> {
+        if (self.granted)() {
+            return Ok(());
+        }
+        Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; the host no longer contacts its service"))
     }
 
     async fn create(&self, job: &ProviderJob, context: Option<&SubmitContext>) -> Result<Submission, ProviderError> {
@@ -202,6 +212,7 @@ impl Broker {
         if !self.template.origins().any(|o| o.holds(&parsed)) || !parsed.username().is_empty() || parsed.password().is_some() {
             return Err(malformed("an output link in the provider's reply is outside its template's origins"));
         }
+        self.still_granted()?;
         let request = HttpRequest::get(parsed.as_str()).max_response_bytes(MAX_OUTPUT_BYTES.min(*budget)).timeout_ms(DOWNLOAD_TIMEOUT_MS);
         let reply = self.http.send_no_redirect(request).await.map_err(|e| self.scrub(e))?;
         if !reply.is_success() {

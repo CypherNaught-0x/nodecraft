@@ -313,3 +313,25 @@ fn grant_and_rights_requests_are_bounded_before_the_worker_takes_them() {
         assert_eq!(bounded_request(&request).unwrap_err().kind, ErrorKind::InvalidInput, "{request}");
     }
 }
+
+#[test]
+fn an_empty_store_counts_as_loaded_once_it_is_read_and_one_that_cant_be_read_never_does() {
+    // #174: restored jobs of a plugin that is gone are given up only once the store has been read.
+    let worker = PluginWorker::spawn(memory, host()).unwrap();
+    assert!(!worker.loaded(), "nothing read yet");
+    let before = worker.changes();
+    assert!(worker.refresh());
+    let until = Instant::now() + Duration::from_secs(60);
+    while !worker.loaded() {
+        assert!(Instant::now() < until, "the store was never read");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_ne!(worker.changes(), before, "the first read is a change, so the window looks again");
+    assert!(worker.plugins().1.is_empty());
+
+    let broken = PluginWorker::spawn(|| Err::<Store<MemoryBackend>, _>(Error::new(ErrorKind::Busy, "fixture store locked")), host()).unwrap();
+    assert!(broken.refresh());
+    let id = broken.submit(&json!({"op":"list"})).unwrap();
+    assert_eq!(wait(&broken, &id)["status"], "failed");
+    assert!(!broken.loaded());
+}

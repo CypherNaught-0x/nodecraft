@@ -341,3 +341,69 @@ fn the_store_keeps_a_referenced_digest_on_uninstall() {
         assert_eq!(crate::plugin_cmds::handle(&mut store, &host, &bad).unwrap_err().kind, ErrorKind::InvalidInput);
     }
 }
+
+/// A store whose grants or package objects can be made unreadable (a lock held elsewhere, a
+/// damaged file).
+#[derive(Default)]
+struct Flaky {
+    inner: MemoryBackend,
+    grants: Arc<std::sync::atomic::AtomicBool>,
+    objects: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl StoreBackend for Flaky {
+    fn read_index(&self) -> Result<Option<Vec<u8>>, Error> {
+        self.inner.read_index()
+    }
+    fn write_index(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.inner.write_index(bytes)
+    }
+    fn read_object(&self, digest: &PackageDigest) -> Result<Vec<u8>, Error> {
+        if self.objects.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(Error::new(ErrorKind::Busy, "fixture object unreadable"));
+        }
+        self.inner.read_object(digest)
+    }
+    fn write_object(&mut self, digest: &PackageDigest, bytes: &[u8]) -> Result<(), Error> {
+        self.inner.write_object(digest, bytes)
+    }
+    fn remove_object(&mut self, digest: &PackageDigest) -> Result<(), Error> {
+        self.inner.remove_object(digest)
+    }
+    fn list_objects(&self) -> Result<Vec<PackageDigest>, Error> {
+        self.inner.list_objects()
+    }
+    fn read_grants(&self) -> Result<Option<Vec<u8>>, Error> {
+        if self.grants.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(Error::new(ErrorKind::Busy, "fixture grants unreadable"));
+        }
+        self.inner.read_grants()
+    }
+    fn write_grants(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.inner.write_grants(bytes)
+    }
+}
+
+#[test]
+fn a_read_that_misses_the_grants_or_a_granted_package_is_not_complete() {
+    // #174: only a complete read may tell restored jobs their plugin is gone.
+    let backend = Flaky::default();
+    let (grants, objects) = (Arc::clone(&backend.grants), Arc::clone(&backend.objects));
+    let mut store = Store::open(backend).unwrap();
+    let trust = TrustStore::default();
+    assert!(PluginSnapshot::read(&store).1, "an empty store, read, is complete");
+    store.import(&package("1.0.0", SHOUT), &trust, false).unwrap();
+    store.grant(&id(), &trust).unwrap();
+    store.enable(&id(), &trust, &BTreeSet::new(), &BTreeSet::new()).unwrap();
+    let (plugins, complete) = PluginSnapshot::read(&store);
+    assert!(complete && !plugins.is_empty());
+
+    grants.store(true, std::sync::atomic::Ordering::Release);
+    let (plugins, complete) = PluginSnapshot::read(&store);
+    assert!(!complete && plugins.is_empty(), "unreadable grants run nothing and prove nothing");
+    grants.store(false, std::sync::atomic::Ordering::Release);
+
+    objects.store(true, std::sync::atomic::Ordering::Release);
+    let (plugins, complete) = PluginSnapshot::read(&store);
+    assert!(!complete && plugins.is_empty(), "a granted package that can't be loaded may still be granted");
+}

@@ -271,6 +271,9 @@ pub(super) struct Runs {
     journal_problem: Option<String>,
     /// The plugin providers the provider thread may build brokers for (#174).
     plugins: Board,
+    /// Whether the plugin store has been read, so a plugin missing from `plugins` is gone and
+    /// not just still loading.
+    plugins_known: bool,
 }
 
 /// The session's plugins as the provider thread last saw them.
@@ -306,8 +309,11 @@ impl Runs {
 
     /// Publishes the session's plugin providers to the provider thread (#174). When they
     /// changed, every adapter is forgotten, so no run goes to a broker built under a grant that
-    /// is gone (it would refuse anyway) and a new provider is built afresh.
-    pub(super) fn set_plugins(&mut self, session: &mut Session) -> Result<(), Error> {
+    /// is gone (it would refuse anyway) and a new provider is built afresh. `loaded` says the
+    /// plugin store was just read in full and published, so restored jobs of a plugin that isn't
+    /// there can be given up; until the next such read, they wait.
+    pub(super) fn set_plugins(&mut self, session: &mut Session, loaded: bool) -> Result<(), Error> {
+        self.plugins_known = loaded;
         let next = Arc::clone(session.plugins());
         let changed = {
             let mut board = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -372,6 +378,7 @@ impl Runs {
             tokio: Some(tokio),
             journal_problem: None,
             plugins: Board::default(),
+            plugins_known: false,
         })
     }
 
@@ -410,7 +417,19 @@ impl Runs {
         if !self.host.has_waiting() {
             return;
         }
-        for adapter in self.host.waiting_adapters(session.document().id()) {
+        let project = session.document().id();
+        for adapter in self.host.waiting_adapters(project) {
+            if is_plugin(&adapter) {
+                // A plugin's broker is built from its grant, which is known once the store is read.
+                if !self.plugins_known {
+                    continue;
+                }
+                let granted = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(&adapter).is_some();
+                if !granted {
+                    self.host.abandon(project, &adapter, "its plugin is no longer enabled or granted");
+                    continue;
+                }
+            }
             match self.setup.readiness(&adapter) {
                 Some(Readiness::Ready) => {
                     let binding = self.setup.provider(&adapter).map(|provider| RegisteredProvider::default_instance(Arc::clone(provider)));
@@ -800,5 +819,97 @@ mod plugin_maker_tests {
             Err(other) => panic!("{other:?}"),
             Ok(_) => panic!("built a broker for a plugin nobody enabled"),
         }
+    }
+
+    /// #174: a job a plugin provider was running when the app quit waits until the plugin store
+    /// has been read; if its plugin isn't granted then, it is given up and its charge settled as
+    /// unresolved, without asking for a provider.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_restored_job_of_a_plugin_that_is_gone_is_given_up_once_the_store_is_read() {
+        use nodecraft_engine::run_journal::{JOURNAL_VERSION, Journal, JournalStore, Submitted};
+        use nodecraft_exec::cost::{Charge, UsageEntry};
+        use nodecraft_types::{Currency, Money, ProjectId, ProviderTarget};
+        const PLUGIN: &str = "plugin.io.example.acme.acme";
+        const P: ProjectId = ProjectId::from_bytes([71; 16]);
+        const C: CanvasId = CanvasId::from_bytes([72; 16]);
+        const N: NodeId = NodeId::from_bytes([73; 16]);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("runs.json");
+        let cost = Money::new(Currency::USD, 40_000);
+        let mut usage = UsageLog::default();
+        usage
+            .record(UsageEntry {
+                at_ms: 0,
+                session: "before".into(),
+                node: N,
+                provider: PLUGIN.into(),
+                instance: None,
+                model: format!("{PLUGIN}/v1"),
+                cost,
+                idempotency_key: nodecraft_engine::jobs::sent_key("k", 0),
+                status: Charge::Estimate,
+            })
+            .unwrap();
+        let job = Submitted {
+            project: P,
+            canvas: C,
+            node: N,
+            target: ProviderTarget::new(PLUGIN, None).unwrap(),
+            key: "k".into(),
+            generation: 0,
+            handle: nodecraft_providers::JobHandle { remote_id: "job-1".into(), data: serde_json::Value::Null },
+            model: format!("{PLUGIN}/v1"),
+            estimate: Some(cost),
+            priced: true,
+            routes: Vec::new(),
+            recipe: None,
+            launches: 0,
+            staged: None,
+        };
+        let journal = nodecraft_engine::run_journal::FileJournal::at(path.clone());
+        journal.save(&Journal { version: JOURNAL_VERSION, usage, submitted: vec![job] }).unwrap();
+
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&asked);
+        let mut services = nodecraft_engine::commands::Services::default();
+        let mut runs = Runs::with_inline_maker(
+            &mut services,
+            Box::new(move |adapter, _| {
+                seen.lock().unwrap().push(adapter.to_owned());
+                Err(Readiness::NotSetUp("not in this test".into()))
+            }),
+        )
+        .unwrap();
+        runs.open_journal(path);
+        let mut project = nodecraft_graph::Project::new(P, "Plugin resume").unwrap();
+        nodecraft_graph::Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+        let mut session = Session::new(project).unwrap().with_services(services);
+        runs.install(&mut session);
+        let settings = ProviderSettings::default();
+        assert!(runs.has_waiting());
+
+        // The store hasn't been read: an empty board says nothing yet.
+        runs.set_plugins(&mut session, false).unwrap();
+        runs.resume_waiting(&session, &settings);
+        runs.tick(&mut session, C);
+        assert!(runs.has_waiting(), "kept until the store is read");
+        // A full read followed by one that wasn't (or whose plugins couldn't be published)
+        // knows nothing again.
+        runs.set_plugins(&mut session, true).unwrap();
+        runs.set_plugins(&mut session, false).unwrap();
+        runs.resume_waiting(&session, &settings);
+        assert!(runs.has_waiting(), "kept while the last read is partial");
+        // Read, and the plugin isn't there.
+        runs.set_plugins(&mut session, true).unwrap();
+        runs.resume_waiting(&session, &settings);
+        assert!(!runs.has_waiting());
+        let tick = runs.tick(&mut session, C);
+        assert_eq!(tick.notice.as_deref(), Some("A run failed: it couldn't be followed after a restart: its plugin is no longer enabled or granted"));
+        assert!(runs.failure(C, N).is_some());
+        assert!(asked.lock().unwrap().is_empty(), "no provider was asked for: {:?}", asked.lock().unwrap());
+        let saved = journal.load().unwrap().unwrap();
+        assert!(saved.submitted.is_empty());
+        assert_eq!(saved.usage.entries().map(|e| e.status).collect::<Vec<_>>(), [Charge::Unresolved], "it may have been billed");
     }
 }

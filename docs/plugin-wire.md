@@ -150,10 +150,18 @@ template's price.
 The key is kept in the keychain under `plugin.<package id>:<API host>` (set it with `keys.set`),
 so neither another package nor an update that moves its origin reads it. When the grant is
 withdrawn or replaced, the models leave the catalog at once, and a broker built under the old
-grant refuses to send a paid request. A job submitted before that is still polled and its outputs
-fetched, since it may already be billed. A package publishes at most 256 models; templates past
+grant contacts its service no more: it sends no paid request, and a job submitted before then
+is no longer polled, cancelled or fetched. Such a job fails, saying the grant was withdrawn, and
+its charge stays as it was settled when it was sent, since it may already be billed. A package publishes at most 256 models; templates past
 that are left out, and a package the catalog can't hold is left out on its own, without the
 others.
+
+A job still running at the provider when the app quits is followed after the restart like any
+other (#508), by a broker built from the grant then in force. It waits until the plugin store has
+been read in full. If its plugin isn't enabled and granted by then, the job is given up instead:
+its card says so, and its charge is settled as unresolved, since it may have been billed. A store
+that can't be read, or whose grants or one of whose enabled packages can't be, leaves the job
+waiting until a read succeeds.
 
 ## Grants (#174)
 

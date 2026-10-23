@@ -870,17 +870,20 @@ impl NodeCraftApp {
         if *seen == Some(changes) {
             return;
         }
-        let (changes, plugins) = worker.plugins();
+        let (changes, loaded, plugins) = worker.published();
         *seen = Some(changes);
         let before = Arc::clone(self.session.plugins());
-        if let Err(error) = self.session.set_plugins(plugins) {
+        let published = self.session.set_plugins(plugins);
+        if let Err(error) = &published {
             log::warn!("plugin actions unavailable: {}", error.message);
         }
         if !Arc::ptr_eq(&before, self.session.plugins()) {
             self.plugins_changed();
-            if let Some(Err(error)) = self.runs.as_mut().map(|runs| runs.set_plugins(&mut self.session)) {
-                log::warn!("plugin providers unavailable: {}", error.message);
-            }
+        }
+        // Even when nothing changed: an empty store, once read, tells restored jobs their plugin
+        // is gone. Plugins read in part, or that couldn't be published, aren't known.
+        if let Some(Err(error)) = self.runs.as_mut().map(|runs| runs.set_plugins(&mut self.session, loaded && published.is_ok())) {
+            log::warn!("plugin providers unavailable: {}", error.message);
         }
         ctx.request_repaint();
     }

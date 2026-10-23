@@ -324,12 +324,21 @@ impl PluginSnapshot {
     /// A package that can't be loaded or compiled is left out; enabling it reported why. So is
     /// one this build can't negotiate with, which a newer NodeCraft enabled in the shared store.
     pub fn of<B: StoreBackend>(store: &Store<B>) -> Self {
-        let Ok(grants) = store.grants() else { return Self::default() };
+        Self::read(store).0
+    }
+
+    /// [`Self::of`], and whether the store was read in full: its grants, and every enabled,
+    /// granted package. A read that wasn't may leave out a package that is still granted (#174).
+    pub fn read<B: StoreBackend>(store: &Store<B>) -> (Self, bool) {
+        let Ok(grants) = store.grants() else { return (Self::default(), false) };
+        let mut complete = true;
         let mut actions = BTreeMap::new();
         let mut providers = BTreeMap::new();
         for (id, (digest, state)) in &store.index().active {
             let Some(grant) = (*state == State::Enabled).then(|| grants.live(id, digest)).flatten() else { continue };
+            // One this build can't negotiate with is still granted: a newer NodeCraft may finish its jobs.
             let Ok(package) = store.load(id).and_then(|package| nodecraft_plugin_store::store::compatible(&package.manifest).map(|()| package)) else {
+                complete = false;
                 continue;
             };
             let stamp = PluginStamp { grant_id: grant.grant_id.clone(), package: id.clone(), digest: *digest, epoch: grant.epoch };
@@ -342,7 +351,7 @@ impl PluginSnapshot {
                 actions.insert(action_id.as_str().to_owned(), Arc::new(action));
             }
         }
-        Self { actions, providers }
+        (Self { actions, providers }, complete)
     }
 
     /// The granted provider `id`, while its grant stands.
