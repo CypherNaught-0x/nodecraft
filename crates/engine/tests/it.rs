@@ -97,6 +97,8 @@ mod option_lists_plan162;
 mod option_sources162;
 #[path = "ownership_host362.rs"]
 mod ownership_host362;
+#[path = "paid_image_edit421.rs"]
+mod paid_image_edit421;
 #[path = "perf152.rs"]
 mod perf152;
 #[path = "perf_clock370.rs"]
