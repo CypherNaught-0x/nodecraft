@@ -13,6 +13,8 @@ struct Disk {
     failures: VecDeque<String>,
     /// No Web Locks in this browser.
     no_locks: bool,
+    inventories: usize,
+    removals: Vec<Vec<String>>,
 }
 
 /// One tab's view of the [`Disk`]; its locks go when it does.
@@ -32,8 +34,25 @@ fn ready<T: 'static>(answer: Result<T, String>) -> PickFuture<T> {
 }
 
 impl Shelf for FakeShelf {
-    fn slots(&mut self) -> PickFuture<Vec<String>> {
-        ready(Ok(self.disk.borrow().slots.keys().cloned().collect()))
+    fn slots(&mut self) -> PickFuture<Inventory> {
+        let mut disk = self.disk.borrow_mut();
+        disk.inventories += 1;
+        ready(Ok(disk
+            .slots
+            .iter()
+            .map(|(slot, stored)| {
+                let bytes = stored.frames.iter().fold(stored.checkpoint.as_ref().map_or(0, Vec::len), |sum, (_, frame)| sum.saturating_add(frame.len()));
+                (
+                    slot.clone(),
+                    Slot {
+                        bytes: bytes.saturating_add(usize::from(stored.held)) as u64,
+                        hold_bytes: stored.held.then_some(1),
+                        dirty: stored.held || !stored.frames.is_empty(),
+                        checkpoint: stored.checkpoint.is_some(),
+                    },
+                )
+            })
+            .collect()))
     }
     fn read(&mut self, slot: &str) -> PickFuture<Stored> {
         ready(Ok(self.disk.borrow().slots.get(slot).cloned().unwrap_or_default()))
@@ -42,6 +61,10 @@ impl Shelf for FakeShelf {
         let mut disk = self.disk.borrow_mut();
         if let Some(why) = disk.failures.pop_front() {
             return ready(Err(why));
+        }
+        let removed: Vec<_> = writes.iter().filter_map(|write| if let Write::Remove { slot } = write { Some(slot.clone()) } else { None }).collect();
+        if !removed.is_empty() {
+            disk.removals.push(removed);
         }
         for write in writes {
             match write {
@@ -62,15 +85,32 @@ impl Shelf for FakeShelf {
         if disk.no_locks {
             return ready(Err("this browser can't tell its tabs apart (no Web Locks)".into()));
         }
-        let holder = *disk.locks.entry(slot.to_owned()).or_insert(self.tab);
-        ready(Ok(holder == self.tab))
+        if disk.locks.contains_key(slot) {
+            return ready(Ok(false));
+        }
+        disk.locks.insert(slot.to_owned(), self.tab);
+        ready(Ok(true))
+    }
+    fn release(&mut self, slot: &str) {
+        let mut disk = self.disk.borrow_mut();
+        if disk.locks.get(slot) == Some(&self.tab) {
+            disk.locks.remove(slot);
+        }
     }
 }
 
 /// A tab opening on `disk`; later tabs' slots sort after earlier ones'.
 fn tab(disk: &Rc<RefCell<Disk>>, n: u32) -> NodeCraftApp {
+    tab_with_budget(disk, n, MAX_RECOVERY_BYTES)
+}
+
+fn tab_with_budget(disk: &Rc<RefCell<Disk>>, n: u32, budget: usize) -> NodeCraftApp {
     let shelf = FakeShelf { disk: Rc::clone(disk), tab: n };
-    let recovery = WebRecovery::new(Box::new(shelf), format!("{n:013x}-00000000"));
+    let recovery = if budget == MAX_RECOVERY_BYTES {
+        WebRecovery::new(Box::new(shelf), format!("{n:013x}-00000000"))
+    } else {
+        WebRecovery::with_budget(Box::new(shelf), format!("{n:013x}-00000000"), budget)
+    };
     NodeCraftApp::with_web_files(nodecraft_engine::commands::Services::default(), WebFiles::new(Box::new(Detached)), Some(recovery)).unwrap()
 }
 
@@ -379,4 +419,283 @@ fn a_long_title_stays_one_short_line() {
     assert_eq!(quoted("  "), "an untitled project");
     assert_eq!(quoted("Forest\nwalk"), "“Forest walk”");
     assert_eq!(quoted(&"x".repeat(100)), format!("“{}…”", "x".repeat(80)));
+}
+
+fn stored_size(stored: &Stored) -> usize {
+    stored.checkpoint.as_ref().map_or(0, Vec::len) + stored.frames.iter().map(|(_, bytes)| bytes.len()).sum::<usize>() + usize::from(stored.held)
+}
+
+#[test]
+fn cleanup_reaches_clean_and_checkpointless_slots_beyond_the_offer_window() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    crashed_tab(&disk, &ctx);
+    let mut clean = disk.borrow().slots[&slot(1)].clone();
+    clean.frames.clear();
+    for n in 2..=20 {
+        disk.borrow_mut().slots.insert(slot(n), clean.clone());
+    }
+    disk.borrow_mut().slots.insert(slot(0), Stored { frames: vec![(1, b"orphan frame".to_vec())], ..Stored::default() });
+    let mut app = tab(&disk, 30);
+    frame(&mut app, &ctx);
+    let disk = disk.borrow();
+    assert_eq!(disk.removals.len(), 1, "one atomic cleanup batch, including entries past the offer window");
+    assert_eq!(disk.removals.first().unwrap().len(), 20);
+    assert_eq!(disk.slots.keys().cloned().collect::<Vec<_>>(), [slot(1), slot(30)], "recoverable work outside the window stays under budget");
+    assert!(!disk.locks.contains_key(&slot(1)), "inventory does not reserve unoffered work");
+}
+
+#[test]
+fn total_budget_prunes_oldest_unlocked_work_and_reports_the_count() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    crashed_tab(&disk, &ctx);
+    let stored = disk.borrow().slots[&slot(1)].clone();
+    let base = stored.checkpoint.as_ref().unwrap().len();
+    let budget = 3 * stored_size(&stored) + base;
+    for n in 2..=12 {
+        disk.borrow_mut().slots.insert(slot(n), stored.clone());
+    }
+    let mut app = tab_with_budget(&disk, 20, budget);
+    frame(&mut app, &ctx);
+    assert_eq!(offer(&app).unwrap().slot, slot(12), "the newest recovery copy remains offered");
+    assert!(app.notice.as_deref().unwrap().contains("Removed 9 old recovery copies"));
+    let disk = disk.borrow();
+    assert_eq!(disk.slots.keys().cloned().collect::<Vec<_>>(), [slot(10), slot(11), slot(12), slot(20)]);
+    assert!(disk.slots.values().map(stored_size).sum::<usize>() <= budget);
+    assert!(!disk.locks.contains_key(&slot(10)) && !disk.locks.contains_key(&slot(11)), "other pages may offer the retained copies");
+    assert_eq!(disk.locks.get(&slot(12)), Some(&20), "the offered copy stays protected");
+    assert_eq!(disk.removals.len(), 1, "all old entries, including those outside MAX_SCAN, are removed together");
+}
+
+#[test]
+fn an_old_open_tab_is_never_pruned_even_if_it_exceeds_the_budget() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    crashed_tab(&disk, &ctx);
+    let stored = disk.borrow().slots[&slot(1)].clone();
+    for n in 2..=4 {
+        disk.borrow_mut().slots.insert(slot(n), stored.clone());
+    }
+    disk.borrow_mut().locks.insert(slot(1), 77);
+    let mut app = tab_with_budget(&disk, 20, 0);
+    frame(&mut app, &ctx);
+    let disk = disk.borrow();
+    assert_eq!(disk.slots.keys().cloned().collect::<Vec<_>>(), [slot(1), slot(4), slot(20)], "open tabs and the offered copy are protected even over budget");
+    assert_eq!(disk.locks.get(&slot(1)), Some(&77));
+    assert_eq!(stored_size(&disk.slots[&slot(1)]), stored_size(&stored));
+}
+
+#[test]
+fn growing_work_prunes_old_copies_in_its_write_batch() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    crashed_tab(&disk, &ctx);
+    let stored = disk.borrow().slots[&slot(1)].clone();
+    disk.borrow_mut().slots.insert(slot(2), stored.clone());
+    let base = stored.checkpoint.as_ref().unwrap().len();
+    let inventories = disk.borrow().inventories;
+    let mut app = tab_with_budget(&disk, 20, 2 * stored_size(&stored) + base);
+    frame(&mut app, &ctx);
+    assert_eq!(disk.borrow().inventories, inventories + 1, "small writes reuse the complete startup inventory");
+    app.decide_web_recovery(Choice::Later);
+    add_text(&mut app, 3);
+    frame(&mut app, &ctx);
+    assert!(app.notice.as_deref().unwrap().contains("Removed 1 old recovery copy"));
+    let disk = disk.borrow();
+    assert!(!disk.slots.contains_key(&slot(1)), "oldest abandoned work makes room for the growing tab");
+    assert!(disk.slots.contains_key(&slot(2)), "the previously offered copy is still claimed until the page exits");
+    assert_eq!(disk.slots[&slot(20)].frames.len(), 1, "the new frame landed with the cleanup");
+    assert_eq!(disk.inventories, inventories + 2, "refresh only at the budget boundary");
+}
+
+#[test]
+fn failed_budget_pruning_keeps_copies_and_releases_temporary_claims() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    crashed_tab(&disk, &ctx);
+    let stored = disk.borrow().slots[&slot(1)].clone();
+    disk.borrow_mut().slots.insert(slot(2), stored.clone());
+    let base = stored.checkpoint.as_ref().unwrap().len();
+    let mut app = tab_with_budget(&disk, 20, 2 * stored_size(&stored) + base);
+    frame(&mut app, &ctx);
+    app.decide_web_recovery(Choice::Later);
+    disk.borrow_mut().failures.push_back("this site's browser storage is full".into());
+    add_text(&mut app, 3);
+    frame_at(&mut app, &ctx, 1.0);
+    assert!(app.notice.as_deref().unwrap().contains("keeps trying"));
+    {
+        let disk = disk.borrow();
+        assert!(disk.slots.contains_key(&slot(1)), "pruning and publication both rolled back");
+        assert!(disk.slots[&slot(20)].frames.is_empty());
+        assert!(!disk.locks.contains_key(&slot(1)), "a failed transaction does not reserve its prune candidates");
+    }
+    frame_at(&mut app, &ctx, 1.0 + RETRY_SECS);
+    assert!(!disk.borrow().slots.contains_key(&slot(1)), "retry inventories storage again and prunes atomically");
+    assert!(app.notice.as_deref().unwrap().contains("Removed 1 old recovery copy"));
+}
+
+#[test]
+fn deferred_or_failed_recovery_stays_reserved_when_pruning_cannot_reach_the_budget() {
+    for failed_recover in [false, true] {
+        let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+        crashed_tab(&disk, &ctx);
+        let stored = disk.borrow().slots[&slot(1)].clone();
+        let mut kept = stored.clone();
+        if !failed_recover {
+            kept.checkpoint = Some(b"damaged checkpoint kept by the user".to_vec());
+        }
+        disk.borrow_mut().slots.insert(slot(2), kept);
+        let mut app = tab(&disk, 20);
+        frame(&mut app, &ctx);
+        assert_eq!(offer(&app).unwrap().slot, slot(2));
+        assert_eq!(offer(&app).unwrap().found.is_ok(), failed_recover, "the Later case exercises the corrupt-record Keep choice");
+        if failed_recover {
+            add_text(&mut app, 3);
+            app.decide_web_recovery(Choice::Recover);
+            assert!(app.notice.as_deref().unwrap().contains("offered again next time"));
+        } else {
+            app.decide_web_recovery(Choice::Later);
+            add_text(&mut app, 3);
+        }
+        app.web_recovery.as_mut().unwrap().budget = 0;
+        frame(&mut app, &ctx);
+        {
+            let disk = disk.borrow();
+            assert!(!disk.slots.contains_key(&slot(1)), "the older abandoned copy was pruned");
+            assert!(disk.slots.contains_key(&slot(2)), "pruning must stop before the deferred copy even above budget");
+            assert_eq!(disk.locks.get(&slot(2)), Some(&20), "temporary cleanup must not release a long-term reservation");
+        }
+        drop(app);
+        assert!(!disk.borrow().locks.contains_key(&slot(2)), "only page exit releases the deferred reservation");
+    }
+}
+
+#[test]
+fn pruning_never_borrows_an_existing_claim_as_temporary_deletion_authority() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    crashed_tab(&disk, &ctx);
+    disk.borrow_mut().locks.insert(slot(1), 20);
+    let shelf: Rc<RefCell<Box<dyn Shelf>>> = Rc::new(RefCell::new(Box::new(FakeShelf { disk: Rc::clone(&disk), tab: 20 })));
+    let mut writing: PickFuture<Written> = Box::pin(maintenance::write(Rc::clone(&shelf), Vec::new(), None, Vec::new(), 0));
+    let Poll::Ready(written) = poll(&mut writing, &ctx) else { panic!("the fake shelf never waits") };
+    assert_eq!(written.unwrap().pruned, 0, "an existing claim never becomes temporary deletion authority");
+    assert!(disk.borrow().slots.contains_key(&slot(1)));
+    assert_eq!(disk.borrow().locks.get(&slot(1)), Some(&20));
+}
+
+#[test]
+fn cleanup_preserves_recovery_guidance_and_replaces_its_previous_count() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    crashed_tab(&disk, &ctx);
+    let stored = disk.borrow().slots[&slot(1)].clone();
+    disk.borrow_mut().slots.insert(slot(2), stored.clone());
+    let mut app = tab(&disk, 20);
+    frame(&mut app, &ctx);
+    app.decide_web_recovery(Choice::Recover);
+    app.web_recovery.as_mut().unwrap().budget = 0;
+    frame(&mut app, &ctx);
+    assert!(app.notice.as_deref().unwrap().contains("Save it to a file to keep it."));
+    assert!(app.notice.as_deref().unwrap().contains("Removed 1 old recovery copy"));
+    disk.borrow_mut().slots.insert(slot(0), stored);
+    frame_at(&mut app, &ctx, INVENTORY_SECS);
+    let notice = app.notice.as_deref().unwrap();
+    assert!(notice.contains("Save it to a file to keep it."));
+    assert_eq!(notice.matches("Removed 1 old recovery copy").count(), 1, "periodic cleanup replaces its suffix instead of growing the notice");
+}
+
+#[test]
+fn periodic_inventory_catches_another_tabs_growth_and_close_without_own_writes() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    let mut first = tab(&disk, 1);
+    frame(&mut first, &ctx);
+    add_text(&mut first, 1);
+    frame(&mut first, &ctx);
+    let stored = disk.borrow().slots[&slot(1)].clone();
+    let base = stored.checkpoint.as_ref().unwrap().len();
+    let mut second = tab_with_budget(&disk, 2, stored_size(&stored) + base);
+    frame(&mut second, &ctx);
+    assert!(offer(&second).is_none(), "the other tab was open during our initial inventory");
+    add_text(&mut first, 2);
+    frame_at(&mut first, &ctx, 1.0);
+    drop(first);
+    frame_at(&mut second, &ctx, INVENTORY_SECS - 1.0);
+    assert!(disk.borrow().slots.contains_key(&slot(1)), "the bounded refresh interval has not elapsed");
+    frame_at(&mut second, &ctx, INVENTORY_SECS);
+    assert!(!disk.borrow().slots.contains_key(&slot(1)), "closed-tab growth is noticed even with no local writes or quota error");
+    assert!(disk.borrow().slots[&slot(2)].frames.is_empty(), "this tab did not need to edit to trigger cleanup");
+    assert!(second.notice.as_deref().unwrap().contains("Removed 1 old recovery copy"));
+}
+
+#[test]
+fn a_scan_cleanup_failure_does_not_claim_other_tabs_recovery_copies() {
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    crashed_tab(&disk, &ctx);
+    let stored = disk.borrow().slots[&slot(1)].clone();
+    disk.borrow_mut().slots.insert(slot(2), stored.clone());
+    disk.borrow_mut().failures.push_back("storage unavailable".into());
+    let mut app = tab_with_budget(&disk, 20, 0);
+    frame(&mut app, &ctx);
+    let disk = disk.borrow();
+    assert!(disk.slots.contains_key(&slot(1)) && disk.slots.contains_key(&slot(2)));
+    assert!(!disk.locks.contains_key(&slot(1)) && !disk.locks.contains_key(&slot(2)));
+    assert!(app.notice.as_deref().unwrap().contains("can't keep unsaved work"));
+}
+
+#[test]
+#[ignore = "manual public-safe #726 evidence; requires NODECRAFT_REVIEW_EVIDENCE"]
+fn render_browser_recovery_budget_evidence() {
+    use egui_kittest::kittest::Queryable;
+
+    let folder = std::path::PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&folder).unwrap();
+    for pruning in [false, true] {
+        let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+        crashed_tab(&disk, &ctx);
+        let stored = disk.borrow().slots[&slot(1)].clone();
+        let base = stored.checkpoint.as_ref().unwrap().len();
+        for n in 2..=12 {
+            disk.borrow_mut().slots.insert(slot(n), stored.clone());
+        }
+        let budget = if pruning { 3 * stored_size(&stored) + base } else { MAX_RECOVERY_BYTES };
+        let app = tab_with_budget(&disk, 20, budget);
+        let mut h = egui_kittest::Harness::builder().wgpu().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(
+            |ui, app: &mut NodeCraftApp| {
+                // Native evidence drives the browser-only frame hook explicitly.
+                app.web_recovery_frame(ui.ctx());
+                app.show(ui);
+            },
+            app,
+        );
+        crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+        h.run();
+        h.render().unwrap().save(folder.join(if pruning { "after-budget-cleanup.png" } else { "before-budget-cleanup.png" })).unwrap();
+    }
+    let (disk, ctx) = (Rc::new(RefCell::new(Disk::default())), egui::Context::default());
+    // Keep the evidence on a real starter-project node; the crash-test helper deliberately
+    // adds an unknown kind to exercise lossless recovery, which distracts from this notice.
+    let mut previous = tab(&disk, 1);
+    frame(&mut previous, &ctx);
+    let (&id, node) = previous.session.document().canvases().get(&previous.canvas).unwrap().nodes().iter().next().unwrap();
+    let pos = serde_json::json!({"x": node.pos.x + 24.0, "y": node.pos.y + 24.0});
+    previous.session.dispatch("node.move", &serde_json::json!({"canvas": previous.canvas, "id": id, "pos": pos})).unwrap();
+    frame(&mut previous, &ctx);
+    drop(previous);
+    let stored = disk.borrow().slots[&slot(1)].clone();
+    disk.borrow_mut().slots.insert(slot(2), stored);
+    let mut app = tab(&disk, 20);
+    frame(&mut app, &ctx);
+    app.decide_web_recovery(Choice::Recover);
+    app.web_recovery.as_mut().unwrap().budget = 0;
+    frame_at(&mut app, &ctx, INVENTORY_SECS);
+    let notice = app.notice.as_deref().unwrap();
+    assert!(notice.contains("Save it to a file") && notice.contains("Removed 1 old recovery copy"));
+    let mut h = egui_kittest::Harness::builder().wgpu().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            app.web_recovery_frame(ui.ctx());
+            app.show(ui);
+        },
+        app,
+    );
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run();
+    // Capture a fresh frame after maintenance and the anchored notice layout have settled.
+    h.step();
+    h.get_by_label_contains("Removed 1 old recovery copy");
+    h.render().unwrap().save(folder.join("recovered-budget-guidance-final.png")).unwrap();
 }
