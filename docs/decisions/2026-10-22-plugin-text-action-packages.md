@@ -10,9 +10,10 @@
 - **A changed package needs a new yes.** Update, rollback and uninstall revoke the package's grants
   before the index changes, and fail closed: if the revocation can't be saved, or the grants file is
   from a newer NodeCraft, the index isn't changed either; if the index can't be saved, the
-  revocation stays. Revoking disables a package that was enabled under the grant, and every enabled
-  package depending on it, before the grant is marked revoked, so neither failure leaves a package
-  enabled without its grant. Granting checks the signature against the trust file again.
+  revocation stays. Revoking an already-revoked grant changes nothing. Revoking the last live grant
+  covering an enabled package's active digest disables it and its enabled dependents before the
+  revocation is saved, so a package never runs without a live grant for its active digest, even if
+  a write fails. Granting checks the signature against the trust file again.
 - **Epochs only go up.** Each grant takes the next epoch, and a failed write leaves the counter
   where it was, so a host holding the epoch it started under can tell a revoked grant from a new
   one. Revoked grants stay as tombstones, oldest dropped first past 1024.

@@ -17,7 +17,9 @@
 //!   than lost, and the store reloads.
 //! - **Running needs a grant.** A text action package (#173) installs and enables like a data
 //!   package, but enabling it also needs the user's grant for its exact digest; updating, rolling
-//!   back or uninstalling revokes the package's grants, and revoking one disables the package.
+//!   back or uninstalling revokes the package's grants. Revoking an already-revoked grant changes
+//!   nothing; revoking the last live grant for the active digest disables an enabled package and
+//!   its dependents. A package never runs without a live grant for its active digest.
 //! - **Trust is checked when it matters.** A package's signature is checked against the trust
 //!   file at import and again at enable, so a key revoked since import stops it being enabled.
 //! - **Only what this host speaks.** A package's protocol range, descriptor contract and required
@@ -158,9 +160,10 @@ pub struct EnableReport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RevokeReport {
     pub grant: Grant,
-    /// Whether the package was enabled under it, and is now disabled.
+    /// True only when revocation leaves no live grant for the enabled package's active digest
+    /// and disables that package; an already-revoked grant changes nothing.
     pub disabled: bool,
-    /// Enabled packages depending on it, disabled with it.
+    /// Enabled packages depending on a newly disabled package, disabled with it.
     pub dependents: Vec<PackageId>,
 }
 
@@ -396,9 +399,10 @@ impl<B: StoreBackend> Store<B> {
         Ok(grant)
     }
 
-    /// Revokes `grant_id`, disabling its package if it is enabled under it, and every enabled
-    /// package depending on it. Revoking a revoked grant changes nothing. The package is
-    /// disabled first, so a failed write never leaves it enabled with no grant.
+    /// Revokes `grant_id`, disabling an enabled package at its digest (and its dependents) only
+    /// when no other live grant still covers that digest. Revoking a revoked grant with a newer
+    /// live grant changes nothing. The package is disabled first, so a failed write never leaves
+    /// it enabled with no grant.
     pub fn revoke(&mut self, grant_id: &str) -> Result<RevokeReport, Error> {
         let _transaction = self.backend.transaction()?;
         self.ensure_current()?;
@@ -412,6 +416,7 @@ impl<B: StoreBackend> Store<B> {
         let mut report = RevokeReport { grant, disabled: false, dependents: Vec::new() };
         if let Some((digest, State::Enabled)) = self.index.active.get(&report.grant.package_id).copied()
             && digest == report.grant.digest
+            && grants.live(&report.grant.package_id, &digest).is_none()
         {
             let mut next = self.index.clone();
             next.active.insert(report.grant.package_id.clone(), (digest, State::Disabled));

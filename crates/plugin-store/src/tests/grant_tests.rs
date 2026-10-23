@@ -69,6 +69,67 @@ fn revoking_disables_and_epochs_only_go_up() {
 }
 
 #[test]
+fn revoking_a_stale_grant_preserves_a_newer_enabled_grant() {
+    let (mut st, pkg) = installed();
+    let first = st.grant(&pkg, &TrustStore::default()).unwrap();
+    assert!(!st.revoke(&first.grant_id).unwrap().disabled);
+    let second = st.grant(&pkg, &TrustStore::default()).unwrap();
+    assert_ne!(first.grant_id, second.grant_id);
+    st.enable_with(&pkg, &none(), &BTreeSet::new()).unwrap();
+    let index_before = st.backend().index.clone();
+    let grants_before = st.backend().grants.clone();
+
+    let stale = st.revoke(&first.grant_id).unwrap();
+    assert!(!stale.disabled);
+    assert!(stale.dependents.is_empty());
+    assert_eq!(st.backend().index, index_before);
+    assert_eq!(st.backend().grants, grants_before);
+    assert_eq!(st.index().active[&pkg].1, State::Enabled);
+    assert_eq!(st.grants().unwrap().live(&pkg, &second.digest), Some(&second));
+
+    let current = st.revoke(&second.grant_id).unwrap();
+    assert!(current.disabled);
+    assert_eq!(st.index().active[&pkg].1, State::Disabled);
+    assert!(st.grants().unwrap().live(&pkg, &second.digest).is_none());
+}
+
+#[test]
+fn revoking_one_of_two_live_grants_preserves_the_other_until_it_too_is_revoked() {
+    let (mut st, pkg) = installed();
+    let first = st.grant(&pkg, &TrustStore::default()).unwrap();
+    st.revoke(&first.grant_id).unwrap();
+    let second = st.grant(&pkg, &TrustStore::default()).unwrap();
+    st.enable_with(&pkg, &none(), &BTreeSet::new()).unwrap();
+
+    // A previous store can have two live grants on one digest. Preserve execution while
+    // either one stands, even though today's grant() replaces the previous grant.
+    let mut grants = st.grants().unwrap();
+    grants.grants.iter_mut().find(|g| g.grant_id == first.grant_id).unwrap().revoked = false;
+    let mut backend = reopened_backend(&st);
+    backend.grants = Some(grants::encode(&grants).unwrap().into_bytes());
+    let mut st = Store::open(backend).unwrap();
+    assert!(!st.revoke(&first.grant_id).unwrap().disabled);
+    assert_eq!(st.index().active[&pkg].1, State::Enabled);
+    assert_eq!(st.grants().unwrap().live(&pkg, &second.digest), Some(&second));
+    assert!(st.revoke(&second.grant_id).unwrap().disabled);
+    assert_eq!(st.index().active[&pkg].1, State::Disabled);
+}
+
+#[test]
+fn a_stale_revoke_disables_an_enabled_package_with_no_remaining_grant() {
+    let (mut st, pkg) = installed();
+    let grant = st.grant(&pkg, &TrustStore::default()).unwrap();
+    st.enable_with(&pkg, &none(), &BTreeSet::new()).unwrap();
+    let mut grants = st.grants().unwrap();
+    grants.grants.iter_mut().find(|g| g.grant_id == grant.grant_id).unwrap().revoked = true;
+    let mut backend = reopened_backend(&st);
+    backend.grants = Some(grants::encode(&grants).unwrap().into_bytes());
+    let mut st = Store::open(backend).unwrap();
+    assert!(st.revoke(&grant.grant_id).unwrap().disabled);
+    assert_eq!(st.index().active[&pkg].1, State::Disabled);
+}
+
+#[test]
 fn an_update_or_rollback_never_carries_a_grant_over() {
     let (mut st, pkg) = installed();
     let old = st.grant(&pkg, &TrustStore::default()).unwrap();

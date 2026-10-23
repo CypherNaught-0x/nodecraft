@@ -16,7 +16,8 @@
   Registered IDs were already namespaced under `plugin.` and host IDs can't use it.
 - **Dependencies may run code, under their own grant.** The RFC's "data packages only" rule (still
   in `lock::resolve`) is not applied by the store: since #173 a dependency must itself be enabled,
-  and an executable one only under its own grant, whose revocation disables its dependents. Locks
+  and an executable one only under its own grant; revoking its last live grant for the active
+  digest disables it and its enabled dependents. Locks
   pin exact content digests, so a cycle would need two digests each covering the other: the store
   needs no cycle check, and its depth walk keeps a seen-set regardless.
 - **Failure on a real disk.** A unix test makes the folder backend's `objects/` and then its root
