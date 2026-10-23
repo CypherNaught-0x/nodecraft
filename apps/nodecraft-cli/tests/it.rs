@@ -6,6 +6,8 @@
 mod arguments;
 #[path = "mcp_stdio.rs"]
 mod mcp_stdio;
+#[path = "plugin.rs"]
+mod plugin;
 #[path = "read_only.rs"]
 mod read_only;
 #[path = "relay.rs"]

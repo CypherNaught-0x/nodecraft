@@ -1,3 +1,5 @@
 crates/testkit/tests/golden/*.json text eol=lf
 # Plugin contract fixtures are hashed byte for byte (#171): never convert line endings.
 crates/plugin/fixtures/** -text
+# Example plugin packages are packed in tests with frozen digests (#175): never convert line endings.
+examples/plugins/** -text

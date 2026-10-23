@@ -89,7 +89,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   project as evidence of what was billed; it is never turned into money (#437). Run quotes also
   surface aggregate admission feedback before confirmation (#307). Imported video and audio
   sources probe duration (#608); ComfyUI accepts video and audio workflows (#110). Plugin cards
-  keep their package identity, migrate with their package, and survive uninstall (#173).
+  keep their package identity, migrate with their package, and survive uninstall (#173). Plugin
+  authors pack reproducible packages and lint them with the install verifier
+  (`nodecraft-cli plugin pack|inventory|lint`, [`docs/plugin-authoring.md`](docs/plugin-authoring.md), #175).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a

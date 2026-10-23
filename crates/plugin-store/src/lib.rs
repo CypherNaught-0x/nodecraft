@@ -8,6 +8,7 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
 pub mod archive;
+pub mod author;
 pub mod backend;
 pub mod grants;
 pub mod layout;

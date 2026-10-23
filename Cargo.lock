@@ -3264,6 +3264,7 @@ dependencies = [
  "nodecraft-format",
  "nodecraft-graph",
  "nodecraft-nodes",
+ "nodecraft-plugin-store",
  "nodecraft-provider-testkit",
  "nodecraft-providers",
  "nodecraft-sync",
