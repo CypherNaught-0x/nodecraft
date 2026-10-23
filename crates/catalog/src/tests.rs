@@ -962,3 +962,14 @@ fn builtin_chat_models_read_pdfs_and_quote_their_pages() {
         assert_eq!(base.checked_cmp(read).unwrap(), std::cmp::Ordering::Less, "{id}: pages cost input tokens");
     }
 }
+
+#[test]
+fn a_schema_only_seed_is_pinned_only_when_it_is_sent() {
+    let catalog = Catalog::from_toml(PRICED).unwrap();
+    let model = catalog.get("test.video").unwrap();
+    let mut params = ParamValues::new();
+    params.insert("prompt".into(), Value::Text("a fox".into()));
+    assert!(model.pinned_seeds(&params, false).unwrap().is_empty(), "no seed sent, the provider picks one");
+    params.insert("seed".into(), Value::Unsigned(Unsigned(7)));
+    assert_eq!(model.pinned_seeds(&params, false).unwrap(), vec!["seed".to_owned()]);
+}

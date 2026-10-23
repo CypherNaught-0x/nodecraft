@@ -22,6 +22,11 @@ pub struct ResumeRecipe {
     pub settings: Option<JobSettings>,
     /// The node's output ports in order, and whether each is a list.
     pub ports: Vec<RecipePort>,
+    /// For a variation (#81), the results of the variations after it: recorded after a restart, it
+    /// goes before any of them already in the history and leaves the active result alone, so the
+    /// last variation stays the active one as in a run that doesn't restart (#808).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub later: Vec<GenerationId>,
 }
 
 /// One output port of a [`ResumeRecipe`]'s node.
@@ -53,21 +58,22 @@ impl Run {
             billable_units: None,
         };
         // A variation (#81) made by one job alone is a result of its own, like a single-job step.
-        let variant = match self.steps.get(&node) {
-            Some(StepState { jobs, step, .. }) if jobs.as_slice() == [job] && step.fanout.is_none() => 0,
+        let (variant, count) = match self.steps.get(&node) {
+            Some(StepState { jobs, step, .. }) if jobs.as_slice() == [job] && step.fanout.is_none() => (0, 1),
             Some(StepState { jobs, job_variants, step, .. }) if step.fanout.is_none() && !job_variants.is_empty() => {
                 let variant = *jobs.iter().position(|j| *j == job).and_then(|n| job_variants.get(n))?;
                 if job_variants.iter().filter(|v| **v == variant).count() != 1 {
                     return None;
                 }
-                variant
+                (variant, job_variants.last().map_or(1, |last| last.saturating_add(1)))
             }
             _ => return None,
         };
+        let later = (variant.saturating_add(1)..count).map(|later| self.generation_id(node, later)).collect();
         let target = self.canvas.nodes().get(&node)?;
         let ports = target.outputs.iter().map(|port| RecipePort { name: port.name.clone(), many: port.port_type.many }).collect();
         let input_hash = self.hasher.hash(&self.canvas, kinds, node, &self.produced).ok().flatten();
-        Some(ResumeRecipe { node, generation: self.generation_id(node, variant), input_hash, settings: Some(settings), ports })
+        Some(ResumeRecipe { node, generation: self.generation_id(node, variant), input_hash, settings: Some(settings), ports, later })
     }
 }
 

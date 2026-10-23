@@ -325,6 +325,12 @@ pub(super) fn record_alone(
         }
     }
     let generation = recipe.assemble(produced.outputs, completed.usage.billable_units)?;
-    let params = json!({"canvas": canvas, "results": [{"node": node, "generation": generation}]});
+    // A variation that isn't the last goes on its own card on a canvas that lays them out so (#808).
+    let as_cards = session.document().canvases().get(&canvas).is_some_and(nodecraft_graph::Canvas::variation_cards);
+    let entry = match as_cards && !recipe.later.is_empty() {
+        true => json!({"node": node, "generation": generation, "card": crate::variation_cmds::card_id(recipe.generation)}),
+        false => json!({"node": node, "generation": generation, "later": recipe.later}),
+    };
+    let params = json!({"canvas": canvas, "results": [entry]});
     session.dispatch("run.record", &params).map(|_| ()).map_err(|error| format!("the result could not be saved: {}", error.message))
 }

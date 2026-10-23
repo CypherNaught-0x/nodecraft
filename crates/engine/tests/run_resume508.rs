@@ -447,3 +447,54 @@ fn a_resumed_result_whose_card_is_gone_is_held_until_it_can_be_recorded() {
     assert_eq!(mock.requests().len(), 1, "never sent again");
     assert_eq!(second.budget.log.lock().unwrap().entries().count(), 1, "charged once");
 }
+
+/// Three variations of the writer cut off by a kill and followed after a restart (#808): they
+/// land in any order, yet end up as an uninterrupted run leaves them.
+/// Returns the session and the variations' ids in variant order, read from the saved recipes.
+fn variations_after_restart(cards: bool) -> (Session, Vec<nodecraft_types::GenerationId>) {
+    let mock = slow_mock();
+    let journal = MemoryJournal::default();
+    let (mut first, opened) = launch(&mock, &journal, None, 50);
+    opened.unwrap();
+    first.session.dispatch("node.variations_set", &json!({"canvas": C, "id": WRITER, "count": 3})).unwrap();
+    first.session.dispatch("canvas.set_variation_cards", &json!({"canvas": C, "cards": cards})).unwrap();
+    start(&mut first);
+    pump_until(&mut first, "the variations' handles were never saved", |_| journal.saved().is_some_and(|saved| saved.submitted.len() == 3));
+    first.runtime.kill();
+    let project = first.session.document().clone();
+    drop(first);
+    let mut order: Vec<_> = journal.saved().unwrap().submitted.iter().map(|job| job.recipe.clone().unwrap()).collect();
+    // The first variant has the most after it.
+    order.sort_by_key(|recipe| std::cmp::Reverse(recipe.later.len()));
+    assert_eq!(order.iter().map(|r| r.later.len()).collect::<Vec<_>>(), [2, 1, 0]);
+    let order: Vec<_> = order.into_iter().map(|recipe| recipe.generation).collect();
+    let (mut second, opened) = launch(&mock, &journal, Some(project), 0);
+    opened.unwrap();
+    let binding = second.binding.clone();
+    second.host.resume(&second.session, &binding);
+    pump_until(&mut second, "the resumed variations never ended", |f| !f.host.is_busy());
+    assert_eq!(mock.requests().len(), 3, "followed, never sent again");
+    (second.session, order)
+}
+
+#[test]
+fn variations_followed_after_a_restart_keep_their_order_in_the_history() {
+    let (session, order) = variations_after_restart(false);
+    let writer = session.document().canvases().get(&C).unwrap().nodes().get(&WRITER).unwrap();
+    assert_eq!(writer.history.iter().map(|g| g.id).collect::<Vec<_>>(), order, "in variant order, however they landed");
+    assert_eq!(writer.active, order.last().copied(), "the last variation is active, as uninterrupted");
+}
+
+#[test]
+fn variations_followed_after_a_restart_go_on_cards_but_the_last() {
+    let (session, order) = variations_after_restart(true);
+    let canvas = session.document().canvases().get(&C).unwrap();
+    let writer = canvas.nodes().get(&WRITER).unwrap();
+    assert_eq!(writer.history.iter().map(|g| g.id).collect::<Vec<_>>(), order.get(2..).unwrap(), "the last variation stays on the writer");
+    let cards: Vec<_> = canvas.nodes().values().filter(|n| n.id != WRITER && n.id != SOURCE).collect();
+    assert_eq!(cards.len(), 2, "the two before it get cards");
+    for card in cards {
+        assert_eq!(card.history.len(), 1);
+        assert!(canvas.edges().values().any(|e| e.from.node == SOURCE && e.to.node == card.id), "fed as the writer is");
+    }
+}

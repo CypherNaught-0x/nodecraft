@@ -762,3 +762,105 @@ fn the_toolbar_downloads_the_shown_result_once_there_is_one() {
     assert_eq!(std::fs::read(&path).unwrap(), bytes, "{:?}", h.state().notice);
     assert_eq!(h.state().notice.as_deref(), Some("Exported take.png."));
 }
+
+/// Three variations of the card, run against the mock host with the canvas's preference set by
+/// the card's toggle (`as_cards`) or left alone.
+fn three_variations(as_cards: bool) -> Harness<'static, NodeCraftApp> {
+    let mut h = scene(making(image(MockModel::new(MockOutput::Image))));
+    press(&mut h, Role::Button, "More variations");
+    press(&mut h, Role::Button, "More variations");
+    if as_cards {
+        press(&mut h, Role::Button, "Variations as cards");
+        assert!(h.state().session.document().canvases().get(&C).unwrap().variation_cards());
+    }
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    accept(&mut h);
+    frames_until(&mut h, |app| idle(app) && !node(app).history.is_empty());
+    h
+}
+
+#[test]
+fn variations_arrive_in_the_cards_history_by_default() {
+    let h = three_variations(false);
+    let canvas = h.state().session.document().canvases().get(&C).unwrap();
+    assert_eq!(canvas.nodes().len(), 1, "no new cards");
+    assert_eq!(node(h.state()).history.len(), 3, "three variations, three history entries");
+}
+
+#[test]
+fn variations_arrive_as_cards_once_the_canvas_asks_for_them() {
+    let h = three_variations(true);
+    let canvas = h.state().session.document().canvases().get(&C).unwrap();
+    assert_eq!(canvas.nodes().len(), 3, "the source and two new cards");
+    for card in canvas.nodes().values() {
+        assert_eq!(card.history.len(), 1, "one variation on each card");
+    }
+    let source = node(h.state());
+    for card in canvas.nodes().values().filter(|card| card.id != N) {
+        assert_eq!(card.kind, source.kind);
+        assert_eq!(card.params, source.params);
+        assert!(card.pos.x > source.pos.x, "beside the source");
+    }
+}
+
+const SEEDED: &str = r#"
+[[model]]
+id = "mock-seeded"
+provider = "mock"
+provider_model = "mock-image"
+label = "Mock seeded image"
+description = "Public deterministic test fixture"
+quality = 1
+latency_s = 0
+pricing = { type = "per_call", price = "0.04 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.params.params]]
+name = "seed"
+label = "Seed"
+control = { type = "seed" }
+default = { type = "unsigned", value = "7" }
+"#;
+
+#[test]
+fn variations_with_a_pinned_seed_are_flagged_on_the_card_and_in_the_quote() {
+    let mut h = scene_in(SEEDED, "mock-seeded", making(image(MockModel::new(MockOutput::Image))), |_, _| {});
+    assert!(h.query_by_label("same seed").is_none(), "one result can't come out alike");
+    press(&mut h, Role::Button, "More variations");
+    assert!(h.query_by_label("same seed").is_some(), "the card warns as soon as there are two");
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert!(h.query_by_label(super::generate::ALIKE).is_some(), "the quote warns before anything is spent");
+}
+
+/// The same app, drawn by wgpu in the dark theme, for a screenshot.
+fn drawn(h: Harness<'static, NodeCraftApp>) -> Harness<'static, NodeCraftApp> {
+    let app = h.into_state();
+    let mut h = Harness::builder().wgpu().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run();
+    h
+}
+
+#[test]
+#[ignore = "manual public-safe capture; VARIATIONS808_RENDER_DIR"]
+fn variations808_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("VARIATIONS808_RENDER_DIR").unwrap());
+    let mut h = drawn(three_variations(true));
+    press(&mut h, Role::Button, "Fit all");
+    h.run();
+    h.render().unwrap().save(dir.join("variations808-cards.png")).unwrap();
+    let mut h = scene_in(SEEDED, "mock-seeded", making(image(MockModel::new(MockOutput::Image))), |_, _| {});
+    press(&mut h, Role::Button, "More variations");
+    press(&mut h, Role::Button, "More variations");
+    let mut h = drawn(h);
+    h.state_mut().selection.only(N);
+    h.run();
+    h.render().unwrap().save(dir.join("variations808-same-seed.png")).unwrap();
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    h.render().unwrap().save(dir.join("variations808-quote.png")).unwrap();
+}

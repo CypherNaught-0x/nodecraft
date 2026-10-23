@@ -1649,6 +1649,14 @@ impl NodeCraftApp {
                         audio,
                         mesh,
                         outdated,
+                        variations: card::generate::Variations {
+                            cards: canvas.variation_cards(),
+                            alike: nodecraft_exec::variations::requested(node) > 1
+                                && self
+                                    .session
+                                    .generation_catalog()
+                                    .is_ok_and(|catalog| !nodecraft_engine::variation_cmds::pinned_seeds(catalog, node).is_empty()),
+                        },
                     },
                     editor,
                     self.selection.contains(node.id),
@@ -2173,6 +2181,7 @@ impl NodeCraftApp {
                     None => continue,
                 },
                 Intent::Variations(count) => ("node.variations_set", json!({"canvas":self.canvas,"id":id,"count":count}), None),
+                Intent::VariationCards(cards) => ("canvas.set_variation_cards", json!({"canvas":self.canvas,"cards":cards}), None),
                 Intent::Model => continue,
                 Intent::Migrate => {
                     self.migrate_card(id);

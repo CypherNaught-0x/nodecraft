@@ -89,9 +89,15 @@ pub(super) struct Quote {
     resumable: bool,
     /// Steps priced by their provider before running (#663).
     quoted: usize,
+    /// Cards asking for several variations with a pinned seed (#808).
+    alike: usize,
     /// The planner found nothing in the way; a budget may still refuse the price.
     planned: bool,
 }
+
+/// What a quote says when a card asks for several variations with a pinned seed (#808).
+pub(super) const ALIKE: &str =
+    "A card asks for several variations with a fixed seed: a model that follows its seed returns the same result each time, and each is charged.";
 
 fn line(text: &str) -> String {
     let mut chars = text.chars();
@@ -124,8 +130,9 @@ impl Quote {
         }
         let resumable = value.get("resumable").and_then(Json::as_array).is_some_and(|nodes| !nodes.is_empty());
         let quoted = value.get("quoted").and_then(Json::as_array).map_or(0, Vec::len);
+        let alike = value.get("alike").and_then(Json::as_array).map_or(0, Vec::len);
         let planned = value.get("blocked").and_then(Json::as_array).is_none_or(Vec::is_empty);
-        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed, resumable, quoted, planned })
+        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed, resumable, quoted, alike, planned })
     }
 
     /// Whether the quote can be accepted as shown, given the consent collected so far.
@@ -342,6 +349,9 @@ impl NodeCraftApp {
                 }
                 if let Some(note) = &confirm.estimate_note {
                     ui.label(note);
+                }
+                if quote.alike > 0 {
+                    ui.colored_label(t.stale, ALIKE);
                 }
                 if quote.resumable {
                     ui.label("A batch is priced for every item. Items it finished before aren't charged again if its inputs come out the same.");
@@ -764,6 +774,9 @@ mod tests {
         let mut v = quote(json!([]), false);
         v["resumable"] = json!(["00000000-0000-0000-0000-000000000003"]);
         assert!(Quote::read(&v).unwrap().resumable, "a batch that may keep finished items is said so");
+        assert_eq!(Quote::read(&v).unwrap().alike, 0);
+        v["alike"] = json!([{"node": "00000000-0000-0000-0000-000000000003", "variations": 3, "seeds": ["seed"]}]);
+        assert_eq!(Quote::read(&v).unwrap().alike, 1, "variations with a pinned seed are said so");
     }
 
     #[test]
