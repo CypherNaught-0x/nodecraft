@@ -24,9 +24,18 @@ function fake(world = {}) {
           const permission = (world.perms || {})[username] || 'none';
           return { data: { permission } };
         },
-        getCommit: async () => ({ data: { commit: { committer: { date: world.pushed || ago(H) } } } }),
+        getCommit: async (args) => {
+          calls.push(['getCommit', args]);
+          return { data: { commit: { committer: { date: world.pushed || ago(H) } } } };
+        },
       },
-      pulls: { get: async () => ({ data: { head: { sha: 'abc' } } }) },
+      pulls: { get: async (args) => {
+        calls.push(['getPull', args]);
+        if (world.unavailablePulls && world.unavailablePulls.includes(args.pull_number)) {
+          throw Object.assign(new Error('Not Found'), { status: 404 });
+        }
+        return { data: { head: { sha: 'abc' } } };
+      } },
       reactions: { createForIssueComment: rec('react') },
       issues: {
         getLabel: async () => {
@@ -40,7 +49,7 @@ function fake(world = {}) {
         removeAssignees: rec('removeAssignees'),
         createComment: rec('comment'),
         listForRepo: async () => ({ data: world.issues || [] }),
-        listEventsForTimeline: async () => ({ data: world.timeline || [] }),
+        listEventsForTimeline: async ({ issue_number }) => ({ data: (world.timelines || {})[issue_number] || world.timeline || [] }),
       },
     },
   };
@@ -50,9 +59,12 @@ function fake(world = {}) {
 const names = (calls) => calls.map((c) => c[0]);
 const find = (calls, n) => calls.find((c) => c[0] === n);
 const labeled = (at) => ({ event: 'labeled', label: { name: 'in progress' }, created_at: at });
-const pr = (number, login = 'other', state = 'open') => ({
+const pr = (number, login = 'other', state = 'open', owner = 'nodecraft-owner', repository = 'nodecraft') => ({
   event: 'cross-referenced',
-  source: { issue: { number, state, pull_request: {}, user: { login } } },
+  source: { issue: {
+    number, state, repository_url: `https://api.github.com/repos/${owner}/${repository}`,
+    pull_request: { url: `https://api.github.com/repos/${owner}/${repository}/pulls/${number}` }, user: { login },
+  } },
 });
 
 function ctx(body, { assignees = [], labels = ['difficulty:medium'], user = 'alice', extra = {} } = {}) {
@@ -152,7 +164,7 @@ for (const holder of ['nodecraft-owner', 'carol']) {
       world.issues = [issue(7, ['alice'])];
       const beforeSweep = calls.length;
       assert.deepEqual(await claim.sweep({ github, context: { repo }, now: NOW + 24 * H - 1 }), []);
-      assert.equal(calls.length, beforeSweep);
+      assert.deepEqual(metadataWrites(calls.slice(beforeSweep)), []);
       assert.deepEqual(await claim.sweep({ github, context: { repo }, now: NOW + 24 * H }), [7]);
       assert.deepEqual(calls.filter(([name]) => name === 'removeAssignees').at(-1)[1].assignees, ['alice']);
     });
@@ -285,11 +297,75 @@ for (const holder of ['nodecraft-owner', 'carol']) {
         assert.deepEqual(find(calls, 'removeAssignees')[1].assignees, [holder]);
         assert.match(find(calls, 'comment')[1].body, pushAge === undefined ? /within 24 h/ : /14 days/);
       } else {
-        assert.deepEqual(calls, []);
+        assert.deepEqual(metadataWrites(calls), []);
       }
     });
   }
 }
+
+test('#596 foreign craft-libs#240 does not block an expired NodeCraft claim', async () => {
+  const w = fake({ issues: [issue(596)], timeline: [labeled(ago(80 * H)), pr(240, 'upstream', 'open', 'storytold', 'craft-libs')], unavailablePulls: [240] });
+  assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW }), [596]);
+  assert.equal(find(w.calls, 'getPull'), undefined);
+});
+
+test('local and foreign PRs with the same number cannot collide; recent local PR protects the claim', async () => {
+  const timeline = [labeled(ago(500 * H)), pr(240, 'local'), pr(240, 'upstream', 'open', 'storytold', 'craft-libs')];
+  const w = fake({ issues: [issue(596)], pushed: ago(H), timeline });
+  assert.deepEqual(claim.linkedPulls(timeline, { repo }).map((p) => p.user.login), ['local']);
+  assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW }), []);
+  assert.deepEqual(w.calls.filter(([name]) => name === 'getPull').map(([, args]) => args),
+    [{ ...repo, pull_number: 240 }]);
+  assert.equal(find(w.calls, 'removeLabel'), undefined);
+});
+
+test('an unavailable local PR holds only its issue and reports it while other claims expire', async () => {
+  const warnings = [];
+  const w = fake({ issues: [issue(596), issue(597)], unavailablePulls: [240],
+    timelines: { 596: [labeled(ago(500 * H)), pr(240)], 597: [labeled(ago(80 * H))] },
+  });
+  assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW, report: (text) => warnings.push(text) }), [597]);
+  assert.deepEqual(warnings.length, 1);
+  assert.match(warnings[0], /Skipped issue #596: Cannot resolve local PR #240/);
+  assert.deepEqual(w.calls.filter(([name]) => name === 'removeLabel').map(([, args]) => args.issue_number), [597]);
+});
+
+test('missing repository identity holds the uncertain claim but sweeps unrelated issues', async () => {
+  const warnings = [];
+  const unknown = pr(240);
+  delete unknown.source.issue.repository_url;
+  delete unknown.source.issue.pull_request.url;
+  const w = fake({ issues: [issue(596), issue(597)],
+    timelines: { 596: [labeled(ago(80 * H)), unknown], 597: [labeled(ago(80 * H))] },
+  });
+  assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW, report: (text) => warnings.push(text) }), [597]);
+  assert.match(warnings[0], /issue #596: Cannot identify repository for open PR #240/);
+  assert.equal(find(w.calls, 'getPull'), undefined);
+});
+
+test('conflicting repository identities cannot release a claim', async () => {
+  const conflict = pr(240);
+  conflict.source.issue.pull_request.url = 'https://api.github.com/repos/storytold/craft-libs/pulls/240';
+  const warnings = [];
+  const w = fake({ issues: [issue(596)], timeline: [labeled(ago(80 * H)), conflict] });
+  assert.deepEqual(await claim.sweep({ github: w.github, context: { repo }, now: NOW, report: (text) => warnings.push(text) }), []);
+  assert.match(warnings[0], /issue #596: Cannot identify repository/);
+  assert.equal(find(w.calls, 'getPull'), undefined);
+});
+
+test('foreign upstream PR cannot block a new NodeCraft claim', async () => {
+  const w = fake({ timeline: [pr(240, 'upstream', 'open', 'storytold', 'craft-libs')] });
+  await claim.handleComment({ github: w.github, context: ctx('/claim'), now: NOW });
+  assert.ok(find(w.calls, 'addAssignees'));
+  assert.equal(find(w.calls, 'getPull'), undefined);
+});
+
+test('unavailable local PR prevents an uncertain takeover', async () => {
+  const w = fake({ timeline: [labeled(ago(500 * H)), pr(240)], unavailablePulls: [240] });
+  await claim.handleComment({ github: w.github, context: ctx('/claim', { assignees: ['bob'], labels: ['in progress'] }), now: NOW });
+  assert.equal(find(w.calls, 'removeLabel'), undefined);
+  assert.match(find(w.calls, 'comment')[1].body, /Cannot verify this claim.*local PR #240/);
+});
 
 test('sweep is idempotent: a released issue is no longer listed', async () => {
   const world = { issues: [issue(7)], timeline: [labeled(ago(80 * H))] };
