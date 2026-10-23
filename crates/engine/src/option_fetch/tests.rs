@@ -39,12 +39,16 @@ fn only_unscoped_known_sources_are_fetched() {
         want("comfyui.checkpoints", None),
         want("comfyui.checkpoints", None),
         want("comfyui.loras", Some("checkpoint")),
-        want("elevenlabs.voices", None),
+        want("acme.voices", None),
         want("comfyui.samplers", None),
+        want("elevenlabs.voices", None),
         want("higgsfield.restyle_presets", None),
         want("higgsfield.soul_ids", None),
     ];
-    assert_eq!(fetchable(&wanted), strings(&["comfyui.checkpoints", "comfyui.samplers", "higgsfield.restyle_presets", "higgsfield.soul_ids"]));
+    assert_eq!(
+        fetchable(&wanted),
+        strings(&["comfyui.checkpoints", "comfyui.samplers", "elevenlabs.voices", "higgsfield.restyle_presets", "higgsfield.soul_ids"])
+    );
 }
 
 #[test]
@@ -64,4 +68,8 @@ fn the_builtin_catalog_asks_for_the_sdxl_checkpoints() {
     assert!(wanted.contains(&restyle), "{wanted:?}");
     let souls = Wanted { owner: "higgsfield.soul-2".into(), source: "higgsfield.soul_ids".into(), scope: None };
     assert!(wanted.contains(&souls), "{wanted:?}");
+    for owner in ["elevenlabs.v3", "elevenlabs.multilingual-v2", "elevenlabs.flash-v2-5", "elevenlabs.voice-changer"] {
+        let voices = Wanted { owner: owner.into(), source: "elevenlabs.voices".into(), scope: None };
+        assert!(wanted.contains(&voices), "{wanted:?}");
+    }
 }

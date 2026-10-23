@@ -136,10 +136,14 @@ fn recording(job: &ProviderJob, l: Limits) -> Result<(&'static str, &[u8]), Prov
 /// Only ASCII letters and digits, so it can't change the path or query.
 fn voice(p: &Map<String, Value>) -> Result<&str, ProviderError> {
     let id = text(p, "voice_id")?.or(text(p, "voice")?).ok_or_else(|| invalid("ElevenLabs needs a voice"))?;
-    if id.len() > VOICE_ID_CHARS || !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+    if !voice_id(id) {
         return Err(invalid("ElevenLabs voice ids are letters and digits only"));
     }
     Ok(id)
+}
+/// Whether `id` can be a voice id: ASCII letters and digits only, and not too long.
+pub(super) fn voice_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= VOICE_ID_CHARS && id.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 fn language(p: &Map<String, Value>) -> Result<Option<&str>, ProviderError> {
     let Some(code) = text(p, "language_code")? else { return Ok(None) };

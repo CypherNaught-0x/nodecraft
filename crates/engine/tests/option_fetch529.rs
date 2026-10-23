@@ -120,10 +120,10 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     // Before a fetch any checkpoint is accepted: the list is unknown, not empty.
     checkpoint(&mut session, "anything.safetensors").unwrap();
     let sources = refresh(&mut session, &asked);
-    assert_eq!(sources, ["comfyui.checkpoints", "higgsfield.restyle_presets", "higgsfield.soul_ids"]);
+    assert_eq!(sources, ["comfyui.checkpoints", "elevenlabs.voices", "higgsfield.restyle_presets", "higgsfield.soul_ids"]);
     let http = server(&["sdxl.safetensors", "juggernaut.safetensors", "", "sdxl.safetensors"]);
     let fetched = fetch(http.clone(), &settings(), &sources);
-    // Higgsfield has no key here: it isn't asked, and the ComfyUI lists still come.
+    // Higgsfield and ElevenLabs have no key here: they aren't asked, and the ComfyUI lists still come.
     assert_eq!(http.urls(), ["http://127.0.0.1:8188/object_info"]);
     // The reply's size is capped explicitly, not by the client's default.
     assert_eq!(http.asked.lock().unwrap()[0].1, OBJECT_INFO_CAP);
@@ -132,10 +132,13 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     // Both ComfyUI cards choose a checkpoint from the same list.
     let owners: Vec<&str> = report.installed.iter().map(|i| i.owner.as_str()).collect();
     assert_eq!(owners, ["comfyui.flux-dev", "comfyui.sdxl"], "{report:?}");
-    // Higgsfield isn't set up: its list is unavailable, not refused.
+    // Higgsfield and ElevenLabs aren't set up: their lists are unavailable, not refused.
     assert!(report.refused.is_empty(), "{report:?}");
-    let unavailable: Vec<&str> = report.unavailable.iter().filter(|r| r.reason.contains("key")).map(|r| r.source.as_str()).collect();
-    assert_eq!(unavailable, ["higgsfield.restyle_presets", "higgsfield.soul_ids"], "{report:?}");
+    let mut unavailable: Vec<&str> = report.unavailable.iter().filter(|r| r.reason.contains("key")).map(|r| r.source.as_str()).collect();
+    // Each of the four ElevenLabs voice models reports the voices it can't list.
+    assert_eq!(unavailable.iter().filter(|s| **s == "elevenlabs.voices").count(), 4, "{report:?}");
+    unavailable.dedup();
+    assert_eq!(unavailable, ["elevenlabs.voices", "higgsfield.restyle_presets", "higgsfield.soul_ids"], "{report:?}");
     assert!(report.installed.iter().all(|i| (i.values, i.skipped) == (2, 2)), "{report:?}");
     let listed = session.dispatch("node.options", &json!({"canvas": C, "id": N, "param": "checkpoint"})).unwrap();
     assert_eq!(listed["known"], true);
@@ -251,7 +254,8 @@ fn restyle_presets_come_from_higgsfield_with_their_names_as_labels_even_without_
     assert_eq!(installed, [("higgsfield.genjutsu-restyle", "higgsfield.restyle_presets", 2, 1)]);
     // The ComfyUI list is unavailable with the reason, and what it had stays. The Soul IDs
     // weren't asked for here.
-    let refused: Vec<(&str, &str)> = report.refused.iter().map(|r| (r.source.as_str(), r.reason.as_str())).collect();
+    let refused: Vec<(&str, &str)> =
+        report.refused.iter().filter(|r| r.source.starts_with("higgsfield.")).map(|r| (r.source.as_str(), r.reason.as_str())).collect();
     assert_eq!(refused, [("higgsfield.soul_ids", "not part of this fetch; refresh again")], "{report:?}");
     assert!(report.unavailable.iter().any(|r| r.source == "comfyui.checkpoints" && r.reason.contains("comfyui_url")), "{report:?}");
     // The restyle card offers the presets by name; the id is what it keeps and sends.
@@ -338,4 +342,57 @@ fn soul_ids_are_listed_by_name_for_soul_2_even_when_the_presets_fail() {
     let key = nodecraft_types::OptionKey { owner: "higgsfield.soul-2", source: "higgsfield.soul_ids", scope: None };
     let choices: Vec<(&str, &str)> = lists.get(key).unwrap().iter().map(|c| (c.value.as_str(), c.label.as_str())).collect();
     assert_eq!(choices, [("7c9e6679-7425-40de-944b-e07fc1f90ae7", "Mara")]);
+}
+
+/// Answers ElevenLabs's voice list in two pages.
+struct ElevenVoices(Mutex<Vec<HttpRequest>>);
+
+impl Http for ElevenVoices {
+    fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        panic!("ElevenLabs never follows redirects")
+    }
+    fn send_no_redirect(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        let first = "https://api.elevenlabs.io/v2/voices?page_size=100&include_total_count=false";
+        let body = if request.url == first {
+            json!({"voices": [{"voice_id": "EXAVITQu4vr4xnSDxMaL", "name": "Sarah"}, {"voice_id": "bad id", "name": "Broken"}], "has_more": true, "next_page_token": "p2"})
+        } else if request.url == format!("{first}&next_page_token=p2") {
+            json!({"voices": [{"voice_id": "MyClone42", "name": "My clone"}], "has_more": false})
+        } else {
+            json!({"detail": {"status": "not_found", "message": "unexpected"}})
+        };
+        self.0.lock().unwrap().push(request);
+        Box::pin(async move { Ok(HttpResponse { status: 200, headers: vec![], body: serde_json::to_vec(&body).unwrap() }) })
+    }
+}
+
+#[test]
+fn elevenlabs_voices_are_listed_by_name_for_every_voice_model() {
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("elevenlabs").unwrap(), &Secret::new("fixture-eleven-key").unwrap()).unwrap();
+    let http = Arc::new(ElevenVoices(Mutex::default()));
+    let settings = ProviderSettings::default();
+    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
+    let fetched = block_on(option_fetch::fetch(&env, &["elevenlabs.voices".to_owned()]));
+    assert_eq!(http.0.lock().unwrap().len(), 2);
+    let (mut session, _) = session();
+    let report = option_fetch::finish(&mut session, 1, fetched);
+    assert_eq!(report.error, None);
+    let mut installed: Vec<_> = report.installed.iter().map(|i| (i.owner.as_str(), i.values, i.skipped)).collect();
+    installed.sort_unstable();
+    assert_eq!(installed, [("elevenlabs.flash-v2-5", 2, 1), ("elevenlabs.multilingual-v2", 2, 1), ("elevenlabs.v3", 2, 1), ("elevenlabs.voice-changer", 2, 1)]);
+    let lists = session.option_lists().unwrap();
+    let key = nodecraft_types::OptionKey { owner: "elevenlabs.v3", source: "elevenlabs.voices", scope: None };
+    let choices: Vec<(&str, &str)> = lists.get(key).unwrap().iter().map(|c| (c.value.as_str(), c.label.as_str())).collect();
+    assert_eq!(choices, [("EXAVITQu4vr4xnSDxMaL", "Sarah"), ("MyClone42", "My clone")]);
+}
+
+#[test]
+fn without_an_elevenlabs_key_the_voices_are_unavailable_and_nothing_is_sent() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(ElevenVoices(Mutex::default()));
+    let settings = ProviderSettings::default();
+    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
+    let error = block_on(option_fetch::fetch(&env, &["elevenlabs.voices".to_owned()])).unwrap_err();
+    assert!(http.0.lock().unwrap().is_empty());
+    assert!(error.message.contains("ElevenLabs"), "{}", error.message);
 }

@@ -1114,6 +1114,15 @@ language code; Multilingual v2 detects the language and is never sent one. The v
 uploads MP3, WAV, OGG, FLAC, M4A or AAC, judged by its bytes, at most 50 MiB; it may remove
 background noise first.
 
+**The account's voices (#670).** **Your voice** (`voice_id`) names the `elevenlabs.voices` option
+list, so **Refresh option lists** fetches the voices the account can use: its own clones and
+designed voices, ones added from the library, and the premade ones. The list is free: it pages
+through `GET /v2/voices` (100 a page, following `next_page_token`, at most 50 pages) with only the
+key sent, and each page is capped at 8 MiB. Voices are valued by id and labelled by name; an
+entry whose id isn't letters and digits, or that has no name, is skipped and counted, and a name
+or id that echoes the key is never listed. Once fetched, the field is a picker, and a typed id
+not in the list is refused before a run; before a fetch it stays a text box.
+
 There is no idempotency key and nothing to poll or cancel, so a submit is never retried
 automatically: once the paid request is sent a lost reply may have been billed. The exceptions
 are ElevenLabs's documented refusals, which release the reservation: 401 with `detail.status`
