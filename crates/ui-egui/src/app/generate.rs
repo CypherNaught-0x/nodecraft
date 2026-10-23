@@ -70,6 +70,10 @@ impl RunConfirm {
     pub(super) fn estimating(&self) -> bool {
         self.estimating.is_some()
     }
+
+    pub(super) fn set_quote(&mut self, value: &Json) {
+        self.quote = Quote::read(value).expect("test quote must be readable");
+    }
 }
 
 /// What the confirmation shows and `run.start` needs, read from a `run.quote` result.
@@ -91,6 +95,10 @@ pub(super) struct Quote {
     quoted: usize,
     /// Cards asking for several variations with a pinned seed (#808).
     alike: usize,
+    /// Nodes whose cached results are reused without a step or charge.
+    reused: usize,
+    /// Whether applying cached results is the only work in this quote.
+    cached_only: bool,
     /// The planner found nothing in the way; a budget may still refuse the price.
     planned: bool,
     /// A budget cap refuses the price; the Budgets panel can change it.
@@ -133,9 +141,11 @@ impl Quote {
         let resumable = value.get("resumable").and_then(Json::as_array).is_some_and(|nodes| !nodes.is_empty());
         let quoted = value.get("quoted").and_then(Json::as_array).map_or(0, Vec::len);
         let alike = value.get("alike").and_then(Json::as_array).map_or(0, Vec::len);
+        let reused = value.get("reused").and_then(Json::as_array).map_or(0, Vec::len);
+        let cached_only = reused > 0 && steps.is_empty() && listed;
         let planned = value.get("blocked").and_then(Json::as_array).is_none_or(Vec::is_empty);
         let capped = value.get("blocks").and_then(Json::as_array).is_some_and(|blocks| !blocks.is_empty());
-        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed, resumable, quoted, alike, planned, capped })
+        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed, resumable, quoted, alike, reused, cached_only, planned, capped })
     }
 
     /// Whether the quote can be accepted as shown, given the consent collected so far.
@@ -345,6 +355,12 @@ impl NodeCraftApp {
                 }
             } else {
                 ui.label(egui::RichText::new(quote.price()).color(t.text).strong());
+                if quote.reused > 0 {
+                    ui.label(format!("{} reused, free", quote.reused));
+                }
+                if quote.cached_only {
+                    ui.label("Uses cached results where needed; results already active stay in place. No generation runs.");
+                }
                 if !quote.complete {
                     if quote.unpriced_jobs > 0 {
                         ui.label(format!("{} job(s) are priced only while they run.", quote.unpriced_jobs));
@@ -389,7 +405,13 @@ impl NodeCraftApp {
                     requote = ui.button("Quote again").clicked();
                 } else if quote.allowed && !failed {
                     let title = confirm.kind.title();
-                    let label = if quote.totals.is_empty() { format!("{title} now") } else { format!("{title} for {}", quote.price()) };
+                    let label = if quote.cached_only {
+                        "Continue without generating".to_owned()
+                    } else if quote.totals.is_empty() {
+                        format!("{title} now")
+                    } else {
+                        format!("{title} for {}", quote.price())
+                    };
                     start = ui.add_enabled(quote.acceptable(confirm.partial), egui::Button::new(label)).clicked();
                 }
                 if quote.capped && !quote.allowed && !stale {
