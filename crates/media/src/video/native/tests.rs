@@ -444,7 +444,7 @@ fn actual_decode_supplies_active_render_and_retained_cancelled_sender_is_busy() 
     assert!(service.begin_shutdown().wait_blocking(Duration::from_secs(10)).is_ok());
 }
 
-fn isolated_context() -> Context {
+pub(super) fn isolated_context() -> Context {
     let id = SERVICE_ID.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("nodecraft-video-state-test-{}-{id}", std::process::id()));
     fs::create_dir(&dir).unwrap();
@@ -471,6 +471,7 @@ fn isolated_context() -> Context {
         registry: Arc::new(Mutex::new(RecordRegistry { records: Vec::with_capacity(1024), next: 0 })),
         cache: Arc::new(Mutex::new(FrameCache::default())),
         present: Arc::new(Mutex::new(BTreeSet::new())),
+        filter_script_option: None,
     }
 }
 #[test]
