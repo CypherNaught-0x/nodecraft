@@ -24,7 +24,7 @@
 //! result.
 use super::*;
 use nodecraft_engine::access::Access;
-use nodecraft_engine::collab::{Collab, JoinLink, Key, LINKS_SERVICE, Links, Out, Taken, joining, relay_address};
+use nodecraft_engine::collab::{Collab, JoinLink, Key, LINKS_SERVICE, Links, Taken, joining, relay_address};
 use nodecraft_engine::live_cmds::LIVE_SERVICE;
 use nodecraft_engine::session::DocumentLineage;
 use nodecraft_sync::Role;
@@ -191,9 +191,10 @@ impl Sharing {
         let mut desk = self.desk.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "live sharing is busy"))?;
         // Who comes in by the room id owns it; a link's role comes from the relay.
         let status = Status { role: matches!(link.key(), Key::Room(_)).then_some(Role::Owner), ..Status::default() };
-        // Assets too large for one frame come in parts, kept in files until imported (#700).
+        // Assets too large for one frame come in parts, kept in files until the worker seals
+        // them into the session's storage (#700, #842).
         #[cfg(not(target_arch = "wasm32"))]
-        let make = move || make().map(|collab| if large { collab.with_spool(Box::new(spool::FileSpool::default())) } else { collab });
+        let make = move || make().map(|collab| if large { collab.with_spool(Box::new(spool::FileSpool::new())).sealing() } else { collab });
         // The browser has no files to keep them in: it takes only what fits in memory.
         #[cfg(target_arch = "wasm32")]
         let _ = large;
@@ -559,10 +560,6 @@ impl NodeCraftApp {
             if let Some(notice) = report.notices.into_iter().last() {
                 self.notice = Some(notice);
             }
-            if let Some((n, asks)) = report.assets {
-                let frames = asks.into_iter().flat_map(|(hash, stretch)| Out::Asset(hash, stretch).frames(&self.session)).collect();
-                live.worker.send(n, frames)?;
-            }
             plans.extend(report.plan);
         }
         desk.role = live.status.role;
@@ -613,7 +610,9 @@ impl NodeCraftApp {
             let revision = self.session.revision();
             // The copy is the one cost left here; it is made only when the document changed.
             let document = (live.sent != Some(revision)).then(|| self.session.document().clone());
-            let assets = self.session.assets().hashes().copied().collect();
+            // A clone shares the session's storage: the worker reads assets the others ask for
+            // from it, and seals those that came into it, away from this thread (#842).
+            let assets = self.session.assets().clone();
             live.worker.turn(Turn { revision, document, assets })?;
             live.sent = Some(revision);
             live.in_flight = true;

@@ -4,12 +4,14 @@
 //! document when that has changed ([`Turn`]), and takes the [`Plan`] that comes back only if
 //! nothing was edited meanwhile; otherwise the next turn plans again from the newer copy. The
 //! browser has no threads (#699): there the same work is done in the frame, a batch at a time.
-use std::collections::BTreeSet;
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
-use nodecraft_engine::collab::{Collab, Out, Plan, Stretch, View};
+use nodecraft_engine::collab::{Collab, Plan, View};
+use nodecraft_format::AssetStore;
 use nodecraft_graph::Project;
 use nodecraft_sync::{Frame, Person, Presence, Role};
 use nodecraft_types::{Blake3, Error, ErrorKind, ProjectId};
@@ -24,8 +26,9 @@ enum Ask {
     Turn(Turn),
     /// Frames for the next publish: the owner's share links.
     Queue(Vec<Frame>),
-    /// Frames for connection `n` now: the assets the others asked for.
-    Send(u64, Vec<Frame>),
+    /// A while has passed: assets put off are tried again.
+    #[cfg(not(target_arch = "wasm32"))]
+    Retry,
     /// What came of a plan, as the session took it: `document` (at `revision`) is what it now
     /// holds if `applied`.
     Taken {
@@ -45,7 +48,8 @@ pub(super) struct Turn {
     pub(super) revision: u64,
     /// `None`: the same document as the last turn's.
     pub(super) document: Option<Project>,
-    pub(super) assets: BTreeSet<Blake3>,
+    /// A clone of the session's store, sharing its storage.
+    pub(super) assets: AssetStore,
 }
 
 /// How the shared session is doing, as of the thread's last report.
@@ -69,8 +73,6 @@ pub(super) struct Report {
     pub(super) events: Vec<Event>,
     /// The answer to a turn.
     pub(super) plan: Option<Plan>,
-    /// Assets the others asked for, which only the session has the bytes of, for connection `n`.
-    pub(super) assets: Option<(u64, Vec<(Blake3, Stretch)>)>,
     pub(super) status: Status,
     /// Something to tell the person.
     pub(super) notices: Vec<String>,
@@ -200,6 +202,10 @@ impl Worker {
             (inline.wake)();
         }
         let Some((thread, collab)) = inline.running.as_mut() else { return Err(gone()) };
+        // No timer here: an asset put off is asked for again at the next turn.
+        if asks.iter().any(|ask| matches!(ask, Ask::Turn(_))) {
+            collab.retry_put_off();
+        }
         let (report, ended) = work(thread, collab, asks);
         inline.ended = ended;
         Ok(report.into_iter().collect())
@@ -237,11 +243,6 @@ impl Worker {
     pub(super) fn presence(&self, presence: Presence) -> Result<(), String> {
         self.ask(Ask::Presence(presence))
     }
-
-    /// Frames for connection `n` now, if it is still the open one.
-    pub(super) fn send(&self, n: u64, frames: Vec<Frame>) -> Result<(), String> {
-        if frames.is_empty() { Ok(()) } else { self.ask(Ask::Send(n, frames)) }
-    }
 }
 
 fn gone() -> String {
@@ -251,11 +252,37 @@ fn gone() -> String {
 /// The most asks the thread takes in before reporting, so a busy room still shows progress.
 const BATCH: usize = 64;
 
+/// How long an asset the storage was too busy or full for, or the spool had no room for, waits
+/// before it is tried again (#842).
+#[cfg(not(target_arch = "wasm32"))]
+const RETRY: Duration = Duration::from_secs(2);
+
 /// The thread: waits for something to do, does all of it, and reports.
 #[cfg(not(target_arch = "wasm32"))]
 fn run(connection: Connection, mut collab: Collab, inbox: &Receiver<Ask>, outbox: &Sender<Report>, wake: &(dyn Fn() + Send + Sync)) {
     let mut thread = Thread { connection, n: None, document: None };
-    while let Ok(first) = inbox.recv() {
+    // When what waits is tried again; a busy room doesn't put it off.
+    let mut retry_at: Option<Instant> = None;
+    loop {
+        if !(collab.puts_off() || collab.seals_pending()) {
+            retry_at = None;
+        } else if retry_at.is_none() {
+            retry_at = Instant::now().checked_add(RETRY);
+        }
+        let first = match retry_at {
+            Some(at) => match inbox.recv_timeout(at.saturating_duration_since(Instant::now())) {
+                Ok(ask) => ask,
+                Err(RecvTimeoutError::Timeout) => {
+                    retry_at = None;
+                    Ask::Retry
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
+            },
+            None => match inbox.recv() {
+                Ok(ask) => ask,
+                Err(_) => return,
+            },
+        };
         let asks: Vec<Ask> = std::iter::once(first).chain(inbox.try_iter().take(BATCH - 1)).collect();
         if asks.iter().any(|ask| matches!(ask, Ask::Stop)) {
             return;
@@ -343,10 +370,11 @@ impl Thread {
                 collab.queue(frames);
                 report.dirty = true;
             }
-            Ask::Send(n, frames) => {
-                for frame in frames {
-                    self.connection.send(n, frame.encode()?);
-                }
+            #[cfg(not(target_arch = "wasm32"))]
+            Ask::Retry => {
+                // The next turn seals what waits, and asks again for what was put off and fits.
+                let asks = collab.retry_put_off();
+                report.dirty |= asks || collab.seals_pending();
             }
             Ask::Presence(presence) => {
                 // The window checks it first; one that still doesn't pass just isn't said.
@@ -370,22 +398,15 @@ impl Thread {
                     self.document = Some(document);
                 }
                 let document = self.document.as_ref().ok_or_else(|| Error::new(ErrorKind::Internal, "live sharing was asked to settle no document"))?;
+                // Slow for a large asset, so done here rather than in the window (#842).
+                collab.seal_arrivals(&turn.assets);
                 let has = |hash: &Blake3| turn.assets.contains(hash);
                 let (out, plan) = collab.plan(&View { revision: turn.revision, document, has: &has })?;
-                let mut assets = Vec::new();
-                let mut frames = Vec::new();
-                for out in out {
-                    match out {
-                        Out::Frame(frame) => frames.push(frame),
-                        Out::Asset(hash, stretch) => assets.push((hash, stretch)),
-                    }
-                }
+                let frames = out.into_iter().flat_map(|out| out.frames(&turn.assets)).collect();
                 self.send(frames)?;
-                if let Some(n) = self.n.filter(|_| !assets.is_empty()) {
-                    report.assets = Some((n, assets));
-                }
                 report.plan = Some(plan);
-                // Asks not answered this turn are, the next.
+                // Asks not answered this turn are, the next. Assets the storage was too busy to
+                // seal wait a while instead, so the window isn't asked for turn after turn.
                 report.dirty |= collab.owes_assets();
             }
         }

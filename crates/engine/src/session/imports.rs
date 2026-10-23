@@ -2,7 +2,7 @@
 use super::{Session, SourceStamp, guard};
 use crate::commands::{Context, Effect, Phase, validate_json};
 use nodecraft_format::{
-    AssetStore,
+    AssetStore, SealedAsset,
     asset_source::{AssetRange, MemorySource, StreamMetrics, TransferCancel, copy_and_hash},
 };
 use nodecraft_types::{Blake3, Error, ErrorKind};
@@ -102,6 +102,20 @@ impl Session {
         let hash = prepared.hashes.first().copied().ok_or_else(|| invalid("import batch has no result"))?;
         self.commit_imports(prepared)?;
         Ok(hash)
+    }
+    /// Adds an asset sealed away from the session, by [`AssetStore::seal`] on a clone of its
+    /// store (#842), as [`Self::import_asset_from`] would have; it doesn't read the asset again.
+    pub fn adopt_sealed_asset(&mut self, sealed: SealedAsset) -> Result<Blake3, Error> {
+        self.settle_for_edit()?;
+        guard(|| {
+            let next_generation = self.execution.next()?;
+            let mut assets = self.assets.clone();
+            let hash = assets.adopt_sealed(sealed)?;
+            self.assets = assets;
+            self.admission_identity = Arc::new(());
+            self.execution.advance(next_generation);
+            Ok(hash)
+        })
     }
     pub(super) fn import_small(&mut self, bytes: &[u8]) -> Result<Blake3, Error> {
         self.execution.next()?;
