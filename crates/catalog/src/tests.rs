@@ -150,6 +150,10 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 assert_eq!(price.0, Money::new(Currency::USD, micros), "{}", model.id);
             }
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{}", model.id);
+        } else if model.provider == "seedance" {
+            // Per second by resolution (#18); quoted in seedance_is_quoted_per_second_at_its_largest_size.
+            assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
+            assert!(model.quote(&ParamValues::new()).unwrap().is_some(), "{}", model.id);
         } else if model.provider == "google-veo" {
             // Per second by resolution (#742); quoted in veo_on_google_cloud_is_quoted_by_length_and_resolution.
             assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
@@ -257,6 +261,10 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("openai.gpt-6-luna", false),
             ("openai.gpt-4.1-mini", false),
             ("replicate.hello", false),
+            ("seedance.2-0", false),
+            ("seedance.2-5", false),
+            ("seedance.2-0-fast", false),
+            ("seedance.2-0-mini", false),
             ("test.video", false),
             ("tripo.image-to-3d", false),
             ("tripo.multiview-to-3d", false),
@@ -612,6 +620,28 @@ fn veo_on_google_cloud_is_quoted_by_length_and_resolution() {
     let lite = c.get("google-veo.veo-3.1-lite").unwrap();
     assert!(lite.mode("image-to-video").is_none() && lite.mode("reference-to-video").is_none(), "Lite is text only");
     assert_eq!(c.get("google-veo.veo-3.1-fast").unwrap().mode("reference-to-video").unwrap().inputs.iter().find(|i| i.role == "reference").unwrap().max, 3);
+}
+
+#[test]
+fn seedance_is_quoted_per_second_at_its_largest_size() {
+    // ModelArk pricing page, checked 2026-10-23: USD per million tokens, tokens being
+    // width x height x 24 x seconds / 1024, at each resolution's largest listed size.
+    let c = Catalog::builtin().unwrap();
+    let quote = |id: &str, seconds: u64, resolution: &str| {
+        let mut p = ParamValues::new();
+        p.insert("duration_seconds".into(), Value::Unsigned(nodecraft_types::Unsigned(seconds)));
+        p.insert("resolution".into(), Value::Text(resolution.into()));
+        c.get(id).unwrap().quote(&p)
+    };
+    assert_eq!(c.get("seedance.2-0").unwrap().quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 760_765)), "5 s at 720p");
+    assert_eq!(quote("seedance.2-5", 30, "1080p").unwrap(), Some(Money::new(Currency::USD, 17_167_830)));
+    assert_eq!(quote("seedance.2-0", 15, "4k").unwrap(), Some(Money::new(Currency::USD, 11_664_915)));
+    assert_eq!(quote("seedance.2-0-mini", 4, "480p").unwrap(), Some(Money::new(Currency::USD, 140_616)));
+    assert!(quote("seedance.2-0-fast", 5, "1080p").is_err(), "Fast and Mini stop at 720p");
+    assert!(quote("seedance.2-5", 5, "4k").is_err(), "4K is 2.0's alone");
+    assert!(quote("seedance.2-0", 16, "720p").is_err() && quote("seedance.2-5", 31, "720p").is_err() && quote("seedance.2-5", 3, "720p").is_err());
+    let references = |id: &str| c.get(id).unwrap().mode("reference-to-video").unwrap().inputs.iter().find(|i| i.role == "reference").unwrap().max;
+    assert_eq!((references("seedance.2-5"), references("seedance.2-0-mini")), (30, 9));
 }
 
 #[test]

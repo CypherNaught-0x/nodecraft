@@ -43,7 +43,7 @@ pub mod meshy;
 /// Deterministic testing tools, available locally in unit tests or with feature `testkit`.
 #[cfg(any(test, feature = "testkit"))]
 pub mod mock;
-#[cfg(any(feature = "tripo", feature = "meshy", feature = "higgsfield"))]
+#[cfg(any(feature = "tripo", feature = "meshy", feature = "higgsfield", feature = "seedance"))]
 mod model_file;
 #[cfg(feature = "openai-images")]
 pub mod openai_images;
@@ -51,6 +51,8 @@ mod provider;
 #[cfg(feature = "replicate")]
 pub mod replicate;
 pub mod secrets;
+#[cfg(feature = "seedance")]
+pub mod seedance;
 #[cfg(feature = "seedream")]
 pub mod seedream;
 mod task;

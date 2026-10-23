@@ -27,6 +27,8 @@ gemini-images = ["dep:base64"]
 gemini-video = ["dep:base64"]
 # Queue models, and style training (#167), whose images go up as one zip.
 fal = ["dep:base64", "dep:zip"]
+# Seedance 2.5 and 2.0 video on ModelArk: one paid task, polling, cancelling while queued and the MP4 download.
+seedance = ["dep:base64"]
 # Dated Seedream text generation and ordered multi-reference edits.
 seedream = ["dep:base64"]
 # Tripo text, image and multiview to 3D: uploads, a paid task, polling and the GLB download.
