@@ -18,6 +18,7 @@ pub mod comfy_workflow_cmds;
 mod command_schemas;
 pub mod commands;
 pub mod comment_cmds;
+pub mod copy_cmds;
 pub mod create_cmds;
 pub mod deck_cmds;
 pub mod describe_cmds;

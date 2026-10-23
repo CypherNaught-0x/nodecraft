@@ -31,6 +31,12 @@ pub enum HistoryIntent {
         item: Option<usize>,
         name: String,
     },
+    /// Put one text or image output (or list item) on the OS clipboard.
+    Copy {
+        generation: GenerationId,
+        port: Option<String>,
+        item: Option<usize>,
+    },
     Clear,
 }
 
@@ -92,6 +98,33 @@ pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Opt
                 }
             }
             _ => targets.push((port.name.clone(), Some(port.name.clone()), None)),
+        }
+    }
+    targets
+}
+
+/// What the Copy menu offers for a result: each text or image output, or each such item of a
+/// list output (up to [`MAX_EXTRACT_ITEMS`]), labelled for the menu.
+pub fn copy_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>)> {
+    let copies = |value: &Value| match value {
+        Value::Text(_) => true,
+        Value::Media(asset) => asset.mime.essence().starts_with("image/"),
+        _ => false,
+    };
+    let mut targets = Vec::new();
+    for (port, value) in node.outputs.iter().zip(&generation.outputs) {
+        match value {
+            Value::List(items) => {
+                let items = || nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty());
+                let count = items().count();
+                for (item, value) in items().enumerate().take(MAX_EXTRACT_ITEMS) {
+                    if copies(value) {
+                        targets.push((format!("{}: item {} of {}", port.name, item + 1, count), Some(port.name.clone()), Some(item)));
+                    }
+                }
+            }
+            value if copies(value) => targets.push((port.name.clone(), Some(port.name.clone()), None)),
+            _ => {}
         }
     }
     targets
@@ -285,6 +318,28 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
                             for (label, port, item, name) in &targets {
                                 if ui.button(label).clicked() {
                                     intent = Some(HistoryIntent::Export { generation: generation.id, port: port.clone(), item: *item, name: name.clone() });
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                }
+                let targets = copy_targets(node, generation);
+                match targets.as_slice() {
+                    [(_, port, item)] => {
+                        if ui.button("Copy").clicked() {
+                            intent = Some(HistoryIntent::Copy { generation: generation.id, port: port.clone(), item: *item });
+                            ui.close();
+                        }
+                    }
+                    [] => {
+                        ui.add_enabled(false, egui::Button::new("Copy")).on_disabled_hover_text("Only text and image results copy.");
+                    }
+                    _ => {
+                        ui.menu_button("Copy", |ui| {
+                            for (label, port, item) in &targets {
+                                if ui.button(label).clicked() {
+                                    intent = Some(HistoryIntent::Copy { generation: generation.id, port: port.clone(), item: *item });
                                     ui.close();
                                 }
                             }

@@ -530,6 +530,7 @@ fn template(id: &str) -> (Session, Value) {
         "history.extract" => {
             json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"node":node_id(7),"pos":{"x":1,"y":2}})
         }
+        "history.copy" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         // A text result never writes, so the hunt leaves no files behind.
         "history.export" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"path":"/nodecraft-panic-hunt/out.png"}),
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),

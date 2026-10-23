@@ -50,6 +50,8 @@ pub struct Services {
     /// Whether the run host has no accepted run waiting to start; a host without it never holds one.
     run_host_idle: Option<Box<dyn Fn() -> bool>>,
     handlers: BTreeMap<&'static str, ServiceHandler>,
+    /// The OS clipboard (`history.copy`, #831); a host without one refuses the command.
+    clipboard: Option<Box<dyn FnMut(crate::copy_cmds::Clip) -> Result<(), Error>>>,
 }
 impl Services {
     pub fn register(&mut self, id: &'static str, handler: impl FnMut(&Value) -> Result<Value, Error> + 'static) -> Result<(), Error> {
@@ -82,6 +84,19 @@ impl Services {
     }
     pub(crate) fn run_host_idle(&self) -> bool {
         self.run_host_idle.as_ref().is_none_or(|idle| idle())
+    }
+    pub fn register_clipboard(&mut self, handler: impl FnMut(crate::copy_cmds::Clip) -> Result<(), Error> + 'static) -> Result<(), Error> {
+        if self.clipboard.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "clipboard host already registered"));
+        }
+        self.clipboard = Some(Box::new(handler));
+        Ok(())
+    }
+    pub fn contains_clipboard(&self) -> bool {
+        self.clipboard.is_some()
+    }
+    pub(crate) fn invoke_clipboard(&mut self, clip: crate::copy_cmds::Clip) -> Result<(), Error> {
+        self.clipboard.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "there is no clipboard here"))?(clip)
     }
     pub fn contains_run_host(&self) -> bool {
         self.run_host.is_some()
@@ -186,6 +201,10 @@ pub enum Effect {
         path: std::path::PathBuf,
         overwrite: bool,
     },
+    /// Put a text or image result on the OS clipboard (`history.copy`).
+    Copy {
+        what: crate::copy_cmds::Copied,
+    },
     /// Start, stop or clear the session's performance recorder (`perf_cmds`).
     Perf {
         action: crate::perf_cmds::PerfAction,
@@ -280,6 +299,7 @@ impl Registry {
             .chain(crate::order_cmds::specs())
             .chain(crate::history_cmds::specs())
             .chain(crate::export_cmds::specs())
+            .chain(crate::copy_cmds::specs())
             .chain(crate::turn_into_cmds::specs())
             .chain(crate::field_cmds::specs())
             .chain(crate::tag_cmds::specs())

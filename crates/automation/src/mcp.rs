@@ -260,6 +260,8 @@ pub const HUMAN_ONLY: &[&str] = &[
     // Writing files on this machine is the person's call, as saving the project is (#557).
     "history.export",
     "timeline.export_interchange",
+    // What lands on the person's clipboard is what they paste next: theirs to put there (#831).
+    "history.copy",
     "file.open",
     "file.save",
     "file.save_as",

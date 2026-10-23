@@ -334,6 +334,7 @@ mod app_mode;
 #[cfg(not(target_arch = "wasm32"))]
 mod comfy_nodes;
 mod comments;
+mod copy_result;
 mod deck_editor;
 mod deck_presenter;
 mod drop;
@@ -414,6 +415,8 @@ pub struct NodeCraftApp {
     pub comments: crate::comments::Discussions,
     comments_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     navigation_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
+    /// What `history.copy` last put on the clipboard, until the frame hands it to egui (#831).
+    copied: Rc<RefCell<Option<nodecraft_engine::copy_cmds::Clip>>>,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<nodecraft_engine::settings::SettingsStore>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -1013,6 +1016,7 @@ impl NodeCraftApp {
             *slot = Some(request.clone());
             Ok(serde_json::json!({"accepted":true}))
         })?;
+        let copied = copy_result::register(&mut session)?;
         Ok(Self {
             theme: ThemeKind::default(),
             view: CanvasView::default(),
@@ -1033,6 +1037,7 @@ impl NodeCraftApp {
             comments: crate::comments::Discussions::default(),
             comments_mailbox,
             navigation_mailbox,
+            copied,
             #[cfg(not(target_arch = "wasm32"))]
             store: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1160,6 +1165,7 @@ impl NodeCraftApp {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let started = self.frame_started(ui.ctx().current_pass_index() == 0);
         self.show_frame(ui);
+        self.deliver_copy(ui.ctx());
         self.frame_finished(started);
         self.pumped = self.frame_pump && self.session.perf().enabled();
         if self.pumped {
@@ -2708,6 +2714,16 @@ impl NodeCraftApp {
                 self.start_export(self.canvas, id, generation, port, item, &name);
                 return None;
             }
+            HistoryIntent::Copy { generation, port, item } => {
+                let mut params = json!({"canvas": self.canvas, "id": id, "generation": generation});
+                if let Some(port) = port {
+                    params["port"] = json!(port);
+                }
+                if let Some(item) = item {
+                    params["item"] = json!(item);
+                }
+                ("history.copy", params)
+            }
         })
     }
 
@@ -3085,6 +3101,8 @@ mod audio672_tests;
 mod audio_tests;
 #[cfg(test)]
 mod comfy_workflow9_tests;
+#[cfg(test)]
+mod copy_result_tests;
 #[cfg(test)]
 mod deck_editor_tests;
 #[cfg(test)]
