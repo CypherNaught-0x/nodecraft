@@ -148,6 +148,11 @@ pub fn higgsfield(env: &HostEnv<'_>) -> Result<nodecraft_providers::higgsfield::
     Ok(nodecraft_providers::higgsfield::Higgsfield::new(needs_key(env.keys, "higgsfield")?, env.http.clone()))
 }
 
+/// ElevenLabs, from its stored key; runs and the voice list (#670) both build it here.
+pub fn elevenlabs(env: &HostEnv<'_>) -> Result<nodecraft_providers::elevenlabs::ElevenLabs, Readiness> {
+    Ok(nodecraft_providers::elevenlabs::ElevenLabs::new(needs_key(env.keys, "elevenlabs")?, env.http.clone()))
+}
+
 /// Veo on Vertex AI (#742), signed in as the stored Google Cloud service account.
 fn google_veo(env: &HostEnv<'_>) -> Result<nodecraft_providers::google_cloud::veo::Veo, Readiness> {
     let secret = needs_key(env.keys, nodecraft_providers::google_cloud::ACCOUNT)?;
@@ -182,7 +187,7 @@ pub fn make(adapter: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readi
         "meshy" => Arc::new(nodecraft_providers::meshy::Meshy::new(needs_key(env.keys, "meshy")?, env.http.clone())),
         "higgsfield" => Arc::new(higgsfield(env)?),
         "kling" => Arc::new(nodecraft_providers::kling::Kling::new(needs_key(env.keys, "kling")?, env.http.clone())),
-        "elevenlabs" => Arc::new(nodecraft_providers::elevenlabs::ElevenLabs::new(needs_key(env.keys, "elevenlabs")?, env.http.clone())),
+        "elevenlabs" => Arc::new(elevenlabs(env)?),
         "comfy-cloud" => Arc::new(nodecraft_providers::comfy_cloud::ComfyCloud::new(needs_key(env.keys, "comfy-cloud")?, env.http.clone(), env.now_ms.clone())),
         "comfyui" => Arc::new(comfyui(env)?),
         _ => return Err(Readiness::NotSetUp("NodeCraft can't run this provider's models yet".into())),

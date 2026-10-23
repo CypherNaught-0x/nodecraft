@@ -18,6 +18,14 @@ const API: &str = "https://api.elevenlabs.io";
 /// Every endpoint is asked for the same output: MP3, 44.1 kHz, 128 kbps.
 const OUTPUT_FORMAT: &str = "mp3_44100_128";
 const MIB: usize = 1024 * 1024;
+/// The id of the account's voice list (#670), as parameter contracts name it.
+pub const VOICES: &str = "elevenlabs.voices";
+/// Voices asked for a page, ElevenLabs's most.
+const VOICE_PAGE: usize = 100;
+/// Pages read before giving up: 5000 voices.
+const VOICE_PAGES: usize = 50;
+/// The largest page read; a page of 100 voices with their settings and labels is far smaller.
+const VOICE_PAGE_BYTES: usize = 8 * MIB;
 
 /// Local operation limits, not service maxima. Every field can only be lowered by `with_limits`.
 #[derive(Clone, Copy, Debug)]
@@ -51,6 +59,21 @@ fn malformed(s: &'static str) -> ProviderError {
     ProviderError::new(ErrorKind::Malformed, s)
 }
 
+/// A voice the account can speak with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Voice {
+    pub id: String,
+    pub name: String,
+}
+
+/// The account's voices in ElevenLabs's order, premade ones included, and how many entries
+/// didn't read as a voice.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Voices {
+    pub voices: Vec<Voice>,
+    pub skipped: usize,
+}
+
 /// Fixed-origin synchronous adapter. Constructing a provider never reads credentials or calls HTTP.
 pub struct ElevenLabs {
     key: Secret,
@@ -63,6 +86,38 @@ impl ElevenLabs {
     }
     pub fn with_limits(key: Secret, http: Arc<dyn Http>, limits: Limits) -> Result<Self, ProviderError> {
         Ok(Self { key, http, limits: limits.validate()? })
+    }
+    /// The voices the account has (#670), every page of `GET /v2/voices`. Free, and sends nothing
+    /// but the key.
+    pub async fn voices(&self) -> Result<Voices, ProviderError> {
+        let mut out = Voices::default();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut token: Option<String> = None;
+        let mut asked = std::collections::HashSet::new();
+        for _ in 0..VOICE_PAGES {
+            let mut url = format!("{API}/v2/voices?page_size={VOICE_PAGE}&include_total_count=false");
+            if let Some(token) = &token {
+                url.push_str("&next_page_token=");
+                url.push_str(&response::query_escaped(token));
+            }
+            let list = crate::HttpRequest::get(url).timeout_ms(30_000).secret_header("xi-api-key", self.key.expose()).max_response_bytes(VOICE_PAGE_BYTES);
+            let reply =
+                self.http.send_no_redirect(list).await.map_err(|e| ProviderError { message: "ElevenLabs's voice list couldn't be reached".into(), ..e })?;
+            let page = response::voice_page(reply, &self.key)?;
+            out.skipped = out.skipped.saturating_add(page.skipped);
+            for voice in page.voices {
+                if seen.insert(voice.id.clone()) {
+                    out.voices.push(voice);
+                }
+            }
+            match page.next {
+                // A page that points back at one already read would go round for ever.
+                Some(next) if !asked.insert(next.clone()) => return Err(malformed("ElevenLabs's voice list pointed back at a page already read")),
+                Some(next) => token = Some(next),
+                None => return Ok(out),
+            }
+        }
+        Err(malformed("this ElevenLabs account has more voices than NodeCraft lists"))
     }
     async fn perform(&self, job: &ProviderJob, context: Option<&SubmitContext>) -> Result<Completed, ProviderError> {
         let prepared = request::prepare(job, self.limits)?;

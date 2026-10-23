@@ -1,5 +1,6 @@
 //! Fetching run-time option lists (#529): the checkpoints, LoRAs and samplers a ComfyUI server
-//! has, and the restyle presets (#179) and the account's Soul IDs (#180) Higgsfield lists, for the catalog models whose parameter
+//! has, the restyle presets (#179) and the account's Soul IDs (#180) Higgsfield lists, and the
+//! ElevenLabs voices (#670), for the catalog models whose parameter
 //! contracts name them (docs/descriptor-contract.md, Option sources). Each provider is asked on
 //! its own, so one that isn't set up doesn't keep the others' lists from being fetched.
 //!
@@ -40,9 +41,12 @@ fn comfy_source(id: &str) -> Option<(&'static str, &'static str)> {
 /// The lists Higgsfield answers.
 const HIGGSFIELD_SOURCES: [&str; 2] = [nodecraft_providers::higgsfield::RESTYLE_PRESETS, nodecraft_providers::higgsfield::SOUL_IDS];
 
+/// The lists ElevenLabs answers (#670).
+const ELEVENLABS_SOURCES: [&str; 1] = [nodecraft_providers::elevenlabs::VOICES];
+
 /// Whether NodeCraft knows where to fetch source `id`.
 fn known(id: &str) -> bool {
-    comfy_source(id).is_some() || HIGGSFIELD_SOURCES.contains(&id)
+    comfy_source(id).is_some() || HIGGSFIELD_SOURCES.contains(&id) || ELEVENLABS_SOURCES.contains(&id)
 }
 
 /// A list a catalog model's contract names.
@@ -166,7 +170,7 @@ fn values<'a>(options: impl IntoIterator<Item = (&'a str, &'a str)>, skipped: us
 }
 
 /// Fetches `sources` from the providers in `env`'s settings: the ComfyUI server's lists from its
-/// node catalog, the Higgsfield presets and Soul IDs from its API. The host calls it off the UI thread: it
+/// node catalog, the Higgsfield presets and Soul IDs and the ElevenLabs voices from their APIs. The host calls it off the UI thread: it
 /// reads keys from the keychain and calls the providers. A provider that can't be asked refuses
 /// its own lists; the fetch fails only when none could be.
 pub async fn fetch(env: &HostEnv<'_>, sources: &[String]) -> Result<Fetched, Error> {
@@ -192,6 +196,17 @@ pub async fn fetch(env: &HostEnv<'_>, sources: &[String]) -> Result<Fetched, Err
             Ok(listed) => fetched.lists.extend(listed),
             Err(failure) => {
                 fetched.fail(higgsfield.iter().copied(), &failure);
+                failed.push(failure);
+            }
+        }
+    }
+    let elevenlabs: Vec<&String> = sources.iter().copied().filter(|s| ELEVENLABS_SOURCES.contains(&s.as_str())).collect();
+    if !elevenlabs.is_empty() {
+        asked += 1;
+        match elevenlabs_lists(env, &elevenlabs).await {
+            Ok(listed) => fetched.lists.extend(listed),
+            Err(failure) => {
+                fetched.fail(elevenlabs.iter().copied(), &failure);
                 failed.push(failure);
             }
         }
@@ -269,6 +284,17 @@ async fn higgsfield_lists(env: &HostEnv<'_>, wanted: &[&String]) -> Result<Vec<(
         Some(error) if listed.iter().all(|(_, l)| l.is_err()) => Err(Failure::Failed(error)),
         _ => Ok(listed),
     }
+}
+
+/// The ElevenLabs voices: the library's premade voices and the account's own (#670).
+async fn elevenlabs_lists(env: &HostEnv<'_>, wanted: &[&String]) -> Result<Vec<(String, Listed)>, Failure> {
+    let provider = crate::provider_setup::elevenlabs(env).map_err(not_set_up("ElevenLabs"))?;
+    let voices = provider
+        .voices()
+        .await
+        .map_err(|error| Failure::Failed(Error::new(provider_kind(error.kind), format!("ElevenLabs's voices couldn't be read: {}", error.message))))?;
+    let listed = values(voices.voices.iter().map(|v| (v.id.as_str(), v.name.as_str())), voices.skipped);
+    Ok(wanted.iter().map(|id| ((*id).clone(), listed.clone())).collect())
 }
 
 pub(crate) fn provider_kind(kind: nodecraft_providers::ErrorKind) -> ErrorKind {
@@ -414,7 +440,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{} -> {pending: id}; fetches every run-time option list the catalog's models name (the checkpoints, LoRAs, VAEs, upscale models, samplers and schedulers the ComfyUI server in settings has, Higgsfield's restyle presets, whose labels are the preset names, and the Higgsfield account's ready SOUL 2 Soul IDs, labelled by name) and installs them, so node.options and edits see them. The host answers later: read the outcome with options.status. A list that can't be fetched keeps what was installed before. Refused when no model names a fetchable list, or the host can't fetch (the CLI).",
+            params_doc: "{} -> {pending: id}; fetches every run-time option list the catalog's models name (the checkpoints, LoRAs, VAEs, upscale models, samplers and schedulers the ComfyUI server in settings has, Higgsfield's restyle presets, whose labels are the preset names, the Higgsfield account's ready SOUL 2 Soul IDs, labelled by name, and the ElevenLabs voices the account can use, its own and the premade ones, labelled by name) and installs them, so node.options and edits see them. The host answers later: read the outcome with options.status. A list that can't be fetched keeps what was installed before. Refused when no model names a fetchable list, or the host can't fetch (the CLI).",
             enabled: enabled_refresh,
             run: refresh,
         },

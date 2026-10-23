@@ -396,3 +396,120 @@ fn polling_and_cancelling_are_unsupported() {
     assert_eq!(block_on(p.cancel(&handle)).unwrap_err().kind, ErrorKind::UnsupportedInput);
     assert_eq!(http.sent(), 0);
 }
+
+/// Answers each request with the next reply in turn.
+struct Pages {
+    replies: Mutex<Vec<Result<HttpResponse, ProviderError>>>,
+    requests: Mutex<Vec<HttpRequest>>,
+}
+impl Pages {
+    fn new(mut replies: Vec<Result<HttpResponse, ProviderError>>) -> Arc<Self> {
+        replies.reverse();
+        Arc::new(Self { replies: Mutex::new(replies), requests: Mutex::default() })
+    }
+    fn urls(&self) -> Vec<String> {
+        self.requests.lock().unwrap().iter().map(|r| r.url.clone()).collect()
+    }
+}
+impl Http for Pages {
+    fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        panic!("redirect-following fallback forbidden")
+    }
+    fn send_no_redirect(&self, r: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        self.requests.lock().unwrap().push(r);
+        let reply = self.replies.lock().unwrap().pop().expect("a reply for every page");
+        Box::pin(async move { reply })
+    }
+}
+fn page(voices: Value, next: Option<&str>) -> Result<HttpResponse, ProviderError> {
+    let body = json!({"voices": voices, "has_more": next.is_some(), "next_page_token": next});
+    reply(200, &serde_json::to_vec(&body).unwrap())
+}
+fn voices(http: &Arc<Pages>) -> Result<Voices, ProviderError> {
+    block_on(ElevenLabs::new(Secret::new(KEY).unwrap(), http.clone()).voices())
+}
+
+#[test]
+fn the_voice_list_reads_every_page_and_sends_only_the_key() {
+    let http = Pages::new(vec![
+        page(
+            json!([{"voice_id": "EXAVITQu4vr4xnSDxMaL", "name": "Sarah", "category": "premade"}, {"voice_id": "abc123", "name": " My\nclone "}]),
+            Some("a+b/c=&d"),
+        ),
+        page(json!([{"voice_id": "abc123", "name": "My clone"}, {"voice_id": "Zz9", "name": "Narrator"}]), None),
+    ]);
+    let listed = voices(&http).unwrap();
+    let names: Vec<(&str, &str)> = listed.voices.iter().map(|v| (v.id.as_str(), v.name.as_str())).collect();
+    // A voice on two pages is listed once; control characters in a name are spaces.
+    assert_eq!(names, [("EXAVITQu4vr4xnSDxMaL", "Sarah"), ("abc123", "My clone"), ("Zz9", "Narrator")]);
+    assert_eq!(listed.skipped, 0);
+    assert_eq!(
+        http.urls(),
+        [
+            "https://api.elevenlabs.io/v2/voices?page_size=100&include_total_count=false",
+            "https://api.elevenlabs.io/v2/voices?page_size=100&include_total_count=false&next_page_token=a%2Bb%2Fc%3D%26d",
+        ]
+    );
+    for r in http.requests.lock().unwrap().iter() {
+        assert_eq!(r.method, HttpMethod::Get);
+        assert!(r.body.is_empty());
+        assert_eq!(header(r, "xi-api-key"), Some(KEY));
+        assert!(r.secret_headers.contains(&"xi-api-key".to_owned()));
+        assert_eq!(r.max_response_bytes, VOICE_PAGE_BYTES);
+    }
+}
+
+#[test]
+fn voices_that_cant_be_spoken_with_are_skipped_and_counted() {
+    let http = Pages::new(vec![page(
+        json!([
+            {"voice_id": "../v1/user", "name": "Path"},
+            {"voice_id": "", "name": "Empty"},
+            {"voice_id": "ok1", "name": ""},
+            {"voice_id": "ok2"},
+            {"voice_id": "ok3", "name": format!("has {KEY}")},
+            {"voice_id": "x".repeat(65), "name": "Too long"},
+            {"voice_id": "ok4", "name": "Kept"},
+            "not a voice",
+        ]),
+        None,
+    )]);
+    let listed = voices(&http).unwrap();
+    assert_eq!(listed.voices, [Voice { id: "ok4".into(), name: "Kept".into() }]);
+    assert_eq!(listed.skipped, 7);
+}
+
+#[test]
+fn a_voice_list_that_cant_be_read_says_why_without_the_key() {
+    let mut cases = vec![
+        (reply(401, br#"{"detail": {"status": "invalid_api_key", "message": "bad"}}"#), ErrorKind::Auth),
+        (reply(200, b"not json"), ErrorKind::Malformed),
+        (reply(200, br#"{"has_more": false}"#), ErrorKind::Malformed),
+        (reply(200, br#"{"voices": [], "has_more": true}"#), ErrorKind::Malformed),
+        (reply(200, &serde_json::to_vec(&json!({"voices": [], "has_more": true, "next_page_token": "t".repeat(1025)})).unwrap()), ErrorKind::Malformed),
+        (Err(ProviderError::new(ErrorKind::Network, format!("refused {KEY}"))), ErrorKind::Network),
+    ];
+    for (n, (answer, kind)) in cases.drain(..).enumerate() {
+        let error = voices(&Pages::new(vec![answer])).unwrap_err();
+        assert_eq!(error.kind, kind, "case {n}: {}", error.message);
+        assert!(!error.message.contains(KEY), "case {n}: {}", error.message);
+    }
+}
+
+#[test]
+fn a_voice_list_that_never_ends_is_refused() {
+    let pages = (0..VOICE_PAGES).map(|n| page(json!([{"voice_id": format!("v{n}"), "name": "V"}]), Some(&format!("more{n}")))).collect();
+    let http = Pages::new(pages);
+    let error = voices(&http).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Malformed);
+    assert_eq!(http.urls().len(), VOICE_PAGES);
+}
+
+#[test]
+fn a_voice_list_that_points_back_at_a_page_already_read_is_refused() {
+    let pages = (0..3).map(|n| page(json!([{"voice_id": format!("v{n}"), "name": "V"}]), Some(if n == 0 { "a" } else { "b" }))).collect();
+    let http = Pages::new(pages);
+    let error = voices(&http).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Malformed);
+    assert_eq!(http.urls().len(), 3);
+}
