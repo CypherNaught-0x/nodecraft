@@ -9,7 +9,7 @@
 //! the overlap to it, as editors that read FCPXML expect. Clips on other tracks are connected to
 //! whatever is under them on the main track (a gap past its end), on lanes over it for pictures
 //! and under it for sound.
-use super::{Input, Timeline, TrackKind, Wire};
+use super::{CENTRE, Clip, Input, Timeline, TrackKind, UNIT, Wire};
 use nodecraft_types::{Error, ErrorKind};
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -177,6 +177,49 @@ struct Spined<'a> {
     dissolve: Option<(u64, u64)>,
 }
 
+/// Describe each edited feature the writer still leaves at its FCPXML default. Coordinates and
+/// crop edges share a line within their feature, but the changed fields remain explicit.
+fn untranslated_clip_settings(clip: &Clip, losses: &mut Vec<Loss>) {
+    let id = || Some(clip.id.clone());
+    if clip.speed != UNIT {
+        losses.push(Loss {
+            clip: id(),
+            feature: "speed",
+            detail: "not written: the clip exports at its unretimed media-trim length; retime it in the other editor".into(),
+        });
+    }
+    let position: Vec<&str> =
+        [(clip.pos_x != CENTRE, "pos_x"), (clip.pos_y != CENTRE, "pos_y")].into_iter().filter_map(|(changed, name)| changed.then_some(name)).collect();
+    if !position.is_empty() {
+        losses.push(Loss {
+            clip: id(),
+            feature: "position",
+            detail: format!("{} not written: the clip exports centred in the frame; reposition it in the other editor", position.join(" and ")),
+        });
+    }
+    if clip.scale != UNIT {
+        losses.push(Loss { clip: id(), feature: "scale", detail: "not written: the clip exports at the editor's default fitted size; resize it there".into() });
+    }
+    let crop: Vec<&str> =
+        [(clip.crop_left != 0, "crop_left"), (clip.crop_top != 0, "crop_top"), (clip.crop_right != 0, "crop_right"), (clip.crop_bottom != 0, "crop_bottom")]
+            .into_iter()
+            .filter_map(|(changed, name)| changed.then_some(name))
+            .collect();
+    if !crop.is_empty() {
+        losses.push(Loss {
+            clip: id(),
+            feature: "crop",
+            detail: format!("{} not written: the clip exports uncropped; crop it in the other editor", crop.join(", ")),
+        });
+    }
+    if clip.rotation != 0 {
+        losses.push(Loss { clip: id(), feature: "rotation", detail: "not written: the clip exports upright; rotate it in the other editor".into() });
+    }
+    if clip.opacity != UNIT {
+        losses.push(Loss { clip: id(), feature: "opacity", detail: "not written: the clip exports fully opaque; set its opacity in the other editor".into() });
+    }
+}
+
 /// Describes `sequence` as an FCPXML document.
 pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
     let fps = sequence.fps;
@@ -245,6 +288,7 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
         if clip.fade_in_us != 0 || clip.fade_out_us != 0 {
             losses.push(Loss { clip: Some(clip.id.clone()), caption: None, feature: "fade", detail: "not written: add the fades in the other editor".into() });
         }
+        untranslated_clip_settings(clip, &mut losses);
         let audible = source.kind == MediaKind::Audio || (source.kind == MediaKind::Video && source.sound);
         let volume = if audible { decibels(clip.volume, clip.muted) } else { None };
         if !used.contains(&source_index) {

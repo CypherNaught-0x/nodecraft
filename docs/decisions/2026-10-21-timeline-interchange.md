@@ -14,7 +14,8 @@
   rounded and reported.
 - **Losses are data.** Each setting the document can't carry is returned as a `Loss`, shown by
   `timeline.interchange` and written to `report.txt`. Nothing is dropped unseen. Fades and a
-  non-black background are the current losses.
+  non-black background were the original losses; non-default clip speed and placement now also
+  report their untranslated fields (#777, #779).
 - **Missing media is an error, not a hole.** A wired node with no result stops the export,
   naming the clip, rather than writing an offline clip.
 - **`history.export`'s file path is shared.** `Effect::Export` carries an `Exported`, either an

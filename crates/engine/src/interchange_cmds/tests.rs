@@ -127,6 +127,65 @@ fn the_archive_holds_the_document_the_report_and_only_the_media_it_names() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn archived_reports_name_each_untranslated_clip_field_without_default_noise() {
+    let clip = nodecraft_nodes::timeline::auto_id(nodecraft_nodes::timeline::Input::Clips, &FOX.to_string(), 0);
+    // Each case is a separate saved timeline and archive. A combined case also ensures that
+    // related axes/edges group together without hiding unrelated features.
+    let cases = [
+        ("default", json!({}), Vec::<String>::new()),
+        (
+            "explicit_defaults",
+            json!({"speed": 1000, "pos_x": 500, "pos_y": 500, "scale": 1000, "crop_left": 0, "crop_top": 0, "crop_right": 0, "crop_bottom": 0, "rotation": 0, "opacity": 1000}),
+            Vec::new(),
+        ),
+        (
+            "speed",
+            json!({"speed": 2000}),
+            vec!["speed: not written: the clip exports at its unretimed media-trim length; retime it in the other editor".into()],
+        ),
+        ("pos_x", json!({"pos_x": 250}), vec!["position: pos_x not written: the clip exports centred in the frame; reposition it in the other editor".into()]),
+        ("pos_y", json!({"pos_y": 750}), vec!["position: pos_y not written: the clip exports centred in the frame; reposition it in the other editor".into()]),
+        ("scale", json!({"scale": 1500}), vec!["scale: not written: the clip exports at the editor's default fitted size; resize it there".into()]),
+        ("crop_left", json!({"crop_left": 100}), vec!["crop: crop_left not written: the clip exports uncropped; crop it in the other editor".into()]),
+        ("crop_top", json!({"crop_top": 100}), vec!["crop: crop_top not written: the clip exports uncropped; crop it in the other editor".into()]),
+        ("crop_right", json!({"crop_right": 100}), vec!["crop: crop_right not written: the clip exports uncropped; crop it in the other editor".into()]),
+        ("crop_bottom", json!({"crop_bottom": 100}), vec!["crop: crop_bottom not written: the clip exports uncropped; crop it in the other editor".into()]),
+        ("rotation", json!({"rotation": 45}), vec!["rotation: not written: the clip exports upright; rotate it in the other editor".into()]),
+        ("opacity", json!({"opacity": 700}), vec!["opacity: not written: the clip exports fully opaque; set its opacity in the other editor".into()]),
+        (
+            "all_features",
+            json!({"speed": 2000, "pos_x": 250, "pos_y": 750, "scale": 1500, "crop_left": 100, "crop_top": 100, "crop_right": 100, "crop_bottom": 100, "rotation": 45, "opacity": 700}),
+            vec![
+                "speed: not written: the clip exports at its unretimed media-trim length; retime it in the other editor".into(),
+                "position: pos_x and pos_y not written: the clip exports centred in the frame; reposition it in the other editor".into(),
+                "scale: not written: the clip exports at the editor's default fitted size; resize it there".into(),
+                "crop: crop_left, crop_top, crop_right, crop_bottom not written: the clip exports uncropped; crop it in the other editor".into(),
+                "rotation: not written: the clip exports upright; rotate it in the other editor".into(),
+                "opacity: not written: the clip exports fully opaque; set its opacity in the other editor".into(),
+            ],
+        ),
+    ];
+    let root = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let dir = tempfile::tempdir_in(root).unwrap();
+    for (name, settings, expected) in cases {
+        let mut s = session();
+        if settings != json!({}) {
+            s.dispatch("timeline.update", &json!({"canvas": CANVAS, "id": EDITOR, "clip": clip, "set": settings})).unwrap();
+        }
+        let path = dir.path().join(format!("{name}.zip"));
+        s.dispatch("timeline.export_interchange", &json!({"canvas": CANVAS, "id": EDITOR, "path": path})).unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+        let mut report = String::new();
+        zip.by_name("report.txt").unwrap().read_to_string(&mut report).unwrap();
+        let actual: Vec<String> = report.lines().filter(|line| line.starts_with("- ")).map(str::to_owned).collect();
+        let expected: Vec<String> = expected.iter().map(|line| format!("- clip {clip}: {line}")).collect();
+        assert_eq!(actual, expected, "{name}: {report}");
+        assert_eq!(report.contains("No losses detected."), expected.is_empty(), "{name}: {report}");
+    }
+}
+
 #[test]
 fn file_names_keep_letters_and_lose_the_rest() {
     assert_eq!(stem("Füchse / Eulen", "x"), "Füchse-Eulen");
