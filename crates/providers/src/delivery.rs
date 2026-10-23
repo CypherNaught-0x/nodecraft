@@ -30,6 +30,9 @@ pub struct SubmitContext {
     text: Option<Mutex<Streamed>>,
     /// Where a paid request is saved before it is sent, when the runner keeps them (#664).
     stager: Option<Arc<crate::Stager>>,
+    /// The latest preview of a result still arriving and not yet reported, when the runner asked
+    /// for them (#671). A newer one replaces it.
+    preview: Option<Mutex<Option<crate::Output>>>,
 }
 
 /// Most bytes of streamed text one submit reports; the rest of a longer answer arrives only with
@@ -93,11 +96,11 @@ pub(crate) struct SubmitNotAccepted;
 
 impl SubmitContext {
     pub(crate) fn new() -> Self {
-        Self { state: Arc::default(), text: None, stager: None }
+        Self { state: Arc::default(), text: None, stager: None, preview: None }
     }
     /// A context that collects a text answer as it streams, for [`Self::take_text`].
     pub(crate) fn streaming_text() -> Self {
-        Self { state: Arc::default(), text: Some(Mutex::default()), stager: None }
+        Self { state: Arc::default(), text: Some(Mutex::default()), stager: None, preview: None }
     }
     /// Saves staged requests with `stager` (see [`Self::stage`]).
     pub(crate) fn with_stager(mut self, stager: Option<Arc<crate::Stager>>) -> Self {
@@ -113,6 +116,24 @@ impl SubmitContext {
             return Err(ProviderError::new(crate::ErrorKind::UnsupportedInput, "the request is too large to save before sending it, so it wasn't sent"));
         }
         stager(staged).map_err(|reason| ProviderError::new(crate::ErrorKind::UnsupportedInput, reason))
+    }
+    /// Collects previews of a result while it arrives, for [`Self::take_preview`], when `on`.
+    pub(crate) fn with_previews(mut self, on: bool) -> Self {
+        self.preview = on.then(Mutex::default);
+        self
+    }
+    /// Whether the runner wants previews of a result while it arrives.
+    pub(crate) fn wants_previews(&self) -> bool {
+        self.preview.is_some()
+    }
+    /// Keeps `preview` as the latest one, replacing any not yet reported.
+    pub(crate) fn push_preview(&self, preview: crate::Output) {
+        let Some(slot) = &self.preview else { return };
+        *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(preview);
+    }
+    /// The latest preview since the last call, if there is a newer one.
+    pub(crate) fn take_preview(&self) -> Option<crate::Output> {
+        self.preview.as_ref()?.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
     /// Whether the runner wants text as it streams.
     pub(crate) fn wants_text(&self) -> bool {
