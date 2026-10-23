@@ -61,6 +61,8 @@ mod image_modes500;
 mod impact114;
 #[path = "import_ownership334.rs"]
 mod import_ownership334;
+#[path = "known_media795.rs"]
+mod known_media795;
 #[path = "layers101.rs"]
 mod layers101;
 #[path = "layout.rs"]

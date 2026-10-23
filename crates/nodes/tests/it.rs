@@ -14,6 +14,8 @@ mod generation465_required_wire;
 mod generation515_fans_out;
 #[path = "instances.rs"]
 mod instances;
+#[path = "known_media795.rs"]
+mod known_media795;
 #[path = "mesh_generation22.rs"]
 mod mesh_generation22;
 #[path = "mesh_inputs23.rs"]
