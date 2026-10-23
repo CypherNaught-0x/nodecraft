@@ -39,6 +39,8 @@ pub struct Row {
     pub kept: Vec<String>,
     /// The live grant's ID and the capabilities it covers.
     pub grant: Option<(String, Vec<String>)>,
+    /// The file it was installed from, which Reload installs again.
+    pub reload_from: Option<String>,
 }
 
 impl Row {
@@ -54,6 +56,7 @@ impl Row {
             signed_by: text("signed_by"),
             kept: strings(v.get("kept")),
             grant,
+            reload_from: text("reload_from"),
         })
     }
 }
@@ -93,6 +96,8 @@ enum Ask {
         granted: bool,
     },
     Rights,
+    /// Installing a package's file again.
+    Reload,
     /// A change to an installed package; the text says what was done.
     Change(String),
 }
@@ -229,7 +234,7 @@ impl PluginsPanel {
             Err(e) => {
                 self.notice = Some(e.message);
                 self.status = None;
-                if matches!(ask, Ask::Install { .. } | Ask::Change(_)) {
+                if matches!(ask, Ask::Install { .. } | Ask::Reload | Ask::Change(_)) {
                     self.list(session);
                 }
                 return;
@@ -285,6 +290,25 @@ impl PluginsPanel {
                     origins: strings(answer.get("origins")),
                     chosen: BTreeSet::new(),
                 });
+            }
+            Ask::Reload => {
+                let id = answer.get("package_id").and_then(Value::as_str).unwrap_or_default();
+                let version = answer.get("version").and_then(Value::as_str).unwrap_or_default();
+                let flag = |key: &str| answer.get(key).and_then(Value::as_bool) == Some(true);
+                let then = if flag("enabled") {
+                    "It is enabled again."
+                } else if flag("needs_grant") {
+                    "It runs actions, so it stays disabled: grant it again, then enable it."
+                } else {
+                    "It stays disabled until you enable it."
+                };
+                self.status = Some(format!("Reloaded {id} {version} from its file. {then}"));
+                if let Some(why) = answer.get("enable_error").and_then(Value::as_str) {
+                    self.notice = Some(format!("It couldn't be enabled again: {why}"));
+                }
+                // A consent shown for the digest this replaced no longer applies.
+                self.consent = None;
+                self.list(session);
             }
             Ask::Change(done) => {
                 let mut status = done;
@@ -351,6 +375,13 @@ impl PluginsPanel {
         self.consent = None;
         self.confirm_uninstall = None;
         self.send(session, id, params, Ask::Change(done));
+    }
+
+    /// Installs `package`'s file again, as an update (`plugins.reload`).
+    pub fn reload(&mut self, session: &mut Session, package: &str) {
+        self.consent = None;
+        self.confirm_uninstall = None;
+        self.send(session, "plugins.reload", json!({"package_id": package}), Ask::Reload);
     }
 
     /// Asks what `package` would be granted, to show it before granting.
@@ -524,6 +555,15 @@ impl PluginsPanel {
                                 self.ask_rights(session, id);
                             }
                         }
+                    }
+                    // Only a package installed from a path; a browser pick is gone once installed.
+                    if let Some(from) = row.reload_from.as_deref().filter(|_| !self.session_only)
+                        && ui
+                            .add_enabled(!self.pending.values().any(|ask| matches!(ask, Ask::Reload)), egui::Button::new("Reload"))
+                            .on_hover_text(format!("Install its file again from {from}, if it changed"))
+                            .clicked()
+                    {
+                        self.reload(session, id);
                     }
                     if !row.enabled {
                         for kept in &row.kept {

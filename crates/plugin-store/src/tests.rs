@@ -622,7 +622,50 @@ mod admission_tests;
 mod grant_tests;
 #[cfg(not(target_arch = "wasm32"))]
 mod lock_tests;
+mod pack_tests;
 mod property_tests;
+
+#[test]
+fn the_store_remembers_where_a_package_came_from_until_it_is_uninstalled() {
+    let mut st = store();
+    let palette = id("io.example.palette");
+    // Nothing is remembered for a package that isn't installed.
+    st.remember_source(&palette, Some("/plugins/palette.ncraft-plugin")).unwrap();
+    assert_eq!(st.source(&palette).unwrap(), None);
+    assert!(st.backend().sources.is_none(), "nothing to write");
+    st.import(&package(&spec("io.example.palette")), &TrustStore::default(), false).unwrap();
+    st.remember_source(&palette, Some("/plugins/palette.ncraft-plugin")).unwrap();
+    assert_eq!(st.source(&palette).unwrap().as_deref(), Some("/plugins/palette.ncraft-plugin"));
+    // The index is untouched, so older builds still read it; a reopened store remembers.
+    assert!(!String::from_utf8_lossy(st.backend().index.as_deref().unwrap()).contains("palette.ncraft-plugin"));
+    let reopened = Store::open(st.backend().clone_for_test()).unwrap();
+    assert_eq!(reopened.source(&palette).unwrap().as_deref(), Some("/plugins/palette.ncraft-plugin"));
+    // Too long a location isn't kept; the old one is forgotten rather than left stale.
+    st.remember_source(&palette, Some(&"x".repeat(crate::store::MAX_SOURCE + 1))).unwrap();
+    assert_eq!(st.source(&palette).unwrap(), None);
+    st.remember_source(&palette, Some("/plugins/palette.ncraft-plugin")).unwrap();
+    // A damaged sources file costs only the location.
+    let mut damaged = Store::open(MemoryBackend { sources: Some(b"{oops".to_vec()), ..st.backend().clone_for_test() }).unwrap();
+    assert_eq!(damaged.source(&palette).unwrap(), None);
+    damaged.remember_source(&palette, Some("/again.ncraft-plugin")).unwrap();
+    assert_eq!(damaged.source(&palette).unwrap().as_deref(), Some("/again.ncraft-plugin"));
+    // Uninstalling forgets it.
+    st.uninstall(&palette, &BTreeSet::new()).unwrap();
+    assert_eq!(st.source(&palette).unwrap(), None);
+    assert!(!String::from_utf8_lossy(st.backend().sources.as_deref().unwrap()).contains("palette"));
+}
+
+impl MemoryBackend {
+    fn clone_for_test(&self) -> MemoryBackend {
+        MemoryBackend {
+            index: self.index.clone(),
+            objects: self.objects.clone(),
+            grants: self.grants.clone(),
+            sources: self.sources.clone(),
+            ..MemoryBackend::default()
+        }
+    }
+}
 
 #[test]
 fn an_author_signed_pack_installs_as_verified_and_only_the_publisher_may_sign() {

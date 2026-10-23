@@ -339,10 +339,69 @@ fn a_picked_file_is_installed_into_a_session_only_store() {
     settle(&mut h);
     assert_eq!(h.state().panel.rows().first().map(|r| r.package_id.as_str()), Some("io.example.text"));
     assert!(h.query_by_label("Grant…").is_none(), "nothing runs here, so nothing is offered to consent to");
+    assert!(h.query_by_label("Reload").is_none(), "a picked file is let go once installed: there is nothing to reload");
     h.get_by_label("Enable").click();
     settle(&mut h);
     assert!(!h.state().panel.rows()[0].enabled);
     assert!(h.state().panel.notice.as_deref().is_some_and(|n| n.contains("can't run in the browser")), "{:?}", h.state().panel.notice);
+}
+
+/// Reload (#866) installs the package's file again, through the worker the desktop uses: a data
+/// package is enabled again, an unchanged file is refused and says so.
+#[test]
+fn reload_installs_a_changed_file_again_and_refuses_an_unchanged_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(worker());
+    let file = package(dir.path(), "data", "MIT\n");
+    check(&mut h, &file);
+    assert!(h.query_by_label("Reload").is_none(), "nothing installed yet");
+    h.get_by_label("Install").click();
+    settle(&mut h);
+    assert_eq!(h.state().panel.rows()[0].reload_from.as_deref(), Some(file.as_str()));
+    h.get_by_label("Enable").click();
+    settle(&mut h);
+    let before = h.state().panel.rows()[0].digest.clone();
+    // The author changes the package and packs it again, to the same path.
+    assert_eq!(package(dir.path(), "data", "MIT\n\nChanged.\n"), file);
+    h.get_by_label("Reload").click();
+    settle(&mut h);
+    let row = h.state().panel.rows()[0].clone();
+    assert_ne!(row.digest, before);
+    assert!(row.enabled && row.kept == [before], "{row:?}");
+    assert_eq!(h.state().panel.notice, None);
+    assert!(
+        h.state().panel.status.as_deref().is_some_and(|s| s.contains("Reloaded io.example.text 1.0.0") && s.contains("enabled again")),
+        "{:?}",
+        h.state().panel.status
+    );
+    h.get_by_label("Reload").click();
+    settle(&mut h);
+    assert!(h.state().panel.notice.as_deref().is_some_and(|n| n.contains("unchanged")), "{:?}", h.state().panel.notice);
+    assert_eq!(h.state().panel.rows()[0].digest, row.digest);
+}
+
+/// A package that runs actions loses its grant on reload, so it stays disabled and says why.
+#[test]
+fn reloading_a_granted_package_leaves_it_disabled_until_granted_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(direct());
+    settle(&mut h);
+    check(&mut h, &package(dir.path(), "text_actions", "MIT\n"));
+    h.get_by_label("Install").click();
+    settle(&mut h);
+    h.get_by_label("Grant…").click();
+    settle(&mut h);
+    h.get_by_label("Grant").click();
+    settle(&mut h);
+    h.get_by_label("Enable").click();
+    settle(&mut h);
+    assert!(h.state().panel.rows()[0].enabled);
+    package(dir.path(), "text_actions", "MIT\n\nChanged.\n");
+    h.get_by_label("Reload").click();
+    settle(&mut h);
+    let row = &h.state().panel.rows()[0];
+    assert!(!row.enabled && row.grant.is_none(), "{row:?}");
+    assert!(h.state().panel.status.as_deref().is_some_and(|s| s.contains("grant it again")), "{:?}", h.state().panel.status);
 }
 
 #[test]

@@ -114,12 +114,31 @@ shows the package's digest, its provenance and the rights it asks for. Nothing i
 you press **Install**. From an agent or the CLI's MCP
 server, call `plugins.import` with `{"location": "/absolute/path.ncraft-plugin", "dry_run": true}`
 to see the same report, and without `dry_run` to install. Then call `plugins.grant` if the package
-runs anything, and `plugins.enable`. There is no watched source folder. To try a change, pack
-again and use `plugins.update` (disable the package first); every version is a new, explicit
-install.
+runs anything, and `plugins.enable`.
+
+### Trying a change: Reload
+
+NodeCraft remembers the file each package was last installed or updated from (by absolute path, in
+`sources.json` beside the store's index). To try a change, pack again to the same path and press
+**Reload** beside the package in the panel, or call `plugins.reload` with `{"package_id": "…"}`. It
+installs that file again as an update, after the same checks:
+
+- **Refused, with nothing changed,** when no file is remembered (a package installed some other
+  way: update it from its file once), when the file is missing or broken, when it now holds
+  another package, or when it is unchanged (the same digest).
+- **An enabled package** is disabled for the update, which refuses while enabled packages depend
+  on it. A data package is enabled again. A package that runs anything stays disabled: grants
+  cover one digest and are never carried over, so grant the new version, then enable it. The
+  result says which: `enabled`, `needs_grant`, and `enable_error` if enabling again failed.
+- **Nothing is watched.** Each reload is one request from you; NodeCraft never reads the file on
+  its own and opens no dialog. Agents can't call it (it installs code, like `plugins.update`).
+
+`plugins.update` (disable the package first) still works for a file anywhere else; every version is
+a new, explicit install, kept for rollback.
 
 In the browser, a package is picked in the panel and lasts until the page closes. Only `data`
-packages can be enabled there.
+packages can be enabled there, and there is no Reload: the picked file is let go once installed,
+so pick it again and update.
 
 ## Compatibility: majors and minors
 

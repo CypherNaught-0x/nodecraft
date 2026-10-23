@@ -17,6 +17,7 @@ pub struct MemoryBackend {
     pub grants: Option<Vec<u8>>,
     /// Fails the next grants write.
     pub fail_next_grants_write: bool,
+    pub sources: Option<Vec<u8>>,
 }
 
 impl StoreBackend for MemoryBackend {
@@ -54,6 +55,13 @@ impl StoreBackend for MemoryBackend {
         self.grants = Some(bytes.to_vec());
         Ok(())
     }
+    fn read_sources(&self) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self.sources.clone())
+    }
+    fn write_sources(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        self.sources = Some(bytes.to_vec());
+        Ok(())
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -65,7 +73,7 @@ mod native {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
-    /// A folder holding `index.json`, `grants.json` and `objects/<digest>.ncraft-plugin`. Files are written
+    /// A folder holding `index.json`, `grants.json`, `sources.json` and `objects/<digest>.ncraft-plugin`. Files are written
     /// aside, flushed and renamed over, so a crash or a full disk leaves the old file whole.
     #[derive(Debug)]
     pub struct FolderBackend {
@@ -109,7 +117,8 @@ mod native {
             if let Ok(entries) = std::fs::read_dir(&self.root) {
                 for entry in entries.flatten().take(1024) {
                     let settled = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= SETTLED);
-                    let aside = |n: &str| (n.starts_with("index.json.") || n.starts_with("grants.json.")) && n.ends_with(".new");
+                    let aside =
+                        |n: &str| (n.starts_with("index.json.") || n.starts_with("grants.json.") || n.starts_with("sources.json.")) && n.ends_with(".new");
                     if settled && entry.file_name().to_str().is_some_and(aside) {
                         let _ = std::fs::remove_file(entry.path());
                     }
@@ -187,6 +196,12 @@ mod native {
         }
         fn write_grants(&mut self, bytes: &[u8]) -> Result<(), Error> {
             Self::replace(&self.root.join("grants.json"), bytes)
+        }
+        fn read_sources(&self) -> Result<Option<Vec<u8>>, Error> {
+            Self::read(&self.root.join("sources.json"))
+        }
+        fn write_sources(&mut self, bytes: &[u8]) -> Result<(), Error> {
+            Self::replace(&self.root.join("sources.json"), bytes)
         }
         fn read_object(&self, digest: &PackageDigest) -> Result<Vec<u8>, Error> {
             Self::read(&self.object(digest))?.ok_or_else(|| Error::new(ErrorKind::NotFound, "a stored package is missing; import it again"))

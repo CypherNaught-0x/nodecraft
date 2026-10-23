@@ -421,3 +421,87 @@ fn picked_files_are_bounded_and_their_names_kept_safe() {
     assert!(location.starts_with("picked/") && location.len() <= 300 && location.matches('/').count() == 2, "{location}");
     assert!(picked.put("", Vec::new()).unwrap().ends_with("/package"));
 }
+
+/// `plugins.reload` (#866): the file a package was imported from, installed again as an update.
+#[test]
+fn reload_installs_the_remembered_file_again_and_keeps_a_data_package_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(BTreeSet::new(), None);
+    let pkg = json!({"package_id": "io.example.palette"});
+    let file = dir.path().join("palette.ncraft-plugin");
+    std::fs::copy(package(dir.path(), "io.example.palette", "1.0.0"), &file).unwrap();
+    let location = file.to_str().unwrap();
+    // A dry run remembers nothing; there is nothing installed to reload.
+    s.dispatch("plugins.import", &json!({"location": location, "dry_run": true})).unwrap();
+    assert_eq!(s.dispatch("plugins.reload", &pkg).unwrap_err().kind, ErrorKind::NotFound);
+    s.dispatch("plugins.import", &json!({"location": location})).unwrap();
+    assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["reload_from"], location);
+    s.dispatch("plugins.enable", &pkg).unwrap();
+    let before = s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0].clone();
+
+    // Unchanged: refused, nothing changes.
+    let unchanged = s.dispatch("plugins.reload", &pkg).unwrap_err();
+    assert!(unchanged.kind == ErrorKind::Conflict && unchanged.message.contains("unchanged"), "{unchanged:?}");
+    // Another package in the file now: refused, nothing changes.
+    std::fs::copy(package(dir.path(), "io.example.other", "1.0.0"), &file).unwrap();
+    let other = s.dispatch("plugins.reload", &pkg).unwrap_err();
+    assert!(other.kind == ErrorKind::Conflict && other.message.contains("io.example.other"), "{other:?}");
+    // A broken or missing file: refused, and the package stays enabled as it was.
+    std::fs::write(&file, b"not a package").unwrap();
+    assert_eq!(s.dispatch("plugins.reload", &pkg).unwrap_err().kind, ErrorKind::InvalidInput);
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(s.dispatch("plugins.reload", &pkg).unwrap_err().kind, ErrorKind::NotFound);
+    assert_eq!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0], before);
+
+    // A new version at the same path: updated, the old one kept, enabled again.
+    std::fs::copy(package(dir.path(), "io.example.palette", "1.1.0"), &file).unwrap();
+    let reloaded = s.dispatch("plugins.reload", &pkg).unwrap();
+    assert_eq!((reloaded["version"].clone(), reloaded["replaced"].clone()), (json!("1.1.0"), before["digest"].clone()));
+    assert_eq!((reloaded["reloaded_from"].clone(), reloaded["enabled"].clone(), reloaded["needs_grant"].clone()), (json!(location), json!(true), json!(false)));
+    assert!(reloaded.get("enable_error").is_none());
+    let after = s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0].clone();
+    assert_eq!((after["state"].clone(), after["kept"].clone(), after["reload_from"].clone()), (json!("enabled"), json!([before["digest"]]), json!(location)));
+    // Uninstalling forgets the file.
+    s.dispatch("plugins.disable", &pkg).unwrap();
+    s.dispatch("plugins.uninstall", &pkg).unwrap();
+    s.dispatch("plugins.import", &json!({"location": package(dir.path(), "io.example.palette", "1.0.0")})).unwrap();
+    assert_ne!(s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0]["reload_from"], location);
+}
+
+#[test]
+fn reload_never_carries_a_grant_over_and_needs_a_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = session(BTreeSet::new(), None);
+    let pkg = json!({"package_id": "io.example.text"});
+    let file = dir.path().join("text.ncraft-plugin");
+    std::fs::copy(text_package(dir.path(), "io.example.text", "1.0.0", SHOUT), &file).unwrap();
+    s.dispatch("plugins.import", &json!({"location": file.to_str().unwrap()})).unwrap();
+    s.dispatch("plugins.grant", &pkg).unwrap();
+    s.dispatch("plugins.enable", &pkg).unwrap();
+    std::fs::copy(text_package(dir.path(), "io.example.text", "1.1.0", SHOUT), &file).unwrap();
+    let reloaded = s.dispatch("plugins.reload", &pkg).unwrap();
+    assert_eq!((reloaded["version"].clone(), reloaded["enabled"].clone(), reloaded["needs_grant"].clone()), (json!("1.1.0"), json!(false), json!(true)));
+    let row = s.dispatch("plugins.list", &json!({})).unwrap()["packages"][0].clone();
+    assert_eq!((row["state"].clone(), row["grant"].clone()), (json!("disabled"), Value::Null), "the person grants the new version");
+    // Granting and enabling the new version works as for any update.
+    s.dispatch("plugins.grant", &pkg).unwrap();
+    s.dispatch("plugins.enable", &pkg).unwrap();
+
+    // Without a remembered file (installed some other way), and with bad params.
+    let mut store = Store::open(MemoryBackend::default()).unwrap();
+    store.import(&std::fs::read(package(dir.path(), "io.example.palette", "1.0.0")).unwrap(), &TrustStore::default(), false).unwrap();
+    let host = PluginHost { trust: None, taken: BTreeSet::new(), bindings: BTreeSet::new() };
+    let unknown = handle(&mut store, &host, &json!({"op": "reload", "package_id": "io.example.palette"})).unwrap_err();
+    assert!(unknown.kind == ErrorKind::NotFound && unknown.message.contains("which file"), "{unknown:?}");
+    assert_eq!(handle(&mut store, &host, &json!({"op": "reload", "package_id": "io.example.none"})).unwrap_err().kind, ErrorKind::NotFound);
+    for bad in [json!({}), json!({"package_id": "Bad"}), json!({"package_id": "io.example.text", "location": "/x"})] {
+        assert_eq!(s.dispatch("plugins.reload", &bad).unwrap_err().kind, ErrorKind::InvalidInput, "{bad}");
+    }
+}
+
+#[test]
+fn the_browser_store_refuses_reload() {
+    let (mut s, _picked) = session_only();
+    let error = s.dispatch("plugins.reload", &json!({"package_id": "io.example.palette"})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+}

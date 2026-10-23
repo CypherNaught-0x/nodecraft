@@ -1,5 +1,5 @@
-//! `plugins.*` commands (#172): list, import, update, enable, disable, roll back, uninstall and
-//! prune packages in the local store, and grant or revoke a package's right to run (#173), scoped
+//! `plugins.*` commands (#172): list, import, update, reload (#866), enable, disable, roll back,
+//! uninstall and prune packages in the local store, and grant or revoke a package's right to run (#173), scoped
 //! to the capabilities and origins it asks for (#174; people only, never agents). `plugins.rights`
 //! shows what a grant would cover. They change no document and add no undo step; the
 //! host's `plugins` service ([`register_plugin_service`]) owns the store and the trust file.
@@ -28,6 +28,7 @@ pub const RESULT_SERVICE: &str = "plugins.results";
 pub const MAX_PENDING_ID: usize = 53;
 mod lint;
 pub use lint::{host_ids, lint};
+mod reload;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod worker;
 #[cfg(not(target_arch = "wasm32"))]
@@ -326,7 +327,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.list",
             "List plugin packages",
             none_schema,
-            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch, capabilities, origins}|null}], session_only?: true (the browser: packages last until the page closes)}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{}; installed packages: {packages: [{package_id, version, digest, state, license, signed_by, kept: [digest], grant: {grant_id, epoch, capabilities, origins}|null, reload_from: string|null (the file plugins.reload installs again)}], session_only?: true (the browser: packages last until the page closes)}. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             list,
         ),
         spec(
@@ -343,6 +344,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "{location: string, dry_run?: bool, digest?: string}; installs a disabled package version (digest: as for plugins.import), keeping the previous digest for rollback. Direct result: import report with replaced (and session_only: true in the browser). Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             update,
         ),
+        spec("plugins.reload", "Reload plugin package", package_only_schema, reload::PARAMS_DOC, reload::run),
         spec(
             "plugins.enable",
             "Enable plugin package",
@@ -576,6 +578,8 @@ pub(crate) fn handle_reading<B: StoreBackend>(store: &mut Store<B>, host: &Plugi
         Some("list") => {
             // Grants that can't be read grant nothing; the list still shows the packages.
             let grants = store.grants().unwrap_or_default();
+            // Likewise sources: a package whose file isn't known just can't be reloaded.
+            let sources = store.sources().unwrap_or_default();
             let index = store.index();
             let packages: Vec<Value> = index
                 .active
@@ -589,6 +593,7 @@ pub(crate) fn handle_reading<B: StoreBackend>(store: &mut Store<B>, host: &Plugi
                         "state": if *state == State::Enabled { "enabled" } else { "disabled" },
                         "license": entry.license, "signed_by": entry.signed_by, "kept": kept,
                         "grant": grants.live(id, digest).map(grant_json),
+                        "reload_from": sources.get(id),
                     }))
                 })
                 .collect();
@@ -597,8 +602,18 @@ pub(crate) fn handle_reading<B: StoreBackend>(store: &mut Store<B>, host: &Plugi
         Some(op @ ("import" | "update")) => {
             let location = request.get("location").and_then(Value::as_str).unwrap_or_default();
             let bytes = read(location)?;
-            import_bytes(store, host, request, op, &bytes)
+            let out = import_bytes(store, host, request, op, &bytes)?;
+            // Where it came from, for plugins.reload: only a path on this machine (never a
+            // browser pick), and best effort, since the package is installed either way.
+            if !request.get("dry_run").and_then(Value::as_bool).unwrap_or(false)
+                && std::path::Path::new(location).is_absolute()
+                && let Some(id) = out.get("package_id").and_then(Value::as_str).and_then(|id| PackageId::parse(id).ok())
+            {
+                let _ = store.remember_source(&id, Some(location));
+            }
+            Ok(out)
         }
+        Some("reload") => reload::handle(store, host, request, read),
         Some("enable") => {
             let id = package_id(request)?;
             compiles(store, &id)?;

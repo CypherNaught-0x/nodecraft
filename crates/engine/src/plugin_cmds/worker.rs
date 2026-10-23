@@ -366,7 +366,7 @@ fn bounded_request(request: &Value) -> Result<Value, Error> {
             }
             &["op", "grant_id"]
         }
-        "enable" | "disable" | "uninstall" | "rollback" | "grant" | "rights" => {
+        "enable" | "disable" | "reload" | "uninstall" | "rollback" | "grant" | "rights" => {
             let package = object.get("package_id").and_then(Value::as_str).ok_or_else(invalid)?;
             PackageId::parse(package).map_err(|_| invalid())?;
             if op == "rollback" {

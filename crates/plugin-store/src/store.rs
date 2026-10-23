@@ -36,6 +36,9 @@ use nodecraft_plugin::{PackageDigest, register};
 use nodecraft_types::{Error, ErrorKind};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod sources;
+pub use sources::{MAX_SOURCE, SOURCES_VERSION};
+
 /// Index format this build reads.
 pub const INDEX_VERSION: i64 = 1;
 /// Most package digests kept (active and retained).
@@ -83,6 +86,16 @@ pub trait StoreBackend {
     fn write_grants(&mut self, bytes: &[u8]) -> Result<(), Error> {
         let _ = bytes;
         Err(Error::new(ErrorKind::Unsupported, "this plugin store can't keep grants, so its packages can't run"))
+    }
+    /// Where installed packages were imported from (for reload), or `None` before the first.
+    /// A backend that keeps none remembers nothing, and packages can't be reloaded.
+    fn read_sources(&self) -> Result<Option<Vec<u8>>, Error> {
+        Ok(None)
+    }
+    /// Replaces the sources atomically, like the index.
+    fn write_sources(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let _ = bytes;
+        Err(Error::new(ErrorKind::Unsupported, "this plugin store can't remember where packages came from"))
     }
 }
 
@@ -696,6 +709,8 @@ impl<B: StoreBackend> Store<B> {
         report.dependents.dedup();
         self.revoke_all(package)?;
         self.commit(next)?;
+        // Best effort: a stale source names a package no longer installed, which nothing reads.
+        let _ = self.forget_or_remember(package, None);
         Ok(report)
     }
 

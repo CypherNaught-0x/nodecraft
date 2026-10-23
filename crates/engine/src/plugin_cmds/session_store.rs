@@ -85,6 +85,10 @@ pub fn register_session_plugins<B: StoreBackend + 'static>(services: &mut Servic
         let op = request.get("op").and_then(Value::as_str);
         match op {
             Some("grant") => return Err(cant_run()),
+            // A picked file is let go once installed; there is no file to read again.
+            Some("reload") => {
+                return Err(Error::new(ErrorKind::Unsupported, "the browser can't read a package file again; pick it in the Plugins panel and update"));
+            }
             Some("enable") => {
                 store.refresh()?;
                 if !matches!(store.load(&package_id(request)?)?.manifest.runtime, Runtime::Data) {
