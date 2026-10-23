@@ -12,6 +12,9 @@ For other clients, configure a stdio server that runs `nodecraft-cli` with the a
 
 The server starts with a new, empty project with one canvas. It has no allowed folders, so the
 project file commands are listed but refused; use the bridge below to open and save projects.
+It does not load the desktop app's usage log: `usage.export_csv`, `usage.ownership` and
+`usage.unsettled` are listed as `ready: false` with bridge guidance, rather than reporting an
+empty log as though it were billing evidence. Bridge to the running app to read its real log.
 Streamable HTTP and the in-app server setting are still to come (#116).
 
 ## Bridge to the running app

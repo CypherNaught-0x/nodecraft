@@ -30,23 +30,46 @@ fn layout_is_listed_as_live_only_and_refused_headless_without_mutation() {
     }
 }
 
-/// Every agent command a headless session lists as ready must not need a window capability
-/// that only the live app supplies: those belong in `LIVE_ONLY`.
+#[test]
+fn headless_usage_readers_advertise_the_missing_real_log() {
+    let session = blank_session(ProjectId::from_bytes([78; 16]), CanvasId::from_bytes([79; 16])).unwrap();
+    let mut server = McpServer::new(session, Box::new(|| [80; 16]));
+    for id in ["usage.export_csv", "usage.ownership", "usage.unsettled"] {
+        let listed = call(&mut server, "command_list", json!({"query":id}));
+        let commands = listed["structuredContent"]["commands"].as_array().unwrap();
+        assert_eq!(commands.len(), 1, "{id}");
+        assert_eq!(commands[0]["id"], id);
+        assert_eq!(commands[0]["ready"], false, "{id}");
+        let reason = commands[0]["not_ready_because"].as_str().unwrap();
+        assert!(reason.contains("usage log") && reason.contains("nodecraft-cli mcp --bridge"), "{id}: {reason}");
+        let result = call(&mut server, "command_run", json!({"id":id,"params":{}}));
+        assert_eq!(result["isError"], true, "{id}: no fabricated usage result");
+        assert!(result["content"][0]["text"].as_str().unwrap().contains("required host capability"));
+    }
+}
+
+/// Every agent command a headless session lists as ready must not need a capability
+/// unavailable in that host. Unavailable readers must give an actionable not-ready reason.
 #[test]
 fn headless_agent_commands_never_need_a_live_host_capability() {
     use nodecraft_automation::mcp::{AGENT_COMMANDS, LIVE_ONLY};
     let canvas = CanvasId::from_bytes([75; 16]);
     let session = blank_session(ProjectId::from_bytes([76; 16]), canvas).unwrap();
     let mut server = McpServer::new(session, Box::new(|| [77; 16]));
-    // These need the usage log, a data resource the headless server doesn't supply yet (#883).
-    let data_hosted = ["usage.export_csv", "usage.ownership", "usage.unsettled"];
     let mut missing = Vec::new();
-    for id in AGENT_COMMANDS.iter().filter(|id| !LIVE_ONLY.contains(id) && !data_hosted.contains(id)) {
+    for id in AGENT_COMMANDS.iter().filter(|id| !LIVE_ONLY.contains(id)) {
         let result = call(&mut server, "command_run", json!({"id":id,"params":{}}));
         let text = result["content"][0]["text"].as_str().unwrap_or_default();
         if text.contains("required host capability") {
-            missing.push(*id);
+            let listed = call(&mut server, "command_list", json!({"query":id}));
+            let commands = listed["structuredContent"]["commands"].as_array().unwrap();
+            if commands.len() != 1
+                || commands[0]["ready"] != false
+                || !commands[0]["not_ready_because"].as_str().is_some_and(|reason| reason.contains("nodecraft-cli mcp --bridge"))
+            {
+                missing.push(*id);
+            }
         }
     }
-    assert!(missing.is_empty(), "need a host capability but are not LIVE_ONLY: {missing:?}");
+    assert!(missing.is_empty(), "need a host capability without actionable not-ready guidance: {missing:?}");
 }
