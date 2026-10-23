@@ -79,7 +79,9 @@ already report the `format` and `version` they wrote.
 | Captions | connected `<title>` elements plus a UTF-8 SRT companion | Text and line breaks, frame-rounded start and length. Captions are clipped to the exported sequence and never lengthen it. Disabled and out-of-range captions are left out and reported. |
 | Caption alignment and position | text alignment and frame anchors in FCPXML; absent from SRT | Distinct lanes above picture tracks preserve overlapping titles. The destination's Basic Title template can change exact margins and text metrics; every caption reports this. |
 | Caption font, size, colour and outline | destination Basic Title appearance; absent from SRT | The requested font, pixel size, fill and outline are listed in the report, so style is never silently lost. No Motion template or font is included. |
-| Clip placement, speed and effects | not yet translated by this writer | Separate from caption interchange. |
+| Clip speed | **not written**, reported when not 1000 (1×) | Exports the unretimed length derived from media trim; retime in the destination editor. |
+| Clip position (`pos_x`, `pos_y`), scale, crop edges, rotation, opacity | **not written**, reported for each changed field | Exports centred, at the editor's default fitted size, uncropped, upright and fully opaque. Position axes and crop edges are grouped within their respective feature but individually named. |
+| Effects | not written | |
 
 The report lists each loss, naming the clip it concerns. The document never claims more than it
 holds, and the export never presents itself as a lossless round trip.
