@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 type Peers = Arc<Mutex<(Room, HashMap<Peer, Sender<Vec<u8>>>)>>;
 
 /// A relay holding one room, whatever the hello names; its address.
-fn relay() -> String {
+pub(super) fn relay() -> String {
     relay_peers().0
 }
 

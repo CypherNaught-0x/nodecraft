@@ -132,7 +132,8 @@ impl Arrival {
 /// The seal of one large asset that came ([`super::Collab::next_seal`]): a host runs it away
 /// from its window and hands what came of it to [`super::Collab::sealed`] (#855). It has a
 /// cancel of its own, so it stops once no card uses the asset any more (#880), or once its
-/// `Collab` is dropped.
+/// `Collab` is dropped. Until the host says what came of it, no other seal starts.
+#[must_use]
 pub struct Seal {
     pub(super) hash: Blake3,
     pub(super) range: AssetRange,

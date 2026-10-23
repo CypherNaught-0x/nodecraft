@@ -346,7 +346,9 @@ impl Collab {
     /// ([`Seal::run`]) into a clone of the session's store, so taking it is quick. It reads the
     /// asset whole, so it is slow: the host runs one at a time, and starts the next after a plan
     /// (#855), which drops what no card uses (#880). None while one is under way, or if none
-    /// waits. Say what came of it with [`Self::sealed`].
+    /// waits. Say what came of it with [`Self::sealed`], whatever happens to it: until then no
+    /// other starts.
+    #[must_use]
     pub fn next_seal(&mut self) -> Option<Seal> {
         // One that doesn't seal takes them in with the plan.
         if !self.seals || self.under_way.is_some() {
@@ -369,7 +371,12 @@ impl Collab {
     /// host starts after a while rather than at once; one it can't keep is given up. Whether it
     /// sealed, gave up or let go of one, so another may be started at once.
     pub fn sealed(&mut self, hash: Blake3, result: Result<SealedAsset, Error>) -> bool {
-        if self.under_way.as_ref().is_some_and(|(sealing, _)| *sealing == hash) {
+        // Stopped because no card used the asset then (#880), not because this is going.
+        let mut let_go = false;
+        if let Some((sealing, cancel)) = &self.under_way
+            && *sealing == hash
+        {
+            let_go = cancel.check().is_err();
             self.under_way = None;
         }
         // No card uses it any more (#880): what was sealed, if anything, is let go.
@@ -383,8 +390,9 @@ impl Collab {
                 self.unsettled = true;
                 return true;
             }
-            // Stopped: it waits as it was.
-            Err(error) if TransferCancel::is_cancellation(&error) => {}
+            // Stopped: it waits as it was. One let go that came again meanwhile, as a card that
+            // uses it came back, starts again at once.
+            Err(error) if TransferCancel::is_cancellation(&error) => return let_go,
             Err(error) if seal_waits(error.kind, self.seal_tries.get(&hash).copied().unwrap_or(0)) => {
                 if error.kind != ErrorKind::Busy {
                     let tries = self.seal_tries.entry(hash).or_insert(0);
@@ -1025,7 +1033,7 @@ impl Collab {
 }
 
 impl Drop for Collab {
-    /// A seal under way stops: nobody is left to take it (#855).
+    /// A seal under way stops: nobody is left to take it (#880).
     fn drop(&mut self) {
         if let Some((_, cancel)) = &self.under_way {
             cancel.cancel();

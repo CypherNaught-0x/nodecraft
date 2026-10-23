@@ -379,3 +379,49 @@ fn a_seal_stopped_while_its_card_is_still_used_waits_to_start_again() {
     assert!(net.session(2).document().canvases()[&canvas()].nodes().contains_key(&nid(1)));
     assert!(net.session(2).assets().contains(&hash));
 }
+
+#[test]
+fn a_seal_let_go_whose_card_comes_back_starts_again_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut net, hash, _, sealing) = sealing_for_a_card(dir.path());
+    // The card goes, and comes back before the stopped seal says so: the asset comes again.
+    net.session(1).dispatch("node.remove", &json!({"canvas": canvas(), "id": nid(1)})).unwrap();
+    net.settle();
+    net.session(1).apply_remote(Changeset::new(vec![Change::AddNode { canvas: canvas(), node: showing(2, hash) }])).unwrap();
+    net.settle();
+    assert!(net.collab(2).next_seal().is_none(), "the stopped seal hasn't said so yet");
+    let result = sealing.join().unwrap();
+    assert!(result.as_ref().is_err_and(TransferCancel::is_cancellation), "{result:?}");
+    // No wait for a retry: the next seal starts at once.
+    assert!(net.collab(2).sealed(hash, result));
+    assert_eq!(net.collab(2).next_seal().map(|seal| seal.hash()), Some(hash));
+}
+
+#[test]
+fn a_seal_that_failed_unexpectedly_lets_the_next_one_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = on_disk(empty(), &dir.path().join("sharer"));
+    let first = large(&mut session, 13);
+    let second = large(&mut session, 17);
+    let cards = vec![Change::AddNode { canvas: canvas(), node: showing(1, first) }, Change::AddNode { canvas: canvas(), node: showing(2, second) }];
+    session.apply_remote(Changeset::new(cards)).unwrap();
+    let mut net = Net::new();
+    net.disk = Some(dir.path().join("joiners"));
+    net.enter(Person { id: 1, collab: Collab::share(&session, room_id()).unwrap(), session: Some(session) });
+    net.enter(Person { id: 2, collab: Collab::join(room_id()).with_spool(Box::new(MemorySpool::new(64 << 20))).sealing(), session: None });
+    // A seal whose thread died says so as a failure (the desktop's worker sends it).
+    let seal = net.collab(2).next_seal().unwrap();
+    let dead = seal.hash();
+    drop(seal);
+    assert!(net.collab(2).sealed(dead, Err(Error::new(ErrorKind::Internal, "sealing stopped unexpectedly"))));
+    assert_eq!(net.person(2).collab.unusable_assets(), 1);
+    // The other still seals, and its card comes in.
+    let assets = net.session(2).assets().clone();
+    let seal = net.collab(2).next_seal().unwrap();
+    let other = seal.hash();
+    assert_ne!(other, dead);
+    let result = seal.run(&assets);
+    assert!(net.collab(2).sealed(other, result));
+    net.settle();
+    assert!(net.session(2).assets().contains(&other));
+}
