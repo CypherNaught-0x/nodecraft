@@ -339,6 +339,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
 pub(crate) mod admission;
 
 mod app_mode;
+mod browser_providers;
 mod budget_caps;
 #[cfg(not(target_arch = "wasm32"))]
 mod comfy_nodes;
@@ -373,7 +374,6 @@ mod mesh_capture;
 mod metrics;
 mod models;
 mod navigation;
-#[cfg(not(target_arch = "wasm32"))]
 mod option_fetch;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
@@ -556,6 +556,7 @@ pub struct NodeCraftApp {
     /// The Budgets panel, and the caps runs are checked against (from settings, #201).
     pub budgets: crate::budgets::BudgetsPanel,
     budget_caps: nodecraft_engine::settings::BudgetSettings,
+    browser_providers: Option<browser_providers::BrowserProviders>,
     /// Answers from the keychain thread (the app's `keys.store` service).
     #[cfg(not(target_arch = "wasm32"))]
     key_results: Option<nodecraft_engine::secrets::KeyResults>,
@@ -565,7 +566,6 @@ pub struct NodeCraftApp {
     /// The runs `run.start` hands over, and the providers they use (#409).
     runs: Option<runs::Runs>,
     /// Fetches the option lists `options.refresh` asks for (#529).
-    #[cfg(not(target_arch = "wasm32"))]
     option_fetch: Option<option_fetch::OptionFetcher>,
     /// Reads the ComfyUI server's nodes `comfy.nodes.refresh` asks for (#9).
     #[cfg(not(target_arch = "wasm32"))]
@@ -856,6 +856,8 @@ impl NodeCraftApp {
         use nodecraft_engine::secrets::{OriginStore, SecretStore, register_key_service};
         let store = std::sync::Arc::new(OriginStore::new(crate::web_storage::LocalStorage));
         let mut services = nodecraft_engine::commands::Services::default();
+        let (providers, provider_notice) = nodecraft_engine::browser_providers::OriginProviders::load(std::sync::Arc::new(crate::web_storage::LocalStorage));
+        providers.register(&mut services)?;
         let changed = Arc::new(key_changes::KeyChanges::default());
         register_key_service(&mut services, Arc::new(key_changes::ObservedStore::new(Arc::clone(&store) as Arc<dyn SecretStore>, Arc::clone(&changed))))?;
         let accounts = store.accounts().unwrap_or_else(|e| {
@@ -869,6 +871,9 @@ impl NodeCraftApp {
             .ok();
         // Without it the panel says plugin packages aren't available here.
         let picked = Self::register_session_plugins(&mut services).inspect_err(|e| log::warn!("plugin packages unavailable: {}", e.message)).ok();
+        let option_fetch = option_fetch::OptionFetcher::browser(&mut services, std::sync::Arc::clone(&store) as std::sync::Arc<dyn SecretStore>)
+            .inspect_err(|error| log::warn!("option lists unavailable: {}", error.message))
+            .ok();
         let recovery = web_journal::WebRecovery::new(Box::<web_journal::IndexedDb>::default(), web_journal::fresh_slot());
         // Live sharing through a relay over the page's WebSocket (#699).
         let sharing = Self::register_sharing(&mut services, Box::new(sharing::open_window));
@@ -880,6 +885,9 @@ impl NodeCraftApp {
         }
         app.runs = runs;
         app.key_changes = Some(changed);
+        app.option_fetch = option_fetch;
+        app.notice = provider_notice.clone();
+        app.browser_providers = Some(browser_providers::BrowserProviders::new(providers, provider_notice));
         // Recovery is a safety net, not a save: leaving with unsaved work still asks first.
         web_files::guard_unload(Rc::clone(&app.web_files.unsaved));
         Ok((app, accounts))
@@ -1156,12 +1164,12 @@ impl NodeCraftApp {
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
             budgets: crate::budgets::BudgetsPanel::default(),
             budget_caps: nodecraft_engine::settings::BudgetSettings::default(),
+            browser_providers: None,
             #[cfg(not(target_arch = "wasm32"))]
             key_results: None,
             #[cfg(any(test, target_arch = "wasm32"))]
             key_changes: None,
             runs: None,
-            #[cfg(not(target_arch = "wasm32"))]
             option_fetch: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_nodes: None,
@@ -1324,6 +1332,7 @@ impl NodeCraftApp {
             && self.palette.is_none()
             && self.turn_into.is_none()
             && !self.keys.open
+            && !self.browser_providers.as_ref().is_some_and(|providers| providers.open)
             && (!canvas::text_input_focused(ui.ctx()) || self.bulk.owns_text_focus(ui.ctx()))
             && (!egui::Popup::is_any_open(ui.ctx()) || self.bulk.owns_popup(ui.ctx()))
             && ui.input(|i| i.raw.hovered_files.is_empty() && i.raw.dropped_files.is_empty());
@@ -1442,6 +1451,7 @@ impl NodeCraftApp {
                 || self.comments.gesture_cancelled
                 || egui::Popup::is_any_open(ui.ctx())
                 || self.keys.open
+                || self.browser_providers.as_ref().is_some_and(|providers| providers.open)
                 || self.drop_pointer_owned();
             // egui reports no ⌘V press when the clipboard holds no text, only its release (#319).
             #[cfg(not(target_arch = "wasm32"))]
@@ -2457,6 +2467,7 @@ impl NodeCraftApp {
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
         self.plugin_panel.show(ui.ctx(), &mut self.session, t);
+        self.browser_providers_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
         self.comfy_server_panel(ui.ctx(), t);
         self.budgets_panel(ui.ctx(), t);
@@ -2624,6 +2635,7 @@ impl NodeCraftApp {
                             self.queue_open = !self.queue_open;
                         }
                         self.share_button(ui, t);
+                        self.browser_providers_button(ui, t);
                         if ui
                             .add(egui::Button::new(egui::RichText::new("Budgets").color(t.text_muted)).frame(false))
                             .on_hover_text("The most runs may spend per call, per session and in total")
@@ -3164,8 +3176,8 @@ impl eframe::App for NodeCraftApp {
                 ctx.request_repaint_after(deadline.saturating_duration_since(std::time::Instant::now()));
             }
         }
+        self.tick_browser_providers();
         self.tick_runs(ctx);
-        #[cfg(not(target_arch = "wasm32"))]
         self.tick_option_fetch(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_comfy_nodes(ctx);

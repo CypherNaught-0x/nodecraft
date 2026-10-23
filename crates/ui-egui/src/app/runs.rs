@@ -635,6 +635,13 @@ impl Runs {
         Ok(())
     }
 
+    pub(super) fn settings_changed(&mut self, session: &mut Session, settings: &ProviderSettings) -> Result<(), Error> {
+        if let Some(waiting) = &mut self.waiting {
+            waiting.settings = settings.clone();
+        }
+        self.forget_adapters(session)
+    }
+
     /// One frame: takes built adapters and pumps the host.
     pub(super) fn tick(&mut self, session: &mut Session, canvas: CanvasId) -> Tick {
         let mut tick = Tick::default();
@@ -828,12 +835,12 @@ impl Drop for Runs {
 
 /// Milliseconds on a monotonic clock, for the adapters (ComfyUI's prompt bookkeeping).
 #[cfg(not(target_arch = "wasm32"))]
-fn monotonic_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
+pub(super) fn monotonic_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
     let start = Instant::now();
     Arc::new(move || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX))
 }
 #[cfg(target_arch = "wasm32")]
-fn monotonic_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
+pub(super) fn monotonic_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
     Arc::new(browser::now_ms)
 }
 

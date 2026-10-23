@@ -1,13 +1,8 @@
-//! Fetching option lists in the desktop app (#529): the engine's `options.fetch` service.
-//!
-//! `options.refresh` (palette, MCP, control channel) asks the service, which only queues the
-//! request and answers `{pending: id}`. Each frame [`OptionFetcher::tick`] hands a queued request,
-//! with the current provider settings, to the fetch thread, which reads the server's token from
-//! the keychain and calls `/object_info`, so neither an unlock prompt nor a slow server holds up
-//! a frame. The answer is installed with `option_fetch::finish` and told as a notice. One fetch
-//! runs at a time; asking again meanwhile is refused as busy.
+//! Option lists handed over on later frames. The desktop worker reads the keychain and blocks
+//! on its private runtime; the browser polls an owned future on the page's queue (#721).
 use nodecraft_engine::option_fetch::{self, FetchRequest, Fetched, OPTION_SERVICE, Report};
 use nodecraft_engine::provider_setup::HostEnv;
+#[cfg(not(target_arch = "wasm32"))]
 use nodecraft_engine::secrets::KeyringStore;
 use nodecraft_engine::settings::ProviderSettings;
 use nodecraft_engine::{Session, commands::Services};
@@ -17,45 +12,50 @@ use serde_json::json;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 
-/// Fetches the named sources with the given settings; the app's reads the keychain and the
-/// network, tests pass a fixture.
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) type Fetch = Box<dyn FnMut(&[String], &ProviderSettings) -> Result<Fetched, Error> + Send>;
-
+#[cfg(any(test, target_arch = "wasm32"))]
+type FetchFuture = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Fetched, Error>>>>;
+#[cfg(any(test, target_arch = "wasm32"))]
+type AsyncFetch = Box<dyn FnMut(Vec<String>, ProviderSettings) -> FetchFuture>;
+#[cfg(not(target_arch = "wasm32"))]
 type Ask = (u64, Vec<String>, ProviderSettings);
+#[cfg(not(target_arch = "wasm32"))]
 type Done = (u64, Result<Fetched, Error>);
-
-/// The `options.fetch` handler [`OptionFetcher::spawn`] registers.
 pub(super) type Service = Box<dyn FnMut(&serde_json::Value) -> Result<serde_json::Value, Error>>;
 
-/// What the service asked for and the frame hasn't handed on.
 #[derive(Default)]
 struct Asked {
     next: u64,
     queued: Option<(u64, Vec<String>)>,
-    /// The fetch handed to the thread and not yet answered.
     running: Option<u64>,
-    /// A fetch is queued or running.
     busy: bool,
+}
+
+enum Worker {
+    #[cfg(not(target_arch = "wasm32"))]
+    Thread { asks: SyncSender<Ask>, done: Receiver<Done> },
+    #[cfg(any(test, target_arch = "wasm32"))]
+    Async { fetch: AsyncFetch, pending: Option<(u64, FetchFuture)> },
 }
 
 pub(super) struct OptionFetcher {
     asked: Rc<RefCell<Asked>>,
-    asks: SyncSender<Ask>,
-    done: Receiver<Done>,
+    worker: Worker,
 }
 
 impl OptionFetcher {
-    /// The fetch thread, over its own runtime and HTTP client, registered as `options.fetch`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn new(services: &mut Services) -> Result<Self, Error> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the option fetch thread: {e}")))?;
         let http: Arc<dyn Http> = Arc::new(nodecraft_providers::http::ReqwestHttp::new().map_err(|e| Error::new(ErrorKind::Unsupported, e.message))?);
-        let start = std::time::Instant::now();
-        let now_ms: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(move || u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX));
+        let now_ms = super::runs::monotonic_ms();
         let (fetcher, mut service) = Self::spawn(Box::new(move |sources, settings| {
             let env = HostEnv { keys: &KeyringStore, http: http.clone(), settings, now_ms: now_ms.clone(), progress: None };
             runtime.block_on(option_fetch::fetch(&env, sources))
@@ -64,7 +64,22 @@ impl OptionFetcher {
         Ok(fetcher)
     }
 
-    /// The fetch thread over `fetch`, and the `options.fetch` handler that queues for it.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn browser(services: &mut Services, keys: Arc<dyn nodecraft_engine::secrets::SecretStore>) -> Result<Self, Error> {
+        let http: Arc<dyn Http> = Arc::new(nodecraft_providers::http::ReqwestHttp::new().map_err(|e| Error::new(ErrorKind::Unsupported, e.message))?);
+        let now_ms = super::runs::monotonic_ms();
+        let (fetcher, mut service) = Self::asynchronous(Box::new(move |sources, settings| {
+            let (keys, http, now_ms) = (Arc::clone(&keys), Arc::clone(&http), Arc::clone(&now_ms));
+            Box::pin(async move {
+                let env = HostEnv { keys: keys.as_ref(), http, settings: &settings, now_ms, progress: None };
+                option_fetch::fetch(&env, &sources).await
+            })
+        }));
+        services.register(OPTION_SERVICE, move |request| service(request))?;
+        Ok(fetcher)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn spawn(mut fetch: Fetch) -> Result<(Self, Service), Error> {
         let (asks, inbox) = sync_channel::<Ask>(1);
         let (outbox, done) = sync_channel::<Done>(1);
@@ -72,7 +87,6 @@ impl OptionFetcher {
             .name("nodecraft-options".into())
             .spawn(move || {
                 for (id, sources, settings) in inbox {
-                    // A keychain backend or reply that panics fails this fetch, not the thread.
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetch(&sources, &settings)))
                         .unwrap_or_else(|_| Err(Error::new(ErrorKind::Internal, "fetching option lists failed unexpectedly")));
                     if outbox.send((id, result)).is_err() {
@@ -81,8 +95,17 @@ impl OptionFetcher {
                 }
             })
             .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the option fetch thread: {e}")))?;
+        Ok(Self::with_worker(Worker::Thread { asks, done }))
+    }
+
+    #[cfg(any(test, target_arch = "wasm32"))]
+    fn asynchronous(fetch: AsyncFetch) -> (Self, Service) {
+        Self::with_worker(Worker::Async { fetch, pending: None })
+    }
+
+    fn with_worker(worker: Worker) -> (Self, Service) {
         let asked = Rc::new(RefCell::new(Asked::default()));
-        let queue = asked.clone();
+        let queue = Rc::clone(&asked);
         let service = move |request: &serde_json::Value| {
             let request: FetchRequest =
                 serde_json::from_value(request.clone()).map_err(|_| Error::new(ErrorKind::InvalidInput, "malformed option fetch request"))?;
@@ -90,39 +113,86 @@ impl OptionFetcher {
             if asked.busy {
                 return Err(Error::new(ErrorKind::Busy, "option lists are already being fetched; try again when that finishes"));
             }
-            asked.next = asked.next.saturating_add(1);
+            asked.next = asked.next.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "too many option requests; reopen the app"))?;
             let id = asked.next;
             asked.queued = Some((id, request.sources));
             asked.busy = true;
             Ok(json!({"pending": id}))
         };
-        Ok((Self { asked, asks, done }, Box::new(service)))
+        (Self { asked, worker }, Box::new(service))
     }
 
-    /// Whether a fetch is queued or running.
     pub(super) fn is_waiting(&self) -> bool {
         self.asked.borrow().busy
     }
 
-    /// Hands a queued request to the fetch thread and installs a finished fetch, returning what to
-    /// tell the person about it.
-    pub(super) fn tick(&mut self, session: &mut Session, settings: impl FnOnce() -> ProviderSettings) -> Option<String> {
+    /// A new endpoint invalidates both queued work and any old server's late answer.
+    pub(super) fn invalidate(&mut self, session: &mut Session) -> Option<String> {
+        let mut asked = self.asked.borrow_mut();
+        let id = asked.queued.take().map(|(id, _)| id).or(asked.running.take());
+        asked.busy = false;
+        drop(asked);
+        match &mut self.worker {
+            #[cfg(not(target_arch = "wasm32"))]
+            Worker::Thread { .. } => {}
+            #[cfg(any(test, target_arch = "wasm32"))]
+            Worker::Async { pending, .. } => *pending = None,
+        }
+        id.map(|id| {
+            let report = option_fetch::finish(session, id, Err(Error::new(ErrorKind::Conflict, "the provider server changed; refresh again")));
+            notice(&report)
+        })
+    }
+
+    pub(super) fn tick(&mut self, session: &mut Session, settings: impl FnOnce() -> ProviderSettings, _ctx: &egui::Context) -> Option<String> {
         let queued = self.asked.borrow_mut().queued.take();
         if let Some((id, sources)) = queued {
-            if self.asks.try_send((id, sources, settings())).is_err() {
-                // The thread is gone: say so, and let the next refresh try again.
-                return Some(self.stopped(session, id));
+            match &mut self.worker {
+                #[cfg(not(target_arch = "wasm32"))]
+                Worker::Thread { asks, .. } => {
+                    if asks.try_send((id, sources, settings())).is_err() {
+                        return Some(self.stopped(session, id));
+                    }
+                }
+                #[cfg(any(test, target_arch = "wasm32"))]
+                Worker::Async { fetch, pending } => {
+                    *pending = Some((id, fetch(sources, settings())));
+                    self.asked.borrow_mut().running = Some(id);
+                    _ctx.request_repaint();
+                    return None;
+                }
             }
-            self.asked.borrow_mut().running = Some(id);
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.asked.borrow_mut().running = Some(id);
+            }
         }
-        let (id, result) = match self.done.try_recv() {
-            Ok(done) => done,
-            Err(TryRecvError::Empty) => return None,
-            Err(TryRecvError::Disconnected) => {
-                let running = self.asked.borrow_mut().running.take();
-                return running.map(|id| self.stopped(session, id));
+        let (id, result) = match &mut self.worker {
+            #[cfg(not(target_arch = "wasm32"))]
+            Worker::Thread { done, .. } => match done.try_recv() {
+                Ok(done) => done,
+                Err(TryRecvError::Empty) => return None,
+                Err(TryRecvError::Disconnected) => {
+                    let running = self.asked.borrow_mut().running.take();
+                    return running.map(|id| self.stopped(session, id));
+                }
+            },
+            #[cfg(any(test, target_arch = "wasm32"))]
+            Worker::Async { pending, .. } => {
+                let (id, mut future) = pending.take()?;
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::web_files::poll(&mut future, _ctx))) {
+                    Ok(std::task::Poll::Pending) => {
+                        *pending = Some((id, future));
+                        return None;
+                    }
+                    Ok(std::task::Poll::Ready(result)) => (id, result),
+                    Err(_) => (id, Err(Error::new(ErrorKind::Internal, "fetching option lists failed unexpectedly"))),
+                }
             }
         };
+        if self.asked.borrow().running != Some(id) {
+            return None;
+        }
         let mut asked = self.asked.borrow_mut();
         asked.busy = false;
         asked.running = None;
@@ -131,10 +201,8 @@ impl OptionFetcher {
         log::info!("option lists: {} installed, {} refused", report.installed.len(), report.refused.len());
         Some(notice(&report))
     }
-}
 
-impl OptionFetcher {
-    /// Records fetch `id` as failed because the thread stopped, so `options.status` says so too.
+    #[cfg(not(target_arch = "wasm32"))]
     fn stopped(&mut self, session: &mut Session, id: u64) -> String {
         let mut asked = self.asked.borrow_mut();
         asked.busy = false;
@@ -175,11 +243,11 @@ pub(super) fn notice(report: &Report) -> String {
 impl super::NodeCraftApp {
     /// Hands on and installs option fetches; repaints while one runs so its answer is seen.
     pub(super) fn tick_option_fetch(&mut self, ctx: &egui::Context) {
+        let settings = self.provider_settings();
         let Some(fetcher) = &mut self.option_fetch else {
             return;
         };
-        let store = &self.store;
-        if let Some(notice) = fetcher.tick(&mut self.session, || store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default()) {
+        if let Some(notice) = fetcher.tick(&mut self.session, || settings, ctx) {
             // Cards drawing a list resolve against the new lists (#676).
             self.schemas.forget_listed();
             self.notice = Some(notice);

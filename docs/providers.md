@@ -43,7 +43,8 @@ does, and never treats an absent field as "opaque 8-bit sRGB".
 
 The engine builds an adapter for every provider the model catalog names
 (`engine::provider_setup`, #409). Each paid adapter reads its key from the keychain account below;
-ComfyUI reads its server from `config.toml`. An adapter that can't be built is reported with what
+ComfyUI and LiteLLM read their servers from `config.toml`, or the browser's per-site Providers
+panel (#721). An adapter that can't be built is reported with what
 to do, and a node routed to it is refused before planning, so no request is sent.
 
 | Catalog provider | Keychain account | Also needs |
@@ -65,11 +66,23 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `comfy-cloud` | `comfy-cloud` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[[providers.comfyui]]` entries with `name`, `url` (such as `"http://127.0.0.1:8188"`) and optional `max_jobs` (1–16; unset, 4), and `[providers] comfyui_default` naming one (or the desktop toolbar's ComfyUI panel), and the per-install `install_salt`; an older `comfyui_url` is read as one server |
 
+LiteLLM's endpoint and optional `litellm` virtual key can be saved now, but the shipped model
+catalog has no LiteLLM entries: no card can select or call the proxy yet. The adapter accepts the
+proxy root (`[providers] litellm_url = "https://proxy.example"`, without `/v1`) for future catalog
+integration. Saving this address alone does not add models.
+The model-catalog integration decision is tracked in [#489](https://github.com/CypherNaught-0x/nodecraft/issues/489).
+
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
 adapters off the UI thread and only for the providers a run uses; each run gets a fresh routing
 from the adapters already built. ComfyUI's token is optional: a keychain that can't be opened or
 was refused means no token, not no ComfyUI. The app makes `install_salt` once and saves it at once;
 with read-only settings none is made and ComfyUI stays off.
+
+In the browser, the same server addresses and installation salt persist only for this origin,
+separately from API keys. Open Providers to edit them; a failed save keeps the previous settings.
+ComfyUI and LiteLLM must allow this page's origin in their CORS settings, and an HTTPS page may
+block an HTTP endpoint. `options.refresh` runs asynchronously on the page and hands its option
+lists to the next frame; changing server addresses cancels an old endpoint's pending list.
 
 ### Testing a key
 

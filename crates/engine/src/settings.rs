@@ -11,7 +11,8 @@
 //! Values read from the file are hostile like any other input: use the accessor methods (such as
 //! [`CanvasSettings::zoom_speed`]), which clamp them, rather than the raw fields.
 //!
-//! The store is native only (the browser build keeps settings in memory for now, with defaults).
+//! This store is native only. Browser provider addresses and their salt use per-origin storage
+//! through `browser_providers`; other browser app settings still use in-memory defaults.
 
 use serde::{Deserialize, Serialize};
 
@@ -94,6 +95,8 @@ pub struct ProviderSettings {
     pub comfyui: Vec<ComfyServer>,
     /// The server cards run on unless they pick one, by name; unset or unknown, the first.
     pub comfyui_default: Option<String>,
+    /// The LiteLLM proxy root, without `/v1`; its optional virtual key uses account `litellm`.
+    pub litellm_url: Option<String>,
     /// A random value made once per install; it keeps prompt ids of different installs apart on
     /// a shared ComfyUI server. Empty until the host first creates it.
     pub install_salt: String,
@@ -109,14 +112,15 @@ struct ReadProviderSettings {
     comfyui_default: Option<String>,
     install_salt: String,
     comfyui_url: Option<String>,
+    litellm_url: Option<String>,
 }
 
 impl From<ReadProviderSettings> for ProviderSettings {
     fn from(read: ReadProviderSettings) -> Self {
-        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url } = read;
+        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url } = read;
         match comfyui_url.as_deref().map(str::trim).filter(|url| !url.is_empty()) {
-            Some(url) if comfyui.is_empty() => Self::with_comfyui(url, &install_salt),
-            _ => Self { comfyui, comfyui_default, install_salt },
+            Some(url) if comfyui.is_empty() => Self { litellm_url, ..Self::with_comfyui(url, &install_salt) },
+            _ => Self { comfyui, comfyui_default, litellm_url, install_salt },
         }
     }
 }
@@ -193,7 +197,7 @@ impl ProviderSettings {
     /// One ComfyUI server at `url`, named by [`server_name_for`] and the default.
     pub fn with_comfyui(url: &str, install_salt: &str) -> Self {
         let name = server_name_for(url);
-        Self { comfyui: vec![ComfyServer::new(&name, url)], comfyui_default: Some(name), install_salt: install_salt.to_owned() }
+        Self { comfyui: vec![ComfyServer::new(&name, url)], comfyui_default: Some(name), install_salt: install_salt.to_owned(), litellm_url: None }
     }
 
     /// The ComfyUI servers to use, in order: at most [`MAX_COMFY_SERVERS`], each with a good name

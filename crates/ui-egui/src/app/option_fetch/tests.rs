@@ -39,6 +39,57 @@ fn with_fetcher(fetch: Fetch) -> Harness<'static, NodeCraftApp> {
     h
 }
 
+fn async_fixture(ready: Rc<std::cell::Cell<bool>>, wake: Rc<RefCell<Option<std::task::Waker>>>, seen: Rc<RefCell<Vec<ProviderSettings>>>) -> AsyncFetch {
+    let body =
+        serde_json::to_vec(&json!({"CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [["browser.safetensors"]]}}, "output": ["MODEL"]}})).unwrap();
+    let http: Arc<dyn Http> = Arc::new(Fixture(body));
+    Box::new(move |sources, settings| {
+        seen.borrow_mut().push(settings.clone());
+        let (ready, wake, http) = (Rc::clone(&ready), Rc::clone(&wake), Arc::clone(&http));
+        Box::pin(async move {
+            std::future::poll_fn(move |cx| {
+                if ready.get() {
+                    std::task::Poll::Ready(())
+                } else {
+                    *wake.borrow_mut() = Some(cx.waker().clone());
+                    std::task::Poll::Pending
+                }
+            })
+            .await;
+            let keys = nodecraft_engine::secrets::MemoryStore::default();
+            let env = HostEnv { keys: &keys, http, settings: &settings, now_ms: Arc::new(|| 0), progress: None };
+            option_fetch::fetch(&env, &sources).await
+        })
+    })
+}
+
+struct Origin;
+impl nodecraft_engine::secrets::OriginStorage for Origin {
+    fn get(&self, _: &str) -> Result<Option<String>, nodecraft_engine::secrets::SecretError> {
+        Ok(None)
+    }
+    fn set(&self, _: &str, _: &str) -> Result<(), nodecraft_engine::secrets::SecretError> {
+        Ok(())
+    }
+    fn remove(&self, _: &str) -> Result<(), nodecraft_engine::secrets::SecretError> {
+        Ok(())
+    }
+    fn keys(&self) -> Result<Vec<String>, nodecraft_engine::secrets::SecretError> {
+        Ok(Vec::new())
+    }
+}
+
+fn browser_scene(project: nodecraft_graph::Project, canvas: nodecraft_types::CanvasId) -> NodeCraftApp {
+    let (store, notice) = nodecraft_engine::browser_providers::OriginProviders::load(Arc::new(Origin));
+    let mut services = Services::default();
+    store.register(&mut services).unwrap();
+    let mut session = Session::new(project).unwrap().with_services(services);
+    session.dispatch("providers.settings_set", &json!({"comfyui_url": "https://comfy.example"})).unwrap();
+    let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+    app.browser_providers = Some(crate::app::browser_providers::BrowserProviders::new(store, notice));
+    app
+}
+
 /// Frames until the fetch is told.
 fn answered(h: &mut Harness<'static, NodeCraftApp>) -> String {
     for _ in 0..500 {
@@ -222,6 +273,94 @@ mod picker {
         h.run();
         assert!(h.query_by_role_and_label(Role::ComboBox, "Checkpoint").is_none());
         assert!(h.query_by_label(crate::card::listed::UNFETCHED_HINT).is_none());
+    }
+
+    #[test]
+    fn browser_refresh_polls_a_future_and_hands_the_lists_to_a_later_frame() {
+        let (ready, wake, seen) = (Rc::new(std::cell::Cell::new(false)), Rc::new(RefCell::new(None)), Rc::new(RefCell::new(Vec::new())));
+        let app = browser_scene(scene(None).session.document().clone(), C);
+        let mut h = harness(app);
+        let (fetcher, mut service) = OptionFetcher::asynchronous(async_fixture(Rc::clone(&ready), Rc::clone(&wake), Rc::clone(&seen)));
+        h.state_mut().session.register_host_service(OPTION_SERVICE, move |request| service(request)).unwrap();
+        h.state_mut().option_fetch = Some(fetcher);
+        h.run();
+        h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
+        let ctx = h.ctx.clone();
+        h.state_mut().tick_option_fetch(&ctx);
+        assert_eq!(seen.borrow().len(), 1);
+        assert_eq!(nodecraft_engine::browser_providers::comfyui_url(&seen.borrow()[0]).as_deref(), Some("https://comfy.example"));
+        assert!(h.state().option_fetch.as_ref().unwrap().is_waiting());
+        assert!(h.state_mut().session.dispatch("options.status", &json!({})).unwrap()["last"].is_null());
+        h.state_mut().tick_option_fetch(&ctx);
+        assert!(wake.borrow().is_some(), "the future was polled without blocking the frame");
+        assert_eq!(h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap_err().kind, ErrorKind::Busy);
+        ready.set(true);
+        wake.borrow_mut().take().unwrap().wake();
+        h.state_mut().tick_option_fetch(&ctx);
+        assert!(!h.state().option_fetch.as_ref().unwrap().is_waiting());
+        h.run();
+        h.get_by_role_and_label(Role::ComboBox, "Checkpoint").click();
+        h.run();
+        h.get_by_label("browser.safetensors").click();
+        h.run();
+        assert_eq!(checkpoint(h.state()), Some(Value::Text("browser.safetensors".into())));
+        assert_eq!(h.state_mut().session.dispatch("options.status", &json!({})).unwrap()["last"]["installed"][0]["values"], 1);
+    }
+
+    #[test]
+    fn changing_servers_cancels_a_queued_refresh_before_its_future_is_created() {
+        let (ready, wake, seen) = (Rc::new(std::cell::Cell::new(false)), Rc::new(RefCell::new(None)), Rc::new(RefCell::new(Vec::new())));
+        let mut h = harness(browser_scene(scene(None).session.document().clone(), C));
+        let (fetcher, mut service) = OptionFetcher::asynchronous(async_fixture(ready, wake, Rc::clone(&seen)));
+        h.state_mut().session.register_host_service(OPTION_SERVICE, move |request| service(request)).unwrap();
+        h.state_mut().option_fetch = Some(fetcher);
+        let pending = h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
+        h.state_mut().session.dispatch("providers.settings_set", &json!({"comfyui_url": "https://queued-new.example"})).unwrap();
+        h.state_mut().tick_browser_providers();
+        let status = h.state_mut().session.dispatch("options.status", &json!({})).unwrap();
+        assert_eq!(status["last"]["id"], pending["pending"]);
+        assert_eq!(status["last"]["error"], "the provider server changed; refresh again");
+        assert!(!h.state().option_fetch.as_ref().unwrap().is_waiting());
+        let ctx = h.ctx.clone();
+        h.state_mut().tick_option_fetch(&ctx);
+        assert!(seen.borrow().is_empty(), "cancelled queued work never reads provider configuration");
+    }
+
+    #[test]
+    fn changing_servers_drops_the_old_async_reply_and_the_next_fetch_uses_new_settings() {
+        let (ready, wake, seen) = (Rc::new(std::cell::Cell::new(false)), Rc::new(RefCell::new(None)), Rc::new(RefCell::new(Vec::new())));
+        let mut h = harness(browser_scene(scene(None).session.document().clone(), C));
+        let (fetcher, mut service) = OptionFetcher::asynchronous(async_fixture(Rc::clone(&ready), Rc::clone(&wake), Rc::clone(&seen)));
+        h.state_mut().session.register_host_service(OPTION_SERVICE, move |request| service(request)).unwrap();
+        h.state_mut().option_fetch = Some(fetcher);
+        let pending = h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
+        let ctx = h.ctx.clone();
+        h.state_mut().tick_option_fetch(&ctx);
+        h.state_mut().tick_option_fetch(&ctx);
+        h.state_mut().session.dispatch("providers.settings_set", &json!({"comfyui_url": "https://new-comfy.example"})).unwrap();
+        h.state_mut().tick_browser_providers();
+        assert!(!h.state().option_fetch.as_ref().unwrap().is_waiting());
+        let status = h.state_mut().session.dispatch("options.status", &json!({})).unwrap();
+        assert_eq!(status["last"]["id"], pending["pending"]);
+        assert_eq!(status["last"]["error"], "the provider server changed; refresh again");
+        assert_eq!(status["last"]["installed"], json!([]));
+        assert!(h.state().notice.as_deref().is_some_and(|notice| notice.contains("server changed")));
+        ready.set(true);
+        wake.borrow_mut().take().unwrap().wake();
+        h.state_mut().tick_option_fetch(&ctx);
+        assert!(h.state().session.option_lists().is_none(), "an old endpoint's delayed reply was discarded");
+        h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
+        h.state_mut().tick_option_fetch(&ctx);
+        h.state_mut().tick_option_fetch(&ctx);
+        assert_eq!(nodecraft_engine::browser_providers::comfyui_url(seen.borrow().last().unwrap()).as_deref(), Some("https://new-comfy.example"));
+        assert!(h.state().session.option_lists().is_some());
+        h.state_mut().session.dispatch("providers.settings_set", &json!({"comfyui_url": "https://third-comfy.example"})).unwrap();
+        h.state_mut().tick_browser_providers();
+        assert!(h.state().session.option_lists().is_none());
+        assert!(
+            h.state_mut().session.dispatch("options.status", &json!({})).unwrap()["last"].is_null(),
+            "old installed lists are not reported for a new server"
+        );
     }
 
     use egui::accesskit::Role;

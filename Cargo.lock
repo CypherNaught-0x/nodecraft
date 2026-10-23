@@ -3324,6 +3324,7 @@ dependencies = [
  "serde_path_to_error",
  "tempfile",
  "tokio",
+ "url",
  "zip",
 ]
 

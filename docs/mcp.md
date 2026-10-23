@@ -117,9 +117,11 @@ act on. Protocol mistakes (an unknown tool, malformed arguments) are JSON-RPC er
 in `mcp::HUMAN_ONLY` are neither: `keys.set` would pass an API key through the agent's context,
 and `keys.remove` deletes a key with no undo. `keys.test` is human-only too (#237): in the app it
 answers `{pending: id}` with no command to read the verdict back, and each test sends the stored key
-out and holds the keychain thread for up to 25 seconds. `file.open`, `file.save`, `file.save_as` and
-`file.cancel` are agent commands, admitted only inside allowed folders (see the bridge section
-above, #423). `history.export` writes a result to a file anywhere on the
+out and holds the keychain thread for up to 25 seconds. `providers.settings_set` changes where
+provider requests and stored keys are sent, so it is human-only too; `providers.settings_get` can
+read the saved addresses without keys or the installation salt. `file.open`, `file.save`,
+`file.save_as` and `file.cancel` are agent commands, admitted only inside allowed folders (see
+the bridge section above, #423). `history.export` writes a result to a file anywhere on the
 machine, so it is human-only for the same reason (#557), as are `timeline.export_interchange` and
 `deck.export` (#692). `history.copy` puts a result on the person's clipboard, where their next paste
 takes it from, so it is human-only too (#831). `run.record` writes results the host ran, and
