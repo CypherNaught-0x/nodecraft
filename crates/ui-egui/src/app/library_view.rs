@@ -13,9 +13,15 @@ pub(super) struct LibraryView {
     pub(super) open: bool,
     /// The last `library.list` answer; `None` reads it again on the next frame it shows.
     listed: Option<Result<Vec<Kept>, String>>,
-    /// The shader library's names and latest versions, read with the techniques; `None` where
-    /// there is no shader library.
-    shaders: Option<Vec<(String, u32)>>,
+    /// The shader library's names and latest versions, read with the techniques.
+    shaders: super::shader_editor::ShaderListing,
+}
+
+impl LibraryView {
+    /// Lists the libraries again the next frame the panel shows.
+    pub(super) fn reset(&mut self) {
+        self.listed = None;
+    }
 }
 
 /// One version the library keeps, as `library.list` describes it.
@@ -151,10 +157,17 @@ impl NodeCraftApp {
                             }
                         });
                     }
-                    if let Some(shaders) = &self.library.shaders {
+                    if let Some(listing) = &self.library.shaders {
                         ui.separator();
                         ui.label(egui::RichText::new("Shaders").strong().color(t.text));
-                        if shaders.is_empty() {
+                        let shaders: &[(String, u32)] = match listing {
+                            Ok(shaders) => shaders,
+                            Err(error) => {
+                                ui.colored_label(t.danger, error);
+                                &[]
+                            }
+                        };
+                        if listing.is_ok() && shaders.is_empty() {
                             ui.label(egui::RichText::new("No shaders saved yet. Save one from a custom shader card's editor.").color(t.text_muted));
                         }
                         for (name, latest) in shaders {

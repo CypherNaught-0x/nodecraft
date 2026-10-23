@@ -9,9 +9,10 @@
 - **Names with numbered versions.** A shader is a name (1 to 40 characters on one line, unique
   ignoring case) with up to 64 versions. `shader.save {canvas, id, name?}` keeps the card's shader
   as the name's next version, unless the latest is already that shader. Numbers only go up:
-  removing a version never frees its number, so a version number always means one shader. The
-  file is checked when read (names, order, sizes), and a damaged file is reported, never
-  overwritten.
+  removing a version never frees its number, so a version number always means one shader. Removing a
+  whole shader remembers its next number (up to 4096 removed names), so saving the name again carries
+  on from there. The file is checked when read (names, order, sizes), and a damaged file is
+  reported where the library is shown, never overwritten.
 - **A card records where its shader came from.** `shader.place {canvas, name, version?, id, pos}`
   adds a card with that version, titled with its name. `shader.update {canvas, id, name?, version?}`
   gives a card a version (by default the latest of the one it came from) as one undo step. Both

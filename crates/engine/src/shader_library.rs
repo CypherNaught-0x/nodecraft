@@ -30,6 +30,8 @@ pub const MAX_SHADERS: usize = 1024;
 pub const MAX_VERSIONS: usize = 64;
 /// Longest shader name, in characters.
 pub const MAX_NAME_CHARS: usize = 40;
+/// Most removed names whose next version number the library remembers.
+pub const MAX_RETIRED: usize = 4096;
 
 fn invalid(message: &str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
@@ -80,12 +82,18 @@ struct ShadersFile {
     version: u32,
     #[serde(default)]
     shaders: Vec<Entry>,
+    /// The next version number of each removed shader, by name ignoring case.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    retired: BTreeMap<String, u32>,
 }
 
 /// The shaders in the library, by name ignoring case.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ShaderLibrary {
     entries: BTreeMap<String, Entry>,
+    /// The next version number of each removed shader, so saving its name again carries on from
+    /// there and an old card's version never means a different shader.
+    retired: BTreeMap<String, u32>,
 }
 
 fn key(name: &str) -> String {
@@ -134,18 +142,24 @@ impl ShaderLibrary {
         if file.shaders.len() > MAX_SHADERS {
             return Err(invalid("the shader library holds too many shaders"));
         }
-        let mut library = Self::default();
+        if file.retired.len() > MAX_RETIRED || file.retired.iter().any(|(name, next)| !valid_name(name) || key(name) != *name || *next < 2) {
+            return Err(invalid("the shader library's removed names are damaged"));
+        }
+        let mut library = Self { retired: file.retired, ..Self::default() };
         for entry in file.shaders {
             let entry = checked(entry)?;
             if library.entries.insert(key(&entry.name), entry).is_some() {
                 return Err(invalid("the shader library holds one name twice"));
             }
         }
+        // A name both kept and retired carries on from the kept entry.
+        let entries = &library.entries;
+        library.retired.retain(|name, _| !entries.contains_key(name));
         Ok(library)
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        let file = ShadersFile { version: SHADERS_VERSION, shaders: self.entries.values().cloned().collect() };
+        let file = ShadersFile { version: SHADERS_VERSION, shaders: self.entries.values().cloned().collect(), retired: self.retired.clone() };
         let bytes = serde_json::to_vec(&file).map_err(|_| Error::new(ErrorKind::Internal, "the shader library couldn't be written"))?;
         if bytes.len() > MAX_SHADERS_BYTES {
             return Err(invalid("the shader library would be too large; remove shaders you no longer use"));
@@ -177,7 +191,10 @@ impl ShaderLibrary {
         let entry = match self.entries.get_mut(&key(name)) {
             Some(entry) => entry,
             None if full => return Err(invalid("the shader library is full; remove shaders you no longer use")),
-            None => self.entries.entry(key(name)).or_insert(Entry { name: name.into(), next: 1, versions: Vec::new() }),
+            None => {
+                let next = self.retired.get(&key(name)).copied().unwrap_or(1);
+                self.entries.entry(key(name)).or_insert(Entry { name: name.into(), next, versions: Vec::new() })
+            }
         };
         if let Some(latest) = entry.latest().filter(|latest| latest.shader == shader) {
             return Ok((latest.version, false));
@@ -188,10 +205,12 @@ impl ShaderLibrary {
         let version = entry.next;
         entry.next = version.checked_add(1).ok_or_else(|| invalid("this shader has no version numbers left; save it under a new name"))?;
         entry.versions.push(Version { version, shader });
+        self.retired.remove(&key(name));
         Ok((version, true))
     }
 
-    /// Removes one version of `name`, or all of it. A shader left with no versions goes.
+    /// Removes one version of `name`, or all of it. A shader left with no versions goes, and its
+    /// next version number is remembered for when the name is saved again.
     fn remove(&mut self, name: &str, version: Option<u32>) -> Result<(), Error> {
         let missing = || Error::new(ErrorKind::NotFound, "that shader isn't in the library");
         let entry = self.entries.get_mut(&key(name)).ok_or_else(missing)?;
@@ -203,7 +222,13 @@ impl ShaderLibrary {
             }
         }
         if version.is_none() || entry.versions.is_empty() {
+            let next = entry.next;
             self.entries.remove(&key(name));
+            if self.retired.len() >= MAX_RETIRED {
+                // Bounded: the oldest-named record goes, the only case a number can come back.
+                self.retired.pop_first();
+            }
+            self.retired.insert(key(name), next);
         }
         Ok(())
     }

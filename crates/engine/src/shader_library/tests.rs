@@ -36,6 +36,13 @@ fn saving_numbers_versions_and_skips_an_unchanged_shader() {
     ask(&store, &shelf, json!({"op": "remove", "name": "glow"})).unwrap();
     assert_eq!(ask(&store, &shelf, json!({"op": "list"})).unwrap(), json!({"shaders": []}));
     assert_eq!(ask(&store, &shelf, json!({"op": "remove", "name": "glow"})).unwrap_err().kind, ErrorKind::NotFound);
+    // Saving the name again carries on numbering, so a card pinned to v3 never means another shader.
+    assert_eq!(save("d", "GLOW"), json!({"name": "GLOW", "version": 4, "saved": true}));
+    let reread = ShaderLibrary::from_bytes(&store.load().unwrap().unwrap()).unwrap();
+    assert!(reread.retired.is_empty(), "a saved name is no longer retired");
+    ask(&store, &shelf, json!({"op": "remove", "name": "glow", "version": 4})).unwrap();
+    let reread = ShaderLibrary::from_bytes(&store.load().unwrap().unwrap()).unwrap();
+    assert_eq!(reread.retired.get("glow"), Some(&5), "the removed name's next number survives a reread");
 }
 
 #[test]
@@ -68,6 +75,8 @@ fn a_hostile_file_is_refused_not_trusted() {
         entry("Glow", 9, json!([one(3), one(2)])),
         json!({"version": 1, "shaders": [{"name": "Glow", "next": 2, "versions": [one(1)]}, {"name": "GLOW", "next": 2, "versions": [one(1)]}]}),
         entry("Glow", 9, json!([{"version": 1, "shader": shader(&"x".repeat(nodecraft_gpu::shader::MAX_SOURCE + 1))}])),
+        json!({"version": 1, "shaders": [], "retired": {"Glow": 3}}),
+        json!({"version": 1, "shaders": [], "retired": {"glow": 1}}),
     ] {
         let bytes = serde_json::to_vec(&file).unwrap();
         assert!(ShaderLibrary::from_bytes(&bytes).is_err(), "{file}");

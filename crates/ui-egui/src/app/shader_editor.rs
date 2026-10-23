@@ -16,6 +16,10 @@ use nodecraft_nodes::shader::{Pin, StoredParam, StoredShader, pinned, stored};
 use nodecraft_types::{CanvasId, GenerationId, NodeId};
 use serde_json::json;
 
+/// The shader library's names and latest versions as listed, or why it couldn't be read; `None`
+/// where there is no shader library.
+pub(super) type ShaderListing = Option<Result<Vec<(String, u32)>, String>>;
+
 pub(super) struct ShaderEditor {
     canvas: CanvasId,
     pub(super) node: NodeId,
@@ -34,14 +38,14 @@ pub(super) struct ShaderEditor {
     /// The name to save the shader to the library as.
     pub(super) save_as: String,
     /// The library's shaders and their latest versions, as listed when the editor opened or
-    /// last saved; `None` where there is no shader library.
-    library: Option<Vec<(String, u32)>>,
+    /// last saved.
+    library: ShaderListing,
     /// What the last save did.
     pub(super) saved: Option<String>,
 }
 
 impl ShaderEditor {
-    fn new(canvas: CanvasId, node: NodeId, shader: StoredShader, from: Option<&Pin>, library: Option<Vec<(String, u32)>>) -> Self {
+    fn new(canvas: CanvasId, node: NodeId, shader: StoredShader, from: Option<&Pin>, library: ShaderListing) -> Self {
         let save_as = from.map(|pin| pin.name.clone()).unwrap_or_default();
         let mut editor =
             Self { canvas, node, draft: shader, check: None, request: String::new(), pending: None, refusal: None, error: None, save_as, library, saved: None };
@@ -107,19 +111,24 @@ impl NodeCraftApp {
         }
     }
 
-    /// The shader library's names and latest versions, read afresh; `None` without a library.
-    pub(super) fn library_shaders(&mut self) -> Option<Vec<(String, u32)>> {
-        let listed = self.session.dispatch("library.shaders", &json!({})).ok()?;
-        let shaders = listed.get("shaders")?.as_array()?;
-        Some(
-            shaders
-                .iter()
-                .filter_map(|shader| {
-                    let latest = u32::try_from(shader.get("latest")?.as_u64()?).ok()?;
-                    Some((shader.get("name")?.as_str()?.to_owned(), latest))
-                })
-                .collect(),
-        )
+    /// The shader library's names and latest versions, read afresh, or why they couldn't be.
+    pub(super) fn library_shaders(&mut self) -> ShaderListing {
+        // Disabled only where the host keeps no shader library.
+        self.session.enabled("library.shaders", &json!({})).ok()?;
+        let listed = match self.session.dispatch("library.shaders", &json!({})) {
+            Ok(listed) => listed,
+            Err(error) => return Some(Err(error.message)),
+        };
+        let Some(shaders) = listed.get("shaders").and_then(|shaders| shaders.as_array()) else {
+            return Some(Err("The shader library's list couldn't be read.".to_owned()));
+        };
+        Some(Ok(shaders
+            .iter()
+            .filter_map(|shader| {
+                let latest = u32::try_from(shader.get("latest")?.as_u64()?).ok()?;
+                Some((shader.get("name")?.as_str()?.to_owned(), latest))
+            })
+            .collect()))
     }
 
     /// The editor's window, while it is open on a card that still exists.
@@ -138,7 +147,7 @@ impl NodeCraftApp {
         let from = card.and_then(pinned);
         let Some(editor) = &mut self.shader_editor else { return };
         let latest = from.as_ref().and_then(|pin| {
-            let library = editor.library.as_ref()?;
+            let library = editor.library.as_ref()?.as_ref().ok()?;
             library.iter().find(|(name, _)| name.to_lowercase() == pin.name.to_lowercase()).map(|(_, latest)| *latest)
         });
         let applied = on_card.as_ref() == Some(&editor.draft);
@@ -214,11 +223,15 @@ impl NodeCraftApp {
                         ui.label(egui::RichText::new("Not applied yet").color(t.text_muted));
                     }
                 });
-                if editor.library.is_some() {
+                if let Some(Err(error)) = &editor.library {
+                    ui.separator();
+                    ui.label(egui::RichText::new(format!("The shader library can't be used: {error}")).color(t.text_muted));
+                }
+                if let Some(Ok(_)) = &editor.library {
                     ui.separator();
                     if let Some(pin) = &from {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("From the library: {} v{}", pin.name, pin.version)).color(t.text_muted));
+                            ui.label(egui::RichText::new(format!("From the library: {} v{}", super::sheet_view::line(&pin.name), pin.version)).color(t.text_muted));
                             if let Some(latest) = latest.filter(|latest| *latest > pin.version)
                                 && ui
                                     .add_enabled(applied, egui::Button::new(format!("Update to v{latest}")))
@@ -306,13 +319,19 @@ impl NodeCraftApp {
     fn save_shader(&mut self) {
         let Some(editor) = &self.shader_editor else { return };
         let (canvas, node, name) = (editor.canvas, editor.node, editor.save_as.trim().to_owned());
-        let result = self.session.dispatch("shader.save", &json!({"canvas": canvas, "id": node, "name": name})).and_then(|saved| {
+        let result = self.session.dispatch("shader.save", &json!({"canvas": canvas, "id": node, "name": name})).map(|saved| {
             let (name, version) = (saved.get("name").cloned().unwrap_or_default(), saved.get("version").cloned().unwrap_or_default());
-            self.session.dispatch("shader.update", &json!({"canvas": canvas, "id": node, "name": name, "version": version}))?;
             let line = format!("{} v{version}", name.as_str().unwrap_or_default());
-            Ok(if saved.get("saved") == Some(&json!(true)) { format!("Saved as {line}.") } else { format!("{line} is this shader already.") })
+            let line = if saved.get("saved") == Some(&json!(true)) { format!("Saved as {line}.") } else { format!("{line} is this shader already.") };
+            // The library has it either way; say so even if the card can't record where it came from.
+            match self.session.dispatch("shader.update", &json!({"canvas": canvas, "id": node, "name": name, "version": version})) {
+                Ok(_) => line,
+                Err(error) => format!("{line} The card couldn't record it: {}", error.message),
+            }
         });
         let library = self.library_shaders();
+        // The Techniques panel lists the library again, so it shows this save too.
+        self.library.reset();
         let Some(editor) = &mut self.shader_editor else { return };
         editor.library = library;
         match result {

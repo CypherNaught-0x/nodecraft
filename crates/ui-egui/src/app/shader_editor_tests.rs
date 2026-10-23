@@ -360,3 +360,13 @@ fn saving_needs_a_name_and_an_applied_valid_shader() {
     type_into(&mut h, "WGSL source", "oops");
     assert!(disabled(&h), "a draft that isn't applied, or valid");
 }
+
+#[test]
+fn a_damaged_library_is_reported_not_hidden() {
+    use nodecraft_engine::library::LibraryStore;
+    let store = nodecraft_engine::library::MemoryLibrary::default();
+    store.save(b"not a library").unwrap();
+    let (h, _) = open(scene_with(Some(&store)));
+    assert!(h.query_by_label_contains("The shader library can't be used").is_some());
+    assert!(h.query_by_label("Save to library").is_none());
+}
