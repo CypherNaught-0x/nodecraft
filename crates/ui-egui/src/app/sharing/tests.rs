@@ -362,6 +362,7 @@ fn fill(app: &mut NodeCraftApp) {
 
 #[test]
 fn a_large_project_comes_in_without_a_frame_over_budget() {
+    const FRAME_BUDGET: Duration = Duration::from_millis(25);
     let opened = Rc::new(RefCell::new(Vec::new()));
     let relay = relay();
     let mut owner = app(&opened);
@@ -403,9 +404,12 @@ fn a_large_project_comes_in_without_a_frame_over_budget() {
     let in_one_frame = started.elapsed();
     assert_eq!(session.document(), owner.session.document());
     eprintln!("slowest frame {slowest:?}; catch-up {caught_up:?}; in one frame {in_one_frame:?}");
-    // Both measurements do the same catch-up work; comparing them avoids a machine-load-sensitive
-    // wall-clock limit while still catching frames that consume a substantial share of that work.
-    assert!(slowest.as_secs_f64() < in_one_frame.as_secs_f64() * 0.1, "a frame took {slowest:?}, at least 10% of the catch-up in one frame ({in_one_frame:?})");
+    // Each measured frame also copies the document for the worker and drives the transport;
+    // the one-frame baseline only diffs and applies. Keep a 25 ms floor for fixed frame costs.
+    assert!(
+        slowest < FRAME_BUDGET.max(in_one_frame.mul_f64(0.1)),
+        "a frame took {slowest:?}, exceeding both the 25 ms frame budget and 10% of the catch-up in one frame ({in_one_frame:?})"
+    );
 }
 
 #[test]
