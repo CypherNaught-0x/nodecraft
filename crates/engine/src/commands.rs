@@ -239,6 +239,7 @@ impl Registry {
             .chain(crate::run_cmds::specs())
             .chain(crate::perf_cmds::specs())
             .chain(crate::cache_cmds::specs())
+            .chain(crate::variation_cmds::specs())
             .chain(crate::shader_cmds::specs())
             .chain(crate::mask_cmds::specs())
             .chain(crate::image_tool_cmds::specs())

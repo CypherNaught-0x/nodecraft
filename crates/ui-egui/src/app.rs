@@ -2172,6 +2172,7 @@ impl NodeCraftApp {
                     Some((command, params)) => (command, params, None),
                     None => continue,
                 },
+                Intent::Variations(count) => ("node.variations_set", json!({"canvas":self.canvas,"id":id,"count":count}), None),
                 Intent::Model => continue,
                 Intent::Migrate => {
                     self.migrate_card(id);

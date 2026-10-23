@@ -73,6 +73,8 @@ pub enum Intent {
     Audio(crate::audio::AudioIntent),
     /// Bring a plugin card to its plugin's current version (#173).
     Migrate,
+    /// Make this many variations a run (#81).
+    Variations(u64),
 }
 pub struct CardResponse {
     pub response: egui::Response,

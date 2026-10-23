@@ -63,6 +63,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   are layer stacks whose source layers show what their card shows now, and `deck.*` commands
   list and edit them with revision checks (#122). Edit slides opens a slide sorter beside the
   Layer Editor's stage, to arrange each slide's text, shapes and sources (#694).
+  A generation card's `− N× +` counter makes up to 20 variations a run, each its own request
+  (quoted as such) and its own result in the node's history (#81).
   The viewer's Photo and Views buttons add a 3D photo or a
   4/8/16-view sheet card that draws the model from the current view as an image (#112). Each capture
   owns its device, and closing cancels and drains captures from live recompute and explicit runs
