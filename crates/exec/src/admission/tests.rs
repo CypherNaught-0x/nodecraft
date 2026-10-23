@@ -682,3 +682,27 @@ fn wired_pdfs_are_quoted_at_their_counted_pages() {
     step.fanout = Some(crate::planner::Fanout { items: vec![], cells: cells(&[Some(4), None]), jobs: vec![], resume: None });
     assert_eq!(document_pages(&step, &reads("document")), 100);
 }
+
+#[test]
+fn known_character_inputs_are_priced_at_admission_and_allow_an_exact_budget() {
+    let (canvas, kinds) = fixture();
+    let mut model = catalog(2).get("selected").unwrap().clone();
+    model.provider = "elevenlabs".into();
+    model.pricing = Pricing::PerUnit { unit: Unit::ThousandCharacters, price: Price(Money::new(Currency::USD, 80_000)), count: None, default_count: None };
+    let catalog = Catalog::from_models(vec![model]).unwrap();
+    let mut work = job(id(1), Default::default());
+    if let JobSpec::Generate { provider, inputs, .. } = &mut work {
+        *provider = "elevenlabs".into();
+        inputs.push(nodecraft_nodes::GenerateInput { role: "prompt".into(), value: Value::Text("雪é🙂".into()) });
+    }
+    let quote = quote(&plan(Some(vec![work])), &canvas, &kinds, &catalog).unwrap();
+    assert!(quote.is_complete());
+    assert_eq!(quote.totals[&Currency::USD].micros, 240);
+    let caps = crate::cost::Budgets { per_call: Some(Money::new(Currency::USD, 240)), ..Default::default() };
+    assert!(crate::cost::check(&quote, &caps, &Default::default()).unwrap().allowed());
+    let low = crate::cost::Budgets { per_call: Some(Money::new(Currency::USD, 239)), ..Default::default() };
+    assert!(!crate::cost::check(&quote, &low, &Default::default()).unwrap().allowed());
+    let deferred = super::quote(&plan(None), &canvas, &kinds, &catalog).unwrap();
+    assert!(!deferred.is_complete());
+    assert!(!crate::cost::check(&deferred, &caps, &Default::default()).unwrap().allowed());
+}
