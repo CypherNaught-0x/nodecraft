@@ -9,7 +9,9 @@
 use crate::commands::{CommandSpec, Context, Effect, Phase, invalid, params};
 use crate::provider_setup::HostEnv;
 use crate::session::Session;
-use nodecraft_comfy::{ApiWorkflow, NodeCatalog};
+use nodecraft_comfy::ApiWorkflow;
+/// The server node list [`finish`] installs, read from `/object_info` with `NodeCatalog::parse`.
+pub use nodecraft_comfy::NodeCatalog;
 use nodecraft_graph::{Change, Changeset, Position};
 use nodecraft_nodes::comfy_workflow;
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ParamValues};
@@ -141,52 +143,11 @@ fn import(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
             "NodeCraft hasn't read the ComfyUI server's nodes yet; refresh them (comfy.nodes.refresh), then import again",
         ));
     };
-    let conversion = ApiWorkflow::convert(p.workflow.as_bytes(), Some(catalog))
-        .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("this isn't a ComfyUI workflow NodeCraft can read: {e}")))?;
-    let workflow = conversion.workflow;
-    let check = workflow.check(catalog);
-    if !check.missing_nodes.is_empty() {
-        let mut missing = check.missing_nodes.iter().take(MAX_WARNINGS).map(|n| bounded(n, 128)).collect::<Vec<_>>().join(", ");
-        let more = check.missing_nodes.len().saturating_sub(MAX_WARNINGS);
-        if more > 0 {
-            missing.push_str(&format!(" and {more} more"));
-        }
-        return Err(Error::new(
-            ErrorKind::Unsupported,
-            format!("the ComfyUI server doesn't have these nodes: {missing}. Install them, refresh the server's nodes, then import again"),
-        ));
-    }
-    let mut exposed =
-        nodecraft_comfy::discover(&workflow, catalog).map_err(|e| Error::new(ErrorKind::InvalidInput, format!("this ComfyUI workflow can't be read: {e}")))?;
-    let media = |input: &nodecraft_comfy::ExposedInput| matches!(input.kind, nodecraft_comfy::ExposedKind::Media(_));
-    match &p.params {
-        None => exposed.inputs.retain(|input| media(input) || input.role.exposed_by_default()),
-        Some(names) => {
-            let wanted: BTreeSet<&str> = names.iter().map(String::as_str).collect();
-            let offered: BTreeSet<String> = exposed.inputs.iter().filter(|input| !media(input)).map(full_name).collect();
-            if let Some(unknown) = wanted.iter().find(|name| !offered.contains(**name)) {
-                return Err(Error::new(ErrorKind::InvalidInput, format!("the workflow has no input {} that can be a parameter", bounded(unknown, 128))));
-            }
-            exposed.inputs.retain(|input| media(input) || wanted.contains(full_name(input).as_str()));
-        }
-    }
-    let config = comfy_workflow::propose(&workflow, &exposed)?;
-    let mut node = c.kinds.get(comfy_workflow::ID)?.instantiate_instance(p.id, config, &ParamValues::new())?;
+    let (mut node, warnings) = card(catalog, c.kinds, p.id, &p.workflow, p.params.as_deref())?;
     node.pos = p.pos;
     if let Some(title) = p.title.filter(|t| !t.trim().is_empty()) {
         node.title = title;
     }
-    // Seeds aren't re-randomised per run yet (docs/decisions/2026-10-23-comfy-workflow-card.md).
-    let modes = conversion.controls.iter().filter(|(_, mode)| mode.as_str() != "fixed").map(|((node, input), mode)| {
-        bounded(&format!("{node}.{input} was set to \"{mode}\" in ComfyUI; the card keeps its value fixed until you change it"), 512)
-    });
-    let warnings: Vec<String> = conversion
-        .warnings
-        .iter()
-        .map(|w| bounded(w, 512))
-        .chain(modes)
-        .chain(check.problems.iter().map(|problem| bounded(&format!("{}.{}: {}", problem.node, problem.input, problem.message), 512)))
-        .collect();
     let result = json!({
         "id": p.id,
         "ports": node.inputs.iter().map(|port| &port.name).collect::<Vec<_>>(),
@@ -198,6 +159,96 @@ fn import(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let changes = Changeset::new(vec![Change::AddNode { canvas: p.canvas, node }]);
     c.preview_changes(&changes)?;
     Ok(Effect::Edit { changes, result, gesture: None })
+}
+
+/// Whether dropped text is a ComfyUI workflow file, in either format: an editor save (`nodes` and
+/// `links` lists) or an API export (an object of nodes, each with a `class_type`).
+pub(crate) fn is_workflow(text: &str) -> bool {
+    let Ok(Value::Object(top)) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    // Other graph formats (d3's) also have `nodes` and `links`; ComfyUI's nodes carry a numeric
+    // id and a string type.
+    if let (Some(Value::Array(nodes)), Some(Value::Array(links))) = (top.get("nodes"), top.get("links")) {
+        return nodes.iter().all(|node| node.get("id").is_some_and(Value::is_number) && node.get("type").is_some_and(Value::is_string))
+            && links.iter().all(|link| link.is_array() || link.is_object())
+            && (top.contains_key("last_node_id") || top.contains_key("version"));
+    }
+    !top.is_empty() && top.values().all(|node| node.get("class_type").is_some_and(Value::is_string))
+}
+
+/// The card a dropped workflow file becomes (#9), with the default parameters; the reason when
+/// it can't become one, for the drop's notice.
+pub(crate) fn dropped_card(session: &Session, id: NodeId, workflow: &str, name: &str) -> Result<nodecraft_graph::Node, String> {
+    let Some(ComfyNodes(catalog)) = session.resource::<ComfyNodes>() else {
+        return Err("it is a ComfyUI workflow; read the ComfyUI server's nodes first (Read ComfyUI server nodes), then drop it again".into());
+    };
+    let (mut node, _) = card(catalog, session.kinds(), id, workflow, None).map_err(|e| e.message)?;
+    let stem = match name.len().checked_sub(5).and_then(|at| name.get(at..).map(|ext| (at, ext))) {
+        Some((at, ext)) if ext.eq_ignore_ascii_case(".json") => name.get(..at).unwrap_or(name),
+        _ => name,
+    }
+    .trim();
+    if !stem.is_empty() {
+        node.title = stem.to_owned();
+    }
+    Ok(node)
+}
+
+/// A `comfy_workflow` card for `workflow` read with the server's `catalog`, exposing its media
+/// inputs and the named `params` (prompts and seeds when `None`), and the import's warnings.
+fn card(
+    catalog: &NodeCatalog,
+    kinds: &nodecraft_nodes::Registry,
+    id: NodeId,
+    workflow: &str,
+    params: Option<&[String]>,
+) -> Result<(nodecraft_graph::Node, Vec<String>), Error> {
+    let conversion = ApiWorkflow::convert(workflow.as_bytes(), Some(catalog))
+        .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("this isn't a ComfyUI workflow NodeCraft can read: {e}")))?;
+    let workflow = conversion.workflow;
+    let check = workflow.check(catalog);
+    if !check.missing_nodes.is_empty() {
+        let mut missing = check.missing_nodes.iter().take(MAX_WARNINGS).map(|n| bounded(n, 128)).collect::<Vec<_>>().join(", ");
+        let more = check.missing_nodes.len().saturating_sub(MAX_WARNINGS);
+        if more > 0 {
+            missing.push_str(&format!(" and {more} more"));
+        }
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            format!(
+                "the ComfyUI server doesn't have these nodes: {missing}. Install them, read the server's nodes again (Read ComfyUI server nodes), then try again"
+            ),
+        ));
+    }
+    let mut exposed =
+        nodecraft_comfy::discover(&workflow, catalog).map_err(|e| Error::new(ErrorKind::InvalidInput, format!("this ComfyUI workflow can't be read: {e}")))?;
+    let media = |input: &nodecraft_comfy::ExposedInput| matches!(input.kind, nodecraft_comfy::ExposedKind::Media(_));
+    match params {
+        None => exposed.inputs.retain(|input| media(input) || input.role.exposed_by_default()),
+        Some(names) => {
+            let wanted: BTreeSet<&str> = names.iter().map(String::as_str).collect();
+            let offered: BTreeSet<String> = exposed.inputs.iter().filter(|input| !media(input)).map(full_name).collect();
+            if let Some(unknown) = wanted.iter().find(|name| !offered.contains(**name)) {
+                return Err(Error::new(ErrorKind::InvalidInput, format!("the workflow has no input {} that can be a parameter", bounded(unknown, 128))));
+            }
+            exposed.inputs.retain(|input| media(input) || wanted.contains(full_name(input).as_str()));
+        }
+    }
+    let config = comfy_workflow::propose(&workflow, &exposed)?;
+    let node = kinds.get(comfy_workflow::ID)?.instantiate_instance(id, config, &ParamValues::new())?;
+    // Seeds aren't re-randomised per run yet (docs/decisions/2026-10-23-comfy-workflow-card.md).
+    let modes = conversion.controls.iter().filter(|(_, mode)| mode.as_str() != "fixed").map(|((node, input), mode)| {
+        bounded(&format!("{node}.{input} was set to \"{mode}\" in ComfyUI; the card keeps its value fixed until you change it"), 512)
+    });
+    let warnings: Vec<String> = conversion
+        .warnings
+        .iter()
+        .map(|w| bounded(w, 512))
+        .chain(modes)
+        .chain(check.problems.iter().map(|problem| bounded(&format!("{}.{}: {}", problem.node, problem.input, problem.message), 512)))
+        .collect();
+    Ok((node, warnings))
 }
 
 fn enabled_import(c: &Context<'_>, value: &Value) -> Result<(), Error> {

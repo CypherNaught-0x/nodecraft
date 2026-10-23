@@ -379,6 +379,11 @@ impl Session {
         self.resources.get::<nodecraft_types::OptionLists>()
     }
 
+    /// A resource the host installed, for engine code outside a command.
+    pub(crate) fn resource<T: std::any::Any>(&self) -> Option<&T> {
+        self.resources.get::<T>()
+    }
+
     /// Replace a host-owned capability without discarding other injected resources.
     /// A host may scope a live view snapshot to one enabled/dispatch call and restore it after.
     pub fn swap_resource<T: std::any::Any>(&mut self, value: Option<T>) -> Option<T> {

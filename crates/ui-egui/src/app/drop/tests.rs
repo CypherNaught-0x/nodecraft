@@ -247,3 +247,27 @@ fn a_dropped_pdf_becomes_a_pdf_card_showing_its_page_count() {
     h.run();
     assert!(h.query_by_label("PDF, 2 pages").is_some(), "the card says how many pages the PDF has");
 }
+
+#[test]
+fn a_dropped_comfyui_workflow_asks_for_the_servers_nodes_then_becomes_its_card() {
+    let (mut h, _worker) = drop_harness();
+    let workflow =
+        br#"{"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a red fox"}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}"#;
+    let scratch = Scratch::new("comfy");
+    let path = scratch.write("fox.json", workflow);
+    let before = nodes(&h).len();
+    drop_at(&mut h, Pos2::new(700.0, 150.0), std::slice::from_ref(&path));
+    assert_eq!(nodes(&h).len(), before);
+    let notice = h.state().notice.clone().unwrap_or_default();
+    assert!(notice.contains("fox.json") && notice.contains("Read ComfyUI server nodes"), "{notice}");
+
+    let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {}]}}, "output": ["IMAGE"]},
+        "SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
+    let catalog = nodecraft_engine::comfy_workflow_cmds::NodeCatalog::parse(info).unwrap().0;
+    nodecraft_engine::comfy_workflow_cmds::finish(&mut h.state_mut().session, 1, Ok(Arc::new(catalog)));
+    drop_at(&mut h, Pos2::new(700.0, 150.0), &[path]);
+    let card = nodes(&h).into_iter().find(|n| n.kind == nodecraft_nodes::comfy_workflow::ID).expect("the workflow's card");
+    assert_eq!(card.title, "fox");
+    h.run();
+    h.get_by_label_contains("fox");
+}

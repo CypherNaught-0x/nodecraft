@@ -87,6 +87,26 @@ pub(super) fn run(
             continue;
         };
         let plan = match plan(file, text_left) {
+            Ok(Plan::Text(text)) if crate::comfy_workflow_cmds::is_workflow(&text) => {
+                match crate::comfy_workflow_cmds::dropped_card(session, *id, &text, &name) {
+                    // The paste carries the whole card (the workflow, its mapping and its values),
+                    // so the card, not the file, spends the drop's text.
+                    Ok(node) => match serde_json::to_vec(&node).ok().and_then(|bytes| text_left.checked_sub(bytes.len())) {
+                        Some(left) => {
+                            text_left = left;
+                            Plan::Card(Box::new(node))
+                        }
+                        None => {
+                            imported.skipped.push((name, "its ComfyUI card is too large to add in a drop; import it with comfy.workflow.import".into()));
+                            continue;
+                        }
+                    },
+                    Err(why) => {
+                        imported.skipped.push((name, why));
+                        continue;
+                    }
+                }
+            }
             Ok(plan) => plan,
             Err(why) => {
                 imported.skipped.push((name, why));
@@ -98,6 +118,7 @@ pub(super) fn run(
                 text_left = text_left.checked_sub(text.len()).ok_or_else(|| invalid("import text budget exceeded"))?;
                 None
             }
+            Plan::Card(_) => None,
             Plan::Media { bytes, .. } => {
                 let length = u64::try_from(bytes.len()).map_err(|_| invalid("import length cannot be represented"))?;
                 let hash = Blake3::from_bytes(*blake3::hash(bytes).as_bytes());
@@ -140,6 +161,12 @@ pub(super) fn run(
     nodes.try_reserve_exact(plans.len()).map_err(|_| allocation())?;
     for (id, plan, hash) in plans {
         let (kind, parameter, value) = match plan {
+            Plan::Card(mut node) => {
+                node.pos = Position { x: at.x + step * nodes.len() as f32, y: at.y };
+                imported.nodes.push(id);
+                nodes.push(*node);
+                continue;
+            }
             Plan::Text(text) => ("source.text", "text", Value::Text(text)),
             Plan::Media { kind, mime, mut meta, .. } => {
                 let hash = hash.ok_or_else(|| invalid("media import has no planned identity"))?;

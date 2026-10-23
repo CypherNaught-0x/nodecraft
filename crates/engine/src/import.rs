@@ -1,7 +1,8 @@
 //! Files from the operating system (#197): dropped on the canvas, or pasted as image data. Each
 //! file is recognised from its bytes (never its name), media goes into the project's asset store,
 //! and every file that can be held becomes a source node, all added as one undo step through
-//! `canvas.paste`. Files that can't are reported with a reason instead of failing the rest.
+//! `canvas.paste`. Files that can't are reported with a reason instead of failing the rest. A
+//! ComfyUI workflow file becomes the card that runs it once the server's nodes have been read.
 //!
 //! Eligibility and unique retained capacity are planned before one Session-bound import batch.
 //! The candidate store and all nodes publish together through `canvas.paste`; refusing a drop
@@ -118,7 +119,14 @@ fn text_of(bytes: &[u8], mime: &str, limit: usize) -> Result<String, String> {
 /// What one file will become, decided before anything is stored.
 enum Plan<'a> {
     Text(String),
-    Media { kind: &'static str, mime: Mime, meta: MediaMeta, bytes: &'a [u8] },
+    Media {
+        kind: &'static str,
+        mime: Mime,
+        meta: MediaMeta,
+        bytes: &'a [u8],
+    },
+    /// A ComfyUI workflow file, as the card that runs it (#9).
+    Card(Box<nodecraft_graph::Node>),
 }
 
 /// Images NodeCraft can store but not yet decode (common camera formats): kept without a size.
@@ -215,7 +223,7 @@ pub fn import_media_with_movie(session: &mut Session, file: &Incoming<'_>, movie
             enrich_movie(hash, &mime, &mut meta, movie.map(std::slice::from_ref).unwrap_or_default());
             Ok(nodecraft_types::AssetRef { hash, mime, meta })
         }
-        Plan::Text(_) => Err(refused("it is text, not media".into())),
+        Plan::Text(_) | Plan::Card(_) => Err(refused("it is text, not media".into())),
     }
 }
 
