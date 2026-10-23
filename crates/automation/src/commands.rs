@@ -17,6 +17,10 @@ pub trait CommandHost {
     fn impact(&mut self, id: &str, params: &Value) -> Result<Impact, Error> {
         self.session().impact(id, params)
     }
+    /// Whether this host routes the live view commands ([`crate::mcp::LIVE_ONLY`]) to a window.
+    fn live(&self) -> bool {
+        false
+    }
 }
 
 impl CommandHost for Session {

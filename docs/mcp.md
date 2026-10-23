@@ -109,8 +109,7 @@ and opening someone else's (`share.join`) are the person's call too; agents can 
 going with `share.status`, which also lists who else is in the room and where (#120), and end it
 with `share.stop` (#698). A new
 command stays hidden until it is added to one of the
-lists, and a test fails until then. `canvas.auto_format` is temporarily human-only: it consumes
-the live selection and trusted card geometry, which MCP and the control bridge cannot supply yet.
+lists, and a test fails until then.
 
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
@@ -171,10 +170,17 @@ person's choice. The standalone CLI and the browser build report the check unava
 A longer line is skipped with an error reply instead of being buffered. Messages must be UTF-8
 JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.
 
-Navigation commands (`canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle`,
-`canvas.pan_to`) are discoverable but require a scoped live canvas host. The standalone stdio
-session reports them unavailable and returns Unsupported when run; they never open a window
-or change the document.
+**Live-only commands** act on the running window, so they need MCP bridged to the app
+(`nodecraft --control`). They are navigation (`canvas.fit_all`, `canvas.fit_selection`,
+`canvas.minimap_toggle`, `canvas.pan_to`), search (`canvas.search_*`), the tag filter
+(`canvas.tag_filter_*`), the discussions panel (`canvas.comments_toggle`, `comment.open`) and
+Format selection (`canvas.auto_format`). Format selection takes an optional `nodes` list, so an
+agent can arrange cards without touching the person's selection; it moves cards in one undoable
+step. A standalone stdio session lists these commands as not ready, says where they run, and
+refuses them without opening a window or changing the document. `mcp::LIVE_ONLY` lists them, and
+a test checks the app routes exactly those (#360). `comment.compose` stays human-only: it opens an
+empty draft and takes the person's keyboard focus. Agents write a discussion with
+`comment.create`.
 
 Paid operations (running generations) aren't exposed yet. When they arrive, they will show their
 cost first and respect the session's budget (plan §4.8, #207).
@@ -186,7 +192,7 @@ file. `skill.import` and `skill.enable` are human-only: what untrusted text come
 skills are offered to the agent, are the person's call. A skill is guidance: reading one runs
 nothing, and it never overrides approvals, budgets or cost confirmations.
 
-Persistent tag commands (`tag.put`, `tag.remove`, `node.tag_set`) are available to agents. Tag-filter view commands remain human-only until the MCP live host routes their scoped view intents.
+Persistent tag commands (`tag.put`, `tag.remove`, `node.tag_set`) are available to agents. The tag-filter view commands are live-only (see above).
 
 Field commands (`field.create`, `field.update`, `field.move`, `field.remove`,
 `node.field_set`) are available to agents.

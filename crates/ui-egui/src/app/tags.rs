@@ -10,7 +10,7 @@ pub(super) enum TagAction {
     Palette(usize),
     Clear,
 }
-fn is_command(id: &str) -> bool {
+pub(super) fn is_command(id: &str) -> bool {
     matches!(id, "canvas.tag_filter_open" | "canvas.tag_filter_close" | "canvas.tag_filter_set" | "canvas.tag_filter_next" | "canvas.tag_filter_previous")
 }
 pub(super) fn tag_menu(ui: &mut egui::Ui, canvas: &Canvas, selection: &Selection, t: &theme::Tokens, order: &[TagId]) -> Option<TagAction> {

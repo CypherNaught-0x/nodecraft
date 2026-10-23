@@ -1,6 +1,6 @@
 //! Live geometry capability for one atomic engine layout command. No graph edits in the UI.
 use super::*;
-use nodecraft_engine::layout_cmds::LayoutContext;
+use nodecraft_engine::layout_cmds::{LayoutContext, requested_nodes};
 use nodecraft_graph::layout::Extent;
 use serde_json::Value as Json;
 // Consume a disabled toolbar's pointer input before *any* widgets are built, including
@@ -70,17 +70,19 @@ fn passive_toolbar(ctx: &egui::Context) {
     ctx.add_plugin(PassiveToolbarInput::default());
 }
 impl NodeCraftApp {
-    fn layout_context(&mut self, ctx: &egui::Context, owner: Option<egui::Id>) -> LayoutContext {
+    /// `nodes` names what to measure instead of the selection (an agent's explicit list, #360).
+    fn layout_context(&mut self, ctx: &egui::Context, owner: Option<egui::Id>, nodes: Option<Vec<NodeId>>) -> LayoutContext {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let t = self.theme.tokens();
         let blocked = self.layout_busy(ctx) || (egui::Popup::is_any_open(ctx) && !owner.is_some_and(|id| egui::Popup::is_id_open(ctx, id)));
         let mut extents = Vec::new();
         let mut selection = Vec::new();
+        let wanted = nodes.unwrap_or_else(|| self.selection.nodes().iter().copied().collect());
         if let Some(scene) = self.session.document().canvases().get(&self.canvas)
-            && self.selection.len() <= scene.nodes().len()
-            && self.selection.len() <= nodecraft_graph::MAX_CHANGES
+            && wanted.len() <= scene.nodes().len()
+            && wanted.len() <= nodecraft_graph::MAX_CHANGES
         {
-            selection.extend(self.selection.nodes().iter().copied());
+            selection = wanted;
             for id in &selection {
                 if let (Some(node), Some(size)) = (scene.nodes().get(id), self.navigation.geometry.sizes.get(id)) {
                     let (left, top, right, bottom) = card::outer_insets(t, 1.0, !node.outputs.is_empty());
@@ -112,7 +114,7 @@ impl NodeCraftApp {
         self.layout_enabled_scoped(ctx, params, None)
     }
     pub(super) fn layout_enabled_scoped(&mut self, ctx: &egui::Context, params: &Json, owner: Option<egui::Id>) -> Result<(), Error> {
-        let host = self.layout_context(ctx, owner);
+        let host = self.layout_context(ctx, owner, requested_nodes(params));
         let old = self.session.swap_resource(Some(host));
         let result = self.session.enabled("canvas.auto_format", params);
         self.session.swap_resource(old);
@@ -122,13 +124,21 @@ impl NodeCraftApp {
         self.dispatch_layout_scoped(ctx, params, None)
     }
     fn dispatch_layout_scoped(&mut self, ctx: &egui::Context, params: &Json, owner: Option<egui::Id>) -> Result<Json, Error> {
-        let host = self.layout_context(ctx, owner);
+        let host = self.layout_context(ctx, owner, requested_nodes(params));
         let old = self.session.swap_resource(Some(host));
         let result = self.session.dispatch("canvas.auto_format", params);
         self.session.swap_resource(old);
         if result.is_ok() {
             ctx.request_repaint();
         }
+        result
+    }
+    /// What Format selection would do, measured with the same fresh geometry as dispatch.
+    pub(super) fn layout_impact(&mut self, ctx: &egui::Context, params: &Json) -> Result<nodecraft_engine::impact::Impact, Error> {
+        let host = self.layout_context(ctx, None, requested_nodes(params));
+        let old = self.session.swap_resource(Some(host));
+        let result = self.session.impact("canvas.auto_format", params);
+        self.session.swap_resource(old);
         result
     }
     fn layout_busy(&self, ctx: &egui::Context) -> bool {
@@ -151,7 +161,7 @@ impl NodeCraftApp {
             || self.navigation.drag.is_some()
     }
     pub(super) fn layout_base_available(&mut self, ctx: &egui::Context) -> bool {
-        let host = self.layout_context(ctx, None);
+        let host = self.layout_context(ctx, None, None);
         // Used only inside the card's verified context menu. Its actual root ID is checked
         // separately there, then checked again at scoped dispatch.
         !self.layout_busy(ctx) && host.selection.len() >= 2 && host.extents.len() == host.selection.len()
@@ -164,7 +174,7 @@ impl NodeCraftApp {
         }
         let popup = egui::Id::new("format_selection_popup");
         let owned_before = egui::Popup::is_id_open(&ctx, popup);
-        let host = self.layout_context(&ctx, Some(popup));
+        let host = self.layout_context(&ctx, Some(popup), None);
         let can_open = !host.blocked && host.selection.len() >= 2 && host.extents.len() == host.selection.len();
         let mut mode = None;
         let t = self.theme.tokens();
@@ -331,7 +341,7 @@ mod tests {
                 let mut app = app();
                 app.view.zoom = zoom;
                 let ctx = egui::Context::default();
-                let host = app.layout_context(&ctx, None);
+                let host = app.layout_context(&ctx, None, None);
                 let mut headless = Session::new(app.session.document().clone()).unwrap();
                 // An explicit headless host supplies the same reference-world metrics.
                 headless.swap_resource(Some(host));
@@ -519,12 +529,12 @@ mod tests {
     fn geometry_replacement_same_document_and_revision_cannot_reuse_old_session_cache() {
         let mut app = app();
         let ctx = egui::Context::default();
-        app.layout_context(&ctx, None);
+        app.layout_context(&ctx, None, None);
         let before = app.navigation.geometry.rects[&id(3)];
         let mut document = app.session.document().clone();
         Change::MoveNode { canvas: app.canvas, id: id(3), pos: nodecraft_graph::Position { x: 90_000.0, y: 50_000.0 } }.apply(&mut document).unwrap();
         app.session = Session::new(document).unwrap();
-        app.layout_context(&ctx, None);
+        app.layout_context(&ctx, None, None);
         assert_ne!(app.navigation.geometry.rects[&id(3)], before);
         assert_eq!(app.navigation.geometry.rects[&id(3)].min.x, 90_000.0);
     }
@@ -610,7 +620,7 @@ mod tests {
         let mut h = harness();
         let ctx = h.ctx.clone();
         let params = json!({"mode":"grid"});
-        let mut old = h.state_mut().layout_context(&ctx, None);
+        let mut old = h.state_mut().layout_context(&ctx, None, None);
         old.blocked = true;
         h.state_mut().session.swap_resource(Some(old));
         assert!(h.state_mut().dispatch_layout(&ctx, &json!({"mode":"bad"})).is_err());
@@ -848,7 +858,7 @@ mod tests {
         assert!(!app.text_focused);
         assert!(app.drag.is_none() && app.marquee.is_none());
         assert!(!app.navigation.pointer_owned && app.navigation.drag.is_none());
-        let mut prior = app.layout_context(ctx, None);
+        let mut prior = app.layout_context(ctx, None, None);
         prior.gap = 80.0;
         prior.blocked = false;
         app.session.swap_resource(Some(prior.clone()));
@@ -962,7 +972,7 @@ mod tests {
         for mode in ["grid", "layered"] {
             let mut app = app();
             let ctx = egui::Context::default();
-            let plain = app.layout_context(&ctx, None).extents;
+            let plain = app.layout_context(&ctx, None, None).extents;
             let canvas = app.canvas;
             app.session
                 .dispatch(
@@ -971,7 +981,7 @@ mod tests {
                 "id":"29292929-2929-4929-8929-292929292929","outputs":[{"type":"text","value":"Public layout history"}]}}]}),
                 )
                 .unwrap();
-            let history = app.layout_context(&ctx, None).extents;
+            let history = app.layout_context(&ctx, None, None).extents;
             let before = plain.iter().find(|e| e.id == id(3)).unwrap();
             let after = history.iter().find(|e| e.id == id(3)).unwrap();
             assert!(after.height > before.height);
@@ -993,7 +1003,7 @@ mod tests {
             assert_eq!(app.dispatch_layout(&ctx, &request).unwrap(), json!({"moved":0}));
             assert_eq!(app.session.revision(), revision);
             app.session.dispatch("history.clear", &json!({"canvas":canvas,"id":id(3)})).unwrap();
-            let cleared = app.layout_context(&ctx, None).extents;
+            let cleared = app.layout_context(&ctx, None, None).extents;
             assert_eq!(cleared.iter().find(|e| e.id == id(3)).unwrap().height, before.height);
         }
     }

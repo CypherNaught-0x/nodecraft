@@ -24,7 +24,7 @@ enum Action {
     Discard(u64),
     Resume(u64),
 }
-fn view_command(id: &str) -> bool {
+pub(super) fn view_command(id: &str) -> bool {
     matches!(id, "comment.compose" | "comment.open" | "canvas.comments_toggle")
 }
 impl NodeCraftApp {

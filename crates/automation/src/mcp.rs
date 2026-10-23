@@ -11,6 +11,7 @@
 //! - `ids_new`: fresh ids for commands that take caller-supplied ids (`node.add`, `node.create`, edge commands).
 //!
 //! Every command is classified: [`AGENT_COMMANDS`] may be listed and run, [`HUMAN_ONLY`] never.
+//! [`LIVE_ONLY`] agent commands act on the running window's view and run only through it.
 //! An unclassified command stays hidden, and a test fails until it is classified.
 
 mod overview;
@@ -39,6 +40,30 @@ pub const NODE_INLINE_BYTES: usize = 64 * 1024;
 pub const MAX_PAGE: usize = 500;
 /// Most ids `ids_new` hands out per call.
 pub const MAX_NEW_IDS: usize = 100;
+
+/// The [`AGENT_COMMANDS`] that act on the running window's view (#360): they run only through a
+/// live host (`nodecraft --control`, or MCP bridged to it). A headless session lists them as not
+/// ready and refuses them, saying where they do run.
+pub const LIVE_ONLY: &[&str] = &[
+    "canvas.fit_all",
+    "canvas.fit_selection",
+    "canvas.minimap_toggle",
+    "canvas.pan_to",
+    "canvas.search_open",
+    "canvas.search_query",
+    "canvas.search_next",
+    "canvas.search_previous",
+    "canvas.search_close",
+    "canvas.auto_format",
+    "comment.open",
+    "canvas.comments_toggle",
+    "canvas.tag_filter_open",
+    "canvas.tag_filter_close",
+    "canvas.tag_filter_set",
+    "canvas.tag_filter_next",
+    "canvas.tag_filter_previous",
+];
+const NEEDS_LIVE_APP: &str = "needs the running app's canvas: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`";
 
 /// Commands an agent may see and run.
 pub const AGENT_COMMANDS: &[&str] = &[
@@ -108,6 +133,14 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "canvas.search_next",
     "canvas.search_previous",
     "canvas.search_close",
+    "canvas.auto_format",
+    "comment.open",
+    "canvas.comments_toggle",
+    "canvas.tag_filter_open",
+    "canvas.tag_filter_close",
+    "canvas.tag_filter_set",
+    "canvas.tag_filter_next",
+    "canvas.tag_filter_previous",
     "tag.put",
     "tag.remove",
     "node.tag_set",
@@ -288,15 +321,9 @@ pub const HUMAN_ONLY: &[&str] = &[
     // Sharing the project, or opening someone else's, is the person's call (#698).
     "share.start",
     "share.join",
-    "canvas.auto_format",
+    // Compose opens an empty draft in the person's window and takes their keyboard focus for
+    // them to type into; an agent writes a discussion with `comment.create` instead (#360).
     "comment.compose",
-    "comment.open",
-    "canvas.comments_toggle",
-    "canvas.tag_filter_open",
-    "canvas.tag_filter_close",
-    "canvas.tag_filter_set",
-    "canvas.tag_filter_next",
-    "canvas.tag_filter_previous",
 ];
 
 const PARSE_ERROR: i64 = -32700;
@@ -452,7 +479,10 @@ pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut 
             let mut entry = json!({"id": s.id, "label": s.label, "params_schema": schema, "params_doc": s.params_doc});
             // Whether a command can run depends on its params; only parameterless ones are
             // checked here, so `ready` always means the same thing.
-            if !takes_params {
+            if LIVE_ONLY.contains(&s.id) && !host.live() {
+                entry["ready"] = json!(false);
+                entry["not_ready_because"] = json!(NEEDS_LIVE_APP);
+            } else if !takes_params {
                 let enabled = host.enabled(s.id, &json!({}));
                 entry["ready"] = json!(enabled.is_ok());
                 if let Err(e) = enabled {
@@ -481,6 +511,9 @@ pub(crate) fn admitted<H: crate::commands::CommandHost + ?Sized>(host: &H, mut a
     if !visible(&id) {
         let why = if HUMAN_ONLY.contains(&id.as_str()) { "can only be run by a person in the app" } else { "isn't available to automation yet" };
         return Err(Error::new(ErrorKind::Unsupported, format!("{id} {why}")));
+    }
+    if LIVE_ONLY.contains(&id.as_str()) && !host.live() {
+        return Err(Error::new(ErrorKind::Unsupported, format!("{id} {NEEDS_LIVE_APP}")));
     }
     Ok((id, args.remove("params").unwrap_or(Value::Object(Map::new()))))
 }

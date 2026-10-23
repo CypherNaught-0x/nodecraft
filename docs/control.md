@@ -82,6 +82,10 @@ set a query, step next/previous, or close it. Queries retain the 1024 UTF-8 byte
 incremental per-frame scanner; a response may report scanning before the match is framed.
 Search requests also refuse an active minimap gesture. Headless sessions still have no live
 search capability.
+The tag filter (`canvas.tag_filter_*`), the discussions panel (`canvas.comments_toggle`,
+`comment.open`) and Format selection (`canvas.auto_format`) reach the window the same way (#360).
+Format selection measures the cards named in its optional `nodes` list, or the selection when
+there is none. It is the one live command that edits the document, in one undoable step.
 
 Classification is shared with MCP; the live host does not widen it. Human-only and unclassified
 commands stay excluded. Agent-visible `run.start` still requires engine quote/consent validation
