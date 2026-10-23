@@ -149,6 +149,11 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "node.shader_set",
     "shader.write",
     "shader.apply",
+    // Placing and updating from the shader library edit the document (undoable); saving and
+    // removing change the shared library, so only a person does.
+    "shader.place",
+    "shader.update",
+    "library.shaders",
     // Masks only add and wire cards; the edit card runs (and is quoted) through run.start.
     "node.mask_set",
     "mask.create",
@@ -238,6 +243,8 @@ pub const HUMAN_ONLY: &[&str] = &[
     "element.save",
     "library.remove_element",
     "library.rename_element",
+    "shader.save",
+    "library.remove_shader",
     // What untrusted skill text comes in, and which skills are offered to the agent, is the
     // person's call (#168).
     "skill.import",

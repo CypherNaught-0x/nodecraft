@@ -57,7 +57,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
   image as one undo step (#103). 3D models (glTF, GLB, OBJ) become 3D nodes whose cards show
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
-  writes a GLB or OBJ copy (#111). Typing `@` in a generation prompt mentions another card,
+  writes a GLB or OBJ copy (#111). A custom shader card runs WGSL with declared sliders; its editor
+  checks the code as it's typed, has a text model write or fix it through an ordinary, priced
+  request card, and saves it to a versioned shader library every project shares, which places it
+  on other canvases and moves cards to newer versions (#90). Typing `@` in a generation prompt mentions another card,
   whose text goes into the prompt where it is mentioned and which runs first, like a wire (#505).
   Present selection makes a Deck card with a slide per card and presents it full-window; slides
   are layer stacks whose source layers show what their card shows now, and `deck.*` commands

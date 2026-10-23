@@ -56,6 +56,32 @@ pub fn stored(node: &Node) -> Result<StoredShader, Error> {
     }
 }
 
+/// The config key naming the shader library version (#90) the node's shader came from, as JSON
+/// `{"name", "version"}`. It says where the shader came from, not what it does, so results never
+/// go stale over it.
+pub const FROM_CONFIG: &str = "nodecraft.shader.from";
+
+/// A library shader version a node's shader came from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Pin {
+    pub name: String,
+    pub version: u32,
+}
+
+/// The library version `node`'s shader came from, if it names a readable one.
+pub fn pinned(node: &Node) -> Option<Pin> {
+    match node.config.get(FROM_CONFIG) {
+        Some(Value::Text(json)) if json.len() <= 1024 => serde_json::from_str(json).ok(),
+        _ => None,
+    }
+}
+
+/// The config value storing `pin`.
+pub fn pin_value(pin: &Pin) -> Result<Value, Error> {
+    serde_json::to_string(pin).map(Value::Text).map_err(|_| invalid("the shader's library version can't be stored"))
+}
+
 /// The config value storing `shader`.
 pub fn config_value(shader: &StoredShader) -> Result<Value, Error> {
     let json = serde_json::to_string(shader).map_err(|_| invalid("the shader can't be stored"))?;

@@ -93,6 +93,38 @@ fn a_version_kept_in_the_library_is_placed_in_another_project_and_outlives_remov
 }
 
 #[test]
+fn a_library_shader_is_placed_as_a_card_and_removed() {
+    let mut h = harness_on(&MemoryLibrary::default());
+    let app = h.state_mut();
+    let (canvas, card) = (app.canvas, NodeId::from_bytes([0x5a; 16]));
+    app.session.dispatch("node.create", &json!({"canvas": canvas, "id": card, "kind": nodecraft_nodes::shader::ID, "pos": {"x": 0, "y": 0}})).unwrap();
+    app.session.dispatch("shader.save", &json!({"canvas": canvas, "id": card, "name": "Glow"})).unwrap();
+    h.run();
+    open_panel(&mut h);
+    assert!(h.query_by_label("Glow · v1").is_some());
+    h.get_by_label("Place").click();
+    h.run();
+    let app = h.state();
+    let shaders: Vec<&Node> = app
+        .session
+        .document()
+        .canvases()
+        .get(&app.canvas)
+        .unwrap()
+        .nodes()
+        .values()
+        .filter(|n| n.kind == nodecraft_nodes::shader::ID && n.id != card)
+        .collect();
+    assert_eq!(shaders.len(), 1, "{:?}", app.notice);
+    assert_eq!(shaders[0].title, "Glow");
+    assert_eq!(nodecraft_nodes::shader::pinned(shaders[0]).map(|pin| pin.version), Some(1));
+    assert!(app.selection.contains(shaders[0].id));
+    h.get_by_label("Remove").click();
+    h.run();
+    assert!(h.query_by_label_contains("No shaders saved yet").is_some(), "{:?}", h.state().notice);
+}
+
+#[test]
 #[ignore = "manual public-safe capture; LIBRARY96_RENDER_DIR"]
 fn library96_visual() {
     let dir = std::path::PathBuf::from(std::env::var_os("LIBRARY96_RENDER_DIR").unwrap());

@@ -26,5 +26,5 @@
   later from its own menu (Use as shader), e.g. after it was run by hand.
 - **Compiler reports use ASCII framing.** naga's box-drawing characters are mapped to `- | +`,
   since the UI font and many terminals lack them.
-- **Not yet**: saving shaders to the library and versioning saved actions; shaders with more than
-  one image input (#162).
+- Saving shaders to a versioned library is recorded in `2026-10-23-shader-library.md`. Shaders with
+  more than one image input are #162.

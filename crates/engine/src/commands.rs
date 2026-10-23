@@ -279,6 +279,7 @@ impl Registry {
             .chain(crate::variation_cmds::specs())
             .chain(crate::shader_cmds::specs())
             .chain(crate::shader_assist_cmds::specs())
+            .chain(crate::shader_library_cmds::specs())
             .chain(crate::mask_cmds::specs())
             .chain(crate::image_tool_cmds::specs())
             .chain(crate::mesh_cmds::specs())

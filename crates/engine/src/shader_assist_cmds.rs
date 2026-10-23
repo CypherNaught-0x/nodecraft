@@ -284,7 +284,7 @@ fn apply(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     }
     let from = canvas.nodes().get(&p.from).ok_or_else(|| Error::new(ErrorKind::NotFound, "the answering card does not exist"))?;
     let shader = parse_reply(answer(from)?).map_err(|message| Error::new(ErrorKind::InvalidInput, format!("the answer isn't a shader: {message}")))?;
-    crate::shader_cmds::set_shader(c, p.canvas, p.id, shader)
+    crate::shader_cmds::set_shader(c, p.canvas, p.id, shader, None)
 }
 
 fn enabled_write(c: &Context<'_>, value: &Json) -> Result<(), Error> {

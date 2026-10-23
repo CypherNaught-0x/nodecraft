@@ -1,6 +1,7 @@
 //! The Techniques panel (#96): the project's published technique versions and the library every
 //! project shares. Placing, adding and removing dispatch `technique.place` and the `library.*`
-//! commands; the library list is read when the panel opens and after every change.
+//! commands; the library list is read when the panel opens and after every change. Below them,
+//! the shader library (#90): each saved shader's latest version is placed with `shader.place`.
 use super::*;
 use nodecraft_types::TechniqueId;
 use serde::Deserialize;
@@ -12,6 +13,15 @@ pub(super) struct LibraryView {
     pub(super) open: bool,
     /// The last `library.list` answer; `None` reads it again on the next frame it shows.
     listed: Option<Result<Vec<Kept>, String>>,
+    /// The shader library's names and latest versions, read with the techniques.
+    shaders: super::shader_editor::ShaderListing,
+}
+
+impl LibraryView {
+    /// Lists the libraries again the next frame the panel shows.
+    pub(super) fn reset(&mut self) {
+        self.listed = None;
+    }
 }
 
 /// One version the library keeps, as `library.list` describes it.
@@ -28,7 +38,7 @@ struct Listing {
 }
 
 /// What the panel asked for, applied after it is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Action {
     /// Place the project's own version, by its canvas.
     Place(CanvasId),
@@ -37,6 +47,10 @@ enum Action {
     /// Place a version from the library.
     PlaceKept(TechniqueId, u32),
     Remove(TechniqueId, u32),
+    /// Place a library shader's latest version.
+    PlaceShader(String),
+    /// Take a shader, every version, out of the library.
+    RemoveShader(String),
 }
 
 impl NodeCraftApp {
@@ -64,6 +78,7 @@ impl NodeCraftApp {
         let library = self.has_library();
         if library && self.library.listed.is_none() {
             self.library.listed = Some(self.list_library());
+            self.library.shaders = self.library_shaders();
         }
         let mut own: Vec<(CanvasId, TechniqueId, u32, String)> = self
             .session
@@ -142,6 +157,35 @@ impl NodeCraftApp {
                             }
                         });
                     }
+                    if let Some(listing) = &self.library.shaders {
+                        ui.separator();
+                        ui.label(egui::RichText::new("Shaders").strong().color(t.text));
+                        let shaders: &[(String, u32)] = match listing {
+                            Ok(shaders) => shaders,
+                            Err(error) => {
+                                ui.colored_label(t.danger, error);
+                                &[]
+                            }
+                        };
+                        if listing.is_ok() && shaders.is_empty() {
+                            ui.label(egui::RichText::new("No shaders saved yet. Save one from a custom shader card's editor.").color(t.text_muted));
+                        }
+                        for (name, latest) in shaders {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{} · v{latest}", sheet_view::line(name)));
+                                if ui.button("Place").on_hover_text("A custom shader card with its latest version, in the middle of the view").clicked() {
+                                    action = Some(Action::PlaceShader(name.clone()));
+                                }
+                                if ui
+                                    .button("Remove")
+                                    .on_hover_text("Take it and its versions out of the library; cards placed from it keep their shader")
+                                    .clicked()
+                                {
+                                    action = Some(Action::RemoveShader(name.clone()));
+                                }
+                            });
+                        }
+                    }
                 });
             });
         self.library.open = open;
@@ -163,6 +207,8 @@ impl NodeCraftApp {
                 .and_then(|copy| self.place_technique(t, "library.place", json!({"technique": technique, "version": version, "copy": copy}))),
             Action::Add(canvas) => self.session.dispatch("library.add", &json!({"canvas": canvas})).map(|_| ()),
             Action::Remove(technique, version) => self.session.dispatch("library.remove", &json!({"technique": technique, "version": version})).map(|_| ()),
+            Action::PlaceShader(ref name) => self.place_technique(t, "shader.place", json!({"name": name})),
+            Action::RemoveShader(ref name) => self.session.dispatch("library.remove_shader", &json!({"name": name})).map(|_| ()),
         };
         // What the library holds may have changed, even for a refused request (another window).
         if !matches!(action, Action::Place(_)) {
@@ -174,7 +220,7 @@ impl NodeCraftApp {
         }
     }
 
-    /// Dispatches `command` (`technique.place` or `library.place`) with `params` for a new node
+    /// Dispatches `command` (`technique.place`, `library.place` or `shader.place`) with `params` for a new node
     /// centred in the view, and selects it.
     fn place_technique(&mut self, t: &Tokens, command: &str, mut params: Json) -> Result<(), Error> {
         let usable = self.navigation.usable(self.viewport, t);

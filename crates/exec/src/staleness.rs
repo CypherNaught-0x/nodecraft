@@ -406,13 +406,18 @@ impl InputHasher {
         charge_stored(&mut self.meter, node)?;
         let mut w = Writer::new();
         w.text(&node.kind);
-        // Whether a node reuses cached results (#91), and how many variations a run makes
-        // (#81), don't change what it makes: leave them out, so changing them never makes a
+        // Whether a node reuses cached results (#91), how many variations a run makes (#81),
+        // and the shader library version (#90) a custom shader came from don't change what it
+        // makes (the shader itself is hashed): leave them out, so changing them never makes a
         // result stale.
-        if node.config.contains_key(CACHE_CONFIG) || node.config.contains_key(VARIATIONS_CONFIG) {
+        let pinned = node.kind == nodecraft_nodes::shader::ID && node.config.contains_key(nodecraft_nodes::shader::FROM_CONFIG);
+        if node.config.contains_key(CACHE_CONFIG) || node.config.contains_key(VARIATIONS_CONFIG) || pinned {
             let mut config = node.config.clone();
             config.remove(CACHE_CONFIG);
             config.remove(VARIATIONS_CONFIG);
+            if pinned {
+                config.remove(nodecraft_nodes::shader::FROM_CONFIG);
+            }
             w.params(&config)?;
         } else {
             w.params(&node.config)?;

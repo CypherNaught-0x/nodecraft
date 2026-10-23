@@ -162,6 +162,12 @@ fn mcp() -> ExitCode {
     if let Some(dir) = nodecraft_engine::settings::settings_dir() {
         nodecraft_engine::element_library::install(&mut session, std::rc::Rc::new(nodecraft_engine::element_library::FileElements::new(dir.join("elements"))));
     }
+    // The app's shader library (#90), for agents to list and place from.
+    if let Some(dir) = nodecraft_engine::settings::settings_dir()
+        && let Err(e) = nodecraft_engine::shader_library::install(&mut session, Box::new(nodecraft_engine::shader_library::file_store(dir.join("shaders"))))
+    {
+        eprintln!("warning: the shader library is unavailable: {}", e.message);
+    }
     // The person's agent skills (#168), shared with the app; the folder is made on the first change.
     if let Some(dir) = nodecraft_engine::settings::settings_dir()
         && let Err(e) = nodecraft_engine::skills::install(&mut session, std::rc::Rc::new(nodecraft_engine::skills::FileSkills::new(dir.join("skills"))))

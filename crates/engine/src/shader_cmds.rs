@@ -3,7 +3,7 @@
 //! longer declares are dropped; the rest are kept.
 use crate::commands::{CommandSpec, Context, Effect, params};
 use nodecraft_graph::{Change, Changeset};
-use nodecraft_nodes::shader::{CONFIG, ID, StoredParam, StoredShader, config_value};
+use nodecraft_nodes::shader::{CONFIG, FROM_CONFIG, ID, Pin, StoredParam, StoredShader, config_value, pin_value};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -51,11 +51,13 @@ fn always(_: &Context<'_>, _: &Value) -> Result<(), Error> {
 
 fn set(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: ShaderParams = params(value)?;
-    set_shader(c, p.canvas, p.id, StoredShader { source: p.source, params: p.params })
+    set_shader(c, p.canvas, p.id, StoredShader { source: p.source, params: p.params }, None)
 }
 
-/// Validates `shader` and stores it on the custom shader node `id`, as one undo step.
-pub(crate) fn set_shader(c: &Context<'_>, canvas: CanvasId, id: NodeId, shader: StoredShader) -> Result<Effect, Error> {
+/// Validates `shader` and stores it on the custom shader node `id`, as one undo step, with the
+/// library version it came from when `from` names one. Without one, the version it came from is
+/// kept: the card shows it was edited since.
+pub(crate) fn set_shader(c: &Context<'_>, canvas: CanvasId, id: NodeId, shader: StoredShader, from: Option<&Pin>) -> Result<Effect, Error> {
     let node = c
         .document
         .canvases()
@@ -70,6 +72,9 @@ pub(crate) fn set_shader(c: &Context<'_>, canvas: CanvasId, id: NodeId, shader: 
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("the shader isn't valid: {}", e.0.chars().take(4000).collect::<String>())))?;
     let mut changed = node.clone();
     changed.config.insert(CONFIG.into(), config_value(&shader)?);
+    if let Some(from) = from {
+        changed.config.insert(FROM_CONFIG.into(), pin_value(from)?);
+    }
     // Kept values move into their new range; ones for undeclared parameters go.
     changed.params.retain(|name, _| shader.params.iter().any(|d| d.name == *name));
     for declared in &shader.params {
