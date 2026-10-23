@@ -107,6 +107,7 @@ fn v2_additions() -> Vec<Change> {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             },
         });
@@ -121,6 +122,7 @@ fn v2_additions() -> Vec<Change> {
             input_hash: Some(nodecraft_types::Blake3::from_bytes([7; 32])),
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         },
     });

@@ -83,6 +83,74 @@ fn each_wired_video_is_listed_as_a_whole_clip_until_it_is_stored() {
 }
 
 #[test]
+fn rendered_source_versions_stay_with_the_active_result_when_sources_change_and_undo() {
+    use nodecraft_graph::{Generation, SourceVersion};
+    use nodecraft_types::{GenerationId, MediaMeta};
+    let mut s = session();
+    let clip = timeline::auto_id(Input::Clips, &A.to_string(), 0);
+    let old = s.import_asset(b"old video fixture").unwrap();
+    let new = s.import_asset(b"new video fixture").unwrap();
+    let asset = |hash| Value::Media(AssetRef { hash, mime: "video/webm".parse().unwrap(), meta: MediaMeta { duration_ms: Some(1000), ..Default::default() } });
+    s.dispatch("node.param_set", &json!({"canvas":CANVAS,"id":A,"name":"asset","value":asset(old)})).unwrap();
+    let mut generation = Generation::new(GenerationId::from_bytes([8; 16]), vec![]);
+    generation.source_versions.push(SourceVersion { role: clip.clone(), hash: old, item: None });
+    s.record_derived(CANVAS, vec![(EDITOR, generation)], &Default::default(), s.revision()).unwrap();
+    assert_eq!(list(&mut s)[0]["rendered_sources"][0]["hash"], json!(old));
+    s.dispatch("timeline.update", &with(on(&clip), json!({"set":{"in_us":500_000,"out_us":2_000_000}}))).unwrap();
+    s.dispatch("node.param_set", &json!({"canvas":CANVAS,"id":A,"name":"asset","value":asset(new)})).unwrap();
+    let listed = list(&mut s);
+    assert_eq!((listed[0]["source_hash"].clone(), listed[0]["rendered_sources"][0]["hash"].clone()), (json!(new), json!(old)));
+    assert_eq!(
+        (listed[0]["in_us"].clone(), listed[0]["out_us"].clone()),
+        (json!(500_000), json!(2_000_000)),
+        "regeneration never silently adjusts stored trims"
+    );
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(list(&mut s)[0]["source_hash"], json!(old));
+    s.dispatch("edge.disconnect", &json!({"canvas":CANVAS,"id":EdgeId::from_bytes([1;16])})).unwrap();
+    let listed = list(&mut s);
+    assert_eq!(listed[0]["wired"], json!(false));
+    assert_eq!(listed[0]["rendered_sources"][0]["hash"], json!(old), "missing wire keeps the rendered version record");
+}
+
+#[test]
+fn disabled_clips_keep_their_last_rendered_source_as_of_the_selected_history() {
+    use nodecraft_graph::{Generation, SourceVersion};
+    use nodecraft_types::{GenerationId, MediaMeta};
+    let mut s = session();
+    let first = s.import_asset(b"first video version").unwrap();
+    let newer = s.import_asset(b"newer video version").unwrap();
+    let asset = |hash| Value::Media(AssetRef { hash, mime: "video/webm".parse().unwrap(), meta: MediaMeta::default() });
+    for id in [A, B] {
+        s.dispatch("node.param_set", &json!({"canvas":CANVAS,"id":id,"name":"asset","value":asset(first)})).unwrap();
+    }
+    let a = timeline::auto_id(Input::Clips, &A.to_string(), 0);
+    let b = timeline::auto_id(Input::Clips, &B.to_string(), 0);
+    let record = |s: &mut Session, n: u8, role: String, hash| {
+        let mut generation = Generation::new(GenerationId::from_bytes([n; 16]), vec![]);
+        generation.source_versions.push(SourceVersion { role, hash, item: None });
+        s.record_derived(CANVAS, vec![(EDITOR, generation)], &Default::default(), s.revision()).unwrap();
+    };
+    s.dispatch("timeline.update", &with(on(&b), json!({"set":{"enabled":false}}))).unwrap();
+    record(&mut s, 10, a.clone(), first);
+    s.dispatch("timeline.update", &with(on(&a), json!({"set":{"enabled":false}}))).unwrap();
+    s.dispatch("timeline.update", &with(on(&b), json!({"set":{"enabled":true}}))).unwrap();
+    record(&mut s, 11, b.clone(), first);
+    s.dispatch("node.param_set", &json!({"canvas":CANVAS,"id":A,"name":"asset","value":asset(newer)})).unwrap();
+    let last = list(&mut s);
+    assert_eq!(
+        (last[0]["enabled"].clone(), last[0]["source_hash"].clone(), last[0]["rendered_sources"][0]["hash"].clone(), last[0]["rendered_generation"].clone()),
+        (json!(false), json!(newer), json!(first), json!(GenerationId::from_bytes([10; 16])))
+    );
+    s.dispatch("timeline.update", &with(on(&a), json!({"set":{"enabled":true}}))).unwrap();
+    s.dispatch("timeline.update", &with(on(&b), json!({"set":{"enabled":false}}))).unwrap();
+    record(&mut s, 12, a.clone(), newer);
+    assert_eq!(list(&mut s)[0]["rendered_sources"][0]["hash"], json!(newer));
+    s.dispatch("history.select", &json!({"canvas":CANVAS,"id":EDITOR,"generation":GenerationId::from_bytes([11;16])})).unwrap();
+    assert_eq!(list(&mut s)[0]["rendered_sources"][0]["hash"], json!(first), "never borrow a future render while inspecting older history");
+}
+
+#[test]
 fn a_split_plays_one_video_twice_and_a_wired_videos_last_clip_stays() {
     let mut s = session();
     let a = timeline::auto_id(Input::Clips, &A.to_string(), 0);

@@ -543,6 +543,7 @@ fn launch_authority_rejects_copied_projects_and_equal_revision_inputs_before_ser
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             };
             n.active = Some(generation.id);

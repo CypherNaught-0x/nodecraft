@@ -150,6 +150,7 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let inputs = inputs(c, p.canvas, p.id)?;
     let wires: Vec<Wire> = inputs.iter().map(|(wire, _)| wire.clone()).collect();
     let shown = stored(node)?.with_sources(&wires);
+    let rendered = last_rendered(node, &shown);
     let mut clips = Vec::with_capacity(shown.clips.len());
     for clip in &shown.clips {
         let mut entry = serde_json::to_value(clip).map_err(|_| invalid("the clips can't be listed"))?;
@@ -176,12 +177,44 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             }
             fields.insert("wired".into(), Json::Bool(Timeline::is_wired(clip, &wires)));
             fields.insert("media_us".into(), media_length(&inputs, clip).map_or(Json::Null, Json::from));
+            let source = usize::try_from(clip.nth)
+                .ok()
+                .and_then(|nth| inputs.iter().filter(|(wire, _)| wire.input == clip.input && wire.origin == clip.origin).nth(nth))
+                .and_then(|(_, media)| media.as_ref());
+            fields.insert("source_hash".into(), json!(source.map(|asset| asset.hash)));
+            let previous = rendered.get(clip.id.as_str());
+            fields.insert("rendered_sources".into(), json!(previous.map(|(_, sources)| sources).cloned().unwrap_or_default()));
+            fields.insert("rendered_generation".into(), json!(previous.map(|(generation, _)| generation)));
         }
         clips.push(entry);
     }
     let tracks: Vec<Json> = std::iter::once(TrackKind::Video).chain(shown.tracks.iter().map(|t| t.kind)).map(|kind| json!({"kind": kind})).collect();
     let inputs: Vec<Json> = inputs.into_iter().map(|(wire, media)| json!({"origin": wire.origin, "input": wire.input, "media": media})).collect();
     Ok(Effect::None { result: json!({"clips": clips, "tracks": tracks, "inputs": inputs, "captions": shown.captions}) })
+}
+
+/// Each current clip's last successful use, no later than the selected output. This includes
+/// clips disabled/unwired in that output, while never borrowing evidence from future history.
+/// One scan of the node-byte-bounded history; only the current clip roles get map entries.
+type RenderedSources<'a> = std::collections::BTreeMap<&'a str, (nodecraft_types::GenerationId, Vec<&'a nodecraft_graph::SourceVersion>)>;
+
+fn last_rendered<'a>(node: &'a Node, shown: &Timeline) -> RenderedSources<'a> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(index) = node.active.and_then(|active| node.history.iter().position(|generation| generation.id == active)) else { return out };
+    let Some(history) = node.history.get(..=index) else { return out };
+    let roles: std::collections::BTreeSet<&str> = shown.clips.iter().map(|clip| clip.id.as_str()).collect();
+    for generation in history.iter().rev() {
+        for source in &generation.source_versions {
+            if !roles.contains(source.role.as_str()) {
+                continue;
+            }
+            let (id, versions) = out.entry(source.role.as_str()).or_insert_with(|| (generation.id, Vec::new()));
+            if *id == generation.id {
+                versions.push(source);
+            }
+        }
+    }
+    out
 }
 
 #[derive(Deserialize)]
@@ -516,7 +549,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: list_schema,
-            params_doc: "{canvas, id: Timeline NodeId} -> {clips, tracks, inputs, captions}; every clip: the stored ones and a whole clip for each wired video, sound or picture no stored clip names. A clip is {id, origin, input, nth, track, at_us, in_us, out_us?, fade_in_us, fade_out_us, volume, muted, transition_us, enabled, pos_x, pos_y, scale, crop_left, crop_top, crop_right, crop_bottom, rotation, opacity, speed, wired, media_us}: input the port its media is wired into (clips, audio or stills), track 0 the main track (its clips play in list order) or another track (its clips start at at_us), times in microseconds into its media, out_us absent to play to the end (a still's length), volume in thousandths, transition_us the cross-fade into the next main-track clip (0 cuts), pos_x/pos_y the picture's centre in thousandths of the frame (500 the middle), scale thousandths of the size that fits the frame, crop_* thousandths cut from each edge, rotation clockwise degrees, opacity thousandths, speed the playback rate in thousandths (fades and transitions are in played time, in_us and out_us in the media's), wired whether its media is connected now and media_us the video's or sound's length when known. tracks lists every track as {kind: video|audio}, the main track first: video tracks draw over the ones before them, audio tracks mix in. inputs lists each wired item in input order as {origin, input, media}: the node it comes from, its port and the asset it shows now (null until that node has a result). captions lists the text drawn over the picture, in drawing order (see timeline.caption_add), every field included.",
+            params_doc: "{canvas, id: Timeline NodeId} -> {clips, tracks, inputs, captions}; every clip: the stored ones and a whole clip for each wired video, sound or picture no stored clip names. A clip is {id, origin, input, nth, track, at_us, in_us, out_us?, fade_in_us, fade_out_us, volume, muted, transition_us, enabled, pos_x, pos_y, scale, crop_left, crop_top, crop_right, crop_bottom, rotation, opacity, speed, wired, media_us, source_hash, rendered_sources, rendered_generation}: input the port its media is wired into (clips, audio or stills), track 0 the main track (its clips play in list order) or another track (its clips start at at_us), times in microseconds into its media, out_us absent to play to the end (a still's length), volume in thousandths, transition_us the cross-fade into the next main-track clip (0 cuts), pos_x/pos_y the picture's centre in thousandths of the frame (500 the middle), scale thousandths of the size that fits the frame, crop_* thousandths cut from each edge, rotation clockwise degrees, opacity thousandths, speed the playback rate in thousandths (fades and transitions are in played time, in_us and out_us in the media's), wired whether its media is connected now and media_us the video's or sound's length when known. source_hash is the current wired asset's content hash (null when unknown); rendered_sources lists {role, hash, item?} from this clip's last recorded use at or before the selected output history entry; rendered_generation names that entry or is null. Disabled or disconnected clips keep their earlier recorded use while that history is retained. The list is empty without an eligible recorded use and never borrows future history. These hashes do not keep old media bytes alive. tracks lists every track as {kind: video|audio}, the main track first: video tracks draw over the ones before them, audio tracks mix in. inputs lists each wired item in input order as {origin, input, media}: the node it comes from, its port and the asset it shows now (null until that node has a result). captions lists the text drawn over the picture, in drawing order (see timeline.caption_add), every field included.",
             enabled: always,
             run: list,
         },

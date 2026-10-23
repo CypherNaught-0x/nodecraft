@@ -16,6 +16,7 @@ fn generation(n: u8) -> Generation {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     }
 }

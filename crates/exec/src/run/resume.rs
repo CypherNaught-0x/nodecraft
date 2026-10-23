@@ -103,6 +103,7 @@ impl ResumeRecipe {
             input_hash: self.input_hash,
             items: Vec::new(),
             settings: self.settings.iter().cloned().map(|settings| JobSettings { billable_units, ..settings }).collect(),
+            source_versions: Vec::new(),
             incomplete: None,
         };
         recordable(generation)

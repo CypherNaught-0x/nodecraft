@@ -40,6 +40,24 @@ fn golden_archive_round_trip_and_optional_fields() {
 }
 
 #[test]
+fn render_source_versions_round_trip_without_pinning_the_old_media() {
+    let mut s = snapshot();
+    let canvas = CanvasId::from_bytes([2; 16]);
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Timeline") }.apply(&mut s.project).unwrap();
+    let mut node = Node::new(NodeId::from_bytes([3; 16]), "video.timeline");
+    let mut generation = Generation::new(GenerationId::from_bytes([4; 16]), vec![Value::Text("render fixture".into())]);
+    generation.source_versions.push(nodecraft_graph::SourceVersion { role: "clip".into(), hash: Blake3::from_bytes([8; 32]), item: None });
+    node.active = Some(generation.id);
+    node.history.push(generation);
+    Change::AddNode { canvas, node }.apply(&mut s.project).unwrap();
+    // The old source bytes deliberately aren't in assets: diagnostic hashes are not media refs.
+    let bytes = encode(&s).unwrap();
+    assert_eq!(decode(&bytes).unwrap(), s);
+    let checkpoint = journal::checkpoint(&s).unwrap();
+    assert_eq!(journal::recover(&checkpoint.bytes).unwrap().snapshot, s);
+}
+
+#[test]
 fn assets_deduplicate_validate_hashes_and_cover_nested_generation_history() {
     let mut s = snapshot();
     let digest = s.assets.insert(b"a small media fixture").unwrap();
@@ -56,6 +74,7 @@ fn assets_deduplicate_validate_hashes_and_cover_nested_generation_history() {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     });
     Change::AddNode { canvas, node }.apply(&mut s.project).unwrap();
@@ -280,6 +299,7 @@ fn public_journal_payload_preflight_includes_generation_depth_counts_and_record_
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         },
     }]);
@@ -314,6 +334,7 @@ fn text_that_starts_like_a_style_still_opens_as_text_and_styles_open_as_styles()
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         });
         Change::AddNode { canvas, node }.apply(&mut s.project).unwrap();

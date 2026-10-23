@@ -1173,9 +1173,18 @@ impl Run {
         let billed = self.billed_keys(&job_ids, &job_items);
         let mut per_cell: Vec<Vec<Vec<Value>>> = vec![vec![Vec::new(); target.outputs.len()]; cells];
         let mut settings: Vec<Vec<JobSettings>> = vec![Vec::new(); cells];
+        let mut source_versions = vec![Vec::new(); cells];
         for (n, job) in job_ids.into_iter().enumerate() {
             let cell = if items.is_some() { *job_items.get(n).ok_or("a job's item is unknown")? } else { 0 };
             let per_port = per_cell.get_mut(cell).ok_or("a job's item is out of range")?;
+            if let Some(JobState { work: JobSpec::Action { action, params, inputs, .. }, .. }) = self.jobs.get(&job)
+                && action == nodecraft_nodes::timeline::ID
+                && !missing.contains_key(&cell)
+            {
+                let item = items.as_ref().map(|_| u32::try_from(cell).map_err(|_| "a job's item is out of range")).transpose()?;
+                let sources = nodecraft_nodes::timeline::provenance::source_versions(params, inputs, item).map_err(|e| e.message)?;
+                source_versions.get_mut(cell).ok_or("a job's item is out of range")?.extend(sources);
+            }
             if let Some(JobState { work: JobSpec::Generate { provider, instance, model, params, inputs, .. }, billable_units, .. }) = self.jobs.get(&job) {
                 let item = if items.is_some() { Some(u32::try_from(cell).map_err(|_| "a job's item is out of range")?) } else { None };
                 let inputs = inputs.iter().map(|input| JobInput { role: input.role.clone(), value: input.value.clone() }).collect();
@@ -1204,12 +1213,14 @@ impl Run {
         for (cell, per_port) in per_cell.into_iter().enumerate() {
             if missing.contains_key(&cell) {
                 settings.get_mut(cell).map(Vec::clear);
+                source_versions.get_mut(cell).map(Vec::clear);
                 assembled.push(vec![Value::List(Vec::new()); target.outputs.len()]);
                 continue;
             }
             if resume.as_ref().is_some_and(|r| r.generation.is_none() && !r.runs(cell)) {
                 // Inside a technique (#536): its technique node keeps this item.
                 settings.get_mut(cell).map(Vec::clear);
+                source_versions.get_mut(cell).map(Vec::clear);
                 assembled.push(vec![Value::List(Vec::new()); target.outputs.len()]);
                 continue;
             }
@@ -1224,6 +1235,9 @@ impl Run {
                 if let Some(cell_settings) = settings.get_mut(cell) {
                     let of_cell = |job: &&JobSettings| job.item.and_then(|item| usize::try_from(item).ok()) == Some(cell);
                     *cell_settings = kept.settings.iter().filter(of_cell).cloned().collect();
+                }
+                if let Some(sources) = source_versions.get_mut(cell) {
+                    *sources = kept.source_versions.iter().filter(|source| source.item.and_then(|i| usize::try_from(i).ok()) == Some(cell)).cloned().collect();
                 }
                 continue;
             }
@@ -1284,8 +1298,10 @@ impl Run {
             Some(Incomplete { missing: items })
         };
         let settings = settings.into_iter().flatten().collect();
-        let generation =
-            Generation { id: self.generation_id(node, variant.unwrap_or(0)), outputs, input_hash, items: items.unwrap_or_default(), settings, incomplete };
+        let source_versions = source_versions.into_iter().flatten().collect();
+        let generation = Generation {
+            id: self.generation_id(node, variant.unwrap_or(0)), outputs, input_hash, items: items.unwrap_or_default(), settings, source_versions, incomplete
+        };
         let generation = recordable(generation)?;
         if generation.incomplete.is_none() {
             self.produced.insert(node, generation.outputs.clone());
@@ -1507,6 +1523,9 @@ mod seed;
 pub use resume::{RecipePort, ResumeRecipe};
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod timeline_source_tests;
 
 #[cfg(test)]
 mod partial_tests;

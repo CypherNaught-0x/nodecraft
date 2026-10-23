@@ -57,6 +57,51 @@ fn opened() -> Harness<'static, NodeCraftApp> {
     h
 }
 
+#[test]
+fn regenerated_shorter_sources_warn_before_running_and_keep_the_rendered_version() {
+    use nodecraft_graph::{Generation, SourceVersion};
+    use nodecraft_types::GenerationId;
+    let mut h = opened();
+    let canvas = h.state().canvas;
+    let source = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&ONE).unwrap().params.get("asset").cloned().unwrap();
+    let Value::Media(mut asset) = source else { panic!("video source") };
+    asset.meta.duration_ms = Some(2000);
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas":canvas,"id":ONE,"name":"asset","value":Value::Media(asset.clone())})).unwrap();
+    dispatch(&mut h, "timeline.update", json!({"clip":auto(ONE),"set":{"out_us":1_500_000}}));
+    let mut rendered = Generation::new(GenerationId::from_bytes([90; 16]), vec![]);
+    rendered.source_versions.push(SourceVersion { role: auto(ONE), hash: asset.hash, item: None });
+    let revision = h.state().session.revision();
+    h.state_mut().session.record_derived(canvas, vec![(EDITOR, rendered)], &Default::default(), revision).unwrap();
+    h.state_mut().timeline_editor.as_mut().unwrap().selected = Some(auto(ONE));
+    h.run_steps(3);
+    assert!(h.query_by_label("Trim exceeds source").is_none());
+    if let Ok(dir) = std::env::var("NODECRAFT_SCREENSHOT_DIR") {
+        h.render().unwrap().save(std::path::Path::new(&dir).join("timeline-source-before.png")).unwrap();
+    }
+    let old = asset.hash;
+    let mut bytes = webm();
+    *bytes.last_mut().unwrap() = 1;
+    asset.hash = h.state_mut().session.import_asset(&bytes).unwrap();
+    asset.meta.duration_ms = Some(1000);
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas":canvas,"id":ONE,"name":"asset","value":Value::Media(asset)})).unwrap();
+    h.run_steps(3);
+    assert!(h.query_by_label("A clip extends beyond its current source. Adjust its trim before rendering.").is_some());
+    assert!(h.query_by_label("Trim exceeds source").is_some());
+    assert!(h.query_by_label("Source changed since this clip was rendered.").is_some());
+    let clip = list(&mut h).remove(0);
+    assert_eq!((clip["id"].clone(), clip["out_us"].clone(), clip["rendered_sources"][0]["hash"].clone()), (json!(auto(ONE)), json!(1_500_000), json!(old)));
+    assert!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&EDITOR).unwrap().history.len() == 1, "warning starts no render");
+    if let Ok(dir) = std::env::var("NODECRAFT_SCREENSHOT_DIR") {
+        h.render().unwrap().save(std::path::Path::new(&dir).join("timeline-source-after.png")).unwrap();
+    }
+    // Turning the clip off or losing its wire keeps it listed but removes the run warning.
+    dispatch(&mut h, "timeline.update", json!({"clip":auto(ONE),"set":{"enabled":false}}));
+    assert!(h.query_by_label("Trim exceeds source").is_none());
+    h.state_mut().session.dispatch("edge.disconnect", &json!({"canvas":canvas,"id":EdgeId::from_bytes([61;16])})).unwrap();
+    h.run_steps(2);
+    assert_eq!(list(&mut h)[0]["wired"], json!(false));
+}
+
 fn list(h: &mut Harness<'static, NodeCraftApp>) -> Vec<serde_json::Value> {
     let canvas = h.state().canvas;
     let listed = h.state_mut().session.dispatch("timeline.list", &json!({"canvas": canvas, "id": EDITOR})).unwrap();
@@ -341,18 +386,39 @@ fn measured_videos_show_their_lengths_and_trim_to_their_ends() {
     let ctx = h.ctx.clone();
     h.state_mut().apply_settings(&ctx, &settings);
     with_timeline(&mut h, &a, &b);
+    // Advertised metadata can outlive a regenerated source's real duration. A ready probe
+    // must take precedence, or the pre-run warning misses this two-second source.
+    let canvas = h.state().canvas;
+    let Value::Media(mut asset) =
+        h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&ONE).unwrap().params.get("asset").cloned().unwrap()
+    else {
+        panic!("video")
+    };
+    asset.meta.duration_ms = Some(4000);
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas":canvas,"id":ONE,"name":"asset","value":Value::Media(asset)})).unwrap();
     open(&mut h);
+    dispatch(&mut h, "timeline.update", json!({"clip":auto(ONE),"set":{"out_us":2_500_000}}));
     let one = clip_label(&h, ONE);
     let mut measured = false;
     for _ in 0..500 {
         h.step();
-        if h.query_by_label(&format!("Trim end of {one}")).is_some() {
+        if h.query_by_label("Trim exceeds source").is_some() {
             measured = true;
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(measured, "the editor never learned the video's length");
+    assert!(measured, "the editor never warned about the actual shorter video despite advertised metadata");
+    assert_eq!(list(&mut h)[0]["out_us"], json!(2_500_000), "the warning preserves the stored trim");
+    if let Ok(dir) = std::env::var("NODECRAFT_SCREENSHOT_DIR") {
+        h.state_mut().timeline_editor.as_mut().unwrap().selected = Some(auto(ONE));
+        for _ in 0..50 {
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        h.render().unwrap().save(std::path::Path::new(&dir).join("timeline-source-probed.png")).unwrap();
+    }
+    dispatch(&mut h, "timeline.update", json!({"clip":auto(ONE),"set":{"out_us":null}}));
     // Dragging the end past the video's end stops there, and plays to the end.
     let end = centre_of(&h, &format!("Trim end of {one}"));
     let to = end + Vec2::new(screen_x(&h, 1_000_000) - screen_x(&h, 2_000_000), 0.0);

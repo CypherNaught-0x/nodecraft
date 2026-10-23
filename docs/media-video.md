@@ -125,6 +125,24 @@ returns the same verified `RenderedVideo` as a render. It shares the single rend
 
 ## Video actions
 
+### Regenerated Timeline sources
+
+Timeline clips keep their ids and stored trims when an upstream result changes. The editor
+warns before running if an enabled, wired video or sound is now shorter than its trim, using
+its known duration (asset metadata until the video player's actual probe is ready). Unknown lengths are checked
+when measured; still display durations are not source trims. A disabled clip or one whose
+wire is gone stays listed without playing. Fix the trim before rendering; the renderer also
+checks the actual source length.
+
+Successful renders persist each playing clip's source content hash in their generation's
+`source_versions`, including per-item versions for batched renders. `timeline.list` exposes
+each clip's current `source_hash`, last-used `rendered_sources` and `rendered_generation` as of
+the selected output. Disabled/disconnected clips retain their prior use while that history is
+kept; selecting older history never borrows future records. The selected clip shows whether its source changed, and its
+single last-rendered hash on hover. Older results have no recorded version. The hashes do not
+keep old source bytes in the project. Timeline edits use the existing canvas stale badge until
+the card is rendered again; undo can restore the earlier fresh state.
+
 The video action nodes (#108) are ordinary action kinds (`crates/nodes/src/video_edit.rs`) whose
 executor (`crates/engine/src/action_exec/video.rs`) builds one `ComposeSpec` and renders it like
 the Timeline does, on the same shared service, render slot, limits and cancellation. Each makes a

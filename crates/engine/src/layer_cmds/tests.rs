@@ -203,6 +203,7 @@ fn a_wire_carrying_several_images_lists_a_layer_for_each_like_a_run() {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     };
     let mut project = s.document().clone();
