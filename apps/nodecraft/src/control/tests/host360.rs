@@ -118,7 +118,11 @@ fn no_live_only_command_reaches_the_engine_without_its_capability() {
             "canvas.tag_filter_set" => json!({"tags":[],"untagged":true}),
             _ => json!({}),
         };
-        if let Err(error) = run(&mut app, &ctx, &mut connection, id, params) {
+        let result = run(&mut app, &ctx, &mut connection, id, params);
+        if ["canvas.pan_to", "canvas.auto_format", "canvas.comments_toggle", "canvas.tag_filter_open"].contains(id) {
+            assert!(result.is_ok(), "{id} must run in the window: {result:?}");
+        }
+        if let Err(error) = result {
             assert!(!error.message.contains("host capability"), "{id} reached the engine without its capability: {error:?}");
             assert_ne!(error.kind, ErrorKind::Unsupported, "{id}: {error:?}");
         }

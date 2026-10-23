@@ -63,7 +63,7 @@ pub const LIVE_ONLY: &[&str] = &[
     "canvas.tag_filter_next",
     "canvas.tag_filter_previous",
 ];
-const NEEDS_LIVE_APP: &str = "needs the running app's canvas: connect with `nodecraft --control`, or bridge MCP to it";
+const NEEDS_LIVE_APP: &str = "needs the running app's canvas: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`";
 
 /// Commands an agent may see and run.
 pub const AGENT_COMMANDS: &[&str] = &[

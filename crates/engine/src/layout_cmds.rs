@@ -124,7 +124,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: schema,
-        params_doc: "{mode:grid|layered,columns?:integer,nodes?:[uuid]}; atomic layout of the selection, or of `nodes` on the shown canvas, using current host geometry; columns is grid-only.",
+        params_doc: "{mode:grid|layered,columns?:integer,nodes?:[uuid]}; atomic layout of `nodes` on the shown canvas (agents: name them rather than relying on the selection), else of the selection, using current host geometry; columns is grid-only.",
         enabled,
         run,
     }]

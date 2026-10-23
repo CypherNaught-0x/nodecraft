@@ -469,7 +469,20 @@ fn navigation_dispatch_uses_explicit_live_host_without_document_mutations() {
     {
         session.enabled(id, &params).unwrap();
     }
-    let mut s = McpServer::new(session, Box::new(|| [7; 16]));
+    // A window that supplies the navigation capability; live view commands need a live host.
+    struct Window(nodecraft_engine::Session);
+    impl nodecraft_automation::commands::CommandHost for Window {
+        fn session(&self) -> &nodecraft_engine::Session {
+            &self.0
+        }
+        fn dispatch(&mut self, id: &str, params: &Value) -> Result<Value, nodecraft_types::Error> {
+            self.0.dispatch(id, params)
+        }
+        fn live(&self) -> bool {
+            true
+        }
+    }
+    let mut s = McpServer::with_host(Window(session), Box::new(|| [7; 16]));
     let list = call(&mut s, "command_list", json!({"query":"canvas."}));
     for id in ["canvas.fit_all", "canvas.fit_selection", "canvas.minimap_toggle"] {
         let entry = list["structuredContent"]["commands"].as_array().unwrap().iter().find(|entry| entry["id"] == id).unwrap();
