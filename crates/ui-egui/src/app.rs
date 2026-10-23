@@ -524,6 +524,8 @@ pub struct NodeCraftApp {
     centred: bool,
     /// The API keys panel, and the accounts it lists (from settings).
     pub keys: crate::keys::KeysPanel,
+    /// The plugin packages panel (#172).
+    pub plugin_panel: crate::plugins::PluginsPanel,
     pub key_accounts: nodecraft_engine::settings::KeySettings,
     /// Answers from the keychain thread (the app's `keys.store` service).
     #[cfg(not(target_arch = "wasm32"))]
@@ -1065,6 +1067,7 @@ impl NodeCraftApp {
             next_gesture: 0,
             centred: false,
             keys: crate::keys::KeysPanel::default(),
+            plugin_panel: crate::plugins::PluginsPanel::default(),
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             key_results: None,
@@ -2300,6 +2303,7 @@ impl NodeCraftApp {
         self.web_file_button(ui, t);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
+        self.plugin_panel.show(ui.ctx(), &mut self.session, t);
         self.queue_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
         self.share_panel(ui.ctx(), t);
@@ -2471,6 +2475,14 @@ impl NodeCraftApp {
                             .clicked()
                         {
                             self.keys.open = !self.keys.open;
+                        }
+                        if self.session.enabled("plugins.list", &json!({})).is_ok()
+                            && ui
+                                .add(egui::Button::new(egui::RichText::new("Plugins").color(t.text_muted)).frame(false))
+                                .on_hover_text("Install, enable and grant plugin packages")
+                                .clicked()
+                        {
+                            self.plugin_panel.open = !self.plugin_panel.open;
                         }
                     });
                 });

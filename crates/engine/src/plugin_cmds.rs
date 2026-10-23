@@ -32,6 +32,9 @@ pub mod worker;
 pub use worker::{PluginWorker, register_plugin_worker};
 /// Largest trust file read.
 const MAX_TRUST_BYTES: u64 = 256 * 1024;
+/// Most notice text an import report carries for one licence or notice file, and in all.
+pub const MAX_NOTICE_BYTES: usize = 16 * 1024;
+pub const MAX_NOTICES_BYTES: usize = 64 * 1024;
 
 fn object(required: &[&str], properties: Value) -> Value {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": required, "properties": properties})
@@ -465,6 +468,23 @@ fn report_json(r: &ImportReport, dry_run: bool) -> Value {
     })
 }
 
+/// The text of `package`'s licence and notice files, for a person to read before installing:
+/// each cut at a character boundary to [`MAX_NOTICE_BYTES`], and all together to
+/// [`MAX_NOTICES_BYTES`]; `truncated` says where something was left out.
+fn notice_texts(package: &nodecraft_plugin_store::Package) -> Value {
+    let mut left = MAX_NOTICES_BYTES;
+    let texts: Vec<Value> = package
+        .notices()
+        .filter_map(|path| {
+            let text = String::from_utf8_lossy(package.files.get(path)?);
+            let shown = text.get(..text.floor_char_boundary(MAX_NOTICE_BYTES.min(left))).unwrap_or_default();
+            left = left.saturating_sub(shown.len());
+            Some(json!({"path": path.to_string(), "text": shown, "truncated": shown.len() < text.len()}))
+        })
+        .collect();
+    Value::Array(texts)
+}
+
 fn grant_json(grant: &nodecraft_plugin_store::Grant) -> Value {
     let capabilities: Vec<&str> = grant.rights.capabilities.iter().map(|c| c.as_str()).collect();
     json!({"grant_id": grant.grant_id, "epoch": grant.epoch, "capabilities": capabilities, "origins": grant.rights.origins})
@@ -558,6 +578,7 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
             let mut out = report_json(&report, dry_run);
             if let Some(o) = out.as_object_mut() {
                 o.insert("rights".into(), crate::plugin_rights::asks_json(&incoming));
+                o.insert("notice_texts".into(), notice_texts(&incoming));
                 // A delta against a version whose asks can't be read would claim everything is new.
                 if let Some((Ok(old), Ok(new))) = before.as_ref().map(|b| (crate::plugin_rights::asks(b), crate::plugin_rights::asks(&incoming))) {
                     o.insert("rights_delta".into(), crate::plugin_rights::delta(&old, &new));
@@ -583,6 +604,8 @@ pub fn handle<B: StoreBackend>(store: &mut Store<B>, host: &PluginHost, request:
             if let Some(o) = out.as_object_mut() {
                 o.insert("package_id".into(), json!(id.as_str()));
                 o.insert("digest".into(), json!(package.digest.to_string()));
+                // A data package runs nothing, so there is nothing to grant.
+                o.insert("runs".into(), json!(!matches!(package.manifest.runtime, nodecraft_plugin::manifest::Runtime::Data)));
                 o.insert("grant".into(), grants.as_ref().and_then(|g| g.live(&id, &package.digest)).map_or(Value::Null, grant_json));
             }
             Ok(out)
