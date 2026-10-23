@@ -47,7 +47,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   A Layer Editor card composites its wired images with text and shape layers into one frame;
   its full-screen editor moves, resizes, rotates, snaps and aligns layers (#101). Elements turn
   selected images into a named, reusable subject that prompts mention as `#name`, with a
-  generated reference sheet (#104). 3D models (glTF, GLB, OBJ) become 3D nodes whose cards show
+  generated reference sheet (#104). An image card's Image tools menu lists inpaint, expand,
+  remove background, upscale, split into grid or layers, color grade, Make Element and Open in
+  3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
+  image as one undo step (#103). 3D models (glTF, GLB, OBJ) become 3D nodes whose cards show
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
   writes a GLB or OBJ copy (#111). Typing `@` in a generation prompt mentions another card,
   whose text goes into the prompt where it is mentioned and which runs first, like a wire (#505).

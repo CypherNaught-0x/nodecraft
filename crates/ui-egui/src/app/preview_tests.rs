@@ -262,6 +262,8 @@ fn open_split_preview(h: &mut Harness<'static, NodeCraftApp>, id: NodeId) {
         h.run();
     }
     h.run();
+    h.get_by_label_contains("Image tools").hover();
+    h.run();
     h.get_by_label_contains("Split into grid").hover();
     h.run();
     h.run();

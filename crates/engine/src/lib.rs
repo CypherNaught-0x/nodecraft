@@ -32,6 +32,7 @@ pub mod graph_cmds;
 pub mod held_cmds;
 pub mod held_store;
 pub mod history_cmds;
+pub mod image_tool_cmds;
 pub mod impact;
 pub mod import;
 pub mod jobs;
