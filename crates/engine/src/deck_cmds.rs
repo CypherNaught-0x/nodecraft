@@ -47,7 +47,12 @@ pub fn stored(node: &Node) -> Result<Deck, Error> {
 
 /// The frame a Deck card's slides are drawn into, from its parameters.
 pub fn frame(c: &Context<'_>, node: &Node) -> Result<Frame, Error> {
-    let values = c.kinds.get(ID)?.validate_instance(node, true)?.into_visible_values();
+    frame_for(c.kinds, node)
+}
+
+/// The same checked frame for read-only canvas previews that do not dispatch a command.
+pub fn frame_for(kinds: &nodecraft_nodes::Registry, node: &Node) -> Result<Frame, Error> {
+    let values = kinds.get(ID)?.validate_instance(node, true)?.into_visible_values();
     let edge = |name: &str| match values.get(name) {
         Some(Value::Unsigned(v)) => u32::try_from(v.0).ok().filter(|v| (layers::MIN_FRAME..=layers::MAX_FRAME).contains(v)),
         _ => None,
@@ -99,6 +104,10 @@ fn image(node: &Node, nth: u32) -> Option<AssetRef> {
         return (nth == 0).then(|| crate::split::image_of(node).cloned()).flatten();
     }
     let result = node.history.iter().find(|g| Some(g.id) == node.active)?;
+    result_image(result, nth)
+}
+
+fn result_image(result: &nodecraft_graph::Generation, nth: u32) -> Option<AssetRef> {
     let mut images = result.outputs.iter().flat_map(flatten).filter_map(crate::split::image);
     images.nth(usize::try_from(nth).ok()?).cloned()
 }
@@ -122,7 +131,25 @@ fn text(node: &Node) -> Option<&str> {
         };
     }
     let result = node.history.iter().find(|g| Some(g.id) == node.active)?;
+    result_text(result)
+}
+
+fn result_text(result: &nodecraft_graph::Generation) -> Option<&str> {
     result.outputs.iter().flat_map(flatten).find_map(|v| if let Value::Text(text) = v { Some(text.as_str()) } else { None })
+}
+
+/// A staged source result, using the same image ordering and bounded text as `shown`.
+pub fn shown_result(result: &nodecraft_graph::Generation, nth: u32) -> Shown<AssetRef> {
+    if nth > MAX_NTH {
+        return Shown::Missing;
+    }
+    if let Some(image) = result_image(result, nth) {
+        return Shown::Image(image);
+    }
+    match result_text(result).filter(|text| nth == 0 && !text.trim().is_empty()) {
+        Some(text) => Shown::Text(clip(text, MAX_SOURCE_TEXT).into()),
+        None => Shown::Missing,
+    }
 }
 
 fn clip(text: &str, limit: usize) -> &str {
