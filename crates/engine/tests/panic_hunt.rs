@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 #[test]
 #[ignore = "adversarial command corpus; run explicitly when commands change"]
 fn panic_hunt() {
+    let _cleanup = RemoveExportFolder::hold();
     let original = common::project();
     let mut session = Session::new(original.clone()).unwrap();
     plugins::register(&mut session);
@@ -115,6 +116,46 @@ fn panic_hunt() {
 
 fn gen_id(n: u8) -> nodecraft_types::GenerationId {
     nodecraft_types::GenerationId::from_bytes([n; 16])
+}
+
+/// The folder `export.*` templates write into: one directory in the system temporary folder per
+/// test process, so a hunt that reaches the real write path stays out of the repository. It is
+/// left where a leaked `TempDir` would be, for the OS to sweep.
+fn export_destination() -> std::path::PathBuf {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let path = DIR
+        .get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("nodecraft-panic-hunt-export-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&path);
+            std::fs::canonicalize(&path).unwrap_or(path)
+        })
+        .clone();
+    // A hunt that finished may have removed the folder, so recreate it for the next user.
+    let _ = std::fs::create_dir_all(&path);
+    path
+}
+
+/// Hunts currently holding the shared export folder. The last one out removes it, even when an
+/// assertion fails. The count and the removal share one lock, so a hunt starting as the last one
+/// leaves cannot have the folder removed under it.
+static HUNTS_IN_FLIGHT: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+struct RemoveExportFolder;
+impl RemoveExportFolder {
+    fn hold() -> Self {
+        let mut count = HUNTS_IN_FLIGHT.lock().unwrap_or_else(|poison| poison.into_inner());
+        *count += 1;
+        Self
+    }
+}
+impl Drop for RemoveExportFolder {
+    fn drop(&mut self) {
+        let mut count = HUNTS_IN_FLIGHT.lock().unwrap_or_else(|poison| poison.into_inner());
+        *count -= 1;
+        if *count == 0 {
+            let _ = std::fs::remove_dir_all(export_destination());
+        }
+    }
 }
 
 fn template(id: &str) -> (Session, Value) {
@@ -303,6 +344,11 @@ fn template(id: &str) -> (Session, Value) {
             blocked: false,
         }));
         session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
+    if id.starts_with("export.local_") {
+        // A real destination, so the hunt reaches name rendering and the write path rather than
+        // stopping at the host check. It is in the system temporary folder, never the repository.
+        session.swap_resource(Some(nodecraft_engine::local_export::ExportHost::authorize(&export_destination()).unwrap()));
     }
     if id.starts_with("run.") || id == "usage.export_csv" {
         use nodecraft_engine::run_cmds::*;
@@ -539,6 +585,16 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
         }
         "usage.export_csv" => json!({}),
+        // A real folder plus the fixture's own node, so a hunt reaches name rendering, collision
+        // and per-entry failure rather than stopping at the host check.
+        "export.local_plan" | "export.local_run" => json!({
+            "canvas":canvas(),
+            "sources":[{"node":node_id(1),"port":"out"},{"node":node_id(2),"port":"out","item":0}],
+            "destination":export_destination().display().to_string(),
+            "template":"{title}-{index}",
+            "on_collision":"numbered",
+            "format":{"mode":"original"}
+        }),
         "perf.start" | "perf.clear" | "perf.report" => json!({}),
         // Stop needs a running capture; the hunt checks the refusal never panics.
         "perf.stop" => json!({}),
@@ -703,6 +759,7 @@ fn template(id: &str) -> (Session, Value) {
 #[test]
 #[ignore = "valid command templates with individual field mutations"]
 fn typed_template_panic_hunt() {
+    let _cleanup = RemoveExportFolder::hold();
     let ids: Vec<_> = Session::new(common::project()).unwrap().registry().specs().map(|spec| spec.id).collect();
     let mut successes = 0;
     for id in ids {
@@ -861,7 +918,8 @@ fn typed_template_panic_hunt() {
                         assert_ne!(after, before, "a successful paste is a document edit");
                         assert_eq!(session.revision(), revision + 1);
                     }
-                    if id.starts_with("file.") {
+                    if id.starts_with("file.") || id.starts_with("export.") {
+                        // File and export commands write outside the project; neither edits it.
                         assert_eq!(after, before);
                         continue;
                     }

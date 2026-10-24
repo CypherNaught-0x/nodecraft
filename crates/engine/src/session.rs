@@ -1093,6 +1093,24 @@ impl Session {
                     Ok(result)
                 });
             }
+            Effect::LocalExport { plan } => {
+                // Export changes no document, so nothing is staged and there is nothing to undo.
+                // Authority is enforced here as well as where the plan was built, because this is
+                // where the writing happens: the folder must still be one the app authorized, and
+                // without an authorized folder this session writes nothing anywhere.
+                let host = self
+                    .resources
+                    .get::<crate::local_export::ExportHost>()
+                    .ok_or_else(|| Error::new(ErrorKind::Unsupported, nodecraft_format::export::reasons::NO_HOST))?;
+                if !host.authorizes(&plan.destination) {
+                    return Err(Error::new(ErrorKind::Unsupported, nodecraft_format::export::reasons::UNSUPPORTED_TARGET));
+                }
+                // Publication retains the host's pinned root descriptor throughout the run.
+                let outcome = guard(|| crate::local_export::run(&self.assets, &plan, host))?;
+                let result = crate::local_export::outcome_json(&outcome);
+                validate_json(&result)?;
+                return Ok(result);
+            }
             Effect::Save { location, background } => {
                 let next = self.execution.next()?;
                 let roots = self.retained_assets()?;
@@ -1370,6 +1388,7 @@ impl Session {
             | Effect::Service { .. }
             | Effect::Export { .. }
             | Effect::Copy { .. }
+            | Effect::LocalExport { .. }
             | Effect::Open { .. }
             | Effect::Save { .. }
             | Effect::Perf { .. }

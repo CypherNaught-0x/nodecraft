@@ -53,6 +53,7 @@ pub mod library;
 pub mod library_cmds;
 pub mod live_actions;
 pub mod live_cmds;
+pub mod local_export;
 pub mod mask_cmds;
 pub mod mesh_cmds;
 pub mod migrate_cmds;

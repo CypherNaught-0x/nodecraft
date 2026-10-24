@@ -186,6 +186,16 @@ pub enum Effect {
     PreparedRun {
         prepared: Box<crate::run_cmds::PreparedRun>,
     },
+    /// Write a batch of results into an app-authorized folder (`export.local_run`, #98). The
+    /// session performs the writes because handlers must not do I/O; the document is not involved
+    /// either way. Distinct from `Export` below, which is `history.export` (#557) writing one file.
+    ///
+    /// Unlike `Export`, this one is not in the pending-open bypass lists: a batch writes many
+    /// files, so it settles a pending save first and refuses to run while a project open is in
+    /// flight rather than reading a store that is being replaced.
+    LocalExport {
+        plan: nodecraft_format::export::ExportPlan,
+    },
     Service {
         capability: &'static str,
         request: Value,
@@ -252,7 +262,7 @@ impl Registry {
         let mut registry = Self::default();
         // A flat list rather than a chain of iterators: one `Chain` per module nests the
         // iterator type deeper than the compiler's recursion limit.
-        let groups: [fn() -> Vec<CommandSpec>; 67] = [
+        let groups: [fn() -> Vec<CommandSpec>; 68] = [
             crate::graph_cmds::specs,
             crate::node_cmds::specs,
             crate::assist_cmds::specs,
@@ -279,6 +289,7 @@ impl Registry {
             crate::clipboard_cmds::specs,
             crate::search_cmds::specs,
             crate::file_cmds::specs,
+            crate::local_export::specs,
             crate::layout_cmds::specs,
             crate::comment_cmds::specs,
             crate::run_cmds::specs,
