@@ -259,6 +259,8 @@ pub fn import_files_with_movies(
     }
 }
 
+mod folder;
 mod staged;
+pub use folder::{FolderImported, FolderTarget, import_folder};
 #[cfg(test)]
 mod tests;
