@@ -358,6 +358,8 @@ impl NodeCraftApp {
         if let Some(action) = action
             && let Err(error) = self.dispatch_search(&ctx, action, &json!({}))
         {
+            // A failed open must not leave a stale focus request for a later open.
+            self.search_focus_pending = false;
             self.notice = Some(error.message);
         }
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
@@ -445,7 +447,8 @@ mod tests {
     #[test]
     fn click_toolbar_button_opens_search_and_focuses_input() {
         let mut h = harness();
-        h.get_by_role_and_label(Role::Button, "Search (⌘F)").click();
+        let label = if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" };
+        h.get_by_role_and_label(Role::Button, label).click();
         h.run();
         assert!(h.state().search.open);
         assert_eq!(h.ctx.memory(|m| m.focused()), Some(h.state().search_input_id()), "the opened input takes focus");
