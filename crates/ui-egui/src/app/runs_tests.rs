@@ -165,24 +165,44 @@ fn scene_on_with_keys(
     h
 }
 
-/// Wait for the card's Generate hit target to exist, be enabled, and retain its rect
-/// across two frames. A key-result frame can have settled the adapter without having
-/// laid out the next interactive card frame yet.
+/// The response returned by the card's real `submit` interaction this frame. Clearing it
+/// before every probe avoids mistaking an earlier response for a freshly laid-out button.
+fn generate_response(h: &Harness<'static, NodeCraftApp>) -> Option<egui::Response> {
+    h.ctx.data(|data| data.get_temp(egui::Id::new("nodecraft-test-generate-response")))
+}
+
+fn clear_generate_response(h: &Harness<'static, NodeCraftApp>) {
+    h.ctx.data_mut(|data| data.remove::<egui::Response>(egui::Id::new("nodecraft-test-generate-response")));
+}
+
+/// A key-result frame can settle the adapter before the next card frame is hittable.
+/// Test the pointer at exactly the position `press` will use, against the actual egui
+/// Response: AccessKit bounds alone do not account for clipping or covering layers.
 fn wait_for_generate(h: &mut Harness<'static, NodeCraftApp>) {
     let deadline = Instant::now() + Duration::from_secs(20);
-    let mut previous = None;
+    let mut reason = "absent";
     for _ in 0..120 {
+        clear_generate_response(h);
         h.step();
-        let button = h.query_by_role_and_label(Role::Button, "Generate");
-        let rect = button.as_ref().map(|button| button.rect());
-        let enabled = button.is_some_and(|button| !button.accesskit_node().is_disabled());
-        if enabled && rect.is_some() && rect == previous {
-            return;
+        if let Some(button) = h.query_by_role_and_label(Role::Button, "Generate") {
+            let pos = button.rect().center();
+            clear_generate_response(h);
+            h.hover_at(pos);
+            h.run();
+            if let Some(response) = generate_response(h) {
+                let hit_rect =
+                    h.ctx.layer_transform_to_global(response.layer_id).map_or(response.interact_rect, |transform| transform * response.interact_rect);
+                if response.enabled() && hit_rect.contains(pos) && response.contains_pointer() && response.hovered() {
+                    return;
+                }
+                reason = "disabled, clipped, or covered at the pointer center";
+            } else {
+                reason = "not laid out after hover";
+            }
         }
-        previous = rect;
-        assert!(Instant::now() < deadline, "Generate press was not delivered: button not laid out and enabled with a stable rect");
+        assert!(Instant::now() < deadline, "Generate hit target never became ready ({reason}); notice: {:?}", h.state().notice);
     }
-    panic!("Generate press was not delivered: button not laid out and enabled with a stable rect");
+    panic!("Generate hit target never became ready ({reason}); notice: {:?}", h.state().notice);
 }
 
 fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
@@ -190,9 +210,22 @@ fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
     h.hover_at(pos);
     h.run();
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    if label == "Generate" {
+        clear_generate_response(h);
+        h.ctx.data_mut(|data| data.remove::<bool>(egui::Id::new("nodecraft-test-generate-clicked")));
+    }
     h.run();
+    let clicked_on_down = label == "Generate" && h.ctx.data(|data| data.get_temp::<bool>(egui::Id::new("nodecraft-test-generate-clicked"))).unwrap_or(false);
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    if label == "Generate" {
+        clear_generate_response(h);
+        h.ctx.data_mut(|data| data.remove::<bool>(egui::Id::new("nodecraft-test-generate-clicked")));
+    }
     h.run();
+    if label == "Generate" {
+        let clicked_on_up = h.ctx.data(|data| data.get_temp::<bool>(egui::Id::new("nodecraft-test-generate-clicked"))).unwrap_or(false);
+        assert!(clicked_on_down || clicked_on_up, "Generate pointer press was not delivered to the actual button; notice: {:?}", h.state().notice);
+    }
 }
 
 /// Clicks a button in a window or dialog. A pointer held down on a window repaints every frame,
@@ -615,10 +648,35 @@ fn a_synchronous_key_service_change_outside_the_panel_forgets_browser_adapters()
     assert_eq!(*reads.lock().unwrap(), [Some(false), Some(true), None]);
 }
 
-fn failed_browser_style_write_preserves_adapter(command: &str, params: serde_json::Value) {
+fn failed_browser_style_write_preserves_adapter(command: &str, params: serde_json::Value, delayed_hit: bool) {
     let ((mut h, reads), attempts) = browser_key_scene(true);
     generated(&mut h);
     assert_eq!(*reads.lock().unwrap(), [Some(false)]);
+    // Test-only mutation fixture: for several frames after the failed key result, cover
+    // precisely the real pointer target with an egui foreground layer. AccessKit still
+    // reports the same enabled button bounds, but a pointer press cannot reach it.
+    if delayed_hit {
+        let cover = h.get_by_role_and_label(Role::Button, "Generate").rect();
+        let remaining = Arc::new(AtomicUsize::new(0));
+        let draw_cover = Arc::clone(&remaining);
+        h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(
+            move |ui, app: &mut NodeCraftApp| {
+                app.tick_keys(ui.ctx());
+                app.show(ui);
+                if draw_cover.load(Ordering::SeqCst) > 0 {
+                    draw_cover.fetch_sub(1, Ordering::SeqCst);
+                    egui::Area::new(egui::Id::new("test-only-block-generate-hit")).order(egui::Order::Foreground).fixed_pos(cover.min - Vec2::splat(5.0)).show(
+                        ui.ctx(),
+                        |ui| {
+                            ui.allocate_exact_size(cover.size() + Vec2::splat(10.0), egui::Sense::click());
+                        },
+                    );
+                }
+            },
+            h.into_state(),
+        );
+        remaining.store(12, Ordering::SeqCst);
+    }
     assert!(h.state_mut().session.dispatch(command, &params).is_err(), "{command} must fail");
     assert_eq!(attempts.load(Ordering::SeqCst), 1, "{command} reached the rejecting browser store");
     h.run();
@@ -635,36 +693,23 @@ fn failed_browser_style_write_preserves_adapter(command: &str, params: serde_jso
 }
 
 #[test]
-fn generate_waits_for_a_card_laid_out_one_frame_late() {
-    let h = scene(making(image(MockModel::new(MockOutput::Image))));
-    // Test-only delayed layout: the first frame is intentionally not drawn. An unguarded
-    // press here cannot find a Generate hit target; the next frame builds the actual card.
-    let allow_layout = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let draw = Arc::clone(&allow_layout);
-    let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(
-        move |ui, app: &mut NodeCraftApp| {
-            if draw.load(Ordering::SeqCst) {
-                app.show(ui);
-            }
-        },
-        h.into_state(),
-    );
-    assert!(h.query_by_role_and_label(Role::Button, "Generate").is_none(), "first frame intentionally has no Generate hit target");
-    allow_layout.store(true, Ordering::SeqCst);
-    wait_for_generate(&mut h);
-    press(&mut h, Role::Button, "Generate");
-    assert!(h.state().run_confirm.is_some() || h.state().notice.as_deref() == Some(super::runs::SETTING_UP), "Generate press was not delivered");
-    frames_until(&mut h, |app| app.run_confirm.is_some());
+fn failed_key_set_waits_for_a_covered_generate_hit_target() {
+    failed_browser_style_write_preserves_adapter("keys.set", json!({"account": "mock", "key": NEW_KEY}), true);
+}
+
+#[test]
+fn failed_key_remove_waits_for_a_covered_generate_hit_target() {
+    failed_browser_style_write_preserves_adapter("keys.remove", json!({"account": "mock"}), true);
 }
 
 #[test]
 fn failed_browser_style_key_set_preserves_the_cached_adapter() {
-    failed_browser_style_write_preserves_adapter("keys.set", json!({"account": "mock", "key": NEW_KEY}));
+    failed_browser_style_write_preserves_adapter("keys.set", json!({"account": "mock", "key": NEW_KEY}), false);
 }
 
 #[test]
 fn failed_browser_style_key_remove_preserves_the_cached_adapter() {
-    failed_browser_style_write_preserves_adapter("keys.remove", json!({"account": "mock"}));
+    failed_browser_style_write_preserves_adapter("keys.remove", json!({"account": "mock"}), false);
 }
 
 #[test]
