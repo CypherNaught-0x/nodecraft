@@ -159,7 +159,7 @@ async fn send(
         return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled before it started")));
     }
     let context = if limits.stream_text { crate::SubmitContext::streaming_text() } else { crate::SubmitContext::new() };
-    let context = context.with_previews(limits.stream_previews);
+    let context = context.with_previews(limits.stream_previews).with_poll_deadline(limits.deadline_ms);
     let (context, job, staged) = match sending {
         Sending::Fresh(job, stager) => (context.with_stager(stager), job, None),
         Sending::Replay(job, staged) => (context, job, Some(staged)),

@@ -287,6 +287,9 @@ The near-term order follows the remaining open issues, not an already-finished w
   raise a cap.
 - **2026-10-23** — the spending log records each charge's project, so the open project has its
   own cap beside the total (#847); the CSV export gains a `project` column.
+- **2026-10-24** — Replicate creation propagates a bounded server lifetime and successful results
+  retain reported execution milliseconds through saving, held results and restart recovery
+  (#339). Duration remains separate from money; restored handles do not reset the server limit.
 - **2026-10-23** — rendered videos and extracted sound share a per-run staging budget (#584):
   1 GiB and 4,096 results, including read-backs in flight. Failure and cancellation return their
   reservations; chained actions retain access to earlier completed outputs.

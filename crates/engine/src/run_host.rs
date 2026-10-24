@@ -1133,9 +1133,12 @@ fn absorb(
                 }
                 active.jobs.end(job, ended(&outputs));
                 match outputs {
-                    Ok((outputs, billed)) => {
-                        if let Some(units) = billed {
+                    Ok((outputs, usage)) => {
+                        if let Some(units) = usage.billable_units {
                             active.run.job_billed(job, units);
+                        }
+                        if let Some(milliseconds) = usage.execution_ms {
+                            active.run.job_execution_ms(job, milliseconds);
                         }
                         active.run.job_done(session.kinds(), job, outputs)
                     }
@@ -1157,9 +1160,12 @@ fn absorb(
                         stop(active);
                     }
                     match outputs {
-                        Ok((outputs, billed)) => {
-                            if let Some(units) = billed {
+                        Ok((outputs, usage)) => {
+                            if let Some(units) = usage.billable_units {
                                 active.run.job_billed(job, units);
+                            }
+                            if let Some(milliseconds) = usage.execution_ms {
+                                active.run.job_execution_ms(job, milliseconds);
                             }
                             active.run.job_done(session.kinds(), job, outputs)
                         }
@@ -1261,8 +1267,8 @@ fn finish(active: &mut Active, job: JobId) -> bool {
     provider
 }
 
-/// A finished job's outputs and the units its provider said it billed (#437).
-type Finished = (Vec<(String, nodecraft_types::Value)>, Option<nodecraft_types::BillableUnits>);
+/// A finished job's outputs and provider-reported usage evidence (#437, #339).
+type Finished = (Vec<(String, nodecraft_types::Value)>, nodecraft_providers::Usage);
 
 /// A finished job's outputs, with any assets it made imported into the project. A model job's
 /// result that can't be converted, imported or fitted to its node's ports is held (#369); one
@@ -1301,13 +1307,13 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
         {
             return Err("this plugin's grant was revoked; its result was dropped".into());
         }
-        return Ok((outputs, None));
+        return Ok((outputs, nodecraft_providers::Usage::default()));
     }
     let delivery = lock(&active.mailbox).deliveries.remove(&job).ok_or("the model's result went missing")?;
     let Some(JobSpec::Generate { node: step, outputs: routes, .. }) = active.run.work(job) else { return Err("the job is not a model call".into()) };
     let step = *step;
     let converted = convert(session, &active.run, job, routes, &delivery.completed);
-    let Some(template) = lock(&active.templates).get(&job).cloned() else { return converted.map(|outputs| (outputs, delivery.completed.usage.billable_units)) };
+    let Some(template) = lock(&active.templates).get(&job).cloned() else { return converted.map(|outputs| (outputs, delivery.completed.usage)) };
     let kept = |reason: String, completed: Completed| held::HeldResult {
         project: template.project,
         canvas: template.canvas,
@@ -1321,12 +1327,12 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
     };
     match converted {
         Ok(outputs) => {
-            let billed = delivery.completed.usage.billable_units;
+            let usage = delivery.completed.usage;
             // A result with nothing in it is nothing to hold.
             if !outputs.is_empty() {
                 active.awaiting.insert(job, Awaiting { step, result: kept(String::new(), delivery.completed) });
             }
-            Ok((outputs, billed))
+            Ok((outputs, usage))
         }
         Err(reason) => {
             held::hold(held, kept(reason.clone(), delivery.completed));

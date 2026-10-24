@@ -563,14 +563,24 @@ The ignored live smoke test requires both explicit environment opt-ins and fresh
 permission; ordinary tests use synthetic fixtures and local listeners only.
 
 Replicate asks for a 2-second queued/running poll interval, subject to the host's existing maximum
-interval and retry/backoff policy. `Cancel-After` can bound server lifetime from prediction creation
-(5 seconds to 24 hours); it is not the synchronous wait duration or a proof of nonbilling. This
-adapter does not add that header: `RunLimits::deadline_ms` is a local polling deadline that is not
-passed to Provider::submit, so equating those clocks would be misleading. The existing local
-deadline still requests best-effort cancellation when a handle exists. Provider-reported
-`metrics.predict_time` measures execution seconds, not tokens or money; current Usage has no
-duration field, so it remains ignored and cost stays unknown. Neither future deadline propagation
-nor a typed runtime-usage schema is supplied by this safety follow-up.
+interval and retry/backoff policy. Creation sends `Cancel-After` using the host's
+`RunLimits::deadline_ms` duration, rounded upward to whole seconds. Durations outside 5 seconds
+to 24 hours are rejected before sending a prediction. Direct `Provider::submit` uses the usual
+one-hour default. This is a server lifetime measured from prediction creation, whereas the local
+deadline begins when polling starts; they are separate clocks. Neither is proof of nonbilling.
+Polling, restored handles, output downloads and cancellation never reset the server lifetime.
+The local deadline still requests best-effort cancellation when a handle exists.
+
+On successful completion, `metrics.predict_time` becomes optional `Usage.execution_ms`, rounded
+to milliseconds. It measures execution rather than queue time, tokens or money. Missing or
+malformed optional metrics remain unknown without discarding valid outputs; negative, nonfinite
+or over-24-hour values are not retained. Failed/canceled predictions still report their failure,
+without a completed-result usage record. Cost stays unknown. The engine retains this evidence
+in result job settings, held results and resumed jobs; copying a cached result does not claim
+another execution. Older records without it remain readable.
+
+Contract checked 2026-10-24: [prediction deadlines](https://replicate.com/docs/topics/predictions/create-a-prediction)
+and [HTTP API metrics](https://replicate.com/docs/reference/http).
 
 
 ## Gemini Images (`gemini-images` feature)
