@@ -143,6 +143,9 @@ struct JobError {
 #[derive(Deserialize)]
 pub(super) struct JobOutput {
     pub id: String,
+    /// Match local ComfyUI history's node ordering, independent of cloud completion order.
+    #[serde(default)]
+    pub node_id: String,
     #[serde(default)]
     pub name: String,
     #[serde(rename = "type", default)]
@@ -181,7 +184,11 @@ impl Job {
                 let message = progress.map(|p| clean(p.message.as_deref(), 200)).filter(|m| !m.is_empty());
                 State::Progress(JobProgress::Running { fraction, message, partial: None })
             }
-            "succeeded" => State::Succeeded(self.outputs.unwrap_or_default()),
+            "succeeded" => {
+                let mut outputs = self.outputs.unwrap_or_default();
+                outputs.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+                State::Succeeded(outputs)
+            }
             "canceled" => State::Failed(ProviderError::new(ErrorKind::Cancelled, "the job was canceled on Comfy Cloud")),
             "expired" => State::Failed(ProviderError::new(ErrorKind::Expired, "the job expired on Comfy Cloud before it finished")),
             "failed" => {

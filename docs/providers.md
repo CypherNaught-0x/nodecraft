@@ -1283,15 +1283,27 @@ NODECRAFT_LIVE_ELEVENLABS=1 ELEVENLABS_API_KEY=… \
 
 ## Comfy Cloud workflows
 
-The optional `comfy-cloud` adapter (#16) runs ComfyUI workflows on Comfy's hosted GPUs through its
-versioned v2 API at the fixed base `https://cloud.comfy.org`. Its jobs have the same shape as the
-local ComfyUI adapter's: `params.workflow` in API format, `params.values` overrides keyed
-`<node>.<input>`, and media inputs whose role names an upload input such as `1.image`.
+The optional `comfy-cloud` adapter (#16, #865) runs ComfyUI workflows on Comfy's hosted GPUs through
+its versioned v2 API at the fixed base `https://cloud.comfy.org`. In **API keys**, save your Comfy
+API key under **comfy-cloud**. Open **ComfyUI**, choose **Add Comfy Cloud**, then **Make default**
+to import workflows against its node list. Existing Workflow cards can choose the named profile
+in their **ComfyUI server** menu. The same Workflow catalog entry, mapping, parameters, media
+ports and selected outputs work with either backend; no separate hosted model needs to be added.
+
+The profile is saved in settings with `backend = "cloud"`; the key stays in the OS keychain.
+Its address is fixed and cannot be edited. Older profiles without `backend` remain local.
+Serverless deployment URLs are not supported by this profile. Checking it reads the node list
+without submitting a job; local GPU statistics and queue health are not available for this API.
+
+At the adapter boundary, both the Workflow card's `comfy.workflow`, `comfy.values` and
+`comfy.outputs` text inputs and the direct API shape (`params.workflow`, `params.values`) are
+supported. Media roles name upload inputs such as `1.image`. Built-in ComfyUI presets use the
+same template expansion as local servers and still require their models to exist on the host.
 
 - **Checked first:** the workflow and its overrides are checked against the cloud's
   `/api/object_info` (cached for five minutes) before anything is uploaded, so a missing node or a
   value the cloud doesn't offer costs nothing.
-- **Inputs** are sniffed (HDR inputs are refused as for local ComfyUI), capped at 100 MiB each,
+- **Inputs** are sniffed (HDR inputs are refused as for local ComfyUI), conservatively capped at 50 MiB each,
   uploaded to `POST /api/v2/assets` under content-hash names, and referenced from the workflow as
   `core/ASSET` values. Uploads are free and deduplicated, so a failed upload proves no job exists.
 - **Submitting once:** `POST /api/v2/jobs` carries an `Idempotency-Key` derived from the run's own
@@ -1315,13 +1327,23 @@ local ComfyUI adapter's: `params.workflow` in API format, `params.values` overri
   quote covers, so a workflow using one (`api_node` in the cloud's node list) is refused before
   anything is uploaded or run.
 
-Comfy Cloud bills GPU time, which isn't known before a run. There are no catalog models for it
-yet: workflows reach it through the Workflow node and the servers panel (#9), which add it as a
-backend profile next to local servers.
+Comfy Cloud bills GPU time, which isn't known before a run. The physical provider binding marks
+this work **unpriced**, even when the reused catalog entry is free for a local server and no
+node-list check has completed. A finite budget refuses the run before any request. With no
+finite budget, the normal cost confirmation requires explicit acceptance of the unknown-priced
+jobs; it never presents hosted work as free. Changing profiles invalidates earlier quotes and
+prepared runs. Comfy's bill is not yet imported as a settled GPU usage charge in NodeCraft.
+
+The [official v2 API schema](https://github.com/Comfy-Org/docs/blob/main/openapi-v2.yaml) and
+[SDK contract](https://github.com/Comfy-Org/docs/blob/main/development/api-development/sdks.mdx)
+were checked on 2026-10-24. Upload tags are a JSON array; returned files are ordered by their
+workflow node id to preserve the Workflow card's output mapping.
 
 The live smoke test only reads the node list, so it spends no credits:
 
 ```sh
-NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
+NODECRAFT_LIVE_COMFYUI_CLOUD=1 COMFY_CLOUD_API_KEY=… \
   cargo test -p nodecraft-providers --features http,comfy-cloud --test live_comfy_cloud -- --ignored
 ```
+
+The older `NODECRAFT_LIVE_COMFY_CLOUD` opt-in remains accepted. Neither test runs in CI.

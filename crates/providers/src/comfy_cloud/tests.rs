@@ -113,6 +113,7 @@ fn submit_checks_uploads_the_input_as_an_asset_and_creates_one_job_with_a_stable
     assert!(bearer(&requests[1]) && bearer(&requests[2]));
     let upload = String::from_utf8_lossy(&requests[1].body);
     assert!(upload.contains("name=\"file\"") && upload.contains("name=\"file_path\"") && upload.contains("image/png"), "{upload}");
+    assert!(upload.contains("name=\"tags\"\r\n\r\n[\"input\"]\r\n"), "tags is a JSON array field: {upload}");
     let body: Value = serde_json::from_slice(&requests[2].body).unwrap();
     assert_eq!(body["workflow"]["2"]["inputs"]["text"], "a red fox");
     let reference = &body["workflow"]["1"]["inputs"]["image"];
@@ -416,4 +417,45 @@ fn uploads_are_named_with_the_extension_comfy_s_loaders_expect() {
     {
         assert_eq!(request::extension(mime), ext, "{mime}");
     }
+}
+
+#[test]
+fn hosted_workflow_card_rejects_conflicting_or_oversized_text_before_upload() {
+    let text = |role: &str, text: String| JobInput::Text { role: role.into(), text };
+    for inputs in [
+        vec![text("comfy.workflow", workflow().to_string())],
+        vec![text("comfy.values", r#"{"2.text":"fox"}"#.into())],
+        vec![text("comfy.outputs", r#"["3"]"#.into())],
+    ] {
+        let http = Transport::new(vec![object_info()]);
+        let error = block_on(provider(http.clone()).submit(&job_with(json!({"workflow":workflow()}), inputs))).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+        assert_eq!(http.paths(), ["/api/object_info"]);
+    }
+    for (values, outputs) in [("[]", r#"["3"]"#), (r#"{"2.text":{}}"#, r#"["3"]"#), ("{}", "[]"), ("{}", r#"["missing"]"#)] {
+        let http = Transport::new(vec![object_info()]);
+        let inputs = vec![text("comfy.workflow", workflow().to_string()), text("comfy.values", values.into()), text("comfy.outputs", outputs.into())];
+        assert!(block_on(provider(http.clone()).submit(&job_with(json!({}), inputs))).is_err());
+        assert_eq!(http.paths(), ["/api/object_info"]);
+    }
+    let http = Transport::new(vec![object_info()]);
+    let inputs = vec![text("comfy.workflow", " ".repeat(crate::comfyui::MAX_CARD_TEXT_BYTES + 1))];
+    assert!(block_on(provider(http.clone()).submit(&job_with(json!({}), inputs))).is_err());
+    assert_eq!(http.paths(), ["/api/object_info"]);
+}
+
+#[test]
+fn hosted_outputs_follow_workflow_node_order_and_preserve_each_nodes_file_order() {
+    let outputs = json!({"outputs":[
+        {"node_id":"20","id":"last","name":"last.txt","type":"text"},
+        {"node_id":"10","id":"first","name":"first.txt","type":"text"},
+        {"node_id":"10","id":"second","name":"second.txt","type":"text"}
+    ]});
+    let http = Transport::new(vec![job_reply("succeeded", outputs), file(b"first"), file(b"second"), file(b"last")]);
+    let JobProgress::Done(done) = block_on(provider(http.clone()).poll(&handle())).unwrap() else { panic!("not done") };
+    assert_eq!(
+        http.paths(),
+        [format!("/api/v2/jobs/{JOB}"), "/api/v2/assets/first/content".into(), "/api/v2/assets/second/content".into(), "/api/v2/assets/last/content".into()]
+    );
+    assert!(matches!(done.outputs.as_slice(),[Output::Text(a),Output::Text(b),Output::Text(c)] if a=="first"&&b=="second"&&c=="last"));
 }
