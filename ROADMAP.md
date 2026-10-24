@@ -203,7 +203,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   2.0 make video on BytePlus ModelArk (#18); Kling's own task API makes video and images with a
   Kling key (#19); most `future` adapters remain tracked separately. ElevenLabs speech (v3,
   Multilingual v2, Flash v2.5), effects, music and voice changer models (#20) have a Generate
-  audio card (#672); 3D has Tripo text/image/multiview and fal Trellis (#22), plus Meshy
+  audio card (#672), account voice choices (#670), and streaming speech playback on desktop
+  (#671, #875). The CLI and browser do not request streaming previews. 3D has Tripo
+  text/image/multiview and fal Trellis (#22), plus Meshy
   text/image/multi-image/retexture/remesh (#23). Consult [`docs/providers.md`](docs/providers.md)
   rather than inferring app support from a catalog entry. Published pre-releases are snapshots,
   not the current `main`.
