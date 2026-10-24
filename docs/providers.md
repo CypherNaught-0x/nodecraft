@@ -8,6 +8,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 |---|---|---|---|---|
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
+| **Gemini text** | `gemini-llm` | existing `gemini` API key account (secret Bearer header) | Gemini 3.8 Flash text generation | Direct Google OpenAI-compatible API; usage-based price, no ambiguous automatic replay. |
 | **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and ordered reference editing | Three stable Gemini models, unknown usage price; bounded inline JPEG outputs. |
 | **Gemini Video** | `gemini-video` | supplied Gemini API key (`x-goog-api-key`), same `gemini` account | Omni Flash text, first/last frame and reference images → video with sound | Veo on the Gemini API is shut down; Veo now runs on Google Cloud (`google-veo`). Paid tier only; charged by measured tokens, no price before the run. See below. |
 | **Veo on Google Cloud** | `google-veo` | a service-account key file, kept compact in the `google-cloud` account; a signed JWT is exchanged for an hour's OAuth token (`Authorization: Bearer`) | Veo 3.1, Fast and Lite: text → video with sound. Veo 3.1 and Fast also: first/last frame, and up to three subject references | Runs in the account's own project in `us-central1`. Quoted per second by resolution before the run. Never replayed after an ambiguous submit; no remote cancellation. See below. |
@@ -1317,3 +1318,32 @@ The live smoke test only reads the node list, so it spends no credits:
 NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
   cargo test -p nodecraft-providers --features http,comfy-cloud --test live_comfy_cloud -- --ignored
 ```
+
+## Gemini text (`gemini-llm` feature)
+
+The Gemini 3.8 Flash text card (#44) calls Google directly through its documented
+OpenAI-compatible chat endpoint. Add the API key to the existing `gemini` account in
+API keys, choose **Gemini 3.8 Flash** on a text generation card, and accept the usage-based
+price before running. No gateway or new SDK is needed. The native host is wired; browser
+provider settings do not expose this adapter yet.
+
+Only text is advertised: at most 64 input turns and 1 MiB total text, with a requested
+`max_tokens` between 1 and 65,536 (default 4,096). The host's usual streaming text path is
+supported. Images, PDFs, tools, thought-signature replay, grounding and Interactions state
+are outside this card's scope. Output uses the shared chat response/stream byte caps.
+
+Google returns token usage; this adapter does not infer an exact dollar cost across account
+tiers and thinking usage. Quotes therefore remain explicitly unknown, never free. Lost,
+malformed or interrupted replies are never automatically resubmitted. A sent synchronous
+request cannot confirm remote cancellation and has no resumable polling handle. Credentials
+use secret headers and the shared transport's redirect protections.
+
+Offline contract, real host-routing, unknown-price admission, lost-reply driver and actual
+picker tests run in CI. The opt-in smoke test makes one real request and may cost money:
+`NODECRAFT_LIVE_GEMINI_LLM=1 GEMINI_API_KEY=… cargo test -p nodecraft-providers --features
+http,gemini-llm --test live_llm live_gemini44`. It is disabled unless explicitly enabled.
+
+Contract checked 2026-10-24: [compatibility API](https://ai.google.dev/gemini-api/docs/openai),
+[model limits](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash),
+[pricing](https://ai.google.dev/gemini-api/docs/pricing). This implements #44 by adapter reuse,
+not a new native `generateContent` or Interactions dialect; #489 remains a separate discussion.
