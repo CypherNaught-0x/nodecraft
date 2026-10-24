@@ -335,6 +335,31 @@ fn an_edit_from_elsewhere_during_a_drag_replaces_its_preview() {
     settle(&mut h, |app| app.session.revision() != revision && previewed(app).is_none());
 }
 
+#[test]
+fn deck695_card_thumbnail_follows_the_staged_slider_preview_and_full_result() {
+    let mut h = blurring();
+    let deck = NodeId::from_bytes([95; 16]);
+    let canvas = h.state().canvas;
+    h.state_mut().session.dispatch("deck.create", &json!({"canvas":canvas,"id":deck,"pos":{"x":0,"y":-200},"nodes":[BLUR]})).unwrap();
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    let ready = |app: &NodeCraftApp, hash| app.deck_thumbnails.ready_images.get(&deck).is_some_and(|images| images.contains(&hash));
+    settle(&mut h, |app| blurred(app).is_some_and(|hash| ready(app, hash)));
+    let first = blurred(h.state()).unwrap();
+    let revision = h.state().session.revision();
+    let from = h.get_by_role_and_label(egui::accesskit::Role::Slider, "Strength").rect().center();
+    h.drag_at(from);
+    h.step();
+    h.hover_at(from + egui::Vec2::new(8.0, 0.0));
+    until(&mut h, |app| previewed(app).is_some_and(|(hash, _)| ready(app, hash)) && app.live.running.is_none());
+    let (preview, _) = previewed(h.state()).unwrap();
+    assert_ne!(preview, first);
+    assert!(!h.state().session.assets().contains(&preview), "thumbnail reads the staged store, not committed assets");
+    assert_eq!(h.state().session.revision(), revision, "previewing never edits the deck");
+    h.drop_at(from + egui::Vec2::new(8.0, 0.0));
+    settle(&mut h, |app| previewed(app).is_none() && blurred(app).is_some_and(|hash| hash != first && ready(app, hash)));
+}
+
 /// PR evidence: the card before a drag, while it drags (the preview) and after release.
 #[test]
 #[ignore = "manual public-safe PR evidence"]

@@ -133,7 +133,8 @@ pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
         || crate::mesh_view::mesh_of(node).is_some()
         // A speech card always has room for its sound, so the card doesn't jump when a preview
         // of the first one starts playing (#875).
-        || node.kind == nodecraft_nodes::generation::AUDIO_KIND;
+        || node.kind == nodecraft_nodes::generation::AUDIO_KIND
+        || node.kind == nodecraft_nodes::deck::ID;
     let preview = if shows { t.card_preview_height } else { 0.0 };
     // A text card always has room for its answer, so the card doesn't jump when one starts
     // streaming in (#504).
@@ -357,7 +358,11 @@ pub fn show(
                 intents.push(Intent::History(intent));
             }
         }
-        if !images.0.is_empty() {
+        if node.kind == nodecraft_nodes::deck::ID {
+            // The shell paints cached live slide thumbnails in this reserved preview area.
+            let (_, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+        } else if !images.0.is_empty() {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
             inner = rest;
             let area = area.shrink2(Vec2::new(0.0, t.control_gap));

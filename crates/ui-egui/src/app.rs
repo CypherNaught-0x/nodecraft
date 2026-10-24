@@ -349,6 +349,7 @@ mod comments;
 mod copy_result;
 mod deck_editor;
 mod deck_presenter;
+mod deck_thumbnails;
 mod drop;
 mod element_library_view;
 mod elements;
@@ -530,6 +531,7 @@ pub struct NodeCraftApp {
     shader_editor: Option<shader_editor::ShaderEditor>,
     presenter: Option<deck_presenter::Presenter>,
     deck_editor: Option<deck_editor::DeckEditor>,
+    deck_thumbnails: deck_thumbnails::Cache,
     timeline_editor: Option<timeline_editor::TimelineEditor>,
     /// App mode's form (#95), while it is open.
     app_mode: Option<app_mode::AppMode>,
@@ -1147,6 +1149,7 @@ impl NodeCraftApp {
             shader_editor: None,
             presenter: None,
             deck_editor: None,
+            deck_thumbnails: Default::default(),
             timeline_editor: None,
             app_mode: None,
             exports: Default::default(),
@@ -1789,6 +1792,26 @@ impl NodeCraftApp {
                     let r = result.response;
                     self.painted.insert(node.id, r.rect);
                     let tag_painter = egui::Painter::new(ui.ctx().clone(), r.layer_id, tag_world_clip(&self.view, viewport, ui.clip_rect()));
+                    if node.kind == nodecraft_nodes::deck::ID && self.view.zoom >= card::BODY_MIN_ZOOM {
+                        let inner = r.rect.shrink(t.card_padding);
+                        let area = Rect::from_min_size(inner.min, Vec2::new(inner.width(), t.card_preview_height));
+                        self.deck_thumbnails.paint(
+                            ui,
+                            &tag_painter,
+                            area,
+                            t,
+                            deck_thumbnails::Inputs {
+                                session: &self.session,
+                                canvas,
+                                node,
+                                live: &self.live,
+                                previews: &mut self.previews,
+                                clock: self.cache_clock,
+                                view: &self.view,
+                                origin: viewport.min,
+                            },
+                        );
+                    }
                     if let Some(tag) = node.tag.and_then(|id| canvas.tags().get(&id)) {
                         let marker = Rect::from_min_size(
                             r.rect.min + Vec2::splat(t.navigation_gap),
@@ -2781,7 +2804,7 @@ impl NodeCraftApp {
             |n| payload_rect(&self.session, n, self.theme.tokens()),
             self.session.revision(),
         ) else {
-            self.notice = Some("Couldn't allocate ids for the cut roundtrip; try again.".into());
+            self.notice = Some("Couldn't prepare the cut roundtrip; copy fewer nodes or check their stored data.".into());
             return;
         };
         match self.session.dispatch_clipboard_cut(&json!({"canvas":self.canvas,"nodes":nodes}), &json!({"canvas":self.canvas,"nodes":pasted,"edges":edges})) {
@@ -2798,7 +2821,7 @@ impl NodeCraftApp {
         let t = self.theme.tokens();
         let placed = clipboard::place(self.session.document(), self.canvas, payload, centre, |n| payload_rect(&self.session, n, t), self.session.revision());
         let Some((nodes, edges)) = placed else {
-            self.notice = Some("Couldn't allocate ids for the pasted nodes; try again.".into());
+            self.notice = Some("Couldn't prepare the pasted nodes; copy fewer nodes or check their stored data.".into());
             return;
         };
         let pasted: std::collections::BTreeSet<NodeId> = nodes.iter().map(|n| n.id).collect();
@@ -3234,6 +3257,8 @@ mod deck_editor_tests;
 mod deck_fonts_tests;
 #[cfg(test)]
 mod deck_presenter_tests;
+#[cfg(test)]
+mod deck_thumbnails_tests;
 #[cfg(test)]
 mod element_library_view_tests;
 #[cfg(test)]
