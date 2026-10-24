@@ -59,3 +59,16 @@ async fn live_ollama() {
     let reply = client.chat(&ask(model)).await.unwrap();
     assert!(!reply.text.is_empty());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_azure_openai() {
+    if !enabled("AZURE_OPENAI") {
+        return;
+    }
+    let key = ApiKey::new(std::env::var("AZURE_OPENAI_API_KEY").unwrap());
+    let endpoint = Endpoint::azure_openai(&std::env::var("AZURE_OPENAI_ENDPOINT").unwrap(), key).unwrap();
+    let deployment = std::env::var("AZURE_OPENAI_DEPLOYMENT").unwrap();
+    let client = LlmClient::new(endpoint, Arc::new(ReqwestHttp::new().unwrap()));
+    let reply = client.chat_stream(&ask(&deployment), &mut |_| {}).await.unwrap();
+    assert!(!reply.text.trim().is_empty(), "deployment returned no text");
+}

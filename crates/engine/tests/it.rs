@@ -3,6 +3,8 @@
 //! must run alone; xtask's `every_integration_test_file_is_built` test fails otherwise.
 
 // Shared helpers, compiled once; the test files reach them as `crate::common`.
+#[path = "azure45.rs"]
+mod azure45;
 mod common;
 
 #[path = "asset_imports147.rs"]

@@ -135,6 +135,32 @@ fn legacy_default_keeps_retrying_with_the_same_charge() {
 }
 
 #[test]
+fn azure_lost_reply_stops_actual_driver_retries_and_keeps_the_charge_unresolved() {
+    use nodecraft_providers::llm::{ApiKey, Endpoint, LlmClient};
+    struct LostHttp(AtomicU64);
+    impl nodecraft_providers::Http for LostHttp {
+        fn send(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(ProviderError::new(ErrorKind::Network, "public Azure accepted-but-lost fixture")) })
+        }
+    }
+    let http = Arc::new(LostHttp(AtomicU64::new(0)));
+    let provider = Arc::new(LlmClient::new(Endpoint::azure_openai("https://demo.openai.azure.com", ApiKey::new("public-fixture")).unwrap(), http.clone()));
+    assert!(!provider.retry_ambiguous_submit());
+    let (runner, budget) = budgeted(Some(1_000_000));
+    let mut queued = priced(provider, Some(100_000));
+    queued.job.model = "public-deployment".into();
+    queued.job.inputs = vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A harbour".into() }];
+    runner.register(JobId(1), queued);
+    let (scheduler, events) = drive(Arc::new(runner));
+    assert_eq!(http.0.load(Ordering::SeqCst), 1);
+    assert!(!events.iter().any(|event| matches!(event, Event::Retrying { .. })), "{events:?}");
+    assert!(matches!(scheduler.state(JobId(1)), Some(JobState::Failed { .. })));
+    assert_eq!(spent(&budget), 100_000);
+    assert_eq!(statuses(&budget), [Charge::Unresolved]);
+}
+
+#[test]
 fn false_policy_preserves_genuine_handle_resume_and_finished_generation_retry() {
     for finished in [false, true] {
         let inner: Arc<dyn Provider> = if finished {
