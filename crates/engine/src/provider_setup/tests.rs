@@ -55,6 +55,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     assert_eq!(setup.readiness("openai"), Some(&Readiness::NeedsKey { account: "openai".into() }));
     assert_eq!(setup.readiness("anthropic"), Some(&Readiness::NeedsKey { account: "anthropic".into() }));
     assert_eq!(setup.readiness("replicate"), Some(&Readiness::NeedsKey { account: "replicate".into() }));
+    assert_eq!(setup.readiness("runway"), Some(&Readiness::NeedsKey { account: "runway".into() }));
     assert_eq!(setup.readiness("seedream"), Some(&Readiness::NeedsKey { account: "seedream".into() }));
     assert_eq!(setup.readiness("gemini-images"), Some(&Readiness::NeedsKey { account: "gemini".into() }));
     assert_eq!(setup.readiness("gemini-video"), Some(&Readiness::NeedsKey { account: "gemini".into() }));
@@ -79,9 +80,21 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
 fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     let catalog = Catalog::builtin().unwrap();
     let keys = MemoryStore::default();
-    for account in
-        ["openai", "anthropic", "replicate", "seedream", "gemini", "fal", "tripo", "meshy", "higgsfield", "kling", "elevenlabs", "comfyui:gpu-box:8188"]
-    {
+    for account in [
+        "openai",
+        "anthropic",
+        "replicate",
+        "runway",
+        "seedream",
+        "gemini",
+        "fal",
+        "tripo",
+        "meshy",
+        "higgsfield",
+        "kling",
+        "elevenlabs",
+        "comfyui:gpu-box:8188",
+    ] {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
     }
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
@@ -97,6 +110,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "openai",
         "anthropic",
         "replicate",
+        "runway",
         "seedream",
         "seedance",
         "gemini-images",

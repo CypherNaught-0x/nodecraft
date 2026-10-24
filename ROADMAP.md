@@ -29,6 +29,9 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 11/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 2/29 |
 
+Runway Gen-4.5 text/first-frame video and Gen-4 Turbo first-frame video are available through
+priced catalog models and the direct task adapter (#25); paid live verification remains opt-in.
+
 ## What works today
 
 Run it: `cargo run -p nodecraft`. What the window actually does:

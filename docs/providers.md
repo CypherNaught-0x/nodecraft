@@ -27,6 +27,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
 | **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video); Soul ID training (images → identity) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
+| **Runway** | `runway` (feature `runway`) | API key (`Authorization: Bearer`, keychain account `runway`) | Gen-4.5 text or first frame → video; Gen-4 Turbo first frame → video | Standard MP4, 2–10 seconds. 0.12/0.05 USD per second before tax. No submission deduplication; uncertain creates are never replayed. See below. |
 | **Kling** | `kling` (feature `kling`) | API key (`Authorization: Bearer`), or access key and secret key stored as `ak:sk`, which sign a 30-minute HS256 token per request | Kling 2.5 Turbo, 2.1 Master and 1.6 text → video and start frame (+ end frame) → video; Kling 1.6 up to four references → video; Kling Image 2.1 text → image | Billed in prepaid Kling units, so no quote before the run. One create per job carrying an `external_task_id` from the idempotency key; never replayed automatically; no remote cancellation. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
 
@@ -1317,3 +1318,42 @@ The live smoke test only reads the node list, so it spends no credits:
 NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
   cargo test -p nodecraft-providers --features http,comfy-cloud --test live_comfy_cloud -- --ignored
 ```
+
+## Runway video (#25)
+
+Store a Runway developer API key under `runway` in API keys. The desktop, CLI and headless
+provider setup route the builtin `runway.gen4-5` and `runway.gen4-turbo` models to the same
+adapter. Gen-4.5 accepts a prompt alone or a prompt with one first-frame image; Turbo requires
+that image. Prompts are limited to 1,000 UTF-16 units. Inputs are PNG/JPEG/WebP, at most 3 MiB
+and 4096 pixels per side. These are NodeCraft's local bounds; larger inputs must be resized.
+The catalog offers Gen-4.5's shared landscape/portrait sizes and Turbo's six frame sizes.
+Video editing, reference sets, audio generation and premium output formats are not offered.
+
+Duration is sent explicitly (2–10 seconds) and the catalog quotes standard MP4 at 0.12 USD per
+second for Gen-4.5 and 0.05 USD per second for Turbo, excluding tax. Sources checked 2026-10-24:
+[Runway pricing](https://docs.dev.runwayml.com/guides/pricing/) and
+[the API schema](https://docs.dev.runwayml.com/openapi.json). The API's optional terminal
+nonnegative credit count is recorded as cost at 0.01 USD/credit when representable. Missing cost,
+negative credit adjustments or an overflowing conversion leave usage unknown and retain the
+conservative estimate; they do not discard a successful video. Turbo omits the unsupported
+`outputFormat` field and uses its standard MP4 default.
+Input safety refusals may be billed. No paid live verification was performed for this change.
+
+One paid create returns a resumable UUID. The shared runner polls at five-second intervals.
+A lost reply may hide a billed task: Runway has no documented submission deduplication, so an
+uncertain create is not retried. A failed result download resumes the task and obtains a fresh
+link. JSON replies are limited to 64 KiB; videos to 256 MiB. The downloaded MP4 must have readable
+headers, dimensions no greater than 4096 pixels and duration no greater than 60 seconds; this
+checks the container metadata, not every encoded frame. Only public CloudFront HTTPS result
+links are admitted. API credentials never accompany downloads and redirects are refused.
+The builtin browser transport cannot provide no-redirect requests, so it refuses this adapter;
+wasm compilation is supported for hosts with an audited transport.
+
+Cancellation reads the task first and refuses to delete an already completed video. Runway's
+DELETE can still race completion and remove that result; cancellation does not guarantee a
+refund. Already missing/cancelled tasks count as stopped. See
+[Runway task management](https://docs.dev.runwayml.com/api/).
+
+`live_runway` is ignored and requires `NODECRAFT_LIVE_RUNWAY=1`,
+`NODECRAFT_LIVE_RUNWAY_ACKNOWLEDGE_COST=1`, and `RUNWAYML_API_SECRET`; run it only with spending
+authorization. It requests one 2-second Gen-4.5 clip (0.24 USD before tax), never in CI.
