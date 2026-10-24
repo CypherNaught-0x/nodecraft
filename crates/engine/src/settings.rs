@@ -126,6 +126,17 @@ impl From<ReadProviderSettings> for ProviderSettings {
 }
 
 /// One ComfyUI server (#864).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComfyBackend {
+    #[default]
+    Local,
+    Cloud,
+    /// An unrecognized future backend is never treated as an unauthenticated local server.
+    #[serde(other)]
+    Unsupported,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ComfyServer {
@@ -133,6 +144,8 @@ pub struct ComfyServer {
     pub name: String,
     /// Such as `http://127.0.0.1:8188`.
     pub url: String,
+    /// Local ComfyUI or the fixed, account-authenticated Comfy Cloud API.
+    pub backend: ComfyBackend,
     /// How many jobs one run sends it at once; unset, the scheduler's usual 4. Read through
     /// [`Self::max_jobs`].
     #[serde(deserialize_with = "lenient_jobs")]
@@ -159,7 +172,23 @@ pub const MAX_SERVER_JOBS: u32 = 16;
 
 impl ComfyServer {
     pub fn new(name: &str, url: &str) -> Self {
-        Self { name: name.to_owned(), url: url.to_owned(), max_jobs: None }
+        Self { name: name.to_owned(), url: url.to_owned(), backend: ComfyBackend::Local, max_jobs: None }
+    }
+
+    pub fn cloud(name: &str) -> Self {
+        Self { backend: ComfyBackend::Cloud, ..Self::new(name, nodecraft_providers::comfy_cloud::ORIGIN) }
+    }
+
+    pub fn is_cloud(&self) -> bool {
+        self.backend == ComfyBackend::Cloud
+    }
+
+    fn supported(&self) -> bool {
+        match self.backend {
+            ComfyBackend::Local => !self.url.trim().is_empty(),
+            ComfyBackend::Cloud => self.url.trim() == nodecraft_providers::comfy_cloud::ORIGIN,
+            ComfyBackend::Unsupported => false,
+        }
     }
 
     /// The jobs one run may send at once, within 1..=[`MAX_SERVER_JOBS`]; `None` for the usual.
@@ -167,6 +196,10 @@ impl ComfyServer {
         self.max_jobs.map(|n| usize::try_from(n.clamp(1, MAX_SERVER_JOBS)).unwrap_or(1))
     }
 }
+
+#[cfg(test)]
+#[path = "settings/hosted_profile_tests.rs"]
+mod hosted_profile_tests;
 
 /// Why `name` can't name a ComfyUI server, or `Ok` when it can: 1 to [`MAX_SERVER_NAME`]
 /// characters, no control characters, no space at either end.
@@ -206,7 +239,7 @@ impl ProviderSettings {
         let mut seen = std::collections::BTreeSet::new();
         self.comfyui
             .iter()
-            .filter(|server| check_server_name(&server.name).is_ok() && !server.url.trim().is_empty())
+            .filter(|server| check_server_name(&server.name).is_ok() && server.supported())
             .filter(|server| seen.insert(server.name.as_str()))
             .take(MAX_COMFY_SERVERS)
             .collect()

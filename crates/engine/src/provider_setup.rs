@@ -26,6 +26,8 @@ use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub(crate) mod comfy_profile;
+
 /// Why an adapter can't run, in words a person can act on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Readiness {
@@ -177,6 +179,9 @@ pub fn comfyui_named(env: &HostEnv<'_>, name: &str) -> Result<nodecraft_provider
 }
 
 fn comfyui_server(env: &HostEnv<'_>, server: &crate::settings::ComfyServer) -> Result<nodecraft_providers::comfyui::ComfyProvider, Readiness> {
+    if server.is_cloud() {
+        return Err(Readiness::NotSetUp("this profile uses the Comfy Cloud API; use its hosted workflow route".into()));
+    }
     let url = server.url.trim();
     if url.is_empty() {
         return Err(Readiness::NotSetUp("the ComfyUI server has no address".into()));
@@ -243,7 +248,13 @@ fn llm(endpoint: Endpoint, env: &HostEnv<'_>) -> LlmClient {
 /// [`comfy_slot`]), built from its key and settings.
 pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readiness> {
     if let Some(name) = comfy_slot_server(slot) {
-        return Ok(Arc::new(comfyui_named(env, name)?));
+        let server = env.settings.comfy_server(name).ok_or_else(|| Readiness::NotSetUp(format!("there's no ComfyUI server called “{name}”")))?;
+        return comfy_profile::make(server, env);
+    }
+    if slot == "comfyui"
+        && let Some(server) = env.settings.default_comfy()
+    {
+        return comfy_profile::make(server, env);
     }
     let adapter = slot;
     let provider: Arc<dyn Provider> = match adapter {
