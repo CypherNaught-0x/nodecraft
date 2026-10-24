@@ -79,6 +79,24 @@ fn the_palette_reads_the_servers_nodes_and_a_workflow_then_imports() {
 }
 
 #[test]
+fn disconnected_worker_reports_an_abandoned_accepted_id() {
+    let mut h = with_fetcher(fetcher(false));
+    let id = h.state_mut().session.dispatch("comfy.nodes.refresh", &json!({})).unwrap()["pending"].as_u64().unwrap();
+    let ctx = h.ctx.clone();
+    h.state_mut().tick_comfy_nodes(&ctx);
+    let fetcher = h.state_mut().comfy_nodes.as_mut().unwrap();
+    fetcher.abandon();
+    let (sender, disconnected) = std::sync::mpsc::sync_channel(1);
+    drop(sender);
+    fetcher.done = disconnected;
+    h.state_mut().tick_comfy_nodes(&ctx);
+    let report = comfy_workflow_cmds::last(&h.state().session).0.unwrap();
+    assert_eq!(report.id, id);
+    assert!(report.error.as_deref().unwrap_or_default().contains("abandoned"));
+    assert_eq!(h.state().comfy_nodes.as_ref().unwrap().completed_ids(), [id]);
+}
+
+#[test]
 fn without_a_server_in_settings_the_notice_says_what_to_add() {
     let mut h = with_fetcher(fetcher(false));
     h.state_mut().session.dispatch("comfy.nodes.refresh", &json!({})).unwrap();

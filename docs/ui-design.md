@@ -36,8 +36,7 @@ same structure with the values inverted.
 | `waveform` | `#5c5c66` | `#a8a8b2` | a sound card's waveform still to play (≥ 2:1 against the canvas); what has played is `wire_audio` |
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
-panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide, at least 220 high, with 64 points per
-additional schema row (720 maximum); control gaps are 6 points. Longer bodies scroll internally. The composer's submit button is 28
+panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide. Ordinary parameter bodies use deterministic, control-specific row metrics plus padding, rather than a 220-point minimum plus 64 points per schema field. Longer bodies scroll internally at the 720-point parameter-body cap. The separate `composer_body_height` token reserves 220 points for a generation composer; `card_min_height` remains only a legacy deterministic creation-ID seed, not a card geometry input. Previews and answers retain their separate 180-point regions. Conditional controls keep their declared space so changing a value does not move ports and wires. Composer prompts and hidden workflow-model fields do not reserve duplicate rows. Some contract-defined composer controls still retain conservative parameter space because the pure geometry interface does not yet receive their semantic roles. Control gaps are 6 points; `control_vertical_padding` is 2 points so native button rows agree with the logical metrics. Image actions reserve their 180-point preview before the first live result, and PDF source previews reserve the same region. History uses two compact rows rather than an extra 64-point parameter row. Multi-port cards retain a port-spacing height floor without enlarging the parameter viewport; vertical hit cells keep adjacent ports independently selectable at overview zoom and during legacy-input previews. Sliders use the full content width, with an exact numeric input below; text inputs and choice buttons also fill that width. The composer's submit button is 28
 points across; the generation toolbar is 32 high, 10 above its card; the image viewer opens 720 wide. A sheet's table has 32-wide checkbox and number columns and
 120-wide model, references, result, status and button columns, the prompt taking the rest; the
 Sheets panel lists canvases 320 high, with a 250-wide title field. The Layer Editor's layers and
@@ -45,12 +44,17 @@ properties panels are 250 wide; a dragged layer snaps within 6 points of a guide
 handle sits 24 points above it. App mode's form is 640 wide, and its media and result
 thumbnails 120 across. The Timeline editor shares the Layer Editor's panel width; its clip track
 is 84 high under a 22-high time ruler, and a clip's edge trims within 6 points.
+The ComfyUI servers panel's jobs-at-once text field is `comfy_jobs_width` (48) wide,
+and its new-server name field is `comfy_name_width` (160) wide.
 A card's image preview, and a text card's answer, take `card_preview_height` (180) above the
 composer; a long answer scrolls inside it and can be selected and copied. While a wire feeds a
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the
 label's own row, so the card keeps its size), and its hover text explains that nonempty connected
 text is used instead; the typed prompt is kept and comes back when the wire is removed. A
-generation kind other than images is offered only when the catalog has a model for it.
+generation kind other than images is offered only when the catalog has a model for it. A media
+card's overlay — its prompt, its variation counter and its submit arrow — can be hidden for a
+clean board with `H`; that is view state, so the document, the card's size and its other
+parameters are untouched, and a text card's prompt is never hidden because there it is the editor.
 
 Tests in `theme.rs` keep body text ≥ 7:1 against cards, labels ≥ 4.5:1 against the canvas, and the
 selected border more visible than the resting one, in both themes.
@@ -69,6 +73,7 @@ selected border more visible than the resting one, in both themes.
 | Escape in search | close search and retain selection |
 | Shift+1 / Shift+2 outside editors and gestures | fit all / selected nodes |
 | Shift+M, or Hide map / Show map | toggle the minimap |
+| `H` outside text fields, popups, menus and gestures, and not a held-key repeat | hide or show the prompt overlays on media cards, for a clean board. Shift is allowed because that is how a capital is typed; any other modifier means another key. View state: the document, the revision and the undo history do not move, the card keeps its size, a text card's prompt stays because there it is the editor, and the letter stays with the field, menu or gesture that owns the keyboard |
 | Click or primary-drag the minimap | center the canvas on that world point |
 | Drag a card background | move through `node.move`, one undo step per gesture; click selects it |
 | Click a card / Shift-click | select only it / add or remove it from the selection |
@@ -90,7 +95,7 @@ selected border more visible than the resting one, in both themes.
 | Right-click a card → **Field** | move the selected nodes into a field, or take them out (`node.field_set`) |
 | Right-click (or long-press) a card | menu: select the upstream / downstream chain of the selection, or all nodes of the card's kind; an unselected card becomes the selection first |
 | Double-click the title | rename; Enter or blur commits, Escape cancels; empty restores the automatic title |
-| Enter on a focused generation card, ⌘/Ctrl+Enter in its prompt, or its round arrow button | quote a run of that card (`run.quote`) and show its price, anything blocking it and any unknown part (a by-usage step whose provider can quote it is asked first, `run.estimate`, and the price shown again with its answer); **Generate for …** starts it (`run.start` with the quote's token and totals), Cancel or Escape starts nothing. An edit after the quote makes it stale: nothing starts until it is quoted again. If the start fails, the dialog offers only Close, since the host may have taken the run. F2 or double-click still renames a generation card |
+| Enter on a focused generation card, ⌘/Ctrl+Enter in its prompt, or its round arrow button | quote a run of that card (`run.quote`) and show its price, anything blocking it and any unknown part (a by-usage step whose provider can quote it is asked first, `run.estimate`, and the price shown again with its answer); **Generate for …** starts priced work (`run.start` with the quote's token and totals). The confirmation counts cached reuse as **N reused, free**; with only cached results, it says results are used where needed, already-active results stay in place, and nothing generates. Its button is **Continue without generating**: `run.start` applies any needed cached results but does nothing when they are already active. Cancel or Escape starts nothing. An edit after the quote makes it stale: nothing starts until it is quoted again. If the start fails, the dialog offers only Close, since the host may have taken the run. F2 or double-click still renames a generation card |
 | Click a card's **Stale ↻** badge (shown when its result no longer matches its inputs) | quote a refresh of that card with whatever upstream is stale or missing (`run.quote`, mode `with_upstream`) and confirm it as above, in a dialog titled **Refresh** |
 | Click **Queue** (top-right, beside **API keys**; **Queue (N)** while N jobs are queued or running) | open the queue panel under search: every running and recent job with its card, provider and model, status, and price. **Cancel** stops a live job; **Retry** quotes a failed or cancelled card again like Generate; **Clear finished** forgets ended jobs. A cancelled job never sent shows **Not charged**; one that may have reached the provider shows its estimate as **unresolved**. Cancel asks the provider to stop; if it refuses or doesn't answer, the job shows **Cancel refused** and is followed to its end, since it may still be billed. A paid result that couldn't be kept on its card (it didn't fit its ports, couldn't be converted or couldn't be recorded) is **held** (#369): **Queue (N, M held)** counts them and the panel lists each with why, and **Retry**, **Put on canvas** and **Discard**; none calls the provider again. While 16 are held, new jobs are refused unsent. The desktop app saves held results so they survive a restart (#614). Cards show their own status under them (**Queued**, **Generating 40%**, **Run failed: API key**, with the full error and a hint on hover) |
 | Click **Plugins** (top-right, beside **API keys**) | open the plugins panel (#172); in the browser it says packages last only for the session and can't run there (#823): every installed package with its version, state, licence, signer and grant. Type or **Choose…** a `.ncraft-plugin` file and **Check** it: a dry run shows who signed it (or that nobody did), its licence and the text of its licence and notice files, the IDs it adds and the capabilities and addresses it asks for (and, for an update, what is new), with nothing installed; **Install** or **Update** then imports it disabled. **Grant…** shows what a grant would allow, required capabilities ticked and fixed, optional ones to tick, before **Grant**; a data package says it needs none. **Enable**, **Disable**, **Revoke**, **Roll back to …** (a kept version, while disabled), **Uninstall** (asks to confirm) and **Remove unused versions** each dispatch one `plugins.*` command |
@@ -157,9 +162,17 @@ keep the editable text control and Refresh guidance. Reset is disabled without a
   the edit costs about 2× a move at 200 nodes and about 3× at 1,000. The gap grows with node count
   because the edit runs the O(nodes) `live_actions::pending` path that a move skips. The move half
   also lands on the #549 line above, 2.3 and 7.8 ms, within 0.2 ms, which is what makes the two
-  worth reading together. #203's frame after an edit was 1.82 and 6.21 ms; these loaded runs
-  cannot establish a comparable change from that quiet-machine baseline. A quiet re-measure is
-  tracked in #743. The spread matters as much as the figures: runs taken earlier the same day, while other builds held the load average at 40-55, came out up to 3× worse
+  worth reading together. #203's first 1-pixel-per-point replay run, 1.85 ms (200 nodes) and 6.21 ms
+  (1,000 nodes), is a set of **release-mode move frames**, not `node.param_set` frames: its 60-frame
+  "after an edit" loop dispatched `node.move` on successive nodes. Its grid shape, 10% zoom,
+  moving pointer, egui-plus-tessellation span and pixels-per-point settings match the present
+  move control, but the parameter-edit command and live-recompute work are different. Neither
+  a quiet parameter-edit result nor these loaded runs can be interpreted as a before/after
+  regression against #203's *parameter-edit* baseline, because #203 has no parameter-edit run. The #203
+  report also did not record its macOS version or 1/5/15-minute load averages, preventing a
+  load-matched historical comparison. A quiet re-measure is tracked in #743. The spread matters
+  as much as the figures: runs taken earlier the same day, while other builds held the load
+  average at 40-55, came out up to 3× worse
   (a 1,000-node pan read 9.4 ms in one and 27.7 ms in the other). Pass `--test-threads=1` when
   rerunning, or the ignored cases share the machine with each other on top of everything else.
 - Grid dots keep a fixed screen size. When zooming out would put them closer than 12 points, the
@@ -209,8 +222,7 @@ inset, 6-point corner radius and 12-point gap from node decorations. Open bubble
 as fill with canvas-colour count text; resolved bubbles use panel fill, a primary-text outline and
 checkmark. The active bubble adds a second outline. The local Show resolved checkbox explicitly
 uses the primary-text stroke for both its unchecked boundary and checked glyph in both themes.
-Initial node offsets include the bubble's ring and gap outside the actual card bounds. A selected
-marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed.
+The Comments button sits on the viewport's right below search, with its discussion panel beneath it; opening search moves both down. The panel stays clear of bottom navigation when there is room; in cramped viewports it may overlap, with foreground discussion clicks explicitly excluded from minimap-pan admission. Tags stay on the left; with both panels open their widths share the viewport. Node-attached markers overlapping a card or its output handle are displayed to the card's right with the bubble's ring and gap outside the actual bounds. At viewport edges, projected markers try the left, above or below the card while keeping their full ring reachable and clear of both port-hit strips. A viewport-filling card can use a safe interior position; if no safe position fits, protecting wire interaction takes priority over pin visibility. New node-attached anchors use zoom-independent world offsets, and markers follow live field-drag previews. Existing safe off-card offsets and free-canvas pins stay where placed. These display adjustments never rewrite stored anchors. Minimap admission uses the discussion panel's actual painted bounds, so unused space below a short panel remains interactive. A selected marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed. Pin dragging retains that display offset through the gesture, so release publishes only the actual world-space drag delta.
 
 ## Minimap and fit navigation
 
@@ -246,8 +258,8 @@ or discussion-pin gesture, or act through a popup or active text editor. A cance
 gesture keeps ownership until release. Admission refused before a same-frame cancellation stays
 refused until a fresh press.
 
-The new `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and `canvas.pan_to`
-commands use the engine service path. Live hosts use `NodeCraftApp::dispatch_navigation(ctx, id,
+The `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle`,
+`canvas.prompt_overlays_toggle` and `canvas.pan_to` commands use the engine service path. Live hosts use `NodeCraftApp::dispatch_navigation(ctx, id,
 params)` (and `navigation_enabled`) to compute current geometry, selection and focus, temporarily
 install the capability, dispatch, restore prior resources and apply the intent immediately. A raw
 headless Session has no live capability and returns Unsupported. Existing services/resources are

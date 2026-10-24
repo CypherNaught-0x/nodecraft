@@ -261,19 +261,167 @@ fn the_helper_checks_the_msi_again_while_holding_it() {
 fn a_relaunch_keeps_control_and_the_project() {
     let project = Path::new("a.ncraft");
     let args = |command: &std::process::Command| command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
-    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), Some(project), true, "42");
-    assert_eq!(args(&exec), ["--wait-for", "42", "--control", "a.ncraft"]);
-    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), None, false, "42");
-    assert_eq!(args(&exec), ["--wait-for", "42"]);
+    let read = vec![PathBuf::from("/reference materials"), PathBuf::from("/sources")];
+    let write = vec![PathBuf::from("/working files")];
+    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), Some(project), true, &read, &write, "42");
+    assert_eq!(
+        args(&exec),
+        ["--wait-for", "42", "--control", "--root", "/working files", "--read-root", "/reference materials", "--read-root", "/sources", "a.ncraft"]
+    );
+    let bundle = command(&Relaunch::Bundle("NodeCraft.app".into()), Some(project), true, &read, &write, "42");
+    assert_eq!(
+        args(&bundle),
+        [
+            "-n",
+            "NodeCraft.app",
+            "--args",
+            "--wait-for",
+            "42",
+            "--control",
+            "--root",
+            "/working files",
+            "--read-root",
+            "/reference materials",
+            "--read-root",
+            "/sources",
+            "a.ncraft"
+        ]
+    );
+    let exec = command(&Relaunch::Exec("NodeCraft.AppImage".into()), Some(project), false, &read, &write, "42");
+    assert_eq!(args(&exec), ["--wait-for", "42", "a.ncraft"], "no control means no grants");
     let helper = Relaunch::Helper { helper: "helper.exe".into(), msi: "u.msi".into(), blake3: "ab12".into(), exe: "NodeCraft.exe".into() };
     assert_eq!(
-        args(&command(&helper, Some(project), true, "7")),
-        ["--finish-update", "u.msi", "ab12", "NodeCraft.exe", "--wait-for", "7", "--control", "a.ncraft"]
+        args(&command(&helper, Some(project), true, &read, &write, "7")),
+        [
+            "--finish-update",
+            "u.msi",
+            "ab12",
+            "NodeCraft.exe",
+            "--wait-for",
+            "7",
+            "--control",
+            "--root",
+            "/working files",
+            "--read-root",
+            "/reference materials",
+            "--read-root",
+            "/sources",
+            "a.ncraft"
+        ]
+    );
+    assert_eq!(
+        args(&installed_command(Path::new("NodeCraft.exe"), Some(project), true, &read, &write)),
+        ["--control", "--root", "/working files", "--read-root", "/reference materials", "--read-root", "/sources", "a.ncraft"]
+    );
+    assert_eq!(args(&installed_command(Path::new("NodeCraft.exe"), None, false, &read, &write)), Vec::<String>::new());
+    assert_eq!(args(&command(&helper, None, false, &read, &write, "7")), ["--finish-update", "u.msi", "ab12", "NodeCraft.exe", "--wait-for", "7"]);
+}
+
+#[test]
+fn windows_second_hop_drops_vanished_grant_but_forwards_valid_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let granted = dir.path().join("granted");
+    let read_only = dir.path().join("reference materials");
+    std::fs::create_dir(&granted).unwrap();
+    std::fs::create_dir(&read_only).unwrap();
+    // Startup and the first hop have already captured these canonical folders.
+    let write = vec![std::fs::canonicalize(&granted).unwrap()];
+    let read = vec![std::fs::canonicalize(&read_only).unwrap()];
+    let args = |command: std::process::Command| command.get_args().map(|arg| arg.to_os_string()).collect::<Vec<_>>();
+    let project = Path::new("open.ncraft");
+    let valid = args(second_hop_command(Path::new("NodeCraft.exe"), Some(project), true, &read, &write));
+    assert_eq!(
+        valid,
+        [
+            std::ffi::OsString::from("--control"),
+            "--root".into(),
+            write[0].as_os_str().into(),
+            "--read-root".into(),
+            read[0].as_os_str().into(),
+            "open.ncraft".into()
+        ]
+    );
+
+    std::fs::remove_dir(&granted).unwrap();
+    assert_eq!(
+        args(second_hop_command(Path::new("NodeCraft.exe"), Some(project), true, &read, &write)),
+        ["open.ncraft"],
+        "a grant removed while the MSI runs must not reach the installed copy"
     );
 }
 
 #[test]
+fn windows_second_hop_drops_redirected_grant_but_forwards_valid_grants() {
+    let dir = tempfile::tempdir().unwrap();
+    let granted = dir.path().join("granted");
+    let substitute = dir.path().join("substitute");
+    std::fs::create_dir(&granted).unwrap();
+    std::fs::create_dir(&substitute).unwrap();
+    let write = vec![std::fs::canonicalize(&granted).unwrap()];
+    let args = |command: std::process::Command| command.get_args().map(|arg| arg.to_os_string()).collect::<Vec<_>>();
+    assert_eq!(
+        args(second_hop_command(Path::new("NodeCraft.exe"), None, true, &[], &write)),
+        [std::ffi::OsString::from("--control"), "--root".into(), write[0].as_os_str().into()],
+        "a still-valid grant must be forwarded unchanged"
+    );
+    std::fs::remove_dir(&granted).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&substitute, &granted).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&substitute, &granted).unwrap();
+    assert_eq!(
+        args(second_hop_command(Path::new("NodeCraft.exe"), None, true, &[], &write)),
+        Vec::<std::ffi::OsString>::new(),
+        "a substituted link must not reach the installed copy, even as the original path"
+    );
+}
+
+#[test]
+fn relaunch_refuses_a_missing_or_redirected_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let granted = dir.path().join("granted");
+    let other = dir.path().join("other");
+    std::fs::create_dir(&granted).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    // macOS tempdirs may live under a symlinked /var; startup stores canonical paths.
+    let granted = std::fs::canonicalize(granted).unwrap();
+    let write = vec![granted.clone()];
+    assert!(check_relaunch_roots(&[], &write).is_ok());
+    std::fs::remove_dir(&granted).unwrap();
+    assert!(check_relaunch_roots(&[], &write).unwrap_err().message.contains("restart NodeCraft manually"));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&other, &granted).unwrap();
+        assert!(check_relaunch_roots(&[], &write).is_err(), "a changed link must not grant its new destination");
+    }
+}
+
+// File locks survive fork until exec. Other tests may spawn while holding these locks;
+// running each lock-owner test in its own test process removes that unrelated fork window.
+// The child executes exactly this test, not the suite, and reports its assertion failures.
+fn in_own_process(test: &str) -> bool {
+    if std::env::var_os("NODECRAFT_INSTALL_LOCK_TEST_CHILD").is_some() {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env("NODECRAFT_INSTALL_LOCK_TEST_CHILD", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("running 1 test") && stdout.contains("1 passed"),
+        "isolated install lock test {test} did not run and pass exactly once: {stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
+#[test]
 fn leftovers_are_kept_while_another_copy_runs() {
+    if in_own_process("app::updates::install::tests::leftovers_are_kept_while_another_copy_runs") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("NodeCraft.AppImage");
     std::fs::write(&file, b"\x7fELF").unwrap();
@@ -289,14 +437,8 @@ fn leftovers_are_kept_while_another_copy_runs() {
     assert_eq!(after_start(dir.path(), Some(&kind), second.alone), None);
     assert!(leftover.exists());
     drop((first, second));
-    // As below, a child another test forks may hold the lock until it execs (#827).
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut third = Instance::hold(&updates);
-    while !third.alone && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        third = Instance::hold(&updates);
-    }
-    assert!(third.alone, "the lock goes with the copies holding it");
+    let third = Instance::hold(&updates);
+    assert!(third.alone, "the instance lock must be free immediately after its owners exit");
     after_start(dir.path(), Some(&kind), third.alone);
     assert!(!leftover.exists());
     // Without an instance lock nothing is removed.
@@ -306,7 +448,71 @@ fn leftovers_are_kept_while_another_copy_runs() {
 }
 
 #[test]
+fn a_spawned_child_does_not_keep_its_parents_instance_lock() {
+    if in_own_process("app::updates::install::tests::a_spawned_child_does_not_keep_its_parents_instance_lock") {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let updates = dir.path().join("updates");
+    let first = Instance::hold(&updates);
+    assert!(first.alone);
+    let bundle = dir.path().join("NodeCraft.app");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let old = dir.path().join(format!("{BUNDLE_OLD_PREFIX}0.0.1.app"));
+    std::fs::create_dir_all(old.join("Contents/MacOS")).unwrap();
+    let exe = old.join("Contents/MacOS/NodeCraft");
+    std::fs::write(&exe, b"old").unwrap();
+    let running = std::fs::File::open(&exe).unwrap();
+    running.lock_shared().unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "app::updates::install::tests::lock_child_waits_for_parent", "--nocapture"])
+        .env("NODECRAFT_INSTALL_LOCK_TEST_CHILD", "1")
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // An explicit signal confirms exec and that the child remains alive; no fixed delay
+    // approximates the fork window. Bound only the readiness handshake, naming what stalled.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut stderr = child.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut ready = [0];
+        let result = std::io::Read::read_exact(&mut stderr, &mut ready).map(|()| ready);
+        let _ = sender.send(result);
+    });
+    let ready = receiver.recv_timeout(std::time::Duration::from_secs(30));
+    if ready.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(reader.join().is_ok(), "the child's readiness reader crashed");
+    assert_eq!(ready.expect("the child never reported exec readiness").unwrap(), [b'R']);
+    drop(first);
+    assert!(Instance::hold(&updates).alone, "an exec'd child must not inherit the instance lock");
+    drop(running);
+    clean(&Kind::MacBundle { bundle, verify: false }, dir.path());
+    assert!(!old.exists(), "an exec'd child must not inherit the old bundle executable lock");
+    drop(child.stdin.take());
+    assert!(child.wait().unwrap().success(), "the lock child did not exit cleanly");
+}
+
+#[test]
+fn lock_child_waits_for_parent() {
+    if std::env::var_os("NODECRAFT_INSTALL_LOCK_TEST_CHILD").is_none() {
+        return;
+    }
+    use std::io::{Read as _, Write as _};
+    std::io::stderr().write_all(b"R").unwrap();
+    std::io::stderr().flush().unwrap();
+    let mut input = [0];
+    assert_eq!(std::io::stdin().read(&mut input).unwrap(), 0, "the parent did not close the control pipe");
+}
+
+#[test]
 fn an_old_bundle_another_copy_runs_from_is_kept() {
+    if in_own_process("app::updates::install::tests::an_old_bundle_another_copy_runs_from_is_kept") {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let bundle = dir.path().join("NodeCraft.app");
     std::fs::create_dir_all(&bundle).unwrap();
@@ -321,14 +527,8 @@ fn an_old_bundle_another_copy_runs_from_is_kept() {
     clean(&kind, dir.path());
     assert!(old.is_dir());
     drop(running);
-    // A child another test forks shares the lock until it execs (#827), so this may take a try
-    // or two.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while old.exists() && std::time::Instant::now() < deadline {
-        clean(&kind, dir.path());
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert_eq!(names(dir.path()), ["NodeCraft.app"]);
+    clean(&kind, dir.path());
+    assert_eq!(names(dir.path()), ["NodeCraft.app"], "the old bundle's executable lock must be free after its owner exits");
 }
 
 /// A bundle around a copy of `/usr/bin/true`, signed ad hoc.

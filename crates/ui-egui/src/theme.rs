@@ -80,6 +80,9 @@ pub struct Tokens {
     pub field_min_width: f32,
     pub field_min_height: f32,
     pub field_fill_opacity: f32,
+    /// ComfyUI servers panel's job-count and new-name text field widths (#874).
+    pub comfy_jobs_width: f32,
+    pub comfy_name_width: f32,
     pub search_width: f32,
     pub search_height: f32,
     pub search_button_width: f32,
@@ -125,7 +128,11 @@ pub struct Tokens {
     pub card_width: f32,
     /// Duplicate displacement in world points, independent of zoom.
     pub duplicate_offset: f32,
+    /// Legacy creation seed baseline; not a card geometry or placement budget.
     pub card_min_height: f32,
+    /// Generation composer body budget including card padding.
+    pub composer_body_height: f32,
+    /// Maximum parameter body, including padding; previews and history reserve separate space.
     pub card_max_height: f32,
     /// Height of the image preview at the top of a card that shows an image (#386).
     pub card_preview_height: f32,
@@ -133,6 +140,8 @@ pub struct Tokens {
     pub dialog_width: f32,
     pub control_row_height: f32,
     pub control_gap: f32,
+    /// Vertical button padding on cards, keeping native controls within the logical row budget.
+    pub control_vertical_padding: f32,
     pub title_min_screen_px: f32,
     pub handle_min_screen_radius: f32,
     pub handle_stroke: f32,
@@ -244,6 +253,8 @@ pub const DARK: Tokens = Tokens {
     field_min_width: 160.0,
     field_min_height: 96.0,
     field_fill_opacity: 0.10,
+    comfy_jobs_width: 48.0,
+    comfy_name_width: 160.0,
     search_width: 420.0,
     search_height: 128.0,
     search_button_width: 130.0,
@@ -281,11 +292,13 @@ pub const DARK: Tokens = Tokens {
     card_width: 320.0,
     duplicate_offset: 40.0,
     card_min_height: 220.0,
+    composer_body_height: 220.0,
     card_max_height: 720.0,
     card_preview_height: 180.0,
     dialog_width: 440.0,
     control_row_height: 64.0,
     control_gap: 6.0,
+    control_vertical_padding: 2.0,
     title_min_screen_px: 9.0,
     handle_min_screen_radius: 5.0,
     handle_stroke: 1.5,

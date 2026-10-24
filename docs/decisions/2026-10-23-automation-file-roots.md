@@ -19,6 +19,5 @@
   save folders, and for key-backed (browser) storage.
 - **`file.cancel` isn't limited** to the folders: it takes no location, and cancelling loses
   nothing written.
-- **Not yet:** the folders aren't kept when the app relaunches after an update (#887), and the plain
-  `nodecraft-cli mcp` server has none, so it refuses file commands. Configuring folders in the app
-  belongs with the in-app server setting (#116).
+- **Not yet:** the plain `nodecraft-cli mcp` server has no folders, so it refuses file commands.
+  Configuring folders in the app belongs with the in-app server setting (#116).

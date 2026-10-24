@@ -46,6 +46,16 @@ impl FileRoots {
         self.read.is_empty() && self.write.is_empty()
     }
 
+    /// Canonical folders granted read access at startup, for an update relaunch.
+    pub fn read_roots(&self) -> &[PathBuf] {
+        &self.read
+    }
+
+    /// Canonical folders granted write access at startup, for an update relaunch.
+    pub fn write_roots(&self) -> &[PathBuf] {
+        &self.write
+    }
+
     fn readable(&self, path: &Path) -> bool {
         self.read.iter().chain(&self.write).any(|root| path.starts_with(root))
     }

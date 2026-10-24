@@ -12,6 +12,9 @@ For other clients, configure a stdio server that runs `nodecraft-cli` with the a
 
 The server starts with a new, empty project with one canvas. It has no allowed folders, so the
 project file commands are listed but refused; use the bridge below to open and save projects.
+It does not load the desktop app's usage log: `usage.export_csv`, `usage.ownership` and
+`usage.unsettled` are listed as `ready: false` with bridge guidance, rather than reporting an
+empty log as though it were billing evidence. Bridge to the running app to read its real log.
 Streamable HTTP and the in-app server setting are still to come (#116).
 
 ## Bridge to the running app
@@ -48,8 +51,7 @@ any folders the file commands are refused with `unsupported`, saying how to allo
 `file.save` is refused when the open project lives outside the save folders. `file.open` refuses
 `discard_dirty: true`: an agent can't throw away unsaved work, so it saves first. No dialog
 opens, whatever window has focus. The folders apply to control clients only; the app's own
-menus and shortcuts are unaffected. They aren't yet kept when the app relaunches after an update
-(#887).
+menus and shortcuts are unaffected.
 
 Limits: the check happens when the command arrives. A program that can change the folders
 themselves (swap a folder for a link between the check and the write) isn't guarded against.
@@ -219,10 +221,13 @@ JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.
 
 **Live-only commands** act on the running window, so they need MCP bridged to the app
 (`nodecraft --control`). They are navigation (`canvas.fit_all`, `canvas.fit_selection`,
-`canvas.minimap_toggle`, `canvas.pan_to`), search (`canvas.search_*`), the tag filter
+`canvas.minimap_toggle`, `canvas.prompt_overlays_toggle`, `canvas.pan_to`), search (`canvas.search_*`), the tag filter
 (`canvas.tag_filter_*`), the discussions panel (`canvas.comments_toggle`, `comment.open`) and
-Format selection (`canvas.auto_format`). Format selection takes an optional `nodes` list, so an
-agent can arrange cards without touching the person's selection; it moves cards in one undoable
+Format selection (`canvas.auto_format`). `canvas.fit_selection` also accepts an optional `nodes`
+list (2..=MAX_CHANGES unique IDs on the shown canvas); it frames those cards, using collapsed
+field headers for hidden cards, without changing the person's selection. Without it, the command
+frames the selection. Format selection takes an optional `nodes` list, so an agent can arrange
+cards without touching the person's selection; it moves cards in one undoable
 step. A standalone stdio session lists these commands as not ready, says where they run, and
 refuses them without opening a window or changing the document. `mcp::LIVE_ONLY` lists them, and
 a test checks the app routes exactly those (#360). `comment.compose` stays human-only: it opens an

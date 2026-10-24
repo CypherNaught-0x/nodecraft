@@ -823,11 +823,35 @@ impl Session {
         })
     }
 
+    /// Inspect the exact fresh node described by a creation command, without publishing or
+    /// executing services. Hosts can measure it before supplying the final position.
+    pub fn preview_created_node(&self, command: &str, params: &Value, id: nodecraft_types::NodeId) -> Result<nodecraft_graph::Node, Error> {
+        guard(|| {
+            let spec = self.registry.get(command)?;
+            let effect = Self::describe(spec, &self.context(Phase::Preview), params)?;
+            let changes = match effect {
+                Effect::Edit { changes, .. } | Effect::Place { changes, .. } => changes,
+                _ => return Err(invalid("command does not describe a node creation")),
+            };
+            changes
+                .changes
+                .into_iter()
+                .find_map(|change| match change {
+                    Change::AddNode { node, .. } if node.id == id => Some(node),
+                    _ => None,
+                })
+                .ok_or_else(|| invalid("command does not create that node"))
+        })
+    }
+
     /// What dispatching `id` with `params` would do, without doing it (#114). The handler runs
     /// as dispatch would run it, so a run is classified by the run it would really start and
     /// what it accepted; the effect is then dropped, never applied.
     /// An edit is also prepared against the document (and dropped), so one that dispatch would
-    /// refuse is refused here.
+    /// refuse is refused here. A `run.start` that also applies cached results reports only
+    /// `Impact::Run` (including its accepted ceiling), not a separate edit; if every node reuses
+    /// and no run starts, it reports `Impact::Edit` when results change, or `Impact::Read` when
+    /// all results were already active.
     pub fn impact(&self, id: &str, params: &Value) -> Result<crate::impact::Impact, Error> {
         let spec = *self.registry.get(id)?;
         let effect = Self::describe(&spec, &self.context(Phase::Dispatch), params)?;

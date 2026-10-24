@@ -81,6 +81,7 @@ pub mod share_cmds;
 pub mod style_cmds;
 
 pub mod field_cmds;
+pub mod folder_cmds;
 pub mod generation_catalog;
 pub mod interchange_cmds;
 pub mod run_ceiling;

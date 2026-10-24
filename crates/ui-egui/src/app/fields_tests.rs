@@ -533,7 +533,9 @@ fn selected_card_in_distant_collapsed_field(h: &mut Harness<'static, NodeCraftAp
     let card = *h.state().navigation.geometry.rects.get(&node).unwrap();
     let canvas_id = h.state().canvas;
     let rect = json!({"pos": {"x": card.min.x - 40.0, "y": card.min.y - 3000.0}, "width": card.width() + 80.0, "height": 3000.0 + card.height() + 40.0});
-    let target = self::card(h).unwrap().min + Vec2::new(150.0, 30.0);
+    // Select background padding, not the compact card's generated text controls.
+    let screen = h.state().view.rect_to_screen(h.state().viewport.min, card);
+    let target = Pos2::new(screen.center().x, screen.top() + h.state().theme.tokens().card_padding * h.state().view.zoom * 0.5);
     press(h, target, egui::PointerButton::Primary, true);
     press(h, target, egui::PointerButton::Primary, false);
     assert!(h.state().selection.contains(node), "pointer selects the member card");
@@ -573,6 +575,25 @@ fn fit_selection_frames_only_hidden_cards_by_their_header() {
     h.state_mut().dispatch_navigation(&ctx, "canvas.fit_selection", &json!({})).unwrap();
     h.run();
     assert_fit_frames_header_not_card(&h, id, card);
+}
+
+#[test]
+fn named_fit_frames_hidden_header_without_selecting_its_card() {
+    let mut h = harness();
+    let (id, node, card) = selected_card_in_distant_collapsed_field(&mut h);
+    h.hover_at(Pos2::new(60.0, 590.0));
+    h.key_press(egui::Key::T);
+    h.run();
+    let other = *canvas(&h).nodes().keys().find(|candidate| **candidate != node).unwrap();
+    let canvas_id = h.state().canvas;
+    h.state_mut().session.dispatch("node.move", &json!({"canvas":canvas_id,"id":other,"pos":{"x":card.min.x + 1000.0,"y":card.min.y - 2900.0}})).unwrap();
+    h.run();
+    let selection = h.state().selection.clone();
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_selection", &json!({"nodes":[node,other]})).unwrap();
+    h.run();
+    assert_fit_frames_header_not_card(&h, id, card);
+    assert_eq!(h.state().selection, selection, "named framing does not select hidden cards");
 }
 
 #[test]

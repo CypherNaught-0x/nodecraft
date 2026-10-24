@@ -82,7 +82,12 @@ fn dropped_files_become_nodes_at_the_pointer_as_one_undo_step() {
     assert!(added.iter().any(|n| n.kind == "source.image"));
     let world = h.state().view.to_world(h.state().viewport.min, at);
     let t = *h.state().theme.tokens();
-    assert!((text.pos.x + t.card_width * 0.5 - world.x).abs() < 1.0, "centred under the pointer");
+    for (index, kind) in ["source.text", "source.image"].into_iter().enumerate() {
+        let node = added.iter().find(|node| node.kind == kind).unwrap();
+        let rect = super::super::payload_rect(&h.state().session, node, &t);
+        let expected = world + egui::Vec2::new(index as f32 * (t.card_width + t.card_padding * 4.0), 0.0);
+        assert!((rect.center() - expected).length() < 1.0, "actual {kind} geometry must center under pointer/grid");
+    }
     assert_eq!(h.state().selection.nodes(), &added.iter().map(|n| n.id).collect());
     assert!(h.state().notice.is_none());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
@@ -180,8 +185,17 @@ fn unsupported_and_oversized_files_are_skipped_with_a_notice() {
     let missing = std::env::temp_dir().join("nodecraft-drop-does-not-exist.txt");
     drop_at(&mut h, Pos2::new(600.0, 300.0), &[missing]);
     assert_eq!(h.state().notice.as_deref(), Some("nodecraft-drop-does-not-exist.txt wasn't added: the file can't be read."));
+    // A dropped folder goes to a Folder card instead; nothing in this one can be held.
     drop_at(&mut h, Pos2::new(600.0, 300.0), std::slice::from_ref(&scratch.0));
-    assert_eq!(h.state().notice.as_deref().map(|n| n.ends_with("only files can be added, not folders or devices.")), Some(true));
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while h.state().folder_import_busy() {
+        h.step();
+        assert!(std::time::Instant::now() < end, "bounded folder import");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let notice = h.state().notice.clone().unwrap_or_default();
+    assert!(notice.starts_with("nothing in nodecraft-drop-") && notice.contains("can be added"), "{notice}");
+    assert_eq!(nodes(&h).len(), count);
 }
 
 #[test]

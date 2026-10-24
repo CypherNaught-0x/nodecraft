@@ -48,6 +48,7 @@ pub const LIVE_ONLY: &[&str] = &[
     "canvas.fit_all",
     "canvas.fit_selection",
     "canvas.minimap_toggle",
+    "canvas.prompt_overlays_toggle",
     "canvas.pan_to",
     "canvas.search_open",
     "canvas.search_query",
@@ -64,6 +65,8 @@ pub const LIVE_ONLY: &[&str] = &[
     "canvas.tag_filter_previous",
 ];
 const NEEDS_LIVE_APP: &str = "needs the running app's canvas: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`";
+const NEEDS_USAGE_LOG: &str = "needs the running app's usage log: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`; standalone `nodecraft-cli mcp` has no usage log";
+const USAGE_READ_COMMANDS: &[&str] = &["usage.export_csv", "usage.ownership", "usage.unsettled"];
 
 /// Commands an agent may see and run.
 pub const AGENT_COMMANDS: &[&str] = &[
@@ -133,6 +136,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "canvas.fit_all",
     "canvas.fit_selection",
     "canvas.minimap_toggle",
+    "canvas.prompt_overlays_toggle",
     "canvas.pan_to",
     "canvas.search_open",
     "canvas.search_query",
@@ -186,6 +190,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "node.cache_set",
     "node.variations_set",
     "canvas.set_variation_cards",
+    // Refills a Folder card with files already in the project; one undoable edit.
+    "folder.fill",
     "node.shader_set",
     "shader.write",
     "shader.apply",
@@ -507,7 +513,14 @@ pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut 
                 let enabled = crate::roots::admit(host, s.id, json!({})).and_then(|params| host.enabled(s.id, &params));
                 entry["ready"] = json!(enabled.is_ok());
                 if let Err(e) = enabled {
-                    entry["not_ready_because"] = json!(e.message);
+                    // These readers need a real host log. Never substitute an empty log for
+                    // monetary evidence; explain how to connect to the app that owns it.
+                    entry["not_ready_because"] =
+                        if USAGE_READ_COMMANDS.contains(&s.id) && e.kind == ErrorKind::Unsupported && e.message == "required host capability is unavailable" {
+                            json!(NEEDS_USAGE_LOG)
+                        } else {
+                            json!(e.message)
+                        };
                 }
             }
             entry

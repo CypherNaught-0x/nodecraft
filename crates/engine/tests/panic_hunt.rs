@@ -297,7 +297,7 @@ fn template(id: &str) -> (Session, Value) {
     } else {
         Session::new(document).unwrap()
     };
-    if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to") {
+    if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" | "canvas.pan_to") {
         session.swap_resource(Some(nodecraft_engine::navigation_cmds::NavigationContext {
             canvas: canvas(),
             viewport_available: true,
@@ -623,7 +623,7 @@ fn template(id: &str) -> (Session, Value) {
         "node.create_connected" => json!({"canvas":canvas(),"id":node_id(7),"kind":"structure.router","pos":{"x":1,"y":2},
             "from":{"node":node_id(1),"port":"out"},"edge":nodecraft_types::EdgeId::from_bytes([0x77; 16])}),
         "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
-        "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
+        "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" => json!({}),
         "canvas.search_open" | "canvas.search_next" | "canvas.search_previous" | "canvas.search_close" => json!({}),
         "canvas.search_query" => json!({"query":"needle"}),
         "canvas.pan_to" => json!({"x":0,"y":0}),
@@ -740,6 +740,8 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"style":node_id(6),"id":node_id(7),"edge":nodecraft_types::EdgeId::from_bytes([0x79; 16]),"pos":{"x":1,"y":2}})
         }
         "style.use" => json!({"canvas":canvas(),"style":node_id(6),"target":node_id(5),"edge":nodecraft_types::EdgeId::from_bytes([0x79; 16])}),
+        "folder.fill" => json!({"canvas":canvas(),"id":node_id(5),"folder":"Shots","modality":"text",
+            "files":[{"name":"a.txt","value":{"type":"text","value":"first"}},{"name":"b/c.txt","value":{"type":"text","value":"second"}}]}),
         "document.use_pages" => json!({"canvas":canvas(),"node":node_id(5),"first":2,"last":3}),
         "document.extract_page" => json!({"canvas":canvas(),"node":node_id(5),"page":1,"id":node_id(7),"at":{"x":400,"y":20}}),
         "document.extract_text" => json!({"canvas":canvas(),"node":node_id(5),"page":1,"region":[0.0,0.0,1.0,1.0],"id":node_id(7),"at":{"x":400,"y":20}}),
@@ -848,7 +850,7 @@ fn typed_template_panic_hunt() {
                         id,
                         "canvas.fit_all"
                             | "canvas.fit_selection"
-                            | "canvas.minimap_toggle"
+                            | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle"
                             | "canvas.pan_to"
                             | "canvas.tag_filter_open"
                             | "canvas.tag_filter_close"

@@ -296,6 +296,7 @@ impl Registry {
             crate::perf_cmds::specs,
             crate::cache_cmds::specs,
             crate::variation_cmds::specs,
+            crate::folder_cmds::specs,
             crate::shader_cmds::specs,
             crate::shader_assist_cmds::specs,
             crate::shader_library_cmds::specs,
