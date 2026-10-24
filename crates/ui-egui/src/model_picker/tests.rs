@@ -74,6 +74,9 @@ fn groups_keep_disabled_models_and_run_additional_checks_only_once() {
 fn search_is_case_insensitive_bounded_and_keyboard_skips_disabled_rows() {
     let catalog = catalog();
     let mut picker = picker(&catalog);
+    // The disabled-row assertions below need them visible; the default hides them (see below).
+    picker.selectable_only = false;
+    picker.refilter(&catalog);
     picker.move_highlight(true);
     assert_eq!(selected(&picker), Some("b.good"));
     picker.move_highlight(false);
@@ -88,6 +91,23 @@ fn search_is_case_insensitive_bounded_and_keyboard_skips_disabled_rows() {
     assert_eq!(selected(&picker), None, "search does not turn an incompatible row into a choice");
     picker.set_query(&"λ".repeat(128)).unwrap();
     assert!(picker.set_query(&"λ".repeat(129)).is_err());
+}
+
+#[test]
+fn selectable_only_is_on_by_default_and_toggling_it_off_reveals_disabled_models() {
+    let catalog = catalog();
+    let mut picker = picker(&catalog);
+    assert!(picker.selectable_only);
+    let visible = |picker: &ModelPicker| picker.filtered.iter().map(|i| picker.choices[*i].id.clone()).collect::<Vec<_>>();
+    assert_eq!(visible(&picker), ["a.good", "b.good"], "disabled models are hidden by default");
+    assert_eq!(selected(&picker), Some("a.good"));
+    picker.selectable_only = false;
+    picker.refilter(&catalog);
+    assert!(visible(&picker).contains(&"a.blocked".to_owned()), "turning the filter off shows disabled models again");
+    assert_eq!(selected(&picker), Some("a.good"), "highlight still lands on a selectable model");
+    picker.selectable_only = true;
+    picker.refilter(&catalog);
+    assert_eq!(visible(&picker), ["a.good", "b.good"]);
 }
 
 #[test]
@@ -150,6 +170,8 @@ fn harness() -> Harness<'static, View> {
 #[test]
 fn actual_pointer_and_keyboard_choose_a_model_but_never_a_disabled_row() {
     let mut h = harness();
+    h.run();
+    h.get_by_label("Selectable only").click();
     h.run();
     let blocked = h.get_by_label("Reference model").rect().center();
     for pressed in [true, false] {

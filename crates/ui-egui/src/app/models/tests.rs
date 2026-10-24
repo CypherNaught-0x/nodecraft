@@ -132,6 +132,9 @@ fn actual_role_filter_keeps_incompatible_models_visible_but_disabled() {
     h.event(egui::Event::Text("fal.flux-schnell".into()));
     h.run();
     let label = nodecraft_catalog::Catalog::builtin().unwrap().get("fal.flux-schnell").unwrap().label.clone();
+    assert!(h.query_by_label(&label).is_none(), "selectable-only is on by default and hides the incompatible model");
+    h.get_by_label("Selectable only").click();
+    h.run();
     assert!(h.get_by_label(&label).accesskit_node().is_disabled());
     h.key_press(egui::Key::Enter);
     h.run();

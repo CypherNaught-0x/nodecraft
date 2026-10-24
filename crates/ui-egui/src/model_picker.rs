@@ -30,6 +30,8 @@ pub struct ModelPicker {
     highlighted: Option<usize>,
     focus: bool,
     text_bytes: usize,
+    /// Hide models that cannot be chosen for this target. On by default.
+    selectable_only: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -99,7 +101,17 @@ impl ModelPicker {
         filtered.try_reserve_exact(choices.len()).map_err(|_| allocation())?;
         let mut rows = Vec::new();
         rows.try_reserve_exact(choices.len().checked_mul(2).ok_or_else(|| invalid("model picker row size overflow"))?).map_err(|_| allocation())?;
-        let mut picker = Self { choices, filtered, rows, query: String::new(), filtered_query: String::new(), highlighted: None, focus: true, text_bytes };
+        let mut picker = Self {
+            choices,
+            filtered,
+            rows,
+            query: String::new(),
+            filtered_query: String::new(),
+            highlighted: None,
+            focus: true,
+            text_bytes,
+            selectable_only: true,
+        };
         picker.refilter(catalog);
         Ok(picker)
     }
@@ -125,6 +137,9 @@ impl ModelPicker {
         let mut provider = None;
         for (index, choice) in self.choices.iter().enumerate() {
             let Some(model) = catalog.get(&choice.id) else { continue };
+            if self.selectable_only && choice.unavailable.is_some() {
+                continue;
+            }
             if !query.is_empty() && !model.id.contains(&query) && !model.provider.contains(&query) && !model.label.to_lowercase().contains(&query) {
                 continue;
             }
@@ -174,7 +189,8 @@ impl ModelPicker {
             .order(egui::Order::Foreground)
             .open(&mut open)
             .collapsible(false)
-            .default_width(t.dialog_width)
+            .resizable(true)
+            .default_size([t.dialog_width, t.model_picker_height])
             .show(ctx, |ui| {
                 let search = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search models or providers…").char_limit(QUERY_CHARS));
                 if self.focus {
@@ -182,6 +198,9 @@ impl ModelPicker {
                     self.focus = false;
                 }
                 if self.filtered_query != self.query {
+                    self.refilter(catalog);
+                }
+                if ui.checkbox(&mut self.selectable_only, "Selectable only").changed() {
                     self.refilter(catalog);
                 }
                 if up {
@@ -194,46 +213,51 @@ impl ModelPicker {
                 if self.filtered.is_empty() {
                     ui.label("No matching models");
                 }
-                let row_height = t.control_row_height * 2.0;
-                let mut scroll = egui::ScrollArea::vertical().max_height(t.comments_height);
-                if (up || down)
-                    && let Some(row) = self.rows.iter().position(|row| matches!(row, Row::Model(index) if Some(*index) == self.highlighted))
-                {
-                    scroll = scroll.vertical_scroll_offset(row as f32 * (row_height + ui.spacing().item_spacing.y));
-                }
-                scroll.show_rows(ui, row_height, self.rows.len(), |ui, range| {
-                    for row in self.rows.get(range).into_iter().flatten() {
-                        let index = match row {
-                            Row::Provider(index) | Row::Model(index) => *index,
-                        };
-                        let Some(choice) = self.choices.get(index) else { continue };
-                        let Some(model) = catalog.get(&choice.id) else {
-                            changed_catalog = true;
-                            continue;
-                        };
-                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::top_down(egui::Align::Min), |ui| {
-                            if matches!(row, Row::Provider(_)) {
-                                ui.heading(&model.provider);
-                                return;
-                            }
-                            let response = ui
-                                .add_enabled(choice.unavailable.is_none(), egui::Button::selectable(self.highlighted == Some(index), &model.label).truncate());
-                            ui.label(
-                                egui::RichText::new(format!("Quality {}/5 · typically {} s · {}", model.quality, model.latency_s, price_label(model)))
-                                    .color(t.text_muted),
-                            );
-                            if let Some(reason) = &choice.unavailable {
-                                response.on_disabled_hover_ui(|ui| {
-                                    ui.label(reason);
-                                    model_details(ui, model);
-                                });
-                            } else {
-                                if response.clicked() {
-                                    chosen = Some(index);
+                // Rows size to their content. The catalog is small enough to draw every row, which
+                // avoids fixed-height virtualization; each provider is a shaded group with a gap after it.
+                let scroll = egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(ui.available_height());
+                scroll.show(ui, |ui| {
+                    for group in self.rows.chunk_by(|_, next| !matches!(next, Row::Provider(_))) {
+                        egui::Frame::new().fill(t.card_fill).inner_margin(egui::Margin::same(t.control_gap as i8)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            for row in group {
+                                let index = match row {
+                                    Row::Provider(index) | Row::Model(index) => *index,
+                                };
+                                let Some(choice) = self.choices.get(index) else { continue };
+                                let Some(model) = catalog.get(&choice.id) else {
+                                    changed_catalog = true;
+                                    continue;
+                                };
+                                if matches!(row, Row::Provider(_)) {
+                                    ui.heading(&model.provider);
+                                    continue;
                                 }
-                                response.on_hover_ui(|ui| model_details(ui, model));
+                                let response = ui.add_enabled(
+                                    choice.unavailable.is_none(),
+                                    egui::Button::selectable(self.highlighted == Some(index), &model.label).truncate(),
+                                );
+                                if (up || down) && self.highlighted == Some(index) {
+                                    response.scroll_to_me(Some(egui::Align::Center));
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!("Quality {}/5 · typically {} s · {}", model.quality, model.latency_s, price_label(model)))
+                                        .color(t.text_muted),
+                                );
+                                if let Some(reason) = &choice.unavailable {
+                                    response.on_disabled_hover_ui(|ui| {
+                                        ui.label(reason);
+                                        model_details(ui, model);
+                                    });
+                                } else {
+                                    if response.clicked() {
+                                        chosen = Some(index);
+                                    }
+                                    response.on_hover_ui(|ui| model_details(ui, model));
+                                }
                             }
                         });
+                        ui.add_space(t.control_gap);
                     }
                 });
             });

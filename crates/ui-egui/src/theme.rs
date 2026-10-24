@@ -138,6 +138,8 @@ pub struct Tokens {
     pub card_preview_height: f32,
     /// Width of a modal question such as the startup recovery prompt (#408).
     pub dialog_width: f32,
+    /// Starting height of the model picker; its list fills the rest and the window can be resized.
+    pub model_picker_height: f32,
     pub control_row_height: f32,
     pub control_gap: f32,
     /// Vertical button padding on cards, keeping native controls within the logical row budget.
@@ -296,6 +298,7 @@ pub const DARK: Tokens = Tokens {
     card_max_height: 720.0,
     card_preview_height: 180.0,
     dialog_width: 440.0,
+    model_picker_height: 640.0,
     control_row_height: 64.0,
     control_gap: 6.0,
     control_vertical_padding: 2.0,
