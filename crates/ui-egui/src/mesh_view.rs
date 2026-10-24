@@ -205,6 +205,12 @@ fn read_message(reason: nodecraft_format::PreviewReadError) -> &'static str {
     }
 }
 
+/// The source for a re-entry that only reads the cache. A named function has one type, so the
+/// recursive call in `Meshes::request` doesn't instantiate a new generic each time.
+fn unavailable_source() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError> {
+    Err(nodecraft_format::PreviewReadError::Unavailable)
+}
+
 impl Meshes {
     /// Decoded bytes held now.
     pub fn bytes(&self) -> usize {
@@ -340,7 +346,7 @@ impl Meshes {
                 _ => Err(Failure::permanent("3D preview not available here")),
             };
             self.finish(hash, result);
-            self.request(ctx, asset, || Err(nodecraft_format::PreviewReadError::Unavailable))
+            self.request(ctx, asset, unavailable_source)
         }
     }
 
