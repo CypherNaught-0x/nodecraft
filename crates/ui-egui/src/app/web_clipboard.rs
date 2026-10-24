@@ -105,17 +105,19 @@ impl NodeCraftApp {
             self.notice = Some("The document changed while reading the clipboard; nothing was added. Paste again.".into());
             return;
         }
-        let now = ctx.input(|i| i.time);
-        if !now.is_finite() || now >= pending.deadline {
-            self.notice = Some("The browser didn't finish reading the clipboard; nothing was pasted. Close its permission request and try again.".into());
-            return;
-        }
         let result = pending
             .state
             .try_borrow()
             .ok()
             .and_then(|state| state.reads.try_borrow_mut().ok().and_then(|mut reads| reads.first_mut().and_then(|(_, slot)| slot.take())));
         let Some(result) = result else {
+            // Read callbacks may finish while the browser suspends animation frames. Only
+            // a still-unsettled read expires when the app next gets a frame.
+            let now = ctx.input(|i| i.time);
+            if !now.is_finite() || now >= pending.deadline {
+                self.notice = Some("The browser didn't finish reading the clipboard; nothing was pasted. Close its permission request and try again.".into());
+                return;
+            }
             self.web_paste.pending = Some(pending);
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
             return;

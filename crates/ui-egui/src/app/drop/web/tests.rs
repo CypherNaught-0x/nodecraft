@@ -77,6 +77,28 @@ fn a_browser_drop_waits_for_every_read_then_imports_as_one_undo_step() {
 }
 
 #[test]
+fn a_completed_read_survives_a_browser_drop_frame_after_the_deadline() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    let old = nodes(&h).len();
+    let png = nodecraft_media::encode_png(4, 4, &[90; 64], &Default::default()).unwrap();
+    let reads = pending(&mut h, vec![("note.txt", None), ("pic.png", None)], vec![]);
+    // FileReader callbacks settle while requestAnimationFrame is paused in a background tab.
+    reads.borrow_mut()[0].1 = Some(Ok(b"Finished before the tab returned".to_vec()));
+    reads.borrow_mut()[1].1 = Some(Ok(png));
+    let deadline = h.state().web_drop.as_ref().unwrap().deadline;
+    h.input_mut().time = Some(deadline + READ_SECONDS);
+    h.step();
+    assert!(h.ctx.input(|i| i.time) > deadline);
+    assert_eq!(nodes(&h).len(), old + 2, "completed bytes must survive the delayed frame: {:?}", h.state().notice);
+    assert!(h.state().web_drop.is_none());
+    assert!(h.state().notice.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before, "the completed batch still imports as one undo step");
+}
+
+#[test]
 fn skipped_failed_and_grown_files_are_named_and_the_rest_still_land() {
     let mut h = harness();
     let count = nodes(&h).len();

@@ -122,12 +122,14 @@ impl NodeCraftApp {
             self.notice = Some("File reading was cancelled; nothing was added.".into());
             return;
         }
-        let now = ctx.input(|i| i.time);
-        if !now.is_finite() || !pending.deadline.is_finite() || now >= pending.deadline {
-            self.notice = Some("The browser didn't finish reading files; nothing was added. Drop them again.".into());
-            return;
-        }
         if !pending.done() {
+            // A background tab can defer this frame after all FileReader callbacks finished.
+            // The deadline limits an unfinished read, not already-completed bytes.
+            let now = ctx.input(|i| i.time);
+            if !now.is_finite() || !pending.deadline.is_finite() || now >= pending.deadline {
+                self.notice = Some("The browser didn't finish reading files; nothing was added. Drop them again.".into());
+                return;
+            }
             self.web_drop = Some(pending);
             return;
         }
