@@ -77,9 +77,15 @@ impl NodeCraftApp {
         match intent.get("action").and_then(Json::as_str) {
             Some("open") => {
                 self.search.open = true;
-                ctx.memory_mut(|m| m.request_focus(self.search_input_id()));
+                // A click opens search after the overlay has already drawn, so the input is not in
+                // this frame's accessibility tree yet. Focusing it then panics accesskit: the overlay
+                // requests focus when it draws the input instead.
+                if !self.search_focus_pending {
+                    ctx.memory_mut(|m| m.request_focus(self.search_input_id()));
+                }
             }
             Some("close") => {
+                self.search_focus_pending = false;
                 self.search.close();
                 ctx.memory_mut(|m| m.surrender_focus(self.search_input_id()));
             }
@@ -266,6 +272,7 @@ impl NodeCraftApp {
                         .on_hover_text("Finish any active node editor or gesture before opening canvas search.")
                         .clicked()
                     {
+                        self.search_focus_pending = true;
                         action = Some("canvas.search_open");
                     }
                     return;
@@ -284,6 +291,9 @@ impl NodeCraftApp {
                             .hint_text("Title, prompt, stored model or tag"),
                     )
                     .labelled_by(label.id);
+                if std::mem::take(&mut self.search_focus_pending) {
+                    response.request_focus();
+                }
                 changed = response.changed();
                 if response.has_focus() || response.lost_focus() {
                     let direction = ui.input_mut(|i| {
@@ -431,6 +441,21 @@ mod tests {
         assert_eq!(h.state().session.document(), &original);
         assert_eq!(h.state().session.revision(), 0);
         assert!(!h.state().session.can_undo());
+    }
+    #[test]
+    fn click_toolbar_button_opens_search_and_focuses_input() {
+        let mut h = harness();
+        h.get_by_role_and_label(Role::Button, "Search (⌘F)").click();
+        h.run();
+        assert!(h.state().search.open);
+        assert_eq!(h.ctx.memory(|m| m.focused()), Some(h.state().search_input_id()), "the opened input takes focus");
+        h.event(egui::Event::Text("needle".into()));
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(h.state().search.current, Some(NodeId::from_bytes([4; 16])));
+        h.get_by_role_and_label(Role::Button, "Close search").click();
+        h.run();
+        assert!(!h.state().search.open);
     }
     #[test]
     fn unrelated_dirty_editor_keeps_focus_and_draft_when_search_shortcut_is_pressed() {
