@@ -124,6 +124,7 @@ fn diagnostic_with_downstream(downstream: bool) -> (NodeCraftApp, Arc<AtomicUsiz
             input_hash: if downstream && n == 21 { None } else { Some(Blake3::from_bytes([0; 32])) },
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         });
         node.active = Some(generation);

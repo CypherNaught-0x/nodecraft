@@ -101,6 +101,48 @@ fn a_twin_node_copies_the_result_and_the_switch_never_makes_it_stale() {
 }
 
 #[test]
+fn timeline_cache_copies_rebind_source_versions_to_the_recipients_clip_ids() {
+    use nodecraft_graph::{Canvas, Change, Edge, Endpoint, Generation, Project, SourceVersion};
+    use nodecraft_types::{Blake3, EdgeId, GenerationId, ProjectId};
+    let kinds = Registry::builtins().unwrap();
+    let mut p = Project::new(ProjectId::from_bytes([2; 16]), "Timeline cache").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(CANVAS, "Timeline") }.apply(&mut p).unwrap();
+    let asset = AssetRef { hash: Blake3::from_bytes([7; 32]), mime: "video/webm".parse().unwrap(), meta: MediaMeta::default() };
+    let source2 = NodeId::from_bytes([13; 16]);
+    for source in [SOURCE, source2] {
+        let node = kinds.get("source.video").unwrap().descriptor().instantiate(source, &[("asset".into(), Value::Media(asset.clone()))].into()).unwrap();
+        Change::AddNode { canvas: CANVAS, node }.apply(&mut p).unwrap();
+    }
+    for (n, (source, target)) in [(SOURCE, BLUR), (source2, TWIN)].into_iter().enumerate() {
+        let node = kinds.get(nodecraft_nodes::timeline::ID).unwrap().descriptor().instantiate(target, &Default::default()).unwrap();
+        Change::AddNode { canvas: CANVAS, node }.apply(&mut p).unwrap();
+        Change::Connect {
+            canvas: CANVAS,
+            edge: Edge {
+                id: EdgeId::from_bytes([u8::try_from(n + 20).unwrap(); 16]),
+                from: Endpoint { node: source, port: "out".into() },
+                to: Endpoint { node: target, port: "clips".into() },
+                order: 0,
+            },
+        }
+        .apply(&mut p)
+        .unwrap();
+    }
+    let hash = nodecraft_exec::staleness::input_hash(p.canvases().get(&CANVAS).unwrap(), &kinds, BLUR).unwrap();
+    assert_eq!(hash, nodecraft_exec::staleness::input_hash(p.canvases().get(&CANVAS).unwrap(), &kinds, TWIN).unwrap());
+    let auto = |source: NodeId| nodecraft_nodes::timeline::auto_id(nodecraft_nodes::timeline::Input::Clips, &source.to_string(), 0);
+    let id = GenerationId::from_bytes([8; 16]);
+    let mut generation = Generation::new(id, vec![Value::Media(asset.clone())]);
+    generation.input_hash = Some(hash);
+    generation.source_versions.push(SourceVersion { role: auto(SOURCE), hash: asset.hash, item: None });
+    Change::AddGeneration { canvas: CANVAS, id: BLUR, index: 0, generation }.apply(&mut p).unwrap();
+    Change::SetActiveGeneration { canvas: CANVAS, id: BLUR, generation: Some(id) }.apply(&mut p).unwrap();
+    let hits = super::hits(&p, CANVAS, &kinds, [TWIN], || Ok(GenerationId::from_bytes([9; 16]))).unwrap();
+    let [super::Hit::Copy { generation, .. }] = hits.as_slice() else { panic!("one cached copy") };
+    assert_eq!(generation.source_versions, vec![SourceVersion { role: auto(source2), hash: asset.hash, item: None }]);
+}
+
+#[test]
 fn model_kinds_are_off_unless_asked_and_unknown_kinds_never_reuse() {
     let kinds = Registry::builtins().unwrap();
     let mut node = nodecraft_graph::Node::new(NodeId::from_bytes([1; 16]), "gen.unknown");
@@ -185,6 +227,7 @@ fn a_copied_fanned_result_keeps_its_item_tags() {
         input_hash: Some(hash),
         items: items.clone(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     };
     nodecraft_graph::Change::AddGeneration { canvas: CANVAS, id: BLUR, index: 0, generation }.apply(&mut project).unwrap();
@@ -223,6 +266,7 @@ fn a_copied_result_was_billed_nothing() {
         input_hash: Some(hash),
         items: Vec::new(),
         settings: vec![settings.clone()],
+        source_versions: Vec::new(),
         incomplete: None,
     };
     nodecraft_graph::Change::AddGeneration { canvas: CANVAS, id: BLUR, index: 0, generation }.apply(&mut project).unwrap();

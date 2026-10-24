@@ -93,6 +93,20 @@ fn generation_values(generation: &Generation) -> Result<(), Error> {
         value(output)?;
     }
     settings(generation)?;
+    if generation.source_versions.len() > crate::MAX_SOURCE_VERSIONS {
+        return Err(invalid("generation exceeds source version limit; render fewer batch items or Timeline clips"));
+    }
+    let mut roles = BTreeSet::new();
+    for source in &generation.source_versions {
+        text(&source.role, 64)?;
+        if source.role.is_empty()
+            || !roles.insert((source.item, source.role.as_str()))
+            || source.item.is_some_and(|item| usize::try_from(item).map_or(true, |item| item >= generation.items.len()))
+            || (!generation.items.is_empty() && source.item.is_none())
+        {
+            return Err(invalid("source versions need unique bounded roles and valid result items"));
+        }
+    }
     if generation.items.is_empty() {
         return match generation.incomplete {
             Some(_) => Err(invalid("only a fanned generation can be partial")),

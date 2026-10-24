@@ -206,6 +206,7 @@ mod tests {
                 input_hash: Some(hash),
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             },
         }
@@ -276,7 +277,15 @@ mod tests {
                 canvas,
                 id: node,
                 index: 0,
-                generation: Generation { id: generation, outputs: vec![], input_hash: Some(hash), items: Vec::new(), settings: Vec::new(), incomplete: None },
+                generation: Generation {
+                    id: generation,
+                    outputs: vec![],
+                    input_hash: Some(hash),
+                    items: Vec::new(),
+                    settings: Vec::new(),
+                    source_versions: Vec::new(),
+                    incomplete: None,
+                },
             },
             Change::SetActiveGeneration { canvas, id: node, generation: Some(generation) },
         ])

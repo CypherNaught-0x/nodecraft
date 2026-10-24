@@ -4,6 +4,31 @@ use nodecraft_graph::Project;
 use nodecraft_types::ProjectId;
 
 #[test]
+fn render_source_versions_survive_native_save_and_recovery() {
+    use nodecraft_graph::{Canvas, Change, Generation, Node, SourceVersion};
+    use nodecraft_types::{Blake3, CanvasId, GenerationId, NodeId};
+    let mut project = Project::new(ProjectId::from_bytes([1; 16]), "Timeline sources").unwrap();
+    let canvas = CanvasId::from_bytes([2; 16]);
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Timeline") }.apply(&mut project).unwrap();
+    let mut node = Node::new(NodeId::from_bytes([3; 16]), "video.timeline");
+    let mut generation = Generation::new(GenerationId::from_bytes([4; 16]), vec![]);
+    generation.source_versions.push(SourceVersion { role: "clip".into(), hash: Blake3::from_bytes([8; 32]), item: None });
+    node.active = Some(generation.id);
+    node.history.push(generation);
+    Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+    let snapshot = Snapshot { project, assets: AssetStore::default(), epoch: 0 };
+    let dir = tempfile::tempdir().unwrap();
+    let recovery = dir.path().join("recovery");
+    let location = StorageLocation::Path(dir.path().join("timeline.ncraft"));
+    let mut storage = NativeStorage::new(recovery.clone()).unwrap();
+    storage.checkpoint(&journal::checkpoint(&snapshot).unwrap().bytes).unwrap();
+    storage.save(&location, &encode(&snapshot).unwrap()).unwrap();
+    assert_eq!(decode(&storage.load(&location).unwrap()).unwrap(), snapshot);
+    drop(storage);
+    assert_eq!(NativeStorage::new(recovery).unwrap().recover().unwrap().snapshot, snapshot);
+}
+
+#[test]
 fn atomic_save_recovery_lock_and_failed_save_preserve_previous_data() {
     let dir = tempfile::tempdir().unwrap();
     let recovery = dir.path().join("recovery");
