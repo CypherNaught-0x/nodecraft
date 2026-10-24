@@ -277,6 +277,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("openai.gpt-6.1-sol", false),
             ("openai.gpt-6-luna", false),
             ("openai.gpt-4.1-mini", false),
+            ("openai-audio.transcribe", false),
+            ("openai-audio.mini-tts", false),
             ("replicate.hello", false),
             ("seedance.2-0", false),
             ("seedance.2-5", false),

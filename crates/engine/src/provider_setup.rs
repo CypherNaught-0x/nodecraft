@@ -56,7 +56,7 @@ impl Readiness {
 /// The keychain account holding the key for an adapter that needs one.
 pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
-        "openai" | "openai-images" => Some("openai"),
+        "openai" | "openai-images" | "openai-audio" => Some("openai"),
         "anthropic" => Some("anthropic"),
         "litellm" => Some("litellm"),
         "replicate" => Some("replicate"),
@@ -270,6 +270,7 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             Arc::new(llm(Endpoint::litellm(&url, key.as_ref().map(ApiKey::from)), env))
         }
         "openai-images" => Arc::new(nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone())),
+        "openai-audio" => Arc::new(nodecraft_providers::openai_audio::OpenAiAudio::new(needs_key(env.keys, "openai")?, env.http.clone())),
         "replicate" => Arc::new(nodecraft_providers::replicate::Replicate::new(needs_key(env.keys, "replicate")?, env.http.clone())),
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),
         "seedance" => Arc::new(nodecraft_providers::seedance::Seedance::new(needs_key(env.keys, "seedream")?, env.http.clone())),

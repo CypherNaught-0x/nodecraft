@@ -1,0 +1,49 @@
+# OpenAI Audio APIs, checked 2026-10-24. All models are available as of that date.
+# https://developers.openai.com/api/docs/guides/text-to-speech
+# https://developers.openai.com/api/docs/guides/speech-to-text
+# https://developers.openai.com/api/docs/deprecations
+# https://developers.openai.com/api/docs/models/gpt-transcribe
+# Speech bills tokens unavailable in the binary MP3 response. Transcription is $0.0045/minute;
+# no reliable pre-submit quote is implemented. Unknown-price jobs require explicit acceptance.
+[[model]]
+id = "openai-audio.mini-tts"
+provider = "openai-audio"
+provider_model = "gpt-4o-mini-tts-2025-12-15"
+label = "OpenAI speech (ends Jan 6, 2027)"
+description = "AI-generated speech, up to 4096 characters, as MP3. Deprecated; shuts down January 6, 2027. Realtime replacement is not supported here. Unknown token cost."
+latency_s = 10
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "text-to-speech"
+output = "audio"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.params.params]]
+name = "voice"
+label = "Voice"
+control = { type = "choice", options = [{value="alloy",label="Alloy"},{value="ash",label="Ash"},{value="ballad",label="Ballad"},{value="coral",label="Coral"},{value="echo",label="Echo"},{value="fable",label="Fable"},{value="nova",label="Nova"},{value="onyx",label="Onyx"},{value="sage",label="Sage"},{value="shimmer",label="Shimmer"},{value="verse",label="Verse"},{value="marin",label="Marin"},{value="cedar",label="Cedar"}] }
+default = { type = "text", value = "coral" }
+[[model.params.params]]
+name = "speed"
+label = "Speed"
+control = { type = "slider", min = 0.25, max = 4.0, step = 0.05 }
+default = { type = "number", value = 1.0 }
+[[model.params.params]]
+name = "instructions"
+label = "Speaking instructions"
+description = "Optional style, emotion or delivery instructions; at most 4096 characters."
+control = { type = "text", multiline = true, max_bytes = 4096 }
+
+[[model]]
+id = "openai-audio.transcribe"
+provider = "openai-audio"
+provider_model = "gpt-transcribe"
+label = "OpenAI file transcription"
+description = "Transcribe one recording to text, optionally guided by the prompt. MP3, WAV, FLAC, Ogg or M4A; at most 25 MB. USD 0.0045/minute when duration usage is reported; unknown upfront cost."
+latency_s = 15
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "audio-to-text"
+output = "text"
+inputs = [{ role = "audio", modality = "audio", min = 1, max = 1 }, { role = "prompt", modality = "text", min = 0, max = 1, inline = true }]

@@ -147,6 +147,57 @@ fn harness() -> Harness<'static, View> {
     )
 }
 
+fn openai_audio39_view(before: bool, speech: bool) -> View {
+    let builtin = Catalog::builtin().unwrap();
+    let catalog = Catalog::from_models(builtin.models().filter(|m| !before || m.provider != "openai-audio").cloned()).unwrap();
+    let wiring = if speech { Wiring::new(Modality::Audio).with_inline_prompt() } else { Wiring::new(Modality::Text).with(Modality::Audio, 1) };
+    let mut picker = ModelPicker::new(&catalog, &wiring, |_| Ok(())).unwrap();
+    picker.set_query("openai-audio").unwrap();
+    picker.refilter(&catalog);
+    View { catalog, picker, outcome: Outcome::Open }
+}
+
+#[test]
+fn openai_audio39_real_picker_selects_each_modality_with_unknown_price_and_sunset() {
+    for (speech, label, id) in
+        [(true, "OpenAI speech (ends Jan 6, 2027)", "openai-audio.mini-tts"), (false, "OpenAI file transcription", "openai-audio.transcribe")]
+    {
+        let state = openai_audio39_view(false, speech);
+        assert_eq!(price_label(state.catalog.get(id).unwrap()), "Usage based (USD)");
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).build_ui_state(
+            |ui, state: &mut View| {
+                if state.outcome == Outcome::Open {
+                    state.outcome = state.picker.show(ui.ctx(), &state.catalog, &crate::theme::DARK);
+                }
+            },
+            state,
+        );
+        h.run();
+        h.get_by_label(label).click();
+        h.run();
+        assert_eq!(h.state().outcome, Outcome::Chosen(id.into()));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+#[ignore = "manual public-safe before/after picker screenshots"]
+fn openai_audio39_render_picker_evidence() {
+    let directory = std::env::var("AUDIO39_RENDER_DIR").expect("output directory");
+    std::fs::create_dir_all(&directory).unwrap();
+    for (before, speech, name) in [(true, true, "before"), (false, true, "speech"), (false, false, "transcription")] {
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 800.0)).wgpu().build_ui_state(
+            |ui, state: &mut View| {
+                crate::theme::apply(ui.ctx(), crate::theme::ThemeKind::Dark);
+                state.outcome = state.picker.show(ui.ctx(), &state.catalog, &crate::theme::DARK);
+            },
+            openai_audio39_view(before, speech),
+        );
+        h.run();
+        h.render().unwrap().save(std::path::Path::new(&directory).join(format!("audio39-{name}.png"))).unwrap();
+    }
+}
+
 #[test]
 fn actual_pointer_and_keyboard_choose_a_model_but_never_a_disabled_row() {
     let mut h = harness();
