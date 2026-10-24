@@ -293,6 +293,8 @@ pub(super) struct Prediction<'a> {
     pub(super) data_removed: bool,
     #[serde(borrow, default)]
     pub(super) output: Option<&'a RawValue>,
+    #[serde(borrow, default)]
+    pub(super) metrics: Option<&'a RawValue>,
 }
 impl Prediction<'_> {
     pub(super) fn identity(&self, id: Option<&str>, record: Record) -> Result<(), ProviderError> {

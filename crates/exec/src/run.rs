@@ -145,6 +145,7 @@ struct JobState {
     outputs: Vec<(String, Value)>,
     /// The units its provider said it billed (#437), recorded with its settings.
     billable_units: Option<BillableUnits>,
+    execution_ms: Option<u64>,
     /// The key it may have been billed under without finishing (#517), kept with its item when
     /// the item fails.
     billed_key: Option<String>,
@@ -489,6 +490,13 @@ impl Run {
         }
     }
 
+    /// Keeps the provider's execution-time evidence before the job finishes; never a charge.
+    pub fn job_execution_ms(&mut self, job: JobId, milliseconds: u64) {
+        if let Some(state) = self.jobs.get_mut(&job).filter(|state| !state.done) {
+            state.execution_ms = Some(milliseconds);
+        }
+    }
+
     /// `job` is about to fail although the provider may have billed it, under `key` (#517): a
     /// reply lost on submit, or a job it accepted whose outputs failed here. A fanned step keeps
     /// the key with the item, so running the item again sends the job under it rather than
@@ -786,7 +794,20 @@ impl Run {
             self.next_job = next;
             // A key shared by two jobs would make them one charge: the second runs afresh.
             let key = reused.get(&n).filter(|key| self.sent_again.insert((*key).clone())).cloned();
-            self.jobs.insert(id, JobState { step: node, work, done: false, reported: false, outputs: Vec::new(), billable_units: None, billed_key: None, key });
+            self.jobs.insert(
+                id,
+                JobState {
+                    step: node,
+                    work,
+                    done: false,
+                    reported: false,
+                    outputs: Vec::new(),
+                    billable_units: None,
+                    execution_ms: None,
+                    billed_key: None,
+                    key,
+                },
+            );
             progress.jobs.push(scheduler::JobSpec { id, deps: Vec::new(), lane, retry: self.retry, idempotency_key: self.key(id) });
             ids.push(id);
         }
@@ -1199,7 +1220,9 @@ impl Run {
         for (n, job) in job_ids.into_iter().enumerate() {
             let cell = if items.is_some() { *job_items.get(n).ok_or("a job's item is unknown")? } else { 0 };
             let per_port = per_cell.get_mut(cell).ok_or("a job's item is out of range")?;
-            if let Some(JobState { work: JobSpec::Generate { provider, instance, model, params, inputs, .. }, billable_units, .. }) = self.jobs.get(&job) {
+            if let Some(JobState { work: JobSpec::Generate { provider, instance, model, params, inputs, .. }, billable_units, execution_ms, .. }) =
+                self.jobs.get(&job)
+            {
                 let item = if items.is_some() { Some(u32::try_from(cell).map_err(|_| "a job's item is out of range")?) } else { None };
                 let inputs = inputs.iter().map(|input| JobInput { role: input.role.clone(), value: input.value.clone() }).collect();
                 let cell_settings = settings.get_mut(cell).ok_or("a job's item is out of range")?;
@@ -1211,6 +1234,7 @@ impl Run {
                     inputs,
                     item,
                     billable_units: *billable_units,
+                    execution_ms: *execution_ms,
                 });
             }
             let outputs = self.jobs.get_mut(&job).map(|j| std::mem::take(&mut j.outputs)).unwrap_or_default();
