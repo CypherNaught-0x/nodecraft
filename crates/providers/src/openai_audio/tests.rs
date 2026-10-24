@@ -113,6 +113,7 @@ fn invalid_inputs_never_cross_the_paid_boundary() {
         json!({"speed":4.1}),
         json!({"speed":"fast"}),
         json!({"instructions":"a".repeat(4097)}),
+        json!({"instructions":"🌊".repeat(4097)}),
     ] {
         let mut j = job(SPEECH);
         j.params = params.as_object().unwrap().clone();
@@ -147,6 +148,7 @@ fn invalid_inputs_never_cross_the_paid_boundary() {
     }
     let mut j = job(SPEECH);
     j.inputs = vec![JobInput::Text { role: "prompt".into(), text: "雪".repeat(4096) }];
+    j.params.insert("instructions".into(), json!("🌊".repeat(4096)));
     done(run(&j, reply(200, MP3)).0);
     let mut j = job(TRANSCRIBE);
     j.inputs = vec![JobInput::Media { role: "audio".into(), mime: "audio/wav".into(), bytes: vec![0; INPUT_BYTES + 1].into() }];
@@ -167,28 +169,47 @@ fn a_context_cannot_inject_multipart_fields() {
     assert!(context.finish_error().is_some());
 }
 #[test]
-fn failures_stay_redacted_and_possibly_billed_without_replay() {
-    for (status, code, kind) in [
-        (401, "invalid_api_key", ErrorKind::Auth),
-        (403, "content_filter", ErrorKind::Auth),
-        (400, "content_policy_violation", ErrorKind::BlockedContent),
-        (429, "insufficient_quota", ErrorKind::Budget),
-        (429, "rate_limit", ErrorKind::RateLimited),
-        (500, "server", ErrorKind::Server),
-        (302, "redirect", ErrorKind::Malformed),
+fn parsed_refusals_release_evidence_and_unknown_failures_stay_possibly_billed() {
+    for (status, code, error_type, kind, refused) in [
+        (401, "invalid_api_key", None, ErrorKind::Auth, true),
+        (403, "unsupported_country_region_territory", None, ErrorKind::Auth, true),
+        (400, "invalid_parameter", Some("invalid_request_error"), ErrorKind::UnsupportedInput, true),
+        (400, "content_policy_violation", None, ErrorKind::BlockedContent, false),
+        (400, "content_filter", Some("invalid_request_error"), ErrorKind::BlockedContent, false),
+        (429, "insufficient_quota", None, ErrorKind::Budget, true),
+        (429, "credit_balance_exhausted", None, ErrorKind::Budget, true),
+        (429, "organization_spend_limit_exceeded", None, ErrorKind::Budget, true),
+        (429, "project_spend_limit_exceeded", None, ErrorKind::Budget, true),
+        (429, "organization_usage_limit_exceeded", None, ErrorKind::Budget, true),
+        (429, "future_billing_code", Some("insufficient_quota"), ErrorKind::Budget, true),
+        (429, "rate_limit_exceeded", None, ErrorKind::RateLimited, true),
+        (429, "slow_down", Some("rate_limit_error"), ErrorKind::RateLimited, true),
+        (429, "unknown", None, ErrorKind::RateLimited, false),
+        (500, "insufficient_quota", Some("insufficient_quota"), ErrorKind::Server, false),
+        (302, "redirect", None, ErrorKind::Malformed, false),
     ] {
-        let body = serde_json::to_vec(&json!({"error":{"code":code,"message":KEY}})).unwrap();
+        let body = serde_json::to_vec(&json!({"error":{"code":code,"type":error_type,"message":KEY}})).unwrap();
         let (result, http, context) = run(&job(SPEECH), reply(status, &body));
         let error = result.unwrap_err();
         assert_eq!(error.kind, kind);
         assert!(!error.message.contains(KEY));
-        assert!(context.finish_error().is_none());
+        assert_eq!(context.finish_error().is_some(), refused, "{status} {code}");
         assert_eq!(http.requests.lock().unwrap().len(), 1);
     }
     let (result, http, context) = run(&job(SPEECH), Err(ProviderError::new(ErrorKind::Network, KEY)));
     assert!(!result.unwrap_err().message.contains(KEY));
     assert!(context.finish_error().is_none());
     assert_eq!(http.requests.lock().unwrap().len(), 1);
+    for status in [400, 401, 403, 429, 500] {
+        for body in [b"not json".as_slice(), b"{}", br#"{"error":{}}"#, br#"{"error":{"code":123}}"#] {
+            let (_, _, context) = run(&job(SPEECH), reply(status, body));
+            assert!(context.finish_error().is_none(), "unparsed or unclassified HTTP {status} stays uncertain");
+        }
+    }
+    let mut oversized = br#"{"error":{"code":"invalid_api_key"}}"#.to_vec();
+    oversized.resize(TRANSCRIPT_BYTES + 1, b' ');
+    let (_, _, context) = run(&job(SPEECH), reply(401, &oversized));
+    assert!(context.finish_error().is_none(), "an oversized refusal is not delivery evidence");
 }
 #[test]
 fn malformed_and_oversized_replies_cannot_be_imported() {

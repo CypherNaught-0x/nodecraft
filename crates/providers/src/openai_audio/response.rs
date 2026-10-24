@@ -3,6 +3,41 @@ use crate::{HttpResponse, Output, Usage};
 use nodecraft_types::{Currency, Money};
 use serde::Deserialize;
 
+/// Only parsed, bounded refusals can clear the paid-send evidence. Unknown bodies, redirects,
+/// 5xx and transport failures remain uncertain even if they mention one of these error codes.
+/// https://developers.openai.com/api/docs/guides/error-codes (checked 2026-10-24).
+pub(super) fn refusal_kind(reply: &HttpResponse) -> Option<ErrorKind> {
+    if reply.body.len() > TRANSCRIPT_BYTES {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&reply.body).ok()?;
+    let error = value.get("error")?.as_object()?;
+    let code = error.get("code").and_then(serde_json::Value::as_str);
+    let kind = error.get("type").and_then(serde_json::Value::as_str);
+    match reply.status {
+        401 | 403 if code.is_some_and(|s| !s.is_empty()) || kind.is_some_and(|s| !s.is_empty()) => Some(ErrorKind::Auth),
+        400 if kind == Some("invalid_request_error") && !matches!(code, Some("content_policy_violation" | "content_filter")) => {
+            Some(ErrorKind::UnsupportedInput)
+        }
+        429 if kind == Some("insufficient_quota")
+            || matches!(
+                code,
+                Some(
+                    "insufficient_quota"
+                        | "credit_balance_exhausted"
+                        | "organization_spend_limit_exceeded"
+                        | "project_spend_limit_exceeded"
+                        | "organization_usage_limit_exceeded"
+                )
+            ) =>
+        {
+            Some(ErrorKind::Budget)
+        }
+        429 if matches!(code, Some("rate_limit_exceeded" | "slow_down")) || kind == Some("rate_limit_error") => Some(ErrorKind::RateLimited),
+        _ => None,
+    }
+}
+
 pub(super) fn parse(reply: HttpResponse, model: &str) -> Result<Completed, ProviderError> {
     let cap = if model == SPEECH { OUTPUT_BYTES } else { TRANSCRIPT_BYTES };
     if reply.body.len() > cap {
@@ -11,12 +46,12 @@ pub(super) fn parse(reply: HttpResponse, model: &str) -> Result<Completed, Provi
     if !reply.is_success() {
         let value: serde_json::Value = serde_json::from_slice(&reply.body).unwrap_or_default();
         let code = value.get("error").and_then(|e| e.get("code")).and_then(serde_json::Value::as_str);
-        let kind = match (reply.status, code) {
+        let kind = refusal_kind(&reply).unwrap_or_else(|| match (reply.status, code) {
             (401 | 403, _) => ErrorKind::Auth,
             (_, Some("content_policy_violation" | "content_filter")) => ErrorKind::BlockedContent,
             (429, Some("insufficient_quota")) => ErrorKind::Budget,
             _ => ProviderError::from_status(reply.status, b"").kind,
-        };
+        });
         let mut error = ProviderError::new(kind, format!("OpenAI audio refused or failed (HTTP {}); check the model, input and account", reply.status));
         error.retry_after_ms = reply
             .header("retry-after")

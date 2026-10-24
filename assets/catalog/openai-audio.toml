@@ -32,7 +32,7 @@ default = { type = "number", value = 1.0 }
 name = "instructions"
 label = "Speaking instructions"
 description = "Optional style, emotion or delivery instructions; at most 4096 characters."
-control = { type = "text", multiline = true, max_bytes = 4096 }
+control = { type = "text", multiline = true, max_bytes = 16384 }
 
 [[model]]
 id = "openai-audio.transcribe"

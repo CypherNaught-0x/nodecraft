@@ -1319,7 +1319,6 @@ NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
   cargo test -p nodecraft-providers --features http,comfy-cloud --test live_comfy_cloud -- --ignored
 ```
 
-
 ## OpenAI speech and file transcription (`openai-audio`)
 
 Add an OpenAI key under **API keys → openai**. The native host binds it to the
@@ -1349,8 +1348,12 @@ no guaranteed price ceiling. Speech does not return billable token counts here. 
 records [the published $0.0045/minute rate](https://developers.openai.com/api/docs/models/gpt-transcribe)
 only if its response includes valid duration usage; otherwise the cost remains unknown.
 Requests never automatically replay after an uncertain paid submission, do not follow
-redirects, and cannot cancel a request already sent. Retry manually only after checking the
-provider account for any charge.
+redirects, and cannot cancel a request already sent. Parsed authentication, validation, quota
+and rate-limit refusals release the reservation; documented transient rate-limit refusals can
+retry under the configured attempt limit. Unknown or oversized error bodies, server errors and
+lost replies remain possibly billed. For those uncertain failures, retry manually only after
+checking the provider account for any charge. See OpenAI's
+[error codes](https://developers.openai.com/api/docs/guides/error-codes).
 
 Offline fixtures cover request shapes, validation and size bounds, redacted errors, duration
 billing and actual canvas runs in both directions. The ignored `live_openai_audio` smoke makes

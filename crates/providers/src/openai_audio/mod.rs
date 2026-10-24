@@ -46,6 +46,11 @@ impl OpenAiAudio {
             message: "OpenAI audio request failed in transport; it may have been billed".into(),
             retry_after_ms: error.retry_after_ms.filter(|ms| *ms <= 3_600_000),
         })?;
+        if response::refusal_kind(&reply).is_some()
+            && let Some(context) = context
+        {
+            context.refused();
+        }
         response::parse(reply, &job.model)
     }
 }
