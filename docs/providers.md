@@ -1196,6 +1196,20 @@ NODECRAFT_LIVE_HIGGSFIELD=1 NODECRAFT_LIVE_HIGGSFIELD_ACKNOWLEDGE_COST=1 HIGGSFI
 
 ## ElevenLabs speech, sound and music
 
+The adapter tracker [#20](https://github.com/CypherNaught-0x/nodecraft/issues/20) is implemented
+across the following merged changes. Generation works in the desktop app and headless CLI.
+The account voice list and streamed previews are desktop-only; the host limits below apply.
+
+| Tracker requirement | Implementation and offline coverage |
+|---|---|
+| Speech, effects, music and voice changing | [#667](https://github.com/CypherNaught-0x/nodecraft/pull/667); [adapter contract tests](../crates/providers/src/elevenlabs/tests.rs) and [catalog](../assets/catalog/elevenlabs.toml) |
+| Voices from the account | [#857](https://github.com/CypherNaught-0x/nodecraft/pull/857); [option-list integration tests](../crates/engine/tests/option_fetch529.rs) |
+| Streaming speech previews | [#876](https://github.com/CypherNaught-0x/nodecraft/pull/876) and [#884](https://github.com/CypherNaught-0x/nodecraft/pull/884); [stream contracts](../crates/providers/src/elevenlabs/stream_tests.rs), [engine delivery tests](../crates/engine/tests/audio_previews875.rs) and [card playback tests](../crates/ui-egui/src/app/audio875_tests.rs) |
+
+The [opt-in live tests](../crates/providers/tests/live_elevenlabs.rs) cover a short speech request
+and streamed speech. Their existence is not evidence of a live run; paid validation requires
+the explicit authorization described below. The tests linked above use fixture or mock data.
+
 The optional `elevenlabs` adapter calls the [ElevenLabs API](https://elevenlabs.io/docs/api-reference)
 at the fixed origin `https://api.elevenlabs.io` with the key in the `xi-api-key` header. Every
 request is synchronous: the reply body is the audio, always asked for as MP3 at 44.1 kHz and
