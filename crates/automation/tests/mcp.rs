@@ -426,9 +426,13 @@ fn navigation_commands_are_discoverable_but_require_a_live_view_host() {
     let commands = list["structuredContent"]["commands"].as_array().unwrap();
     let before = s.session().unwrap().document().clone();
     let revision = s.session().unwrap().revision();
-    for (id, params) in
-        [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":10,"y":20}))]
-    {
+    for (id, params) in [
+        ("canvas.fit_all", json!({})),
+        ("canvas.fit_selection", json!({})),
+        ("canvas.minimap_toggle", json!({})),
+        ("canvas.prompt_overlays_toggle", json!({})),
+        ("canvas.pan_to", json!({"x":10,"y":20})),
+    ] {
         let entry = commands.iter().find(|entry| entry["id"] == id).unwrap();
         assert_eq!(entry["params_schema"], (s.session().unwrap().registry().get(id).unwrap().input_schema)());
         if id != "canvas.pan_to" {
@@ -465,9 +469,13 @@ fn navigation_dispatch_uses_explicit_live_host_without_document_mutations() {
         .unwrap();
     let before = session.document().clone();
     let revision = session.revision();
-    for (id, params) in
-        [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":10,"y":20}))]
-    {
+    for (id, params) in [
+        ("canvas.fit_all", json!({})),
+        ("canvas.fit_selection", json!({})),
+        ("canvas.minimap_toggle", json!({})),
+        ("canvas.prompt_overlays_toggle", json!({})),
+        ("canvas.pan_to", json!({"x":10,"y":20})),
+    ] {
         session.enabled(id, &params).unwrap();
     }
     // A window that supplies the navigation capability; live view commands need a live host.
@@ -485,13 +493,17 @@ fn navigation_dispatch_uses_explicit_live_host_without_document_mutations() {
     }
     let mut s = McpServer::with_host(Window(session), Box::new(|| [7; 16]));
     let list = call(&mut s, "command_list", json!({"query":"canvas."}));
-    for id in ["canvas.fit_all", "canvas.fit_selection", "canvas.minimap_toggle"] {
+    for id in ["canvas.fit_all", "canvas.fit_selection", "canvas.minimap_toggle", "canvas.prompt_overlays_toggle"] {
         let entry = list["structuredContent"]["commands"].as_array().unwrap().iter().find(|entry| entry["id"] == id).unwrap();
         assert_eq!(entry["ready"], true);
     }
-    for (id, params) in
-        [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":10,"y":20}))]
-    {
+    for (id, params) in [
+        ("canvas.fit_all", json!({})),
+        ("canvas.fit_selection", json!({})),
+        ("canvas.minimap_toggle", json!({})),
+        ("canvas.prompt_overlays_toggle", json!({})),
+        ("canvas.pan_to", json!({"x":10,"y":20})),
+    ] {
         let result = call(&mut s, "command_run", json!({"id":id,"params":params}));
         assert_eq!(result["isError"], false, "{result}");
         assert_eq!(result["structuredContent"]["result"], json!({"accepted":true}));
@@ -502,9 +514,15 @@ fn navigation_dispatch_uses_explicit_live_host_without_document_mutations() {
     }
     assert_eq!(
         *requests.borrow(),
-        vec![json!({"action":"fit_all"}), json!({"action":"fit_selection"}), json!({"action":"minimap_toggle"}), json!({"action":"pan_to","x":10.0,"y":20.0})]
+        vec![
+            json!({"action":"fit_all"}),
+            json!({"action":"fit_selection"}),
+            json!({"action":"minimap_toggle"}),
+            json!({"action":"prompt_overlays_toggle"}),
+            json!({"action":"pan_to","x":10.0,"y":20.0})
+        ]
     );
     let rejected = call(&mut s, "command_run", json!({"id":"canvas.pan_to","params":{"x":1e13,"y":0}}));
     assert_eq!(rejected["isError"], true);
-    assert_eq!(requests.borrow().len(), 4, "invalid params never reach the host");
+    assert_eq!(requests.borrow().len(), 5, "invalid params never reach the host");
 }

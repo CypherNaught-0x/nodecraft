@@ -553,6 +553,10 @@ pub struct NodeCraftApp {
     cache_clock: u64,
     next_gesture: u64,
     centred: bool,
+    /// Media cards draw their prompt overlays (#321). `H` hides them for a clean board. View
+    /// state only: it is never a document edit, a changeset or a saved setting, so a hidden
+    /// overlay leaves `session.revision()` and undo/redo exactly as they were.
+    prompt_overlays: bool,
     /// The API keys panel, and the accounts it lists (from settings).
     pub keys: crate::keys::KeysPanel,
     /// The plugin packages panel (#172).
@@ -1166,6 +1170,7 @@ impl NodeCraftApp {
             cache_clock: 0,
             next_gesture: 0,
             centred: false,
+            prompt_overlays: true,
             keys: crate::keys::KeysPanel::default(),
             plugin_panel: crate::plugins::PluginsPanel::default(),
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
@@ -1426,13 +1431,24 @@ impl NodeCraftApp {
                     // Invalid drafts remain view state across unrelated undo/redo.
                 }
             }
-            let (select_all, escape, delete) = ui.input_mut(|i| {
+            // `H` hides prompt overlays on media cards (#321). It is a plan §2.1 canvas letter, so
+            // it yields to exactly what the quick-add letters yield to — a focused text field, the
+            // palette, the "Turn into" menu, an open popup, a panel that owns canvas input and a
+            // gesture in flight — and it is never taken from any of them unconsumed.
+            // An egui drag (a slider or DragValue, for example) owns the keyboard too, and the
+            // navigation command refuses while one is active, so H must not be consumed into that.
+            let overlays_offered = !self.canvas_letter_keys_blocked(ui, minimap_held, model_blocks, bulk_blocks) && ui.ctx().dragged_id().is_none();
+            let (select_all, escape, delete, overlays) = ui.input_mut(|i| {
                 (
                     i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
                     i.key_pressed(egui::Key::Escape),
                     !minimap_held && (i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)),
+                    overlays_offered && consume_canvas_letter(i, egui::Key::H),
                 )
             });
+            if overlays && let Err(error) = self.dispatch_navigation(ui.ctx(), "canvas.prompt_overlays_toggle", &json!({})) {
+                self.notice = Some(error.message);
+            }
             if delete && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                 // Drop ids an undo or canvas switch removed, so they don't fail the delete.
                 self.selection.retain_existing(canvas);
@@ -1773,6 +1789,7 @@ impl NodeCraftApp {
                         listed: schema.map(|cached| &cached.listed),
                         lists: self.session.option_lists(),
                         prompt_wired: prompt_wired.contains(&node.id),
+                        prompt_overlay: self.prompt_overlays,
                         elements: &element_names,
                         mentions: mention_cards,
                         mention_blocked: mention_blocked.get(&node.id).map(String::as_str),
@@ -2550,37 +2567,55 @@ impl NodeCraftApp {
         })
     }
 
-    /// A kind's `quick_add` key creates it under the pointer: a fresh press (not a repeat) with
-    /// exactly the bound modifiers, nothing else holding input, and the canvas holding the
-    /// pointer. Runs last in the frame so floating Windows have laid out (#267); it keeps every
-    /// gate main's inline version had, including the frozen minimap admission from #361 and the
-    /// model-swap (#472) and bulk-panel (#473) admissions.
-    fn quick_add(&mut self, ui: &egui::Ui, viewport: Rect, minimap_owned: bool, model_blocks: bool, bulk_blocks: bool) {
-        let busy = self.drag.is_some()
+    /// What every plan §2.1 canvas letter yields to, so that quick-add (#267) and the prompt
+    /// overlays' `H` (#321) cannot drift apart. Each term is a reader of state only: nothing here
+    /// consumes an event, so a refused letter stays unconsumed for whoever does own it.
+    ///
+    /// - A gesture in flight (a card drag, a marquee, a wire, an input reorder, a comment drag, a
+    ///   field drag, or a comment gesture just cancelled) owns the canvas for the rest of the
+    ///   gesture. The field drag belongs here (#703): a field moves its members, and a kind key
+    ///   landing mid-drag would drop a card into the zone still in motion.
+    /// - `minimap_held`: held minimap input owns canvas keys through release (#361). Quick-add
+    ///   passes this frame's frozen admission; `H` runs earlier in the frame, where only a *held*
+    ///   minimap gesture exists yet and a fresh press has not been admitted or refused.
+    /// - #472: a model swap in flight owns every canvas key. Main's inline quick-add ran inside the
+    ///   canvas-keys guard that starts with `!model_blocks`, so this carries it forward (as #460's
+    ///   drop guard was).
+    /// - #473: the bulk parameter panel owns the pointer and canvas keys while it holds input.
+    /// - #460: the pending native-drop control owns the pointer and every canvas key while it is
+    ///   held. Main's inline quick-add sat behind that guard (#335).
+    /// - An open popup owns canvas keys, as Escape here already assumes: the letter belongs to
+    ///   whatever is open, not to the board behind it.
+    /// - The "Turn into" menu takes letters for kinds, exactly as a text field does.
+    fn canvas_letter_keys_blocked(&self, ui: &egui::Ui, minimap_held: bool, model_blocks: bool, bulk_blocks: bool) -> bool {
+        self.drag.is_some()
             || self.marquee.is_some()
             || self.wiring.is_some()
             || self.reordering.is_some()
             || self.comments.drag.is_some()
             || self.comments.gesture_cancelled
             || self.fields.drag.is_some()
-            || minimap_owned
-            // #472: a model swap in flight owns every canvas key, so it owns this one too. Main's
-            // inline quick-add ran inside the canvas-keys guard that starts with `!model_blocks`,
-            // so the relocated version carries that term forward (as #460's drop guard was).
+            || minimap_held
             || model_blocks
-            // #473: the bulk parameter panel owns the pointer and canvas keys while it holds input.
-            // Main's inline quick-add sat behind that guard in the canvas-keys block, so the
-            // relocated version carries it forward (same precedent as #460's drop guard).
             || bulk_blocks
             || self.navigation.pointer_owned
             || self.navigation.drag.is_some()
-            // #460: the pending native-drop control owns the pointer and every canvas key while
-            // it is held. Main's inline quick-add sat behind that guard in the canvas-keys block,
-            // so the relocated version carries it forward (#335).
             || self.drop_pointer_owned()
-            || egui::Popup::is_any_open(ui.ctx());
-        // The "Turn into" menu takes letters for kinds, exactly as a text field does.
-        if self.text_focused || canvas::text_input_focused(ui.ctx()) || self.palette.is_some() || self.turn_into.is_some() || busy {
+            || egui::Popup::is_any_open(ui.ctx())
+            || self.text_focused
+            || canvas::text_input_focused(ui.ctx())
+            || self.palette.is_some()
+            || self.turn_into.is_some()
+    }
+
+    /// A kind's `quick_add` key creates it under the pointer: a fresh press (not a repeat) with
+    /// exactly the bound modifiers, nothing else holding input, and the canvas holding the
+    /// pointer. Runs last in the frame so floating Windows have laid out (#267); it keeps every
+    /// gate main's inline version had, including the frozen minimap admission from #361 and the
+    /// model-swap (#472) and bulk-panel (#473) admissions.
+    fn quick_add(&mut self, ui: &egui::Ui, viewport: Rect, minimap_owned: bool, model_blocks: bool, bulk_blocks: bool) {
+        // One admission for every canvas letter; pointer ownership is checked after admission.
+        if self.canvas_letter_keys_blocked(ui, minimap_owned, model_blocks, bulk_blocks) {
             return;
         }
         // Borrow binding metadata; no owned list or kind string until admission succeeds.
@@ -3146,6 +3181,23 @@ fn tag_world_clip(view: &CanvasView, viewport: Rect, parent_clip: Rect) -> Rect 
 fn consume_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
     consume_shortcut_with_policy(input, shortcut, false)
 }
+/// Was a bare canvas letter (#321's `H`) pressed this frame, fresh rather than repeating?
+///
+/// A plan §2.1 letter is a letter, and Shift is how a person types a capital, so Shift is allowed
+/// and any other modifier is not; unlike `InputState::consume_key`, which matches extra Shift and
+/// Alt and includes auto-repeat, this refuses a repeat, because `H` toggles and strobing the board
+/// while a key sits under a finger is not a clean board. Consumes every press it accepts, and
+/// consumes nothing when the letter never arrived, so a refused owner keeps the event.
+fn consume_canvas_letter(input: &mut egui::InputState, letter: egui::Key) -> bool {
+    let mut pressed = false;
+    input.events.retain(|event| {
+        let matched = matches!(event, egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+            if *key == letter && !modifiers.command && !modifiers.ctrl && !modifiers.alt);
+        pressed |= matched;
+        !matched
+    });
+    pressed
+}
 fn consume_navigation_shortcut(input: &mut egui::InputState, shortcut: &str) -> bool {
     consume_shortcut_with_policy(input, shortcut, true)
 }
@@ -3335,6 +3387,8 @@ mod perf;
 mod plugin_tests;
 #[cfg(test)]
 mod preview_tests;
+#[cfg(test)]
+mod prompt_overlay_tests;
 #[cfg(test)]
 mod reader_tests;
 #[cfg(test)]

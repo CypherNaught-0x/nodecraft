@@ -10,7 +10,7 @@ impl NodeCraftApp {
     /// Whether a command uses the live canvas navigation bridge. This is routing metadata;
     /// automation must still apply its own human-only, paid and classification checks.
     pub fn is_navigation_command(id: &str) -> bool {
-        matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to")
+        matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" | "canvas.pan_to")
     }
     fn navigation_contexts(&mut self, ctx: &egui::Context) -> [NavigationContext; 4] {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
@@ -95,7 +95,7 @@ impl NodeCraftApp {
         match id {
             "canvas.fit_all" => all,
             "canvas.fit_selection" => selected,
-            "canvas.minimap_toggle" => toggle,
+            "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" => toggle,
             _ => pan,
         }
     }
@@ -135,6 +135,7 @@ impl NodeCraftApp {
         let intent = intent.ok_or_else(|| Error::new(ErrorKind::Conflict, "navigation host did not acknowledge the command"))?;
         let previous_view = self.view;
         let previous_visibility = self.navigation.visible;
+        let previous_overlays = self.prompt_overlays;
         let mut clamped = false;
         match intent.get("action").and_then(Json::as_str) {
             Some("fit_all" | "fit_selection") => {
@@ -154,6 +155,7 @@ impl NodeCraftApp {
                 clamped = self.view.fit(viewport, bounds, padding).ok_or_else(|| Error::new(ErrorKind::Conflict, "canvas is too small to fit nodes"))?.clamped;
             }
             Some("minimap_toggle") => self.navigation.visible = !self.navigation.visible,
+            Some("prompt_overlays_toggle") => self.prompt_overlays = !self.prompt_overlays,
             Some("pan_to") => {
                 let x = intent.get("x").and_then(Json::as_f64).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "pan target is unavailable"))?;
                 let y = intent.get("y").and_then(Json::as_f64).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "pan target is unavailable"))?;
@@ -166,10 +168,10 @@ impl NodeCraftApp {
         if matches!(id, "canvas.fit_all" | "canvas.fit_selection") && self.notice.as_deref().is_none_or(|notice| notice == FIT_CLAMP_NOTICE) {
             self.notice = clamped.then(|| FIT_CLAMP_NOTICE.into());
         }
-        if self.view != previous_view || self.navigation.visible != previous_visibility {
+        if self.view != previous_view || self.navigation.visible != previous_visibility || self.prompt_overlays != previous_overlays {
             ctx.request_repaint();
         }
-        Ok(json!({"zoom":self.view.zoom,"minimap_visible":self.navigation.visible,"clamped":clamped}))
+        Ok(json!({"zoom":self.view.zoom,"minimap_visible":self.navigation.visible,"prompt_overlays_visible":self.prompt_overlays,"clamped":clamped}))
     }
     pub(super) fn minimap_input_owned(&mut self, ctx: &egui::Context) -> bool {
         if self.navigation.pointer_owned || self.navigation.drag.is_some() {
@@ -209,6 +211,10 @@ impl NodeCraftApp {
         let pan = self.navigation_enabled_with_context(pan_context, "canvas.pan_to", &json!({"x":0,"y":0})).is_ok() && !self.navigation.geometry.error;
         let specs: Vec<_> = self.session.registry().specs().filter(|spec| Self::is_navigation_command(spec.id)).copied().collect();
         for spec in specs {
+            // H uses the shared canvas-letter admission earlier in the frame.
+            if spec.id == "canvas.prompt_overlays_toggle" {
+                continue;
+            }
             let enabled = match spec.id {
                 "canvas.fit_all" => all,
                 "canvas.fit_selection" => selected,
