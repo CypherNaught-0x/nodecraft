@@ -134,6 +134,7 @@ fn harness(zoom: f32, ppp: f32, control: ParamControl, enabled: bool) -> Harness
                 audio: None,
                 mesh: None,
                 outdated: false,
+                prompt_overlay: true,
                 variations: Default::default(),
             };
             if let Some(r) = show(ui, &view, &state.node, card, &mut state.editor, false, t) {
