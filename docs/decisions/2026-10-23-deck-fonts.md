@@ -21,6 +21,9 @@
   shows a visible notice in the editor or presenter. A successful explicit re-import retries
   missing cache entries and redraws the fallback even when the graph itself is unchanged.
   Resident and indexed font sizes are checked before copying or reading their payloads.
+  PNG and PDF exports load the same bounded collection, validate each payload, and report
+  visible text layers using Lato in `font_fallbacks` separately from empty image boxes. The
+  export completion notice includes that fallback count; exports never change text or history.
 - **An asynchronous picker cannot overtake an edit.** The desktop reuses the existing bounded
   file picker/worker. A pending deck pick captures its starting revision; changes while the
   dialog/read is pending refuse its result. A frame's edit or undo takes precedence over a ready

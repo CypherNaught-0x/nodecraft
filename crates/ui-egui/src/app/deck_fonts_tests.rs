@@ -277,3 +277,27 @@ fn deck693_visual() {
         h.render().unwrap().save(output.join("after-fallback.png")).unwrap();
     }
 }
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn deck693_export_controls_report_fallbacks_for_files_and_folders() {
+    let mut h = headless(crate::theme::ThemeKind::Dark);
+    let canvas = h.state().canvas;
+    h.state_mut().session.dispatch("deck.slide_add", &json!({"canvas": canvas, "id": DECK, "slide": {"id": "empty", "layers": []}})).unwrap();
+    h.run_steps(3);
+    let dir = tempfile::tempdir().unwrap();
+    for (item, answer) in [("This slide as PNG…", dir.path().join("slide.png")), ("Slides as PNGs…", dir.path().to_path_buf())] {
+        h.state_mut().exports.answer = Some(answer);
+        h.get_by_label("Export").click();
+        h.run();
+        h.get_by_label(item).click();
+        h.run_steps(3);
+        assert!(
+            h.state().notice.as_deref().is_some_and(|notice| notice.contains("2 text layers used Lato because their fonts were unavailable.")),
+            "{:?}",
+            h.state().notice
+        );
+    }
+    assert!(dir.path().join("slide.png").exists());
+    assert!(dir.path().join("Public fonts-1.png").exists());
+}

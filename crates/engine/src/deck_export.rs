@@ -34,14 +34,30 @@ pub struct SlidesExport {
     pub slides: Vec<(String, Drawable<AssetRef>)>,
     /// Each source whose node shows nothing, as (slide id, layer id).
     pub missing: Vec<(String, String)>,
+    /// The card's bounded collection of imported fonts.
+    pub fonts: Vec<(String, AssetRef)>,
 }
 
 impl SlidesExport {
     /// The export's result once `bytes` are written; `unreadable` are the image sources drawing
     /// found it couldn't use.
-    pub(crate) fn result(&self, bytes: u64, unreadable: &[(String, String)]) -> Json {
+    pub(crate) fn result(&self, bytes: u64, unreadable: &[(String, String)], font_fallbacks: &[(String, String, String)]) -> Json {
         let missing: Vec<Json> = self.missing.iter().chain(unreadable).map(|(slide, layer)| json!({"slide": slide, "layer": layer})).collect();
-        json!({"bytes": bytes, "slides": self.slides.len(), "missing": missing})
+        let mut result = json!({"bytes": bytes, "slides": self.slides.len(), "missing": missing});
+        if !font_fallbacks.is_empty()
+            && let Some(result) = result.as_object_mut()
+        {
+            result.insert(
+                "font_fallbacks".into(),
+                json!(
+                    font_fallbacks
+                        .iter()
+                        .map(|(slide, layer, font)| json!({"slide": slide, "layer": layer, "font": font, "resolved": "lato"}))
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
+        result
     }
 }
 
@@ -51,6 +67,7 @@ impl SlidesExport {
 pub(crate) struct Rendered {
     pub bytes: Vec<u8>,
     pub unreadable: Vec<(String, String)>,
+    pub font_fallbacks: Vec<(String, String, String)>,
 }
 
 #[derive(Deserialize)]
@@ -98,7 +115,7 @@ fn export(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         missing.extend(drawn.missing.iter().map(|layer| (slide.id.clone(), layer.clone())));
         slides.push((slide.id.clone(), drawn));
     }
-    let what = SlidesExport { frame, format: p.format, slides, missing };
+    let what = SlidesExport { frame, format: p.format, slides, missing, fonts: deck_cmds::fonts::held(node) };
     Ok(Effect::Export { what: crate::export::Exported::Slides(Box::new(what)), path: p.path, overwrite: p.overwrite })
 }
 
@@ -110,13 +127,37 @@ fn enabled(c: &Context<'_>, value: &Json) -> Result<(), Error> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn render(assets: &nodecraft_format::AssetStore, what: &SlidesExport) -> Result<Rendered, Error> {
     use nodecraft_actions::image::ImageLimits;
-    use nodecraft_actions::layers::Fonts;
+    use nodecraft_actions::layers::{Content, Fonts, font_info};
     let limits = ImageLimits::default();
-    let fonts = Fonts::default();
+    // Use the editor's validation and bounds before retaining font payloads for the export.
+    let payloads: Vec<_> = what
+        .fonts
+        .iter()
+        .take(nodecraft_actions::layers::MAX_FONTS)
+        .filter_map(|(name, asset)| {
+            let bytes = crate::layer_cmds::fonts::bytes(assets, asset).ok()?;
+            font_info(&bytes).ok()?;
+            Some((name, bytes))
+        })
+        .collect();
+    let mut fonts = Fonts::default();
+    for (name, bytes) in &payloads {
+        let _ = fonts.add(name, bytes);
+    }
     let too_large = || Error::new(ErrorKind::InvalidInput, "the export is too large to write; export fewer slides, or make the deck smaller");
     let mut pages = Vec::new();
     let mut unreadable = Vec::new();
+    let mut font_fallbacks = Vec::new();
     for (slide, drawn) in &what.slides {
+        for layer in &drawn.layers {
+            if layer.visible
+                && layer.opacity > 0.0
+                && let Content::Text { font, .. } = &layer.content
+                && !fonts.has(font)
+            {
+                font_fallbacks.push((slide.clone(), layer.id.clone(), font.clone()));
+            }
+        }
         let (raster, boxed) = draw(assets, what.frame, drawn, &fonts, limits)?;
         unreadable.extend(boxed.into_iter().map(|layer| (slide.clone(), layer)));
         pages.push(nodecraft_media::PageImage { width: raster.width(), height: raster.height(), rgba: raster.pixels().to_vec() });
@@ -130,7 +171,7 @@ pub(crate) fn render(assets: &nodecraft_format::AssetStore, what: &SlidesExport)
     if bytes.len() > MAX_EXPORT_BYTES {
         return Err(too_large());
     }
-    Ok(Rendered { bytes, unreadable })
+    Ok(Rendered { bytes, unreadable, font_fallbacks })
 }
 
 /// One slide drawn at its frame size, and the image layers it drew as empty boxes because their
@@ -231,7 +272,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: schema,
-        params_doc: "{canvas, id: Deck NodeId, format: \"png\" | \"pdf\", slide?: slide id (required for png), path: absolute file path, overwrite?: bool (default false)} -> {bytes, slides, missing: [{slide, layer}]}; draws slides at the deck's size, as the presenter shows them, and writes one slide as a PNG, or the named slide or every slide as the pages of one PDF. A source layer whose node shows nothing, or whose image is missing, damaged or too large, draws as an empty box and is listed in missing. Refuses a file that's already there unless `overwrite`, a missing folder, a full disk, and a PDF over 1 GiB of pixels, leaving nothing half written. Desktop only.",
+        params_doc: "{canvas, id: Deck NodeId, format: \"png\" | \"pdf\", slide?: slide id (required for png), path: absolute file path, overwrite?: bool (default false)} -> {bytes, slides, missing: [{slide, layer}], font_fallbacks?: [{slide, layer, font, resolved: \"lato\"}]}; draws slides at the deck's size, as the presenter shows them, and writes one slide as a PNG, or the named slide or every slide as the pages of one PDF. A source layer whose node shows nothing, or whose image is missing, damaged or too large, draws as an empty box and is listed in missing. Imported deck fonts draw as in the presenter; missing or unreadable fonts use Lato and each visible affected text layer is listed in font_fallbacks. Refuses a file that's already there unless `overwrite`, a missing folder, a full disk, and a PDF over 1 GiB of pixels, leaving nothing half written. Desktop only.",
         enabled,
         run: export,
     }]

@@ -41,13 +41,13 @@ pub fn listed(node: &Node) -> Json {
 
 /// The bytes of a font asset in this project, at most [`MAX_FONT_BYTES`]; a larger asset is
 /// refused before any of it is read.
-fn bytes(c: &Context<'_>, font: &AssetRef) -> Result<Vec<u8>, Error> {
+pub(crate) fn bytes(assets: &nodecraft_format::AssetStore, font: &AssetRef) -> Result<Vec<u8>, Error> {
     let too_large = || invalid("the font is larger than 16 MiB");
-    if let Some(resident) = c.assets.get(&font.hash) {
+    if let Some(resident) = assets.get(&font.hash) {
         return if resident.len() > MAX_FONT_BYTES { Err(too_large()) } else { Ok(resident.to_vec()) };
     }
     let missing = || Error::new(ErrorKind::NotFound, "the font isn't in this project; import it first");
-    let read = c.assets.preview_read(font).map_err(|error| match error {
+    let read = assets.preview_read(font).map_err(|error| match error {
         nodecraft_format::PreviewReadError::TooLarge => too_large(),
         nodecraft_format::PreviewReadError::Missing => missing(),
         _ => invalid("the font can't be read"),
@@ -134,7 +134,7 @@ fn add(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
 
 /// Stores the same bounded font collection on either card kind, after its own edit guard.
 pub(crate) fn add_to(c: &Context<'_>, canvas: CanvasId, node: &Node, asset: &AssetRef, label: &str) -> Result<Effect, Error> {
-    let info = font_info(&bytes(c, asset)?).map_err(not_a_font)?;
+    let info = font_info(&bytes(c.assets, asset)?).map_err(not_a_font)?;
     refuse_builtin(&info.name)?;
     let mime = info.mime.parse().map_err(|_| invalid("the font's type can't be recorded"))?;
     let font = AssetRef { hash: asset.hash, mime, meta: Default::default() };
