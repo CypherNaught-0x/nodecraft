@@ -79,9 +79,21 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
 fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     let catalog = Catalog::builtin().unwrap();
     let keys = MemoryStore::default();
-    for account in
-        ["openai", "anthropic", "replicate", "seedream", "gemini", "fal", "tripo", "meshy", "higgsfield", "kling", "elevenlabs", "comfyui:gpu-box:8188"]
-    {
+    for account in [
+        "openai",
+        "anthropic",
+        "replicate",
+        "seedream",
+        "gemini",
+        "fal",
+        "tripo",
+        "meshy",
+        "higgsfield",
+        "kling",
+        "elevenlabs",
+        "deepgram",
+        "comfyui:gpu-box:8188",
+    ] {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
     }
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
@@ -110,6 +122,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "higgsfield",
         "kling",
         "elevenlabs",
+        "deepgram",
         "comfyui",
     ]
     .into_iter()
@@ -320,4 +333,18 @@ fn each_server_is_its_own_instance_with_its_own_cap() {
     assert_eq!(routing.find_parts("comfyui", laptop.instance()).unwrap().limit(), None);
     assert!(setup.routing_for([(NODE, "comfyui@elsewhere")], &settings).is_err(), "a slot not set up isn't routed");
     assert_eq!(http.0.load(Ordering::SeqCst), 0, "building sends nothing");
+}
+
+#[test]
+fn deepgram40_host_uses_its_keychain_account() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    assert!(matches!(make("deepgram",&env(&keys,&http,&settings)),Err(Readiness::NeedsKey {account}) if account=="deepgram"));
+    keys.set(&Account::new("deepgram").unwrap(), &Secret::new("public-deepgram-fixture").unwrap()).unwrap();
+    let provider = make("deepgram", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "deepgram");
+    assert_eq!(key_account("deepgram"), Some("deepgram"));
+    assert!(!provider.retry_ambiguous_submit());
+    assert_eq!(http.0.load(Ordering::SeqCst), 0);
 }

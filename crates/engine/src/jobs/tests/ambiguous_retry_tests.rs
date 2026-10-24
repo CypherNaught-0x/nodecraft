@@ -243,3 +243,33 @@ fn unknown_price_terminal_failure_does_not_invent_money_and_drop_stays_conservat
     assert_eq!(statuses(&budget), [Charge::Unresolved]);
     assert_eq!(spent(&budget), 100_000);
 }
+
+#[test]
+fn deepgram40_real_lost_reply_is_not_replayed_by_driver() {
+    struct LostHttp(AtomicU64);
+    impl nodecraft_providers::Http for LostHttp {
+        fn send(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            panic!("no redirects")
+        }
+        fn send_no_redirect(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(ProviderError::new(ErrorKind::Network, "public lost reply")) })
+        }
+    }
+    let http = Arc::new(LostHttp(AtomicU64::new(0)));
+    let provider = Arc::new(nodecraft_providers::deepgram::Deepgram::new(nodecraft_providers::secrets::Secret::new("public-fixture").unwrap(), http.clone()));
+    let (runner, budget) = budgeted(Some(1_000_000));
+    let mut queued = priced(provider, Some(100_000));
+    queued.job.model = nodecraft_providers::deepgram::MODEL.into();
+    queued.job.params = Default::default();
+    queued.job.inputs = vec![nodecraft_providers::JobInput::Media {
+        role: "audio".into(),
+        mime: "audio/wav".into(),
+        bytes: Arc::from(include_bytes!("../../../../providers/src/fal/fixtures/tone.wav").as_slice()),
+    }];
+    runner.register(JobId(1), queued);
+    let (_, events) = drive(Arc::new(runner));
+    assert_eq!(http.0.load(Ordering::SeqCst), 1);
+    assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
+    assert_eq!(statuses(&budget), [Charge::Unresolved]);
+}

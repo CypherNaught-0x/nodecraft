@@ -335,3 +335,6 @@ fn model_details(ui: &mut egui::Ui, model: &ModelDescriptor) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod deepgram40_tests;

@@ -21,6 +21,8 @@ pub mod broker;
 pub mod comfy_cloud;
 #[cfg(feature = "comfyui")]
 pub mod comfyui;
+#[cfg(feature = "deepgram")]
+pub mod deepgram;
 mod delivery;
 #[cfg(feature = "elevenlabs")]
 pub mod elevenlabs;
