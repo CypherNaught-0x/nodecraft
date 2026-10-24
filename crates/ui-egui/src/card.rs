@@ -79,6 +79,31 @@ pub enum Intent {
     Variations(u64),
     /// Put this canvas's extra variations on cards beside their source, or in its history (#808).
     VariationCards(bool),
+    /// Choose a folder whose files replace the ones this Folder card holds.
+    ImportFolder,
+}
+
+/// What a Folder card holds and gives: "12 of 40 images from Shoot".
+pub fn folder_summary(node: &Node) -> String {
+    use nodecraft_nodes::folder;
+    let (stored, selected) = match (folder::stored(node), folder::selected(node)) {
+        (Ok(stored), Ok(selected)) => (stored.len(), selected.len()),
+        (Err(error), _) | (_, Err(error)) => return error.message,
+    };
+    if stored == 0 {
+        return "Drop a folder here, or import one.".into();
+    }
+    let kind = match folder::modality(node) {
+        Ok(nodecraft_types::Modality::Image) => "images",
+        Ok(nodecraft_types::Modality::Video) => "videos",
+        Ok(nodecraft_types::Modality::Audio) => "sounds",
+        Ok(nodecraft_types::Modality::Mesh) => "3D models",
+        Ok(nodecraft_types::Modality::Document) => "PDFs",
+        _ => "files",
+    };
+    let name: String = folder::folder_name(node).chars().take(48).collect();
+    let from = if name.is_empty() { String::new() } else { format!(" from {name}") };
+    if selected == stored { format!("{stored} {kind}{from}") } else { format!("{selected} of {stored} {kind}{from}") }
 }
 pub struct CardResponse {
     pub response: egui::Response,
@@ -137,6 +162,8 @@ pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
     // The history strip sits under the parameters and is never squeezed out by them; an image
     // or video or sound or 3D preview sits above them.
     let shows = nodecraft_engine::split::image_of(node).is_some()
+        // A folder of images shows the images it gives.
+        || node.kind == nodecraft_nodes::folder::ID && nodecraft_engine::split::image_rows(node).1 > 0
         || crate::video::video_of(node).is_some()
         || crate::audio::audio_of(node).is_some()
         || crate::mesh_view::mesh_of(node).is_some()
@@ -468,6 +495,14 @@ pub fn show(
                     }
                 }
                 Some(d) => {
+                    if node.kind == nodecraft_nodes::folder::ID {
+                        ui.label(folder_summary(node));
+                        let label =
+                            if nodecraft_nodes::folder::stored(node).is_ok_and(|files| files.is_empty()) { "Import folder…" } else { "Import again…" };
+                        if ui.button(label).on_hover_text("Choose a folder; its files replace the ones this card holds").clicked() {
+                            intents.push(Intent::ImportFolder);
+                        }
+                    }
                     for spec in &d.params.params {
                         if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
                             continue;

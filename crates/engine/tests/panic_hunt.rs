@@ -688,6 +688,8 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"style":node_id(6),"id":node_id(7),"edge":nodecraft_types::EdgeId::from_bytes([0x79; 16]),"pos":{"x":1,"y":2}})
         }
         "style.use" => json!({"canvas":canvas(),"style":node_id(6),"target":node_id(5),"edge":nodecraft_types::EdgeId::from_bytes([0x79; 16])}),
+        "folder.fill" => json!({"canvas":canvas(),"id":node_id(5),"folder":"Shots","modality":"text",
+            "files":[{"name":"a.txt","value":{"type":"text","value":"first"}},{"name":"b/c.txt","value":{"type":"text","value":"second"}}]}),
         "document.use_pages" => json!({"canvas":canvas(),"node":node_id(5),"first":2,"last":3}),
         "document.extract_page" => json!({"canvas":canvas(),"node":node_id(5),"page":1,"id":node_id(7),"at":{"x":400,"y":20}}),
         "document.extract_text" => json!({"canvas":canvas(),"node":node_id(5),"page":1,"region":[0.0,0.0,1.0,1.0],"id":node_id(7),"at":{"x":400,"y":20}}),

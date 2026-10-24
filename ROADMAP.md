@@ -38,7 +38,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   upstream/downstream/kind, minimap with zoom-to-fit and zoom-to-selection (Shift+1/Shift+2/Shift+M), incremental
   search (⌘F), double-click quick-add palette with per-key shortcuts, "Turn into" on
   drop-to-empty, input-order badges with drag-to-reorder, copy/cut/paste/duplicate through the OS
-  clipboard, OS file drop as source nodes, split-grid image previews (#337), per-node generation
+  clipboard, OS file drop as source nodes, OS folders (dropped, or Import folder…) as one Folder card whose
+  files loop through downstream nodes like a batch or go out as lists, after name filters, an order
+  and a range, split-grid image previews (#337), per-node generation
   history strip, local pinned
   discussions with Note nodes (#68), grid/dependency formatting of selected nodes (#70), named
   colour tags with a bounded highlight filter and tag navigation (#67), router nodes that carry

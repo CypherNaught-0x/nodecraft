@@ -356,6 +356,8 @@ mod export;
 mod fields;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_dialogs;
+#[cfg(not(target_arch = "wasm32"))]
+mod folder_import;
 mod generate;
 mod host;
 mod image_tools;
@@ -452,6 +454,9 @@ pub struct NodeCraftApp {
     mask_badges: Option<mask_badges::MaskBadges>,
     #[cfg(not(target_arch = "wasm32"))]
     drop_acquisition: drop::Acquisition,
+    /// A folder being picked or read, to become a Folder card.
+    #[cfg(not(target_arch = "wasm32"))]
+    folder_import: folder_import::FolderImport,
     /// A copied image being read off the UI thread (#319).
     #[cfg(not(target_arch = "wasm32"))]
     image_paste: paste_image::ImagePaste,
@@ -1103,6 +1108,8 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             drop_acquisition: drop::Acquisition::new(),
             #[cfg(not(target_arch = "wasm32"))]
+            folder_import: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
             image_paste: paste_image::ImagePaste::new(),
             #[cfg(any(test, target_arch = "wasm32"))]
             web_drop: None,
@@ -1379,6 +1386,8 @@ impl NodeCraftApp {
         let drop_blocks = self.poll_drop(ui, t);
         #[cfg(not(target_arch = "wasm32"))]
         self.poll_image_paste(ui.ctx());
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_folder_import(ui.ctx(), t);
         let search_blocks = if model_blocks { true } else { self.search_overlay(ui) };
         let selected_before = self.selection.clone();
         let mut minimap_press = None;
@@ -2357,6 +2366,15 @@ impl NodeCraftApp {
                 Intent::Model => continue,
                 Intent::Migrate => {
                     self.migrate_card(id);
+                    continue;
+                }
+                Intent::ImportFolder => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.pick_folder(folder_import::Target::Existing(id));
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        self.notice = Some("Importing a folder needs the desktop app for now.".into());
+                    }
                     continue;
                 }
                 Intent::Video(intent) => {
