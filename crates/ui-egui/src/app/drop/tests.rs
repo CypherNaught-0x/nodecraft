@@ -61,6 +61,40 @@ fn drop_harness() -> (Harness<'static, NodeCraftApp>, native::TestService) {
     (h, worker)
 }
 
+#[test]
+fn typed_clipboard_files_use_bounded_drop_acquisition_and_one_undo() {
+    let scratch = Scratch::new("clipboard633");
+    let png = nodecraft_media::encode_png(4, 4, &[90; 64], &Default::default()).unwrap();
+    let paths = vec![scratch.write("note.txt", b"Public copied text"), scratch.write("picture.png", &png)];
+    let (mut h, _worker) = drop_harness();
+    h.state_mut().image_paste.files_reader = Some(Arc::new(move || Ok(Some(paths.clone()))));
+    h.state_mut().image_paste.reader = Arc::new(|| Err("File-reference arbitration must never read image pixels".into()));
+    let before = h.state().session.document().clone();
+    h.hover_at(Pos2::new(600.0, 300.0));
+    h.run();
+    // Finder provides both typed references and a plain-text list of these names.
+    h.event(egui::Event::Paste("note.txt\npicture.png".into()));
+    h.event(egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::COMMAND });
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        h.step();
+        if !h.state().image_paste_pending() && !h.state().drop_pending() {
+            break;
+        }
+        assert!(std::time::Instant::now() < end, "bounded copied-file delivery");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let existing = before.canvases().get(&h.state().canvas).unwrap().nodes();
+    let added: Vec<_> = nodes(&h).into_iter().filter(|node| !existing.contains_key(&node.id)).collect();
+    assert_eq!(added.len(), 2, "{:?}", h.state().notice);
+    assert!(added.iter().any(|node| node.kind == "source.text"));
+    assert!(added.iter().any(|node| node.kind == "source.image"));
+    assert!(h.state().notice.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}
+
 fn nodes(h: &Harness<'static, NodeCraftApp>) -> Vec<nodecraft_graph::Node> {
     h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().values().cloned().collect()
 }
