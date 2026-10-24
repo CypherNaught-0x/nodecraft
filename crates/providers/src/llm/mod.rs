@@ -13,6 +13,7 @@
 //! jobs go through the same queue as everything else.
 
 mod anthropic;
+mod azure;
 mod openai;
 pub mod sse;
 #[cfg(test)]
@@ -21,6 +22,7 @@ mod stream_tests;
 mod turns_tests;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
+pub use azure::validate_azure_deployment;
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -522,7 +524,7 @@ impl LlmClient {
         req.validate(self.endpoint.dialect)?;
         let req = &req;
         let (path, body) = match self.endpoint.dialect {
-            Dialect::OpenAi => ("chat/completions", openai::body(req, stream, self.endpoint.id == "openai")),
+            Dialect::OpenAi => ("chat/completions", openai::body(req, stream, matches!(self.endpoint.id.as_str(), "openai" | "azure-openai"))),
             Dialect::Anthropic => ("messages", anthropic::body(req, stream)),
         };
         // A stream carries ~200–250 bytes of framing per token: size the cap from the reply length,
@@ -547,7 +549,7 @@ impl LlmClient {
 
     fn auth(&self, mut http: HttpRequest) -> HttpRequest {
         match (self.endpoint.dialect, &self.endpoint.key) {
-            (Dialect::OpenAi, Some(key)) => http = http.header("Authorization", format!("Bearer {}", key.expose())),
+            (Dialect::OpenAi, Some(key)) => http = http.secret_header("Authorization", format!("Bearer {}", key.expose())),
             (Dialect::Anthropic, Some(key)) => http = http.header("x-api-key", key.expose()),
             (_, None) => {}
         }
@@ -799,9 +801,15 @@ impl Provider for LlmClient {
         &self.endpoint.id
     }
 
+    fn retry_ambiguous_submit(&self) -> bool {
+        // Azure v1 offers no idempotency guarantee. A lost synchronous reply may already
+        // have been billed; preserve legacy endpoint policies while making Azure terminal.
+        self.endpoint.id != "azure-openai"
+    }
+
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         Box::pin(async move {
-            let reply = self.chat(&chat_request(job)?).await?;
+            let reply = self.chat(&self.provider_request(job)?).await?;
             Ok(Submission::Finished(Completed { outputs: vec![Output::Text(reply.text)], usage: reply.usage }))
         })
     }
@@ -812,9 +820,9 @@ impl Provider for LlmClient {
         Box::pin(async move {
             let reply = if context.wants_text() {
                 // The answer streams in, each piece reported to the runner as it arrives (#504).
-                self.streamed(&chat_request(job)?, &mut |piece| context.push_text(piece), Some(context)).await?
+                self.streamed(&self.provider_request(job)?, &mut |piece| context.push_text(piece), Some(context)).await?
             } else {
-                let request = self.request(&chat_request(job)?, false)?;
+                let request = self.request(&self.provider_request(job)?, false)?;
                 let response = context.send(self.http.as_ref(), request).await?;
                 self.chat_response(response)?
             };

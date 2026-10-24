@@ -117,6 +117,22 @@ fn listed_accounts_are_checked_only_on_request_and_removal_asks_first() {
 }
 
 #[test]
+fn azure_quick_pick_stores_the_separate_provider_account() {
+    let store = Arc::new(MemoryStore::default());
+    let mut h = harness(sync_state(Arc::clone(&store), &[]));
+    h.run();
+    h.get_by_label("azure-openai").click();
+    h.run();
+    type_into(&mut h, "Key", KEY);
+    h.get_by_label("Save").click();
+    h.run();
+    assert!(store.get(&Account::new("azure-openai").unwrap()).unwrap().is_some());
+    assert!(store.get(&Account::new("openai").unwrap()).unwrap().is_none());
+    assert!(h.state().panel.key.is_empty());
+    assert!(h.query_by_label_contains("abcdefghij").is_none());
+}
+
+#[test]
 fn bad_input_is_reported_without_echoing_the_key() {
     let mut h = harness(sync_state(Arc::new(MemoryStore::default()), &[]));
     h.run();
@@ -451,4 +467,22 @@ fn test_without_a_check_host_says_it_is_unsupported() {
     h.run();
     assert!(h.state().panel.notice.as_deref().is_some_and(|n| n.contains("desktop app")), "{:?}", h.state().panel.notice);
     assert!(!h.state().panel.is_waiting());
+}
+
+#[test]
+#[ignore = "manual public-safe key panel capture; NODECRAFT_AZURE_KEYS_EVIDENCE"]
+fn azure45_render_key_setup_evidence() {
+    let path = std::path::PathBuf::from(std::env::var_os("NODECRAFT_AZURE_KEYS_EVIDENCE").unwrap());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let mut h = Harness::builder().wgpu().with_size(egui::Vec2::new(1050.0, 620.0)).with_step_dt(1.0 / 60.0).with_max_steps(120).build_ui_state(
+        |ui, s: &mut State| {
+            s.panel.show(ui.ctx(), &mut s.session, &s.settings, crate::theme::ThemeKind::Dark.tokens());
+        },
+        sync_state(Arc::new(MemoryStore::default()), &[]),
+    );
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run();
+    h.render().unwrap().save(path).unwrap();
 }

@@ -5,6 +5,9 @@
 // Shared helpers, compiled once; the test files reach them as `crate::common`.
 mod common;
 
+#[path = "azure45.rs"]
+mod azure45;
+
 #[path = "asset_imports147.rs"]
 mod asset_imports147;
 #[path = "audio_generation672.rs"]

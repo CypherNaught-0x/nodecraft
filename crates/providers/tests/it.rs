@@ -2,6 +2,8 @@
 //! the disk. Add a new `tests/*.rs` file here, or as its own `[[test]]` in Cargo.toml when it
 //! must run alone; xtask's `every_integration_test_file_is_built` test fails otherwise.
 
+#[path = "azure_openai.rs"]
+mod azure_openai;
 #[path = "gemini_record_shapes.rs"]
 mod gemini_record_shapes;
 #[path = "live_fal.rs"]

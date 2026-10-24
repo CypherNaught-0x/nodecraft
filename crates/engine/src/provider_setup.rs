@@ -58,6 +58,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
         "openai" | "openai-images" => Some("openai"),
         "anthropic" => Some("anthropic"),
+        "azure-openai" => Some("azure-openai"),
         "litellm" => Some("litellm"),
         "replicate" => Some("replicate"),
         "seedream" => Some("seedream"),
@@ -250,6 +251,18 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         // Chat models (#503): the LLM client, keyed by its endpoint id.
         "openai" => Arc::new(llm(Endpoint::openai(ApiKey::from(&needs_key(env.keys, "openai")?)), env)),
         "anthropic" => Arc::new(llm(Endpoint::anthropic(ApiKey::from(&needs_key(env.keys, "anthropic")?)), env)),
+        "azure-openai" => {
+            let url = env.settings.azure_openai_url.as_deref().filter(|url| !url.trim().is_empty()).ok_or_else(|| {
+                let why = if cfg!(target_arch = "wasm32") {
+                    "Azure OpenAI needs a custom browser host to supply its resource endpoint and routing; the built-in browser cannot configure it"
+                } else {
+                    "set azure_openai_url in provider settings to the Azure resource root or /openai/v1 address"
+                };
+                Readiness::NotSetUp(why.into())
+            })?;
+            let endpoint = Endpoint::azure_openai(url, ApiKey::from(&needs_key(env.keys, "azure-openai")?)).map_err(adapter_error)?;
+            Arc::new(llm(endpoint, env))
+        }
         "litellm" => {
             let url = crate::browser_providers::server_url(env.settings.litellm_url.as_deref())
                 .map_err(|_| Readiness::NotSetUp("set a valid LiteLLM server address without credentials; keep its virtual key in API keys".into()))?
