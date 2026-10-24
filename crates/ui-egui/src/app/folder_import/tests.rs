@@ -49,7 +49,7 @@ fn shoot(test: &str) -> Scratch {
     scratch.write(".DS_Store", b"\0\0\0\x01Bud1");
     scratch.write(".hidden/shot.png", &png(40));
     scratch.write("Thumbs.db", b"thumbs");
-    // A carriage return isn't a valid file name on Windows, so the file can't exist there.
+    // Windows rejects the carriage return in this macOS icon file name.
     #[cfg(not(windows))]
     scratch.write("Icon\r", b"icon");
     scratch.write("notes.txt", b"not a picture");
