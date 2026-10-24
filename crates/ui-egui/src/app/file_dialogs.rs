@@ -437,6 +437,7 @@ impl NodeCraftApp {
         let mut recent = None;
         let mut remove = None;
         let mut clear = false;
+        let mut import_folder = false;
         egui::Window::new("Project files")
             .id(egui::Id::new("project_files407"))
             .open(&mut self.files.menu_open)
@@ -452,6 +453,8 @@ impl NodeCraftApp {
                         action = Some(id);
                     }
                 }
+                ui.separator();
+                import_folder = ui.button("Import folder…").on_hover_text("Add a folder's files as one Folder card").clicked();
                 ui.separator();
                 ui.label("Recent projects");
                 let paths = self.files.projects.recent();
@@ -476,9 +479,16 @@ impl NodeCraftApp {
                     clear = true;
                 }
             });
-        let owns = was_open || self.files.menu_open || action.is_some() || recent.is_some();
-        if action.is_some() || recent.is_some() {
+        let owns = was_open || self.files.menu_open || action.is_some() || recent.is_some() || import_folder;
+        if action.is_some() || recent.is_some() || import_folder {
             self.files.menu_open = false;
+        }
+        if import_folder {
+            // The new card goes in the middle of the canvas.
+            let viewport = self.viewport;
+            let world = self.view.to_world(viewport.min, viewport.center());
+            let at = nodecraft_graph::Position { x: world.x - t.card_width * 0.5, y: world.y - t.card_min_height * 0.5 };
+            self.pick_folder(super::folder_import::Target::New(at));
         }
         if let Some(id) = action {
             self.begin_file(id, ui.ctx());

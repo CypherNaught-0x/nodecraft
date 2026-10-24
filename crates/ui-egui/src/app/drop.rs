@@ -13,6 +13,9 @@ use nodecraft_graph::Position;
 pub const MAX_DROP_BYTES: usize = MAX_MEDIA_BYTES;
 #[cfg(not(target_arch = "wasm32"))]
 pub const MAX_DROP_TOTAL_BYTES: usize = MAX_PROJECT_MEDIA_BYTES;
+/// Most dropped paths checked for folders: as many as a drop of files reads.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_FILES_LOOKED_AT: usize = nodecraft_engine::import::MAX_FILES;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
@@ -267,6 +270,15 @@ impl NodeCraftApp {
                 self.notice = Some("Drop onto the canvas after releasing the file-reading control.".into());
                 return;
             }
+            // A dropped folder becomes a Folder card, or refills the one it is dropped on.
+            let at: Pos2 = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
+            let world = self.view.to_world(viewport.min, at);
+            let paths: Vec<std::path::PathBuf> = ui.input(|i| i.raw.dropped_files.iter().take(MAX_FILES_LOOKED_AT).map(|f| f.path().to_path_buf()).collect());
+            let position = Position { x: world.x - t.card_width * 0.5, y: world.y - t.card_min_height * 0.5 };
+            if self.drop_folders(&paths, world, position) {
+                ui.ctx().request_repaint();
+                return;
+            }
             let ticket = match &self.drop_acquisition.service {
                 Ok(service) => ui.input(|i| service.start(&i.raw.dropped_files)),
                 Err(e) => Err(*e),
@@ -278,8 +290,6 @@ impl NodeCraftApp {
                     return;
                 }
             };
-            let at: Pos2 = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
-            let world = self.view.to_world(viewport.min, at);
             let identity = crate::navigation::Geometry::identity(&mut self.session);
             self.drop_acquisition.pending = Some(Pending {
                 ticket,
@@ -288,7 +298,7 @@ impl NodeCraftApp {
                 project: self.session.document().id(),
                 canvas: self.canvas,
                 revision: self.session.revision(),
-                position: Position { x: world.x - t.card_width * 0.5, y: world.y - t.card_min_height * 0.5 },
+                position,
                 step: t.card_width + t.card_padding * 4.0,
             });
             self.notice = None;

@@ -10,9 +10,9 @@ use std::{
     sync::Arc,
 };
 
-struct Unique<'a> {
-    hash: Blake3,
-    bytes: &'a [u8],
+pub(super) struct Unique<'a> {
+    pub(super) hash: Blake3,
+    pub(super) bytes: &'a [u8],
 }
 fn invalid(message: &'static str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
@@ -21,7 +21,7 @@ fn allocation() -> Error {
     invalid("cannot reserve import bookkeeping")
 }
 
-fn prepare(session: &Session, unique: &[Unique<'_>]) -> Result<PreparedImports, Error> {
+pub(super) fn prepare(session: &Session, unique: &[Unique<'_>]) -> Result<PreparedImports, Error> {
     let cancel = TransferCancel::default();
     let metrics = StreamMetrics::default();
     let prepared = if session.assets().context().supports_large_assets() {
