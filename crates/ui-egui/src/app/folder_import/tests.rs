@@ -176,3 +176,25 @@ fn reading_can_be_cancelled_and_nothing_is_added() {
     finish(&mut h);
     assert_eq!(h.state().session.document(), &before);
 }
+
+#[test]
+#[ignore = "manual public-safe capture; FOLDER_RENDER_DIR"]
+fn folder_card_visual() {
+    let dir = PathBuf::from(std::env::var_os("FOLDER_RENDER_DIR").unwrap());
+    let mut h = Harness::builder()
+        .wgpu()
+        .with_size(egui::Vec2::new(1000.0, 760.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap());
+    let scratch = Scratch::new("visual");
+    for n in 0..9u8 {
+        let pixels: Vec<u8> = (0..64 * 64).flat_map(|p| [n.wrapping_mul(28), (p % 64) as u8 * 4, 255 - n.wrapping_mul(20), 255]).collect();
+        scratch.write(&format!("frame{}.png", n + 1), &nodecraft_media::encode_png(64, 64, &pixels, &Default::default()).unwrap());
+    }
+    drop_at(&mut h, Pos2::new(560.0, 220.0), &scratch.0);
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end {
+        h.step();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    h.render().unwrap().save(dir.join("folder-card.png")).unwrap();
+}
