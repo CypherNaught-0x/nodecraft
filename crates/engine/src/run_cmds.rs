@@ -271,7 +271,7 @@ fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -
     c.routing.bind(&mut hash);
     // A quote a provider gave since (#663) can price the run differently.
     crate::provider_quotes::bind(c.resources, &mut hash);
-    crate::comfy_partner_quotes::bind(c.resources, &mut hash);
+    crate::comfy_partner_quotes::bind(c.resources, c.routing.routing.targets(), &mut hash);
     let (tag, field) = match mode {
         RunMode::Selected => (0, None),
         RunMode::WithUpstream => (1, None),

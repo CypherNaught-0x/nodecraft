@@ -78,6 +78,14 @@ from the adapters already built. ComfyUI's token is optional: a keychain that ca
 was refused means no token, not no ComfyUI. The app makes `install_salt` once and saves it at once;
 with read-only settings none is made and ComfyUI stays off.
 
+Older Workflow cards may lack stored partner-node names. In the desktop, refreshing their
+selected server installs runtime evidence from `/object_info`, so quotes and budget admission
+treat matching partner nodes as unknown paid work. Identical refreshes and checks of unrelated
+profiles preserve an open quote. This evidence is not persisted in the project: before a refresh
+in a new session, and in CLI, MCP or serve hosts that do not install the desktop refresh result,
+legacy cards retain their previous pricing behavior. Reimporting with a current server list
+stores partner names on the card and avoids that host/session limitation.
+
 In the browser, the same server addresses and installation salt persist only for this origin,
 separately from API keys. Open Providers to edit them; a failed save keeps the previous settings.
 ComfyUI and LiteLLM must allow this page's origin in their CORS settings, and an HTTPS page may

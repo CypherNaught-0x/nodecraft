@@ -14,9 +14,11 @@ const REASON: &str = "its ComfyUI partner nodes spend comfy.org credits NodeCraf
 
 /// Fixed-size hashes avoid retaining entire server catalogs or arbitrary class-name payloads.
 /// An oversized list conservatively marks workflows unknown rather than forgetting paid nodes.
+#[derive(PartialEq, Eq)]
 struct Classes {
     hashes: Vec<[u8; 32]>,
     incomplete: bool,
+    digest: [u8; 32],
 }
 
 impl Classes {
@@ -32,7 +34,14 @@ impl Classes {
         }
         hashes.sort_unstable();
         hashes.dedup();
-        Self { hashes, incomplete }
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"nodecraft.comfy-partner-classes.v1");
+        hash.update(&[u8::from(incomplete)]);
+        hash.update(&(hashes.len() as u64).to_le_bytes());
+        for class in &hashes {
+            hash.update(class);
+        }
+        Self { hashes, incomplete, digest: *hash.finalize().as_bytes() }
     }
 
     fn contains(&self, class: &str) -> bool {
@@ -43,7 +52,6 @@ impl Classes {
 #[derive(Default)]
 struct Known {
     servers: BTreeMap<Option<ProviderInstanceId>, Classes>,
-    stamp: [u8; 32],
 }
 
 /// Install only after a successful fetch. `None` is the unnamed/default compatibility route;
@@ -51,40 +59,42 @@ struct Known {
 pub(crate) fn keep(session: &mut Session, instance: Option<ProviderInstanceId>, catalog: &NodeCatalog) {
     let mut known = session.swap_resource::<Known>(None).unwrap_or_default();
     if known.servers.contains_key(&instance) || known.servers.len() < crate::settings::MAX_COMFY_SERVERS.saturating_add(1) {
-        known.servers.insert(instance, Classes::read(catalog));
-        changed(&mut known);
+        let classes = Classes::read(catalog);
+        if known.servers.get(&instance) != Some(&classes) {
+            known.servers.insert(instance, classes);
+        }
     }
     session.swap_resource(Some(known));
 }
 
 pub(crate) fn forget(session: &mut Session, instance: Option<ProviderInstanceId>) {
     if let Some(mut known) = session.swap_resource::<Known>(None) {
-        if known.servers.remove(&instance).is_some() {
-            changed(&mut known);
-        }
+        known.servers.remove(&instance);
         session.swap_resource(Some(known));
     }
 }
 
-fn changed(known: &mut Known) {
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"nodecraft.comfy-partners.v1");
-    hash.update(&known.stamp);
-    for (instance, classes) in &known.servers {
-        hash.update(&[u8::from(instance.is_some()), u8::from(classes.incomplete)]);
-        if let Some(instance) = instance {
-            hash.update(instance.as_bytes());
-        }
-        hash.update(&(classes.hashes.len() as u64).to_le_bytes());
-        for class in &classes.hashes {
-            hash.update(class);
+/// Bind current evidence only for routes selected in this execution context. A panel check of
+/// an unrelated profile or an identical refresh must not revoke open consent. The routing
+/// authority already binds its selections separately; no planner pass or workflow parse belongs
+/// here. At most 33 fixed-size server digests are added to this intermediate hash.
+pub(crate) fn bind(resources: &Resources, targets: &TargetSelection, hash: &mut blake3::Hasher) {
+    let mut evidence = blake3::Hasher::new();
+    evidence.update(b"nodecraft.comfy-partners.v2");
+    if let Some(known) = resources.get::<Known>() {
+        for (instance, classes) in &known.servers {
+            let selected = targets.iter().any(|choice| choice.target().adapter() == comfy_workflow::PROVIDER && choice.target().instance() == *instance);
+            if !selected {
+                continue;
+            }
+            evidence.update(&[u8::from(instance.is_some())]);
+            if let Some(instance) = instance {
+                evidence.update(instance.as_bytes());
+            }
+            evidence.update(&classes.digest);
         }
     }
-    known.stamp = *hash.finalize().as_bytes();
-}
-
-pub(crate) fn bind(resources: &Resources, hash: &mut blake3::Hasher) {
-    hash.update(&resources.get::<Known>().map_or([0; 32], |known| known.stamp));
+    hash.update(evidence.finalize().as_bytes());
 }
 
 /// The same adjustment runs for the displayed quote and its admitted run. It changes only a

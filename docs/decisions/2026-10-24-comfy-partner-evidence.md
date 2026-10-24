@@ -9,9 +9,14 @@ The unnamed compatibility route uses the default server's list.
 This is runtime evidence, not a document migration: opening, quoting and refreshing never
 rewrite a mapping or add an undo entry. Stored partner names remain conservative evidence.
 Failed refreshes keep the previous evidence; editing/removing a server forgets its evidence.
-A refresh or forget changes the quote token, including between preparation and authorization.
+A changed partner-class set or forget for a selected route changes the quote token, including
+between preparation and authorization. Identical refreshes and checks of profiles absent from
+the active routing preserve consent. The token hashes current per-server content, not refresh
+history; forgetting and reinstalling identical evidence restores the same evidence binding.
 Unknown-price consent and budget caps therefore apply to older cards just as to new ones.
 Without known evidence, a legacy card keeps its previous behavior until its server is refreshed.
+The desktop installs this evidence through its server refresh path; CLI, MCP and serve hosts
+currently do not install it. This is a desktop runtime safeguard, not persisted migration.
 
 Each server retains at most 4,096 fixed-size hashes. A larger partner list conservatively makes
 all its workflow costs unknown. At most the configured server limit plus one compatibility

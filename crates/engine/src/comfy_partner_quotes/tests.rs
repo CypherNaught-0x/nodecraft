@@ -117,8 +117,10 @@ fn legacy_partner_quotes_refresh_without_edits_and_admission_requires_partial_co
 #[test]
 fn named_server_evidence_never_leaks_to_another_server_and_failed_fetch_retains_it() {
     let (mut session, _) = session(Some("studio"));
+    let initial = quote(&mut session);
     crate::comfy_server_cmds::finish(&mut session, 2, "laptop", true, Ok(Arc::new(catalog(true)).into()));
     assert_eq!(quote(&mut session)["complete"], true, "default/laptop evidence cannot classify studio's classes");
+    assert_eq!(quote(&mut session)["token"], initial["token"], "an unrelated profile must not invalidate open consent");
     crate::comfy_server_cmds::finish(&mut session, 3, "studio", false, Ok(Arc::new(catalog(true)).into()));
     let paid = quote(&mut session);
     assert_eq!(paid["complete"], false);
@@ -126,10 +128,49 @@ fn named_server_evidence_never_leaks_to_another_server_and_failed_fetch_retains_
     assert_eq!(quote(&mut session)["token"], paid["token"], "failed fetch leaves last evidence installed");
     crate::comfy_server_cmds::forget(&mut session, "laptop", true);
     assert_eq!(quote(&mut session)["complete"], false, "forgetting another server preserves studio's evidence");
+    assert_eq!(quote(&mut session)["token"], paid["token"], "unrelated forget also preserves consent");
     crate::comfy_server_cmds::forget(&mut session, "studio", false);
     assert_eq!(quote(&mut session)["complete"], true);
     crate::comfy_server_cmds::finish(&mut session, 5, "studio", false, Ok(Arc::new(catalog(false)).into()));
     assert_eq!(quote(&mut session)["complete"], true, "known local-only nodes remain free");
+}
+
+#[test]
+fn identical_and_unrelated_refreshes_preserve_consent_and_prepared_authority() {
+    for selected in [None, Some("studio")] {
+        let (mut session, started) = session(selected);
+        let default = selected.is_none();
+        // A default-server check installs both its named and unnamed alias.
+        crate::comfy_server_cmds::finish(&mut session, 2, "studio", default, Ok(Arc::new(catalog(true)).into()));
+        let accepted = quote(&mut session);
+        assert_eq!(accepted["complete"], false);
+        for request in 3..6 {
+            crate::comfy_server_cmds::finish(&mut session, request, "studio", default, Ok(Arc::new(catalog(true)).into()));
+            crate::comfy_server_cmds::finish(&mut session, request + 10, "laptop", false, Ok(Arc::new(catalog(request % 2 == 0)).into()));
+            assert_eq!(quote(&mut session)["token"], accepted["token"], "same evidence and unrelated server changes preserve consent");
+        }
+        session.dispatch("run.start", &start(&accepted, true)).unwrap();
+        let prepared = started.lock().unwrap().pop().unwrap();
+        crate::comfy_server_cmds::finish(&mut session, 6, "studio", default, Ok(Arc::new(catalog(true)).into()));
+        crate::comfy_server_cmds::forget(&mut session, "laptop", false);
+        let options = nodecraft_exec::run::RunOptions { id: [4; 16], first_job: 1, limits: Default::default(), retry: Default::default() };
+        assert!(session.authorize_prepared_run(prepared, options).is_ok(), "harmless refreshes after preparation preserve authority");
+    }
+}
+
+#[test]
+fn evidence_binding_depends_on_current_contents_instead_of_refresh_history() {
+    let (mut session, _) = session(None);
+    let free = quote(&mut session);
+    crate::comfy_workflow_cmds::finish(&mut session, 2, Ok(Arc::new(catalog(false)).into()));
+    assert_eq!(quote(&mut session)["token"], free["token"], "a repeated empty partner list is stable too");
+    crate::comfy_workflow_cmds::finish(&mut session, 3, Ok(Arc::new(catalog(true)).into()));
+    let paid = quote(&mut session);
+    assert_ne!(paid["token"], free["token"]);
+    crate::comfy_workflow_cmds::forget(&mut session);
+    assert_ne!(quote(&mut session)["token"], paid["token"], "forgetting selected evidence still invalidates consent");
+    crate::comfy_workflow_cmds::finish(&mut session, 4, Ok(Arc::new(catalog(true)).into()));
+    assert_eq!(quote(&mut session)["token"], paid["token"], "reinstalling the same evidence restores its binding");
 }
 
 #[test]
