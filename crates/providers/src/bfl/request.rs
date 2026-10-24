@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 pub(super) fn geometry(width: u64, height: u64) -> Result<(), ProviderError> {
     if !(64..=2048).contains(&width)
         || !(64..=2048).contains(&height)
-        || width % 16 != 0
-        || height % 16 != 0
+        || !width.is_multiple_of(16)
+        || !height.is_multiple_of(16)
         || width.checked_mul(height).is_none_or(|pixels| pixels > PIXELS)
     {
         return Err(invalid("Black Forest Labs dimensions must be multiples of 16 from 64 to 2048, at most 4 million pixels"));
