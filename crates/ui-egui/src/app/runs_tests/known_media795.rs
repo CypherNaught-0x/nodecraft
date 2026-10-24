@@ -88,8 +88,25 @@ fn scene() -> (Harness<'static, NodeCraftApp>, MockProvider) {
     h.run();
     // This is the same review entry point used by running checked Sheet rows together.
     h.state_mut().request_runs(vec![WRITER, N], super::super::generate::RunKind::Generate).unwrap();
-    frames_until(&mut h, |app| app.run_confirm.is_some());
+    settle_refusal(&mut h);
     (h, mock)
+}
+
+/// Like the live tests' `until`, drive the UI until the worker's *result* is visible,
+/// not just until a confirmation shell opens or a fixed number of frames elapses.
+fn settle_refusal(h: &mut Harness<'static, NodeCraftApp>) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while Instant::now() < deadline {
+        // This kittest calls `show`, not eframe's `update`, so pump the run host here.
+        let ctx = h.ctx.clone();
+        h.state_mut().tick_runs(&ctx);
+        h.step();
+        if h.query_by_label_contains("this model reads at most 100").is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("the deferred PDF reader's known 100-page refusal never appeared before paid confirmation; notice: {:?}", h.state().notice);
 }
 
 #[test]
@@ -102,7 +119,9 @@ fn a_deferred_pdf_reader_shows_the_known_refusal_before_a_paid_confirmation_in_b
         h.get_by_label_contains("this model reads at most 100");
         assert!(h.query_by_label_contains("Generate for").is_none());
         assert!(mock.requests().is_empty());
-        press(&mut h, Role::Button, "Cancel");
+        // The modal repaints while a pointer is held: use the dialog's real click
+        // helper rather than running to the harness step limit before release.
+        click(&mut h, "Cancel");
         assert!(h.state().run_confirm.is_none());
         assert!(mock.requests().is_empty());
     }
