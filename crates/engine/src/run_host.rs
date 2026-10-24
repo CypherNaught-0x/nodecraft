@@ -363,6 +363,13 @@ impl RunHost {
         for mut entry in journal.submitted {
             entry.launches = entry.launches.saturating_add(1);
             if entry.launches <= MAX_PARKED_LAUNCHES {
+                if entry.project == crate::session::project_identity::LEGACY {
+                    self.held.push(RunNotice::Failed {
+                        canvas: entry.canvas,
+                        node: entry.node,
+                        reason: "this saved job uses the legacy starter identity shared by older projects; it will not be reassigned to a migrated project. It remains parked in the run journal, with its charge under the legacy identity".into(),
+                    });
+                }
                 self.parked.push(entry);
                 continue;
             }

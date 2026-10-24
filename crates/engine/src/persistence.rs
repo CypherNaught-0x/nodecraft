@@ -1,3 +1,4 @@
+use crate::session::project_identity::{self, OpenedDocument};
 use crate::{
     file_cmds::{FileOperation, FileOperationKind, FilePhase, FileStatus},
     save_runner::SaveRunner,
@@ -105,7 +106,7 @@ fn write(
 }
 /// What an open read, ready to adopt.
 pub(crate) struct Opened {
-    snapshot: Snapshot,
+    document: OpenedDocument,
     adopted: CheckpointState,
     access: ProjectAccess,
 }
@@ -122,11 +123,18 @@ fn read(storage: &mut dyn ProjectStorage, location: &StorageLocation, control: &
     let prepared = (|| {
         let prepared = guard(|| storage.prepare_open_snapshot(location, cancel, metrics))?;
         let (snapshot, checkpoint, access) = prepared.into_parts();
+        let document = project_identity::prepare(snapshot)?;
+        let checkpoint = if document.migration.is_some() {
+            let capability = guard(|| Ok(storage.capability()))?;
+            CheckpointPlan::new(ArchivePlan::prepare(&document.snapshot, capability, cancel, metrics)?)?
+        } else {
+            checkpoint
+        };
         let adopted = CheckpointState::prepare(&checkpoint)?;
         control.progress.set(FilePhase::Checkpointing);
         cancel.check()?;
         guard(|| storage.checkpoint_plan(&checkpoint, cancel, metrics))?;
-        Ok::<_, Error>(Opened { snapshot, adopted, access })
+        Ok::<_, Error>(Opened { document, adopted, access })
     })();
     let opened = match prepared {
         Ok(opened) => opened,
@@ -179,7 +187,7 @@ pub(crate) enum Started<T> {
 /// What [`Persistence::settle`] finished: a save (`true` when recovery is ready) or an open.
 pub(crate) enum Settled {
     Saved(bool),
-    Opened(Snapshot),
+    Opened(Box<OpenedDocument>),
 }
 pub(crate) struct Persistence {
     store: Store,
@@ -199,7 +207,9 @@ pub(crate) struct Persistence {
     metrics: StreamMetrics,
 }
 impl Persistence {
-    pub fn new(mut store: Store, mut snapshot: Snapshot) -> Result<(Self, Snapshot), Error> {
+    pub fn new(mut store: Store, snapshot: Snapshot) -> Result<(Self, OpenedDocument), Error> {
+        let mut document = project_identity::prepare(snapshot)?;
+        let snapshot = &mut document.snapshot;
         let cancel = TransferCancel::default();
         let metrics = StreamMetrics::default();
         let storage = store.get()?;
@@ -209,7 +219,7 @@ impl Persistence {
                 .ok_or_else(|| Error::new(ErrorKind::Unsupported, "streaming storage requires its authentic asset context"))?;
             snapshot.assets = snapshot.assets.in_context(context, &cancel, &metrics)?;
         }
-        let archive = ArchivePlan::prepare(&snapshot, capability, &cancel, &metrics)?;
+        let archive = ArchivePlan::prepare(snapshot, capability, &cancel, &metrics)?;
         let checkpoint = CheckpointPlan::new(archive)?;
         let adopted = CheckpointState::prepare(&checkpoint)?;
         let mut state = Self {
@@ -231,7 +241,7 @@ impl Persistence {
         };
         guard(|| state.store.get()?.checkpoint_plan(&checkpoint, &cancel, &state.metrics))?;
         state.adopt(adopted);
-        Ok((state, snapshot))
+        Ok((state, document))
     }
     fn adopt(&mut self, checkpoint: CheckpointState) {
         self.checkpoint = checkpoint.identity;
@@ -419,7 +429,7 @@ impl Persistence {
                 Err(error) => Err(error),
             },
             Outcome::Opened { location, state, result } => match result {
-                Ok(opened) => Ok(Settled::Opened(self.opened(location, state, opened))),
+                Ok(opened) => Ok(Settled::Opened(Box::new(self.opened(location, state, opened)))),
                 Err(failure) => {
                     if failure.latch {
                         // The replacement checkpoint is published: the old live document can
@@ -435,18 +445,18 @@ impl Persistence {
             },
         }
     }
-    fn opened(&mut self, location: StorageLocation, state: u64, opened: Opened) -> Snapshot {
+    fn opened(&mut self, location: StorageLocation, state: u64, opened: Opened) -> OpenedDocument {
         self.adopt(opened.adopted);
         self.location = Some(location);
         self.read_only = opened.access == ProjectAccess::ReadOnly;
-        self.saved_state = Some(state);
-        self.epoch = opened.snapshot.epoch;
-        opened.snapshot
+        self.saved_state = opened.document.migration.is_none().then_some(state);
+        self.epoch = opened.document.snapshot.epoch;
+        opened.document
     }
     /// Opens `location` as the document at `state`. With a `runner` and a `Send` storage, the
     /// file work runs there and this returns [`Started::Started`]; [`Self::settle`] finishes
     /// it. Otherwise it runs inline.
-    pub fn open(&mut self, location: StorageLocation, state: u64, runner: Option<&dyn SaveRunner>) -> Result<Started<Snapshot>, Error> {
+    pub fn open(&mut self, location: StorageLocation, state: u64, runner: Option<&dyn SaveRunner>) -> Result<Started<OpenedDocument>, Error> {
         self.idle()?;
         let control = Control::new(FilePhase::Reading);
         let metrics = self.metrics.clone();
@@ -459,7 +469,7 @@ impl Persistence {
         };
         match self.run(FileOperationKind::Open, control, runner, work)? {
             Started::Started => Ok(Started::Started),
-            Started::Done(Settled::Opened(snapshot)) => Ok(Started::Done(snapshot)),
+            Started::Done(Settled::Opened(snapshot)) => Ok(Started::Done(*snapshot)),
             Started::Done(Settled::Saved(_)) => Err(Error::new(ErrorKind::Internal, "an open finished as a save")),
         }
     }

@@ -35,6 +35,7 @@ mod document_extract;
 mod imports;
 pub use imports::PreparedImports;
 mod file_lifecycle;
+pub(crate) mod project_identity;
 mod remote;
 pub use file_lifecycle::DocumentLineage;
 
@@ -444,8 +445,10 @@ impl Session {
         let (kinds, generation) = crate::generation_catalog::default_registry()?;
         let execution = crate::execution_identity::ExecutionSource::new()?;
         let identity = Arc::new(());
-        let (persistence, snapshot) = crate::persistence::Persistence::new(storage, snapshot)?;
+        let (persistence, document) = crate::persistence::Persistence::new(storage, snapshot)?;
+        let project_identity::OpenedDocument { snapshot, migration } = document;
         let mut session = Self::from_validated_identity(snapshot.project, registry, kinds, execution, identity);
+        session.undo = migration.map_or_else(History::default, |migration| migration.history);
         generation.install(&mut session);
         session.assets = snapshot.assets;
         session.persistence = Some(persistence);
@@ -486,7 +489,7 @@ impl Session {
                 }
                 Ok(serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":self.file_status().read_only}))
             }
-            (crate::persistence::Settled::Opened(snapshot), Some(PendingFile::Open(pending))) => Ok(self.install(snapshot, pending)),
+            (crate::persistence::Settled::Opened(snapshot), Some(PendingFile::Open(pending))) => Ok(self.install(*snapshot, pending)),
             (crate::persistence::Settled::Opened(_), _) => Err(Error::new(ErrorKind::Internal, "an open finished without the session waiting for it")),
         });
         if self.file_status() != before {
@@ -514,17 +517,23 @@ impl Session {
         }
     }
     /// Publishes an opened project: the new document, fresh history and the open's authority.
-    fn install(&mut self, snapshot: Snapshot, pending: PendingOpen) -> Value {
+    fn install(&mut self, document: project_identity::OpenedDocument, pending: PendingOpen) -> Value {
+        let project_identity::OpenedDocument { snapshot, migration } = document;
+        let receipt = migration.as_ref().map(|migration| serde_json::json!({"from": migration.from, "to": migration.to}));
         self.document = snapshot.project;
         self.assets = snapshot.assets;
-        self.undo = History::default();
+        self.undo = migration.map_or_else(History::default, |migration| migration.history);
         self.redo = History::default();
         self.gesture = None;
         self.state = pending.revision;
         // Adoption, not dispatch, replaces the lineage: a background open may still fail.
         self.file_lifecycle.replaced(Arc::clone(&pending.identity));
         self.publish(pending.revision, "file.open", pending.next, pending.identity);
-        serde_json::json!({"opened":true,"read_only":self.file_status().read_only})
+        let mut result = serde_json::json!({"opened":true,"read_only":self.file_status().read_only});
+        if let Some(receipt) = receipt {
+            result["identity_migrated"] = receipt;
+        }
+        result
     }
     /// A save's successful completion, inline or settled from the background (#450): only now
     /// may the host treat this document's recovery copy as superseded.
@@ -636,7 +645,11 @@ impl Session {
         snapshot.project.validate()?;
         self.replace_valid(snapshot, location, command)
     }
-    fn replace_valid(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str) -> Result<(), Error> {
+    fn replace_valid(&mut self, snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str) -> Result<(), Error> {
+        // Live sharing must retain the room's identity. Only local recovery migrates it.
+        let document =
+            if command == "file.recover" { project_identity::prepare(snapshot)? } else { project_identity::OpenedDocument { snapshot, migration: None } };
+        let project_identity::OpenedDocument { mut snapshot, migration } = document;
         snapshot.assets = snapshot.assets.in_context(
             self.assets.context().clone(),
             &nodecraft_format::asset_source::TransferCancel::default(),
@@ -652,7 +665,7 @@ impl Session {
         }
         self.document = snapshot.project;
         self.assets = snapshot.assets;
-        self.undo = History::default();
+        self.undo = migration.map_or_else(History::default, |migration| migration.history);
         self.redo = History::default();
         self.gesture = None;
         self.state = revision;

@@ -1,4 +1,4 @@
-use nodecraft_types::{CanvasId, CommentId, EdgeId, Error, ErrorKind, FieldId, GenerationId, NodeId, SkillId, TagId, Value};
+use nodecraft_types::{CanvasId, CommentId, EdgeId, Error, ErrorKind, FieldId, GenerationId, NodeId, ProjectId, SkillId, TagId, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::{Canvas, Comment, CommentPin, CommentReply, Edge, Field, Generation, Node, Position, Project, Skill, Tag, validate};
@@ -23,6 +23,10 @@ pub enum Change {
     },
     SetProjectTitle {
         title: String,
+    },
+    /// A recorded identity migration; inverse/redo restore the exact former identity.
+    SetProjectId {
+        id: ProjectId,
     },
     AddCanvas {
         canvas: Canvas,
@@ -575,6 +579,7 @@ impl Change {
                 Self::SetNodeTags { canvas: *canvas, assignments: inverse }
             }
             Self::SetProjectTitle { title } => Self::SetProjectTitle { title: std::mem::replace(&mut project.title, title.clone()) },
+            Self::SetProjectId { id } => Self::SetProjectId { id: std::mem::replace(&mut project.id, *id) },
             Self::AddCanvas { canvas } => {
                 if project.canvases.contains_key(&canvas.id) {
                     return Err(duplicate());
