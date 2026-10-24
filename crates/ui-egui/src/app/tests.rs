@@ -1492,9 +1492,13 @@ fn active_wire_gesture_crosses_minimap_without_navigation_and_commits_once() {
     h.run();
     assert!(h.state().wiring.is_some());
     let ctx = h.ctx.clone();
-    for (id, params) in
-        [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":0,"y":0}))]
-    {
+    for (id, params) in [
+        ("canvas.fit_all", json!({})),
+        ("canvas.fit_selection", json!({})),
+        ("canvas.minimap_toggle", json!({})),
+        ("canvas.prompt_overlays_toggle", json!({})),
+        ("canvas.pan_to", json!({"x":0,"y":0})),
+    ] {
         assert!(h.state_mut().navigation_enabled(&ctx, id, &params).is_err());
         assert!(h.state_mut().dispatch_navigation(&ctx, id, &params).is_err());
     }

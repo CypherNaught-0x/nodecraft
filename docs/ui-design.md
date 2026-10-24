@@ -52,7 +52,10 @@ composer; a long answer scrolls inside it and can be selected and copied. While 
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the
 label's own row, so the card keeps its size), and its hover text explains that nonempty connected
 text is used instead; the typed prompt is kept and comes back when the wire is removed. A
-generation kind other than images is offered only when the catalog has a model for it.
+generation kind other than images is offered only when the catalog has a model for it. A media
+card's overlay — its prompt, its variation counter and its submit arrow — can be hidden for a
+clean board with `H`; that is view state, so the document, the card's size and its other
+parameters are untouched, and a text card's prompt is never hidden because there it is the editor.
 
 Tests in `theme.rs` keep body text ≥ 7:1 against cards, labels ≥ 4.5:1 against the canvas, and the
 selected border more visible than the resting one, in both themes.
@@ -71,6 +74,7 @@ selected border more visible than the resting one, in both themes.
 | Escape in search | close search and retain selection |
 | Shift+1 / Shift+2 outside editors and gestures | fit all / selected nodes |
 | Shift+M, or Hide map / Show map | toggle the minimap |
+| `H` outside text fields, popups, menus and gestures, and not a held-key repeat | hide or show the prompt overlays on media cards, for a clean board. Shift is allowed because that is how a capital is typed; any other modifier means another key. View state: the document, the revision and the undo history do not move, the card keeps its size, a text card's prompt stays because there it is the editor, and the letter stays with the field, menu or gesture that owns the keyboard |
 | Click or primary-drag the minimap | center the canvas on that world point |
 | Drag a card background | move through `node.move`, one undo step per gesture; click selects it |
 | Click a card / Shift-click | select only it / add or remove it from the selection |
@@ -248,8 +252,8 @@ or discussion-pin gesture, or act through a popup or active text editor. A cance
 gesture keeps ownership until release. Admission refused before a same-frame cancellation stays
 refused until a fresh press.
 
-The new `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and `canvas.pan_to`
-commands use the engine service path. Live hosts use `NodeCraftApp::dispatch_navigation(ctx, id,
+The `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle`,
+`canvas.prompt_overlays_toggle` and `canvas.pan_to` commands use the engine service path. Live hosts use `NodeCraftApp::dispatch_navigation(ctx, id,
 params)` (and `navigation_enabled`) to compute current geometry, selection and focus, temporarily
 install the capability, dispatch, restore prior resources and apply the intent immediately. A raw
 headless Session has no live capability and returns Unsupported. Existing services/resources are

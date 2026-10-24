@@ -244,6 +244,7 @@ fn headless_ui_and_human_only_operations_are_refused_without_document_changes() 
         ("canvas.fit_all", json!({})),
         ("canvas.fit_selection", json!({})),
         ("canvas.minimap_toggle", json!({})),
+        ("canvas.prompt_overlays_toggle", json!({})),
         ("canvas.pan_to", json!({"x":0,"y":0})),
         ("keys.set", json!({"account":"test","key":"fixture-not-a-secret"})),
         ("keys.remove", json!({"account":"test"})),

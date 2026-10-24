@@ -141,3 +141,18 @@ impl Registry {
         self.kinds.values().filter(move |kind| kind.mode(inputs).is_some()).map(|kind| kind.descriptor())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn builtins_leave_prompt_overlay_letter_unbound() {
+        let registry = super::Registry::builtins().unwrap();
+        for kind in registry.descriptors() {
+            assert!(
+                kind.quick_add.as_deref().is_none_or(|key| !matches!(super::shortcut_key(key).as_str(), "h" | "shift+h")),
+                "{} shadows the canvas overlay shortcut",
+                kind.id
+            );
+        }
+    }
+}

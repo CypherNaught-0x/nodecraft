@@ -213,7 +213,7 @@ JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.
 
 **Live-only commands** act on the running window, so they need MCP bridged to the app
 (`nodecraft --control`). They are navigation (`canvas.fit_all`, `canvas.fit_selection`,
-`canvas.minimap_toggle`, `canvas.pan_to`), search (`canvas.search_*`), the tag filter
+`canvas.minimap_toggle`, `canvas.prompt_overlays_toggle`, `canvas.pan_to`), search (`canvas.search_*`), the tag filter
 (`canvas.tag_filter_*`), the discussions panel (`canvas.comments_toggle`, `comment.open`) and
 Format selection (`canvas.auto_format`). `canvas.fit_selection` also accepts an optional `nodes`
 list (2..=MAX_CHANGES unique IDs on the shown canvas); it frames those cards, using collapsed
