@@ -207,6 +207,7 @@ fn read_message(reason: nodecraft_format::PreviewReadError) -> &'static str {
 
 /// The source for a re-entry that only reads the cache. A named function has one type, so the
 /// recursive call in `Meshes::request` doesn't instantiate a new generic each time.
+#[cfg(target_arch = "wasm32")]
 fn unavailable_source() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError> {
     Err(nodecraft_format::PreviewReadError::Unavailable)
 }
