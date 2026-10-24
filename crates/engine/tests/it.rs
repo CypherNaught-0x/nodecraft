@@ -157,3 +157,6 @@ mod token_rates595;
 mod trained_styles167;
 #[path = "video_generation559.rs"]
 mod video_generation559;
+
+#[path = "openai_audio39.rs"]
+mod openai_audio39;

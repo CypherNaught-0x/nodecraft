@@ -7,6 +7,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
+| **OpenAI Audio** | `openai-audio` | existing `openai` API key (`Authorization: Bearer`) | text → MP3, audio file → text | Unknown upfront usage price; no automatic paid replay. Speech model shuts down January 6, 2027; Realtime is not supported. See below. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
 | **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and ordered reference editing | Three stable Gemini models, unknown usage price; bounded inline JPEG outputs. |
 | **Gemini Video** | `gemini-video` | supplied Gemini API key (`x-goog-api-key`), same `gemini` account | Omni Flash text, first/last frame and reference images → video with sound | Veo on the Gemini API is shut down; Veo now runs on Google Cloud (`google-veo`). Paid tier only; charged by measured tokens, no price before the run. See below. |
@@ -1317,3 +1318,45 @@ The live smoke test only reads the node list, so it spends no credits:
 NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
   cargo test -p nodecraft-providers --features http,comfy-cloud --test live_comfy_cloud -- --ignored
 ```
+
+## OpenAI speech and file transcription (`openai-audio`)
+
+Add an OpenAI key under **API keys → openai**. The native host binds it to the
+`openai-audio` catalog provider. Choose **OpenAI speech (ends Jan 6, 2027)** on a Generate audio
+card with a prompt, or connect a recording to a Generate text card and choose **OpenAI file
+transcription**. These use the same quote, acceptance, budget and result-history commands as
+other generated media. The adapter compiles for wasm, but a custom browser host must supply
+transport/routing; the shipping browser does not configure paid credentials here.
+
+Speech uses `gpt-4o-mini-tts-2025-12-15` at `/v1/audio/speech`, a built-in voice, speed from
+0.25 to 4 and an optional style instruction. Input is limited to 4,096 characters and output
+is MP3. The catalog identifies it as AI-generated speech; disclose that to listeners.
+**OpenAI has deprecated these speech models and will shut them down on January 6, 2027.**
+Migration is needed before that date. The suggested Realtime replacement is a separate API,
+not a model accepted by this endpoint, and is not implemented here. See the
+[speech guide](https://developers.openai.com/api/docs/guides/text-to-speech) and
+[deprecation notice](https://developers.openai.com/api/docs/deprecations), checked 2026-10-24.
+
+Transcription uses current `gpt-transcribe` at `/v1/audio/transcriptions`, uploading one MP3,
+WAV, FLAC, Ogg or M4A recording up to 25 MB, plus an optional context prompt. It returns plain
+text in the card history. This initial integration does not expose WebM/video containers,
+translation, diarization or realtime transcription. See the
+[file transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text).
+
+Both entries show **Usage based (USD)**, requiring acceptance of one unpriced job; there is
+no guaranteed price ceiling. Speech does not return billable token counts here. Transcription
+records [the published $0.0045/minute rate](https://developers.openai.com/api/docs/models/gpt-transcribe)
+only if its response includes valid duration usage; otherwise the cost remains unknown.
+Requests never automatically replay after an uncertain paid submission, do not follow
+redirects, and cannot cancel a request already sent. Parsed authentication, validation, quota
+and rate-limit refusals release the reservation; documented transient rate-limit refusals can
+retry under the configured attempt limit. Unknown or oversized error bodies, server errors and
+lost replies remain possibly billed. For those uncertain failures, retry manually only after
+checking the provider account for any charge. See OpenAI's
+[error codes](https://developers.openai.com/api/docs/guides/error-codes).
+
+Offline fixtures cover request shapes, validation and size bounds, redacted errors, duration
+billing and actual canvas runs in both directions. The ignored `live_openai_audio` smoke makes
+two paid requests only with separately authorized spending, `OPENAI_API_KEY`, and both
+`NODECRAFT_LIVE_OPENAI_AUDIO=1` and `NODECRAFT_LIVE_OPENAI_AUDIO_ACKNOWLEDGE_COST=1`.
+No live service availability or quality claim follows from offline tests.

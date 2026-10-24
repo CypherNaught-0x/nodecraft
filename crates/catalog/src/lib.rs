@@ -34,6 +34,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("google-veo.toml", include_str!("../../../assets/catalog/google-veo.toml")),
     ("google-tts.toml", include_str!("../../../assets/catalog/google-tts.toml")),
     ("openai.toml", include_str!("../../../assets/catalog/openai.toml")),
+    ("openai-audio.toml", include_str!("../../../assets/catalog/openai-audio.toml")),
     ("openai-images.toml", include_str!("../../../assets/catalog/openai-images.toml")),
     ("replicate.toml", include_str!("../../../assets/catalog/replicate.toml")),
     ("seedream.toml", include_str!("../../../assets/catalog/seedream.toml")),
