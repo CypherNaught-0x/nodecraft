@@ -46,13 +46,129 @@ fn catalog() -> Catalog {
 }
 
 #[test]
-fn local_builtin_models_are_free_and_paid_images_remain_unknown() {
+fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
     let catalog = Catalog::builtin().unwrap();
     assert!(catalog.len() >= 2);
     for model in catalog.models() {
         if model.provider == "comfyui" {
             assert_eq!(model.pricing, Pricing::Free, "{}", model.id);
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::zero(Currency::USD)));
+        } else if model.id == "fal.trellis2" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if model.id == "fal.bria-rmbg" {
+            assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 18_000)));
+        } else if model.id == "fal.flux-lora-trainer" {
+            // 2 USD per 1000 training steps, checked 2026-10-21; 1000 steps by default.
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 2_000_000)));
+            let mut long = ParamValues::new();
+            long.insert("steps".into(), Value::Unsigned(Unsigned(2500)));
+            assert_eq!(model.quote(&long).unwrap(), Some(Money::new(Currency::USD, 5_000_000)));
+        } else if model.provider == "tripo" {
+            let micros = if model.id == "tripo.text-to-3d" { 200_000 } else { 300_000 };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)), "{}", model.id);
+        } else if model.provider == "meshy" {
+            let micros = match model.id.as_str() {
+                "meshy.text-to-3d" => 400_000,
+                "meshy.image-to-3d" | "meshy.multi-image-to-3d" => 600_000,
+                "meshy.remesh" => 100_000,
+                _ => 200_000,
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)), "{}", model.id);
+        } else if model.provider == "openai" || model.provider == "anthropic" {
+            // Chat models (#503): the output price per 1000 tokens, counted on max_tokens (16000 by default).
+            let Pricing::PerUnit { unit: Unit::ThousandTokens, price, count: Some(count), default_count: None } = &model.pricing else {
+                panic!("{}: {:?}", model.id, model.pricing)
+            };
+            assert_eq!(count, "max_tokens", "{}", model.id);
+            // Output USD per 1000 tokens from the providers' pricing pages, checked 2026-10-21.
+            let per_thousand = match model.id.as_str() {
+                "anthropic.claude-opus-5-5" => 20_000,
+                "anthropic.claude-sonnet-5-5" => 10_000,
+                // GPT-6.1 Sol and GPT-6 Luna at their rate for prompts over 272K tokens (1.5x).
+                "openai.gpt-6.1-sol" => 15_000,
+                "anthropic.claude-haiku-5-5" => 2_500,
+                "openai.gpt-6-luna" => 750,
+                "openai.gpt-4.1-mini" => 1_600,
+                other => panic!("{other}: no verified price in this test"),
+            };
+            assert_eq!(price.0, Money::new(Currency::USD, per_thousand), "{}", model.id);
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, per_thousand * 16)), "{}", model.id);
+            let mut short = ParamValues::new();
+            short.insert("max_tokens".into(), Value::Unsigned(Unsigned(1000)));
+            assert_eq!(model.quote(&short).unwrap(), Some(Money::new(Currency::USD, per_thousand)), "{}", model.id);
+        } else if model.provider == "elevenlabs" {
+            // ElevenLabs pricing page, checked 2026-10-21.
+            match model.id.as_str() {
+                // Speech per 1000 characters, known only once the text is: no quote before the run.
+                "elevenlabs.v3" | "elevenlabs.multilingual-v2" | "elevenlabs.flash-v2-5" => {
+                    let Pricing::PerUnit { unit: Unit::ThousandCharacters, price, count: None, default_count: None } = &model.pricing else {
+                        panic!("{}: {:?}", model.id, model.pricing)
+                    };
+                    let micros = if model.id == "elevenlabs.flash-v2-5" { 40_000 } else { 80_000 };
+                    assert_eq!(price.0, Money::new(Currency::USD, micros), "{}", model.id);
+                    assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{}", model.id);
+                }
+                // 0.12 USD a minute of sound, 5 seconds by default.
+                "elevenlabs.sound-effects" => {
+                    assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 10_000)));
+                    let mut long = ParamValues::new();
+                    long.insert("duration_seconds".into(), Value::Number(nodecraft_types::Number::new(30.0).unwrap()));
+                    assert_eq!(model.quote(&long).unwrap(), Some(Money::new(Currency::USD, 60_000)));
+                }
+                // 0.15 USD a minute, 30 seconds by default.
+                "elevenlabs.music" => {
+                    assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 75_000)));
+                    let mut long = ParamValues::new();
+                    long.insert("duration".into(), Value::Unsigned(Unsigned(600)));
+                    assert_eq!(model.quote(&long).unwrap(), Some(Money::new(Currency::USD, 1_500_000)));
+                }
+                "elevenlabs.voice-changer" => assert_eq!(model.quote(&ParamValues::new()).unwrap(), None),
+                other => panic!("{other}: no verified price in this test"),
+            }
+        } else if model.provider == "seedream" {
+            assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
+        } else if model.id.starts_with("higgsfield.genjutsu-") {
+            // Priced per source second (#179): no quote until the source's length is known.
+            assert!(matches!(&model.pricing, Pricing::PerSourceSecond { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
+        } else if model.provider == "google-tts" {
+            // Cloud Text-to-Speech pricing page, checked 2026-10-23.
+            if model.provider_model.starts_with("gemini-") {
+                // Text tokens in, audio tokens out, and the reply reports neither.
+                assert!(matches!(&model.pricing, Pricing::ByUsage { .. }), "{}", model.id);
+            } else {
+                // Per character sent, known only once the text is: no quote before the run.
+                let Pricing::PerUnit { unit: Unit::ThousandCharacters, price, count: None, default_count: None } = &model.pricing else {
+                    panic!("{}: {:?}", model.id, model.pricing)
+                };
+                let micros = match model.id.as_str() {
+                    "google-tts.chirp3-hd" => 30_000,
+                    "google-tts.neural2" => 16_000,
+                    "google-tts.wavenet" | "google-tts.standard" => 4_000,
+                    "google-tts.studio" => 160_000,
+                    other => panic!("{other}: no verified price in this test"),
+                };
+                assert_eq!(price.0, Money::new(Currency::USD, micros), "{}", model.id);
+            }
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{}", model.id);
+        } else if model.provider == "seedance" {
+            // Per second by resolution (#18); quoted in seedance_is_quoted_per_second_at_its_largest_size.
+            assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
+            assert!(model.quote(&ParamValues::new()).unwrap().is_some(), "{}", model.id);
+        } else if model.provider == "google-gemini-images" {
+            // Per image by size (#47); quoted in gemini_images_on_google_cloud_are_quoted_per_image_by_size.
+            assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Image, .. } | Pricing::PerUnit { unit: Unit::Image, .. }), "{}", model.id);
+            assert!(model.quote(&ParamValues::new()).unwrap().is_some() && model.usage.is_some(), "{}", model.id);
+        } else if model.provider == "google-veo" {
+            // Per second by resolution (#742); quoted in veo_on_google_cloud_is_quoted_by_length_and_resolution.
+            assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
+            assert!(model.quote(&ParamValues::new()).unwrap().is_some(), "{}", model.id);
+        } else if model.id == "higgsfield.soul-id-trainer" {
+            // Soul ID training's list price per request (#680), checked 2026-10-22.
+            assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 2_500_000)));
         } else {
             assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD });
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
@@ -98,18 +214,104 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
         vec![
             ("comfyui.flux-dev", true),
             ("comfyui.sdxl", true),
+            ("fal.flux-schnell", true),
+            ("gemini-images.pro", true),
+            ("gemini-images.nano-banana-2.1", true),
+            ("gemini-images.flash-lite", true),
+            ("google-gemini-images.3-pro", true),
+            ("google-gemini-images.3.1-flash", true),
+            ("google-gemini-images.nano-banana-2.1", true),
+            ("google-gemini-images.2.5-flash", true),
+            ("google-gemini-images.3.1-flash-lite", true),
+            ("higgsfield.soul-2", true),
+            ("kling.image_v2_1", true),
             ("openai-images.flare", true),
             ("openai-images.sunburst", true),
             ("replicate.sdxl", true),
+            ("seedream.4_5", true),
+            ("anthropic.claude-opus-5-5", false),
+            ("anthropic.claude-sonnet-5-5", false),
+            ("anthropic.claude-haiku-5-5", false),
+            ("elevenlabs.v3", false),
+            ("elevenlabs.multilingual-v2", false),
+            ("elevenlabs.music", false),
+            ("elevenlabs.sound-effects", false),
+            ("elevenlabs.voice-changer", false),
+            ("elevenlabs.flash-v2-5", false),
+            ("fal.flux-lora", false),
+            ("fal.bria-rmbg", false),
+            ("fal.esrgan", false),
+            ("fal.flux-lora-trainer", false),
+            ("fal.kokoro", false),
+            ("fal.trellis2", false),
+            ("fal.wan22", false),
+            ("fal.wan22-i2v", false),
+            ("fal.wan22-s2v", false),
+            ("gemini-video.omni-flash", false),
+            ("google-tts.gemini-2.5-pro", false),
+            ("google-tts.chirp3-hd", false),
+            ("google-tts.gemini-2.5-flash", false),
+            ("google-tts.gemini-3.1-flash", false),
+            ("google-tts.neural2", false),
+            ("google-tts.studio", false),
+            ("google-tts.gemini-2.5-flash-lite", false),
+            ("google-tts.wavenet", false),
+            ("google-tts.standard", false),
+            ("google-veo.veo-3.1", false),
+            ("google-veo.veo-3.1-fast", false),
+            ("google-veo.veo-3.1-lite", false),
+            ("higgsfield.genjutsu-motion-transfer", false),
+            ("higgsfield.genjutsu-object-swap", false),
+            ("higgsfield.genjutsu-restyle", false),
+            ("higgsfield.soul-id-trainer", false),
+            ("higgsfield.kling-2.5-turbo-i2v", false),
+            ("kling.v2_1_master", false),
+            ("kling.v2_5_turbo", false),
+            ("kling.v1_6", false),
+            ("meshy.image-to-3d", false),
+            ("meshy.multi-image-to-3d", false),
+            ("meshy.remesh", false),
+            ("meshy.retexture", false),
+            ("meshy.retexture-image", false),
+            ("meshy.text-to-3d", false),
+            ("openai.gpt-6.1-sol", false),
+            ("openai.gpt-6-luna", false),
+            ("openai.gpt-4.1-mini", false),
             ("replicate.hello", false),
-            ("test.video", false)
+            ("seedance.2-0", false),
+            ("seedance.2-5", false),
+            ("seedance.2-0-fast", false),
+            ("seedance.2-0-mini", false),
+            ("test.video", false),
+            ("tripo.image-to-3d", false),
+            ("tripo.multiview-to-3d", false),
+            ("tripo.text-to-3d", false)
         ]
     );
     // Wiring an image narrows it to image-to-image models.
     let edit = Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 1);
+    let bria = catalog.get("fal.bria-rmbg").unwrap();
+    assert_eq!(Wiring::new(Modality::Image).with(Modality::Image, 1).fit(bria).map(|mode| mode.id.as_str()), Ok("remove-background"));
+    assert!(Wiring::new(Modality::Image).fit(bria).is_err(), "one image is required");
+    assert!(Wiring::new(Modality::Image).with(Modality::Image, 2).fit(bria).is_err(), "extra images are refused");
+    assert!(edit.fit(bria).is_err(), "a wired prompt cannot select the differently priced guided operation");
     let groups = catalog.by_provider(&edit);
     let comfy: Vec<(&str, bool)> = groups.get("comfyui").unwrap().iter().map(|c| (c.model.id.as_str(), c.fit.is_ok())).collect();
     assert_eq!(comfy, vec![("comfyui.flux-dev", true), ("comfyui.sdxl", false)]);
+    // A wired 3D model picks the Meshy models that take one; the prompt picks retexture.
+    let retexture = catalog.get("meshy.retexture").unwrap();
+    let remesh = catalog.get("meshy.remesh").unwrap();
+    let styled = catalog.get("meshy.retexture-image").unwrap();
+    let mesh_in = Wiring::new(Modality::Mesh).with(Modality::Mesh, 1);
+    assert!(mesh_in.clone().fit(remesh).is_ok());
+    assert!(mesh_in.clone().with(Modality::Image, 1).fit(styled).is_ok());
+    assert!(mesh_in.clone().fit(styled).is_err(), "the style image is required");
+    assert!(Wiring::new(Modality::Mesh).fit(remesh).is_err(), "remesh needs a model");
+    assert!(mesh_in.clone().with_inline_prompt().fit(retexture).is_ok());
+    assert!(mesh_in.clone().fit(retexture).is_err(), "retexture needs a prompt");
+    let seedream = catalog.get("seedream.4_5").unwrap();
+    assert!(Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 14).fit(seedream).is_ok());
+    assert!(Wiring::new(Modality::Image).with(Modality::Text, 1).with(Modality::Image, 15).fit(seedream).is_err());
 }
 
 #[test]
@@ -385,4 +587,446 @@ fn measured_usage_pricing_is_never_free_and_keeps_schema_admission() {
     for bad in ["type = \"by_usage\"", "type = \"by_usage\"\ncurrency = \"usd\"", "type = \"by_usage\"\ncurrency = \"USD\"\nreason = \"free\""] {
         assert!(toml::from_str::<Pricing>(bad).is_err());
     }
+}
+
+#[test]
+fn gemini_models_have_exact_wire_options_and_unknown_cost() {
+    let c = Catalog::builtin().unwrap();
+    let models: Vec<_> = c.models().filter(|m| m.provider == "gemini-images").collect();
+    assert_eq!(models.len(), 3);
+    for m in models {
+        assert_eq!(m.quote(&ParamValues::new()).unwrap(), None);
+        assert_eq!(m.mode("edit").unwrap().inputs.iter().find(|i| i.role == "image").unwrap().max, 14);
+        assert_eq!(m.params.params.len(), 2);
+        let mut p = ParamValues::new();
+        p.insert("image_size".into(), Value::Text("1024px".into()));
+        assert!(m.quote(&p).is_err());
+        if m.provider_model == "gemini-3.1-flash-lite-image" {
+            p.insert("image_size".into(), Value::Text("2K".into()));
+            assert!(m.quote(&p).is_err());
+        }
+    }
+}
+
+#[test]
+fn gemini_omni_flash_is_charged_by_measured_tokens() {
+    // Gemini pricing page, checked 2026-10-22: 1.50 USD per million input tokens, 17.50 USD per
+    // million video output tokens. The clip's length is the model's choice: no quote before the run.
+    let c = Catalog::builtin().unwrap();
+    let m = c.get("gemini-video.omni-flash").unwrap();
+    assert_eq!(m.quote(&ParamValues::new()).unwrap(), None);
+    let rates = m.usage.as_ref().unwrap();
+    assert_eq!((rates.input.0, rates.output.0), (Money::new(Currency::USD, 1_500), Money::new(Currency::USD, 17_500)));
+    assert_eq!(m.mode("reference-to-video").unwrap().inputs.iter().find(|i| i.role == "reference").unwrap().max, 3);
+    let mut p = ParamValues::new();
+    p.insert("resolution".into(), Value::Text("4k".into()));
+    assert!(m.quote(&p).is_err(), "4K's token rate isn't published");
+}
+
+#[test]
+fn veo_on_google_cloud_is_quoted_by_length_and_resolution() {
+    // Vertex AI pricing page, checked 2026-10-22: per second of video with audio.
+    let c = Catalog::builtin().unwrap();
+    let quote = |id: &str, seconds: u64, resolution: &str| {
+        let mut p = ParamValues::new();
+        p.insert("duration_seconds".into(), Value::Unsigned(nodecraft_types::Unsigned(seconds)));
+        p.insert("resolution".into(), Value::Text(resolution.into()));
+        c.get(id).unwrap().quote(&p)
+    };
+    assert_eq!(c.get("google-veo.veo-3.1").unwrap().quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 3_200_000)), "8 s at 720p");
+    assert_eq!(quote("google-veo.veo-3.1", 4, "4k").unwrap(), Some(Money::new(Currency::USD, 2_400_000)));
+    assert_eq!(quote("google-veo.veo-3.1-fast", 6, "1080p").unwrap(), Some(Money::new(Currency::USD, 720_000)));
+    assert_eq!(quote("google-veo.veo-3.1-lite", 8, "1080p").unwrap(), Some(Money::new(Currency::USD, 640_000)));
+    assert!(quote("google-veo.veo-3.1-fast", 8, "4k").is_err(), "4K is Veo 3.1's alone");
+    assert!(quote("google-veo.veo-3.1", 5, "720p").is_err(), "4, 6 or 8 seconds");
+    let lite = c.get("google-veo.veo-3.1-lite").unwrap();
+    assert!(lite.mode("image-to-video").is_none() && lite.mode("reference-to-video").is_none(), "Lite is text only");
+    assert_eq!(c.get("google-veo.veo-3.1-fast").unwrap().mode("reference-to-video").unwrap().inputs.iter().find(|i| i.role == "reference").unwrap().max, 3);
+}
+
+#[test]
+fn gemini_images_on_google_cloud_are_quoted_per_image_by_size() {
+    // Vertex AI pricing page, checked 2026-10-23: image output tokens per image by size, at the
+    // model's image output rate per million tokens (Standard PayGo, global).
+    let c = Catalog::builtin().unwrap();
+    let usd = |micros| Some(Money::new(Currency::USD, micros));
+    let quote = |id: &str, size: Option<&str>| {
+        let mut p = ParamValues::new();
+        if let Some(size) = size {
+            p.insert("image_size".into(), Value::Text(size.into()));
+        }
+        c.get(id).unwrap().quote(&p).unwrap()
+    };
+    assert_eq!(quote("google-gemini-images.3.1-flash", None), usd(67_200), "1K by default: 1120 tokens at 60 USD/M");
+    assert_eq!(quote("google-gemini-images.3.1-flash", Some("2K")), usd(100_800));
+    assert_eq!(quote("google-gemini-images.3.1-flash", Some("4K")), usd(151_200));
+    assert_eq!(quote("google-gemini-images.3-pro", Some("2K")), usd(134_400));
+    assert_eq!(quote("google-gemini-images.3-pro", Some("4K")), usd(240_000));
+    assert_eq!(quote("google-gemini-images.nano-banana-2.1", Some("4K")), usd(113_400));
+    assert_eq!(quote("google-gemini-images.3.1-flash-lite", None), usd(33_600));
+    assert_eq!(quote("google-gemini-images.2.5-flash", None), usd(38_700));
+    let pro = c.get("google-gemini-images.3-pro").unwrap();
+    let rates = pro.usage.as_ref().unwrap();
+    assert_eq!((rates.input.0, rates.output.0), (Money::new(Currency::USD, 2_000), Money::new(Currency::USD, 120_000)));
+    assert_eq!(pro.mode("edit").unwrap().inputs.iter().find(|i| i.role == "image").unwrap().max, 14);
+    assert_eq!(c.get("google-gemini-images.2.5-flash").unwrap().mode("edit").unwrap().inputs.iter().find(|i| i.role == "image").unwrap().max, 3);
+}
+
+#[test]
+fn seedance_is_quoted_per_second_at_its_largest_size() {
+    // ModelArk pricing page, checked 2026-10-23: USD per million tokens, tokens being
+    // width x height x 24 x seconds / 1024, at each resolution's largest listed size.
+    let c = Catalog::builtin().unwrap();
+    let quote = |id: &str, seconds: u64, resolution: &str| {
+        let mut p = ParamValues::new();
+        p.insert("duration_seconds".into(), Value::Unsigned(nodecraft_types::Unsigned(seconds)));
+        p.insert("resolution".into(), Value::Text(resolution.into()));
+        c.get(id).unwrap().quote(&p)
+    };
+    assert_eq!(c.get("seedance.2-0").unwrap().quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 760_765)), "5 s at 720p");
+    assert_eq!(quote("seedance.2-5", 30, "1080p").unwrap(), Some(Money::new(Currency::USD, 17_167_830)));
+    assert_eq!(quote("seedance.2-0", 15, "4k").unwrap(), Some(Money::new(Currency::USD, 11_664_915)));
+    assert_eq!(quote("seedance.2-0-mini", 4, "480p").unwrap(), Some(Money::new(Currency::USD, 140_616)));
+    assert!(quote("seedance.2-0-fast", 5, "1080p").is_err(), "Fast and Mini stop at 720p");
+    assert!(quote("seedance.2-5", 5, "4k").is_err(), "4K is 2.0's alone");
+    assert!(quote("seedance.2-0", 16, "720p").is_err() && quote("seedance.2-5", 31, "720p").is_err() && quote("seedance.2-5", 3, "720p").is_err());
+    let references = |id: &str| c.get(id).unwrap().mode("reference-to-video").unwrap().inputs.iter().find(|i| i.role == "reference").unwrap().max;
+    assert_eq!((references("seedance.2-5"), references("seedance.2-0-mini")), (30, 9));
+}
+
+#[test]
+fn fal_catalog_covers_all_five_modalities_without_false_free_quotes() {
+    let c = Catalog::builtin().unwrap();
+    for (id, output, input) in [
+        ("fal.flux-schnell", Modality::Image, Modality::Text),
+        ("fal.wan22", Modality::Video, Modality::Text),
+        ("fal.kokoro", Modality::Audio, Modality::Text),
+        ("fal.trellis2", Modality::Mesh, Modality::Image),
+        ("fal.esrgan", Modality::Image, Modality::Image),
+    ] {
+        let m = c.get(id).unwrap();
+        assert_eq!(m.provider, "fal");
+        assert!(Wiring::new(output).with(input, 1).fit(m).is_ok());
+        let excess = if id == "fal.wan22" { 3 } else { 2 };
+        assert!(Wiring::new(output).with(input, excess).fit(m).is_err());
+        assert_eq!(m.quote(&ParamValues::new()).unwrap(), if id == "fal.trellis2" { Some(Money::new(Currency::USD, 250_000)) } else { None });
+    }
+}
+
+#[test]
+fn token_rates_must_match_a_paid_price_and_name_a_real_threshold() {
+    let pricing = r#"pricing = { type = "per_unit", unit = "second", price = "0.05 USD", count = "duration", default_count = 5 }"#;
+    let with = |line: &str| PRICED.replace(pricing, line);
+    let rated = |usage: &str| with(&format!("{pricing}\nusage = {usage}"));
+    let ok =
+        Catalog::from_toml(&rated(r#"{ input = "0.002 USD", output = "0.01 USD", long = { above = 1, input = "0.003 USD", output = "0.015 USD" } }"#)).unwrap();
+    assert_eq!(ok.get("test.video").and_then(|m| m.usage.as_ref()).map(|r| r.input.0), Some(Money::new(Currency::USD, 2_000)));
+    assert!(Catalog::from_toml(&rated(r#"{ input = "0.002 EUR", output = "0.01 EUR" }"#)).is_err(), "another currency");
+    assert!(Catalog::from_toml(&rated(r#"{ input = "0.002 USD", output = "0.01 USD", long = { above = 0, input = "1 USD", output = "1 USD" } }"#)).is_err());
+    let free = with("pricing = { type = \"free\" }\nusage = { input = \"0.002 USD\", output = \"0.01 USD\" }");
+    assert!(Catalog::from_toml(&free).is_err(), "a free model has nothing to settle");
+    assert!(Catalog::from_toml(&with(&format!("{pricing}\nusage = {{ input = \"0.002 USD\" }}"))).is_err(), "both rates");
+    assert!(Catalog::from_toml(&rated(r#"{ input = "0.002 USD", output = "0 USD" }"#)).is_err(), "a paid reply costs something");
+}
+
+/// PRICED with a speech mode appended, and `extra` spliced into that mode.
+fn with_speech_mode(extra: &str) -> Result<Catalog, nodecraft_types::Error> {
+    let speech = format!(
+        r#"
+[[model.modes]]
+id = "speech-to-video"
+output = "video"
+inputs = [{{ role = "prompt", modality = "text", min = 0, max = 1 }}, {{ role = "portrait", modality = "image", min = 1, max = 1 }}, {{ role = "speech", modality = "audio", min = 1, max = 1 }}]
+{extra}
+"#
+    );
+    // The mode goes before the params so TOML keeps it in the same model.
+    let at = PRICED.find("[[model.params.params]]").unwrap();
+    Catalog::from_toml(&format!("{}{speech}{}", &PRICED[..at], &PRICED[at..]))
+}
+
+#[test]
+fn a_mode_may_send_only_some_settings_and_describe_its_audio() {
+    let catalog = with_speech_mode(
+        r#"params = ["duration", "seed"]
+audio = { role = "speech", duration = "fixed", max_ms = 30000, sound = "input" }"#,
+    )
+    .unwrap();
+    let model = catalog.get("test.video").unwrap();
+    let mode = model.modes.iter().find(|mode| mode.id == "speech-to-video").unwrap();
+    assert_eq!(mode.params.as_deref(), Some(&["duration".to_owned(), "seed".to_owned()][..]));
+    let audio = mode.audio.as_ref().unwrap();
+    assert_eq!((audio.max_ms, audio.longer), (Some(30_000), nodecraft_types::AudioOverrun::Refuse), "refusing is the default");
+    assert!(model.modes.iter().filter(|mode| mode.id != "speech-to-video").all(|mode| mode.params.is_none() && mode.audio.is_none()));
+}
+
+#[test]
+fn bad_mode_settings_and_audio_are_rejected_with_a_reason() {
+    let speech = r#"audio = { role = "speech", duration = "fixed", sound = "input" }"#;
+    for (extra, reason) in [
+        (r#"params = ["duration", "fps"]"#, "doesn't have"),
+        (r#"params = ["duration", "duration"]"#, "twice"),
+        // Pricing counts `duration`: a mode that never sends it can't be quoted.
+        (r#"params = ["seed"]"#, "which pricing counts"),
+        (r#"audio = { role = "portrait", duration = "fixed", sound = "silent" }"#, "audio inputs"),
+        (r#"audio = { role = "speech", duration = "fixed", max_ms = 0, sound = "input" }"#, "max_ms"),
+        (r#"audio = { role = "speech", duration = "fixed", max_ms = 3600001, sound = "input" }"#, "max_ms"),
+        (r#"audio = { role = "speech", duration = "sometimes", sound = "input" }"#, ""),
+        // Priced per second of `duration`, but the clip runs as long as the speech.
+        (r#"audio = { role = "speech", duration = "follows_audio", sound = "input" }"#, "follows its audio"),
+        (r#"audio = { role = "speech", duration = "fixed", sound = "input", loud = true }"#, ""),
+    ] {
+        let error = with_speech_mode(extra).unwrap_err();
+        assert!(error.message.contains(reason), "{extra}: {}", error.message);
+    }
+    assert!(with_speech_mode(speech).is_ok());
+}
+
+#[test]
+fn fal_wan_frames_and_speech_take_what_their_adapter_maps() {
+    let c = Catalog::builtin().unwrap();
+    let frames = c.get("fal.wan22-i2v").unwrap();
+    let one = Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 1);
+    assert_eq!(one.fit(frames).map(|m| m.id.as_str()), Ok("image-to-video"));
+    assert!(Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 2).fit(frames).is_ok());
+    assert!(Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 3).fit(frames).is_err());
+    assert!(Wiring::new(Modality::Video).with_inline_prompt().fit(frames).is_err(), "a first frame is required");
+    let speech = c.get("fal.wan22-s2v").unwrap();
+    let both = Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 1).with(Modality::Audio, 1);
+    let mode = both.fit(speech).unwrap();
+    assert_eq!(mode.id, "speech-to-video");
+    let audio = mode.audio.as_ref().unwrap();
+    assert_eq!((audio.role.as_str(), audio.duration, audio.sound), ("speech", nodecraft_types::AudioDuration::Fixed, nodecraft_types::AudioSound::Input));
+    assert_eq!(audio.max_ms, Some(7_500), "the longest clip: 120 frames at 16 fps");
+    assert!(Wiring::new(Modality::Video).with_inline_prompt().with(Modality::Image, 1).fit(speech).is_err(), "speech is required");
+    for m in [frames, speech] {
+        assert_eq!(m.quote(&ParamValues::new()).unwrap(), None, "fal bills by usage");
+    }
+}
+
+const TRAINER: &str = r#"
+[[model]]
+id = "test.trainer"
+provider = "test"
+provider_model = "trainer-v1"
+label = "Test Trainer"
+description = "Trains a style from images."
+latency_s = 600
+quality = 3
+style_family = "flux-1"
+pricing = { type = "per_unit", unit = "thousand_steps", price = "2 USD", count = "steps" }
+
+[[model.modes]]
+id = "images-to-style"
+output = "style"
+inputs = [{ role = "images", modality = "image", min = 4, max = 50 }]
+
+[[model.params.params]]
+name = "steps"
+label = "Steps"
+control = { type = "unsigned", min = "1", max = "10000" }
+default = { type = "unsigned", value = "1000" }
+"#;
+
+#[test]
+fn trainers_quote_their_steps_and_name_the_family_they_train() {
+    let catalog = Catalog::from_toml(TRAINER).unwrap();
+    let trainer = catalog.get("test.trainer").unwrap();
+    assert_eq!(trainer.style_family.as_deref(), Some("flux-1"));
+    let mut params = ParamValues::new();
+    assert_eq!(trainer.quote(&params).unwrap(), Some(Money::new(Currency::USD, 2_000_000)));
+    params.insert("steps".into(), Value::Unsigned(Unsigned(2500)));
+    assert_eq!(trainer.quote(&params).unwrap(), Some(Money::new(Currency::USD, 5_000_000)));
+    assert!(Wiring::new(Modality::Style).with(Modality::Image, 10).fit(trainer).is_ok());
+    assert!(Wiring::new(Modality::Style).with(Modality::Image, 2).fit(trainer).is_err(), "too few images");
+
+    let unnamed = TRAINER.replace("style_family = \"flux-1\"\n", "");
+    assert!(Catalog::from_toml(&unnamed).unwrap_err().message.contains("style_family"));
+    assert!(Catalog::from_toml(&TRAINER.replace("\"flux-1\"", "\"Flux 1\"")).is_err());
+    // Steps are known before the run: a count from zero would quote a paid run as free.
+    assert!(Catalog::from_toml(&TRAINER.replace("min = \"1\"", "min = \"0\"")).is_err());
+    // Only a model that trains or takes styles names a family.
+    let video = PRICED.replace("quality = 5", "quality = 5\nstyle_family = \"flux-1\"");
+    assert!(Catalog::from_toml(&video).unwrap_err().message.contains("style_family"));
+    let styled = PRICED.replace(
+        "{ role = \"last_frame\", modality = \"image\", min = 0, max = 1 },",
+        "{ role = \"last_frame\", modality = \"image\", min = 0, max = 1 },\n  { role = \"style\", modality = \"style\", min = 0, max = 1 },",
+    );
+    assert!(Catalog::from_toml(&styled).is_err(), "takes a style but names no family");
+    assert!(Catalog::from_toml(&styled.replace("quality = 5", "quality = 5\nstyle_family = \"wan-2\"")).is_ok());
+}
+
+#[test]
+fn source_edits_quote_the_used_seconds_of_their_source_at_the_chosen_resolution() {
+    let catalog = Catalog::builtin().unwrap();
+    let swap = catalog.get("higgsfield.genjutsu-object-swap").unwrap();
+    let edit = swap.edit().unwrap();
+    assert_eq!((edit.role.as_str(), edit.min_ms, edit.uses_ms, edit.min_pixels), ("source", Some(4000), Some(30_000), Some(409_600)));
+    let usd = |micros| Some(Money::new(Currency::USD, micros));
+    // 720p by default; a started second counts in full.
+    assert_eq!(swap.quote_source(&ParamValues::new(), Some(4_200)).unwrap(), usd(5 * 681_000));
+    let mut fine = ParamValues::new();
+    fine.insert("resolution".into(), Value::Text("1080p".into()));
+    assert_eq!(swap.quote_source(&fine, Some(10_000)).unwrap(), usd(10 * 1_632_000));
+    // Only the first 30 s is used, so only it is charged.
+    assert_eq!(swap.quote_source(&fine, Some(95_000)).unwrap(), usd(30 * 1_632_000));
+    // Without the source's length there is no price yet, and a plain quote has none either.
+    assert_eq!(swap.quote_source(&fine, None).unwrap(), None);
+    assert_eq!(swap.quote(&ParamValues::new()).unwrap(), None);
+    let mut bad = ParamValues::new();
+    bad.insert("resolution".into(), Value::Text("4K".into()));
+    assert!(swap.quote_source(&bad, Some(5_000)).is_err());
+    // Other pricing ignores the source.
+    let kling = catalog.get("higgsfield.kling-2.5-turbo-i2v").unwrap();
+    assert_eq!(kling.quote_source(&ParamValues::new(), Some(5_000)).unwrap(), kling.quote_selected(&ParamValues::new()).unwrap());
+}
+
+#[test]
+fn per_source_second_pricing_is_checked() {
+    const EDIT: &str = r#"
+[[model]]
+id = "test.edit"
+provider = "test"
+provider_model = "edit-v1"
+label = "Edit"
+description = "Edits a source."
+latency_s = 90
+quality = 3
+pricing = PRICING
+
+[[model.modes]]
+id = "edit"
+output = "video"
+inputs = [{ role = "source", modality = "video", min = 1, max = 1 }]
+EDIT_LINE
+
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "480p", label = "480p" }, { value = "720p", label = "720p" }] }
+default = { type = "text", value = "720p" }
+"#;
+    let edit = r#"edit = { operation = "restyle", role = "source", min_ms = 4000, sound = "source" }"#;
+    let good = r#"{ type = "per_source_second", param = "resolution", prices = { "480p" = "0.1 USD", "720p" = "0.2 USD" } }"#;
+    let parse = |pricing: &str, edit: &str| Catalog::from_toml(&EDIT.replace("PRICING", pricing).replace("EDIT_LINE", edit));
+    parse(good, edit).unwrap();
+    for (pricing, edit, why) in [
+        (good, "", "every mode to edit the same source"),
+        (r#"{ type = "per_source_second", param = "resolution", prices = { "480p" = "0.1 USD" } }"#, edit, "each `resolution` choice"),
+        (r#"{ type = "per_source_second", param = "resolution", prices = { "480p" = "0.1 USD", "720p" = "0.2 EUR" } }"#, edit, "one currency"),
+        (r#"{ type = "per_source_second", param = "resolution", prices = { "480p" = "0 USD", "720p" = "0.2 USD" } }"#, edit, "above zero"),
+        (r#"{ type = "per_source_second", param = "seed", prices = { "480p" = "0.1 USD", "720p" = "0.2 USD" } }"#, edit, "choice setting with a default"),
+        (good, r#"edit = { operation = "restyle", role = "prompt", sound = "source" }"#, "one required video input"),
+        (good, r#"edit = { operation = "restyle", role = "source", min_ms = 0, sound = "source" }"#, "source lengths"),
+    ] {
+        let error = parse(pricing, edit).unwrap_err();
+        assert!(error.message.contains(why), "{why}: {}", error.message);
+    }
+}
+
+/// A text model reading PDFs, with `document` spliced into its document mode.
+fn reader(document: &str) -> Result<Catalog, nodecraft_types::Error> {
+    Catalog::from_toml(&format!(
+        r#"
+[[model]]
+id = "test.reader"
+provider = "test"
+provider_model = "reader-v1"
+label = "Test Reader"
+description = "Reads PDFs."
+latency_s = 10
+quality = 3
+pricing = {{ type = "per_unit", unit = "thousand_tokens", price = "0.02 USD", count = "max_tokens" }}
+usage = {{ input = "0.004 USD", output = "0.02 USD", long = {{ above = 100000, input = "0.008 USD", output = "0.04 USD" }} }}
+
+[[model.modes]]
+id = "document-to-text"
+output = "text"
+inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }}, {{ role = "document", modality = "document", min = 1, max = 5 }}]
+{document}
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max tokens"
+control = {{ type = "unsigned", min = "1", max = "64000" }}
+default = {{ type = "unsigned", value = "1000" }}
+"#
+    ))
+}
+
+#[test]
+fn pdf_pages_add_their_input_tokens_to_the_quote() {
+    let catalog = reader(r#"document = { role = "document", max_pages = 100, tokens_per_page = 3000 }"#).unwrap();
+    let model = catalog.get("test.reader").unwrap();
+    let document = model.mode("document-to-text").and_then(|mode| mode.document.as_ref()).unwrap();
+    let params = ParamValues::new();
+    // 1000 output tokens at 0.02 USD per 1000.
+    let base = Money::new(Currency::USD, 20_000);
+    assert_eq!(model.quote_inputs(&params, None, 0).unwrap(), Some(base), "no PDF, the output-only quote");
+    // 10 pages × 3000 tokens = 30000 input tokens at 0.004 USD per 1000 = 0.12 USD.
+    assert_eq!(model.quote_inputs(&params, None, document.tokens(10)).unwrap(), Some(Money::new(Currency::USD, 140_000)));
+    // 100 pages = 300000 tokens: over the long-prompt threshold, so the long rate applies.
+    assert_eq!(model.quote_inputs(&params, None, document.tokens(100)).unwrap(), Some(Money::new(Currency::USD, 20_000 + 2_400_000)));
+    assert!(model.quote_inputs(&params, None, u64::MAX).is_err(), "a hostile token count is refused, not wrapped");
+}
+
+#[test]
+fn a_mode_taking_pdfs_must_say_how_it_reads_them() {
+    for (document, reason) in [
+        ("", "says how it reads them"),
+        (r#"document = { role = "prompt", max_pages = 100, tokens_per_page = 3000 }"#, "isn't its one document input"),
+        (r#"document = { role = "document", max_pages = 0, tokens_per_page = 3000 }"#, "max_pages"),
+        (r#"document = { role = "document", max_pages = 100, tokens_per_page = 0 }"#, "tokens_per_page"),
+        (r#"document = { role = "document", max_pages = 100, tokens_per_page = 3000, pages = 2 }"#, ""),
+    ] {
+        let error = reader(document).unwrap_err();
+        assert!(error.message.contains(reason), "{document}: {}", error.message);
+    }
+}
+
+#[test]
+fn builtin_chat_models_read_pdfs_and_quote_their_pages() {
+    let catalog = Catalog::builtin().unwrap();
+    let chat: Vec<_> = catalog.models().filter(|model| model.provider == "anthropic" || model.provider == "openai").collect();
+    assert!(!chat.is_empty());
+    for model in chat {
+        let id = &model.id;
+        let document = model.mode("document-to-text").and_then(|mode| mode.document.as_ref()).unwrap_or_else(|| panic!("{id} reads PDFs"));
+        assert_eq!((document.role.as_str(), document.max_pages), ("document", 100), "{id}");
+        let params = ParamValues::new();
+        let base = model.quote_inputs(&params, None, 0).unwrap().unwrap();
+        let read = model.quote_inputs(&params, None, document.tokens(10)).unwrap().unwrap();
+        assert_eq!(base.checked_cmp(read).unwrap(), std::cmp::Ordering::Less, "{id}: pages cost input tokens");
+    }
+}
+
+#[test]
+fn a_schema_only_seed_is_pinned_only_when_it_is_sent() {
+    let catalog = Catalog::from_toml(PRICED).unwrap();
+    let model = catalog.get("test.video").unwrap();
+    let mut params = ParamValues::new();
+    params.insert("prompt".into(), Value::Text("a fox".into()));
+    assert!(model.pinned_seeds(&params, false).unwrap().is_empty(), "no seed sent, the provider picks one");
+    params.insert("seed".into(), Value::Unsigned(Unsigned(7)));
+    assert_eq!(model.pinned_seeds(&params, false).unwrap(), vec!["seed".to_owned()]);
+}
+
+#[test]
+fn a_model_cards_dont_offer_is_kept_but_never_picked() {
+    let catalog = catalog();
+    let workflow = catalog.get("comfyui.workflow").unwrap();
+    assert!(!workflow.cards);
+    assert!(catalog.get("comfyui.flux-dev").unwrap().cards, "cards offer models by default");
+    assert!(catalog.models().any(|m| m.id == workflow.id), "it is still priced and admitted");
+    assert!(catalog.card_models().all(|m| m.id != workflow.id));
+    for output in [Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh] {
+        let wiring = Wiring::new(output);
+        assert!(workflow.modes.iter().any(|mode| mode.output == output));
+        assert!(catalog.candidates(&wiring).iter().all(|c| c.model.id != workflow.id));
+        let request = select::Request { wiring, effort: select::Effort::Balanced, budget_per_job: None, providers: None, params: None };
+        let selection = catalog.select(&request);
+        assert!(selection.ranked.iter().all(|c| c.model.id != workflow.id) && selection.rejected.iter().all(|(m, _)| m.id != workflow.id));
+    }
+    let unlisted = PRICED.replace("quality = 5", "quality = 5\ncards = false");
+    assert!(!Catalog::from_toml(&unlisted).unwrap().models().next().unwrap().cards);
 }

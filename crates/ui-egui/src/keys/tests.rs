@@ -359,8 +359,96 @@ fn keychain_errors_and_silence_become_retryable_failures() {
     panel.tick(2.0);
     assert!(!panel.is_waiting());
     // Its late answer is not this panel's any more.
-    let late = nodecraft_engine::secrets::KeyOutcome { id: 9, account: "fal".into(), result: Ok(serde_json::json!({"stored": true, "masked": "…"})) };
+    let late = nodecraft_engine::secrets::KeyOutcome {
+        id: 9,
+        account: "fal".into(),
+        operation: nodecraft_engine::secrets::KeyOperation::Status,
+        result: Ok(serde_json::json!({"stored": true, "masked": "…"})),
+    };
     let (changes, others) = panel.receive(vec![late]);
     assert!(changes.is_empty() && others.len() == 1);
     assert!(matches!(&panel.rows()[0].1, KeyStatus::Failed(_)));
+}
+
+/// Runs `keys.test` checks on a tokio runtime, as the app's runs do.
+struct TestRuntime(tokio::runtime::Runtime);
+impl nodecraft_exec::driver::Runtime for TestRuntime {
+    fn spawn(&self, task: nodecraft_exec::driver::TaskFuture<()>) {
+        self.0.spawn(task);
+    }
+    fn sleep(&self, _: u64) -> nodecraft_exec::driver::TaskFuture<()> {
+        Box::pin(async {})
+    }
+    fn now_ms(&self) -> u64 {
+        0
+    }
+}
+
+/// A provider fixture: OpenAI accepts the key, Anthropic rejects it. No real network.
+struct Providers;
+impl nodecraft_providers::http::Http for Providers {
+    fn send(
+        &self,
+        _: nodecraft_providers::http::HttpRequest,
+    ) -> nodecraft_providers::BoxFuture<'_, Result<nodecraft_providers::http::HttpResponse, nodecraft_providers::ProviderError>> {
+        panic!("key checks never follow redirects")
+    }
+    fn send_no_redirect(
+        &self,
+        request: nodecraft_providers::http::HttpRequest,
+    ) -> nodecraft_providers::BoxFuture<'_, Result<nodecraft_providers::http::HttpResponse, nodecraft_providers::ProviderError>> {
+        let status = if request.url.starts_with("https://api.openai.com/") { 200 } else { 401 };
+        Box::pin(async move { Ok(nodecraft_providers::http::HttpResponse { status, headers: vec![], body: b"{}".to_vec() }) })
+    }
+}
+
+#[test]
+fn test_asks_the_provider_and_shows_works_rejected_or_unverifiable() {
+    let store = Arc::new(MemoryStore::default());
+    for account in ["openai", "anthropic", "fal"] {
+        store.set(&Account::new(account).unwrap(), &nodecraft_engine::secrets::Secret::new(KEY).unwrap()).unwrap();
+    }
+    let runtime = TestRuntime(tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap());
+    let host = nodecraft_engine::key_test::KeyTestHost { runtime: Arc::new(runtime), http: Arc::new(Providers) };
+    let (worker, results) = KeyWorker::spawn_with_tests(store, Some(host)).unwrap();
+    let mut services = Services::default();
+    register_key_worker(&mut services, worker).unwrap();
+    let mut state = worker_state(Arc::new(MemoryStore::default()), &["openai", "anthropic", "fal"]);
+    state.session = session(services);
+    state.results = Some(results);
+    let mut h = harness_at_dt(state, Some(1.0 / 60.0));
+    h.run_steps(2);
+    for row in 0..3 {
+        h.get_all_by_label("Test").nth(row).unwrap().click();
+        h.run_steps(1);
+        // The check answers on the worker (often within that frame); frames deliver it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while h.state().panel.is_waiting() {
+            assert!(std::time::Instant::now() < deadline, "the check never answered");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            h.run_steps(1);
+        }
+        // A longer status widens the grid a frame later; let the buttons settle before the next click.
+        h.run_steps(2);
+    }
+    let statuses: Vec<KeyStatus> = h.state().panel.rows().iter().map(|(_, status)| status.clone()).collect();
+    assert_eq!(statuses[0], KeyStatus::Verified("…1234".into()), "a test keeps the stored key's tail");
+    assert!(matches!(&statuses[1], KeyStatus::Failed(why) if why.starts_with("rejected: Anthropic")), "{statuses:?}");
+    assert!(matches!(&statuses[2], KeyStatus::Unverifiable(masked, _) if masked == "…1234"), "{statuses:?}");
+    assert!(h.query_by_label("Stored …1234, works: the provider accepted it").is_some());
+    assert!(h.query_by_label_contains("Stored …1234, can't verify").is_some());
+    assert!(h.query_by_label_contains("abcdefghij").is_none(), "the key is never shown");
+    assert!(h.state().changes.is_empty(), "a test changes no remembered account");
+}
+
+#[test]
+fn test_without_a_check_host_says_it_is_unsupported() {
+    let store = Arc::new(MemoryStore::default());
+    store.set(&Account::new("openai").unwrap(), &nodecraft_engine::secrets::Secret::new(KEY).unwrap()).unwrap();
+    let mut h = harness(sync_state(store, &["openai"]));
+    h.run();
+    h.get_by_label("Test").click();
+    h.run();
+    assert!(h.state().panel.notice.as_deref().is_some_and(|n| n.contains("desktop app")), "{:?}", h.state().panel.notice);
+    assert!(!h.state().panel.is_waiting());
 }

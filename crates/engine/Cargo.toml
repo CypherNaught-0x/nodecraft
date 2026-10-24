@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-engine"
 version.workspace = true
 edition.workspace = true
@@ -13,36 +14,69 @@ workspace = true
 [dependencies]
 nodecraft-exec = { workspace = true }
 nodecraft-catalog = { workspace = true }
+# Plugin data packages (#172): the store behind the plugin.* commands.
+nodecraft-plugin = { workspace = true }
+nodecraft-plugin-store = { workspace = true }
 nodecraft-nodes = { workspace = true }
-nodecraft-providers = { workspace = true }
+nodecraft-comfy = { workspace = true }
+# Adapters the catalog names (#409); the host builds them in `provider_setup`.
+nodecraft-providers = { workspace = true, features = ["openai-images", "replicate", "seedream", "gemini-images", "gemini-video", "google-veo", "google-tts", "google-gemini-images", "seedance", "fal", "tripo", "meshy", "higgsfield", "kling", "elevenlabs", "comfy-cloud"] }
 nodecraft-gpu = { workspace = true }
 nodecraft-format = { workspace = true }
 craft-settings = { workspace = true }
 nodecraft-graph.workspace = true
+# Live sharing (#119): the shared document the collab glue mirrors a session into.
+nodecraft-sync.workspace = true
 nodecraft-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-nodecraft-media.workspace = true
+url.workspace = true
+nodecraft-media = { workspace = true, features = ["pdf"] }
+# Action nodes run their operations locally (#410).
+nodecraft-actions.workspace = true
 blake3.workspace = true
+# Update feed signatures (#540): verify only, against the keys in packaging/update-key.pub.
+ed25519-dalek = { workspace = true }
 # Fallible live execution identities; Web Crypto on wasm, OS entropy natively.
 getrandom = { version = "=0.3.4", features = ["wasm_js"] }
 serde_path_to_error.workspace = true
+# Element bundles (#765): one library entry and its images in a stored ZIP.
+zip.workspace = true
 
 # The OS keychain wraps platform APIs; pinned exactly and reviewed (AGENTS.md: no unsafe of our own,
 # platform wrappers come from small audited crates). Native only: the browser has no keychain.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
+# The run journal (#508) is replaced atomically, so a crash mid-save keeps the last one.
+craft-atomic.workspace = true
+# Timeline renders (#109) run the ffmpeg the settings name; browsers have no video service.
+nodecraft-media = { workspace = true, features = ["video"] }
 
 [dev-dependencies]
+# Guard against allocations proportional to input-derived nested Timeline results.
+allocation-counter = "=0.8.1"
+nodecraft-media = { workspace = true, features = ["fixtures"] }
 nodecraft-provider-testkit = { workspace = true }
 # Exercise the real image adapter through the runner, not only a policy fixture.
-nodecraft-providers = { workspace = true, features = ["openai-images", "replicate"] }
+nodecraft-providers = { workspace = true, features = ["openai-images", "replicate", "seedream", "gemini-images", "gemini-video", "google-veo", "google-tts", "google-gemini-images", "seedance", "fal", "tripo", "meshy", "higgsfield", "kling", "elevenlabs", "comfy-cloud"] }
 nodecraft-format = { workspace = true, features = ["validation-metrics"] }
 tempfile = { workspace = true }
 futures = { workspace = true, features = ["executor"] }
 serde_json = { workspace = true }
-zip = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Real native Reqwest/Driver fixtures need an entered reactor, not the virtual test runtime.
 tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "panic_hunt"
+path = "tests/panic_hunt.rs"
+
+[[test]]
+name = "physical_zip64147"
+path = "tests/physical_zip64147.rs"

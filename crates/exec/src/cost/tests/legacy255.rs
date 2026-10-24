@@ -91,7 +91,7 @@ fn ownership_marker_and_aggregate_coverage_are_checked_before_admission() {
     invalid.open_session_ownership = 1;
     assert!(UsageLog::try_from(invalid).unwrap_err().message.contains("named session"));
     let mut invalid = file.clone();
-    invalid.open_session_ownership = 3;
+    invalid.open_session_ownership = 5;
     assert!(UsageLog::try_from(invalid).unwrap_err().message.contains("newer NodeCraft"));
     let mut invalid = file.clone();
     invalid.open_session_ownership = 1;

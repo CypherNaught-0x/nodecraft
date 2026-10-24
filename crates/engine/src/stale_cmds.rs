@@ -200,7 +200,14 @@ mod tests {
             canvas,
             id,
             index: 0,
-            generation: nodecraft_graph::Generation { id: generation, outputs: vec![nodecraft_types::Value::Text("result".into())], input_hash: Some(hash) },
+            generation: nodecraft_graph::Generation {
+                id: generation,
+                outputs: vec![nodecraft_types::Value::Text("result".into())],
+                input_hash: Some(hash),
+                items: Vec::new(),
+                settings: Vec::new(),
+                incomplete: None,
+            },
         }
         .apply(&mut project)
         .unwrap();
@@ -265,7 +272,12 @@ mod tests {
             .unwrap();
         let hash = nodecraft_exec::staleness::input_hash(project.canvases().get(&canvas).unwrap(), &kinds, node).unwrap();
         Changeset::new(vec![
-            Change::AddGeneration { canvas, id: node, index: 0, generation: Generation { id: generation, outputs: vec![], input_hash: Some(hash) } },
+            Change::AddGeneration {
+                canvas,
+                id: node,
+                index: 0,
+                generation: Generation { id: generation, outputs: vec![], input_hash: Some(hash), items: Vec::new(), settings: Vec::new(), incomplete: None },
+            },
             Change::SetActiveGeneration { canvas, id: node, generation: Some(generation) },
         ])
         .apply(&mut project)

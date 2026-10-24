@@ -3,7 +3,7 @@
 //! inputs through [`incoming`], so a router adds no step, no cost and no hash of its own.
 
 use nodecraft_graph::Canvas;
-use nodecraft_nodes::{Registry, router};
+use nodecraft_nodes::{Registry, element, mention, router};
 use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,6 +31,12 @@ pub struct Incoming<'a> {
     /// port must not hide this failure. Reasons are fixed-size and stored once per router.
     pub invalid: BTreeMap<(NodeId, &'a str), NodeId>,
     pub invalid_routers: BTreeMap<NodeId, &'static str>,
+    /// Consumers whose prompt mentions a name several Elements share (#104).
+    pub ambiguous: BTreeSet<NodeId>,
+    /// Consumers blocked by an `@node` mention (#505), with the reason.
+    pub mention_problems: BTreeMap<NodeId, String>,
+    /// (consumer, mentioned card) pairs left unfed because the card is made from the consumer.
+    pub mention_loops: BTreeSet<(NodeId, NodeId)>,
 }
 
 /// Whether `id` is a router.
@@ -166,7 +172,77 @@ pub fn incoming<'a>(canvas: &'a Canvas, kinds: &Registry) -> Result<Incoming<'a>
         }
         resolved.insert(*target, out);
     }
-    Ok(Incoming { feeds: resolved, wired, invalid, invalid_routers })
+    // An Element's sheet card that hasn't run yet feeds nothing, so the Element uses its images
+    // and planning it doesn't pull in the paid sheet run (#104).
+    for (target, feeds) in resolved.iter_mut() {
+        if canvas.nodes().get(target).is_some_and(|node| node.kind == element::ID) {
+            feeds.retain(|feed| feed.0 != element::SHEET || canvas.nodes().get(&feed.2).is_some_and(|from| from.active.is_some()));
+            if !feeds.iter().any(|feed| feed.0 == element::SHEET) {
+                wired.remove(&(*target, element::SHEET));
+            }
+        }
+    }
+    // Elements a prompt mentions feed in after the wires (#104), unless a wire (perhaps through
+    // routers) already brings that Element's references.
+    let mentioned = crate::mentions::feeds(canvas, kinds);
+    for (target, feeds) in mentioned.feeds {
+        let out = resolved.entry(target).or_default();
+        for (port, from, from_port) in feeds {
+            if out.iter().any(|feed| feed.2 == from && feed.3 == from_port) {
+                continue;
+            }
+            let in_port = out.iter().filter(|feed| feed.0 == port).count();
+            if in_port >= MAX_FEEDS_PER_PORT {
+                continue;
+            }
+            steps = steps.saturating_add(1);
+            if steps > MAX_RESOLUTION_STEPS {
+                return Err(too_large());
+            }
+            out.push((port, u32::try_from(in_port).unwrap_or(u32::MAX), from, from_port));
+        }
+    }
+    // Cards a prompt `@mentions` feed their text on a port of their own (#505), unless the card is
+    // made from the consumer: that would be a loop.
+    let mentioned_nodes = crate::node_mentions::feeds(canvas);
+    let mut mention_problems: BTreeMap<NodeId, String> =
+        mentioned_nodes.problems.iter().map(|(id, (title, problem))| (*id, crate::node_mentions::reason(title, *problem))).collect();
+    let mut mention_loops = BTreeSet::new();
+    if !mentioned_nodes.feeds.is_empty() {
+        let mut next: BTreeMap<NodeId, BTreeSet<NodeId>> = BTreeMap::new();
+        for (target, feeds) in &resolved {
+            for feed in feeds {
+                next.entry(feed.2).or_default().insert(*target);
+            }
+        }
+        for (target, feeds) in &mentioned_nodes.feeds {
+            for (from, _) in feeds {
+                next.entry(*from).or_default().insert(*target);
+            }
+        }
+        // A mention is a loop when the mentioning card is downstream of the card it mentions:
+        // with the mention's own edge, both are then in one component.
+        let components = crate::node_mentions::components(&next);
+        for (target, feeds) in mentioned_nodes.feeds {
+            let out = resolved.entry(target).or_default();
+            for (from, from_port) in feeds {
+                if from == target || components.get(&from).is_some_and(|c| components.get(&target) == Some(c)) {
+                    mention_loops.insert((target, from));
+                    continue;
+                }
+                let in_port = out.iter().filter(|feed| feed.0 == mention::PORT).count();
+                out.push((mention::PORT, u32::try_from(in_port).unwrap_or(u32::MAX), from, from_port));
+            }
+            if let Some(from) = mention_loops.iter().find(|pair| pair.0 == target).map(|pair| pair.1) {
+                let node = canvas.nodes().get(&target);
+                let title = node
+                    .and_then(|node| crate::node_mentions::of(canvas, node, &mention_loops).into_iter().find(|found| found.id == from))
+                    .map_or("", |found| found.title);
+                mention_problems.entry(target).or_insert_with(|| crate::node_mentions::reason(title, crate::node_mentions::Problem::Loop));
+            }
+        }
+    }
+    Ok(Incoming { feeds: resolved, wired, invalid, invalid_routers, ambiguous: mentioned.ambiguous, mention_problems, mention_loops })
 }
 
 #[cfg(test)]

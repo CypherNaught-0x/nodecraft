@@ -10,7 +10,7 @@
 const LABEL = 'in progress';
 const LABEL_COLOR = 'fbca04';
 const LABEL_DESCRIPTION = 'Someone is working on this';
-const CLAIM_HOURS = 72;
+const CLAIM_HOURS = 24;
 const PR_IDLE_DAYS = 14;
 const HOUR = 3600 * 1000;
 
@@ -84,12 +84,25 @@ function getTimeline(github, context, number) {
   });
 }
 
-// Open pull requests that mention the issue, from the timeline's cross-references.
-function linkedPulls(timeline) {
+// Only PRs in this repository claim its issues. Timeline sources can be foreign PRs
+// with the same number as a local PR; never infer repository identity from the number.
+function linkedPulls(timeline, context) {
   const seen = new Map();
   for (const ev of timeline) {
     const src = ev.event === 'cross-referenced' && ev.source && ev.source.issue;
-    if (src && src.pull_request && src.state === 'open') seen.set(src.number, src);
+    if (!src || !src.pull_request || src.state !== 'open') continue;
+    const repository = /^https:\/\/api\.github\.com\/repos\/([^/]+)\/([^/]+)\/?$/i.exec(src.repository_url || '');
+    const pull = /^https:\/\/api\.github\.com\/repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)\/?$/i.exec(src.pull_request.url || '');
+    if ((!repository && !pull) || (src.repository_url && !repository) || (src.pull_request.url && !pull) ||
+        (pull && String(src.number) !== pull[3]) ||
+        (repository && pull && (repository[1].toLowerCase() !== pull[1].toLowerCase() ||
+          repository[2].toLowerCase() !== pull[2].toLowerCase()))) {
+      throw new Error(`Cannot identify repository for open PR #${src.number || '?'}; keeping claim`);
+    }
+    const identity = repository || pull;
+    if (identity[1].toLowerCase() !== context.repo.owner.toLowerCase() ||
+        identity[2].toLowerCase() !== context.repo.repo.toLowerCase()) continue;
+    seen.set(src.number, src);
   }
   return [...seen.values()];
 }
@@ -107,14 +120,21 @@ async function lastPush(github, context, pr) {
 async function claimStatus(github, context, issue, now) {
   const timeline = await getTimeline(github, context, issue.number);
   const since = await labeledAt(github, context, issue, timeline);
-  const pulls = linkedPulls(timeline);
+  const pulls = linkedPulls(timeline, context);
   if (pulls.length === 0) {
     const expires = since + CLAIM_HOURS * HOUR;
     return { pulls, since, expires, release: now >= expires, reason: 'no PR' };
   }
   let newest = 0;
-  for (const pr of pulls) newest = Math.max(newest, await lastPush(github, context, pr));
-  const expires = newest + PR_IDLE_DAYS * 24 * HOUR;
+  for (const pr of pulls) {
+    try {
+      newest = Math.max(newest, await lastPush(github, context, pr));
+    } catch (e) {
+      throw new Error(`Cannot resolve local PR #${pr.number}; keeping claim`, { cause: e });
+    }
+  }
+  // An expired PR from a previous claimant must not erase a new claim's first day.
+  const expires = Math.max(since + CLAIM_HOURS * HOUR, newest + PR_IDLE_DAYS * 24 * HOUR);
   return { pulls, since, expires, release: now >= expires, reason: 'idle PR' };
 }
 
@@ -161,7 +181,6 @@ async function claim(github, context, now) {
   const issue = context.payload.issue;
   const user = context.payload.comment.user.login;
   const n = issue.number;
-  const cache = new Map();
   const assignees = (issue.assignees || []).map((a) => a.login);
 
   if (assignees.includes(user)) {
@@ -169,27 +188,40 @@ async function claim(github, context, now) {
     return;
   }
 
-  // Someone else is assigned: theirs unless the claim has lapsed (never for a maintainer).
+  // Every claimant has the same deadline, including owners and maintainers.
   let held = assignees.length > 0 || hasLabel(issue);
-  let status = null;
+  let takeover = false;
   if (held) {
-    let maintained = false;
-    for (const a of assignees) maintained = maintained || (await isMaintainer(github, context, a, cache));
-    if (!maintained) {
+    let status;
+    try {
       status = await claimStatus(github, context, issue, now);
-      if (status.release) held = false;
+    } catch (e) {
+      await react(github, context, 'eyes');
+      await reply(github, context, `Cannot verify this claim (${e.message}). It stays held; ask a maintainer to check the PR reference.`);
+      return;
+    }
+    if (status.release) {
+      held = false;
+      takeover = true;
     }
     if (held) {
       await react(github, context, 'eyes');
       const who = assignees.length ? assignees.map((a) => '@' + a).join(', ') + ' has' : 'Someone has';
-      const when = maintained || !status ? '' : ` The claim lapses on ${fmt(status.expires)} unless there's progress.`;
+      const when = ` The claim lapses on ${fmt(status.expires)} unless there's progress.`;
       await reply(github, context, `${who} claimed this already.${when}`);
       return;
     }
   } else {
     // Not claimed, but a draft PR may already be the claim (CONTRIBUTING.md, "Claiming an issue").
     const timeline = await getTimeline(github, context, n);
-    const other = linkedPulls(timeline).find((p) => p.user && p.user.login !== user);
+    let other;
+    try {
+      other = linkedPulls(timeline, context).find((p) => p.user && p.user.login !== user);
+    } catch (e) {
+      await react(github, context, 'eyes');
+      await reply(github, context, `Cannot verify the open PR reference (${e.message}). Ask a maintainer to check it before claiming.`);
+      return;
+    }
     if (other) {
       await react(github, context, 'eyes');
       await reply(github, context, `#${other.number} already covers this one.`);
@@ -197,10 +229,24 @@ async function claim(github, context, now) {
     }
   }
 
-  // Free (or lapsed): hand it to the commenter. Clear a lapsed claimant first.
-  if (assignees.length) {
-    await github.rest.issues.removeAssignees({ ...repoArgs(context), issue_number: n, assignees });
+  // Validate before clearing a lapsed owner or changing any issue metadata.
+  const difficulties = (issue.labels || [])
+    .map((label) => (typeof label === 'string' ? label : label.name))
+    .filter((name) => typeof name === 'string' && name.startsWith('difficulty:'));
+  if (difficulties.length !== 1 || !['difficulty:easy', 'difficulty:medium', 'difficulty:hard'].includes(difficulties[0])) {
+    await react(github, context, 'eyes');
+    await reply(
+      github,
+      context,
+      'Before claiming, ask a maintainer to set exactly one difficulty label: `difficulty:easy`, `difficulty:medium` or `difficulty:hard`. ' +
+        `See the [difficulty rubric](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/main/docs/issue-labels.md). Then retry \`/claim\`.`,
+    );
+    return;
   }
+
+  // Free (or lapsed): hand it to the commenter. Clear a lapsed claimant first.
+  // Removing and re-adding the label records the new claimant's start in the timeline.
+  if (takeover) await release(github, context, issue, assignees);
   await ensureLabel(github, context);
   await github.rest.issues.addLabels({ ...repoArgs(context), issue_number: n, labels: [LABEL] });
   try {
@@ -257,22 +303,24 @@ async function handleComment({ github, context, now = Date.now() }) {
 }
 
 // The daily sweep over open issues labelled `in progress`.
-async function sweep({ github, context, now = Date.now() }) {
+async function sweep({ github, context, now = Date.now(), report = console.warn }) {
   const issues = await github.paginate(github.rest.issues.listForRepo, {
     ...repoArgs(context),
     state: 'open',
     labels: LABEL,
     per_page: 100,
   });
-  const cache = new Map();
   const released = [];
   for (const issue of issues) {
     if (issue.pull_request || issue.locked) continue;
     const assignees = (issue.assignees || []).map((a) => a.login);
-    let skip = false;
-    for (const a of assignees) skip = skip || (await isMaintainer(github, context, a, cache));
-    if (skip) continue;
-    const status = await claimStatus(github, context, issue, now);
+    let status;
+    try {
+      status = await claimStatus(github, context, issue, now);
+    } catch (e) {
+      report(`Skipped issue #${issue.number}: ${e.message}`);
+      continue;
+    }
     if (!status.release) continue;
     await release(github, context, issue, assignees);
     await github.rest.issues.createComment({

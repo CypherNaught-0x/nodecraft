@@ -4,7 +4,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use nodecraft_types::Money;
+use nodecraft_types::{BillableUnits, Money};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -62,6 +62,26 @@ pub struct JobHandle {
     pub data: Value,
 }
 
+/// A paid request an adapter is about to send, saved first so it can be sent again unchanged,
+/// under the same idempotency key, after a restart lost its reply (#664). Its body holds what the
+/// provider is sent (prompt text, links to files already uploaded) and never a credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StagedSubmit {
+    /// The request body exactly as sent.
+    pub body: String,
+    /// Whatever else the adapter needs to send it again and follow it (its handle data, say).
+    #[serde(default)]
+    pub data: Value,
+}
+
+/// Longest [`StagedSubmit::body`] an adapter stages or sends again.
+pub const MAX_STAGED_BODY: usize = 1024 * 1024;
+
+/// Saves a [`StagedSubmit`] before its request is sent. An error stops the request unsent, and is
+/// the job's failure reason.
+pub type Stager = dyn Fn(&StagedSubmit) -> Result<(), String> + Send + Sync;
+
 /// A result a job produced.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Output {
@@ -87,6 +107,9 @@ pub struct Usage {
     /// What the provider says the job cost (LiteLLM, for example). `None` when it doesn't say;
     /// budgets then charge the estimate.
     pub cost: Option<Money>,
+    /// How many of its own units the provider says it billed (fal's `X-Fal-Billable-Units`).
+    /// Evidence for the result's record, never a cost: what a unit costs is the model's price.
+    pub billable_units: Option<BillableUnits>,
 }
 
 /// A finished job: its outputs and what it used.
@@ -150,6 +173,28 @@ pub trait Provider: MaybeSendSync {
     fn submit_with_delivery<'a>(&'a self, job: &'a ProviderJob, context: &'a crate::SubmitContext) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         context.unknown();
         self.submit(job)
+    }
+
+    /// Sends `staged` again exactly as it was staged through [`crate::SubmitContext`] before a
+    /// restart (#664), under `job`'s idempotency key, so the provider answers with the request it
+    /// may already have accepted rather than starting (and billing) another. `job` carries only
+    /// its model and key. Unsupported, and nothing is sent, unless the adapter stages requests.
+    fn replay<'a>(
+        &'a self,
+        job: &'a ProviderJob,
+        staged: &'a StagedSubmit,
+        context: &'a crate::SubmitContext,
+    ) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+        let _ = (job, staged, context);
+        Box::pin(async { Err(ProviderError::new(crate::ErrorKind::UnsupportedInput, "this provider can't send a request saved before a restart again")) })
+    }
+
+    /// What this job would cost, asked of the provider before it is submitted (#663), for models
+    /// the catalog prices `by_usage`. Must be free: it sends nothing billable and never uses the
+    /// job's idempotency key, which callers leave empty. Unsupported unless the provider can say.
+    fn quote<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Money, ProviderError>> {
+        let _ = job;
+        Box::pin(async { Err(ProviderError::new(crate::ErrorKind::UnsupportedInput, "this provider can't quote a job before it runs")) })
     }
 
     /// Reports how a submitted job is doing.

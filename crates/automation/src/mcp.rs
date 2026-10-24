@@ -11,6 +11,7 @@
 //! - `ids_new`: fresh ids for commands that take caller-supplied ids (`node.add`, `node.create`, edge commands).
 //!
 //! Every command is classified: [`AGENT_COMMANDS`] may be listed and run, [`HUMAN_ONLY`] never.
+//! [`LIVE_ONLY`] agent commands act on the running window's view and run only through it.
 //! An unclassified command stays hidden, and a test fails until it is classified.
 
 mod overview;
@@ -40,8 +41,39 @@ pub const MAX_PAGE: usize = 500;
 /// Most ids `ids_new` hands out per call.
 pub const MAX_NEW_IDS: usize = 100;
 
+/// The [`AGENT_COMMANDS`] that act on the running window's view (#360): they run only through a
+/// live host (`nodecraft --control`, or MCP bridged to it). A headless session lists them as not
+/// ready and refuses them, saying where they do run.
+pub const LIVE_ONLY: &[&str] = &[
+    "canvas.fit_all",
+    "canvas.fit_selection",
+    "canvas.minimap_toggle",
+    "canvas.pan_to",
+    "canvas.search_open",
+    "canvas.search_query",
+    "canvas.search_next",
+    "canvas.search_previous",
+    "canvas.search_close",
+    "canvas.auto_format",
+    "comment.open",
+    "canvas.comments_toggle",
+    "canvas.tag_filter_open",
+    "canvas.tag_filter_close",
+    "canvas.tag_filter_set",
+    "canvas.tag_filter_next",
+    "canvas.tag_filter_previous",
+];
+const NEEDS_LIVE_APP: &str = "needs the running app's canvas: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`";
+const NEEDS_USAGE_LOG: &str = "needs the running app's usage log: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`; standalone `nodecraft-cli mcp` has no usage log";
+const USAGE_READ_COMMANDS: &[&str] = &["usage.export_csv", "usage.ownership", "usage.unsettled"];
+
 /// Commands an agent may see and run.
 pub const AGENT_COMMANDS: &[&str] = &[
+    // Only inside the folders the person allowed (#423): `crate::roots`.
+    "file.open",
+    "file.save",
+    "file.save_as",
+    "file.cancel",
     "node.add",
     "node.create",
     "node.create_connected",
@@ -49,6 +81,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "node.move",
     "node.title",
     "node.param_set",
+    "node.params_set_bulk",
+    "node.model_preview",
+    "node.set_model",
+    "node.prompt_assist",
     "edge.connect",
     "edge.disconnect",
     "edge.rewire",
@@ -58,6 +94,38 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "edit.undo",
     "edit.redo",
     "canvas.stale",
+    "sheet.create",
+    "sheet.list",
+    "sheet.rows",
+    "sheet.rows_add",
+    "sheet.rows_duplicate",
+    "sheet.rows_remove",
+    "sheet.row_move",
+    "sheet.reference_wire",
+    "sheet.reference_unwire",
+    "technique.check",
+    "technique.publish",
+    "technique.list",
+    "technique.show",
+    "technique.remove",
+    "technique.place",
+    "technique.upgrade",
+    "technique.detach",
+    "app.form",
+    "app.input_set",
+    "library.list",
+    "library.place",
+    "node.describe",
+    "node.options",
+    "options.refresh",
+    "options.status",
+    "comfy.nodes.refresh",
+    "comfy.nodes.status",
+    "comfy.workflow.import",
+    "comfy.server.use",
+    "providers.settings_get",
+    "app.check_updates",
+    "app.update_status",
     "history.select",
     "history.previous",
     "history.next",
@@ -73,22 +141,209 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "canvas.search_next",
     "canvas.search_previous",
     "canvas.search_close",
+    "canvas.auto_format",
+    "comment.open",
+    "canvas.comments_toggle",
+    "canvas.tag_filter_open",
+    "canvas.tag_filter_close",
+    "canvas.tag_filter_set",
+    "canvas.tag_filter_next",
+    "canvas.tag_filter_previous",
+    "tag.put",
+    "tag.remove",
+    "node.tag_set",
+    "field.create",
+    "field.update",
+    "field.move",
+    "field.remove",
+    "node.field_set",
+    "node.migrate",
+    "comment.create",
+    "comment.edit",
+    "comment.reply",
+    "comment.reply_remove",
+    "comment.move",
+    "comment.resolve",
+    "comment.remove",
     "keys.status",
     "run.quote",
+    // Free, and refused by a host that can't ask (the CLI's).
+    "run.estimate",
     "run.start",
+    "run.held",
+    "run.held_retry",
+    "run.held_place",
+    "share.links",
+    "share.link_revoke",
+    "share.stop",
+    "share.status",
     "usage.export_csv",
     "perf.start",
     "perf.stop",
     "perf.clear",
     "perf.report",
+    "usage.ownership",
+    "usage.unsettled",
+    "run.reuse",
+    "node.cache_set",
+    "node.variations_set",
+    "canvas.set_variation_cards",
+    // Refills a Folder card with files already in the project; one undoable edit.
+    "folder.fill",
+    "node.shader_set",
+    "shader.write",
+    "shader.apply",
+    // Placing and updating from the shader library edit the document (undoable); saving and
+    // removing change the shared library, so only a person does.
+    "shader.place",
+    "shader.update",
+    "library.shaders",
+    // Masks only add and wire cards; the edit card runs (and is quoted) through run.start.
+    "node.mask_set",
+    "mask.create",
+    "mask.margins_set",
+    "mask.edit",
+    // The image tools list is read-only; a tool only adds and wires a card, which runs (and is
+    // quoted) through run.start.
+    "image.tools",
+    "image.tool",
+    // Keeping or fitting strokes is one undoable edit; the status is read-only.
+    "mask.refit",
+    "mask.status",
+    // A 3D capture only adds and wires a card; the card runs through run.start.
+    "mesh.capture",
+    // A page range is an ordinary, undoable parameter edit.
+    "document.use_pages",
+    // Project-owned media only; bounded extractions publish one undoable changeset, no dialog.
+    "document.extract_page",
+    "document.extract_text",
+    // Layers only change the node's stored layers; nothing runs.
+    "layers.list",
+    "node.layers_set",
+    "layers.add",
+    "layers.update",
+    "layers.remove",
+    "layers.reorder",
+    "layers.align",
+    "layers.font_add",
+    "layers.font_remove",
+    // Decks only change the card's stored slides; nothing runs.
+    "deck.create",
+    "deck.list",
+    "deck.set",
+    "deck.slide_add",
+    "deck.slide_update",
+    "deck.slide_remove",
+    "deck.slide_move",
+    "deck.layer_update",
+    // Clips only change the node's stored clips; the render runs (and is quoted) through run.start.
+    "timeline.list",
+    "timeline.interchange",
+    "node.timeline_set",
+    "timeline.update",
+    "timeline.move",
+    "timeline.split",
+    "timeline.remove",
+    "timeline.track_add",
+    "timeline.track_remove",
+    "timeline.caption_add",
+    "timeline.caption_update",
+    "timeline.caption_remove",
+    // Elements only add and wire cards; the sheet card runs (and is quoted) through run.start.
+    "element.create",
+    "element.sheet",
+    "element.list",
+    "element.place",
+    "element.update",
+    "library.elements",
+    // Styles only list, add and wire cards; styled generation runs (and is quoted) through run.start.
+    "style.list",
+    "style.use",
+    "style.card",
+    "plugins.list",
+    // What a package asks for: read-only, so an agent can explain a grant before a person gives it.
+    "plugins.rights",
+    // Retained result reads/acknowledgements never read files or change installed packages.
+    "plugins.result",
+    "plugins.forget",
+    // Skills are guidance text: reading runs nothing, and edits are versioned (a project's undoable).
+    "skill.list",
+    "skill.read",
+    "skill.create",
+    "skill.edit",
+    "skill.delete",
+    "skill.export",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
-/// pass through an agent's context, and `keys.remove` deletes a key with no undo. File commands
-/// remain human-only until MCP/control enforce allowed read/write roots (#116); native path
-/// canonicalization is not filesystem authorization. Engine/native callers retain their existing
-/// file access. `run.record` writes the results of a run the host executed: an agent must not
-/// fabricate them.
-pub const HUMAN_ONLY: &[&str] = &["keys.set", "keys.remove", "file.open", "file.save", "file.save_as", "run.record"];
+/// pass through an agent's context, and `keys.remove` deletes a key with no undo. (The file
+/// commands are agent commands, admitted only inside the folders the person allowed: see
+/// [`crate::roots`].) `run.record` writes the results of a run the host executed: an agent must not
+/// fabricate them. `usage.reconcile_ownership` records a person's judgement about historical
+/// charges against their own provider records (#325), and `usage.resolve_charge` what those records
+/// show a reconciled charge cost (#332). `plugins.*` changes read package files and
+/// decide what extends the app (#172): a person's decision, like installing software.
+pub const HUMAN_ONLY: &[&str] = &[
+    // The library is shared by every project and outside undo, so only a person changes it.
+    "library.add",
+    "library.remove",
+    "element.save",
+    "library.remove_element",
+    "library.rename_element",
+    "library.share_element",
+    // Writing or reading a bundle file on this machine is the person's call (#765).
+    "library.export_element",
+    "library.import_element",
+    "shader.save",
+    "library.remove_shader",
+    // What untrusted skill text comes in, and which skills are offered to the agent, is the
+    // person's call (#168).
+    "skill.import",
+    "skill.enable",
+    "plugins.import",
+    "plugins.update",
+    "plugins.reload",
+    "plugins.enable",
+    "plugins.disable",
+    "plugins.rollback",
+    "plugins.uninstall",
+    // Letting a package run, or stopping it, is the person's yes or no (#173).
+    "plugins.grant",
+    "plugins.revoke",
+    "plugins.prune",
+    // Replacing the app and restarting it stays the person's choice (#540).
+    "app.install_update",
+    "app.restart_to_update",
+    "keys.set",
+    "keys.remove",
+    // Human-only like keys.set/remove (#237): in the app it answers {pending: id} and no command
+    // reads the verdict back, and each test sends the person's key out and holds the one keychain
+    // thread for up to 25 s, so an agent could stall the person's own key operations.
+    "keys.test",
+    // Redirecting provider requests and their credentials is the person's choice (#721).
+    "providers.settings_set",
+    // Writing files on this machine is the person's call, as saving the project is (#557).
+    "history.export",
+    "timeline.export_interchange",
+    // What lands on the person's clipboard is what they paste next: theirs to put there (#831).
+    "history.copy",
+    "deck.export",
+    "run.record",
+    "usage.reconcile_ownership",
+    "usage.resolve_charge",
+    // Letting a paid result go can't be undone (#369).
+    "run.held_discard",
+    // A share link lets someone into the project: whom is the person's call (#121).
+    "share.link_create",
+    "share.link_update",
+    // Sharing a private canvas gives it to everyone in the room, and no undo takes it back (#121).
+    "canvas.set_private",
+    // Sharing the project, or opening someone else's, is the person's call (#698).
+    "share.start",
+    "share.join",
+    // Compose opens an empty draft in the person's window and takes their keyboard focus for
+    // them to type into; an agent writes a discussion with `comment.create` instead (#360).
+    "comment.compose",
+];
 
 const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
@@ -106,7 +361,7 @@ pub struct McpServer {
 
 enum Backend {
     /// A headless session of its own.
-    Local(Box<Session>),
+    Local(Box<dyn crate::commands::CommandHost>),
     /// The running app's session, through its control channel (`nodecraft --control`).
     #[cfg(not(target_arch = "wasm32"))]
     Bridge(crate::control::Client),
@@ -151,7 +406,7 @@ fn object_schema(properties: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
 }
 
-fn tools() -> Value {
+pub(crate) fn tools() -> Value {
     json!([
         {
             "name": "command_list",
@@ -243,11 +498,21 @@ pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut 
             let mut entry = json!({"id": s.id, "label": s.label, "params_schema": schema, "params_doc": s.params_doc});
             // Whether a command can run depends on its params; only parameterless ones are
             // checked here, so `ready` always means the same thing.
-            if !takes_params {
-                let enabled = host.enabled(s.id, &json!({}));
+            if LIVE_ONLY.contains(&s.id) && !host.live() {
+                entry["ready"] = json!(false);
+                entry["not_ready_because"] = json!(NEEDS_LIVE_APP);
+            } else if !takes_params {
+                let enabled = crate::roots::admit(host, s.id, json!({})).and_then(|params| host.enabled(s.id, &params));
                 entry["ready"] = json!(enabled.is_ok());
                 if let Err(e) = enabled {
-                    entry["not_ready_because"] = json!(e.message);
+                    // These readers need a real host log. Never substitute an empty log for
+                    // monetary evidence; explain how to connect to the app that owns it.
+                    entry["not_ready_because"] =
+                        if USAGE_READ_COMMANDS.contains(&s.id) && e.kind == ErrorKind::Unsupported && e.message == "required host capability is unavailable" {
+                            json!(NEEDS_USAGE_LOG)
+                        } else {
+                            json!(e.message)
+                        };
                 }
             }
             entry
@@ -256,7 +521,14 @@ pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut 
     Ok(json!({"commands": commands}))
 }
 
-pub(crate) fn command_run<H: crate::commands::CommandHost + ?Sized>(host: &mut H, mut args: Map<String, Value>) -> Result<Value, Error> {
+pub(crate) fn command_run<H: crate::commands::CommandHost + ?Sized>(host: &mut H, args: Map<String, Value>) -> Result<Value, Error> {
+    let (id, params) = admitted(host, args)?;
+    let result = host.dispatch(&id, &params)?;
+    Ok(json!({"result": result, "revision": host.session().revision()}))
+}
+
+/// The command and params `command_run` was asked for, once automation may run that command.
+pub(crate) fn admitted<H: crate::commands::CommandHost + ?Sized>(host: &H, mut args: Map<String, Value>) -> Result<(String, Value), Error> {
     let id = match args.remove("id") {
         Some(Value::String(id)) => id,
         _ => return Err(invalid("command_run needs the command `id`")),
@@ -266,9 +538,22 @@ pub(crate) fn command_run<H: crate::commands::CommandHost + ?Sized>(host: &mut H
         let why = if HUMAN_ONLY.contains(&id.as_str()) { "can only be run by a person in the app" } else { "isn't available to automation yet" };
         return Err(Error::new(ErrorKind::Unsupported, format!("{id} {why}")));
     }
+    if LIVE_ONLY.contains(&id.as_str()) && !host.live() {
+        return Err(Error::new(ErrorKind::Unsupported, format!("{id} {NEEDS_LIVE_APP}")));
+    }
     let params = args.remove("params").unwrap_or(Value::Object(Map::new()));
-    let result = host.dispatch(&id, &params)?;
-    Ok(json!({"result": result, "revision": host.session().revision()}))
+    let params = crate::roots::admit(host, &id, params)?;
+    Ok((id, params))
+}
+
+/// `count` fresh version-4 UUIDs from `new_id`.
+pub(crate) fn ids_new(new_id: &mut dyn FnMut() -> [u8; 16], args: &Map<String, Value>) -> Result<Value, Error> {
+    let count = match args.get("count") {
+        None => 1,
+        Some(v) => v.as_u64().filter(|n| (1..=MAX_NEW_IDS as u64).contains(n)).ok_or_else(|| invalid(format!("`count` must be 1–{MAX_NEW_IDS}")))?,
+    };
+    let ids: Vec<String> = (0..count).map(|_| NodeId::from_bytes(uuid_v4(new_id())).to_string()).collect();
+    Ok(json!({"ids": ids}))
 }
 
 pub(crate) fn canvas_inspect(session: &Session, args: &Map<String, Value>) -> Result<Value, Error> {
@@ -359,7 +644,12 @@ pub(crate) fn canvas_inspect(session: &Session, args: &Map<String, Value>) -> Re
 
 impl McpServer {
     pub fn new(session: Session, new_id: IdSource) -> Self {
-        Self { backend: Backend::Local(Box::new(session)), new_id }
+        Self::with_host(session, new_id)
+    }
+
+    /// A local frontend that supplies scoped capabilities while retaining engine dispatch.
+    pub fn with_host(host: impl crate::commands::CommandHost + 'static, new_id: IdSource) -> Self {
+        Self { backend: Backend::Local(Box::new(host)), new_id }
     }
 
     /// A server that works on the running app (`nodecraft --control`) through `client`: the
@@ -372,7 +662,7 @@ impl McpServer {
     /// The local session (`None` when bridged to the app).
     pub fn session(&self) -> Option<&Session> {
         match &self.backend {
-            Backend::Local(session) => Some(session),
+            Backend::Local(host) => Some(host.session()),
             #[cfg(not(target_arch = "wasm32"))]
             Backend::Bridge(_) => None,
         }
@@ -454,10 +744,10 @@ impl McpServer {
         };
         let unknown = || Err((INVALID_PARAMS, format!("unknown tool {}", name.chars().take(64).collect::<String>())));
         let result = match (&mut self.backend, name.as_str()) {
-            (_, "ids_new") => self.ids_new(&args),
+            (_, "ids_new") => ids_new(&mut self.new_id, &args),
             (Backend::Local(session), "command_list") => command_list(&mut **session, &args),
             (Backend::Local(session), "command_run") => command_run(&mut **session, args),
-            (Backend::Local(session), "canvas_inspect") => canvas_inspect(session, &args),
+            (Backend::Local(host), "canvas_inspect") => canvas_inspect(host.session(), &args),
             #[cfg(not(target_arch = "wasm32"))]
             (Backend::Bridge(client), tool @ ("command_list" | "command_run" | "canvas_inspect")) => {
                 let method = match tool {
@@ -504,15 +794,6 @@ impl McpServer {
             }));
         }
         list
-    }
-
-    fn ids_new(&mut self, args: &Map<String, Value>) -> Result<Value, Error> {
-        let count = match args.get("count") {
-            None => 1,
-            Some(v) => v.as_u64().filter(|n| (1..=MAX_NEW_IDS as u64).contains(n)).ok_or_else(|| invalid(format!("`count` must be 1–{MAX_NEW_IDS}")))?,
-        };
-        let ids: Vec<String> = (0..count).map(|_| NodeId::from_bytes(uuid_v4((self.new_id)())).to_string()).collect();
-        Ok(json!({"ids": ids}))
     }
 }
 

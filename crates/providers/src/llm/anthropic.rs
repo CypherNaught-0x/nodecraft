@@ -27,6 +27,7 @@ pub(super) fn body(req: &ChatRequest, stream: bool) -> Value {
     let block = |p: &Part| match p {
         Part::Text(t) => json!({ "type": "text", "text": t }),
         Part::Image { mime, bytes } => json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": base64(bytes) } }),
+        Part::Document { mime, bytes } => json!({ "type": "document", "source": { "type": "base64", "media_type": mime, "data": base64(bytes) } }),
         // Claude's own calls always carry an object; arguments from another server that weren't
         // JSON can't be sent as tool input.
         Part::ToolUse { id, name, input } => {
@@ -140,6 +141,7 @@ pub(super) fn parse(body: &[u8]) -> Result<ChatResponse, ProviderError> {
         input_tokens: usage.and_then(|u| u.get("input_tokens")).and_then(Value::as_u64),
         output_tokens: usage.and_then(|u| u.get("output_tokens")).and_then(Value::as_u64),
         cost: None,
+        billable_units: None,
     };
     Ok(ChatResponse::new(parts, stop, usage))
 }

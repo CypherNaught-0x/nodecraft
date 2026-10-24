@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub type ParamValues = BTreeMap<String, Value>;
-const MAX_PARAMS: usize = 256;
-const MAX_TEXT: usize = 1024 * 1024;
+pub(crate) const MAX_PARAMS: usize = 256;
+pub(crate) const MAX_TEXT: usize = 1024 * 1024;
 const MAX_CHOICES: usize = 16_384;
 const MAX_OPTION_TEXT: usize = 4096;
 #[cfg(test)]
@@ -103,6 +103,9 @@ pub struct ResolvedParams {
     /// Includes hidden overrides for editor persistence. Provider adapters use visible_values().
     pub values: ParamValues,
     pub visible: BTreeSet<String>,
+    /// Visible parameters left out of a result's identity: their contract declares
+    /// `identity: false`, so editing them keeps results fresh. Always a subset of `visible`.
+    pub unhashed: BTreeSet<String>,
 }
 
 impl ResolvedParams {
@@ -113,12 +116,17 @@ impl ResolvedParams {
     pub fn into_visible_values(self) -> ParamValues {
         self.values.into_iter().filter(|(name, _)| self.visible.contains(name)).collect()
     }
+    /// The visible values a result's identity hashes: [`ResolvedParams::visible_values`] less
+    /// [`ResolvedParams::unhashed`].
+    pub fn identity_values(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.visible_values().filter(|(name, _)| !self.unhashed.contains(*name))
+    }
 }
 
-fn invalid(message: &'static str) -> Error {
+pub(crate) fn invalid(message: &'static str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
 }
-fn name(value: &str) -> bool {
+pub(crate) fn name(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
@@ -166,7 +174,7 @@ impl ParamControl {
     }
 
     // The schema has already validated the control; do not scan large option lists again.
-    fn validate_value_checked(&self, value: &Value) -> Result<(), Error> {
+    pub(crate) fn validate_value_checked(&self, value: &Value) -> Result<(), Error> {
         let valid = match (self, value) {
             (Self::Text { max_bytes, .. }, Value::Text(text)) => text.len() <= *max_bytes,
             (Self::Choice { options }, Value::Text(text)) => options.iter().any(|option| {
@@ -195,14 +203,7 @@ impl ParamControl {
                 !text.is_empty() && text.len() <= 512 && !text.chars().any(char::is_whitespace) && !text.chars().any(char::is_control)
             }
             (Self::Seed { max }, Value::Unsigned(number)) => max.is_none_or(|max| *number <= max),
-            (Self::Asset { modality }, Value::Media(asset)) => match modality {
-                Modality::Text => asset.mime.essence().starts_with("text/"),
-                Modality::Image => asset.mime.essence().starts_with("image/"),
-                Modality::Video => asset.mime.essence().starts_with("video/"),
-                Modality::Audio => asset.mime.essence().starts_with("audio/"),
-                Modality::Mesh => asset.mime.essence().starts_with("model/"),
-                Modality::Document => asset.mime.essence() == "application/pdf",
-            },
+            (Self::Asset { modality }, Value::Media(asset)) => modality.accepts_mime(asset.mime.essence()),
             _ => false,
         };
         if valid { Ok(()) } else { Err(invalid("parameter value does not match its control type or bounds")) }
@@ -211,14 +212,32 @@ impl ParamControl {
 
 impl ParamSchema {
     pub fn validate(&self) -> Result<(), Error> {
+        Self::validate_specs(self.params.iter())
+    }
+
+    /// Validate a disjoint schema layout without cloning any controls/defaults. Pointer
+    /// scratch is bounded before allocation; ownership groups share the original limits.
+    pub fn validate_parts(parts: &[&Self]) -> Result<(), Error> {
+        if parts.len() > MAX_PARAMS {
+            return Err(invalid("schema exceeds owner limit"));
+        }
+        let count = parts.iter().try_fold(0usize, |n, part| n.checked_add(part.params.len()).ok_or_else(|| invalid("schema exceeds parameter limit")))?;
+        if count > MAX_PARAMS {
+            return Err(invalid("schema exceeds parameter limit"));
+        }
+        let specs: Vec<_> = parts.iter().flat_map(|part| part.params.iter()).collect();
+        Self::validate_specs(specs.into_iter())
+    }
+
+    fn validate_specs<'a>(specs: impl ExactSizeIterator<Item = &'a ParamSpec>) -> Result<(), Error> {
         #[cfg(test)]
         SCHEMA_VALIDATIONS.with(|count| count.set(count.get() + 1));
-        if self.params.len() > MAX_PARAMS {
+        if specs.len() > MAX_PARAMS {
             return Err(invalid("schema exceeds parameter limit"));
         }
         let mut seen: BTreeMap<&str, &ParamSpec> = BTreeMap::new();
         let mut bytes = 0_usize;
-        for spec in &self.params {
+        for spec in specs {
             if !name(&spec.name)
                 || spec.label.trim().is_empty()
                 || spec.label.len() > 256
@@ -255,8 +274,20 @@ impl ParamSchema {
     /// `ready` is true, so an unconfigured source can still be placed on the canvas.
     pub fn resolve(&self, supplied: &ParamValues, ready: bool) -> Result<ResolvedParams, Error> {
         self.validate()?;
-        let borrowed = self.resolve_checked(supplied, ready, None)?;
-        Ok(ResolvedParams { values: borrowed.values.into_iter().map(|(name, value)| (name.to_owned(), value.clone())).collect(), visible: borrowed.visible })
+        let borrowed = self.resolve_checked(supplied, ready, None, false)?;
+        Ok(ResolvedParams {
+            values: borrowed.values.into_iter().map(|(name, value)| (name.to_owned(), value.clone())).collect(),
+            visible: borrowed.visible,
+            unhashed: BTreeSet::new(),
+        })
+    }
+
+    /// Borrow effective values without cloning defaults. With `selected`, unrelated node
+    /// parameters are omitted; job maps must pass false to reject every unknown key.
+    /// Callers bounding allocation must admit schema validation/resolution scratch first.
+    pub fn resolve_view<'a>(&'a self, supplied: &'a ParamValues, ready: bool, selected: bool) -> Result<BorrowedResolvedParams<'a>, Error> {
+        self.validate()?;
+        self.resolve_checked(supplied, ready, None, selected)
     }
 
     /// Validate immutable schema data once before checking many instances. The proof borrows
@@ -303,7 +334,7 @@ impl ValidatedParamSchema<'_> {
     /// Uses the same value checks and effective-byte budget as `ParamSchema::resolve`, without
     /// rescanning choice controls or copying large defaults for each instance.
     pub fn resolve_borrowed<'a>(&'a self, supplied: &'a ParamValues, ready: bool) -> Result<BorrowedResolvedParams<'a>, Error> {
-        self.schema.resolve_checked(supplied, ready, Some(&self.choices))
+        self.schema.resolve_checked(supplied, ready, Some(&self.choices), false)
     }
 }
 impl ParamSchema {
@@ -314,6 +345,7 @@ impl ParamSchema {
         supplied: &'a ParamValues,
         ready: bool,
         choices: Option<&BTreeMap<&str, BTreeSet<&str>>>,
+        selected: bool,
     ) -> Result<BorrowedResolvedParams<'a>, Error> {
         let schema = self;
         if supplied.len() > MAX_PARAMS {
@@ -321,6 +353,9 @@ impl ParamSchema {
         }
         let mut bytes = 0_usize;
         for (key, value) in supplied {
+            if selected && !schema.params.iter().any(|spec| spec.name == *key) {
+                continue;
+            }
             let spec = schema.params.iter().find(|spec| spec.name == *key).ok_or_else(|| {
                 if name(key) {
                     Error::new(ErrorKind::InvalidInput, format!("unknown parameter: {key}; migrate this node to the current schema"))
@@ -345,7 +380,11 @@ impl ParamSchema {
         if bytes > MAX_TEXT {
             return Err(invalid("resolved parameters exceed text limit"));
         }
-        let mut values: BTreeMap<&str, &Value> = supplied.iter().map(|(name, value)| (name.as_str(), value)).collect();
+        let mut values: BTreeMap<&str, &Value> = supplied
+            .iter()
+            .filter(|(name, _)| !selected || schema.params.iter().any(|spec| spec.name == **name))
+            .map(|(name, value)| (name.as_str(), value))
+            .collect();
         let mut visible = BTreeSet::new();
         for spec in &schema.params {
             if !values.contains_key(spec.name.as_str())
@@ -368,7 +407,7 @@ impl ParamSchema {
     }
 }
 
-fn value_text_bytes(value: &Value) -> usize {
+pub(crate) fn value_text_bytes(value: &Value) -> usize {
     match value {
         Value::Text(text) => text.len(),
         Value::Media(asset) => asset.mime.as_str().len(),

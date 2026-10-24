@@ -12,9 +12,19 @@ workspace = true
 
 [features]
 default = []
-video = ["dep:serde_json"]
+video = []
+# PDF pages and text (#113), through craft-pdf.
+pdf = ["dep:craft-pdf", "dep:kurbo"]
+# Small PDFs built in code, for other crates' tests.
+fixtures = ["pdf"]
 
 [dependencies]
-serde_json = { workspace = true, optional = true }
+# glTF JSON (#111), and the video service's ffprobe output.
+serde = { workspace = true }
+serde_json = { workspace = true }
 blake3 = { workspace = true }
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
+# `write-pdf` copies a page into a new PDF (#590).
+craft-pdf = { workspace = true, optional = true, features = ["write-pdf"] }
+# Geometry types in the PDF reader's device interface (the version hayro-interpret uses).
+kurbo = { version = "0.13", optional = true }

@@ -1,0 +1,398 @@
+//! Fetching option lists from a ComfyUI server (#529): `options.refresh` asks the host, the host
+//! fetches `/object_info` off the UI thread, and `finish` installs what came back, so the
+//! built-in SDXL row's checkpoint is checked against what the server has.
+use futures::executor::block_on;
+use nodecraft_engine::Session;
+use nodecraft_engine::generation_catalog::default_registry;
+use nodecraft_engine::option_fetch::{self, OPTION_SERVICE};
+use nodecraft_engine::provider_setup::HostEnv;
+use nodecraft_engine::secrets::MemoryStore;
+use nodecraft_engine::secrets::{Account, SecretStore};
+use nodecraft_engine::settings::ProviderSettings;
+use nodecraft_graph::{Canvas, Change, Project};
+use nodecraft_nodes::generation::{KIND, VIDEO_KIND};
+use nodecraft_providers::secrets::Secret;
+use nodecraft_providers::{BoxFuture, ErrorKind as WireKind, Http, HttpRequest, HttpResponse, ProviderError};
+use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ProjectId, Value};
+use serde_json::json;
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+
+const C: CanvasId = CanvasId::from_bytes([51; 16]);
+const N: NodeId = NodeId::from_bytes([52; 16]);
+const RESTYLE: NodeId = NodeId::from_bytes([55; 16]);
+
+/// `/object_info`'s cap, as the ComfyUI client sets it (`nodecraft_comfy::MAX_OBJECT_INFO_BYTES`).
+const OBJECT_INFO_CAP: usize = 128 * 1024 * 1024;
+
+/// Answers every request with `status` and `body`, or fails it as offline; keeps the urls and
+/// response caps asked for. A body over `cap` (or the request's own cap) is refused as too large,
+/// the way the real client refuses one.
+struct Server {
+    body: Option<Vec<u8>>,
+    status: u16,
+    cap: usize,
+    asked: Mutex<Vec<(String, usize)>>,
+}
+
+impl Server {
+    fn offline() -> Arc<Self> {
+        Arc::new(Server { body: None, status: 200, cap: usize::MAX, asked: Mutex::default() })
+    }
+
+    fn answering(status: u16, body: &[u8]) -> Arc<Self> {
+        Arc::new(Server { body: Some(body.to_vec()), status, cap: usize::MAX, asked: Mutex::default() })
+    }
+
+    fn urls(&self) -> Vec<String> {
+        self.asked.lock().unwrap().iter().map(|(url, _)| url.clone()).collect()
+    }
+}
+
+impl Http for Server {
+    fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        self.asked.lock().unwrap().push((request.url.clone(), request.max_response_bytes));
+        let answer = match &self.body {
+            Some(body) if body.len() > request.max_response_bytes.min(self.cap) => Err(ProviderError::new(WireKind::Malformed, "the response is too large")),
+            Some(body) => Ok(HttpResponse { status: self.status, headers: vec![("content-type".into(), "application/json".into())], body: body.clone() }),
+            None => Err(ProviderError::new(WireKind::Network, "connection refused")),
+        };
+        Box::pin(async move { answer })
+    }
+}
+
+fn server(checkpoints: &[&str]) -> Arc<Server> {
+    let info = json!({
+        "CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [checkpoints]}}, "output": ["MODEL", "CLIP", "VAE"], "category": "loaders"},
+        "KSampler": {"input": {"required": {"sampler_name": [["euler", "dpmpp_2m"]], "scheduler": [["normal", "karras"]]}}, "output": ["LATENT"]},
+    });
+    Server::answering(200, &serde_json::to_vec(&info).unwrap())
+}
+
+fn settings() -> ProviderSettings {
+    ProviderSettings::with_comfyui("http://127.0.0.1:8188", "fixture-salt")
+}
+
+fn fetch(http: Arc<Server>, settings: &ProviderSettings, sources: &[String]) -> Result<option_fetch::Fetched, Error> {
+    let keys = MemoryStore::default();
+    let env = HostEnv { keys: &keys, http, settings, now_ms: Arc::new(|| 0), progress: None };
+    block_on(option_fetch::fetch(&env, sources))
+}
+
+/// A session with an SDXL card, a Genjutsu restyle card and an options service that records what it was asked.
+fn session() -> (Session, Rc<RefCell<Vec<serde_json::Value>>>) {
+    let mut project = Project::new(ProjectId::from_bytes([53; 16]), "Option fetch").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    let (kinds, _) = default_registry().unwrap();
+    let values = [("model".into(), Value::Text("comfyui.sdxl".into())), ("prompt".into(), Value::Text("A pier".into()))].into();
+    let node = kinds.get(KIND).unwrap().instantiate_instance(N, Default::default(), &values).unwrap();
+    Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+    let values = [("model".into(), Value::Text("higgsfield.genjutsu-restyle".into()))].into();
+    let node = kinds.get(VIDEO_KIND).unwrap().instantiate_instance(RESTYLE, Default::default(), &values).unwrap();
+    Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+    let mut session = Session::new(project).unwrap();
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let log = asked.clone();
+    session
+        .register_host_service(OPTION_SERVICE, move |request| {
+            log.borrow_mut().push(request.clone());
+            Ok(json!({"pending": 1}))
+        })
+        .unwrap();
+    (session, asked)
+}
+
+fn checkpoint(session: &mut Session, value: &str) -> Result<serde_json::Value, Error> {
+    session.dispatch("node.param_set", &json!({"canvas": C, "id": N, "name": "checkpoint", "value": {"type": "text", "value": value}}))
+}
+
+fn refresh(session: &mut Session, asked: &RefCell<Vec<serde_json::Value>>) -> Vec<String> {
+    assert_eq!(session.dispatch("options.refresh", &json!({})).unwrap(), json!({"pending": 1}));
+    let request = asked.borrow_mut().pop().unwrap();
+    serde_json::from_value(request["sources"].clone()).unwrap()
+}
+
+#[test]
+fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
+    let (mut session, asked) = session();
+    assert!(session.dispatch("options.status", &json!({})).unwrap()["last"].is_null());
+    // Before a fetch any checkpoint is accepted: the list is unknown, not empty.
+    checkpoint(&mut session, "anything.safetensors").unwrap();
+    let sources = refresh(&mut session, &asked);
+    assert_eq!(sources, ["comfyui.checkpoints", "elevenlabs.voices", "higgsfield.restyle_presets", "higgsfield.soul_ids"]);
+    let http = server(&["sdxl.safetensors", "juggernaut.safetensors", "", "sdxl.safetensors"]);
+    let fetched = fetch(http.clone(), &settings(), &sources);
+    // Higgsfield and ElevenLabs have no key here: they aren't asked, and the ComfyUI lists still come.
+    assert_eq!(http.urls(), ["http://127.0.0.1:8188/object_info"]);
+    // The reply's size is capped explicitly, not by the client's default.
+    assert_eq!(http.asked.lock().unwrap()[0].1, OBJECT_INFO_CAP);
+    let report = option_fetch::finish(&mut session, 1, fetched);
+    assert_eq!(report.error, None);
+    // Both ComfyUI cards choose a checkpoint from the same list.
+    let owners: Vec<&str> = report.installed.iter().map(|i| i.owner.as_str()).collect();
+    assert_eq!(owners, ["comfyui.flux-dev", "comfyui.sdxl"], "{report:?}");
+    // Higgsfield and ElevenLabs aren't set up: their lists are unavailable, not refused.
+    assert!(report.refused.is_empty(), "{report:?}");
+    let mut unavailable: Vec<&str> = report.unavailable.iter().filter(|r| r.reason.contains("key")).map(|r| r.source.as_str()).collect();
+    // Each of the four ElevenLabs voice models reports the voices it can't list.
+    assert_eq!(unavailable.iter().filter(|s| **s == "elevenlabs.voices").count(), 4, "{report:?}");
+    unavailable.dedup();
+    assert_eq!(unavailable, ["elevenlabs.voices", "higgsfield.restyle_presets", "higgsfield.soul_ids"], "{report:?}");
+    assert!(report.installed.iter().all(|i| (i.values, i.skipped) == (2, 2)), "{report:?}");
+    let listed = session.dispatch("node.options", &json!({"canvas": C, "id": N, "param": "checkpoint"})).unwrap();
+    assert_eq!(listed["known"], true);
+    assert_eq!(
+        listed["options"],
+        json!([{"value": "sdxl.safetensors", "label": "sdxl.safetensors"}, {"value": "juggernaut.safetensors", "label": "juggernaut.safetensors"}])
+    );
+    assert!(checkpoint(&mut session, "anything.safetensors").is_err(), "the server doesn't have it");
+    // A stale value saved before the fetch is reported, and the rest of the card stays editable.
+    checkpoint(&mut session, "juggernaut.safetensors").unwrap();
+    let report = option_fetch::finish(&mut session, 2, fetch(server(&["sdxl.safetensors"]), &settings(), &sources));
+    assert_eq!(report.installed.len(), 2);
+    let described = session.dispatch("node.describe", &json!({"canvas": C, "id": N})).unwrap();
+    let issues = described["resolution"]["issues"].as_array().unwrap();
+    assert!(issues.iter().any(|issue| issue["code"] == "not_an_option" && issue["param"] == "checkpoint"), "{issues:?}");
+    session.dispatch("node.param_set", &json!({"canvas": C, "id": N, "name": "prompt", "value": {"type": "text", "value": "A harbour"}})).unwrap();
+    checkpoint(&mut session, "sdxl.safetensors").unwrap();
+    let status = session.dispatch("options.status", &json!({})).unwrap();
+    assert_eq!(status["last"]["id"], 2);
+    assert_eq!(status["last"]["installed"][0]["source"], "comfyui.checkpoints");
+}
+
+#[test]
+fn a_failed_or_refused_fetch_keeps_the_list_installed_before() {
+    let (mut session, asked) = session();
+    let sources = refresh(&mut session, &asked);
+    option_fetch::finish(&mut session, 1, fetch(server(&["kept.safetensors"]), &settings(), &sources));
+    // The server goes away: the error says what happened, the list stays.
+    // The server goes away, refuses the request, or sends a reply too large to read: each error
+    // says what happened and is the server's, not an internal one, and the list stays.
+    let too_large = Server { body: Some(vec![b' '; 64]), status: 200, cap: 32, asked: Mutex::default() };
+    let failing = [
+        (Server::offline(), ErrorKind::Network),
+        (Server::answering(404, b"Not Found"), ErrorKind::NotFound),
+        (Server::answering(500, b"Internal Server Error"), ErrorKind::Network),
+        (Server::answering(401, b"Unauthorized"), ErrorKind::Authentication),
+        (Arc::new(too_large), ErrorKind::InvalidInput),
+    ];
+    for (id, (http, kind)) in (2..).zip(failing) {
+        let error = fetch(http, &settings(), &sources).unwrap_err();
+        assert_eq!(error.kind, kind, "{}", error.message);
+        assert!(error.message.contains("ComfyUI"), "{}", error.message);
+        let report = option_fetch::finish(&mut session, id, Err(error));
+        assert!(report.error.is_some() && report.installed.is_empty());
+        checkpoint(&mut session, "kept.safetensors").unwrap();
+        assert!(checkpoint(&mut session, "other.safetensors").is_err());
+    }
+    // A list past the limit is refused whole, not truncated.
+    let many: Vec<String> = (0..=nodecraft_types::MAX_OPTIONS).map(|i| format!("{i}.safetensors")).collect();
+    let many: Vec<&str> = many.iter().map(String::as_str).collect();
+    let report = option_fetch::finish(&mut session, 7, fetch(server(&many), &settings(), &sources));
+    assert!(report.installed.is_empty());
+    assert!(report.refused[0].reason.contains("more than"), "{:?}", report.refused);
+    checkpoint(&mut session, "kept.safetensors").unwrap();
+    assert_eq!(session.dispatch("options.status", &json!({})).unwrap()["last"]["id"], 7);
+}
+
+#[test]
+fn without_a_server_or_a_fetching_host_the_error_says_what_to_do() {
+    let error = fetch(server(&[]), &ProviderSettings::default(), &["comfyui.checkpoints".into()]).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains("[[providers.comfyui]]"), "{}", error.message);
+    // A host that registers no fetch service (the CLI) refuses before anything is asked.
+    let mut project = Project::new(ProjectId::from_bytes([54; 16]), "No host").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    let mut session = Session::new(project).unwrap();
+    let error = session.dispatch("options.refresh", &json!({})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+    assert!(error.message.contains("desktop or browser app"), "{}", error.message);
+    assert!(session.dispatch("options.refresh", &json!({"extra": 1})).is_err());
+}
+
+/// Answers Higgsfield's restyle preset list, and nothing else.
+struct Presets(Mutex<Vec<HttpRequest>>);
+
+impl Http for Presets {
+    fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        panic!("Higgsfield never follows redirects")
+    }
+    fn send_no_redirect(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        let answer = if request.url == "https://api.higgsfield.ai/models/higgsfield/genjutsu/restyle/v1.0/presets" {
+            let body = json!({"model": "higgsfield/genjutsu/restyle/v1.0", "items": [
+                {"id": "6F1E2D3C-4B5A-4968-8776-A5B4C3D2E1F0", "name": "Watercolour", "preview_url": "https://example.com/a.mp4"},
+                {"id": "not-a-uuid", "name": "Broken"},
+                {"id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "name": " Ink wash "},
+            ]});
+            Ok(HttpResponse { status: 200, headers: vec![("content-type".into(), "application/json".into())], body: serde_json::to_vec(&body).unwrap() })
+        } else {
+            Err(ProviderError::new(WireKind::Network, "connection refused"))
+        };
+        self.0.lock().unwrap().push(request);
+        Box::pin(async move { answer })
+    }
+}
+
+#[test]
+fn restyle_presets_come_from_higgsfield_with_their_names_as_labels_even_without_comfyui() {
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("higgsfield").unwrap(), &Secret::new("KEY_ID:KEY_SECRET").unwrap()).unwrap();
+    let http = Arc::new(Presets(Mutex::default()));
+    let settings = ProviderSettings::default();
+    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
+    let sources = ["comfyui.checkpoints".to_owned(), "higgsfield.restyle_presets".to_owned()];
+    let fetched = block_on(option_fetch::fetch(&env, &sources));
+    let asked = http.0.lock().unwrap();
+    assert_eq!(asked.len(), 1, "only Higgsfield is asked; ComfyUI isn't set up: {fetched:?}");
+    assert!(asked[0].body.is_empty());
+    drop(asked);
+    let (mut session, _) = session();
+    let report = option_fetch::finish(&mut session, 1, fetched);
+    assert_eq!(report.error, None);
+    let installed: Vec<_> = report.installed.iter().map(|i| (i.owner.as_str(), i.source.as_str(), i.values, i.skipped)).collect();
+    assert_eq!(installed, [("higgsfield.genjutsu-restyle", "higgsfield.restyle_presets", 2, 1)]);
+    // The ComfyUI list is unavailable with the reason, and what it had stays. The Soul IDs
+    // weren't asked for here.
+    let refused: Vec<(&str, &str)> =
+        report.refused.iter().filter(|r| r.source.starts_with("higgsfield.")).map(|r| (r.source.as_str(), r.reason.as_str())).collect();
+    assert_eq!(refused, [("higgsfield.soul_ids", "not part of this fetch; refresh again")], "{report:?}");
+    assert!(report.unavailable.iter().any(|r| r.source == "comfyui.checkpoints" && r.reason.contains("[[providers.comfyui]]")), "{report:?}");
+    // The restyle card offers the presets by name; the id is what it keeps and sends.
+    let listed = session.dispatch("node.options", &json!({"canvas": C, "id": RESTYLE, "param": "preset_id"})).unwrap();
+    assert_eq!(
+        listed["options"],
+        json!([{"value": "6f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0", "label": "Watercolour"}, {"value": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "label": "Ink wash"}])
+    );
+    let mut preset =
+        |value: &str| session.dispatch("node.param_set", &json!({"canvas": C, "id": RESTYLE, "name": "preset_id", "value": {"type": "text", "value": value}}));
+    assert!(preset("Watercolour").is_err(), "the name is a label, not a value");
+    preset("0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d").unwrap();
+}
+
+/// Higgsfield's host doesn't answer.
+struct Down;
+
+impl Http for Down {
+    fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        panic!("Higgsfield never follows redirects")
+    }
+    fn send_no_redirect(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        Box::pin(async { Err(ProviderError::new(WireKind::Network, "connection refused")) })
+    }
+}
+
+#[test]
+fn when_nothing_could_be_fetched_a_provider_that_failed_says_more_than_one_not_set_up() {
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("higgsfield").unwrap(), &Secret::new("KEY_ID:KEY_SECRET").unwrap()).unwrap();
+    let settings = ProviderSettings::default();
+    let env = HostEnv { keys: &keys, http: Arc::new(Down), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
+    let sources = ["comfyui.checkpoints".to_owned(), "higgsfield.restyle_presets".to_owned()];
+    let error = block_on(option_fetch::fetch(&env, &sources)).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Network, "{}", error.message);
+    assert!(error.message.contains("[[providers.comfyui]]") && error.message.contains("restyle presets"), "{}", error.message);
+}
+
+/// Answers Higgsfield's Soul ID list; the preset list fails.
+struct Souls(Mutex<Vec<HttpRequest>>);
+
+impl Http for Souls {
+    fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        panic!("Higgsfield never follows redirects")
+    }
+    fn send_no_redirect(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        let answer = if request.url == "https://api.higgsfield.ai/v1/custom-references/list?page=1&page_size=50" {
+            let body = json!({"items": [
+                {"id": "7C9E6679-7425-40DE-944B-E07FC1F90AE7", "name": "Mara", "model_version": "v2", "status": "completed"},
+                {"id": "11111111-2222-4333-8444-555555555555", "name": "Still training", "model_version": "v2", "status": "in_progress"},
+                {"id": "22222222-2222-4333-8444-555555555555", "name": "Soul 1", "model_version": "v1", "status": "completed"},
+                {"name": "Broken"},
+            ]});
+            Ok(HttpResponse { status: 200, headers: vec![], body: serde_json::to_vec(&body).unwrap() })
+        } else if request.url == "https://api.higgsfield.ai/v1/custom-references/list?page=2&page_size=50" {
+            Ok(HttpResponse { status: 200, headers: vec![], body: b"[]".to_vec() })
+        } else {
+            Err(ProviderError::new(WireKind::Network, "connection refused"))
+        };
+        self.0.lock().unwrap().push(request);
+        Box::pin(async move { answer })
+    }
+}
+
+#[test]
+fn soul_ids_are_listed_by_name_for_soul_2_even_when_the_presets_fail() {
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("higgsfield").unwrap(), &Secret::new("KEY_ID:KEY_SECRET").unwrap()).unwrap();
+    let http = Arc::new(Souls(Mutex::default()));
+    let settings = ProviderSettings::default();
+    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
+    let sources = ["higgsfield.restyle_presets".to_owned(), "higgsfield.soul_ids".to_owned()];
+    let fetched = block_on(option_fetch::fetch(&env, &sources));
+    // The presets, then Soul ID pages until an empty one.
+    assert_eq!(http.0.lock().unwrap().len(), 3);
+    let (mut session, _) = session();
+    let report = option_fetch::finish(&mut session, 1, fetched);
+    assert_eq!(report.error, None);
+    let installed: Vec<_> = report.installed.iter().map(|i| (i.owner.as_str(), i.source.as_str(), i.values, i.skipped)).collect();
+    // Only the ready SOUL 2 identity is listed; the unreadable entry is counted.
+    assert_eq!(installed, [("higgsfield.soul-2", "higgsfield.soul_ids", 1, 1)]);
+    assert!(report.refused.iter().any(|r| r.source == "higgsfield.restyle_presets" && r.reason.contains("restyle presets")), "{report:?}");
+    let lists = session.option_lists().unwrap();
+    let key = nodecraft_types::OptionKey { owner: "higgsfield.soul-2", source: "higgsfield.soul_ids", scope: None };
+    let choices: Vec<(&str, &str)> = lists.get(key).unwrap().iter().map(|c| (c.value.as_str(), c.label.as_str())).collect();
+    assert_eq!(choices, [("7c9e6679-7425-40de-944b-e07fc1f90ae7", "Mara")]);
+}
+
+/// Answers ElevenLabs's voice list in two pages.
+struct ElevenVoices(Mutex<Vec<HttpRequest>>);
+
+impl Http for ElevenVoices {
+    fn send(&self, _: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        panic!("ElevenLabs never follows redirects")
+    }
+    fn send_no_redirect(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        let first = "https://api.elevenlabs.io/v2/voices?page_size=100&include_total_count=false";
+        let body = if request.url == first {
+            json!({"voices": [{"voice_id": "EXAVITQu4vr4xnSDxMaL", "name": "Sarah"}, {"voice_id": "bad id", "name": "Broken"}], "has_more": true, "next_page_token": "p2"})
+        } else if request.url == format!("{first}&next_page_token=p2") {
+            json!({"voices": [{"voice_id": "MyClone42", "name": "My clone"}], "has_more": false})
+        } else {
+            json!({"detail": {"status": "not_found", "message": "unexpected"}})
+        };
+        self.0.lock().unwrap().push(request);
+        Box::pin(async move { Ok(HttpResponse { status: 200, headers: vec![], body: serde_json::to_vec(&body).unwrap() }) })
+    }
+}
+
+#[test]
+fn elevenlabs_voices_are_listed_by_name_for_every_voice_model() {
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("elevenlabs").unwrap(), &Secret::new("fixture-eleven-key").unwrap()).unwrap();
+    let http = Arc::new(ElevenVoices(Mutex::default()));
+    let settings = ProviderSettings::default();
+    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
+    let fetched = block_on(option_fetch::fetch(&env, &["elevenlabs.voices".to_owned()]));
+    assert_eq!(http.0.lock().unwrap().len(), 2);
+    let (mut session, _) = session();
+    let report = option_fetch::finish(&mut session, 1, fetched);
+    assert_eq!(report.error, None);
+    let mut installed: Vec<_> = report.installed.iter().map(|i| (i.owner.as_str(), i.values, i.skipped)).collect();
+    installed.sort_unstable();
+    assert_eq!(installed, [("elevenlabs.flash-v2-5", 2, 1), ("elevenlabs.multilingual-v2", 2, 1), ("elevenlabs.v3", 2, 1), ("elevenlabs.voice-changer", 2, 1)]);
+    let lists = session.option_lists().unwrap();
+    let key = nodecraft_types::OptionKey { owner: "elevenlabs.v3", source: "elevenlabs.voices", scope: None };
+    let choices: Vec<(&str, &str)> = lists.get(key).unwrap().iter().map(|c| (c.value.as_str(), c.label.as_str())).collect();
+    assert_eq!(choices, [("EXAVITQu4vr4xnSDxMaL", "Sarah"), ("MyClone42", "My clone")]);
+}
+
+#[test]
+fn without_an_elevenlabs_key_the_voices_are_unavailable_and_nothing_is_sent() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(ElevenVoices(Mutex::default()));
+    let settings = ProviderSettings::default();
+    let env = HostEnv { keys: &keys, http: http.clone(), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
+    let error = block_on(option_fetch::fetch(&env, &["elevenlabs.voices".to_owned()])).unwrap_err();
+    assert!(http.0.lock().unwrap().is_empty());
+    assert!(error.message.contains("ElevenLabs"), "{}", error.message);
+}

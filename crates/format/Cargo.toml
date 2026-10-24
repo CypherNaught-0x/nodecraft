@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-format"
 version.workspace = true
 edition.workspace = true
@@ -21,12 +22,28 @@ nodecraft-media.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
+# Direct bounded streaming ZIP integrity; reuse the already locked permissive implementation.
+crc32fast = "=1.5.2"
 zip.workspace = true
+chacha20poly1305.workspace = true
+argon2.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 craft-atomic.workspace = true
 craft-settings.workspace = true
+# Safe native File-handle mismatch diagnostic (MIT choice); never ownership authority.
+same-file = "=1.0.6"
 
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "native"
+path = "tests/native.rs"

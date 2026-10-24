@@ -1,0 +1,20 @@
+## 2026-10-20 · Each result records the settings its provider jobs were sent (#162)
+
+- **Per job, as sent.** `Generation.settings` holds one `JobSettings` per provider job, in job
+  order: provider, provider instance, the provider's model id and the parameters after catalog
+  admission canonicalised them, so it is what the provider actually received, plus the inputs
+  it was given by role (media by reference). The catalog version of the model is not recorded
+  yet: a model that changes behind the same id can't be told apart. A fanned result
+  (#92) tags each job with the index of its item. Local jobs (sources, actions) record nothing;
+  their inputs are already the result's input hash.
+- **Not identity.** Settings describe a result; staleness and caching still compare input hashes.
+  A cache copy keeps the settings of the result it copies, since that is how its outputs were
+  made.
+- **Never at the cost of a result.** A result whose settings would push it over the node byte
+  limit is recorded without them, as an over-budget input hash is recorded as unknown.
+- **Format.** The field is omitted when empty, so older files are unchanged, and version 1
+  refuses it like input hashes and item tags. An older build that reads a newer file drops
+  the field when it saves.
+- **Random seeds** are drawn after admission (admission requires a job's parameters to equal the
+  source's submission exactly) by the run, and recorded here with the job's other parameters;
+  see `2026-10-20-random-seeds.md`.

@@ -3,11 +3,17 @@
 //! Every action is a `keys.*` command dispatched through the app's session. In the app the
 //! `keys.store` service runs on a keychain thread (`engine::secrets::KeyWorker`), so commands
 //! answer `{pending: id}` and the outcome arrives later through `KeyResults`. The panel accepts
-//! both that and an immediate answer (tests, the browser build). Keys are never shown: only
-//! the masked tail the engine returns. A typed key is cleared from the field as soon as it is sent.
+//! both that and an immediate answer (tests, and the browser build, which keeps keys in the
+//! browser's storage for the site). Keys are never shown: only the masked tail the engine returns.
+//! A typed key is cleared from the field as soon as it is sent.
 //!
 //! Accounts are listed from settings (`[keys] accounts`) and never read at startup, since each
-//! keychain read can show a prompt; "Check" reads one on request.
+//! keychain read can show a prompt; "Check" reads one on request. The browser build also lists
+//! the accounts it finds in the site's storage at startup (names only; no key is read).
+//!
+//! "Test" (desktop only) asks the provider whether it accepts the stored key, with a request that
+//! costs nothing (`keys.test`, #237): the row says it works, can't be verified (and why), or the
+//! error, such as the provider rejecting it.
 
 use std::collections::BTreeMap;
 
@@ -23,8 +29,17 @@ use crate::theme::Tokens;
 /// says so and can be used again. A late answer is then ignored.
 pub const KEYCHAIN_TIMEOUT_S: f64 = 120.0;
 
+/// Where keys are kept, shown at the top of the panel.
+#[cfg(not(target_arch = "wasm32"))]
+pub const STORED_WHERE: &str = "Keys are kept in your system keychain, never in projects or settings.";
+/// The browser has no keychain (#118): say plainly who else can read the keys.
+#[cfg(target_arch = "wasm32")]
+pub const STORED_WHERE: &str = "Keys are kept in this browser's storage for this site only, never in projects or settings. \
+    Anyone who uses this browser profile can read them, so remove them when you finish on a shared computer.";
+
 /// Common providers, offered as quick picks.
-const PRESETS: &[&str] = &["openai", "anthropic", "openrouter", "fal", "replicate"];
+const PRESETS: &[&str] =
+    &["openai", "anthropic", "openrouter", "litellm", "fal", "replicate", "seedream", "tripo", "meshy", "higgsfield", "kling", "elevenlabs"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyStatus {
@@ -35,6 +50,12 @@ pub enum KeyStatus {
     /// A key is stored; its masked tail (`…abcd` or `…`).
     Stored(String),
     Missing,
+    /// A `keys.test` check is with the provider.
+    Testing,
+    /// The provider accepted the key; its masked tail.
+    Verified(String),
+    /// The key (its masked tail) can't be checked for free; why.
+    Unverifiable(String, String),
     Failed(String),
 }
 
@@ -43,6 +64,7 @@ enum Op {
     Set,
     Remove,
     Status,
+    Test,
 }
 
 /// A change to the remembered account list, for the host to save in settings.
@@ -121,13 +143,14 @@ impl KeysPanel {
             Op::Set => "keys.set",
             Op::Remove => "keys.remove",
             Op::Status => "keys.status",
+            Op::Test => "keys.test",
         };
         match session.dispatch(id, &params) {
             Ok(answer) => match answer.get("pending").and_then(Value::as_u64) {
                 Some(request) => {
                     self.notice = None;
                     self.pending.insert(request, (account.clone(), op, self.now));
-                    self.set_status(account, KeyStatus::Waiting);
+                    self.set_status(account, if op == Op::Test { KeyStatus::Testing } else { KeyStatus::Waiting });
                     None
                 }
                 None => {
@@ -164,6 +187,14 @@ impl KeysPanel {
             Op::Status => {
                 let stored = answer.get("stored").and_then(Value::as_bool).unwrap_or(false);
                 self.set_status(account, if stored { KeyStatus::Stored(masked()) } else { KeyStatus::Missing });
+                None
+            }
+            Op::Test => {
+                let status = match answer.get("result").and_then(Value::as_str) {
+                    Some("verified") => KeyStatus::Verified(masked()),
+                    _ => KeyStatus::Unverifiable(masked(), answer.get("reason").and_then(Value::as_str).unwrap_or("no free check").to_owned()),
+                };
+                self.set_status(account, status);
                 None
             }
         }
@@ -204,7 +235,7 @@ impl KeysPanel {
         let frame =
             egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
         egui::Window::new("API keys").id(egui::Id::new("nodecraft.keys")).open(&mut open).collapsible(false).resizable(false).frame(frame).show(ctx, |ui| {
-            ui.label(egui::RichText::new("Keys are kept in your system keychain, never in projects or settings.").color(t.text_muted));
+            ui.label(egui::RichText::new(STORED_WHERE).color(t.text_muted));
             ui.add_space(t.control_gap);
             let rows = self.rows.clone();
             if rows.is_empty() {
@@ -218,13 +249,25 @@ impl KeysPanel {
                         KeyStatus::Waiting => ("Waiting for the keychain…".to_owned(), t.text_muted),
                         KeyStatus::Stored(masked) => (format!("Stored {masked}"), t.text),
                         KeyStatus::Missing => ("No key".to_owned(), t.text_muted),
+                        KeyStatus::Testing => ("Asking the provider…".to_owned(), t.text_muted),
+                        KeyStatus::Verified(masked) => (format!("Stored {masked}, works: the provider accepted it"), t.accent),
+                        KeyStatus::Unverifiable(masked, why) => (format!("Stored {masked}, can't verify: {why}"), t.text_muted),
                         KeyStatus::Failed(why) => (why.clone(), t.danger),
                     };
                     ui.label(egui::RichText::new(text).color(color));
                     ui.horizontal(|ui| {
-                        let waiting = *status == KeyStatus::Waiting;
+                        let waiting = matches!(status, KeyStatus::Waiting | KeyStatus::Testing);
                         if ui.add_enabled(!waiting, egui::Button::new("Check")).clicked() {
                             changes.extend(self.send(session, Op::Status, account, json!({"account": account.as_str()})));
+                        }
+                        // The browser can't send the check (keys.test is unsupported there).
+                        if cfg!(not(target_arch = "wasm32"))
+                            && ui
+                                .add_enabled(!waiting, egui::Button::new("Test"))
+                                .on_hover_text("Ask the provider whether it accepts this key (free)")
+                                .clicked()
+                        {
+                            changes.extend(self.send(session, Op::Test, account, json!({"account": account.as_str()})));
                         }
                         let confirming = self.confirm_remove.as_ref() == Some(account);
                         let label = if confirming { "Confirm remove" } else { "Remove" };

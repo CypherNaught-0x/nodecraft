@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use nodecraft_engine::Session;
 use nodecraft_format::{AssetStore, MemoryStorage, ProjectStorage, Snapshot, StorageLocation, decode, journal};
 use nodecraft_types::{AssetRef, Error, ErrorKind, MediaMeta, Value};
@@ -302,4 +302,126 @@ fn published_readonly_save_adopts_location_savepoint_and_recovery_without_discar
         assert!(!session.file_status().recovery_required);
         session.enabled("file.save", &json!({})).unwrap();
     }
+}
+
+#[test]
+fn persistent_layout_preserves_admission_replay_savepoint_and_failure_atomicity() {
+    for mode in ["grid", "layered"] {
+        let (mut session, storage) = setup();
+        session.dispatch("file.save_as", &json!({"location":"layout.ncraft"})).unwrap();
+        let original = session.document().clone();
+        let request = json!({"mode":mode});
+        session.swap_resource(Some(common::layout_context(&session)));
+        let checkpoint = storage.0.borrow().memory.recovery.clone();
+        session.enabled("canvas.auto_format", &request).unwrap();
+        assert_eq!(storage.0.borrow().memory.recovery, checkpoint);
+        assert!(!session.file_status().dirty);
+        session.dispatch("canvas.auto_format", &request).unwrap();
+        let formatted = session.document().clone();
+        assert_ne!(formatted, original);
+        assert!(session.file_status().dirty);
+        assert_eq!(replay(&storage).applied, 1);
+        assert_eq!(replay(&storage).snapshot.project, formatted);
+        // Stale geometry and then exact no-op must not append, alter status or history.
+        let before = (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.file_status(), session.status_revision());
+        let journal = storage.0.borrow().memory.recovery.clone();
+        assert!(session.dispatch("canvas.auto_format", &request).is_err());
+        session.swap_resource(Some(common::layout_context(&session)));
+        assert_eq!(session.dispatch("canvas.auto_format", &request).unwrap(), json!({"moved":0}));
+        assert_eq!(
+            (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.file_status(), session.status_revision()),
+            before
+        );
+        assert_eq!(storage.0.borrow().memory.recovery, journal);
+        session.dispatch("edit.undo", &json!({})).unwrap();
+        assert_eq!(session.document(), &original);
+        assert!(!session.file_status().dirty);
+        assert_eq!(replay(&storage).snapshot.project, original);
+        session.dispatch("edit.redo", &json!({})).unwrap();
+        assert_eq!(session.document(), &formatted);
+        assert_eq!(replay(&storage).snapshot.project, formatted);
+        session.dispatch("edit.undo", &json!({})).unwrap();
+        session.swap_resource(Some(common::layout_context(&session)));
+        let before = (session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.can_undo(), session.can_redo());
+        storage.0.borrow_mut().append = Some(0);
+        assert!(session.dispatch("canvas.auto_format", &request).is_err());
+        assert_eq!((session.document().clone(), session.revision(), session.events_since(0).unwrap(), session.can_undo(), session.can_redo()), before);
+        assert!(session.file_status().recovery_required);
+        assert!(session.enabled("canvas.auto_format", &request).is_err());
+        storage.0.borrow_mut().append = None;
+        session.dispatch("file.save", &json!({})).unwrap();
+        assert!(session.enabled("canvas.auto_format", &request).is_ok());
+        session.dispatch("canvas.auto_format", &request).unwrap();
+        assert_eq!(replay(&storage).snapshot.project, *session.document());
+    }
+}
+
+#[test]
+fn recovery_lineage_tracks_actual_saves_and_successful_replacements() {
+    let (mut s, storage) = setup();
+    let original = s.document_lineage();
+    let snapshot = Snapshot { project: s.document().clone(), assets: s.assets().clone(), epoch: 0 };
+    s.recover(snapshot.clone(), None).unwrap();
+    let token = s.document_lineage();
+    assert!(!s.is_current_document(&original));
+    assert!(!s.has_saved_document(&token));
+    s.dispatch("node.move", &movement(1)).unwrap();
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert!(s.is_current_document(&token));
+    assert!(!s.has_saved_document(&token));
+    storage.0.borrow_mut().save = true;
+    assert!(s.dispatch("file.save_as", &json!({"location":"failed.ncraft"})).is_err());
+    assert!(s.is_current_document(&token));
+    assert!(!s.has_saved_document(&token));
+    storage.0.borrow_mut().save = false;
+    storage.0.borrow_mut().checkpoint = true;
+    let result = s.dispatch("file.save_as", &json!({"location":"published.ncraft"})).unwrap();
+    assert_eq!(result["recovery_ready"], false);
+    assert!(s.has_saved_document(&token));
+    assert_eq!(saved(&storage, "published.ncraft").project, *s.document());
+    storage.0.borrow_mut().checkpoint = false;
+    s.dispatch("file.open", &json!({"location":"published.ncraft","discard_dirty":true})).unwrap();
+    assert!(!s.is_current_document(&token));
+    assert!(!s.has_saved_document(&token));
+    let opened = s.document_lineage();
+    assert!(!s.has_saved_document(&opened));
+    s.dispatch("file.save_as", &json!({"location":"renamed.ncraft"})).unwrap();
+    assert!(s.has_saved_document(&opened));
+    let (other, _) = setup();
+    assert!(!other.is_current_document(&opened));
+}
+#[test]
+fn failed_open_and_recover_do_not_rotate_or_fabricate_a_save_witness() {
+    let (mut s, storage) = setup();
+    let snapshot = Snapshot { project: s.document().clone(), assets: s.assets().clone(), epoch: 0 };
+    s.recover(snapshot.clone(), None).unwrap();
+    let token = s.document_lineage();
+    assert!(s.dispatch("file.open", &json!({"location":"missing.ncraft","discard_dirty":true})).is_err());
+    assert!(s.is_current_document(&token));
+    assert!(!s.has_saved_document(&token));
+    storage.0.borrow_mut().checkpoint = true;
+    assert!(s.recover(snapshot.clone(), None).is_err());
+    assert!(s.is_current_document(&token));
+    assert!(!s.has_saved_document(&token));
+    storage.0.borrow_mut().checkpoint = false;
+    s.dispatch("file.save_as", &json!({"location":"saved.ncraft"})).unwrap();
+    assert!(s.has_saved_document(&token));
+    s.recover(snapshot, None).unwrap();
+    assert!(!s.is_current_document(&token));
+    assert!(!s.has_saved_document(&s.document_lineage()));
+}
+
+#[test]
+fn undo_after_another_peers_edit_leaves_the_file_unsaved() {
+    let (mut s, _storage) = setup();
+    s.dispatch("file.save_as", &json!({"location":"shared.ncraft"})).unwrap();
+    s.dispatch("node.move", &movement(5)).unwrap();
+    let card = nodecraft_graph::Node::new(nodecraft_types::NodeId::from_bytes([77; 16]), "text");
+    s.apply_remote(nodecraft_graph::Changeset::new(vec![nodecraft_graph::Change::AddNode { canvas: common::canvas(), node: card }])).unwrap();
+    // Undoing the move takes the file back to its saved positions, but the other card stays.
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert!(s.file_status().dirty);
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert!(s.file_status().dirty);
 }

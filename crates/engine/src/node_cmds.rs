@@ -31,6 +31,11 @@ fn title(_: &Context<'_>, json: &Json) -> Result<Effect, Error> {
     Ok(edit(Change::SetNodeTitle { canvas: p.canvas, id: p.id, title }))
 }
 fn parameter(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
+    if json.get("value").and_then(|v| v.get("type")).and_then(Json::as_str) == Some("text")
+        && json.get("value").and_then(|v| v.get("value")).and_then(Json::as_str).is_some_and(|text| text.len() > 1024 * 1024)
+    {
+        return Err(crate::commands::invalid("parameter text exceeds UTF-8 byte limit"));
+    }
     let p: ParamParams = params(json)?;
     let node = c
         .document
@@ -38,7 +43,21 @@ fn parameter(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
         .get(&p.canvas)
         .and_then(|canvas| canvas.nodes().get(&p.id))
         .ok_or_else(|| Error::new(ErrorKind::NotFound, "node does not exist"))?;
-    let descriptor = c.kinds.get(&node.kind)?.resolve_instance(node)?;
+    if crate::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, &p.name) {
+        return Err(Error::new(ErrorKind::Unsupported, "use node.model_preview then node.set_model to change this model"));
+    }
+    let kind = c.kinds.get(&node.kind)?;
+    let generation = if nodecraft_nodes::generation::is_generation(&node.kind) {
+        let catalog = crate::generation_catalog::GenerationCatalog::current(c.resources)?;
+        catalog.validate_instance_binding(kind, node)?;
+        let contract = kind.instance_contract(node)?;
+        // Shared borrowed validation admits aggregate values before the proposed map copy.
+        contract.resolve(&node.params, false)?;
+        Some(contract)
+    } else {
+        None
+    };
+    let descriptor = kind.resolve_instance(node)?;
     if node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
         return Err(crate::commands::invalid("node ports do not match its instance descriptor"));
     }
@@ -59,7 +78,36 @@ fn parameter(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
             proposed.remove(&p.name);
         }
     }
+    if let Some(contract) = generation {
+        let resolution = contract.resolve_with(&proposed, false, crate::option_cmds::lookup(c.resources))?;
+        if let Some(issue) = crate::option_cmds::refusing(&resolution.issues, p.value.as_ref().map(|_| p.name.as_str())) {
+            return Err(Error::new(ErrorKind::InvalidInput, issue.message.clone()));
+        }
+        if p.value.is_some() && !resolution.get(&p.name).is_some_and(|state| state.enabled) {
+            return Err(crate::commands::invalid("parameter is disabled by the current model settings"));
+        }
+        let mut changes = vec![Change::SetParam { canvas: p.canvas, id: p.id, name: p.name.clone(), value: p.value }];
+        // Reset publication shares one invertible mutation with its controller edit. Do not
+        // materialize defaults; only remove existing explicit overrides named by resolution.
+        for state in resolution.params {
+            if state.reset && proposed.contains_key(&state.name) {
+                changes.push(Change::SetParam { canvas: p.canvas, id: p.id, name: state.name, value: None });
+            }
+        }
+        return Ok(Effect::Edit { changes: Changeset::new(changes), result: Json::Null, gesture: None });
+    }
     descriptor.params.resolve(&proposed, false)?;
+    if p.value.is_some() && c.resources.get::<nodecraft_types::OptionLists>().is_some() {
+        // The contract of the edited node, for kinds whose contract follows their values.
+        let mut next = node.clone();
+        next.params = proposed.clone();
+        let resolution = kind.instance_contract(&next)?.resolve_with(&proposed, false, crate::option_cmds::lookup(c.resources))?;
+        if let Some(issue) =
+            resolution.issues.iter().find(|issue| issue.code == nodecraft_types::IssueCode::NotAnOption && issue.param.as_deref() == Some(p.name.as_str()))
+        {
+            return Err(Error::new(ErrorKind::InvalidInput, issue.message.clone()));
+        }
+    }
     Ok(edit(Change::SetParam { canvas: p.canvas, id: p.id, name: p.name, value: p.value }))
 }
 fn edit(change: Change) -> Effect {

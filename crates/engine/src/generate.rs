@@ -4,11 +4,15 @@
 //! Limits are conservative representation/work budgets, not exact JSON bytes or allocator/RSS
 //! guarantees. Provider-owned inputs/results remain with the caller when conversion is refused.
 
+use nodecraft_format::{
+    AssetStore,
+    asset_source::{StreamMetrics, TransferCancel},
+};
 use nodecraft_graph::{MAX_NODE_BYTES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS};
 use nodecraft_media::{ContentHash, MediaKind};
 use nodecraft_nodes::{GenerateOutput, JobSpec};
 use nodecraft_providers::{Completed, JobInput, Output, ProviderJob};
-use nodecraft_types::{AssetRef, Blake3, Error, ErrorKind, MediaMeta, Modality, Value};
+use nodecraft_types::{AssetRef, Blake3, Error, ErrorKind, Modality, Value};
 use serde_json::{Map, Value as Json};
 use std::sync::Arc;
 
@@ -16,6 +20,37 @@ use std::sync::Arc;
 pub const MAX_INLINE_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 // Matches graph's per-value aggregate text limit; parity is pinned by a Generation test.
 const MAX_TEXT_VALUE_BYTES: usize = 1024 * 1024;
+/// Largest aggregate size of the media one model call sends (#502).
+pub const MAX_MEDIA_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Where a model call's media inputs come from (#502). `size` answers from metadata without
+/// reading content, so an oversized call is refused before any bytes are read; `read` returns
+/// the stored, verified bytes and refuses an asset larger than `limit`.
+pub trait MediaSource {
+    fn size(&self, asset: &AssetRef) -> Result<u64, Error>;
+    fn read(&self, asset: &AssetRef, limit: u64) -> Result<Arc<[u8]>, Error>;
+}
+impl MediaSource for AssetStore {
+    fn size(&self, asset: &AssetRef) -> Result<u64, Error> {
+        self.descriptor(&asset.hash).map(|d| d.bytes).ok_or_else(|| invalid("a media input names an asset this project doesn't have"))
+    }
+    fn read(&self, asset: &AssetRef, limit: u64) -> Result<Arc<[u8]>, Error> {
+        if self.size(asset)? > limit {
+            return Err(invalid("a media input is larger than this model call allows"));
+        }
+        let metrics = StreamMetrics::default();
+        let lease = self.open_verified(asset, &TransferCancel::default(), &metrics)?;
+        if lease.byte_len() > limit {
+            return Err(invalid("a media input is larger than this model call allows"));
+        }
+        let length = usize::try_from(lease.byte_len()).map_err(|_| invalid("a media input is larger than this model call allows"))?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|_| Error::new(ErrorKind::Internal, "not enough memory to read a media input"))?;
+        bytes.resize(length, 0);
+        std::io::Read::read_exact(&mut lease.reader(metrics), &mut bytes).map_err(|_| Error::new(ErrorKind::Internal, "a media input could not be read"))?;
+        Ok(bytes.into())
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Limits {
@@ -27,6 +62,7 @@ struct Limits {
     inline: usize,
     raw_outputs: usize,
     outputs: usize,
+    media: u64,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -39,6 +75,7 @@ impl Default for Limits {
             inline: MAX_INLINE_OUTPUT_BYTES,
             raw_outputs: MAX_INLINE_OUTPUT_BYTES,
             outputs: MAX_NODE_BYTES,
+            media: MAX_MEDIA_INPUT_BYTES,
         }
     }
 }
@@ -104,13 +141,15 @@ impl Conversion {
     }
 }
 
-struct RequestBudget {
+struct RequestBudget<'a> {
     bytes: Budget,
     values: usize,
     inputs: usize,
     limits: Limits,
+    source: Option<&'a dyn MediaSource>,
+    media: u64,
 }
-impl RequestBudget {
+impl RequestBudget<'_> {
     fn value(&mut self, root: &Value, role: Option<&str>) -> Result<(), Error> {
         let mut stack = vec![std::slice::from_ref(root).iter()];
         let mut text_bytes = 0usize;
@@ -148,13 +187,19 @@ impl RequestBudget {
                     self.bytes.string(text)?;
                 }
                 Value::Number(number) if !f64::from(*number).is_finite() => return Err(invalid("a parameter is not a finite number")),
-                Value::Media(_) => {
-                    return Err(unsupported(if role.is_some() {
-                        "media inputs need the asset store, which isn't available yet"
-                    } else {
-                        "a media value can't be a model parameter"
-                    }));
-                }
+                Value::Media(asset) => match (role, self.source) {
+                    (None, _) => return Err(unsupported("a media value can't be a model parameter")),
+                    (Some(_), None) => return Err(unsupported("this model call has no asset store to send media inputs from")),
+                    (Some(_), Some(source)) => {
+                        let size = source.size(asset)?;
+                        self.media = self.media.checked_add(size).ok_or_else(|| invalid("model media size overflowed"))?;
+                        if self.media > self.limits.media {
+                            return Err(invalid("the model call's media inputs are larger than it allows"));
+                        }
+                        self.bytes.charge(512)?;
+                        self.bytes.string(asset.mime.essence())?;
+                    }
+                },
                 _ => {}
             }
             if let Some(role) = role {
@@ -173,25 +218,83 @@ struct AdmittedRequest<'a> {
     spec: &'a JobSpec,
     key: &'a str,
 }
-fn admit_request<'a>(spec: &'a JobSpec, key: &'a str, limits: Limits) -> Result<AdmittedRequest<'a>, Error> {
-    let JobSpec::Generate { provider, model, params, inputs, .. } = spec else { return Err(invalid("not a model call")) };
-    if params.len() > limits.items || inputs.len() > limits.items {
-        return Err(invalid("model request exceeds item limit"));
-    }
-    let mut budget = RequestBudget { bytes: Budget(limits.request), values: 0, inputs: 0, limits };
-    for text in [provider.as_str(), model.as_str(), key] {
-        budget.bytes.string(text)?;
-    }
-    for (name, value) in params {
-        budget.bytes.string(name)?;
-        budget.value(value, None)?;
-    }
-    for input in inputs {
-        budget.bytes.charge(64)?;
-        budget.bytes.string(&input.role)?;
-        budget.value(&input.value, Some(&input.role))?;
-    }
+/// Counts `spec`'s request against `limits`: the budget as far as it got, and the first
+/// refusal. Advisory checks and runtime admission share this, so they count alike.
+fn measure<'a>(spec: &JobSpec, key: &str, limits: Limits, source: Option<&'a dyn MediaSource>) -> (RequestBudget<'a>, Result<(), Error>) {
+    let mut budget = RequestBudget { bytes: Budget(limits.request), values: 0, inputs: 0, limits, source, media: 0 };
+    let result = (|| {
+        let JobSpec::Generate { provider, model, params, inputs, .. } = spec else { return Err(invalid("not a model call")) };
+        if params.len() > limits.items || inputs.len() > limits.items {
+            return Err(invalid("model request exceeds item limit"));
+        }
+        for text in [provider.as_str(), model.as_str(), key] {
+            budget.bytes.string(text)?;
+        }
+        for (name, value) in params {
+            budget.bytes.string(name)?;
+            budget.value(value, None)?;
+        }
+        for input in inputs {
+            budget.bytes.charge(64)?;
+            budget.bytes.string(&input.role)?;
+            budget.value(&input.value, Some(&input.role))?;
+        }
+        Ok(())
+    })();
+    (budget, result)
+}
+fn admit_request<'a>(spec: &'a JobSpec, key: &'a str, limits: Limits, source: Option<&dyn MediaSource>) -> Result<AdmittedRequest<'a>, Error> {
+    measure(spec, key, limits, source).1?;
     Ok(AdmittedRequest { spec, key })
+}
+
+/// The longest idempotency key a model call is sent with.
+pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 64;
+
+/// What a model request counts against the limits [`provider_job`] admits it under (#307):
+/// aggregate values (parameters and inputs, nested lists and their items), flattened inputs,
+/// the representation budget (strings, metadata and repeated roles) and stored media bytes.
+/// When `refusal` is set the counts stop where it was found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestCheck {
+    pub values: usize,
+    pub value_limit: usize,
+    pub inputs: usize,
+    pub input_limit: usize,
+    pub bytes: usize,
+    pub byte_limit: usize,
+    pub media_bytes: u64,
+    pub media_limit: u64,
+    /// Why runtime admission would refuse the request; `None` when it would admit it.
+    pub refusal: Option<Error>,
+}
+
+/// Checks `spec` as [`provider_job_with_media`] would admit it, without converting or copying
+/// it, reading media content or calling a provider. A request it admits with `key` is admitted
+/// at runtime with that key or any shorter one; [`check_request`] checks with the longest.
+/// Advisory only: runtime admission still runs before conversion.
+pub fn check_request_with_key(spec: &JobSpec, key: &str, source: Option<&dyn MediaSource>) -> RequestCheck {
+    let limits = Limits::default();
+    let (budget, result) = measure(spec, key, limits, source);
+    RequestCheck {
+        values: budget.values,
+        value_limit: limits.items,
+        inputs: budget.inputs,
+        input_limit: limits.inputs,
+        bytes: limits.request.saturating_sub(budget.bytes.0),
+        byte_limit: limits.request,
+        media_bytes: budget.media,
+        media_limit: limits.media,
+        refusal: result.err(),
+    }
+}
+
+/// [`check_request_with_key`] with the longest idempotency key, so a request it admits is
+/// admitted whatever key the run sends it with.
+pub fn check_request(spec: &JobSpec, source: Option<&dyn MediaSource>) -> RequestCheck {
+    const LONGEST: &str = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk";
+    const _: () = assert!(LONGEST.len() == MAX_IDEMPOTENCY_KEY_BYTES);
+    check_request_with_key(spec, LONGEST, source)
 }
 
 // Recursive conversion is only reached after complete standalone depth/item/byte admission.
@@ -210,11 +313,36 @@ fn json(value: &Value, conversion: &mut Conversion) -> Result<Json, Error> {
         Value::Media(_) => return Err(unsupported("a media value can't be a model parameter")),
     })
 }
-fn inputs(role: &str, value: &Value, out: &mut Vec<JobInput>, conversion: &mut Conversion) -> Result<(), Error> {
+struct MediaReads<'a> {
+    source: Option<&'a dyn MediaSource>,
+    left: u64,
+}
+fn inputs(role: &str, value: &Value, out: &mut Vec<JobInput>, media: &mut MediaReads<'_>, conversion: &mut Conversion) -> Result<(), Error> {
     if let Value::List(items) = value {
         for item in items {
-            inputs(role, item, out, conversion)?;
+            inputs(role, item, out, media, conversion)?;
         }
+        return Ok(());
+    }
+    if let Value::Media(asset) = value {
+        let source = media.source.ok_or_else(|| unsupported("this model call has no asset store to send media inputs from"))?;
+        let bytes = source.read(asset, media.left)?;
+        if asset.mime.essence() == nodecraft_media::style::MIME {
+            style_matches(asset, &bytes)?;
+        }
+        // Admission summed the stored sizes; the bytes actually read are held to the same cap.
+        media.left = u64::try_from(bytes.len())
+            .ok()
+            .and_then(|n| media.left.checked_sub(n))
+            .ok_or_else(|| invalid("the model call's media inputs are larger than it allows"))?;
+        let role = conversion.string(role);
+        let mime = conversion.string(asset.mime.essence());
+        #[cfg(test)]
+        {
+            conversion.input_records += 1;
+            conversion.asset_arcs += 1;
+        }
+        out.push(JobInput::Media { role, mime, bytes });
         return Ok(());
     }
     let text = match value {
@@ -232,8 +360,14 @@ fn inputs(role: &str, value: &Value, out: &mut Vec<JobInput>, conversion: &mut C
     out.push(JobInput::Text { role, text });
     Ok(())
 }
-fn request_with_limits(spec: &JobSpec, key: &str, limits: Limits, conversion: &mut Conversion) -> Result<(String, ProviderJob), Error> {
-    let proof = admit_request(spec, key, limits)?;
+fn request_with_limits(
+    spec: &JobSpec,
+    key: &str,
+    limits: Limits,
+    source: Option<&dyn MediaSource>,
+    conversion: &mut Conversion,
+) -> Result<(String, ProviderJob), Error> {
+    let proof = admit_request(spec, key, limits, source)?;
     let JobSpec::Generate { provider, model, params, inputs: given, .. } = proof.spec else { return Err(invalid("not a model call")) };
     let mut map = Map::new();
     for (name, value) in params {
@@ -241,8 +375,9 @@ fn request_with_limits(spec: &JobSpec, key: &str, limits: Limits, conversion: &m
         map.insert(name, json(value, conversion)?);
     }
     let mut job_inputs = Vec::new();
+    let mut media = MediaReads { source, left: limits.media };
     for input in given {
-        inputs(&input.role, &input.value, &mut job_inputs, conversion)?;
+        inputs(&input.role, &input.value, &mut job_inputs, &mut media, conversion)?;
     }
     Ok((
         conversion.string(provider),
@@ -252,8 +387,14 @@ fn request_with_limits(spec: &JobSpec, key: &str, limits: Limits, conversion: &m
 /// Convert a standalone job after complete borrowed depth/item/text/representation admission.
 /// The request representation budget is 64 MiB, with 4096 aggregate values/inputs and graph depth 32.
 /// Text per original value is 1 MiB. Metadata and repeated flattened roles share the byte budget.
+/// A job with media inputs is refused here; see [`provider_job_with_media`].
 pub fn provider_job(spec: &JobSpec, idempotency_key: &str) -> Result<(String, ProviderJob), Error> {
-    request_with_limits(spec, idempotency_key, Limits::default(), &mut Conversion::default())
+    request_with_limits(spec, idempotency_key, Limits::default(), None, &mut Conversion::default())
+}
+/// [`provider_job`], reading media inputs from `source`. Their stored sizes are summed against
+/// [`MAX_MEDIA_INPUT_BYTES`] before the first read, so an oversized call reads nothing.
+pub fn provider_job_with_media(spec: &JobSpec, idempotency_key: &str, source: &dyn MediaSource) -> Result<(String, ProviderJob), Error> {
+    request_with_limits(spec, idempotency_key, Limits::default(), Some(source), &mut Conversion::default())
 }
 
 /// Converted outputs and shared media bytes for the host to store; no asset store is mutated.
@@ -261,6 +402,19 @@ pub fn provider_job(spec: &JobSpec, idempotency_key: &str) -> Result<(String, Pr
 pub struct Produced {
     pub outputs: Vec<(String, Value)>,
     pub assets: Vec<(Blake3, Arc<[u8]>)>,
+}
+/// A style asset's MIME type: the descriptor type with the family it was trained for.
+pub fn style_mime(family: &str) -> String {
+    format!("{}; family={family}", nodecraft_media::style::MIME)
+}
+/// A style about to be sent must be what its asset says: a valid descriptor of the family that
+/// planning checked against the model (#167).
+fn style_matches(asset: &AssetRef, bytes: &[u8]) -> Result<(), Error> {
+    let style = nodecraft_media::style::decode(bytes).map_err(|_| invalid("a wired style is damaged; train it again"))?;
+    if asset.mime.param("family") != Some(style.family.as_str()) {
+        return Err(invalid("a wired style's file doesn't match the family its card records; train it again"));
+    }
+    Ok(())
 }
 fn modality(kind: MediaKind) -> Modality {
     match kind {
@@ -270,6 +424,7 @@ fn modality(kind: MediaKind) -> Modality {
         MediaKind::Model3d => Modality::Mesh,
         MediaKind::Document => Modality::Document,
         MediaKind::Text => Modality::Text,
+        MediaKind::Style => Modality::Style,
     }
 }
 fn index(kind: Modality) -> usize {
@@ -280,9 +435,11 @@ fn index(kind: Modality) -> usize {
         Modality::Audio => 3,
         Modality::Mesh => 4,
         Modality::Document => 5,
+        Modality::Style => 6,
     }
 }
-struct Routes<'a>([Option<&'a str>; 6]);
+/// The first port for each modality, and the family a style port's trainer trains.
+struct Routes<'a>([Option<&'a str>; 7], Option<&'a str>);
 impl<'a> Routes<'a> {
     fn port(&self, kind: Modality) -> Result<&'a str, Error> {
         let label = match kind {
@@ -292,13 +449,14 @@ impl<'a> Routes<'a> {
             Modality::Audio => "audio",
             Modality::Mesh => "mesh",
             Modality::Document => "document",
+            Modality::Style => "style",
         };
         self.0.get(index(kind)).copied().flatten().ok_or_else(|| invalid(&format!("the model returned {label} output but this node has no output port for it")))
     }
 }
 enum BorrowedOutput<'a> {
     Text { port: &'a str, text: &'a str },
-    Media { port: &'a str, mime: &'static str, bytes: &'a Arc<[u8]> },
+    Media { port: &'a str, mime: std::borrow::Cow<'static, str>, bytes: &'a Arc<[u8]> },
 }
 #[derive(Default, Debug)]
 struct ScanWork {
@@ -326,7 +484,14 @@ fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, raw_text:
     match item {
         Output::Text(text) => Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text }),
         Output::Bytes { mime: claimed, bytes } => {
-            let sniffed = nodecraft_media::sniff(bytes).ok_or_else(|| invalid("the provider returned an output that isn't a known media type"))?;
+            let mut sniffed = nodecraft_media::sniff(bytes).ok_or_else(|| invalid("the provider returned an output that isn't a known media type"))?;
+            // Text that merely starts like a style descriptor stays text where no style is expected.
+            if sniffed.kind == MediaKind::Style && routes.0.get(index(Modality::Style)).copied().flatten().is_none() {
+                sniffed = nodecraft_media::Sniffed { mime: "text/plain", kind: MediaKind::Text };
+            }
+            if matches!(sniffed.mime, "image/x-exr" | "image/vnd.radiance") {
+                return Err(unsupported("HDR image outputs aren't supported yet; use PNG or JPEG"));
+            }
             if sniffed.kind == MediaKind::Text {
                 if !claimed.trim_start().get(..5).is_some_and(|head| head.eq_ignore_ascii_case("text/")) {
                     return Err(invalid("the provider claimed non-text output but returned text (an error page?)"));
@@ -344,8 +509,19 @@ fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, raw_text:
                 work.utf8_scan(bytes.len());
                 let text = std::str::from_utf8(bytes).map_err(|_| invalid("the provider returned text that isn't UTF-8"))?;
                 Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text: text.trim_start_matches('\u{feff}') })
+            } else if sniffed.kind == MediaKind::Style {
+                // A trained style (#167) is kept only once its descriptor checks out, and its asset
+                // names the family it was trained for, so a card can refuse it before a run.
+                let port = routes.port(Modality::Style)?;
+                let style = nodecraft_media::style::decode(bytes).map_err(|error| invalid(&format!("the provider returned a damaged style: {error}")))?;
+                // The catalog says which family a trainer trains; a style naming another is refused
+                // rather than offered to models it was never trained for.
+                if routes.1 != Some(style.family.as_str()) {
+                    return Err(invalid("the provider returned a style for a different model family than its trainer trains"));
+                }
+                Ok(BorrowedOutput::Media { port, mime: style_mime(&style.family).into(), bytes })
             } else {
-                Ok(BorrowedOutput::Media { port: routes.port(modality(sniffed.kind))?, mime: sniffed.mime, bytes })
+                Ok(BorrowedOutput::Media { port: routes.port(modality(sniffed.kind))?, mime: sniffed.mime.into(), bytes })
             }
         }
         Output::Url { .. } => Err(unsupported("download URL outputs before mapping them")),
@@ -367,7 +543,7 @@ fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits:
         return Err(invalid("the provider result or route table has too many items"));
     }
     let mut budget = Budget(limits.outputs);
-    let mut routes = Routes([None; 6]);
+    let mut routes = Routes([None; 7], None);
     for output in outputs {
         budget.charge(64)?;
         budget.string(&output.port)?;
@@ -375,6 +551,10 @@ fn admit_outputs<'a>(outputs: &'a [GenerateOutput], done: &'a Completed, limits:
             && slot.is_none()
         {
             *slot = Some(output.port.as_str());
+            if output.modality == Modality::Style {
+                budget.string(output.style_family.as_deref().unwrap_or_default())?;
+                routes.1 = output.style_family.as_deref();
+            }
         }
     }
     // Cheap entire-result size/work admission before semantic scans; every Arc occurrence counts.
@@ -457,9 +637,12 @@ fn outputs_with_work(
                     conversion.asset_arcs += 1;
                 }
                 let hash = Blake3::from_bytes(ContentHash::of(bytes).0);
+                // A generated sound or movie records the length its headers state (#608), so a
+                // speech-to-video mode can check it against its limit before the next run.
+                let meta = crate::import::timed_meta(&mime, bytes);
                 let mime = mime.parse().map_err(|_| Error::new(ErrorKind::Internal, "a sniffed media type didn't parse"))?;
                 produced.assets.push((hash, Arc::clone(bytes)));
-                (conversion.string(port), Value::Media(AssetRef { hash, mime, meta: MediaMeta::default() }))
+                (conversion.string(port), Value::Media(AssetRef { hash, mime, meta }))
             }
         };
         #[cfg(test)]

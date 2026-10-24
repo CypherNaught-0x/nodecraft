@@ -333,7 +333,10 @@ These are worth adding once the adapter pattern has settled. Each one gets a Git
    node body controls, bulk panel, app-mode form and MCP tool schema are all generated from it.
    A new node kind writes no bespoke UI unless it wants a custom body.
 5. **No modality assumptions.** Port types and values are runtime data; nothing hard-codes "an
-   image is RGBA8 PNG". Colour space, bit depth and alpha travel with media.
+   image is RGBA8 PNG". Alpha, stored bit depth and the file's colour-space tag travel with an
+   imported image as optional, verified reference metadata; absent means unknown. Pixels are
+   still decoded as sRGB until the colour/HDR contract lands
+   ([decision](decisions/2026-10-21-image-header-metadata.md)).
 6. **Never crash.** No `unwrap`/`expect`/`panic!`/indexing in non-test code
    (clippy-enforced), `unsafe_code = "forbid"`, hostile-input discipline for files, params and
    provider responses, a last-resort panic guard around command dispatch, and a `panic_hunt`
@@ -686,7 +689,7 @@ parts of a later milestone already built ahead of their host — is tracked in
 | M | Name | Contents | Exit criterion |
 |---|---|---|---|
 | 0 | **Skeleton** | Workspace, lints, xtask layers/wasm, CI, AGENTS.md, empty crates, eframe window | `cargo run` opens a themed empty canvas on all three OSes |
-| 1 | **Canvas core** | Graph model + changesets + undo, command registry, canvas widget (pan/zoom/select/noodles/minimap), source nodes via drag-drop/paste, "Turn into" picker, shortcuts, `.ncraft` save/load | Build and save a 200-node graph at 60 fps; undo everything |
+| 1 | **Canvas core** | Graph model + changesets + undo, command registry, canvas widget (pan/zoom/select/noodles/minimap), source nodes via drag-drop/paste, "Turn into" picker, shortcuts, `.ncraft` save/load | Build and save a 200-node graph at 60 fps (as measured by [P1–P3](performance.md#the-60-fps-criterion)); undo everything |
 | 2 | **Organise** | Fields, tags, comments, search, auto-format, bulk panel, router node, input ordering | Workshop "organise" patterns work |
 | 3 | **Generation** | `exec` planner/scheduler, queue, status, history strip, variations, cost quotes, budgets, catalog, mock provider, keychain; **ComfyUI** (servers panel, workflow node, WebSocket progress), **LLM endpoints** (OpenAI-compatible, Anthropic, LiteLLM), **fal.ai**, **Replicate**, **OpenAI Images**, **Google Imagen + Gemini image**, **Seedream** | Combine → branch → prompt-helper workflows run end to end, both on cloud models and fully offline on ComfyUI + Ollama |
 | 4 | **Actions** | Image + text actions (CPU), live recompute, split into grid, GPU path, custom WGSL actions | Colour grade/blur/crop chains preview live |
@@ -697,9 +700,74 @@ parts of a later milestone already built ahead of their host — is tracked in
 | 9 | **Agent & automation** | Agent sidebar (assist/auto), control channel, MCP servers (headless, bridge, in-app; commands + techniques), `serve` | Agent builds and runs a 5-node workflow from one sentence within budget |
 | 10 | **Share & collaborate** | Browser release polish (the wasm bundle ships from M5 as a preview), CRDT sync, presence, shared comments, share links, decks | Two users edit one canvas live |
 
+M1's feature and exit-criterion checklist (completed issues; #372 closes the documentation
+follow-up):
+
+- [x] Graph model, invertible changesets, command registry, bounded undo/redo and source kinds
+  (#50–#53); `.ncraft` archives, asset storage and native save/open/recovery (#54, #406–#408).
+- [x] Editable cards and noodles, selection, searchable quick-add, Turn into, minimap and fit,
+  input order, clipboard and OS file drop (#57–#64, #197); source import has bounded admission.
+- [x] Build and save a 200-node graph, undo it and reopen identical (#65, #464). The old
+  after-edit CPU regression at `aa1efc86` (17.09 ms at 200 nodes; 283.55 ms at 1,000)
+  blocked the criterion until #549/#551 fixed its quadratic path. #551's 2.28/7.84 ms
+  `node.move` results were taken at load ~18 and do **not** prove general edit performance.
+- [x] Presented pan/zoom P1–P3 measured by the desktop frame pump (#526/#634), then #65
+  closed on Apple M3 Pro/Metal at 120 Hz (not measured on a 60 Hz display or Windows/Linux).
+  The legacy UI kittest numbers at `481700ba` measure CPU preparation plus tessellation,
+  **not** displayed frames. See [the measurement boundaries](performance.md#the-60-fps-criterion).
+- [x] Close the M1 documentation follow-up (#372); the milestone is closed.
+
+M2's feature and exit-criterion checklist (completed issues; #373 closes the documentation
+follow-up):
+
+- [x] Fields: named, coloured zones whose header drag moves every member, empty layout zones,
+  resize and collapse (#66); Delete removes a selected field (#708); membership from stored
+  geometry and shift-drag box select from a header (#709); a collapsed field shows only its
+  header, which search and tag navigation expand to reveal a hidden card (#706), the minimap draws
+  (#707) and Fit all frames (#739).
+- [x] Colour tags with a bounded highlight filter and tag navigation (#67), persisted by the v3
+  tags/fields bridge (#193).
+- [x] Local pinned discussions and Note nodes (#68); canvas search (⌘/Ctrl+F) (#69).
+- [x] Auto-format of a selection into a grid or dependency layout, one undo step (#70).
+- [x] Bulk parameter panel with Mixed values and atomic undo (#71); router nodes (#72); input
+  ordering landed in M1 (#64).
+- [x] Exit criterion: the workshop "organise" pattern (§1.3, item 10) works in the desktop app:
+  coloured fields, colour tags with a jump-to-tagged filter, routers as cable ties, auto-format
+  of a selection, and canvas search.
+- [x] Close the M2 documentation follow-up (#373); the milestone is closed.
+
+M4's feature and exit-criterion checklist (completed issues; #375 closes the documentation
+follow-up). M3 is still open, so its checklist waits for its own close-out (#374):
+
+- [x] CPU image actions with a normative reference (#85) and bounded text actions (#87), run as
+  action node kinds with schema-generated cards, reachable from quick-add and the palette (#410).
+- [x] Live recompute (#88): after an edit, stale action cards recompute on a worker off the UI
+  thread and record into the edit's undo step; a slider drag previews on smaller images, then
+  renders full size on release. Video actions and the Timeline run only when asked.
+- [x] Split into grid: an image cut into tiles as new Image cards, one undo step (#86).
+- [x] GPU path (#89): a wgpu executor for the image actions, checked against the CPU reference
+  within a tolerance. It is a tested library; the app still runs built-in image actions on the
+  CPU.
+- [x] Custom WGSL actions (#90): a shader card with declared sliders, validated before dispatch
+  and run on the GPU; a text model writes or fixes it through an ordinary priced text card, and
+  a versioned shader library keeps it across projects.
+- [x] Custom text actions as a bounded expression language (#165), run through text-action
+  plugin packages.
+- [x] Opt-in result caching (#91): results reused by input hash, on by default for local cards
+  and per card (`node.cache_set`) for model cards; `run.quote` and `run.start` skip what is reused.
+- [x] Plugin store: bounded verification, atomic install/enable/update/rollback/uninstall and the
+  Plugins panel (#172); granted text-action packages run as cards and stop with their grant
+  (#173); a session-only store in the browser (#823); structured property tests over hostile
+  archives and failing operation sequences (#824).
+- [x] Exit criterion: colour grade, blur and crop chains preview live in the desktop app (#88).
+- [ ] Close the M4 documentation follow-up (#375), then GitHub can mark its milestone closed.
+
 ---
 
-## 8. First steps (M0 checklist)
+## 8. First steps (M0 checklist and M1 hand-off)
+
+M0 is complete; the M1 checklist and exit evidence are in §7 above. These were the initial
+workspace steps, not an outstanding list of canvas features.
 
 - [x] `Cargo.toml` workspace with the settings in §5; `rustfmt.toml`, `clippy.toml`,
       `.cargo/config.toml`, `.config/nextest.toml`

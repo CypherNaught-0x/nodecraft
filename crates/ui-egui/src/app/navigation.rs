@@ -2,6 +2,7 @@
 use super::*;
 use nodecraft_engine::navigation_cmds::NavigationContext;
 use serde_json::Value as Json;
+use std::collections::BTreeSet;
 
 const FIT_CLAMP_NOTICE: &str = "Nodes are too spread out to fit at minimum zoom; the view is centered at 10%.";
 
@@ -18,15 +19,25 @@ impl NodeCraftApp {
         let padding = t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius;
         let fit_available = canvas::valid_rect(viewport) && viewport.width() > 2.0 * padding && viewport.height() > 2.0 * padding;
         let viewport_available = canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0;
-        let blocked = egui::Popup::is_any_open(ctx)
+        #[cfg(not(target_arch = "wasm32"))]
+        let file_owned = self.files.owns_navigation(ctx);
+        #[cfg(target_arch = "wasm32")]
+        let file_owned = false;
+        let blocked = file_owned
+            || egui::Popup::is_any_open(ctx)
+            || self.model_choice.is_some()
+            || self.model_frame_owned
             || self.text_focused
             || canvas::text_input_focused(ctx)
             || self.wiring.is_some()
             || self.drag.is_some()
-            || self.marquee.is_some();
+            || self.marquee.is_some()
+            || self.comments.drag.is_some()
+            || self.comments.gesture_cancelled
+            || self.drop_pointer_owned();
         let dragging = ctx.dragged_id().is_some() || self.navigation.drag.is_some();
-        let fit_all = self.navigation.geometry.bounds(None, t).is_some();
-        let fit_selection = self.navigation.geometry.bounds(Some(&self.selection), t).is_some();
+        let fit_all = self.fit_all_bounds().is_some();
+        let fit_selection = self.fit_selection_bounds().is_some();
         std::array::from_fn(|index| NavigationContext {
             canvas: self.canvas,
             viewport_available: if index < 2 { fit_available } else { viewport_available },
@@ -35,8 +46,52 @@ impl NodeCraftApp {
             fit_selection,
         })
     }
-    fn navigation_context(&mut self, ctx: &egui::Context, id: &str) -> NavigationContext {
-        let [all, selected, toggle, pan] = self.navigation_contexts(ctx);
+    /// What Fit all frames: the cards the canvas shows and collapsed field headers, the same
+    /// shapes the minimap draws (#739). None while geometry is unavailable or nothing shows.
+    fn fit_all_bounds(&mut self) -> Option<Rect> {
+        if self.navigation.geometry.error {
+            return None;
+        }
+        // Headers at their least zoomed-out size: sized at the current zoom, a header seen from far
+        // out is taller in world points than the fitted view draws it, so a second Fit all moves.
+        let (membership, collapsed) = self.collapsed_fields(1.0);
+        let t = self.theme.tokens();
+        self.navigation
+            .shapes(None, &membership.hidden, &collapsed)
+            .into_iter()
+            .map(|(_, rect)| crate::navigation::decorated(rect, t))
+            .reduce(|a, b| a.union(b))
+    }
+    /// Frame selected visible cards and the headers standing in for selected hidden cards.
+    /// Use the same membership and header geometry as the canvas and minimap, at Fit all's
+    /// stable header zoom rather than the previous view's zoom. Like the plain selection bounds,
+    /// an invalid unselected node does not matter, but a selected visible node without valid
+    /// geometry refuses the fit rather than being left out of it.
+    fn fit_selection_bounds(&mut self) -> Option<Rect> {
+        let nodes = self.selection.nodes().clone();
+        self.fit_nodes_bounds(&nodes)
+    }
+    fn fit_nodes_bounds(&mut self, nodes: &BTreeSet<NodeId>) -> Option<Rect> {
+        if nodes.is_empty() {
+            return None;
+        }
+        let membership = self.membership();
+        let t = self.theme.tokens();
+        let rects = &self.navigation.geometry.rects;
+        let visible: Vec<Rect> = nodes.iter().filter(|id| !membership.hidden.contains(*id)).map(|id| rects.get(id).copied()).collect::<Option<_>>()?;
+        let hidden = self.session.document().canvases().get(&self.canvas).into_iter().flat_map(|canvas| {
+            fields::stand_ins(canvas, &membership.hidden, t, 1.0, self.field_shift()).filter(|(id, _)| nodes.contains(id)).map(|(_, rect)| rect)
+        });
+        visible.into_iter().chain(hidden).map(|rect| crate::navigation::decorated(rect, t)).reduce(|a, b| a.union(b))
+    }
+    fn navigation_context(&mut self, ctx: &egui::Context, id: &str, params: &Json) -> NavigationContext {
+        let [all, mut selected, toggle, pan] = self.navigation_contexts(ctx);
+        if id == "canvas.fit_selection"
+            && let Some(nodes) = nodecraft_engine::navigation_cmds::requested_nodes(params)
+        {
+            let wanted: BTreeSet<_> = nodes.iter().copied().collect();
+            selected.fit_selection = wanted.len() == nodes.len() && self.fit_nodes_bounds(&wanted).is_some();
+        }
         match id {
             "canvas.fit_all" => all,
             "canvas.fit_selection" => selected,
@@ -57,7 +112,7 @@ impl NodeCraftApp {
         if !Self::is_navigation_command(id) {
             return Err(Error::new(ErrorKind::InvalidInput, "not a canvas navigation command"));
         }
-        let context = self.navigation_context(ctx, id);
+        let context = self.navigation_context(ctx, id, params);
         self.navigation_enabled_with_context(context, id, params)
     }
     /// Dispatch through the same engine command/service path used by buttons and shortcuts,
@@ -66,7 +121,7 @@ impl NodeCraftApp {
         if !Self::is_navigation_command(id) {
             return Err(Error::new(ErrorKind::InvalidInput, "not a canvas navigation command"));
         }
-        let context = self.navigation_context(ctx, id);
+        let context = self.navigation_context(ctx, id, params);
         {
             let mut slot = self.navigation_mailbox.try_borrow_mut().map_err(|_| Error::new(ErrorKind::Conflict, "navigation host is busy"))?;
             *slot = None;
@@ -83,9 +138,17 @@ impl NodeCraftApp {
         let mut clamped = false;
         match intent.get("action").and_then(Json::as_str) {
             Some("fit_all" | "fit_selection") => {
-                let selection = if id == "canvas.fit_selection" { Some(&self.selection) } else { None };
                 let t = self.theme.tokens();
-                let bounds = self.navigation.geometry.bounds(selection, t).ok_or_else(|| Error::new(ErrorKind::Conflict, "node geometry is unavailable"))?;
+                let bounds = if id == "canvas.fit_selection" {
+                    if let Some(nodes) = nodecraft_engine::navigation_cmds::requested_nodes(&intent) {
+                        self.fit_nodes_bounds(&nodes.into_iter().collect())
+                    } else {
+                        self.fit_selection_bounds()
+                    }
+                } else {
+                    self.fit_all_bounds()
+                };
+                let bounds = bounds.ok_or_else(|| Error::new(ErrorKind::Conflict, "node geometry is unavailable"))?;
                 let viewport = self.navigation.usable(self.viewport, t);
                 let padding = t.fit_padding + t.title_min_screen_px + t.handle_min_screen_radius;
                 clamped = self.view.fit(viewport, bounds, padding).ok_or_else(|| Error::new(ErrorKind::Conflict, "canvas is too small to fit nodes"))?.clamped;
@@ -108,10 +171,24 @@ impl NodeCraftApp {
         }
         Ok(json!({"zoom":self.view.zoom,"minimap_visible":self.navigation.visible,"clamped":clamped}))
     }
-    pub(super) fn navigation_overlay(&mut self, ui: &mut egui::Ui) -> bool {
+    pub(super) fn minimap_input_owned(&mut self, ctx: &egui::Context) -> bool {
+        if self.navigation.pointer_owned || self.navigation.drag.is_some() {
+            return true;
+        }
+        // The common case needs no geometry or capability query. A fresh press uses
+        // exactly the pan admission and hit-test used by the later overlay capture.
+        if !self.navigation.visible || !ctx.input(|i| i.pointer.primary_pressed()) {
+            return false;
+        }
+        let context = self.navigation_context(ctx, "canvas.pan_to", &json!({"x":0,"y":0}));
+        let pan = self.navigation_enabled_with_context(context, "canvas.pan_to", &json!({"x":0,"y":0})).is_ok() && !self.navigation.geometry.error;
+        self.navigation.press_pending(ctx, self.viewport, pan, self.theme.tokens())
+    }
+    pub(super) fn navigation_overlay(&mut self, ui: &mut egui::Ui, press_admitted: Option<bool>) -> bool {
         // Decide ownership/availability before consuming any key. An editor, popup,
         // unavailable fit or active canvas gesture must retain the original event.
         let [all_context, selected_context, toggle_context, pan_context] = self.navigation_contexts(ui.ctx());
+        let reset_blocked = toggle_context.blocked;
         let all = self.navigation_enabled_with_context(all_context, "canvas.fit_all", &json!({})).is_ok();
         let selected = self.navigation_enabled_with_context(selected_context, "canvas.fit_selection", &json!({})).is_ok();
         let toggle = self.navigation_enabled_with_context(toggle_context, "canvas.minimap_toggle", &json!({})).is_ok();
@@ -144,6 +221,8 @@ impl NodeCraftApp {
                 .get(&drag.id)
                 .map(|node| (drag.id, Vec2::new(drag.pos.x - node.pos.x, drag.pos.y - node.pos.y)))
         });
+        // The minimap shows a collapsed field as its header, as the canvas does (#707).
+        let (membership, collapsed) = self.collapsed_fields(self.view.zoom);
         let (blocked, actions) = self.navigation.show(
             ui,
             crate::navigation::OverlayInput {
@@ -154,15 +233,24 @@ impl NodeCraftApp {
                 selection_enabled: selected,
                 toggle_enabled: toggle,
                 pan_enabled: pan,
+                press_admitted,
                 preview,
+                hidden: &membership.hidden,
+                collapsed: &collapsed,
                 canvas_gesture: self.wiring.is_some()
                     || self.drag.is_some()
                     || self.marquee.is_some()
+                    || self.comments.drag.is_some()
+                    || self.comments.gesture_cancelled
                     || (ui.ctx().dragged_id().is_some() && !self.navigation.pointer_owned),
                 tokens: self.theme.tokens(),
             },
         );
         for (id, params) in actions {
+            // Reset is a view-only action rather than an engine command; share admission.
+            if id == "reset" && reset_blocked {
+                continue;
+            }
             if id == "reset" {
                 let home = self.home();
                 self.view.reset(self.viewport, home);
@@ -298,7 +386,7 @@ mod tests {
                         app.marquee = Some(Marquee { start: Pos2::ZERO, base: Selection::default(), cancelled: false });
                     }
                     app.viewport = ui.max_rect();
-                    app.navigation_overlay(ui);
+                    app.navigation_overlay(ui, None);
                     *observed.borrow_mut() |= ui.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { pressed: true, .. })));
                 },
                 app(),
@@ -446,6 +534,32 @@ mod tests {
         assert_eq!(actual, card::world_rect(&node, None, app.theme.tokens()));
         let decorated = crate::navigation::decorated(actual, app.theme.tokens());
         assert!(app.navigation.usable(app.viewport, app.theme.tokens()).contains_rect(app.view.rect_to_screen(app.viewport.min, decorated)));
+    }
+    #[test]
+    fn an_invalid_unselected_node_does_not_disable_fit_selected() {
+        let mut h = harness();
+        h.run();
+        let ids: Vec<NodeId> = h.state().navigation.geometry.rects.keys().copied().collect();
+        assert!(ids.len() >= 2);
+        let (selected, broken) = (ids[0], ids[1]);
+        // A node whose geometry fails (a corrupt payload or a NaN position) has no rect and marks
+        // the geometry invalid; the cache keeps that until the document changes.
+        let geometry = &mut h.state_mut().navigation.geometry;
+        geometry.rects.remove(&broken);
+        geometry.error = true;
+        h.state_mut().selection.only(selected);
+        let ctx = h.ctx.clone();
+        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_all", &json!({})).is_err(), "Fit all never frames a partial graph");
+        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_selection", &json!({})).is_ok(), "an unselected bad node leaves Fit selected on");
+        h.state_mut().dispatch_navigation(&ctx, "canvas.fit_selection", &json!({})).unwrap();
+        let app = h.state();
+        let t = app.theme.tokens();
+        let decorated = crate::navigation::decorated(app.navigation.geometry.rects[&selected], t);
+        assert!(app.navigation.usable(app.viewport, t).contains_rect(app.view.rect_to_screen(app.viewport.min, decorated)));
+        // A selected visible node without geometry refuses the fit rather than being left out.
+        h.state_mut().selection.add(broken);
+        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_selection", &json!({})).is_err());
+        assert!(h.state_mut().dispatch_navigation(&ctx, "canvas.fit_selection", &json!({})).is_err());
     }
     #[test]
     fn node_text_editor_owns_shifted_navigation_events_without_mutation() {

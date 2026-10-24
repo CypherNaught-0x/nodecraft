@@ -1,0 +1,414 @@
+# Cloud Text-to-Speech on Google Cloud (#21), checked 2026-10-23:
+# https://cloud.google.com/text-to-speech/pricing
+# https://docs.cloud.google.com/text-to-speech/docs/list-voices-and-types
+# https://docs.cloud.google.com/text-to-speech/docs/chirp3-hd
+# https://docs.cloud.google.com/text-to-speech/docs/gemini-tts
+# Signed in with a service account's key file (keychain account "google-cloud"), billed to the
+# account's own project. Every output is MP3.
+# The classic families are priced per character sent, SSML tags included, so their price is known
+# only once the text is; each family is its own model because each has its own price, and the
+# adapter refuses a voice from another family. Free monthly tiers aren't counted.
+# Gemini-TTS bills text tokens in and audio tokens out, and the reply reports neither, so it is
+# priced by usage.
+
+[[model]]
+id="google-tts.chirp3-hd"
+provider="google-tts"
+provider_model="chirp3-hd"
+label="Google TTS Chirp 3: HD"
+description="Google's most natural classic voices, in 30 personas across many languages. Takes text or SSML. Priced per 1000 characters."
+latency_s=3
+quality=5
+pricing={type="per_unit",unit="thousand_characters",price="0.03 USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="en-US-Chirp3-HD-Achernar",label="Achernar"},{value="en-US-Chirp3-HD-Achird",label="Achird"},{value="en-US-Chirp3-HD-Algenib",label="Algenib"},{value="en-US-Chirp3-HD-Algieba",label="Algieba"},{value="en-US-Chirp3-HD-Alnilam",label="Alnilam"},{value="en-US-Chirp3-HD-Aoede",label="Aoede"},{value="en-US-Chirp3-HD-Autonoe",label="Autonoe"},{value="en-US-Chirp3-HD-Callirrhoe",label="Callirrhoe"},{value="en-US-Chirp3-HD-Charon",label="Charon"},{value="en-US-Chirp3-HD-Despina",label="Despina"},{value="en-US-Chirp3-HD-Enceladus",label="Enceladus"},{value="en-US-Chirp3-HD-Erinome",label="Erinome"},{value="en-US-Chirp3-HD-Fenrir",label="Fenrir"},{value="en-US-Chirp3-HD-Gacrux",label="Gacrux"},{value="en-US-Chirp3-HD-Iapetus",label="Iapetus"},{value="en-US-Chirp3-HD-Kore",label="Kore"},{value="en-US-Chirp3-HD-Laomedeia",label="Laomedeia"},{value="en-US-Chirp3-HD-Leda",label="Leda"},{value="en-US-Chirp3-HD-Orus",label="Orus"},{value="en-US-Chirp3-HD-Pulcherrima",label="Pulcherrima"},{value="en-US-Chirp3-HD-Puck",label="Puck"},{value="en-US-Chirp3-HD-Rasalgethi",label="Rasalgethi"},{value="en-US-Chirp3-HD-Sadachbia",label="Sadachbia"},{value="en-US-Chirp3-HD-Sadaltager",label="Sadaltager"},{value="en-US-Chirp3-HD-Schedar",label="Schedar"},{value="en-US-Chirp3-HD-Sulafat",label="Sulafat"},{value="en-US-Chirp3-HD-Umbriel",label="Umbriel"},{value="en-US-Chirp3-HD-Vindemiatrix",label="Vindemiatrix"},{value="en-US-Chirp3-HD-Zephyr",label="Zephyr"},{value="en-US-Chirp3-HD-Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="en-US-Chirp3-HD-Kore"}
+
+[[model.params.params]]
+name="voice_name"
+label="Voice name, any language (overrides Voice)"
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="input_format"
+label="Input"
+control={type="choice",options=[{value="text",label="Text"},{value="ssml",label="SSML"}]}
+default={type="text",value="text"}
+
+[[model.params.params]]
+name="speaking_rate"
+label="Speed"
+control={type="slider",min=0.25,max=2.0,step=0.05}
+default={type="number",value=1.0}
+
+[[model]]
+id="google-tts.neural2"
+provider="google-tts"
+provider_model="neural2"
+label="Google TTS Neural2"
+description="Natural voices with pitch and speed control. Takes text or SSML. Priced per 1000 characters."
+latency_s=3
+quality=4
+pricing={type="per_unit",unit="thousand_characters",price="0.016 USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="en-US-Neural2-A",label="Neural2 A (US English)"},{value="en-US-Neural2-C",label="Neural2 C (US English)"},{value="en-US-Neural2-D",label="Neural2 D (US English)"},{value="en-US-Neural2-E",label="Neural2 E (US English)"},{value="en-US-Neural2-F",label="Neural2 F (US English)"},{value="en-US-Neural2-G",label="Neural2 G (US English)"},{value="en-US-Neural2-H",label="Neural2 H (US English)"},{value="en-US-Neural2-I",label="Neural2 I (US English)"},{value="en-US-Neural2-J",label="Neural2 J (US English)"}]}
+default={type="text",value="en-US-Neural2-F"}
+
+[[model.params.params]]
+name="voice_name"
+label="Voice name, any language (overrides Voice)"
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="input_format"
+label="Input"
+control={type="choice",options=[{value="text",label="Text"},{value="ssml",label="SSML"}]}
+default={type="text",value="text"}
+
+[[model.params.params]]
+name="speaking_rate"
+label="Speed"
+control={type="slider",min=0.25,max=4.0,step=0.05}
+default={type="number",value=1.0}
+
+[[model.params.params]]
+name="pitch"
+label="Pitch (semitones)"
+control={type="slider",min=-20.0,max=20.0,step=0.5}
+default={type="number",value=0.0}
+
+[[model]]
+id="google-tts.wavenet"
+provider="google-tts"
+provider_model="wavenet"
+label="Google TTS WaveNet"
+description="WaveNet voices with pitch and speed control. Takes text or SSML. Priced per 1000 characters."
+latency_s=3
+quality=3
+pricing={type="per_unit",unit="thousand_characters",price="0.004 USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="en-US-Wavenet-A",label="WaveNet A (US English)"},{value="en-US-Wavenet-B",label="WaveNet B (US English)"},{value="en-US-Wavenet-C",label="WaveNet C (US English)"},{value="en-US-Wavenet-D",label="WaveNet D (US English)"},{value="en-US-Wavenet-E",label="WaveNet E (US English)"},{value="en-US-Wavenet-F",label="WaveNet F (US English)"},{value="en-US-Wavenet-G",label="WaveNet G (US English)"},{value="en-US-Wavenet-H",label="WaveNet H (US English)"},{value="en-US-Wavenet-I",label="WaveNet I (US English)"},{value="en-US-Wavenet-J",label="WaveNet J (US English)"}]}
+default={type="text",value="en-US-Wavenet-D"}
+
+[[model.params.params]]
+name="voice_name"
+label="Voice name, any language (overrides Voice)"
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="input_format"
+label="Input"
+control={type="choice",options=[{value="text",label="Text"},{value="ssml",label="SSML"}]}
+default={type="text",value="text"}
+
+[[model.params.params]]
+name="speaking_rate"
+label="Speed"
+control={type="slider",min=0.25,max=4.0,step=0.05}
+default={type="number",value=1.0}
+
+[[model.params.params]]
+name="pitch"
+label="Pitch (semitones)"
+control={type="slider",min=-20.0,max=20.0,step=0.5}
+default={type="number",value=0.0}
+
+[[model]]
+id="google-tts.standard"
+provider="google-tts"
+provider_model="standard"
+label="Google TTS Standard"
+description="The lowest-cost voices, with pitch and speed control. Takes text or SSML. Priced per 1000 characters."
+latency_s=3
+quality=2
+pricing={type="per_unit",unit="thousand_characters",price="0.004 USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="en-US-Standard-A",label="Standard A (US English)"},{value="en-US-Standard-B",label="Standard B (US English)"},{value="en-US-Standard-C",label="Standard C (US English)"},{value="en-US-Standard-D",label="Standard D (US English)"},{value="en-US-Standard-E",label="Standard E (US English)"},{value="en-US-Standard-F",label="Standard F (US English)"},{value="en-US-Standard-G",label="Standard G (US English)"},{value="en-US-Standard-H",label="Standard H (US English)"},{value="en-US-Standard-I",label="Standard I (US English)"},{value="en-US-Standard-J",label="Standard J (US English)"}]}
+default={type="text",value="en-US-Standard-C"}
+
+[[model.params.params]]
+name="voice_name"
+label="Voice name, any language (overrides Voice)"
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="input_format"
+label="Input"
+control={type="choice",options=[{value="text",label="Text"},{value="ssml",label="SSML"}]}
+default={type="text",value="text"}
+
+[[model.params.params]]
+name="speaking_rate"
+label="Speed"
+control={type="slider",min=0.25,max=4.0,step=0.05}
+default={type="number",value=1.0}
+
+[[model.params.params]]
+name="pitch"
+label="Pitch (semitones)"
+control={type="slider",min=-20.0,max=20.0,step=0.5}
+default={type="number",value=0.0}
+
+[[model]]
+id="google-tts.studio"
+provider="google-tts"
+provider_model="studio"
+label="Google TTS Studio"
+description="Studio voices for narration and news reading. Takes text or SSML. Priced per 1000 characters."
+latency_s=3
+quality=4
+pricing={type="per_unit",unit="thousand_characters",price="0.16 USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="en-US-Studio-O",label="Studio O (US English)"},{value="en-US-Studio-Q",label="Studio Q (US English)"}]}
+default={type="text",value="en-US-Studio-O"}
+
+[[model.params.params]]
+name="voice_name"
+label="Voice name, any language (overrides Voice)"
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="input_format"
+label="Input"
+control={type="choice",options=[{value="text",label="Text"},{value="ssml",label="SSML"}]}
+default={type="text",value="text"}
+
+[[model.params.params]]
+name="speaking_rate"
+label="Speed"
+control={type="slider",min=0.25,max=4.0,step=0.05}
+default={type="number",value=1.0}
+
+[[model]]
+id="google-tts.gemini-2.5-pro"
+provider="google-tts"
+provider_model="gemini-2.5-pro-tts"
+label="Gemini 2.5 Pro TTS"
+description="Expressive speech steered by a style prompt, with one voice or a dialogue of two. Billed by tokens."
+latency_s=8
+quality=5
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="Achernar",label="Achernar"},{value="Achird",label="Achird"},{value="Algenib",label="Algenib"},{value="Algieba",label="Algieba"},{value="Alnilam",label="Alnilam"},{value="Aoede",label="Aoede"},{value="Autonoe",label="Autonoe"},{value="Callirrhoe",label="Callirrhoe"},{value="Charon",label="Charon"},{value="Despina",label="Despina"},{value="Enceladus",label="Enceladus"},{value="Erinome",label="Erinome"},{value="Fenrir",label="Fenrir"},{value="Gacrux",label="Gacrux"},{value="Iapetus",label="Iapetus"},{value="Kore",label="Kore"},{value="Laomedeia",label="Laomedeia"},{value="Leda",label="Leda"},{value="Orus",label="Orus"},{value="Pulcherrima",label="Pulcherrima"},{value="Puck",label="Puck"},{value="Rasalgethi",label="Rasalgethi"},{value="Sadachbia",label="Sadachbia"},{value="Sadaltager",label="Sadaltager"},{value="Schedar",label="Schedar"},{value="Sulafat",label="Sulafat"},{value="Umbriel",label="Umbriel"},{value="Vindemiatrix",label="Vindemiatrix"},{value="Zephyr",label="Zephyr"},{value="Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="Kore"}
+
+[[model.params.params]]
+name="style"
+label="Style prompt (optional)"
+control={type="text",multiline=true,max_bytes=4000}
+
+[[model.params.params]]
+name="language_code"
+label="Language (BCP-47)"
+control={type="text",multiline=false,max_bytes=16}
+default={type="text",value="en-US"}
+
+[[model.params.params]]
+name="speaker_1"
+label="Speaker 1 name (dialogue; lines start \"Name:\")"
+control={type="text",multiline=false,max_bytes=32}
+
+[[model.params.params]]
+name="speaker_1_voice"
+label="Speaker 1 voice"
+control={type="choice",options=[{value="Achernar",label="Achernar"},{value="Achird",label="Achird"},{value="Algenib",label="Algenib"},{value="Algieba",label="Algieba"},{value="Alnilam",label="Alnilam"},{value="Aoede",label="Aoede"},{value="Autonoe",label="Autonoe"},{value="Callirrhoe",label="Callirrhoe"},{value="Charon",label="Charon"},{value="Despina",label="Despina"},{value="Enceladus",label="Enceladus"},{value="Erinome",label="Erinome"},{value="Fenrir",label="Fenrir"},{value="Gacrux",label="Gacrux"},{value="Iapetus",label="Iapetus"},{value="Kore",label="Kore"},{value="Laomedeia",label="Laomedeia"},{value="Leda",label="Leda"},{value="Orus",label="Orus"},{value="Pulcherrima",label="Pulcherrima"},{value="Puck",label="Puck"},{value="Rasalgethi",label="Rasalgethi"},{value="Sadachbia",label="Sadachbia"},{value="Sadaltager",label="Sadaltager"},{value="Schedar",label="Schedar"},{value="Sulafat",label="Sulafat"},{value="Umbriel",label="Umbriel"},{value="Vindemiatrix",label="Vindemiatrix"},{value="Zephyr",label="Zephyr"},{value="Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="Kore"}
+
+[[model.params.params]]
+name="speaker_2"
+label="Speaker 2 name (dialogue; lines start \"Name:\")"
+control={type="text",multiline=false,max_bytes=32}
+
+[[model.params.params]]
+name="speaker_2_voice"
+label="Speaker 2 voice"
+control={type="choice",options=[{value="Achernar",label="Achernar"},{value="Achird",label="Achird"},{value="Algenib",label="Algenib"},{value="Algieba",label="Algieba"},{value="Alnilam",label="Alnilam"},{value="Aoede",label="Aoede"},{value="Autonoe",label="Autonoe"},{value="Callirrhoe",label="Callirrhoe"},{value="Charon",label="Charon"},{value="Despina",label="Despina"},{value="Enceladus",label="Enceladus"},{value="Erinome",label="Erinome"},{value="Fenrir",label="Fenrir"},{value="Gacrux",label="Gacrux"},{value="Iapetus",label="Iapetus"},{value="Kore",label="Kore"},{value="Laomedeia",label="Laomedeia"},{value="Leda",label="Leda"},{value="Orus",label="Orus"},{value="Pulcherrima",label="Pulcherrima"},{value="Puck",label="Puck"},{value="Rasalgethi",label="Rasalgethi"},{value="Sadachbia",label="Sadachbia"},{value="Sadaltager",label="Sadaltager"},{value="Schedar",label="Schedar"},{value="Sulafat",label="Sulafat"},{value="Umbriel",label="Umbriel"},{value="Vindemiatrix",label="Vindemiatrix"},{value="Zephyr",label="Zephyr"},{value="Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="Charon"}
+
+[[model]]
+id="google-tts.gemini-2.5-flash"
+provider="google-tts"
+provider_model="gemini-2.5-flash-tts"
+label="Gemini 2.5 Flash TTS"
+description="Fast speech steered by a style prompt, with one voice or a dialogue of two. Billed by tokens."
+latency_s=5
+quality=4
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="Achernar",label="Achernar"},{value="Achird",label="Achird"},{value="Algenib",label="Algenib"},{value="Algieba",label="Algieba"},{value="Alnilam",label="Alnilam"},{value="Aoede",label="Aoede"},{value="Autonoe",label="Autonoe"},{value="Callirrhoe",label="Callirrhoe"},{value="Charon",label="Charon"},{value="Despina",label="Despina"},{value="Enceladus",label="Enceladus"},{value="Erinome",label="Erinome"},{value="Fenrir",label="Fenrir"},{value="Gacrux",label="Gacrux"},{value="Iapetus",label="Iapetus"},{value="Kore",label="Kore"},{value="Laomedeia",label="Laomedeia"},{value="Leda",label="Leda"},{value="Orus",label="Orus"},{value="Pulcherrima",label="Pulcherrima"},{value="Puck",label="Puck"},{value="Rasalgethi",label="Rasalgethi"},{value="Sadachbia",label="Sadachbia"},{value="Sadaltager",label="Sadaltager"},{value="Schedar",label="Schedar"},{value="Sulafat",label="Sulafat"},{value="Umbriel",label="Umbriel"},{value="Vindemiatrix",label="Vindemiatrix"},{value="Zephyr",label="Zephyr"},{value="Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="Kore"}
+
+[[model.params.params]]
+name="style"
+label="Style prompt (optional)"
+control={type="text",multiline=true,max_bytes=4000}
+
+[[model.params.params]]
+name="language_code"
+label="Language (BCP-47)"
+control={type="text",multiline=false,max_bytes=16}
+default={type="text",value="en-US"}
+
+[[model.params.params]]
+name="speaker_1"
+label="Speaker 1 name (dialogue; lines start \"Name:\")"
+control={type="text",multiline=false,max_bytes=32}
+
+[[model.params.params]]
+name="speaker_1_voice"
+label="Speaker 1 voice"
+control={type="choice",options=[{value="Achernar",label="Achernar"},{value="Achird",label="Achird"},{value="Algenib",label="Algenib"},{value="Algieba",label="Algieba"},{value="Alnilam",label="Alnilam"},{value="Aoede",label="Aoede"},{value="Autonoe",label="Autonoe"},{value="Callirrhoe",label="Callirrhoe"},{value="Charon",label="Charon"},{value="Despina",label="Despina"},{value="Enceladus",label="Enceladus"},{value="Erinome",label="Erinome"},{value="Fenrir",label="Fenrir"},{value="Gacrux",label="Gacrux"},{value="Iapetus",label="Iapetus"},{value="Kore",label="Kore"},{value="Laomedeia",label="Laomedeia"},{value="Leda",label="Leda"},{value="Orus",label="Orus"},{value="Pulcherrima",label="Pulcherrima"},{value="Puck",label="Puck"},{value="Rasalgethi",label="Rasalgethi"},{value="Sadachbia",label="Sadachbia"},{value="Sadaltager",label="Sadaltager"},{value="Schedar",label="Schedar"},{value="Sulafat",label="Sulafat"},{value="Umbriel",label="Umbriel"},{value="Vindemiatrix",label="Vindemiatrix"},{value="Zephyr",label="Zephyr"},{value="Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="Kore"}
+
+[[model.params.params]]
+name="speaker_2"
+label="Speaker 2 name (dialogue; lines start \"Name:\")"
+control={type="text",multiline=false,max_bytes=32}
+
+[[model.params.params]]
+name="speaker_2_voice"
+label="Speaker 2 voice"
+control={type="choice",options=[{value="Achernar",label="Achernar"},{value="Achird",label="Achird"},{value="Algenib",label="Algenib"},{value="Algieba",label="Algieba"},{value="Alnilam",label="Alnilam"},{value="Aoede",label="Aoede"},{value="Autonoe",label="Autonoe"},{value="Callirrhoe",label="Callirrhoe"},{value="Charon",label="Charon"},{value="Despina",label="Despina"},{value="Enceladus",label="Enceladus"},{value="Erinome",label="Erinome"},{value="Fenrir",label="Fenrir"},{value="Gacrux",label="Gacrux"},{value="Iapetus",label="Iapetus"},{value="Kore",label="Kore"},{value="Laomedeia",label="Laomedeia"},{value="Leda",label="Leda"},{value="Orus",label="Orus"},{value="Pulcherrima",label="Pulcherrima"},{value="Puck",label="Puck"},{value="Rasalgethi",label="Rasalgethi"},{value="Sadachbia",label="Sadachbia"},{value="Sadaltager",label="Sadaltager"},{value="Schedar",label="Schedar"},{value="Sulafat",label="Sulafat"},{value="Umbriel",label="Umbriel"},{value="Vindemiatrix",label="Vindemiatrix"},{value="Zephyr",label="Zephyr"},{value="Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="Charon"}
+
+[[model]]
+id="google-tts.gemini-3.1-flash"
+provider="google-tts"
+provider_model="gemini-3.1-flash-tts-preview"
+label="Gemini 3.1 Flash TTS (Preview)"
+description="Low-latency speech steered by a style prompt, with one voice or a dialogue of two. Billed by tokens."
+latency_s=5
+quality=4
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="Achernar",label="Achernar"},{value="Achird",label="Achird"},{value="Algenib",label="Algenib"},{value="Algieba",label="Algieba"},{value="Alnilam",label="Alnilam"},{value="Aoede",label="Aoede"},{value="Autonoe",label="Autonoe"},{value="Callirrhoe",label="Callirrhoe"},{value="Charon",label="Charon"},{value="Despina",label="Despina"},{value="Enceladus",label="Enceladus"},{value="Erinome",label="Erinome"},{value="Fenrir",label="Fenrir"},{value="Gacrux",label="Gacrux"},{value="Iapetus",label="Iapetus"},{value="Kore",label="Kore"},{value="Laomedeia",label="Laomedeia"},{value="Leda",label="Leda"},{value="Orus",label="Orus"},{value="Pulcherrima",label="Pulcherrima"},{value="Puck",label="Puck"},{value="Rasalgethi",label="Rasalgethi"},{value="Sadachbia",label="Sadachbia"},{value="Sadaltager",label="Sadaltager"},{value="Schedar",label="Schedar"},{value="Sulafat",label="Sulafat"},{value="Umbriel",label="Umbriel"},{value="Vindemiatrix",label="Vindemiatrix"},{value="Zephyr",label="Zephyr"},{value="Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="Kore"}
+
+[[model.params.params]]
+name="style"
+label="Style prompt (optional)"
+control={type="text",multiline=true,max_bytes=4000}
+
+[[model.params.params]]
+name="language_code"
+label="Language (BCP-47)"
+control={type="text",multiline=false,max_bytes=16}
+default={type="text",value="en-US"}
+
+[[model.params.params]]
+name="speaker_1"
+label="Speaker 1 name (dialogue; lines start \"Name:\")"
+control={type="text",multiline=false,max_bytes=32}
+
+[[model.params.params]]
+name="speaker_1_voice"
+label="Speaker 1 voice"
+control={type="choice",options=[{value="Achernar",label="Achernar"},{value="Achird",label="Achird"},{value="Algenib",label="Algenib"},{value="Algieba",label="Algieba"},{value="Alnilam",label="Alnilam"},{value="Aoede",label="Aoede"},{value="Autonoe",label="Autonoe"},{value="Callirrhoe",label="Callirrhoe"},{value="Charon",label="Charon"},{value="Despina",label="Despina"},{value="Enceladus",label="Enceladus"},{value="Erinome",label="Erinome"},{value="Fenrir",label="Fenrir"},{value="Gacrux",label="Gacrux"},{value="Iapetus",label="Iapetus"},{value="Kore",label="Kore"},{value="Laomedeia",label="Laomedeia"},{value="Leda",label="Leda"},{value="Orus",label="Orus"},{value="Pulcherrima",label="Pulcherrima"},{value="Puck",label="Puck"},{value="Rasalgethi",label="Rasalgethi"},{value="Sadachbia",label="Sadachbia"},{value="Sadaltager",label="Sadaltager"},{value="Schedar",label="Schedar"},{value="Sulafat",label="Sulafat"},{value="Umbriel",label="Umbriel"},{value="Vindemiatrix",label="Vindemiatrix"},{value="Zephyr",label="Zephyr"},{value="Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="Kore"}
+
+[[model.params.params]]
+name="speaker_2"
+label="Speaker 2 name (dialogue; lines start \"Name:\")"
+control={type="text",multiline=false,max_bytes=32}
+
+[[model.params.params]]
+name="speaker_2_voice"
+label="Speaker 2 voice"
+control={type="choice",options=[{value="Achernar",label="Achernar"},{value="Achird",label="Achird"},{value="Algenib",label="Algenib"},{value="Algieba",label="Algieba"},{value="Alnilam",label="Alnilam"},{value="Aoede",label="Aoede"},{value="Autonoe",label="Autonoe"},{value="Callirrhoe",label="Callirrhoe"},{value="Charon",label="Charon"},{value="Despina",label="Despina"},{value="Enceladus",label="Enceladus"},{value="Erinome",label="Erinome"},{value="Fenrir",label="Fenrir"},{value="Gacrux",label="Gacrux"},{value="Iapetus",label="Iapetus"},{value="Kore",label="Kore"},{value="Laomedeia",label="Laomedeia"},{value="Leda",label="Leda"},{value="Orus",label="Orus"},{value="Pulcherrima",label="Pulcherrima"},{value="Puck",label="Puck"},{value="Rasalgethi",label="Rasalgethi"},{value="Sadachbia",label="Sadachbia"},{value="Sadaltager",label="Sadaltager"},{value="Schedar",label="Schedar"},{value="Sulafat",label="Sulafat"},{value="Umbriel",label="Umbriel"},{value="Vindemiatrix",label="Vindemiatrix"},{value="Zephyr",label="Zephyr"},{value="Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="Charon"}
+
+[[model]]
+id="google-tts.gemini-2.5-flash-lite"
+provider="google-tts"
+provider_model="gemini-2.5-flash-lite-preview-tts"
+label="Gemini 2.5 Flash-Lite TTS (Preview)"
+description="The cheapest Gemini speech, one voice, steered by a style prompt. Billed by tokens."
+latency_s=4
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="Achernar",label="Achernar"},{value="Achird",label="Achird"},{value="Algenib",label="Algenib"},{value="Algieba",label="Algieba"},{value="Alnilam",label="Alnilam"},{value="Aoede",label="Aoede"},{value="Autonoe",label="Autonoe"},{value="Callirrhoe",label="Callirrhoe"},{value="Charon",label="Charon"},{value="Despina",label="Despina"},{value="Enceladus",label="Enceladus"},{value="Erinome",label="Erinome"},{value="Fenrir",label="Fenrir"},{value="Gacrux",label="Gacrux"},{value="Iapetus",label="Iapetus"},{value="Kore",label="Kore"},{value="Laomedeia",label="Laomedeia"},{value="Leda",label="Leda"},{value="Orus",label="Orus"},{value="Pulcherrima",label="Pulcherrima"},{value="Puck",label="Puck"},{value="Rasalgethi",label="Rasalgethi"},{value="Sadachbia",label="Sadachbia"},{value="Sadaltager",label="Sadaltager"},{value="Schedar",label="Schedar"},{value="Sulafat",label="Sulafat"},{value="Umbriel",label="Umbriel"},{value="Vindemiatrix",label="Vindemiatrix"},{value="Zephyr",label="Zephyr"},{value="Zubenelgenubi",label="Zubenelgenubi"}]}
+default={type="text",value="Kore"}
+
+[[model.params.params]]
+name="style"
+label="Style prompt (optional)"
+control={type="text",multiline=true,max_bytes=4000}
+
+[[model.params.params]]
+name="language_code"
+label="Language (BCP-47)"
+control={type="text",multiline=false,max_bytes=16}
+default={type="text",value="en-US"}

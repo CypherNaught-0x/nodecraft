@@ -71,9 +71,43 @@ No signing step is needed.
 
 Use the `aarch64` files on ARM machines.
 
+## Web (preview)
+
+`nodecraft-web-<version>.zip` is a static site. Unzip it and serve the folder over HTTP from any
+host or path, for example `python3 -m http.server` inside it, then open the page in a browser with
+WebGPU or WebGL 2. Opening `index.html` from disk does not work, because browsers refuse to load
+WebAssembly from `file://`. The `v0.2.0-rc.1` archive is an older snapshot; do not infer current
+`main` capabilities from that build. On current source, browser project pickers/downloads and
+site-local keys work (#118), and supported cloud cards can run when the provider permits direct
+browser requests. Local endpoints, option lists (#721) and clipboard image paste remain desktop-only;
+see [`../ROADMAP.md`](../ROADMAP.md).
+
+### Live sharing in the browser
+
+The browser can share a project live, or join one, through the same relay as the desktop app
+(`nodecraft-cli relay`). The relay speaks plain WebSocket (`ws://`). A page served over `http://`,
+such as `python3 -m http.server` on your own machine, reaches it directly. A page served over
+`https://` may only open `wss://` connections, so put a TLS proxy (Caddy, nginx, a hosted
+tunnel) in front of the relay and share through its `wss://` address, for example
+`wss://relay.example/`. The desktop app can't reach a `wss://` relay yet: someone joining from
+the desktop needs a `ws://` address for the same relay.
+
+The browser has a single window, so joining replaces the project in the current tab. It is refused
+while that tab has changes of its own; save them first, or join in a new tab.
+
 ## Building from source
 
 See [`development.md`](development.md): `cargo run --release -p nodecraft`.
+
+## Updates
+
+NodeCraft checks GitHub for a newer release at startup (turn it off with **Don't check at
+startup**, or `[updates] check = false`). When the macOS app in Applications, the AppImage or the
+Windows MSI install finds one, **Install update** downloads it in the background and checks its
+signature; **Restart to update** then replaces this copy and reopens your project (unsaved changes
+come back through crash recovery). Restarting waits while a generation runs. Other installs (the
+deb, rpm, Flatpak, the portable zip) say where to get the new version instead. On Windows the
+installer asks for permission as it does when you first install.
 
 ## Settings
 
@@ -102,9 +136,25 @@ zoom_speed = 1.0      # 0.25 to 4
 ```
 
 
-## Optional FFmpeg library integration
+## Optional FFmpeg tools
 
-The optional `nodecraft-media/video` library feature uses explicitly configured user-installed
-FFmpeg/ffprobe and does not bundle or install them. This is not yet a desktop timeline feature.
+The desktop app plays videos on cards with a user-installed FFmpeg and ffprobe; it does not
+bundle or install them. At startup it resolves each tool in this order: an absolute
+`NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` environment override, an absolute path in `[media]`
+settings, then the first executable `ffmpeg` / `ffprobe` on `PATH` (`.exe` on Windows).
+On macOS it then checks `/opt/homebrew/bin` and `/usr/local/bin`, so Homebrew tools are found
+when Finder or the Dock starts the app without the shell’s `PATH`.
+For explicit settings:
+
+```toml
+[media]
+ffmpeg = "/usr/bin/ffmpeg"
+ffprobe = "/usr/bin/ffprobe"
+```
+
+An invalid explicit path does not fall back to another executable. Discovery skips empty and
+relative `PATH` entries, is bounded, and is not saved into settings; restart after changing
+tools or the environment. Without the tools a video card explains how to install or configure
+them. The same pair serves sound playback, video actions and Timeline rendering.
 See [media-video.md](media-video.md) for capabilities, Flatpak/browser limitations and resource
 contracts. Installing NodeCraft alone does not install a video toolchain.

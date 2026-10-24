@@ -1,10 +1,10 @@
 //! The history strip on a card with results (#81): step through them, pick the active one
-//! (what downstream nodes use), and delete, extract or clear them. It only reports intents; the
+//! (what downstream nodes use), and delete, extract, export or clear them. It only reports intents; the
 //! app turns them into `history.*` commands.
 use crate::theme::Tokens;
 use egui::{RichText, Sense};
 use nodecraft_graph::{Generation, Node};
-use nodecraft_types::{GenerationId, Modality, Value};
+use nodecraft_types::{GenerationId, Value};
 
 /// Rows of controls the strip draws: the step controls, then the results.
 pub const ROWS: usize = 2;
@@ -20,6 +20,19 @@ pub enum HistoryIntent {
     Delete(GenerationId),
     /// Extract one output (`port`, `None` for the first) or one item of a list output.
     Extract {
+        generation: GenerationId,
+        port: Option<String>,
+        item: Option<usize>,
+    },
+    /// Save one media output (or list item) to a file; `name` is the suggested file name.
+    Export {
+        generation: GenerationId,
+        port: Option<String>,
+        item: Option<usize>,
+        name: String,
+    },
+    /// Put one text or image output (or list item) on the OS clipboard.
+    Copy {
         generation: GenerationId,
         port: Option<String>,
         item: Option<usize>,
@@ -51,7 +64,7 @@ pub fn preview(generation: &Generation, t: &Tokens) -> String {
             (Some(w), Some(h)) => format!("{} {w}×{h}", asset.mime.essence()),
             _ => asset.mime.essence().to_owned(),
         },
-        Some(Value::List(items)) => format!("{} items", items.len()),
+        Some(Value::List(items)) => format!("{} items", nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty()).count()),
         Some(_) => "A value".to_owned(),
         None => "No output".to_owned(),
     };
@@ -72,22 +85,96 @@ fn clip(text: &str, chars: usize) -> String {
 pub const MAX_EXTRACT_ITEMS: usize = 12;
 
 /// What the Extract menu offers for a result: each output, or each item of a list output (up to
-/// [`MAX_EXTRACT_ITEMS`]), labelled for the menu.
+/// [`MAX_EXTRACT_ITEMS`], a batch-fanned result's media counted one by one), labelled for the menu.
 pub fn extract_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>)> {
     let mut targets = Vec::new();
-    // Only what a source node can hold (text, image, video, audio).
-    let extractable = |port: &nodecraft_graph::Port| !matches!(port.port_type.modality, Modality::Mesh | Modality::Document);
-    for (port, value) in node.outputs.iter().zip(&generation.outputs).filter(|(port, _)| extractable(port)) {
+    // Every modality has a source node to hold it (PDFs since #113).
+    for (port, value) in node.outputs.iter().zip(&generation.outputs) {
         match value {
             Value::List(items) => {
-                for item in 0..items.len().min(MAX_EXTRACT_ITEMS) {
-                    targets.push((format!("{}: item {} of {}", port.name, item + 1, items.len()), Some(port.name.clone()), Some(item)));
+                let count = nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty()).count();
+                for item in 0..count.min(MAX_EXTRACT_ITEMS) {
+                    targets.push((format!("{}: item {} of {}", port.name, item + 1, count), Some(port.name.clone()), Some(item)));
                 }
             }
             _ => targets.push((port.name.clone(), Some(port.name.clone()), None)),
         }
     }
     targets
+}
+
+/// What the Copy menu offers for a result: each text or image output, or each such item of a
+/// list output (up to [`MAX_EXTRACT_ITEMS`]), labelled for the menu.
+pub fn copy_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>)> {
+    let mut targets = Vec::new();
+    for (port, value) in node.outputs.iter().zip(&generation.outputs) {
+        // As `history.copy` decides: text, or media from an image output.
+        let copies = |value: &Value| match value {
+            Value::Text(_) => true,
+            Value::Media(_) => port.port_type.modality == nodecraft_types::Modality::Image,
+            _ => false,
+        };
+        match value {
+            Value::List(items) => {
+                let items = || nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty());
+                let count = items().count();
+                for (item, value) in items().enumerate().take(MAX_EXTRACT_ITEMS) {
+                    if copies(value) {
+                        targets.push((format!("{}: item {} of {}", port.name, item + 1, count), Some(port.name.clone()), Some(item)));
+                    }
+                }
+            }
+            value if copies(value) => targets.push((port.name.clone(), Some(port.name.clone()), None)),
+            _ => {}
+        }
+    }
+    targets
+}
+
+/// What the Export menu offers for a result: each media output, or each media item of a list
+/// output (up to [`MAX_EXTRACT_ITEMS`]), labelled for the menu, with a suggested file name.
+pub fn export_targets(node: &Node, generation: &Generation) -> Vec<(String, Option<String>, Option<usize>, String)> {
+    let mut targets = Vec::new();
+    for (port, value) in node.outputs.iter().zip(&generation.outputs) {
+        match value {
+            Value::List(items) => {
+                let items = || nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty());
+                let count = items().count();
+                for (item, value) in items().enumerate().take(MAX_EXTRACT_ITEMS) {
+                    if let Value::Media(asset) = value {
+                        let label = format!("{}: item {} of {}", port.name, item + 1, count);
+                        targets.push((label, Some(port.name.clone()), Some(item), suggested_name(asset.mime.essence())));
+                    }
+                }
+            }
+            Value::Media(asset) => targets.push((port.name.clone(), Some(port.name.clone()), None, suggested_name(asset.mime.essence()))),
+            _ => {}
+        }
+    }
+    targets
+}
+
+/// The file name the save dialog suggests for a result of type `mime`.
+pub fn suggested_name(mime: &str) -> String {
+    let extension = match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "video/quicktime" => "mov",
+        "audio/mpeg" => "mp3",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/flac" => "flac",
+        "model/gltf-binary" => "glb",
+        "model/gltf+json" => "gltf",
+        "model/obj" => "obj",
+        "application/pdf" => "pdf",
+        _ => "bin",
+    };
+    format!("result.{extension}")
 }
 
 /// Most result chips drawn at once, centred on the active result; the position label and ‹ ›
@@ -216,6 +303,50 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
                         });
                     }
                 }
+                let targets = export_targets(node, generation);
+                match targets.as_slice() {
+                    [(_, port, item, name)] => {
+                        if ui.button("Export…").clicked() {
+                            intent = Some(HistoryIntent::Export { generation: generation.id, port: port.clone(), item: *item, name: name.clone() });
+                            ui.close();
+                        }
+                    }
+                    [] => {
+                        ui.add_enabled(false, egui::Button::new("Export…")).on_disabled_hover_text("Only media results export to a file.");
+                    }
+                    _ => {
+                        ui.menu_button("Export…", |ui| {
+                            for (label, port, item, name) in &targets {
+                                if ui.button(label).clicked() {
+                                    intent = Some(HistoryIntent::Export { generation: generation.id, port: port.clone(), item: *item, name: name.clone() });
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                }
+                let targets = copy_targets(node, generation);
+                match targets.as_slice() {
+                    [(_, port, item)] => {
+                        if ui.button("Copy").clicked() {
+                            intent = Some(HistoryIntent::Copy { generation: generation.id, port: port.clone(), item: *item });
+                            ui.close();
+                        }
+                    }
+                    [] => {
+                        ui.add_enabled(false, egui::Button::new("Copy")).on_disabled_hover_text("Only text and image results copy.");
+                    }
+                    _ => {
+                        ui.menu_button("Copy", |ui| {
+                            for (label, port, item) in &targets {
+                                if ui.button(label).clicked() {
+                                    intent = Some(HistoryIntent::Copy { generation: generation.id, port: port.clone(), item: *item });
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                }
                 if ui.button("Delete result").clicked() {
                     intent = Some(HistoryIntent::Delete(generation.id));
                     ui.close();
@@ -242,7 +373,7 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
 mod tests {
     use super::*;
     use nodecraft_graph::Port;
-    use nodecraft_types::{NodeId, PortType};
+    use nodecraft_types::{Modality, NodeId, PortType};
 
     fn result(outputs: Vec<Value>) -> Generation {
         Generation::new(GenerationId::from_bytes([1; 16]), outputs)
@@ -271,9 +402,20 @@ mod tests {
         assert_eq!(targets.len(), 1 + MAX_EXTRACT_ITEMS);
         assert_eq!(targets[0], ("caption".into(), Some("caption".into()), None));
         assert_eq!(targets[1], ("takes: item 1 of 20".into(), Some("takes".into()), Some(0)));
-        node.outputs.push(Port { name: "mesh".into(), port_type: PortType { modality: Modality::Mesh, many: false } });
+        node.outputs.push(Port { name: "report".into(), port_type: PortType { modality: Modality::Document, many: false } });
         let targets = extract_targets(&node, &result(vec![Value::Text("c".into()), Value::List(vec![]), Value::Text("m".into())]));
-        assert_eq!(targets.len(), 1, "an empty list and a mesh output offer nothing");
+        assert_eq!(targets.len(), 2, "an empty list offers nothing; a document output is offered");
+        assert_eq!(targets[1], ("report".into(), Some("report".into()), None));
+        // A batch-fanned result offers its values one by one, not each item's list (#519).
+        let texts = |t: &[&str]| t.iter().map(|t| Value::Text((*t).into())).collect::<Vec<_>>();
+        let fanned = Value::List(vec![Value::List(texts(&["a", "b"])), Value::List(texts(&["c"]))]);
+        let key = |n: u8| nodecraft_graph::ItemKey { batch: NodeId::from_bytes([30; 16]), item: nodecraft_types::ItemId::from_bytes([n; 16]) };
+        let by_items = |outputs: Vec<Value>| Generation { items: vec![vec![key(1)], vec![key(2)]], ..result(outputs) };
+        let targets = extract_targets(&node, &by_items(vec![Value::Text("c".into()), fanned.clone(), Value::Text("m".into())]));
+        assert_eq!(targets.iter().rev().nth(1), Some(&("takes: item 3 of 3".into(), Some("takes".into()), Some(2))), "the last item, then the document");
+        assert_eq!(preview(&by_items(vec![fanned.clone()]), &crate::theme::DARK), "3 items");
+        // A list of lists no batch made is two values.
+        assert_eq!(preview(&result(vec![fanned]), &crate::theme::DARK), "2 items");
     }
 
     #[test]

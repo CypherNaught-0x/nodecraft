@@ -85,10 +85,91 @@ fn refuses_what_it_cannot_connect_and_leaves_the_document_alone() {
 fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     let kinds = Registry::builtins().unwrap();
     let ids = |output| kinds_accepting(&kinds, output).into_iter().map(|d| d.id.as_str()).collect::<Vec<_>>();
-    for modality in [Modality::Text, Modality::Image, Modality::Video, Modality::Audio] {
-        assert_eq!(ids(PortType { modality, many: false }), [router::ID], "{modality:?}");
-        assert_eq!(ids(PortType { modality, many: true }), [router::ID], "a router takes a list too");
-    }
+    // Action kinds (#410) take one item; a list goes into a router, a batch (#92) or a list
+    // input (Join). Routers and batches take any modality, one item or a list.
+    let image_actions = [
+        "image.aspect",
+        "image.blur",
+        "image.crop",
+        "image.duplicate",
+        "image.expand",
+        "image.filter",
+        "image.flip",
+        "image.grade",
+        "image.key",
+        "image.layers",
+        "image.mask",
+        "image.overlay",
+        "image.replace_color",
+        "image.resize",
+        "image.rotate",
+        "image.shader",
+        "image.tint",
+    ];
+    let mut image_one: Vec<&str> = image_actions.to_vec();
+    // A picture can be a still on a timeline (#576) or panned and zoomed into a video (#108).
+    image_one.extend([
+        nodecraft_nodes::batch::ID,
+        router::ID,
+        nodecraft_nodes::element::ID,
+        nodecraft_nodes::timeline::ID,
+        nodecraft_nodes::video_frames::KEN_BURNS,
+    ]);
+    image_one.sort();
+    let mut got = ids(PortType { modality: Modality::Image, many: false });
+    got.sort();
+    assert_eq!(got, image_one);
+    let mut text_one = ids(PortType { modality: Modality::Text, many: false });
+    text_one.sort();
+    assert_eq!(text_one, [nodecraft_nodes::batch::ID, router::ID, "text.concat", "text.replace", "text.split", "text.template"]);
+    let mut text_many = ids(PortType { modality: Modality::Text, many: true });
+    text_many.sort();
+    assert_eq!(text_many, [nodecraft_nodes::batch::ID, router::ID, "text.concat", "text.template"], "only list inputs take a list");
+    assert_eq!(
+        ids(PortType { modality: Modality::Image, many: true }),
+        [nodecraft_nodes::element::ID, nodecraft_nodes::layers::ID, nodecraft_nodes::batch::ID, router::ID, nodecraft_nodes::timeline::ID],
+        "an Element, the Layer Editor and a Timeline take a list of images"
+    );
+    use nodecraft_nodes::video_edit::{REPLACE_AUDIO, SPEED, STITCH, TRIM};
+    use nodecraft_nodes::video_frames::{CONTACT_SHEET, FRAMES, LONG_EXPOSURE, REVERSE};
+    use nodecraft_nodes::video_look::{DUPLICATE, FILTER, GRADE, KEY, WATERMARK};
+    use nodecraft_nodes::video_split::{EXTRACT_AUDIO, SPLIT};
+    let (batch, timeline) = (nodecraft_nodes::batch::ID, nodecraft_nodes::timeline::ID);
+    let mut video_one = ids(PortType { modality: Modality::Video, many: false });
+    video_one.sort();
+    let mut want = vec![
+        batch,
+        router::ID,
+        CONTACT_SHEET,
+        FRAMES,
+        LONG_EXPOSURE,
+        REPLACE_AUDIO,
+        REVERSE,
+        SPEED,
+        STITCH,
+        timeline,
+        TRIM,
+        DUPLICATE,
+        FILTER,
+        GRADE,
+        KEY,
+        WATERMARK,
+        SPLIT,
+        EXTRACT_AUDIO,
+    ];
+    want.sort();
+    assert_eq!(video_one, want, "a Timeline and the video actions take a video");
+    assert_eq!(
+        ids(PortType { modality: Modality::Video, many: true }),
+        [batch, router::ID, STITCH, timeline],
+        "only Stitch and a Timeline take a list of videos"
+    );
+    assert_eq!(
+        ids(PortType { modality: Modality::Audio, many: false }),
+        [batch, router::ID, REPLACE_AUDIO, timeline],
+        "a Timeline and Replace sound take a sound"
+    );
+    assert_eq!(ids(PortType { modality: Modality::Audio, many: true }), [batch, router::ID, timeline], "a Timeline takes sounds");
     assert!(compatible(PortType { modality: Modality::Text, many: false }, PortType { modality: Modality::Text, many: true }));
     assert!(!compatible(PortType { modality: Modality::Text, many: true }, PortType { modality: Modality::Text, many: false }));
     assert!(!compatible(PortType { modality: Modality::Text, many: false }, PortType { modality: Modality::Image, many: false }));

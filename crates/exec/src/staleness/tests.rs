@@ -88,7 +88,14 @@ fn stamp(project: &mut Project, kinds: &Registry, n: u8) {
     let hash = input_hash(project.canvases().get(&C).unwrap(), kinds, id(n)).unwrap();
     let serial = project.canvases().get(&C).unwrap().nodes().get(&id(n)).unwrap().history.len();
     let g = generation(n.wrapping_mul(16).wrapping_add(u8::try_from(serial).unwrap()));
-    let result = Generation { id: g, outputs: vec![Value::Text(format!("result {n}.{serial}"))], input_hash: Some(hash) };
+    let result = Generation {
+        id: g,
+        outputs: vec![Value::Text(format!("result {n}.{serial}"))],
+        input_hash: Some(hash),
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    };
     Changeset::new(vec![
         Change::AddGeneration { canvas: C, id: id(n), index: serial, generation: result },
         Change::SetActiveGeneration { canvas: C, id: id(n), generation: Some(g) },
@@ -138,6 +145,76 @@ fn hidden_parameters_do_not_count_until_they_show() {
     assert!(stale_of(&p).is_empty());
     set_param(&mut p, 2, "style", "fine");
     assert!(stale_of(&p).contains(&id(2)));
+}
+
+/// `Gen` whose `note` parameter declares `identity: false` (#162): it is sent, never hashed.
+struct Quiet(Gen);
+impl NodeKind for Quiet {
+    fn descriptor(&self) -> &NodeDescriptor {
+        self.0.descriptor()
+    }
+    fn contract(&self, descriptor: &NodeDescriptor) -> nodecraft_nodes::NodeContract {
+        let mut contract = nodecraft_nodes::NodeContract::derive(descriptor);
+        contract.params.rules = descriptor
+            .params
+            .params
+            .iter()
+            .map(|spec| nodecraft_types::ParamRule {
+                affects: nodecraft_types::Affects { identity: spec.name != "note", ..Default::default() },
+                ..nodecraft_types::ParamRule::implied(&spec.name)
+            })
+            .collect();
+        contract
+    }
+    fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
+        self.0.mode(inputs)
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        self.0.plan(ctx)
+    }
+}
+
+#[test]
+fn parameters_declared_outside_identity_are_sent_but_keep_results_fresh() {
+    let mut kinds = Registry::builtins().unwrap();
+    let text = |name: &str| ParamSpec {
+        name: name.into(),
+        label: name.into(),
+        description: None,
+        control: ParamControl::Text { multiline: false, max_bytes: 1024 },
+        required: false,
+        default: Some(Value::Text("plain".into())),
+        visible_if: None,
+    };
+    let descriptor = NodeDescriptor {
+        id: "test.quiet".into(),
+        label: "Quiet".into(),
+        category: Category::Generation,
+        inputs: vec![],
+        outputs: vec![Port { name: "out".into(), port_type: TEXT }],
+        params: ParamSchema { params: vec![text("style"), text("note")] },
+        quick_add: None,
+    };
+    kinds.register(Box::new(Quiet(Gen(descriptor)))).unwrap();
+    let mut p = Project::new(ProjectId::from_bytes([2; 16]), "Quiet").unwrap();
+    let node = kinds.get("test.quiet").unwrap().descriptor().instantiate(id(2), &Default::default()).unwrap();
+    Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }, Change::AddNode { canvas: C, node }]).apply(&mut p).unwrap();
+    stamp(&mut p, &kinds, 2);
+    let stale_now = |p: &Project| stale(p.canvases().get(&C).unwrap(), &kinds).unwrap();
+
+    set_param(&mut p, 2, "note", "a reminder");
+    assert!(stale_now(&p).is_empty(), "a note outside identity keeps the result fresh");
+    let node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap();
+    let resolved = kinds.get("test.quiet").unwrap().validate_instance(node, true).unwrap();
+    assert_eq!(
+        resolved.visible_values().find(|(name, _)| *name == "note").map(|(_, v)| v.clone()),
+        Some(Value::Text("a reminder".into())),
+        "but it is still sent"
+    );
+    assert_eq!(resolved.identity_values().map(|(name, _)| name.as_str()).collect::<Vec<_>>(), ["style"]);
+
+    set_param(&mut p, 2, "style", "bold");
+    assert_eq!(stale_now(&p), [id(2)].into_iter().collect(), "an identity parameter still counts");
 }
 
 #[test]
@@ -356,7 +433,14 @@ fn a_large_source_fanned_out_is_hashed_once_and_oversized_queries_are_refused() 
             canvas: C,
             id: gen_id(i),
             index: 0,
-            generation: Generation { id: g, outputs: vec![Value::Text("r".into())], input_hash: Some(hash) },
+            generation: Generation {
+                id: g,
+                outputs: vec![Value::Text("r".into())],
+                input_hash: Some(hash),
+                items: Vec::new(),
+                settings: Vec::new(),
+                incomplete: None,
+            },
         });
         stamps.push(Change::SetActiveGeneration { canvas: C, id: gen_id(i), generation: Some(g) });
     }
@@ -458,6 +542,11 @@ fn effective_default_and_stored_payloads_have_identical_hashes_and_admission_bou
                     sample_rate: Some(u32::MAX),
                     channels: Some(u16::MAX),
                     page_count: Some(u32::MAX),
+                    vertices: Some(u32::MAX),
+                    triangles: Some(u32::MAX),
+                    has_alpha: Some(true),
+                    bits_per_channel: Some(u8::MAX),
+                    color_space: Some(nodecraft_types::ColorSpace::IccProfile),
                 },
             }),
         ),
@@ -534,6 +623,11 @@ fn scalar_and_media_reservations_cover_json_before_serialization_and_keep_v2_byt
                 sample_rate: Some(u32::MAX),
                 channels: Some(u16::MAX),
                 page_count: Some(u32::MAX),
+                vertices: Some(u32::MAX),
+                triangles: Some(u32::MAX),
+                has_alpha: Some(true),
+                bits_per_channel: Some(u8::MAX),
+                color_space: Some(nodecraft_types::ColorSpace::IccProfile),
             },
         }),
     ];
@@ -656,6 +750,7 @@ impl NodeKind for Validated {
         Ok(nodecraft_nodes::ResolvedParams {
             values: [("effective".into(), Value::Text(value))].into_iter().collect(),
             visible: ["effective".into()].into_iter().collect(),
+            unhashed: Default::default(),
         })
     }
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId> {
@@ -806,7 +901,14 @@ fn diagnostic_results(project: &mut Project) {
     for n in [20, 21] {
         let mut node = project.canvases().get(&C).unwrap().nodes().get(&id(n)).unwrap().clone();
         let generation = GenerationId::from_bytes([n; 16]);
-        node.history.push(Generation { id: generation, outputs: vec![], input_hash: Some(Blake3::from_bytes([0; 32])) });
+        node.history.push(Generation {
+            id: generation,
+            outputs: vec![],
+            input_hash: Some(Blake3::from_bytes([0; 32])),
+            items: Vec::new(),
+            settings: Vec::new(),
+            incomplete: None,
+        });
         node.active = Some(generation);
         Change::SetNode { canvas: C, node }.apply(project).unwrap();
     }
@@ -920,7 +1022,14 @@ fn report_shared_rejected_source_reuses_cache_and_target_rejection_names_target(
     assert_eq!(calls.swap(0, std::sync::atomic::Ordering::SeqCst), 1);
     let mut source = project.canvases().get(&C).unwrap().nodes().get(&id(1)).unwrap().clone();
     let generation = GenerationId::from_bytes([1; 16]);
-    source.history.push(Generation { id: generation, outputs: vec![], input_hash: Some(Blake3::from_bytes([0; 32])) });
+    source.history.push(Generation {
+        id: generation,
+        outputs: vec![],
+        input_hash: Some(Blake3::from_bytes([0; 32])),
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    });
     source.active = Some(generation);
     Change::SetNode { canvas: C, node: source }.apply(&mut project).unwrap();
     let report = stale_report(project.canvases().get(&C).unwrap(), &kinds).unwrap();
@@ -1204,4 +1313,75 @@ fn report_credit_is_consumed_once_without_double_charge_or_sticky_refusal_escape
     assert!(refused.meter.charge(1).is_err());
     assert!(refused.reported(id(20), InvalidHash::Router(id(1))).is_err());
     assert_eq!(refused.diagnostic_output_bytes, 0);
+}
+
+#[test]
+fn a_chain_of_batches_deeper_than_the_limit_is_unknown_not_a_stack_overflow() {
+    let kinds = kinds();
+    let mut project = Project::new(ProjectId::from_bytes([2; 16]), "Deep").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    let depth = u8::try_from(MAX_BATCH_DEPTH + 8).unwrap();
+    let mut changes = Vec::new();
+    for n in 1..=depth {
+        let mut batch = kinds.get(nodecraft_nodes::batch::ID).unwrap().instantiate_instance(id(n), Default::default(), &Default::default()).unwrap();
+        batch.params.insert("text".into(), Value::Text("a".into()));
+        changes.push(Change::AddNode { canvas: C, node: batch });
+    }
+    let sink = depth + 1;
+    changes.push(Change::AddNode { canvas: C, node: kinds.get("test.gen").unwrap().descriptor().instantiate(id(sink), &Default::default()).unwrap() });
+    for n in 1..=depth {
+        let from = Endpoint { node: id(n), port: "item".into() };
+        let to = Endpoint { node: id(n + 1), port: "in".into() };
+        changes.push(Change::Connect { canvas: C, edge: Edge { id: EdgeId::from_bytes([n; 16]), from, to, order: 0 } });
+    }
+    Changeset::new(changes).apply(&mut project).unwrap();
+    let canvas = project.canvases().get(&C).unwrap();
+    assert!(input_hash(canvas, &kinds, id(sink)).is_err(), "too deep to know");
+    assert!(input_hash(canvas, &kinds, id(2)).is_ok(), "a shallow batch still hashes");
+    assert!(stale(canvas, &kinds).unwrap().is_empty());
+}
+
+/// `test.gen` again, its input declared as fanning out over a batch (like a Generate prompt).
+struct FanGen(NodeDescriptor);
+impl NodeKind for FanGen {
+    fn descriptor(&self) -> &NodeDescriptor {
+        &self.0
+    }
+    fn contract(&self, descriptor: &NodeDescriptor) -> nodecraft_nodes::NodeContract {
+        let mut contract = nodecraft_nodes::NodeContract::derive(descriptor);
+        for input in &mut contract.inputs {
+            input.fans_out = true;
+        }
+        contract
+    }
+    fn mode(&self, _: &[PortType]) -> Option<ModeId> {
+        ModeId::new("gen").ok()
+    }
+    fn plan(&self, _: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        Ok(vec![])
+    }
+}
+
+#[test]
+fn declaring_a_fan_out_changes_hashes_only_where_a_batch_feeds_it() {
+    let plain = kinds();
+    let mut fanning = Registry::builtins().unwrap();
+    fanning.register(Box::new(FanGen(plain.get("test.gen").unwrap().descriptor().clone()))).unwrap();
+    let mut project = project();
+    let hashes = |project: &Project, kinds: &Registry| [2u8, 3].map(|n| input_hash(project.canvases().get(&C).unwrap(), kinds, id(n)).unwrap());
+    assert_eq!(hashes(&project, &plain), hashes(&project, &fanning), "no batch upstream: the declaration alone stales nothing");
+
+    let mut batch = plain.get(nodecraft_nodes::batch::ID).unwrap().instantiate_instance(id(5), Default::default(), &Default::default()).unwrap();
+    batch.params.insert("text".into(), Value::Text("a\nb".into()));
+    let item = Edge {
+        id: EdgeId::from_bytes([12; 16]),
+        from: Endpoint { node: id(5), port: "item".into() },
+        to: Endpoint { node: id(2), port: "in".into() },
+        order: 1,
+    };
+    Changeset::new(vec![Change::AddNode { canvas: C, node: batch }, Change::Connect { canvas: C, edge: item }]).apply(&mut project).unwrap();
+    let [two, three] = hashes(&project, &plain);
+    let [fanned_two, fanned_three] = hashes(&project, &fanning);
+    assert_ne!(two, fanned_two, "a batch into a fanning input is part of the recipe");
+    assert_ne!(three, fanned_three, "and so is a fanned result reaching the next fanning input");
 }

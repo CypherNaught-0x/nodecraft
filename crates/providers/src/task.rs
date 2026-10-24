@@ -6,8 +6,9 @@ use std::fmt;
 use futures::FutureExt;
 
 use crate::http::{Http, HttpRequest};
-use crate::provider::{BoxFuture, CancelSignal, Clock, Completed, JobProgress, Provider, ProviderJob, Submission};
+use crate::provider::{BoxFuture, CancelSignal, Clock, Completed, JobProgress, Provider, ProviderJob, StagedSubmit, Stager, Submission};
 use crate::{ErrorKind, JobHandle, ProviderError};
+use std::sync::Arc;
 
 /// How long a job may take overall before it counts as expired.
 pub const DEFAULT_JOB_DEADLINE_MS: u64 = 60 * 60 * 1000;
@@ -23,11 +24,19 @@ pub struct RunLimits {
     pub max_poll_interval_ms: u64,
     /// Consecutive transient poll failures tolerated (each retried after backoff).
     pub max_poll_errors: u32,
+    /// Ask providers that answer in text to stream it, reported as [`RunUpdate::Text`] (#504).
+    /// Off by default: only a host that shows the answer as it arrives needs it.
+    pub stream_text: bool,
+    /// Ask providers that can to report a preview of a result while it arrives, as
+    /// [`JobProgress::Running`] with `partial` (#671): the speech audio received so far, say.
+    /// Off by default: each preview is a copy of what arrived, so only a host that shows them
+    /// needs it.
+    pub stream_previews: bool,
 }
 
 impl Default for RunLimits {
     fn default() -> Self {
-        Self { deadline_ms: DEFAULT_JOB_DEADLINE_MS, max_poll_interval_ms: 30_000, max_poll_errors: 5 }
+        Self { deadline_ms: DEFAULT_JOB_DEADLINE_MS, max_poll_interval_ms: 30_000, max_poll_errors: 5, stream_text: false, stream_previews: false }
     }
 }
 
@@ -39,6 +48,13 @@ pub enum RunUpdate {
     Progress(JobProgress),
     /// A poll failed and will be retried (shown as "connection lost, retrying").
     PollRetry(ProviderError),
+    /// The job was cancelled, but the provider refused to stop it or didn't confirm it did (the
+    /// reason). It may still run and be billed, so it is followed to the end like any other job.
+    CancelRefused(String),
+    /// The next piece of a text answer as it streams (with [`RunLimits::stream_text`]), at most
+    /// [`crate::MAX_TEXT_DELTA`] bytes, and [`crate::MAX_STREAMED_TEXT`] over the whole submit.
+    /// The pieces are for showing; the whole answer still arrives as the result.
+    Text(String),
 }
 
 /// A failed run. When `handle` is set the job reached the provider (and may be billed, or still
@@ -84,10 +100,56 @@ impl std::error::Error for RunFailure {}
 
 /// Submits `job` and, for queue-style providers, polls until it finishes, fails, is cancelled or
 /// runs past the deadline. Cancellation interrupts waiting and polling alike; the provider is then
-/// asked to stop (time-limited), and the error says if it couldn't be.
+/// asked to stop (time-limited). If it refuses or doesn't confirm, the job may still run and be
+/// billed, so it is reported ([`RunUpdate::CancelRefused`]) and polled to its end as usual.
 pub async fn run_to_completion(
     provider: &dyn Provider,
     job: &ProviderJob,
+    cancel: &dyn CancelSignal,
+    clock: &dyn Clock,
+    limits: RunLimits,
+    on_update: impl FnMut(RunUpdate),
+) -> Result<Completed, RunFailure> {
+    send(provider, Sending::Fresh(job, None), cancel, clock, limits, on_update).await
+}
+
+/// [`run_to_completion`], saving through `stager` the paid request an adapter stages before it
+/// sends it (#664), so a restart can [`replay`] it.
+pub async fn run_to_completion_staged(
+    provider: &dyn Provider,
+    job: &ProviderJob,
+    stager: Option<Arc<Stager>>,
+    cancel: &dyn CancelSignal,
+    clock: &dyn Clock,
+    limits: RunLimits,
+    on_update: impl FnMut(RunUpdate),
+) -> Result<Completed, RunFailure> {
+    send(provider, Sending::Fresh(job, stager), cancel, clock, limits, on_update).await
+}
+
+/// Sends again a request staged before a restart ([`Provider::replay`]) and follows it to the
+/// end like [`run_to_completion`].
+pub async fn replay(
+    provider: &dyn Provider,
+    job: &ProviderJob,
+    staged: &StagedSubmit,
+    cancel: &dyn CancelSignal,
+    clock: &dyn Clock,
+    limits: RunLimits,
+    on_update: impl FnMut(RunUpdate),
+) -> Result<Completed, RunFailure> {
+    send(provider, Sending::Replay(job, staged), cancel, clock, limits, on_update).await
+}
+
+/// What [`send`] sends: a job afresh, or a request staged before a restart.
+enum Sending<'a> {
+    Fresh(&'a ProviderJob, Option<Arc<Stager>>),
+    Replay(&'a ProviderJob, &'a StagedSubmit),
+}
+
+async fn send(
+    provider: &dyn Provider,
+    sending: Sending<'_>,
     cancel: &dyn CancelSignal,
     clock: &dyn Clock,
     limits: RunLimits,
@@ -96,8 +158,28 @@ pub async fn run_to_completion(
     if cancel.is_cancelled() {
         return Err(RunFailure::before_submit(ProviderError::new(ErrorKind::Cancelled, "cancelled before it started")));
     }
-    let context = crate::SubmitContext::new();
-    let submitted = race(provider.submit_with_delivery(job, &context), cancel).await;
+    let context = if limits.stream_text { crate::SubmitContext::streaming_text() } else { crate::SubmitContext::new() };
+    let context = context.with_previews(limits.stream_previews);
+    let (context, job, staged) = match sending {
+        Sending::Fresh(job, stager) => (context.with_stager(stager), job, None),
+        Sending::Replay(job, staged) => (context, job, Some(staged)),
+    };
+    let submitted = {
+        let mut submit = match staged {
+            Some(staged) => provider.replay(job, staged, &context),
+            None => provider.submit_with_delivery(job, &context),
+        };
+        let on_update = &mut on_update;
+        // Each time the submit makes progress, report the text it streamed meanwhile.
+        let streamed = futures::future::poll_fn(|cx| {
+            let polled = submit.as_mut().poll(cx);
+            report_streamed(&context, on_update);
+            polled
+        });
+        race(streamed, cancel).await
+    };
+    // What streamed just before a cancel won the race.
+    report_streamed(&context, &mut on_update);
     let handle = match submitted {
         // Cancelled while submitting: we can't know whether the provider accepted it.
         None => return Err(RunFailure::submit_failed(ProviderError::new(ErrorKind::Cancelled, "cancelled while submitting"), false)),
@@ -107,6 +189,16 @@ pub async fn run_to_completion(
     };
     on_update(RunUpdate::Submitted(handle.clone()));
     resume(provider, &handle, cancel, clock, limits, on_update).await
+}
+
+/// Reports the text and the latest preview a submit streamed since the last call.
+fn report_streamed(context: &crate::SubmitContext, on_update: &mut impl FnMut(RunUpdate)) {
+    for piece in context.take_text() {
+        on_update(RunUpdate::Text(piece));
+    }
+    if let Some(partial) = context.take_preview() {
+        on_update(RunUpdate::Progress(JobProgress::Running { fraction: None, message: None, partial: Some(partial) }));
+    }
 }
 
 /// Polls an already submitted job to the end (after a restart, or a retry of a failed run that
@@ -122,6 +214,7 @@ pub async fn resume(
     let fail = |error: ProviderError| RunFailure { error, handle: Some(handle.clone()), finished: false, uncertain: false };
     let started = clock.now_ms();
     let mut poll_errors: u32 = 0;
+    let mut refused = false;
     let max_interval = limits.max_poll_interval_ms.max(1);
     let mut interval = provider.poll_interval_ms(&JobProgress::Queued { position: None }).clamp(1, max_interval);
     loop {
@@ -132,17 +225,21 @@ pub async fn resume(
         }
         // Wait for the next poll, then poll; cancellation interrupts either.
         let wait = interval.min(limits.deadline_ms.saturating_sub(elapsed)).max(1);
-        let polled = race(
-            async {
-                clock.sleep(wait).await;
-                provider.poll(handle).await
-            },
-            cancel,
-        )
-        .await;
+        let next = async {
+            clock.sleep(wait).await;
+            provider.poll(handle).await
+        };
+        // Once the provider refused to stop it, the cancel has done all it can.
+        let polled = if refused { Some(next.await) } else { race(next, cancel).await };
         let Some(polled) = polled else {
             let note = stop(provider, handle, clock).await;
-            return Err(fail(ProviderError::new(ErrorKind::Cancelled, format!("cancelled{note}"))));
+            if note.is_empty() {
+                return Err(fail(ProviderError::new(ErrorKind::Cancelled, "cancelled")));
+            }
+            // It may still run and be billed: keep polling, so a result it is billed for arrives.
+            refused = true;
+            on_update(RunUpdate::CancelRefused(note.trim_start_matches("; ").to_owned()));
+            continue;
         };
         match polled {
             Ok(JobProgress::Done(done)) => return Ok(done),
@@ -181,7 +278,8 @@ async fn race<T>(work: impl std::future::Future<Output = T>, cancel: &dyn Cancel
 async fn stop(provider: &dyn Provider, handle: &JobHandle, clock: &dyn Clock) -> String {
     let mut cancel = provider.cancel(handle).fuse();
     let mut timeout: futures::future::Fuse<BoxFuture<'static, ()>> = clock.sleep(CANCEL_TIMEOUT_MS).fuse();
-    let result = futures::select! {
+    // Biased: an answer that is ready counts, even if the timeout is ready too.
+    let result = futures::select_biased! {
         r = cancel => Some(r),
         () = timeout => None,
     };
@@ -507,9 +605,9 @@ mod tests {
         assert!(!f.uncertain, "it never reached the provider");
 
         // Cancelled while polling: resume() races the poll against the signal.
-        let p = Scripted { cancel_result: Err(ProviderError::new(ErrorKind::Network, "down")), ..Scripted::new(vec![]) };
         let flag = Flag::default();
         let handle = JobHandle { remote_id: "x".into(), data: serde_json::Value::Null };
+        let p = Scripted::new(vec![]);
         let mut polls = 0;
         let f = block_on(resume(&p, &handle, &flag, &p.clock, RunLimits::default(), |_| {
             polls += 1;
@@ -520,7 +618,27 @@ mod tests {
         .unwrap_err();
         assert_eq!(f.error.kind, ErrorKind::Cancelled);
         assert!(p.cancelled.load(Ordering::SeqCst), "the provider is asked to cancel");
-        assert!(f.error.message.contains("may still run and be billed"), "{}", f.error);
+
+        // A provider that refuses the cancel keeps the job: it is reported and followed to the end,
+        // so the result it bills for still arrives.
+        let running = || Ok(JobProgress::Running { fraction: None, message: None, partial: None });
+        let p = Scripted {
+            cancel_result: Err(ProviderError::new(ErrorKind::Network, "down")),
+            ..Scripted::new(vec![running(), running(), running(), Ok(JobProgress::Done(Completed::new(vec![Output::Text("kept".into())])))])
+        };
+        let flag = Flag::default();
+        let mut updates = Vec::new();
+        let finished = block_on(resume(&p, &handle, &flag, &p.clock, RunLimits::default(), |update| {
+            if matches!(update, RunUpdate::Progress(_)) && updates.len() == 1 {
+                flag.0.store(true, Ordering::SeqCst);
+            }
+            updates.push(update);
+        }));
+        assert!(finished.is_ok(), "{finished:?}");
+        assert!(p.cancelled.load(Ordering::SeqCst), "the provider is asked to cancel");
+        let refused: Vec<&String> = updates.iter().filter_map(|u| if let RunUpdate::CancelRefused(why) = u { Some(why) } else { None }).collect();
+        assert_eq!(refused.len(), 1, "reported once: {updates:?}");
+        assert!(refused[0].contains("may still run and be billed"), "{}", refused[0]);
     }
 
     #[test]

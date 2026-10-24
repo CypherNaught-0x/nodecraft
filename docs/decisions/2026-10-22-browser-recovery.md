@@ -1,0 +1,23 @@
+## 2026-10-22 · Browser recovery from site storage (#717)
+
+- **Each tab keeps its own slot in IndexedDB.**
+  - The session's recovery checkpoint and journal frames go to one object store for the origin (`nodecraft-recovery`), keyed by slot: `<slot>/c` for the checkpoint, `<slot>/f/<seq>` for each frame and `<slot>/h` for a hold.
+  - A slot is named by when its tab opened plus a random part, so names sort by age.
+  - The slot holds the same bytes as the desktop's recovery file, and `nodecraft_format::journal::recover` replays it. The cap is the desktop's 128 MiB journal cap.
+- **Tabs are told apart by Web Locks.**
+  - A tab holds the lock `nodecraft.journal.<slot>` for as long as the page lives.
+  - At load, any slot whose lock is free belongs to a tab that is gone. The newest such slot with work is offered back, as the desktop offers it (#408). Slots without work are deleted. The newest 8 slots are looked at.
+  - A browser without Web Locks keeps nothing. This is said once, and the unload guard still asks before unsaved work is left.
+  - `web-sys` only exposes Web Locks behind an unstable flag, so they are reached through `js-sys` reflection.
+- **The session writes synchronously and IndexedDB is asynchronous, so writes are queued.**
+  - `Journal` (the session's `checkpoint`, `append` and `discard`) queues the writes. The app hands them over one batch per transaction, and each batch is applied in full or not at all.
+  - A checkpoint replaces the whole slot. It drops anything still queued for that slot.
+- **A failed write (usually a full quota) is said once, and nothing is blocked.**
+  - The next frames would follow a gap, so they are dropped until the next checkpoint (a save, an open or a recovery). The slot therefore always holds a checkpoint followed by frames without gaps: an older state, never a broken one.
+  - The notice repeats only after a write has succeeded again.
+- **Recovered work is held until it is saved.**
+  - Recovering checkpoints the work into this tab's slot with a hold, so it is offered again if this tab also goes before saving.
+  - The old slot is removed in the same batch.
+  - Until it is saved, the recovered document counts as unsaved for the unload guard.
+- **The question owns input until it is answered**, as on the desktop. Nothing edits the document, and live recompute waits, while the load's scan runs or the question is open.
+- Keys never go into this store; they stay in the origin's key storage (#118).

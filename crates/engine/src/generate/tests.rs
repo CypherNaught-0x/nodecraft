@@ -1,9 +1,12 @@
 use super::*;
 use nodecraft_nodes::GenerateInput;
-use nodecraft_types::{Integer, NodeId, Number};
+use nodecraft_types::{Integer, MediaMeta, NodeId, Number};
 
 fn routes() -> Vec<GenerateOutput> {
-    vec![GenerateOutput { port: "image".into(), modality: Modality::Image }, GenerateOutput { port: "caption".into(), modality: Modality::Text }]
+    vec![
+        GenerateOutput { port: "image".into(), modality: Modality::Image, style_family: None },
+        GenerateOutput { port: "caption".into(), modality: Modality::Text, style_family: None },
+    ]
 }
 
 fn spec(inputs: Vec<GenerateInput>) -> JobSpec {
@@ -15,7 +18,15 @@ fn spec(inputs: Vec<GenerateInput>) -> JobSpec {
     ]
     .into_iter()
     .collect();
-    JobSpec::Generate { node: NodeId::from_bytes([1; 16]), outputs: routes(), provider: "mock".into(), model: "mock-image".into(), params, inputs }
+    JobSpec::Generate {
+        instance: None,
+        node: NodeId::from_bytes([1; 16]),
+        outputs: routes(),
+        provider: "mock".into(),
+        model: "mock-image".into(),
+        params,
+        inputs,
+    }
 }
 
 #[test]
@@ -59,7 +70,7 @@ fn results_are_sniffed_and_routed_by_modality() {
     assert_eq!(produced(&routes(), &text).unwrap().outputs, vec![("caption".to_owned(), Value::Text("hello".into()))]);
     let utf16 = Completed::new(vec![Output::Bytes { mime: "text/plain".into(), bytes: Arc::from(&b"\xFF\xFEh\x00i\x00"[..]) }]);
     assert_eq!(produced(&routes(), &utf16).unwrap_err().kind, ErrorKind::Unsupported);
-    let image_only = [GenerateOutput { port: "image".into(), modality: Modality::Image }];
+    let image_only = [GenerateOutput { port: "image".into(), modality: Modality::Image, style_family: None }];
     assert!(produced(&image_only, &text).is_err(), "no port takes text");
     // A paid call that returned nothing is a failure.
     assert!(produced(&routes(), &Completed::new(vec![])).is_err());
@@ -88,7 +99,15 @@ fn standalone_empty_containers_count_toward_admission() {
 }
 
 fn bare(inputs: Vec<GenerateInput>) -> JobSpec {
-    JobSpec::Generate { node: NodeId::from_bytes([1; 16]), outputs: vec![], provider: "p".into(), model: "m".into(), params: Default::default(), inputs }
+    JobSpec::Generate {
+        instance: None,
+        node: NodeId::from_bytes([1; 16]),
+        outputs: vec![],
+        provider: "p".into(),
+        model: "m".into(),
+        params: Default::default(),
+        inputs,
+    }
 }
 fn param(value: Value) -> JobSpec {
     let mut job = bare(vec![]);
@@ -100,7 +119,7 @@ fn param(value: Value) -> JobSpec {
 fn no_request_copy(job: &JobSpec, limits: Limits) {
     let original = job.clone();
     let mut conversion = Conversion::default();
-    assert!(request_with_limits(job, "k", limits, &mut conversion).is_err());
+    assert!(request_with_limits(job, "k", limits, None, &mut conversion).is_err());
     assert_eq!(conversion, Conversion::default(), "refused request copied a prefix");
     assert_eq!(job, &original);
 }
@@ -123,25 +142,25 @@ fn request_exact_representation_and_text_boundaries_copy_only_after_admission() 
     let job = param(Value::Text("b".into()));
     // Contract: provider/model/key 3*40, name40, Value128, text40 =328 upper-bound bytes.
     let mut conversion = Conversion::default();
-    let (_, got) = request_with_limits(&job, "k", Limits { request: 328, text: 1, ..Limits::default() }, &mut conversion).unwrap();
+    let (_, got) = request_with_limits(&job, "k", Limits { request: 328, text: 1, ..Limits::default() }, None, &mut conversion).unwrap();
     assert_eq!(got.params, serde_json::from_value::<Map<String, Json>>(serde_json::json!({"a":"b"})).unwrap());
     assert_eq!(conversion.json_nodes, 1);
     assert!(conversion.strings > 0 && conversion.text_bytes > 0);
     no_request_copy(&job, Limits { request: 327, ..Limits::default() });
     no_request_copy(&job, Limits { text: 0, ..Limits::default() });
     let unicode = param(Value::Text("é".into()));
-    assert!(request_with_limits(&unicode, "k", Limits { text: 2, ..Limits::default() }, &mut Conversion::default()).is_ok());
+    assert!(request_with_limits(&unicode, "k", Limits { text: 2, ..Limits::default() }, None, &mut Conversion::default()).is_ok());
     no_request_copy(&unicode, Limits { text: 1, ..Limits::default() });
 }
 
 #[test]
 fn request_counts_all_roots_containers_depth_and_repeated_roles() {
     let nested = param(Value::List(vec![Value::List(vec![Value::Text("x".into())])]));
-    assert!(request_with_limits(&nested, "k", Limits { depth: 2, items: 3, ..Limits::default() }, &mut Conversion::default()).is_ok());
+    assert!(request_with_limits(&nested, "k", Limits { depth: 2, items: 3, ..Limits::default() }, None, &mut Conversion::default()).is_ok());
     no_request_copy(&nested, Limits { depth: 1, ..Limits::default() });
     no_request_copy(&nested, Limits { items: 2, ..Limits::default() });
     let empty = param(Value::List(vec![Value::List(vec![]), Value::List(vec![])]));
-    assert!(request_with_limits(&empty, "k", Limits { items: 3, ..Limits::default() }, &mut Conversion::default()).is_ok());
+    assert!(request_with_limits(&empty, "k", Limits { items: 3, ..Limits::default() }, None, &mut Conversion::default()).is_ok());
     no_request_copy(&empty, Limits { items: 2, ..Limits::default() });
     let mut roots = param(Value::Bool(false));
     if let JobSpec::Generate { inputs, .. } = &mut roots {
@@ -150,7 +169,7 @@ fn request_counts_all_roots_containers_depth_and_repeated_roles() {
     no_request_copy(&roots, Limits { items: 1, ..Limits::default() });
     let input = |role: &str| bare(vec![GenerateInput { role: role.into(), value: Value::List(vec![Value::Text("x".into()); 3]) }]);
     let mut conversion = Conversion::default();
-    let (_, got) = request_with_limits(&input("r"), "k", Limits { request: 1200, ..Limits::default() }, &mut conversion).unwrap();
+    let (_, got) = request_with_limits(&input("r"), "k", Limits { request: 1200, ..Limits::default() }, None, &mut conversion).unwrap();
     assert_eq!(got.inputs.len(), 3);
     assert_eq!(conversion.input_records, 3);
     no_request_copy(&input("longrole"), Limits { request: 1200, ..Limits::default() });
@@ -176,7 +195,7 @@ fn request_metadata_and_late_unsupported_values_never_copy_prefixes() {
     }
     let job = param(Value::Bool(true));
     let mut conversion = Conversion::default();
-    assert!(request_with_limits(&job, &"k".repeat(200), Limits { request: 1000, ..Limits::default() }, &mut conversion).is_err());
+    assert!(request_with_limits(&job, &"k".repeat(200), Limits { request: 1000, ..Limits::default() }, None, &mut conversion).is_err());
     assert_eq!(conversion, Conversion::default());
     let asset = Value::Media(AssetRef { hash: Blake3::from_bytes([2; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() });
     let mut job = param(Value::Text("prefix".into()));
@@ -190,7 +209,7 @@ fn request_metadata_and_late_unsupported_values_never_copy_prefixes() {
 
 #[test]
 fn text_output_exact_budget_and_aggregate_limits_are_pre_copy() {
-    let route = [GenerateOutput { port: "t".into(), modality: Modality::Text }];
+    let route = [GenerateOutput { port: "t".into(), modality: Modality::Text, style_family: None }];
     let done = Completed::new(vec![Output::Text("ab".into())]);
     // Route104 + record128 + proof64+32 + port40 + text46 =414 logical bytes.
     let mut conversion = Conversion::default();
@@ -245,7 +264,7 @@ fn late_semantic_output_failures_do_not_clone_hash_or_publish_valid_prefix() {
     let done = Completed::new(vec![image(png()), Output::Bytes { mime: "x".repeat(500), bytes: png() }]);
     no_output_copy(&done, Limits { outputs: 2000, ..Limits::default() });
     let mut route = routes();
-    route.push(GenerateOutput { port: "p".repeat(500), modality: Modality::Text });
+    route.push(GenerateOutput { port: "p".repeat(500), modality: Modality::Text, style_family: None });
     let mut conversion = Conversion::default();
     assert!(
         outputs_with_limits(&route, &Completed::new(vec![Output::Text("x".into())]), Limits { outputs: 2000, ..Limits::default() }, &mut conversion).is_err()
@@ -261,12 +280,15 @@ fn borrowed_text_bytes_bom_routes_and_graph_text_parity() {
     no_output_copy(&done, Limits { text: 1, ..Limits::default() });
     no_output_copy(&done, Limits { raw_outputs: 4, ..Limits::default() });
     let mut route = routes();
-    route.push(GenerateOutput { port: "second-text".into(), modality: Modality::Text });
+    route.push(GenerateOutput { port: "second-text".into(), modality: Modality::Text, style_family: None });
     assert_eq!(produced(&route, &Completed::new(vec![Output::Text("x".into())])).unwrap().outputs[0].0, "caption");
     let generation = |size| nodecraft_graph::Generation {
         id: nodecraft_types::GenerationId::from_bytes([1; 16]),
         outputs: vec![Value::Text("x".repeat(size))],
         input_hash: None,
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
     };
     assert!(generation(MAX_TEXT_VALUE_BYTES).validate().is_ok());
     assert!(generation(MAX_TEXT_VALUE_BYTES + 1).validate().is_err());
@@ -528,4 +550,160 @@ fn aggregate_raw_text_budget_arithmetic_is_checked_without_large_fixtures() {
     budget.charge(12).unwrap();
     assert!(budget.charge(1).is_err());
     assert_eq!(budget.0, 0);
+}
+
+#[test]
+fn hdr394_provider_outputs_refuse_before_converting_any_paid_prefix() {
+    for bytes in [b"\x76\x2f\x31\x01".as_slice(), b"#?RGBE\n", b"#?RADIANCE\n"] {
+        for claimed in ["image/x-exr", "image/vnd.radiance", "text/plain"] {
+            let hdr: Arc<[u8]> = Arc::from(bytes);
+            let mut done =
+                Completed::new(vec![image(png()), Output::Text("paid prefix".into()), Output::Bytes { mime: claimed.into(), bytes: Arc::clone(&hdr) }]);
+            done.usage.cost = Some(nodecraft_types::Money::new(nodecraft_types::Currency::USD, 7));
+            let original = done.clone();
+            let owners = Arc::strong_count(&hdr);
+            let mut conversion = Conversion::default();
+            let err = outputs_with_limits(&routes(), &done, Limits::default(), &mut conversion).unwrap_err();
+            assert_eq!(err.kind, ErrorKind::Unsupported);
+            assert!(err.message.contains("HDR"));
+            assert_eq!(conversion, Conversion::default());
+            assert_eq!(done, original);
+            assert_eq!(Arc::strong_count(&hdr), owners);
+            assert_eq!(produced(&routes(), &done).unwrap_err().kind, ErrorKind::Unsupported);
+        }
+    }
+}
+
+#[test]
+fn a_style_is_sent_only_when_its_bytes_match_the_family_its_card_records() {
+    let style = nodecraft_media::style::Style {
+        provider: "mock".into(),
+        trainer: "mock-style".into(),
+        family: "flux-1".into(),
+        trigger: String::new(),
+        weights: "https://mock.invalid/styles/a.safetensors".into(),
+    };
+    let bytes = nodecraft_media::style::encode(&style).unwrap();
+    let asset = |mime: &str| AssetRef { hash: Blake3::from_bytes([2; 32]), mime: mime.parse().unwrap(), meta: Default::default() };
+    assert!(style_matches(&asset(&style_mime("flux-1")), &bytes).is_ok());
+    let relabelled = style_matches(&asset(&style_mime("sdxl-1")), &bytes).unwrap_err();
+    assert!(relabelled.message.contains("doesn't match the family"), "{relabelled:?}");
+    assert!(style_matches(&asset(nodecraft_types::STYLE_MIME), &bytes).is_err(), "a style with no family is never sent");
+    assert!(style_matches(&asset(&style_mime("flux-1")), b"not a style").unwrap_err().message.contains("damaged"));
+}
+
+#[test]
+fn a_trainer_keeps_only_styles_of_the_family_its_catalog_entry_trains() {
+    let style = |family: &str| {
+        let style = nodecraft_media::style::Style {
+            provider: "mock".into(),
+            trainer: "mock-style".into(),
+            family: family.into(),
+            trigger: String::new(),
+            weights: "https://mock.invalid/styles/a.safetensors".into(),
+        };
+        Completed::new(vec![Output::Bytes { mime: "application/json".into(), bytes: Arc::from(nodecraft_media::style::encode(&style).unwrap()) }])
+    };
+    let trainer = |family: Option<&str>| vec![GenerateOutput { port: "out".into(), modality: Modality::Style, style_family: family.map(Into::into) }];
+    let kept = produced(&trainer(Some("flux-1")), &style("flux-1")).unwrap();
+    assert!(matches!(kept.outputs.as_slice(), [(_, Value::Media(asset))] if asset.mime.param("family") == Some("flux-1")));
+    for routes in [trainer(Some("flux-1")), trainer(None)] {
+        let refused = produced(&routes, &style("sdxl-1")).unwrap_err();
+        assert!(refused.message.contains("different model family"), "{refused:?}");
+    }
+    // Text that only starts like a descriptor is text where no style is expected.
+    let text = vec![GenerateOutput { port: "out".into(), modality: Modality::Text, style_family: None }];
+    let mut lookalike = style("flux-1");
+    if let Some(Output::Bytes { mime, .. }) = lookalike.outputs.first_mut() {
+        *mime = "text/plain".into();
+    }
+    assert!(matches!(produced(&text, &lookalike).unwrap().outputs.as_slice(), [(_, Value::Text(_))]));
+}
+
+#[test]
+fn the_style_type_and_family_rule_agree_across_crates() {
+    assert_eq!(nodecraft_types::STYLE_MIME, nodecraft_media::style::MIME);
+    for family in ["flux-1", "sdxl_1.0", "flux/dev", "Flux", "", &"a".repeat(65)] {
+        let style = nodecraft_media::style::Style {
+            provider: "mock".into(),
+            trainer: "mock-style".into(),
+            family: family.into(),
+            trigger: String::new(),
+            weights: "https://mock.invalid/w".into(),
+        };
+        assert_eq!(nodecraft_types::style_family(family), style.validate().is_ok(), "{family}");
+    }
+}
+
+#[test]
+fn a_generated_sound_records_its_length() {
+    // Half a second of 8 kHz, 8-bit mono WAV.
+    let mut wav = b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x40\x1f\0\0\x01\0\x08\0data\xa0\x0f\0\0".to_vec();
+    wav.resize(wav.len() + 4000, 0x80);
+    let routes = [GenerateOutput { port: "out".into(), modality: Modality::Audio, style_family: None }];
+    let done = Completed::new(vec![Output::Bytes { mime: "audio/wav".into(), bytes: Arc::from(wav) }]);
+    let got = produced(&routes, &done).unwrap();
+    let [(_, Value::Media(asset))] = got.outputs.as_slice() else { panic!("one sound: {:?}", got.outputs) };
+    assert_eq!(asset.meta, MediaMeta { duration_ms: Some(500), sample_rate: Some(8000), channels: Some(1), ..MediaMeta::default() });
+}
+
+fn params(values: Vec<(&str, Value)>) -> JobSpec {
+    let mut job = bare(vec![]);
+    if let JobSpec::Generate { params, .. } = &mut job {
+        params.extend(values.into_iter().map(|(name, value)| (name.to_owned(), value)));
+    }
+    job
+}
+
+/// The advisory check (#307) and runtime admission agree for the same request and key.
+fn agrees(job: &JobSpec, key: &str) -> RequestCheck {
+    let check = check_request_with_key(job, key, None);
+    let admitted = provider_job(job, key);
+    assert_eq!(check.refusal.is_none(), admitted.is_ok(), "advisory {:?} vs runtime {:?}", check.refusal, admitted.err());
+    if let (Some(refusal), Err(error)) = (&check.refusal, provider_job(job, key)) {
+        assert_eq!(refusal, &error);
+    }
+    check
+}
+
+#[test]
+fn parameters_that_pass_alone_are_refused_together_by_both_checks() {
+    let half = || Value::List(vec![Value::Bool(true); MAX_VALUE_ITEMS / 2]);
+    let alone = agrees(&params(vec![("a", half())]), "k");
+    assert!(alone.refusal.is_none());
+    assert_eq!(alone.values, MAX_VALUE_ITEMS / 2 + 1);
+    let together = agrees(&params(vec![("a", half()), ("b", half())]), "k");
+    assert!(together.refusal.is_some(), "two half-limit lists exceed the aggregate");
+    assert!(together.values <= together.value_limit + 1);
+    assert_eq!(together.value_limit, MAX_VALUE_ITEMS);
+}
+
+#[test]
+fn nested_empty_lists_repeated_roles_and_metadata_count_alike() {
+    agrees(&params(vec![("a", Value::List(vec![Value::List(vec![]); MAX_VALUE_ITEMS - 1]))]), "k");
+    agrees(&params(vec![("a", Value::List(vec![Value::List(vec![]); MAX_VALUE_ITEMS]))]), "k");
+    let role = "r".repeat(1000);
+    let flattened = |n: usize| bare(vec![GenerateInput { role: role.clone(), value: Value::List(vec![Value::Text("x".into()); n]) }]);
+    let fits = agrees(&flattened(8), "k");
+    assert_eq!(fits.inputs, 8, "each list item is its own input");
+    assert!(fits.refusal.is_none());
+    assert!(agrees(&flattened(MAX_VALUE_ITEMS + 1), "k").refusal.is_some());
+    // A long role is repeated per flattened input: 4000 inputs at ~18 KiB each is ~70 MiB, over
+    // the representation budget while under the value and input limits.
+    let long = "r".repeat(3000);
+    let repeated = bare(vec![GenerateInput { role: long, value: Value::List(vec![Value::Text("x".into()); 4000]) }]);
+    let check = agrees(&repeated, "k");
+    assert!(check.refusal.is_some() && check.values <= check.value_limit, "{check:?}");
+    assert!(check.bytes > 0 && check.bytes <= check.byte_limit);
+}
+
+#[test]
+fn the_longest_key_is_conservative() {
+    let job = param(Value::Text("b".into()));
+    let short = agrees(&job, "k");
+    let longest = check_request(&job, None);
+    assert!(longest.bytes > short.bytes, "the longest key costs more: {} vs {}", longest.bytes, short.bytes);
+    assert_eq!(longest, agrees(&job, &"k".repeat(MAX_IDEMPOTENCY_KEY_BYTES)));
+    let action = JobSpec::Action { node: NodeId::from_bytes([1; 16]), action: "a".into(), params: Default::default(), inputs: vec![], output: "o".into() };
+    assert!(check_request(&action, None).refusal.is_some(), "only model calls are requests");
 }

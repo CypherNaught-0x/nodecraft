@@ -54,7 +54,12 @@ fn effective_default_budget_failure_preserves_document_history_revision_and_even
         if index != 0 {
             changes.push(Change::AddNode { canvas, node: Node::new(id, "test.large_default") });
         }
-        changes.push(Change::AddGeneration { canvas, id, index: 0, generation: Generation { id: generation, outputs: vec![], input_hash: Some(hash) } });
+        changes.push(Change::AddGeneration {
+            canvas,
+            id,
+            index: 0,
+            generation: Generation { id: generation, outputs: vec![], input_hash: Some(hash), items: Vec::new(), settings: Vec::new(), incomplete: None },
+        });
         changes.push(Change::SetActiveGeneration { canvas, id, generation: Some(generation) });
     }
     Changeset::new(changes).apply(&mut project).unwrap();

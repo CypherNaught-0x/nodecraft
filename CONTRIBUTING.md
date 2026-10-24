@@ -15,19 +15,24 @@ Several people (and their coding agents) work on NodeCraft at once. Claims keep 
 building the same thing.
 
 1. Work is tracked in GitHub issues, labelled by area (`area:canvas`, `area:graph`, `area:exec`,
-   `area:providers`, `area:media`, `area:ui`, `area:agent`, `area:infra`). If you want to build
-   something bigger than a bug fix and it has no issue yet, open one first.
+   `area:providers`, `area:media`, `area:ui`, `area:agent`, `area:infra`) and by exactly one
+   `difficulty:easy` / `difficulty:medium` / `difficulty:hard`. Difficulty says what signing up
+   costs, not how urgently a change is wanted — that is the milestone and `future`. If you want to
+   build something bigger than a bug fix and it has no issue yet, open one first and give it both
+   labels. The levels and how to rate them are in
+   [`docs/issue-labels.md`](docs/issue-labels.md); re-rate an issue when the shape of its work
+   changes.
 2. **Comment `/claim` on the issue.** The bot assigns you, adds the `in progress` label and
    replies with your deadline. If someone else holds the issue, it tells you who and when their
    claim lapses.
-3. **Open a draft PR within 72 hours** that references the issue (`Fixes #N` in the body,
+3. **Open a draft PR within 24 hours** that references the issue (`Fixes #N` in the body,
    `<summary> (#N)` as the title). An empty commit is fine to start:
    `git commit --allow-empty -m "claim: #N"`. If no PR shows up in time, the claim lapses and
    the issue is free again.
 4. **Push at least every 14 days.** A claim whose PR has had no pushes for 14 days is released by
-   the daily sweep.
+   the daily sweep. Both deadlines apply to everyone, including the owner and maintainers.
 5. **`/unclaim`** releases an issue early. Only the claimant or a maintainer can release a
-   claim. Issues a maintainer has taken are never released automatically.
+   claim.
 6. A draft PR counts as a claim on its own. If an unclaimed issue already has someone's open
    PR, `/claim` points you at that PR instead. If two PRs race for one issue, the lowest-numbered
    open PR wins. Close the other one, or offer to help on the winning PR.
@@ -186,7 +191,9 @@ node --test scripts/claim/*.test.js                     # if you touched the cla
 ## Sending a change
 
 1. Claim the issue (above), branch from the latest `main`, and keep the PR to one topic.
-2. Run the checks under *Tests*. CI runs them on Linux, Windows and macOS.
+2. Run the checks under *Tests*. CI runs them on Linux, Windows and macOS. The exception is a pull
+   request aimed at `main` that touches nothing but documentation and repository tooling: it skips
+   those three legs and runs the docs gate instead (`docs/development.md`).
 3. In the PR, say what you changed, how you tested it and what you measured. For anything
    visible, attach real screenshots or a short recording. Diagrams don't replace evidence of
    visible behaviour. Coding agents should capture that evidence themselves rather than asking a

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-providers"
 version.workspace = true
 edition.workspace = true
@@ -16,12 +17,43 @@ default = ["http", "llm", "comfyui"]
 http = ["dep:reqwest"]
 # Chat endpoints: OpenAI-compatible (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, LiteLLM) and Anthropic.
 llm = []
-# ComfyUI servers (local or remote) through the `comfy` protocol crate.
-comfyui = []
+# ComfyUI servers (local or remote) through the `comfy` protocol crate, with live progress over
+# its WebSocket on the desktop.
+comfyui = ["dep:tungstenite"]
 # Direct GPT Image generations and edits. Never enabled by a live-test environment variable.
 openai-images = ["dep:base64", "dep:blake3"]
 # Version-pinned predictions, polling, cancellation and bounded authenticated file downloads.
 replicate = ["dep:base64"]
+# Stateless Gemini Interactions image generation and editing.
+gemini-images = ["dep:base64"]
+gemini-video = ["dep:base64"]
+# Queue models, and style training (#167), whose images go up as one zip.
+fal = ["dep:base64", "dep:zip"]
+# Seedance 2.5 and 2.0 video on ModelArk: one paid task, polling, cancelling while queued and the MP4 download.
+seedance = ["dep:base64"]
+# Dated Seedream text generation and ordered multi-reference edits.
+seedream = ["dep:base64"]
+# Tripo text, image and multiview to 3D: uploads, a paid task, polling and the GLB download.
+tripo = []
+# Meshy text, image and multi-image to 3D, retexture and remesh: one paid task, polling and the GLB download.
+meshy = ["dep:base64"]
+# Higgsfield SOUL 2 images and Kling image to video: presigned uploads, keyed submits, polling and downloads.
+higgsfield = []
+# Kling text, image and multi-image to video and text to image: one paid task, polling and the
+# download. An access key and secret key sign an HS256 token against the wall clock.
+kling = ["dep:base64", "dep:hmac", "dep:sha2", "dep:web-time"]
+# ElevenLabs speech, sound effects, music and voice changer: one synchronous request each.
+elevenlabs = []
+# Comfy Cloud: workflows on Comfy-hosted GPUs through its v2 jobs and assets API.
+comfy-cloud = ["comfyui"]
+# Google Cloud service accounts: the account's key signs the token request.
+google-cloud = ["dep:base64", "dep:rsa", "dep:web-time", "dep:getrandom02"]
+# Veo on Google Cloud: predictLongRunning and operation polling.
+google-veo = ["google-cloud"]
+# Cloud Text-to-Speech: classic and Gemini voices, one synchronous request each.
+google-tts = ["google-cloud"]
+# Gemini image models on Google Cloud: one synchronous generateContent request each.
+google-gemini-images = ["google-cloud"]
 # Opt-in deterministic testing tools; never enabled by adapter defaults.
 testkit = ["dep:blake3"]
 
@@ -36,6 +68,14 @@ serde_json = { workspace = true, features = ["raw_value"] }
 url = { workspace = true }
 base64 = { version = "=0.22.1", optional = true }
 blake3 = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+# RS256 for Google Cloud service-account tokens (google-cloud): pure Rust, MIT OR Apache-2.0.
+# Signing needs no RNG; `std` stays off so it isn't asked for one.
+rsa = { version = "=0.9.10", optional = true, default-features = false, features = ["pem", "u64_digit", "sha2"] }
+# The wall clock a token's issue and expiry times need, in the browser too.
+web-time = { version = "=1.1.0", optional = true }
 
 # TLS: the operating system's stack on Windows and macOS (no C toolchain needed, and it builds for
 # Windows ARM64, where aws-lc needs clang-cl); rustls with aws-lc on Linux; `fetch` in the browser.
@@ -43,8 +83,16 @@ blake3 = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["native-tls"] }
 [target.'cfg(not(any(windows, target_os = "macos", target_arch = "wasm32")))'.dependencies]
 reqwest = { workspace = true, optional = true, features = ["rustls"] }
+# ComfyUI's progress socket (plain ws://; the browser build polls instead).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tungstenite = { workspace = true, optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 reqwest = { workspace = true, optional = true }
+# rsa's rand_core can still reach getrandom 0.2 through feature unification (ed25519 turns on
+# `signature/std`), and 0.2 only builds for the browser with its `js` backend. Never called.
+getrandom02 = { package = "getrandom", version = "=0.2.17", optional = true, features = ["js"] }
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = ["Window", "Performance"] }
 
 [dev-dependencies]
 # The local cfg(test) mock also compiles without the opt-in testkit feature.
@@ -54,3 +102,60 @@ futures = { workspace = true, features = ["executor"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[[test]]
+name = "live_comfy_cloud"
+path = "tests/live_comfy_cloud.rs"
+
+[[test]]
+name = "live_comfyui"
+path = "tests/live_comfyui.rs"
+
+[[test]]
+name = "live_elevenlabs"
+path = "tests/live_elevenlabs.rs"
+
+[[test]]
+name = "live_gemini_video"
+path = "tests/live_gemini_video.rs"
+
+[[test]]
+name = "live_google_gemini_images"
+path = "tests/live_google_gemini_images.rs"
+
+[[test]]
+name = "live_google_tts"
+path = "tests/live_google_tts.rs"
+
+[[test]]
+name = "live_google_veo"
+path = "tests/live_google_veo.rs"
+
+[[test]]
+name = "live_higgsfield"
+path = "tests/live_higgsfield.rs"
+
+[[test]]
+name = "live_kling"
+path = "tests/live_kling.rs"
+
+[[test]]
+name = "live_llm"
+path = "tests/live_llm.rs"
+
+[[test]]
+name = "live_meshy"
+path = "tests/live_meshy.rs"
+
+[[test]]
+name = "live_seedance"
+path = "tests/live_seedance.rs"
+
+[[test]]
+name = "live_tripo"
+path = "tests/live_tripo.rs"

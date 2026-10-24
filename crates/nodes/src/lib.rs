@@ -4,16 +4,40 @@
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
+pub mod action;
 pub mod audio;
+pub mod batch;
+pub mod comfy_workflow;
+mod contract;
+pub mod deck;
 mod descriptor;
+pub mod document;
+pub mod element;
+pub mod folder;
+pub mod generation;
 pub mod image;
+pub mod layers;
+pub mod mask;
+pub mod mention;
+pub mod mesh;
+pub mod note;
 mod registry;
 pub mod router;
+pub mod shader;
 mod source;
+pub mod technique;
 pub mod text;
+pub mod timeline;
 pub mod video;
+pub mod video_edit;
+pub mod video_frames;
+pub mod video_look;
+pub mod video_split;
 
-pub use descriptor::{Category, GenerateInput, GenerateOutput, InputValue, JobSpec, ModeId, NodeDescriptor, NodeKind, NodeMigration, PlanCtx};
+pub use contract::{InputContract, ModeContract, NodeContract, OutputContract, PortCount};
+pub use descriptor::{
+    Category, GenerateInput, GenerateOutput, InputFacts, InputValue, JobSpec, ModeId, NodeDescriptor, NodeKind, NodeMigration, PlanCtx, PreflightCtx,
+};
 pub use nodecraft_types::{Choice, ParamControl, ParamSchema, ParamSpec, ParamValues, ResolvedParams, VisibleIf};
 pub use registry::Registry;
 pub use source::SourceKind;

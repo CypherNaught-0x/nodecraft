@@ -28,13 +28,17 @@
 //! changed: it is reported **stale** (re-running refreshes it). Deliberately conservative: a
 //! result is never shown as fresh when we can't vouch for it.
 
+use crate::variations::VARIATIONS_CONFIG;
 use nodecraft_graph::{Canvas, Node};
-use nodecraft_nodes::{Category, Registry};
+use nodecraft_nodes::{Category, Registry, mention};
 use nodecraft_types::{Blake3, Error, ErrorKind, NodeId, ParamValues, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
 };
+
+/// The node `config` key holding whether it reuses identical results (#91): a boolean.
+pub const CACHE_CONFIG: &str = "nodecraft.cache";
 
 /// Domain tag mixed into every hash. Bump it when what is hashed changes; results stamped under
 /// an older tag are then reported stale (see the module docs).
@@ -158,6 +162,68 @@ impl Writer {
         }
         Ok(())
     }
+    fn generation_contract(&mut self, contract: &nodecraft_nodes::NodeContract, meter: &mut Meter) -> Result<(), Error> {
+        // instance_contract is a trusted native hook, like validate_instance above. Its
+        // returned owner is charged here; serialization streams twice with bounded scratch,
+        // first for exact encoded admission then hashing, never a full encoded copy.
+        let mut retained = std::mem::size_of::<nodecraft_nodes::NodeContract>();
+        let mut retain = |bytes: usize| -> Result<(), Error> {
+            retained = retained.checked_add(bytes).ok_or_else(too_large)?;
+            Ok(())
+        };
+        retain(contract.kind.len())?;
+        retain(contract.owned_groups.len().checked_mul(std::mem::size_of::<nodecraft_types::Contract>()).ok_or_else(too_large)?)?;
+        retain(contract.inputs.len().checked_mul(std::mem::size_of::<nodecraft_nodes::InputContract>()).ok_or_else(too_large)?)?;
+        for input in &contract.inputs {
+            retain(input.port.len())?;
+            retain(input.role.len())?;
+        }
+        retain(contract.outputs.len().checked_mul(std::mem::size_of::<nodecraft_nodes::OutputContract>()).ok_or_else(too_large)?)?;
+        for output in &contract.outputs {
+            retain(output.port.len())?;
+            retain(output.role.len())?;
+        }
+        retain(contract.modes.len().checked_mul(std::mem::size_of::<nodecraft_nodes::ModeContract>()).ok_or_else(too_large)?)?;
+        for mode in &contract.modes {
+            retain(mode.mode.as_str().len())?;
+            retain(mode.inputs.len().checked_mul(std::mem::size_of::<nodecraft_nodes::PortCount>()).ok_or_else(too_large)?)?;
+            for input in &mode.inputs {
+                retain(input.port.len())?;
+            }
+        }
+        for group in contract.parameter_groups() {
+            retained = retained.checked_add(crate::admission::measure::contract(group).map_err(|_| too_large())?).ok_or_else(too_large)?;
+        }
+        meter.charge(retained)?;
+        struct Sink<'a> {
+            hash: Option<&'a mut blake3::Hasher>,
+            bytes: usize,
+        }
+        impl std::io::Write for Sink<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes = self
+                    .bytes
+                    .checked_add(bytes.len())
+                    .filter(|n| *n <= MAX_QUERY_BYTES)
+                    .ok_or_else(|| std::io::Error::other("contract hash exceeds admission"))?;
+                if let Some(hash) = &mut self.hash {
+                    hash.update(bytes);
+                }
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut count = Sink { hash: None, bytes: 0 };
+        serde_json::to_writer(&mut count, contract).map_err(|_| too_large())?;
+        meter.charge(count.bytes)?;
+        self.text("generation.parameter-contract.v1");
+        self.len(count.bytes);
+        let mut hash = Sink { hash: Some(&mut self.0), bytes: 0 };
+        serde_json::to_writer(&mut hash, contract).map_err(|_| too_large())?;
+        Ok(())
+    }
     fn finish(self) -> [u8; 32] {
         *self.0.finalize().as_bytes()
     }
@@ -166,7 +232,7 @@ impl Writer {
 /// Preflight borrowed values before a proportional clone/JSON allocation. Text payloads
 /// count exactly; scalar JSON reserves 128 bytes (tag/envelope plus at most a finite number
 /// or 20 decimal digits). Media reserves 512 bytes for the tag, digest, metadata keys and
-/// six maximal integers, plus six bytes per MIME byte for worst-case JSON escaping.
+/// six maximal integers and the image header facts, plus six bytes per MIME byte for worst-case JSON escaping.
 /// Mime is independently capped at 1024 bytes. These upper bounds deliberately overcharge
 /// short encodings. Keep the traversal stack proportional to depth, not list length.
 fn charge_value(meter: &mut Meter, value: &Value) -> Result<(), Error> {
@@ -214,6 +280,8 @@ struct CachedRejection {
     kind: ErrorKind,
     reason: String,
 }
+/// How many batches feeding batches staleness follows before calling a result unknown.
+const MAX_BATCH_DEPTH: usize = 32;
 #[derive(Clone, Copy)]
 enum InvalidHash {
     Router(NodeId),
@@ -263,6 +331,12 @@ pub struct InputHasher {
     recipes: BTreeMap<NodeId, Recipe>,
     /// Upstream output digests by (node, port); `None` when it has no usable result there.
     outputs: BTreeMap<(NodeId, String), Option<[u8; 32]>>,
+    /// Batch hashes (#92): `None` while one is being hashed, so a cycle of batches ends.
+    batches: BTreeMap<NodeId, Option<Result<Blake3, InvalidHash>>>,
+    /// Batches being hashed right now; a chain deeper than [`MAX_BATCH_DEPTH`] is unknown.
+    batch_depth: usize,
+    /// Whether a node's result is fanned out by batches (#519), by node.
+    fanned: BTreeMap<NodeId, bool>,
     meter: Meter,
     diagnostic_credit: Option<DiagnosticCredit>,
     #[cfg(test)]
@@ -305,6 +379,9 @@ impl InputHasher {
             invalid,
             recipes: BTreeMap::new(),
             outputs: BTreeMap::new(),
+            batches: BTreeMap::new(),
+            batch_depth: 0,
+            fanned: BTreeMap::new(),
             meter,
             diagnostic_credit,
             #[cfg(test)]
@@ -329,7 +406,22 @@ impl InputHasher {
         charge_stored(&mut self.meter, node)?;
         let mut w = Writer::new();
         w.text(&node.kind);
-        w.params(&node.config)?;
+        // Whether a node reuses cached results (#91), how many variations a run makes (#81),
+        // and the shader library version (#90) a custom shader came from don't change what it
+        // makes (the shader itself is hashed): leave them out, so changing them never makes a
+        // result stale.
+        let pinned = node.kind == nodecraft_nodes::shader::ID && node.config.contains_key(nodecraft_nodes::shader::FROM_CONFIG);
+        if node.config.contains_key(CACHE_CONFIG) || node.config.contains_key(VARIATIONS_CONFIG) || pinned {
+            let mut config = node.config.clone();
+            config.remove(CACHE_CONFIG);
+            config.remove(VARIATIONS_CONFIG);
+            if pinned {
+                config.remove(nodecraft_nodes::shader::FROM_CONFIG);
+            }
+            w.params(&config)?;
+        } else {
+            w.params(&node.config)?;
+        }
         let recipe = match kinds.get(&node.kind) {
             Err(_) => {
                 w.params(&node.params)?;
@@ -361,6 +453,16 @@ impl InputHasher {
                         match kind.validate_instance(node, false) {
                             Err(rejected) => Err(rejected),
                             Ok(resolved) => {
+                                if nodecraft_nodes::generation::is_generation(&node.kind) {
+                                    let mut contract = kind.instance_contract(node)?;
+                                    // Whether a list port fans out or collects is hashed per
+                                    // feed instead (#519): only a batch behind it changes what
+                                    // the node makes, so declaring it never makes results stale.
+                                    for input in &mut contract.inputs {
+                                        input.fans_out = false;
+                                    }
+                                    w.generation_contract(&contract, &mut self.meter)?;
+                                }
                                 for (name, value) in &resolved.values {
                                     let admitted = node.params.get(name).or_else(|| admitted_defaults.get(name.as_str()).copied().flatten());
                                     if admitted.is_none() {
@@ -378,9 +480,10 @@ impl InputHasher {
                                         self.meter.charge(name.len())?;
                                     }
                                 }
-                                let visible: Vec<_> = resolved.visible_values().collect();
-                                w.len(visible.len());
-                                for (name, value) in visible {
+                                // What is sent, less what the contract declares `identity: false`.
+                                let hashed: Vec<_> = resolved.identity_values().collect();
+                                w.len(hashed.len());
+                                for (name, value) in hashed {
                                     w.param(name, value)?;
                                 }
                                 Ok(w.finish())
@@ -537,16 +640,66 @@ impl InputHasher {
         for (port, order, from, from_port) in self.feeds.get(&id).into_iter().flatten() {
             feeds.entry(port.clone()).or_default().push((*order, *from, from_port.clone()));
         }
-        for port in &node.inputs {
-            w.text(&port.name);
-            let mut list = feeds.remove(port.name.as_str()).unwrap_or_default();
+        let fans_out = fans_out_ports(kinds, node);
+        // Cards the prompt `@mentions` feed a port the node doesn't have (#505); only hashed when
+        // there are some, so nodes without mentions keep their hashes.
+        let mentions = feeds.contains_key(mention::PORT).then_some(mention::PORT);
+        for name in node.inputs.iter().map(|port| port.name.as_str()).chain(mentions) {
+            w.text(name);
+            let mut list = feeds.remove(name).unwrap_or_default();
             list.sort();
             w.len(list.len());
+            // A list port that runs once per item (#519) makes something else than one that
+            // collects them: mark the ports a batch fans out.
+            if fans_out.contains(name) {
+                let mut fanned = false;
+                for (_, from, _) in &list {
+                    fanned |= self.fans(canvas, kinds, *from)?;
+                }
+                if fanned {
+                    w.text("fan");
+                }
+            }
             for (_, from, from_port) in list {
                 // Each feed costs a little, so huge fan-ins count against the budget too.
                 self.meter.charge(VALUE_COST.saturating_add(from_port.len()))?;
                 w.text(&from_port);
                 match canvas.nodes().get(&from) {
+                    // A batch (#92) never runs: it contributes its items' recipe, which is its
+                    // own settings and whatever feeds it.
+                    Some(upstream) if upstream.kind == nodecraft_nodes::batch::ID => match self.batches.get(&from) {
+                        Some(Some(Ok(digest))) => {
+                            w.text("batch");
+                            w.digest(digest.as_bytes());
+                        }
+                        Some(Some(Err(invalid))) => return Ok(HashResult::Invalid(*invalid)),
+                        // Batches feeding each other in a loop: there's nothing to hash.
+                        Some(None) => w.text("cycle"),
+                        // Batches feeding batches recurse: bound the depth so a hostile file
+                        // can't exhaust the stack (the planner refuses such chains anyway).
+                        None if self.batch_depth >= MAX_BATCH_DEPTH => {
+                            self.batches.insert(from, Some(Err(InvalidHash::Target(from))));
+                            return Ok(HashResult::Invalid(InvalidHash::Target(from)));
+                        }
+                        None => {
+                            self.batches.insert(from, None);
+                            self.batch_depth = self.batch_depth.saturating_add(1);
+                            let hashed = self.hash_detailed(canvas, kinds, from, produced);
+                            self.batch_depth = self.batch_depth.saturating_sub(1);
+                            let result = match hashed? {
+                                HashResult::Ready(digest) => Ok(digest),
+                                HashResult::Invalid(invalid) => Err(invalid),
+                            };
+                            self.batches.insert(from, Some(result));
+                            match result {
+                                Ok(digest) => {
+                                    w.text("batch");
+                                    w.digest(digest.as_bytes());
+                                }
+                                Err(invalid) => return Ok(HashResult::Invalid(invalid)),
+                            }
+                        }
+                    },
                     // A source contributes its recipe: what it emits.
                     Some(upstream) if is_source(kinds, upstream) => match self.recipe(kinds, upstream)? {
                         Some(recipe) => {
@@ -571,6 +724,65 @@ impl InputHasher {
     }
 }
 
+impl InputHasher {
+    /// Whether `id`'s result is fanned out by batches (#92): it is a batch, or a batch's items
+    /// reach it through a single port or one that fans out. Iterative, with a seen-set, so a
+    /// deep or cyclic graph is bounded by its size.
+    fn fans(&mut self, canvas: &Canvas, kinds: &Registry, id: NodeId) -> Result<bool, Error> {
+        if let Some(known) = self.fanned.get(&id) {
+            return Ok(*known);
+        }
+        // A node is pushed once to expand it, then again with its upstream to decide it.
+        let mut stack: Vec<(NodeId, Option<Vec<NodeId>>)> = vec![(id, None)];
+        let mut seen = BTreeSet::new();
+        while let Some((at, upstream)) = stack.pop() {
+            if self.fanned.contains_key(&at) {
+                continue;
+            }
+            if let Some(upstream) = upstream {
+                // Provisional on a cycle: a node there sees itself as not fanned (the planner
+                // refuses cycles, so no run depends on it).
+                let fans = upstream.iter().any(|from| self.fanned.get(from).copied().unwrap_or(false));
+                self.fanned.insert(at, fans);
+                continue;
+            }
+            if !seen.insert(at) {
+                continue;
+            }
+            let Some(node) = canvas.nodes().get(&at) else {
+                self.fanned.insert(at, false);
+                continue;
+            };
+            // A folder's looping outputs fan out as a batch does; its list outputs, which don't,
+            // only add the marker to what they feed.
+            if node.kind == nodecraft_nodes::batch::ID || node.kind == nodecraft_nodes::folder::ID {
+                self.fanned.insert(at, true);
+                continue;
+            }
+            let fans_out = fans_out_ports(kinds, node);
+            let carries = |port: &str| fans_out.contains(port) || node.inputs.iter().any(|p| p.name == port && !p.port_type.many);
+            let upstream: Vec<NodeId> = self.feeds.get(&at).into_iter().flatten().filter(|(port, ..)| carries(port)).map(|(_, _, from, _)| *from).collect();
+            self.meter.charge(VALUE_COST.saturating_mul(upstream.len().saturating_add(1)))?;
+            let next: Vec<(NodeId, Option<Vec<NodeId>>)> = upstream.iter().filter(|from| !seen.contains(*from)).map(|from| (*from, None)).collect();
+            stack.push((at, Some(upstream)));
+            stack.extend(next);
+        }
+        Ok(self.fanned.get(&id).copied().unwrap_or(false))
+    }
+}
+
+/// The list ports of `node` that run it once per batch item rather than collecting (#515).
+/// A Generate card's depend on its model; other kinds declare theirs statically, so no
+/// instance hook runs for them here.
+fn fans_out_ports(kinds: &Registry, node: &Node) -> BTreeSet<String> {
+    let Ok(kind) = kinds.get(&node.kind) else { return BTreeSet::new() };
+    let contract = if nodecraft_nodes::generation::is_generation(&node.kind) { kind.instance_contract(node) } else { Ok(kind.contract(kind.descriptor())) };
+    match contract {
+        Ok(contract) => contract.inputs.into_iter().filter(|input| input.fans_out).map(|input| input.port).collect(),
+        Err(_) => BTreeSet::new(),
+    }
+}
+
 fn is_source(kinds: &Registry, node: &Node) -> bool {
     kinds.get(&node.kind).is_ok_and(|kind| kind.descriptor().category == Category::Source)
 }
@@ -592,7 +804,7 @@ fn input_hash_within(canvas: &Canvas, kinds: &Registry, id: NodeId, budget: usiz
 }
 
 /// Nodes whose active result is stale: its recorded input hash differs from the current one, or
-/// a node upstream of it is stale (it was built on out-of-date data). Nodes without a result, or
+/// a node upstream of it is stale (it was built on out-of-date data), or it is partial (#480). Nodes without a result, or
 /// whose result recorded no hash (made before hashing), or that their kind rejects, are never
 /// stale themselves. The set is transitive, as `planner::plan` expects. `Err` when routers can't
 /// be resolved or the canvas is too large to check ([`MAX_QUERY_BYTES`]).
@@ -621,8 +833,13 @@ fn query_stale(canvas: &Canvas, kinds: &Registry, budget: usize, details: bool) 
     let mut unknown_total = 0usize;
     let mut first_unknown = None;
     for node in canvas.nodes().values() {
-        let recorded = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)).and_then(|g| g.input_hash);
-        if let Some(recorded) = recorded {
+        let active = node.active.and_then(|active| node.history.iter().find(|g| g.id == active));
+        // A partial result (#480) waits to be completed, whatever its inputs.
+        if active.is_some_and(nodecraft_graph::Generation::is_partial) {
+            stale.insert(node.id);
+            continue;
+        }
+        if let Some(recorded) = active.and_then(|g| g.input_hash) {
             match query.hash_detailed(canvas, kinds, node.id, &none)? {
                 HashResult::Ready(now) if now != recorded => {
                     stale.insert(node.id);

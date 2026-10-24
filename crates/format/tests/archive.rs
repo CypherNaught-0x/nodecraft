@@ -50,7 +50,14 @@ fn assets_deduplicate_validate_hashes_and_cover_nested_generation_history() {
     Change::AddCanvas { canvas: Canvas::new(canvas, "Assets") }.apply(&mut s.project).unwrap();
     let asset = Value::Media(AssetRef { hash: digest, mime: "text/plain".parse().unwrap(), meta: MediaMeta::default() });
     let mut node = Node::new(NodeId::from_bytes([3; 16]), "source.image");
-    node.history.push(Generation { id: GenerationId::from_bytes([4; 16]), outputs: vec![Value::List(vec![asset])], input_hash: None });
+    node.history.push(Generation {
+        id: GenerationId::from_bytes([4; 16]),
+        outputs: vec![Value::List(vec![asset])],
+        input_hash: None,
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    });
     Change::AddNode { canvas, node }.apply(&mut s.project).unwrap();
     let bytes = encode(&s).unwrap();
     let loaded = decode(&bytes).unwrap();
@@ -249,6 +256,10 @@ fn public_journal_payload_preflight_includes_generation_depth_counts_and_record_
                     id: nodecraft_types::CommentId::from_bytes([n; 16]),
                     text: "x".repeat(1024 * 1024),
                     pos: Default::default(),
+                    node: None,
+                    replies: vec![],
+                    resolved: false,
+                    author: None,
                 },
             })
             .collect(),
@@ -263,7 +274,14 @@ fn public_journal_payload_preflight_includes_generation_depth_counts_and_record_
         canvas: CanvasId::from_bytes([1; 16]),
         id: NodeId::from_bytes([2; 16]),
         index: 0,
-        generation: Generation { id: GenerationId::from_bytes([3; 16]), outputs: vec![value], input_hash: None },
+        generation: Generation {
+            id: GenerationId::from_bytes([3; 16]),
+            outputs: vec![value],
+            input_hash: None,
+            items: Vec::new(),
+            settings: Vec::new(),
+            incomplete: None,
+        },
     }]);
     assert!(journal::frame(id, 1, &changes, &assets, &Default::default()).is_err());
     let Change::AddGeneration { mut generation, .. } = changes.changes.into_iter().next().unwrap() else { panic!() };
@@ -274,9 +292,32 @@ fn public_journal_payload_preflight_includes_generation_depth_counts_and_record_
 }
 
 #[test]
-fn no_invented_legacy_migration_or_future_data_is_silently_loaded() {
-    for version in [0, 2, u32::MAX] {
+fn unsupported_versions_are_rejected_before_graph_decode() {
+    for version in [0, 4, u32::MAX] {
         let json = serde_json::to_vec(&json!({"version":version,"project":{"unknown":"future"}})).unwrap();
         assert_eq!(decode(&zip(&[("project.json", &json)])).unwrap_err().kind, ErrorKind::Unsupported);
+    }
+}
+
+#[test]
+fn text_that_starts_like_a_style_still_opens_as_text_and_styles_open_as_styles() {
+    let style = br#"{"nodecraft_style":1,"provider":"mock","trainer":"mock-style","family":"flux-1","trigger":"","weights":"https://mock.invalid/w"}"#;
+    let canvas = CanvasId::from_bytes([2; 16]);
+    for (n, mime) in ["text/plain", "application/json", "application/vnd.nodecraft.style+json; family=flux-1"].into_iter().enumerate() {
+        let mut s = snapshot();
+        let digest = s.assets.insert(style).unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Styles") }.apply(&mut s.project).unwrap();
+        let mut node = Node::new(NodeId::from_bytes([3; 16]), "source.text");
+        node.history.push(Generation {
+            id: GenerationId::from_bytes([4 + n as u8; 16]),
+            outputs: vec![Value::Media(AssetRef { hash: digest, mime: mime.parse().unwrap(), meta: MediaMeta::default() })],
+            input_hash: None,
+            items: Vec::new(),
+            settings: Vec::new(),
+            incomplete: None,
+        });
+        Change::AddNode { canvas, node }.apply(&mut s.project).unwrap();
+        let loaded = decode(&encode(&s).unwrap()).unwrap_or_else(|e| panic!("{mime}: {e:?}"));
+        assert_eq!(loaded.project, s.project, "{mime}");
     }
 }

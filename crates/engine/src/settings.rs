@@ -11,9 +11,17 @@
 //! Values read from the file are hostile like any other input: use the accessor methods (such as
 //! [`CanvasSettings::zoom_speed`]), which clamp them, rather than the raw fields.
 //!
-//! The store is native only (the browser build keeps settings in memory for now, with defaults).
+//! This store is native only. Browser provider addresses and their salt use per-origin storage
+//! through `browser_providers`; other browser app settings still use in-memory defaults.
 
 use serde::{Deserialize, Serialize};
+
+mod agent;
+mod budgets;
+mod projects;
+pub use agent::{AgentEndpoint, AgentMode, AgentSettings};
+pub use budgets::BudgetSettings;
+pub use projects::ProjectSettings;
 
 pub use craft_settings::{DocumentMut, LoadReport, MigrateError, SaveStatus, SettingsError, TickResult};
 #[cfg(not(target_arch = "wasm32"))]
@@ -31,19 +39,260 @@ pub struct NodeCraftSettings {
     pub appearance: AppearanceSettings,
     pub canvas: CanvasSettings,
     pub keys: KeySettings,
+    pub providers: ProviderSettings,
+    pub projects: ProjectSettings,
+    pub updates: UpdateSettings,
+    pub media: MediaSettings,
+    pub agent: AgentSettings,
+    pub share: ShareSettings,
+    pub budgets: BudgetSettings,
+}
+
+/// External tools for video (#105). NodeCraft never downloads or bundles them, and never takes
+/// their paths from a project: only this file names them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaSettings {
+    /// The installed `ffmpeg`, as an absolute path. Read through [`MediaSettings::tools`].
+    pub ffmpeg: Option<std::path::PathBuf>,
+    /// The installed `ffprobe`, as an absolute path.
+    pub ffprobe: Option<std::path::PathBuf>,
+}
+
+impl MediaSettings {
+    /// Both tools when both are set to absolute paths; video playback needs the pair.
+    pub fn tools(&self) -> Option<(&std::path::Path, &std::path::Path)> {
+        let ffmpeg = self.ffmpeg.as_deref().filter(|p| p.is_absolute())?;
+        let ffprobe = self.ffprobe.as_deref().filter(|p| p.is_absolute())?;
+        Some((ffmpeg, ffprobe))
+    }
+}
+
+/// Checking for a newer release (#123). Only notifies: nothing is downloaded or installed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Check once when the app starts. `app.check_updates` checks whenever it's asked.
+    pub check: bool,
+    pub channel: crate::update_check::UpdateChannel,
+    /// The release the person dismissed; it isn't offered again, a newer one is.
+    pub dismissed: Option<String>,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { check: true, channel: crate::update_check::UpdateChannel::Stable, dismissed: None }
+    }
+}
+
+/// How to reach the providers that need more than a key (#409). Keys stay in the keychain.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, from = "ReadProviderSettings")]
+pub struct ProviderSettings {
+    /// The ComfyUI servers (`[[providers.comfyui]]`, #864); none, ComfyUI models aren't set up.
+    /// Read them through [`Self::comfy_servers`], which skips bad and repeated entries. A key
+    /// stored for a server's account (`comfyui:<host>:<port>`) is sent to it as a bearer token.
+    pub comfyui: Vec<ComfyServer>,
+    /// The server cards run on unless they pick one, by name; unset or unknown, the first.
+    pub comfyui_default: Option<String>,
+    /// The LiteLLM proxy root, without `/v1`; its optional virtual key uses account `litellm`.
+    pub litellm_url: Option<String>,
+    /// A random value made once per install; it keeps prompt ids of different installs apart on
+    /// a shared ComfyUI server. Empty until the host first creates it.
+    pub install_salt: String,
+}
+
+/// [`ProviderSettings`] as read. A file with no `schema_version` counts as current and isn't
+/// migrated, so a hand-written one may still hold the old single `comfyui_url`: with no servers
+/// listed, it becomes the one server and the default.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ReadProviderSettings {
+    comfyui: Vec<ComfyServer>,
+    comfyui_default: Option<String>,
+    install_salt: String,
+    comfyui_url: Option<String>,
+    litellm_url: Option<String>,
+}
+
+impl From<ReadProviderSettings> for ProviderSettings {
+    fn from(read: ReadProviderSettings) -> Self {
+        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url } = read;
+        match comfyui_url.as_deref().map(str::trim).filter(|url| !url.is_empty()) {
+            Some(url) if comfyui.is_empty() => Self { litellm_url, ..Self::with_comfyui(url, &install_salt) },
+            _ => Self { comfyui, comfyui_default, litellm_url, install_salt },
+        }
+    }
+}
+
+/// One ComfyUI server (#864).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ComfyServer {
+    /// What the panel and cards call it; unique among the servers.
+    pub name: String,
+    /// Such as `http://127.0.0.1:8188`.
+    pub url: String,
+    /// How many jobs one run sends it at once; unset, the scheduler's usual 4. Read through
+    /// [`Self::max_jobs`].
+    #[serde(deserialize_with = "lenient_jobs")]
+    pub max_jobs: Option<u32>,
+}
+
+/// A hand-edited `max_jobs` that isn't a whole number in range drops the cap (or is clamped),
+/// rather than resetting the whole `[providers]` section.
+fn lenient_jobs<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+    let jobs = match <Option<serde_json::Value> as Deserialize>::deserialize(deserializer)? {
+        Some(serde_json::Value::Number(n)) => n.as_i64(),
+        Some(serde_json::Value::String(text)) => text.trim().parse::<i64>().ok(),
+        _ => None,
+    };
+    Ok(jobs.map(|n| u32::try_from(n.clamp(1, i64::from(MAX_SERVER_JOBS))).unwrap_or(1)))
+}
+
+/// At most this many ComfyUI servers are used; later entries are ignored.
+pub const MAX_COMFY_SERVERS: usize = 32;
+/// The longest server name, in characters.
+pub const MAX_SERVER_NAME: usize = 64;
+/// The most jobs one run sends a server at once: the scheduler runs at most 16 jobs at once in all.
+pub const MAX_SERVER_JOBS: u32 = 16;
+
+impl ComfyServer {
+    pub fn new(name: &str, url: &str) -> Self {
+        Self { name: name.to_owned(), url: url.to_owned(), max_jobs: None }
+    }
+
+    /// The jobs one run may send at once, within 1..=[`MAX_SERVER_JOBS`]; `None` for the usual.
+    pub fn max_jobs(&self) -> Option<usize> {
+        self.max_jobs.map(|n| usize::try_from(n.clamp(1, MAX_SERVER_JOBS)).unwrap_or(1))
+    }
+}
+
+/// Why `name` can't name a ComfyUI server, or `Ok` when it can: 1 to [`MAX_SERVER_NAME`]
+/// characters, no control characters, no space at either end.
+pub fn check_server_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("a ComfyUI server needs a name");
+    }
+    if name.chars().count() > MAX_SERVER_NAME {
+        return Err("a ComfyUI server's name is at most 64 characters");
+    }
+    if name.chars().any(char::is_control) || name.trim() != name {
+        return Err("a ComfyUI server's name can't hold control characters or start or end with a space");
+    }
+    Ok(())
+}
+
+/// A name for the server at `url`: its host and port, such as `127.0.0.1:8188`.
+pub fn server_name_for(url: &str) -> String {
+    let rest = url.trim().split_once("://").map_or(url.trim(), |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // Never a user name or password, which belong in the keychain.
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let name: String = host.chars().filter(|c| !c.is_control() && !c.is_whitespace()).take(MAX_SERVER_NAME).collect();
+    if name.is_empty() { "ComfyUI".to_owned() } else { name }
+}
+
+impl ProviderSettings {
+    /// One ComfyUI server at `url`, named by [`server_name_for`] and the default.
+    pub fn with_comfyui(url: &str, install_salt: &str) -> Self {
+        let name = server_name_for(url);
+        Self { comfyui: vec![ComfyServer::new(&name, url)], comfyui_default: Some(name), install_salt: install_salt.to_owned(), litellm_url: None }
+    }
+
+    /// The ComfyUI servers to use, in order: at most [`MAX_COMFY_SERVERS`], each with a good name
+    /// and an address; a name used twice keeps its first entry.
+    pub fn comfy_servers(&self) -> Vec<&ComfyServer> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.comfyui
+            .iter()
+            .filter(|server| check_server_name(&server.name).is_ok() && !server.url.trim().is_empty())
+            .filter(|server| seen.insert(server.name.as_str()))
+            .take(MAX_COMFY_SERVERS)
+            .collect()
+    }
+
+    /// The ComfyUI server called `name`.
+    pub fn comfy_server(&self, name: &str) -> Option<&ComfyServer> {
+        self.comfy_servers().into_iter().find(|server| server.name == name)
+    }
+
+    /// The server cards follow: the one `comfyui_default` names, or else the first.
+    pub fn default_comfy(&self) -> Option<&ComfyServer> {
+        let servers = self.comfy_servers();
+        let named = self.comfyui_default.as_deref().and_then(|name| servers.iter().copied().find(|server| server.name == name));
+        named.or_else(|| servers.first().copied())
+    }
+
+    /// Creates the install salt if there isn't one yet (32 random bytes as hex). `Ok(true)` when
+    /// it was created, so the host saves the settings.
+    pub fn ensure_install_salt(&mut self) -> Result<bool, nodecraft_types::Error> {
+        if !self.install_salt.trim().is_empty() {
+            return Ok(false);
+        }
+        self.install_salt = crate::execution_identity::nonce()?.iter().map(|b| format!("{b:02x}")).collect();
+        Ok(true)
+    }
+}
+
+/// Sharing a project live (#698).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShareSettings {
+    /// The relay `share.start` shares through when it isn't given one, such as
+    /// `ws://relay.example:7070`; `nodecraft-cli relay` runs one.
+    pub relay: Option<String>,
 }
 
 impl craft_settings::Settings for NodeCraftSettings {
     const APP_ID: &'static str = "nodecraft";
-    const SCHEMA_VERSION: u32 = 1;
+    const SCHEMA_VERSION: u32 = 2;
     const PORTABLE_MARKERS: &'static [&'static str] = &["portable.txt"];
 
     fn migrate(from: u32, doc: &mut DocumentMut) -> Result<(), MigrateError> {
-        // Version 1 is the first schema; add a step here (`from == 1` → 2) when a key is renamed
-        // or reshaped, and a test with a version-1 file.
-        let _ = (from, doc);
+        // Add a step for each version, with a test reading a file of the version before.
+        if from == 1 {
+            migrate_comfy_servers(doc).map_err(|message| MigrateError::new(from, message))?;
+        }
         Ok(())
     }
+}
+
+/// Version 1 → 2 (#864): `[providers] comfyui_url` becomes the one `[[providers.comfyui]]`
+/// server, named by its host and port, and the default.
+fn migrate_comfy_servers(doc: &mut DocumentMut) -> Result<(), String> {
+    let Some(providers) = doc.get_mut("providers").and_then(|item| item.as_table_like_mut()) else {
+        return Ok(());
+    };
+    // The comment above the old key stays above the new ones.
+    let comment = providers.key_mut("comfyui_url").map(|key| key.leaf_decor().clone());
+    let Some(url) = providers.remove("comfyui_url") else {
+        return Ok(());
+    };
+    let Some(address) = url.as_str().map(str::trim).filter(|address| !address.is_empty()) else {
+        return Ok(());
+    };
+    // The entry is parsed from text, the only way to build TOML here; the name holds no quote or
+    // backslash, and the address moves over as it was written.
+    let name: String = server_name_for(address).chars().filter(|c| !matches!(c, '"' | '\\')).collect();
+    let name = if name.is_empty() { "ComfyUI".to_owned() } else { name };
+    let mut made: DocumentMut = format!("comfyui_default = \"{name}\"\n[[comfyui]]\nname = \"{name}\"\n")
+        .parse()
+        .map_err(|_| "the ComfyUI server's name can't be written".to_owned())?;
+    let server = made.get_mut("comfyui").and_then(|servers| servers.get_mut(0)).and_then(|server| server.as_table_like_mut());
+    let Some(server) = server else {
+        return Err("the ComfyUI server can't be written".into());
+    };
+    server.insert("url", url);
+    for key in ["comfyui_default", "comfyui"] {
+        if let Some(item) = made.remove(key) {
+            providers.insert(key, item);
+        }
+    }
+    if let (Some(comment), Some(mut key)) = (comment, providers.key_mut("comfyui_default")) {
+        *key.leaf_decor_mut() = comment;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -155,6 +404,62 @@ pub fn settings_dir() -> Option<std::path::PathBuf> {
     craft_settings::paths::resolve(NodeCraftSettings::APP_ID, &portable, &Location::Auto, &craft_settings::Probe::default()).dir
 }
 
+/// The largest `config.toml` [`peek`] reads; a bigger one is ignored (defaults are used).
+#[cfg(not(target_arch = "wasm32"))]
+const PEEK_LIMIT: u64 = 4 << 20;
+
+/// The app's settings as saved, read without opening a store: nothing is created, locked,
+/// migrated on disk or moved aside, so other tools (the CLI) can read them while the app runs.
+/// Defaults when settings are in memory only, or the file is missing, too big or unreadable; a bad
+/// section falls back to its defaults, as it does in the app.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn peek() -> NodeCraftSettings {
+    settings_dir().map_or_else(NodeCraftSettings::default, |dir| peek_at(&dir))
+}
+
+/// [`peek`] in `dir`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn peek_at(dir: &std::path::Path) -> NodeCraftSettings {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(dir.join(craft_settings::store::CONFIG_FILE)) else {
+        return NodeCraftSettings::default();
+    };
+    let mut text = String::new();
+    if file.take(PEEK_LIMIT.saturating_add(1)).read_to_string(&mut text).is_err() || u64::try_from(text.len()).map_or(true, |n| n > PEEK_LIMIT) {
+        return NodeCraftSettings::default();
+    }
+    let Ok(mut doc) = craft_settings::document::parse(&text) else {
+        return NodeCraftSettings::default();
+    };
+    // Upgraded in memory only; a failed step leaves a half-upgraded document, so use defaults.
+    if craft_settings::migrate::upgrade::<NodeCraftSettings>(&mut doc).is_err() {
+        return NodeCraftSettings::default();
+    }
+    craft_settings::document::deserialize_sections::<NodeCraftSettings>(&doc).0
+}
+
+/// Makes the install salt if `store` has none, saving it at once: ComfyUI prompt ids must stay
+/// the same across restarts, so a salt is never made unless it is saved. On a read-only store
+/// none is made (and ComfyUI reports itself not set up).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn ensure_install_salt(store: &mut SettingsStore) -> Result<(), nodecraft_types::Error> {
+    use nodecraft_types::{Error, ErrorKind};
+    if !store.get().providers.install_salt.trim().is_empty() {
+        return Ok(());
+    }
+    if store.is_read_only() {
+        return Err(Error::new(ErrorKind::Unsupported, "settings can't be saved, so no install salt was made; ComfyUI stays off"));
+    }
+    let mut providers = store.get().providers.clone();
+    providers.ensure_install_salt()?;
+    store.update(|settings| settings.providers = providers);
+    if store.flush().is_err() {
+        store.update(|settings| settings.providers.install_salt.clear());
+        return Err(Error::new(ErrorKind::Internal, "the install salt couldn't be saved; ComfyUI stays off"));
+    }
+    Ok(())
+}
+
 /// Opens the settings for `location`. Never fails; problems are in the report.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open(location: Location) -> (SettingsStore, LoadReport) {
@@ -193,6 +498,33 @@ mod tests {
     }
 
     #[test]
+    fn a_mistyped_budget_cap_in_the_file_blocks_rather_than_lifting_every_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "[budgets]\nper_call_usd_cents = 50.0\nsession_usd_cents = 700\nproject_usd_cents = 12\ntotal_usd_cents = \"9\"\n");
+        let (store, _) = open_in(dir.path());
+        let caps = &store.get().budgets;
+        assert_eq!((caps.per_call_usd_cents, caps.session_usd_cents, caps.project_usd_cents, caps.total_usd_cents), (Some(0), Some(700), Some(12), Some(0)));
+    }
+
+    #[test]
+    fn peek_reads_without_touching_the_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent");
+        assert_eq!(peek_at(&missing), NodeCraftSettings::default());
+        assert!(!missing.exists(), "peeking must not create the folder");
+        write_config(dir.path(), "[providers]\ncomfyui_url = \"http://127.0.0.1:8188\"\n[canvas]\nzoom = \"not a table\"\n");
+        let before = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let peeked = peek_at(dir.path());
+        assert_eq!(peeked.providers.default_comfy().map(|server| server.url.as_str()), Some("http://127.0.0.1:8188"));
+        let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("config.toml")], "nothing is moved aside, backed up or locked");
+        assert_eq!(std::fs::read_to_string(dir.path().join("config.toml")).unwrap(), before);
+        write_config(dir.path(), "this is [not toml");
+        assert_eq!(peek_at(dir.path()), NodeCraftSettings::default());
+        assert!(dir.path().join("config.toml").exists(), "a damaged file stays where it is");
+    }
+
+    #[test]
     fn first_run_uses_defaults_and_writes_the_file_on_flush() {
         let dir = tempfile::tempdir().unwrap();
         let (mut store, report) = open_in(dir.path());
@@ -201,7 +533,7 @@ mod tests {
         assert_eq!(store.get(), &NodeCraftSettings::default());
         store.flush().unwrap();
         let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
-        assert!(text.contains("schema_version = 1"), "{text}");
+        assert!(text.contains("schema_version = 2"), "{text}");
         assert!(text.contains("theme = \"dark\""), "{text}");
         assert!(text.contains("scroll = \"pan\""), "{text}");
     }
@@ -221,6 +553,20 @@ mod tests {
         assert_eq!(again.get().appearance.theme, Theme::Light);
         assert_eq!(again.get().canvas.scroll, ScrollAction::Zoom);
         assert_eq!(again.get().canvas.zoom_speed(), 2.0);
+    }
+
+    #[test]
+    fn video_tools_need_two_absolute_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let ffmpeg = dir.path().join("ffmpeg");
+        let ffprobe = dir.path().join("ffprobe");
+        write_config(dir.path(), &format!("schema_version = 1\n[media]\nffmpeg = '{}'\nffprobe = '{}'\n", ffmpeg.display(), ffprobe.display()));
+        let (store, report) = open_in(dir.path());
+        assert!(describe_problems(&report).is_empty(), "{report:?}");
+        assert_eq!(store.get().media.tools(), Some((ffmpeg.as_path(), ffprobe.as_path())));
+        let relative = MediaSettings { ffmpeg: Some("ffmpeg".into()), ffprobe: Some(ffprobe.clone()) };
+        assert_eq!(relative.tools(), None);
+        assert_eq!(MediaSettings { ffmpeg: Some(ffmpeg), ffprobe: None }.tools(), None);
     }
 
     #[test]
@@ -339,5 +685,102 @@ mod tests {
         write_config(dir.path(), "schema_version = 1\n[keys]\naccounts = [\"openai\"]\n");
         let (store, _) = open_in(dir.path());
         assert_eq!(store.get().keys.accounts().len(), 1);
+    }
+
+    #[test]
+    fn the_install_salt_is_made_once_and_kept() {
+        let mut providers = ProviderSettings::default();
+        assert!(providers.ensure_install_salt().unwrap());
+        let salt = providers.install_salt.clone();
+        assert_eq!(salt.len(), 64);
+        assert!(!providers.ensure_install_salt().unwrap());
+        assert_eq!(providers.install_salt, salt);
+        let dir = tempfile::tempdir().unwrap();
+        let (mut store, _) = open_in(dir.path());
+        assert!(store.update(|s| s.providers = providers.clone()));
+        store.flush().unwrap();
+        assert_eq!(open_in(dir.path()).0.get().providers, providers);
+        let old = tempfile::tempdir().unwrap();
+        write_config(old.path(), "schema_version = 1\n[keys]\naccounts = [\"openai\"]\n");
+        assert_eq!(open_in(old.path()).0.get().providers, ProviderSettings::default(), "a file without [providers] still loads");
+        // The store-level helper saves at once (no deferred write to lose in a crash).
+        let fresh = tempfile::tempdir().unwrap();
+        let (mut store, _) = open_in(fresh.path());
+        ensure_install_salt(&mut store).unwrap();
+        let salt = store.get().providers.install_salt.clone();
+        assert_eq!(salt.len(), 64);
+        let on_disk = std::fs::read_to_string(fresh.path().join("config.toml")).unwrap();
+        assert!(on_disk.contains(&salt), "saved before returning");
+        ensure_install_salt(&mut store).unwrap();
+        assert_eq!(store.get().providers.install_salt, salt);
+    }
+
+    /// #864: a version-1 file's one ComfyUI address becomes the default of a list of servers.
+    #[test]
+    fn the_comfyui_address_becomes_the_default_server() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 1\n[providers]\n# mine\ncomfyui_url = 'http://gpu-box:8188/'\ninstall_salt = \"s\"\n");
+        let (mut store, report) = open_in(dir.path());
+        assert_eq!(report.migrated_from, Some(1), "{report:?}");
+        let providers = store.get().providers.clone();
+        assert_eq!(providers.comfyui, [ComfyServer::new("gpu-box:8188", "http://gpu-box:8188/")]);
+        assert_eq!(providers.default_comfy().map(|server| server.name.as_str()), Some("gpu-box:8188"));
+        assert_eq!(providers.install_salt, "s");
+        store.flush().unwrap();
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        // Arrays are rewritten whole on saving, so the list comes back inline.
+        assert!(!text.contains("comfyui_url") && text.contains("comfyui = [") && text.contains("# mine\ncomfyui_default"), "{text}");
+        let (store, _) = open_in(dir.path());
+        assert_eq!(store.get().providers, providers, "reads back the same");
+
+        // No address, or a blank one, leaves no server.
+        for file in ["schema_version = 1\n[providers]\ninstall_salt = \"s\"\n", "schema_version = 1\n[providers]\ncomfyui_url = ' '\n"] {
+            let dir = tempfile::tempdir().unwrap();
+            write_config(dir.path(), file);
+            let (store, report) = open_in(dir.path());
+            assert!(report.section_errors.is_empty(), "{report:?}");
+            assert!(store.get().providers.comfyui.is_empty());
+        }
+    }
+
+    /// A hand-edited job cap that's out of range or not a number never resets `[providers]`.
+    #[test]
+    fn a_bad_job_cap_is_clamped_or_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let servers = [("a", "-1"), ("b", "\"3\""), ("c", "999"), ("d", "true"), ("e", "99999999999")]
+            .map(|(name, jobs)| format!("[[providers.comfyui]]\nname = \"{name}\"\nurl = \"http://{name}:1\"\nmax_jobs = {jobs}\n"));
+        write_config(dir.path(), &format!("schema_version = 2\n[providers]\ninstall_salt = \"s\"\n{}", servers.concat()));
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        let caps: Vec<_> = store.get().providers.comfyui.iter().map(|server| server.max_jobs).collect();
+        assert_eq!(caps, [Some(1), Some(3), Some(MAX_SERVER_JOBS), None, Some(MAX_SERVER_JOBS)]);
+        assert_eq!(store.get().providers.install_salt, "s");
+    }
+
+    #[test]
+    fn bad_or_repeated_servers_are_skipped_and_the_first_is_the_default() {
+        let mut settings = ProviderSettings {
+            comfyui: vec![
+                ComfyServer::new("", "http://a:1"),
+                ComfyServer::new("local", "http://127.0.0.1:8188"),
+                ComfyServer::new("gpu", " "),
+                ComfyServer::new("local", "http://other:8188"),
+                ComfyServer { max_jobs: Some(0), ..ComfyServer::new("gpu", "http://gpu:8188") },
+                ComfyServer::new(" padded", "http://p:1"),
+            ],
+            ..ProviderSettings::default()
+        };
+        let names: Vec<&str> = settings.comfy_servers().iter().map(|server| server.name.as_str()).collect();
+        assert_eq!(names, ["local", "gpu"]);
+        assert_eq!(settings.comfy_server("local").map(|server| server.url.as_str()), Some("http://127.0.0.1:8188"));
+        assert_eq!(settings.comfy_server("gpu").and_then(ComfyServer::max_jobs), Some(1), "at least one job");
+        assert_eq!(settings.default_comfy().map(|server| server.name.as_str()), Some("local"));
+        settings.comfyui_default = Some("gpu".into());
+        assert_eq!(settings.default_comfy().map(|server| server.name.as_str()), Some("gpu"));
+        settings.comfyui_default = Some("gone".into());
+        assert_eq!(settings.default_comfy().map(|server| server.name.as_str()), Some("local"));
+        assert_eq!(server_name_for("https://me:pw@box.example:443/comfy"), "box.example:443", "no credentials in a name");
+        assert_eq!(server_name_for("::"), "::");
+        assert_eq!(server_name_for(""), "ComfyUI");
     }
 }

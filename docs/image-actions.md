@@ -1,9 +1,10 @@
 # Image actions: CPU reference, version 1
 
 `nodecraft_actions::image` supplies pure, fallible SDR image operations and typed parameter data.
-They have stable library action IDs, not yet registered engine commands. Live graph recomputation
-and command/undo integration belong to #88; GPU implementations compare with this reference in
-#89. Shared descriptor generation belongs to #162. This document is the normative action-owned
+They have stable library action IDs. The app runs them as action node kinds (`nodes::action`,
+#410) through `engine::action_exec`, on the CPU (`CpuExecutor`), and recomputes them live after an
+edit (#88). The GPU implementations compare with this reference in #89 but are not used by the app
+yet. Shared descriptor generation belongs to #162. This document is the normative action-owned
 inventory that that contract must express; it is not a second schema implementation.
 
 ## Inputs and entry points
@@ -51,7 +52,10 @@ coverage. Color grade and tint formulas use unassociated linear RGB. Sampling, c
 source-over use premultiplied linear RGBA, then unpremultiply and encode once per stage. Clamp final SDR
 channels to [0, 1], round to nearest byte; if quantized alpha is zero, newly computed RGB is zero.
 Luminance is `0.2126 R + 0.7152 G + 0.0722 B`. The media pipeline currently assumes sRGB rather
-than applying ICC profiles; this API does not claim HDR or color-profile fidelity.
+than applying ICC profiles; this API does not claim HDR or color-profile fidelity. An imported
+image's reference records what its file says (`color_space`: untagged, sRGB, ICC profile or
+other), but no action reads or applies it yet, and action outputs record only their size
+([decision](decisions/2026-10-21-image-header-metadata.md)).
 
 Admitted identity paths and exact byte copies/permutations preserve every stored byte, including
 hidden RGB at alpha zero and low-alpha colors. Computed operations may canonicalize hidden RGB.
@@ -227,8 +231,9 @@ into the repository; fixture creation needs no downloaded assets or attribution 
 
 `nodecraft_gpu::image::GpuExecutor` executes the same 13 typed request families, including all
 eight blur variants, on wgpu. It accepts the canonical immutable `Raster`/`ImageInputs` and
-returns the same `ImageResult`. This is a usable headless library backend; engine command/live
-recompute integration remains #88. The GPU API does not currently add encoded/decoded/view
+returns the same `ImageResult`. This is a usable headless library backend. The app's action
+cards and live recompute (#88) run the CPU executor instead; nothing in the engine calls
+`GpuExecutor` yet. Custom shader cards (#90) are the app's GPU action path. The GPU API does not currently add encoded/decoded/view
 normalization adapters. Media decoding and SDR normalization remain CPU responsibilities.
 
 `request()` acquires a fresh compatible adapter and matching device/queue together.

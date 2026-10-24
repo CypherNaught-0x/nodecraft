@@ -17,6 +17,10 @@ pub(crate) fn validate(bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 fn project_data(project: &Value) -> Result<(), Error> {
+    // Project skills (#168) are unknown to version 1.
+    if project.get("skills").is_some() {
+        return Err(unsupported());
+    }
     if let Some(canvases) = project.get("canvases").and_then(Value::as_object) {
         for canvas in canvases.values() {
             canvas_data(canvas)?;
@@ -25,6 +29,9 @@ fn project_data(project: &Value) -> Result<(), Error> {
     Ok(())
 }
 fn canvas_data(canvas: &Value) -> Result<(), Error> {
+    if canvas.get("kind").is_some() {
+        return Err(unsupported());
+    }
     if let Some(nodes) = canvas.get("nodes").and_then(Value::as_object) {
         for item in nodes.values() {
             node(item)?;
@@ -63,7 +70,9 @@ fn node(item: &Value) -> Result<(), Error> {
     Ok(())
 }
 fn generation(item: &Value) -> Result<(), Error> {
-    if item.get("input_hash").is_some() {
+    // Item tags (#92), job settings (#162) and partial results (#480) are as unknown to version 1
+    // as input hashes.
+    if item.get("input_hash").is_some() || item.get("items").is_some() || item.get("settings").is_some() || item.get("incomplete").is_some() {
         return Err(unsupported());
     }
     if let Some(outputs) = item.get("outputs").and_then(Value::as_array) {
@@ -228,8 +237,9 @@ mod reserved {
 }
 
 /// Borrowed counterpart for graph-validated current models. Every current typed role
-/// is narrower than the raw read guard: reserved discussion/field/tag members and
-/// future operations do not exist in these Rust types. Keep parity tests with raw v1.
+/// may now contain v2-only discussion members. Current serialization always emits those
+/// defaulted fields, so even a legacy-shaped typed discussion requires the v2 writer.
+/// Keep parity tests with the frozen raw v1 guard.
 pub(crate) fn project(project: &nodecraft_graph::Project) -> Result<(), Error> {
     fn scalar(value: &nodecraft_types::Value) -> Result<(), Error> {
         use nodecraft_types::Value;
@@ -244,12 +254,23 @@ pub(crate) fn project(project: &nodecraft_graph::Project) -> Result<(), Error> {
             Value::Text(_) | Value::Media(_) => Ok(()),
         }
     }
+    if !project.skills().is_empty() {
+        return Err(unsupported());
+    }
     for canvas in project.canvases().values() {
+        // Sheets (#163) would open as a plain canvas in version 1.
+        if !canvas.comments().is_empty() || !canvas.kind().is_canvas() {
+            return Err(unsupported());
+        }
         for node in canvas.nodes().values() {
             if !node.config.is_empty() || node.kind == "structure.note" {
                 return Err(unsupported());
             }
-            if node.history.iter().any(|generation| generation.input_hash.is_some()) {
+            if node
+                .history
+                .iter()
+                .any(|generation| generation.input_hash.is_some() || !generation.items.is_empty() || !generation.settings.is_empty() || generation.is_partial())
+            {
                 return Err(unsupported());
             }
             for value in node.params.values().chain(node.history.iter().flat_map(|generation| &generation.outputs)) {
@@ -280,8 +301,41 @@ mod tests {
             id: GenerationId::from_bytes([5; 16]),
             outputs: vec![],
             input_hash: Some(nodecraft_types::Blake3::from_bytes([6; 32])),
+            items: Vec::new(),
+            settings: Vec::new(),
+            incomplete: None,
         });
         nodes.push(hashed);
+        // Fanned results (#92) carry item tags version 1 can't read.
+        let mut itemed = nodes[0].clone();
+        let key = nodecraft_graph::ItemKey { batch: NodeId::from_bytes([7; 16]), item: nodecraft_types::ItemId::from_bytes([8; 16]) };
+        itemed.history.push(Generation {
+            id: GenerationId::from_bytes([5; 16]),
+            outputs: vec![Wire::List(vec![Wire::Text("a".into())])],
+            input_hash: None,
+            items: vec![vec![key]],
+            settings: Vec::new(),
+            incomplete: None,
+        });
+        let mut v1 = Project::new(ProjectId::from_bytes([4; 16]), "Items").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(c, "C") }.apply(&mut v1).unwrap();
+        Change::AddNode { canvas: c, node: itemed.clone() }.apply(&mut v1).unwrap();
+        assert!(project(&v1).is_err(), "never written as version 1");
+        nodes.push(itemed);
+        // So do recorded job settings (#162).
+        let mut set = nodes[0].clone();
+        let mut job = Generation::new(GenerationId::from_bytes([5; 16]), vec![]);
+        job.settings.push(nodecraft_graph::JobSettings {
+            provider: "mock".into(),
+            instance: None,
+            model: "mock-model".into(),
+            params: Default::default(),
+            inputs: Vec::new(),
+            item: None,
+            billable_units: None,
+        });
+        set.history.push(job);
+        nodes.push(set);
         for value in [
             serde_json::json!({"type":"bool","value":true}),
             serde_json::json!({"type":"number","value":1.5}),
@@ -295,7 +349,14 @@ mod tests {
             params.params.insert("nested".into(), value.clone());
             nodes.push(params);
             let mut output = nodes[0].clone();
-            output.history.push(Generation { id: GenerationId::from_bytes([3; 16]), outputs: vec![value], input_hash: None });
+            output.history.push(Generation {
+                id: GenerationId::from_bytes([3; 16]),
+                outputs: vec![value],
+                input_hash: None,
+                items: Vec::new(),
+                settings: Vec::new(),
+                incomplete: None,
+            });
             nodes.push(output);
         }
         for node in nodes {
@@ -307,9 +368,39 @@ mod tests {
             assert_eq!(project(&p).is_ok(), validate(&json).is_ok());
         }
         let fixture = crate::decode(include_bytes!("../tests/fixtures/v1/comments-v1.ncraft")).unwrap();
-        assert!(project(&fixture.project).is_ok());
+        assert!(project(&fixture.project).is_err());
+        let mut reader = zip::ZipArchive::new(std::io::Cursor::new(include_bytes!("../tests/fixtures/v1/comments-v1.ncraft"))).unwrap();
+        let mut raw = String::new();
+        std::io::Read::read_to_string(&mut reader.by_name("project.json").unwrap(), &mut raw).unwrap();
+        assert!(validate(raw.as_bytes()).is_ok(), "genuine old bytes remain valid even though current typed serialization emits v2 defaults");
         let recovered = crate::journal::recover(include_bytes!("../tests/fixtures/v1/comments-v1.ncrj")).unwrap();
-        assert!(project(&recovered.snapshot.project).is_ok());
+        assert!(project(&recovered.snapshot.project).is_err());
+    }
+
+    #[test]
+    fn skills_are_never_written_or_read_as_version_1() {
+        let mut skilled = Project::new(ProjectId::from_bytes([4; 16]), "Skills").unwrap();
+        let skill = serde_json::json!({"id": "05050505-0505-0505-0505-050505050505", "version": 1, "name": "S", "instructions": "x"});
+        Change::PutSkill { skill: serde_json::from_value(skill.clone()).unwrap() }.apply(&mut skilled).unwrap();
+        assert!(project(&skilled).is_err(), "a version-1 reader would drop the skill");
+        assert!(validate(&serde_json::to_vec(&serde_json::json!({ "project": skilled })).unwrap()).is_err());
+        for change in [serde_json::json!({"type": "put_skill", "skill": skill}), serde_json::json!({"type": "remove_skill", "id": skill["id"]})] {
+            assert!(validate(&serde_json::to_vec(&serde_json::json!({"changes": {"changes": [change]}})).unwrap()).is_err());
+        }
+    }
+
+    #[test]
+    fn a_sheet_is_never_written_or_read_as_version_1() {
+        let mut sheet = Project::new(ProjectId::from_bytes([4; 16]), "Sheets").unwrap();
+        Change::AddCanvas { canvas: Canvas::sheet(CanvasId::from_bytes([1; 16]), "Rows") }.apply(&mut sheet).unwrap();
+        assert!(project(&sheet).is_err(), "a sheet would open as a plain canvas");
+        let json = serde_json::to_vec(&serde_json::json!({ "project": sheet })).unwrap();
+        assert!(validate(&json).is_err());
+        // A plain canvas stays version-1 compatible: its kind isn't written.
+        let mut plain = Project::new(ProjectId::from_bytes([4; 16]), "Plain").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(CanvasId::from_bytes([1; 16]), "C") }.apply(&mut plain).unwrap();
+        assert!(project(&plain).is_ok());
+        assert!(!serde_json::to_string(&plain).unwrap().contains("\"kind\""));
     }
 }
 

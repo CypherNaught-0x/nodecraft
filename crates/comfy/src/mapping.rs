@@ -90,8 +90,20 @@ pub struct ExposedInput {
 pub struct ExposedOutput {
     pub node: String,
     pub label: String,
-    /// `None` when the output node's media kind isn't known (custom savers).
+    /// `None` when the output node's media kind isn't known (custom savers). The bytes the
+    /// server returns are sniffed and decide the port at run time; this is the expected kind.
     pub media: Option<Media>,
+    /// A preview node: it writes temporary files, which a run doesn't collect, so it gives no
+    /// result. Shown so the mapping editor can suggest a Save node instead.
+    pub preview: bool,
+}
+
+/// A paid ComfyUI API (partner) node in the workflow: running it spends the server's comfy.org
+/// credits, which NodeCraft can't price.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartnerNode {
+    pub node: String,
+    pub class_type: String,
 }
 
 /// Inputs and outputs proposed for a workflow.
@@ -99,6 +111,8 @@ pub struct ExposedOutput {
 pub struct Exposed {
     pub inputs: Vec<ExposedInput>,
     pub outputs: Vec<ExposedOutput>,
+    /// Its partner nodes, in node order.
+    pub partners: Vec<PartnerNode>,
 }
 
 /// Proposes inputs and outputs for `workflow`. Only literal inputs are proposed (connected ones
@@ -113,6 +127,11 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Result<Exposed
     for (id, node) in &workflow.nodes {
         let Some(info) = catalog.get(&node.class_type) else { continue };
         let label = node.title.as_deref().unwrap_or(&info.display_name);
+        if info.api_node {
+            budget.container(2, 0)?;
+            budget.text(id, 1)?;
+            budget.text(&node.class_type, 1)?;
+        }
         for spec in info.inputs.iter().filter(|spec| spec.is_widget()) {
             if matches!(node.inputs.get(&spec.name), Some(InputValue::Link { .. })) {
                 continue;
@@ -153,8 +172,16 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Result<Exposed
         let Some(node) = workflow.nodes.get(id) else { continue };
         let Some(info) = catalog.get(&node.class_type) else { continue };
         let node_label = node.title.clone().unwrap_or_else(|| info.display_name.clone());
+        if info.api_node {
+            out.partners.push(PartnerNode { node: id.into(), class_type: node.class_type.clone() });
+        }
         if info.output_node {
-            out.outputs.push(ExposedOutput { node: id.into(), label: node_label.clone(), media: output_media(&node.class_type) });
+            out.outputs.push(ExposedOutput {
+                node: id.into(),
+                label: node_label.clone(),
+                media: output_media(&node.class_type),
+                preview: node.class_type.to_ascii_lowercase().starts_with("preview"),
+            });
         }
         for spec in info.inputs.iter().filter(|s| s.is_widget()) {
             let current = match node.inputs.get(&spec.name) {
@@ -248,7 +275,10 @@ fn role_of(name: &str, kind: &ExposedKind, negative: bool) -> InputRole {
 
 fn output_media(class: &str) -> Option<Media> {
     let c = class.to_ascii_lowercase();
-    if c.contains("video") || c.contains("animated") || c.contains("webm") {
+    // An animated WebP or PNG sniffs as an image, and lands on an image port.
+    if c.contains("animated") {
+        Some(Media::Image)
+    } else if c.contains("video") || c.contains("webm") {
         Some(Media::Video)
     } else if c.contains("audio") {
         Some(Media::Audio)
@@ -293,7 +323,7 @@ mod tests {
         assert!(ex.inputs.iter().all(|i| i.input != "model"), "connected inputs are internal");
         let defaults: Vec<&str> = ex.inputs.iter().filter(|i| i.role.exposed_by_default()).map(|i| i.label.as_str()).collect();
         assert_eq!(defaults, ["KSampler · seed", "Positive", "Negative prompt"]);
-        assert_eq!(ex.outputs, vec![ExposedOutput { node: "9".into(), label: "Save Image".into(), media: Some(Media::Image) }]);
+        assert_eq!(ex.outputs, vec![ExposedOutput { node: "9".into(), label: "Save Image".into(), media: Some(Media::Image), preview: false }]);
     }
 
     #[test]
@@ -308,8 +338,64 @@ mod tests {
     }
 
     #[test]
+    fn partner_nodes_are_listed_in_node_order() {
+        let info = br#"{
+          "PartnerImage": {"input": {"required": {"prompt": ["STRING", {}]}}, "output": ["IMAGE"], "api_node": true},
+          "SaveImage": {"input": {"required": {"images": ["IMAGE"]}}, "output": [], "output_node": true}
+        }"#;
+        let c = NodeCatalog::parse(info).unwrap().0;
+        let wf = ApiWorkflow::parse(
+            br#"{"2":{"class_type":"SaveImage","inputs":{"images":["1",0]}},"1":{"class_type":"PartnerImage","inputs":{"prompt":"a"}}}"#,
+            None,
+        )
+        .unwrap();
+        let ex = discover(&wf, &c).unwrap();
+        assert_eq!(ex.partners, [PartnerNode { node: "1".into(), class_type: "PartnerImage".into() }]);
+        assert!(discover(&setup().0, &setup().1).unwrap().partners.is_empty());
+    }
+
+    #[test]
+    fn video_and_audio_loaders_and_savers_are_mapped() {
+        // Core loaders flag their upload; the custom video loader doesn't, and is known by name.
+        let info = br#"{
+          "LoadVideo": {"input": {"required": {"file": [["a.mp4"], {"video_upload": true}]}}, "output": ["VIDEO"], "output_node": false},
+          "LoadAudio": {"input": {"required": {"audio": [["a.wav"], {"audio_upload": true}]}}, "output": ["AUDIO"], "output_node": false},
+          "VHS_LoadVideo": {"input": {"required": {"video": [["b.mp4"]], "frame_load_cap": ["INT", {"default": 0}]}}, "output": ["IMAGE"], "output_node": false},
+          "SaveVideo": {"input": {"required": {"video": ["VIDEO"], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true},
+          "SaveAudio": {"input": {"required": {"audio": ["AUDIO"], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true},
+          "SaveAnimatedWEBP": {"input": {"required": {"images": ["IMAGE"]}}, "output": [], "output_node": true},
+          "PreviewAudio": {"input": {"required": {"audio": ["AUDIO"]}}, "output": [], "output_node": true}
+        }"#;
+        let c = NodeCatalog::parse(info).unwrap().0;
+        let wf = ApiWorkflow::parse(
+            br#"{"1":{"class_type":"LoadVideo","inputs":{"file":"a.mp4"}},"2":{"class_type":"LoadAudio","inputs":{"audio":"a.wav"}},
+                "3":{"class_type":"VHS_LoadVideo","inputs":{"video":"b.mp4","frame_load_cap":0}},
+                "4":{"class_type":"SaveVideo","inputs":{"video":["1",0],"filename_prefix":"v"}},"5":{"class_type":"SaveAudio","inputs":{"audio":["2",0],"filename_prefix":"a"}},
+                "6":{"class_type":"SaveAnimatedWEBP","inputs":{"images":["3",0]}},"7":{"class_type":"PreviewAudio","inputs":{"audio":["2",0]}}}"#,
+            None,
+        )
+        .unwrap();
+        let ex = discover(&wf, &c).unwrap();
+        let media: Vec<_> = ex
+            .inputs
+            .iter()
+            .filter_map(|i| match i.kind {
+                ExposedKind::Media(m) => Some((i.node.as_str(), i.input.as_str(), m)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(media, [("1", "file", Media::Video), ("2", "audio", Media::Audio), ("3", "video", Media::Video)]);
+        let outputs: Vec<_> = ex.outputs.iter().map(|o| (o.node.as_str(), o.media, o.preview)).collect();
+        assert_eq!(
+            outputs,
+            [("4", Some(Media::Video), false), ("5", Some(Media::Audio), false), ("6", Some(Media::Image), false), ("7", Some(Media::Audio), true)]
+        );
+    }
+
+    #[test]
     fn media_kinds_from_class_names() {
         assert_eq!(output_media("VHS_VideoCombine"), Some(Media::Video));
+        assert_eq!(output_media("SaveAnimatedPNG"), Some(Media::Image), "an animated image sniffs as an image");
         assert_eq!(output_media("SaveAudio"), Some(Media::Audio));
         assert_eq!(output_media("SaveGLB"), Some(Media::Mesh));
         assert_eq!(output_media("ShowText"), None);

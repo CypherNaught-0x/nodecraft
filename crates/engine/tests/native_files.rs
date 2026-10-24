@@ -1,5 +1,5 @@
 #![cfg(not(target_arch = "wasm32"))]
-mod common;
+use crate::common;
 use nodecraft_engine::Session;
 use nodecraft_format::{AssetStore, LoadedProject, NativeStorage, ProjectStorage, Snapshot, StorageLocation, encode};
 use nodecraft_types::{Error, ErrorKind};

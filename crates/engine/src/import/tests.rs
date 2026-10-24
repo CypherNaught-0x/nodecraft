@@ -1,6 +1,7 @@
 use super::*;
-use nodecraft_graph::{Canvas, Change, Project};
-use nodecraft_types::ProjectId;
+use nodecraft_graph::{Canvas, Change, Node, Project};
+use nodecraft_types::{ProjectId, Value};
+use serde_json::json;
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
 
@@ -24,6 +25,41 @@ fn node(s: &Session, id: NodeId) -> &Node {
 
 const AT: Position = Position { x: 10.0, y: 20.0 };
 
+fn video_bytes(duration: u32) -> Vec<u8> {
+    let boxed = |kind: &[u8; 4], body: &[u8]| [u32::try_from(body.len() + 8).unwrap().to_be_bytes().as_slice(), kind, body].concat();
+    let mut header = vec![0; 100];
+    header[12..16].copy_from_slice(&1000u32.to_be_bytes());
+    header[16..20].copy_from_slice(&duration.to_be_bytes());
+    [boxed(b"ftyp", b"isom\0\0\x02\0isom"), boxed(b"moov", &boxed(b"mvhd", &header))].concat()
+}
+
+#[test]
+fn probed_movie_metadata_is_bound_to_the_input_and_only_fills_unknown_fields() {
+    let bytes = video_bytes(0);
+    let hash = nodecraft_types::Blake3::from_bytes(*blake3::hash(&bytes).as_bytes());
+    let proof = ProbedMovie { hash, meta: MediaMeta { duration_ms: Some(500), width: Some(64), height: Some(48), ..Default::default() } };
+    let mut s = session();
+    let files = [Incoming { name: "Fragmented", bytes: &bytes }, Incoming { name: "Notes", bytes: b"Public notes" }];
+    let before = s.document().clone();
+    import_files_with_movies(&mut s, C, AT, 300.0, &files, &ids(2), std::slice::from_ref(&proof)).unwrap();
+    let Some(Value::Media(asset)) = node(&s, ids(1)[0]).params.get("asset") else { panic!("video") };
+    assert_eq!((asset.meta.duration_ms, asset.meta.width, asset.meta.height), (Some(500), Some(64), Some(48)));
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document(), &before, "probe enrichment stays in the same atomic import undo step");
+
+    let known = video_bytes(1200);
+    let known_hash = nodecraft_types::Blake3::from_bytes(*blake3::hash(&known).as_bytes());
+    let another = ProbedMovie { hash: known_hash, ..proof.clone() };
+    let imported = import_media_with_movie(&mut s, &Incoming { name: "Known", bytes: &known }, Some(&another)).unwrap();
+    assert_eq!(imported.meta.duration_ms, Some(1200), "a native probe cannot overwrite known header facts");
+    let unknown = import_media_with_movie(&mut s, &Incoming { name: "Fragmented", bytes: &bytes }, Some(&another)).unwrap();
+    assert_eq!(unknown.meta.duration_ms, None, "another video's metadata cannot be borrowed");
+    let image = png();
+    let image_proof = ProbedMovie { hash: nodecraft_types::Blake3::from_bytes(*blake3::hash(&image).as_bytes()), ..proof };
+    let imported = import_media_with_movie(&mut s, &Incoming { name: "Image", bytes: &image }, Some(&image_proof)).unwrap();
+    assert_eq!(imported.meta.duration_ms, None, "only video fields are enriched");
+}
+
 #[test]
 fn text_and_images_become_source_nodes_in_a_row_as_one_undo_step() {
     let mut s = session();
@@ -40,6 +76,9 @@ fn text_and_images_become_source_nodes_in_a_row_as_one_undo_step() {
     assert_eq!(picture.pos.x, 310.0);
     let Some(Value::Media(asset)) = picture.params.get("asset") else { panic!("an asset parameter") };
     assert_eq!((asset.mime.essence(), asset.meta.width, asset.meta.height), ("image/png", Some(3), Some(2)));
+    // What the header proves travels with the asset (#393).
+    let facts = (asset.meta.has_alpha, asset.meta.bits_per_channel, asset.meta.color_space);
+    assert_eq!(facts, (Some(true), Some(8), Some(nodecraft_types::ColorSpace::Untagged)));
     assert!(s.assets().get(&asset.hash).is_some(), "the bytes are in the project's asset store");
     s.dispatch("edit.undo", &json!({})).unwrap();
     assert_eq!(s.document(), &before, "one undo removes them all");
@@ -135,6 +174,7 @@ fn camera_formats_are_kept_without_a_size_and_bad_text_is_refused() {
     assert_eq!(photo.kind, "source.image");
     let Some(Value::Media(asset)) = photo.params.get("asset") else { panic!("an asset") };
     assert_eq!((asset.mime.essence(), asset.meta.width), ("image/heic", None));
+    assert_eq!(asset.meta, MediaMeta::default(), "nothing is claimed about an image this build can't read");
 }
 
 #[test]
@@ -164,4 +204,167 @@ fn text_right_at_the_budget_still_fits_one_paste() {
     let text = "b".repeat(MAX_DROP_TEXT_BYTES);
     let imported = import_files(&mut s, C, AT, 300.0, &[Incoming { name: "full.txt", bytes: text.as_bytes() }], &ids(1)).unwrap();
     assert_eq!(imported.nodes, ids(1), "{:?}", imported.skipped);
+}
+
+#[test]
+fn hdr394_import_skips_hdr_without_assets_edits_or_text_fallback() {
+    for bytes in [b"\x76\x2f\x31\x01".as_slice(), b"#?RGBE\n", b"#?RADIANCE\n"] {
+        let mut s = session();
+        let before = s.document().clone();
+        let revision = s.revision();
+        let got = import_files(&mut s, C, AT, 300.0, &[Incoming { name: "sample.dat", bytes }], &ids(1)).unwrap();
+        assert!(got.nodes.is_empty());
+        assert_eq!(got.notice().unwrap(), "sample.dat wasn't added: HDR images can't be added yet; convert to PNG or JPEG first.");
+        assert_eq!(s.document(), &before);
+        assert_eq!(s.revision(), revision);
+        assert!(s.assets().is_empty());
+        assert!(!s.can_undo());
+    }
+    let mut s = session();
+    let before = s.document().clone();
+    let got = import_files(
+        &mut s,
+        C,
+        AT,
+        300.0,
+        &[Incoming { name: "empty", bytes: b"" }, Incoming { name: "sample.hdr", bytes: b"#?RGBE\n" }, Incoming { name: "ok.txt", bytes: b"kept" }],
+        &ids(3),
+    )
+    .unwrap();
+    assert_eq!(got.nodes, [ids(3)[2]]);
+    assert_eq!(got.skipped[0].1, "the file is empty");
+    assert!(got.skipped[1].1.contains("HDR"));
+    assert!(s.assets().is_empty());
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document(), &before);
+}
+
+#[test]
+fn import_media_stores_one_file_for_a_later_edit_and_refuses_text() {
+    let mut s = session();
+    let image = png();
+    let asset = import_media(&mut s, &Incoming { name: "photo.png", bytes: &image }).unwrap();
+    assert_eq!((asset.mime.essence(), asset.meta.width, asset.meta.height), ("image/png", Some(3), Some(2)));
+    s.validate_asset(&asset).unwrap();
+    assert!(s.document().canvases().get(&C).unwrap().nodes().is_empty(), "it adds no node");
+    let text = import_media(&mut s, &Incoming { name: "notes.txt", bytes: b"A forest at dawn" }).unwrap_err();
+    assert!(text.message.contains("notes.txt") && text.message.contains("text"), "{}", text.message);
+    assert_eq!(import_media(&mut s, &Incoming { name: "empty", bytes: b"" }).unwrap_err().kind, nodecraft_types::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn models_become_3d_nodes_and_unreadable_ones_are_refused_with_a_reason() {
+    let mut s = session();
+    let obj = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nv 1 1 0\nf 1 2 4 3\n".to_vec();
+    let mesh = nodecraft_media::decode_mesh(&obj, &MeshLimits::default()).unwrap();
+    let glb = nodecraft_media::encode_glb(&mesh).unwrap();
+    let external = br#"{"asset":{"version":"2.0"},"buffers":[{"byteLength":36,"uri":"model.bin"}],"bufferViews":[{"buffer":0,"byteLength":36}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"}],"meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}],"nodes":[{"mesh":0}],"scenes":[{"nodes":[0]}]}"#;
+    let files = [Incoming { name: "quad.obj", bytes: &obj }, Incoming { name: "quad.glb", bytes: &glb }, Incoming { name: "split.gltf", bytes: external }];
+    let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(3)).unwrap();
+    assert_eq!(imported.nodes, ids(2));
+    for (id, mime) in ids(2).into_iter().zip(["model/obj", "model/gltf-binary"]) {
+        let model = node(&s, id);
+        assert_eq!(model.kind, "source.mesh");
+        let Some(Value::Media(asset)) = model.params.get("asset") else { panic!("an asset parameter") };
+        assert_eq!((asset.mime.essence(), asset.meta.vertices, asset.meta.triangles), (mime, Some(4), Some(2)));
+    }
+    let [(name, why)] = imported.skipped.as_slice() else { panic!("one skipped: {:?}", imported.skipped) };
+    assert_eq!(name, "split.gltf");
+    assert!(why.contains("3D model can't be read") && why.contains(".glb"), "{why}");
+}
+
+#[test]
+fn pdfs_become_document_nodes_with_their_page_count_and_damaged_ones_are_refused() {
+    let mut s = session();
+    let pdf = nodecraft_media::pdf_fixture::pdf(&["", "", ""]);
+    let damaged = b"%PDF-1.7\nnot really".to_vec();
+    let empty = nodecraft_media::pdf_fixture::pdf(&[]);
+    let files = [Incoming { name: "paper.pdf", bytes: &pdf }, Incoming { name: "damaged.pdf", bytes: &damaged }, Incoming { name: "empty.pdf", bytes: &empty }];
+    let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(3)).unwrap();
+    assert_eq!(imported.nodes, ids(1));
+    let document = node(&s, ids(1)[0]);
+    assert_eq!(document.kind, nodecraft_nodes::document::SOURCE);
+    let Some(Value::Media(asset)) = document.params.get("asset") else { panic!("an asset parameter") };
+    assert_eq!((asset.mime.essence(), asset.meta.page_count), ("application/pdf", Some(3)));
+    let [(name, why), (empty_name, empty_why)] = imported.skipped.as_slice() else { panic!("two skipped: {:?}", imported.skipped) };
+    assert_eq!(name, "damaged.pdf");
+    assert!(why.contains("PDF can't be read"), "{why}");
+    assert_eq!((empty_name.as_str(), empty_why.as_str()), ("empty.pdf", "the PDF has no pages"));
+}
+
+const WORKFLOW: &str =
+    r#"{"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a red fox"}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}"#;
+
+fn read_comfy_nodes(s: &mut Session) {
+    let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {"multiline": true}]}}, "output": ["IMAGE"]},
+        "SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
+    let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
+    crate::comfy_workflow_cmds::finish(s, 1, Ok(std::sync::Arc::new(catalog).into()));
+}
+
+#[test]
+fn a_dropped_comfyui_workflow_becomes_its_card_beside_other_files() {
+    let mut s = session();
+    read_comfy_nodes(&mut s);
+    let image = png();
+    let files = [Incoming { name: "fox.json", bytes: WORKFLOW.as_bytes() }, Incoming { name: "a.png", bytes: &image }];
+    let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(2)).unwrap();
+    assert_eq!(imported.skipped, []);
+    let card = node(&s, ids(1)[0]);
+    assert_eq!(card.kind, nodecraft_nodes::comfy_workflow::ID);
+    assert_eq!(card.title, "fox");
+    assert_eq!((card.pos.x, card.pos.y), (AT.x, AT.y));
+    assert!(nodecraft_nodes::comfy_workflow::card(card).unwrap().mapping.params.iter().any(|p| p.input == "text"), "the prompt is a parameter");
+    assert_eq!(node(&s, ids(2)[1]).kind, "source.image");
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert!(s.document().canvases().get(&C).unwrap().nodes().is_empty(), "one undo step");
+}
+
+#[test]
+fn a_dropped_workflow_waits_for_the_servers_nodes_and_other_json_stays_text() {
+    let mut s = session();
+    let other = br#"{"prompt": "a red fox", "seed": 7}"#;
+    let files = [Incoming { name: "fox.json", bytes: WORKFLOW.as_bytes() }, Incoming { name: "notes.json", bytes: other }];
+    let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(2)).unwrap();
+    assert_eq!(imported.skipped.len(), 1);
+    assert_eq!(imported.skipped[0].0, "fox.json");
+    assert!(imported.skipped[0].1.contains("Read ComfyUI server nodes"), "{:?}", imported.skipped);
+    assert_eq!(node(&s, ids(2)[1]).kind, "source.text");
+
+    read_comfy_nodes(&mut s);
+    let missing = WORKFLOW.replace("SaveImage", "FancySave");
+    let imported = import_files(&mut s, C, AT, 300.0, &[Incoming { name: "fancy.json", bytes: missing.as_bytes() }], &[NodeId::from_bytes([9; 16])]).unwrap();
+    assert!(imported.skipped[0].1.contains("FancySave"), "{:?}", imported.skipped);
+}
+
+#[test]
+fn only_workflow_shaped_json_is_taken_for_a_workflow() {
+    use crate::comfy_workflow_cmds::is_workflow;
+    assert!(is_workflow(WORKFLOW));
+    assert!(is_workflow(r#"{"nodes": [], "links": [], "version": 0.4}"#));
+    assert!(!is_workflow(r#"{"nodes": [{"id": "Myriel", "group": 1}], "links": [{"source": "Napoleon", "target": "Myriel"}]}"#), "a d3 graph");
+    for text in ["", "[]", "{}", r#"{"1": {"inputs": {}}}"#, r#"{"1": {"class_type": 5}}"#, r#"{"nodes": []}"#, "a red fox"] {
+        assert!(!is_workflow(text), "{text}");
+    }
+}
+
+#[test]
+fn a_workflow_card_too_large_for_the_drop_is_skipped_not_the_whole_drop() {
+    let mut s = session();
+    read_comfy_nodes(&mut s);
+    // The card stores the long prompt in its workflow, its mapping and its values.
+    let prompt = "fox ".repeat(60 * 1024);
+    let workflow = WORKFLOW.replace("a red fox", &prompt);
+    let notes = "n".repeat(MAX_DROP_TEXT_BYTES - workflow.len() - 1024);
+    let files = [Incoming { name: "notes.txt", bytes: notes.as_bytes() }, Incoming { name: "fox.JSON", bytes: workflow.as_bytes() }];
+    let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(2)).unwrap();
+    assert_eq!(imported.skipped.len(), 1, "{:?}", imported.skipped);
+    assert!(imported.skipped[0].1.contains("comfy.workflow.import"), "{:?}", imported.skipped);
+    assert_eq!(node(&s, ids(1)[0]).kind, "source.text", "the rest of the drop lands");
+
+    let mut s = session();
+    read_comfy_nodes(&mut s);
+    let small = [Incoming { name: "Fox.JSON", bytes: WORKFLOW.as_bytes() }];
+    import_files(&mut s, C, AT, 300.0, &small, &ids(1)).unwrap();
+    assert_eq!(node(&s, ids(1)[0]).title, "Fox");
 }

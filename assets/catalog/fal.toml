@@ -1,0 +1,316 @@
+# Official fal model HTTP schemas and endpoint pricing checked 2026-10-18. Live aliases, no immutable weights.
+# https://fal.ai/models/fal-ai/trellis-2/api?platform=http
+
+[[model]]
+id="fal.flux-schnell"
+provider="fal"
+provider_model="fal-ai/flux/schnell"
+label="FLUX Schnell (fal)"
+description="Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=30
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="width"
+label="Width"
+control={type="unsigned",min="512",max="1024",step="64"}
+default={type="unsigned",value="1024"}
+
+[[model.params.params]]
+name="height"
+label="Height"
+control={type="unsigned",min="512",max="1024",step="64"}
+default={type="unsigned",value="1024"}
+
+[[model.params.params]]
+name="num_images"
+label="Images"
+control={type="unsigned",min="1",max="4",step="1"}
+default={type="unsigned",value="1"}
+
+[[model.params.params]]
+name="num_inference_steps"
+label="Steps"
+control={type="unsigned",min="1",max="4",step="1"}
+default={type="unsigned",value="4"}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="fal.wan22"
+provider="fal"
+provider_model="fal-ai/wan/v2.2-a14b/text-to-video"
+label="Wan 2.2 (fal)"
+description="Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=30
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1}]
+
+[[model.params.params]]
+name="num_frames"
+label="Frames"
+control={type="unsigned",min="17",max="81",step="1"}
+default={type="unsigned",value="81"}
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="16:9",label="16:9"},{value="9:16",label="9:16"},{value="1:1",label="1:1"}]}
+default={type="text",value="16:9"}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="fal.wan22-i2v"
+provider="fal"
+provider_model="fal-ai/wan/v2.2-a14b/image-to-video"
+label="Wan 2.2 image to video (fal)"
+description="Animates a first frame, toward an optional last frame; frames up to 1024 px and 1 MiB. Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=45
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="image-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1},{role="first_frame",modality="image",min=1,max=1},{role="last_frame",modality="image",min=0,max=1}]
+
+[[model.params.params]]
+name="num_frames"
+label="Frames"
+control={type="unsigned",min="17",max="161",step="1"}
+default={type="unsigned",value="81"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="580p",label="580p"},{value="720p",label="720p"}]}
+default={type="text",value="480p"}
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="auto",label="From the frame"},{value="16:9",label="16:9"},{value="9:16",label="9:16"},{value="1:1",label="1:1"}]}
+default={type="text",value="auto"}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="fal.wan22-s2v"
+provider="fal"
+provider_model="fal-ai/wan/v2.2-14b/speech-to-video"
+label="Wan 2.2 speech to video (fal)"
+description="Makes a portrait speak a wired speech track of up to 7.5 s; whether the clip carries that track is not yet verified live. Portrait up to 1024 px, each input up to 1 MiB. Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=60
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="speech-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1},{role="portrait",modality="image",min=1,max=1},{role="speech",modality="audio",min=1,max=1}]
+audio={role="speech",duration="fixed",max_ms=7500,sound="input"}
+
+[[model.params.params]]
+name="num_frames"
+label="Frames (multiple of 4)"
+control={type="unsigned",min="40",max="120",step="4"}
+default={type="unsigned",value="80"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="580p",label="580p"},{value="720p",label="720p"}]}
+default={type="text",value="480p"}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="fal.kokoro"
+provider="fal"
+provider_model="fal-ai/kokoro/american-english"
+label="Kokoro (fal)"
+description="Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=30
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-audio"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="af_heart",label="af_heart"},{value="am_adam",label="am_adam"}]}
+default={type="text",value="af_heart"}
+
+[[model.params.params]]
+name="speed"
+label="Speed"
+control={type="slider",min=0.5,max=2.0,step=0.1}
+default={type="number",value=1.0}
+
+[[model]]
+id="fal.trellis2"
+provider="fal"
+provider_model="fal-ai/trellis-2"
+label="Trellis 2 (fal)"
+description="Bounded queue adapter; live model alias. Fixed 512 resolution, dated 0.25 USD estimate."
+latency_s=30
+quality=3
+pricing={type="per_call",price="0.25 USD"}
+
+[[model.modes]]
+id="image-to-mesh"
+output="mesh"
+inputs=[{role="image",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="fal.esrgan"
+provider="fal"
+provider_model="fal-ai/esrgan"
+label="ESRGAN (fal)"
+description="Bounded queue adapter; live model alias. Usage price unknown before execution."
+latency_s=30
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="upscale"
+output="image"
+inputs=[{role="image",modality="image",min=1,max=1}]
+
+# Bria image-only removal, checked 2026-10-22:
+# https://fal.ai/models/fal-ai/bria/background/remove and /api
+# No prompt: the guided variant costs more and is not exposed by this mode.
+[[model]]
+id="fal.bria-rmbg"
+provider="fal"
+provider_model="fal-ai/bria/background/remove"
+label="Bria RMBG 2.0 (fal)"
+description="Removes a background from one image up to 1 MiB and 1024 px. Image-only, dated 0.018 USD estimate; live model alias."
+latency_s=30
+quality=3
+pricing={type="per_call",price="0.018 USD"}
+
+[[model.modes]]
+id="remove-background"
+output="image"
+inputs=[{role="image",modality="image",min=1,max=1}]
+
+# Style training and styled images (#167), checked 2026-10-21:
+# https://fal.ai/models/fal-ai/flux-lora-fast-training/api and https://fal.ai/models/fal-ai/flux-lora/api
+[[model]]
+id="fal.flux-lora-trainer"
+provider="fal"
+provider_model="fal-ai/flux-lora-fast-training"
+label="FLUX style training (fal)"
+description="Trains a FLUX.1 [dev] style from 4 to 12 images; fal keeps the weights. 2 USD per 1000 steps, dated 2026-10-21."
+latency_s=600
+quality=3
+style_family="flux-1"
+pricing={type="per_unit",unit="thousand_steps",price="2 USD",count="steps"}
+
+[[model.modes]]
+id="images-to-style"
+output="style"
+inputs=[{role="images",modality="image",min=4,max=12}]
+
+[[model.params.params]]
+name="steps"
+label="Steps"
+control={type="unsigned",min="1",max="5000",step="1"}
+default={type="unsigned",value="1000"}
+
+[[model.params.params]]
+name="trigger_word"
+label="Trigger word"
+control={type="text",multiline=false,max_bytes=64}
+default={type="text",value=""}
+
+[[model]]
+id="fal.flux-lora"
+provider="fal"
+provider_model="fal-ai/flux-lora"
+label="FLUX with a style (fal)"
+description="FLUX.1 [dev] with a style trained on fal. Priced per megapixel; usage price unknown before execution."
+latency_s=30
+quality=4
+style_family="flux-1"
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="styled"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="style",modality="style",min=1,max=1}]
+
+[[model.params.params]]
+name="width"
+label="Width"
+control={type="unsigned",min="512",max="1024",step="64"}
+default={type="unsigned",value="1024"}
+
+[[model.params.params]]
+name="height"
+label="Height"
+control={type="unsigned",min="512",max="1024",step="64"}
+default={type="unsigned",value="1024"}
+
+[[model.params.params]]
+name="num_images"
+label="Images"
+control={type="unsigned",min="1",max="4",step="1"}
+default={type="unsigned",value="1"}
+
+[[model.params.params]]
+name="num_inference_steps"
+label="Steps"
+control={type="unsigned",min="1",max="50",step="1"}
+default={type="unsigned",value="28"}
+
+[[model.params.params]]
+name="guidance_scale"
+label="Guidance"
+control={type="slider",min=1.0,max=20.0,step=0.5}
+default={type="number",value=3.5}
+
+[[model.params.params]]
+name="lora_scale"
+label="Style strength"
+control={type="slider",min=0.0,max=2.0,step=0.05}
+default={type="number",value=1.0}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}

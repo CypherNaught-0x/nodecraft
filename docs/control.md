@@ -75,10 +75,29 @@ connecting; this is not a bound on filesystem stalls.
 `command.run` routes `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and
 `canvas.pan_to` through the app's scoped navigation bridge. A drawn viewport is required; active
 editors, popups and gestures keep ownership and refuse navigation. `commands.list` reports fresh
-live availability for parameterless commands. These operations change only the view, without
+live availability for parameterless commands. `canvas.fit_selection` accepts an optional `nodes`
+list (2..=MAX_CHANGES unique IDs on the shown canvas); when supplied it frames those cards,
+including collapsed-field headers for hidden cards, without changing the person's selection.
+Without `nodes` it frames the selection. These operations change only the view, without
 document revisions, undo entries or events. Headless control/MCP sessions remain Unsupported.
-Classification is shared with MCP; the live host does not grant access to human-only or paid
-commands. Screenshot requests retain their separate asynchronous capture path.
+The five `canvas.search_*` commands use the app's existing scoped search host: open the bar,
+set a query, step next/previous, or close it. Queries retain the 1024 UTF-8 byte bound and the
+incremental per-frame scanner; a response may report scanning before the match is framed.
+Search requests also refuse an active minimap gesture. Headless sessions still have no live
+search capability.
+The tag filter (`canvas.tag_filter_*`), the discussions panel (`canvas.comments_toggle`,
+`comment.open`) and Format selection (`canvas.auto_format`) reach the window the same way (#360).
+Format selection measures the cards named in its optional `nodes` list, or the selection when
+there is none. It is the one live command that edits the document, in one undoable step.
+
+Classification is shared with MCP; the live host does not widen it. Human-only and unclassified
+commands stay excluded. Agent-visible `run.start` still requires engine quote/consent validation
+and a capable run host; this bridge does not bypass either. Screenshot requests retain their
+separate asynchronous capture path.
+
+Project file commands run only inside the folders given with `--root` (save and open) and
+`--read-root` (open only) when the app started; see "Opening and saving projects" in
+`docs/mcp.md`. Without them, the file commands return `unsupported`.
 
 ## Headless stdio
 

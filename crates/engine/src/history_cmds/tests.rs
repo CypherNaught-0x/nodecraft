@@ -211,7 +211,14 @@ fn the_active_result_is_what_downstream_nodes_are_built_on() {
     kinds.register(Box::new(Gen(descriptor))).unwrap();
     // The downstream result was made from take 2.
     let hash = nodecraft_exec::staleness::input_hash(project.canvases().get(&C).unwrap(), &kinds, down).unwrap();
-    let made = Generation { id: g(9), outputs: vec![Value::Text("from take 2".into())], input_hash: Some(hash) };
+    let made = Generation {
+        id: g(9),
+        outputs: vec![Value::Text("from take 2".into())],
+        input_hash: Some(hash),
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    };
     Change::AddGeneration { canvas: C, id: down, index: 0, generation: made }.apply(&mut project).unwrap();
     Change::SetActiveGeneration { canvas: C, id: down, generation: Some(g(9)) }.apply(&mut project).unwrap();
     let mut s = Session::with_registries(project, crate::commands::Registry::builtins().unwrap(), kinds).unwrap();
@@ -226,15 +233,59 @@ fn the_active_result_is_what_downstream_nodes_are_built_on() {
 #[test]
 fn extract_picks_a_port_and_a_list_item_and_refuses_what_it_cannot_hold() {
     let lists =
-        |n: u8| vec![Value::Text(format!("caption {n}")), Value::List(vec![Value::Text("a".into()), Value::Text("b".into())]), Value::Text("mesh".into())];
-    let mut s = session(1, vec![("caption", Modality::Text, false), ("variants", Modality::Text, true), ("model", Modality::Mesh, false)], lists);
+        |n: u8| vec![Value::Text(format!("caption {n}")), Value::List(vec![Value::Text("a".into()), Value::Text("b".into())]), Value::Text("report".into())];
+    let mut s = session(1, vec![("caption", Modality::Text, false), ("variants", Modality::Text, true), ("report", Modality::Document, false)], lists);
     let error = extract(&mut s, json!({"port": "variants"})).unwrap_err();
-    assert_eq!((error.kind, error.message.as_str()), (ErrorKind::InvalidInput, "that output is a list: choose an item to extract"));
+    assert_eq!((error.kind, error.message.as_str()), (ErrorKind::InvalidInput, "that output is a list: choose an item"));
     assert_eq!(extract(&mut s, json!({"port": "variants", "item": 5})).unwrap_err().kind, ErrorKind::NotFound);
     assert_eq!(extract(&mut s, json!({"item": 0})).unwrap_err().kind, ErrorKind::InvalidInput);
-    assert_eq!(extract(&mut s, json!({"port": "model"})).unwrap_err().kind, ErrorKind::Unsupported);
+    // A PDF output extracts to a PDF source (#113); one that holds text can't fill it.
+    assert_eq!(extract(&mut s, json!({"port": "report"})).unwrap_err().kind, ErrorKind::InvalidInput);
     assert_eq!(extract(&mut s, json!({"port": "nope"})).unwrap_err().kind, ErrorKind::NotFound);
     assert_eq!(extract(&mut s, json!({"pos": {"x": 1e30, "y": 0}})).unwrap_err().kind, ErrorKind::InvalidInput);
     extract(&mut s, json!({"port": "variants", "item": 1})).unwrap();
     assert_eq!(node(&s, NodeId::from_bytes([7; 16])).params.get("text"), Some(&Value::Text("b".into())));
+}
+
+#[test]
+fn extract_counts_through_the_per_item_lists_of_a_fanned_result() {
+    let asset = |n: u8| {
+        Value::Media(nodecraft_types::AssetRef {
+            hash: nodecraft_types::Blake3::from_bytes([n; 32]),
+            mime: "image/png".parse().unwrap(),
+            meta: Default::default(),
+        })
+    };
+    // Two batch items: the first made two images, the second one (#519).
+    let fanned = |_| vec![Value::List(vec![Value::List(vec![asset(1), asset(2)]), Value::List(vec![asset(3)])])];
+    // Not fanned by a batch, the same list keeps its values whole.
+    let mut plain = session(1, vec![("out", Modality::Image, true)], fanned);
+    assert_eq!(extract(&mut plain, json!({"item": 2})).unwrap_err().kind, ErrorKind::NotFound);
+    let mut project = plain.document().clone();
+    let mut fanned_node = node(&plain, N).clone();
+    let key = |n: u8| nodecraft_graph::ItemKey { batch: NodeId::from_bytes([30; 16]), item: nodecraft_types::ItemId::from_bytes([n; 16]) };
+    if let Some(result) = fanned_node.history.first_mut() {
+        result.items = vec![vec![key(1)], vec![key(2)]];
+    }
+    Change::SetNode { canvas: C, node: fanned_node }.apply(&mut project).unwrap();
+    let mut s = Session::new(project).unwrap();
+    extract(&mut s, json!({"item": 2})).unwrap();
+    assert_eq!(node(&s, NodeId::from_bytes([7; 16])).params.get("asset"), Some(&asset(3)), "the third image, not the second item's list");
+    assert_eq!(extract(&mut s, json!({"item": 3, "node": NodeId::from_bytes([8; 16])})).unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[test]
+fn a_3d_result_extracts_to_a_3d_node() {
+    let model = |n: u8| {
+        vec![Value::Media(nodecraft_types::AssetRef {
+            hash: nodecraft_types::Blake3::from_bytes([n; 32]),
+            mime: "model/gltf-binary".parse().unwrap(),
+            meta: Default::default(),
+        })]
+    };
+    let mut s = session(1, vec![("model", Modality::Mesh, false)], model);
+    extract(&mut s, json!({})).unwrap();
+    let extracted = node(&s, NodeId::from_bytes([7; 16]));
+    assert_eq!(extracted.kind, "source.mesh");
+    assert_eq!(extracted.params.get("asset"), model(1).first());
 }

@@ -10,7 +10,16 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 pub const MAX_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
-const VERSION: u32 = 1;
+/// Current graph writer/schema declaration, not the greatest supported container version.
+/// Wire 4 is permanently reserved for streaming graph-v3 content. The next graph schema
+/// must skip to 5 and supply a frozen-v3 reader/migration before changing this declaration.
+pub(crate) const VERSION: u32 = 3;
+pub(crate) const GRAPH_V3: u32 = 3;
+pub(crate) const STREAMING_V4: u32 = 4;
+
+pub(crate) fn is_classic_wire(version: u32) -> bool {
+    matches!(version, 1 | 2 | GRAPH_V3)
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
@@ -29,6 +38,9 @@ struct Manifest {
 }
 
 pub fn encode(snapshot: &Snapshot) -> Result<Vec<u8>, Error> {
+    if !snapshot.assets.is_resident_small() {
+        return Err(Error::new(ErrorKind::Unsupported, "legacy byte encoder requires small resident assets; use a streaming archive plan"));
+    }
     let referenced = snapshot.assets.validate_project(&snapshot.project)?;
     let json = manifest_json(&snapshot.project, snapshot.epoch)?;
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
@@ -56,6 +68,12 @@ pub fn validate_v1_project(project: &Project) -> Result<(), Error> {
     project.validate()?;
     crate::compatibility::project(project)
 }
+/// Current writer admission for Save availability. The real archive manifest has this same cap;
+/// incremental document edits use bounded replay admission instead of imposing it per edit.
+pub fn validate_current_project(project: &Project) -> Result<(), Error> {
+    project.validate()?;
+    manifest_json(project, u64::MAX).map(|_| ())
+}
 fn manifest_json(project: &Project, epoch: u64) -> Result<Vec<u8>, Error> {
     #[derive(Serialize)]
     struct ManifestRef<'a> {
@@ -64,11 +82,14 @@ fn manifest_json(project: &Project, epoch: u64) -> Result<Vec<u8>, Error> {
         project: &'a Project,
     }
     let json = bounded_json(&ManifestRef { version: VERSION, epoch, project }, MAX_MANIFEST_BYTES)?;
-    crate::compatibility::validate(&json)?;
     Ok(json)
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Snapshot, Error> {
+    decode_versioned(bytes).map(|(snapshot, _)| snapshot)
+}
+
+pub(crate) fn decode_versioned(bytes: &[u8]) -> Result<(Snapshot, u32), Error> {
     let entries = preflight(bytes)?;
     let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| invalid("invalid project ZIP directory"))?;
     if archive.len() != entries {
@@ -105,9 +126,28 @@ pub fn decode(bytes: &[u8]) -> Result<Snapshot, Error> {
     }
     let version: Version = serde_json::from_slice(&json).map_err(|_| invalid("invalid project manifest or missing format version"))?;
     let json = migrate(version.version, &json)?;
-    crate::compatibility::validate(json)?;
     let manifest: Manifest = serde_json::from_slice(json).map_err(|_| invalid("invalid project graph or manifest"))?;
     assets.validate_project(&manifest.project)?;
+    Ok((Snapshot { project: manifest.project, assets, epoch: manifest.epoch }, version.version))
+}
+
+/// Structurally decode a bounded index. Version4 assets remain explicitly unverified until
+/// consumption; legacy-v1 content validation retains its published eager admission semantics.
+pub fn decode_indexed(index: &crate::zip_index::ArchiveIndex, context: crate::AssetContext) -> Result<Snapshot, Error> {
+    let snapshot = decode_indexed_presence(index, context)?;
+    if is_classic_wire(index.version()) {
+        for hash in snapshot.assets.hashes() {
+            snapshot.assets.verified_content(hash, &crate::asset_source::TransferCancel::default(), &crate::asset_source::StreamMetrics::default())?;
+        }
+        snapshot.assets.validate_project(&snapshot.project)?;
+    }
+    Ok(snapshot)
+}
+pub(crate) fn decode_indexed_presence(index: &crate::zip_index::ArchiveIndex, context: crate::AssetContext) -> Result<Snapshot, Error> {
+    migrate(index.version(), index.manifest())?;
+    let manifest: Manifest = serde_json::from_slice(index.manifest()).map_err(|_| invalid("invalid project graph or manifest"))?;
+    let assets = AssetStore::from_index(index, context).map_err(|error| nodecraft_types::Error::new(nodecraft_types::ErrorKind::Conflict, error.message))?;
+    assets.validate_project_presence(&manifest.project)?;
     Ok(Snapshot { project: manifest.project, assets, epoch: manifest.epoch })
 }
 
@@ -121,6 +161,7 @@ pub(crate) fn bounded_json(value: &impl Serialize, cap: usize) -> Result<Vec<u8>
             if self.bytes.len().saturating_add(bytes.len()) > self.cap {
                 return Err(std::io::Error::other("JSON limit exceeded"));
             }
+            self.bytes.try_reserve(bytes.len()).map_err(|_| std::io::Error::other("cannot allocate bounded JSON"))?;
             self.bytes.extend_from_slice(bytes);
             Ok(bytes.len())
         }
@@ -224,6 +265,19 @@ fn preflight(bytes: &[u8]) -> Result<usize, Error> {
         if bytes.get(local_name_start..data_start) != Some(name) || data_end > start {
             return Err(invalid("invalid local ZIP entry extent"));
         }
+        if manifest {
+            // Identify an incompatible family before applying small-host asset limits or
+            // decoding graph data. Streaming writers put this bounded entry first.
+            #[derive(Deserialize)]
+            struct Version {
+                version: u32,
+            }
+            let json = bytes.get(data_start..data_end).ok_or_else(|| invalid("invalid manifest extent"))?;
+            let version: Version = serde_json::from_slice(json).map_err(|_| invalid("invalid project manifest or missing format version"))?;
+            if !is_classic_wire(version.version) {
+                return Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; use a compatible NodeCraft build"));
+            }
+        }
         ranges.push((offset, data_end));
         cursor = name_end;
     }
@@ -241,12 +295,45 @@ fn preflight(bytes: &[u8]) -> Result<usize, Error> {
     Ok(count)
 }
 
-/// No older format has been published. Add an explicit tested migration here before v2;
-/// never parse unknown graph variants first or invent a lossy legacy conversion.
+/// Route wire families before typed parsing. Legacy roots retain their frozen role guards;
+/// both classic 3 and reserved streaming 4 carry graph-v3, never a mutable "latest" schema.
 fn migrate(from: u32, json: &[u8]) -> Result<&[u8], Error> {
-    if from == VERSION {
-        Ok(json)
-    } else {
-        Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; update NodeCraft or use a compatible exporter"))
+    match from {
+        1 => {
+            crate::legacy::validate(json)?;
+            Ok(json)
+        }
+        2 => {
+            crate::v2::validate(json)?;
+            Ok(json)
+        }
+        GRAPH_V3 | STREAMING_V4 => admit_graph_v3(json, VERSION),
+        _ => Err(Error::new(ErrorKind::Unsupported, "unsupported project format version; update NodeCraft or use a compatible exporter")),
+    }
+}
+
+/// Current typed Project parsing is the v3 reader only while the schema declaration is 3.
+/// This is a future migration stop, not a claim that current serde freezes all future fields.
+fn admit_graph_v3(json: &[u8], reader_schema: u32) -> Result<&[u8], Error> {
+    if reader_schema != GRAPH_V3 {
+        return Err(Error::new(ErrorKind::Unsupported, "graph-v3 migration is required before reading wire families 3 or 4 with this schema"));
+    }
+    Ok(json)
+}
+
+#[cfg(test)]
+mod wire_family_tests {
+    use super::*;
+
+    #[test]
+    fn v3_reader_gate_fails_closed_before_typed_parsing_after_a_schema_change() {
+        let malformed = b"not a typed project";
+        assert_eq!(admit_graph_v3(malformed, 3).unwrap(), malformed);
+        for schema in [4, 5] {
+            assert_eq!(admit_graph_v3(malformed, schema).unwrap_err().kind, ErrorKind::Unsupported);
+        }
+        assert!(is_classic_wire(3));
+        assert!(!is_classic_wire(4));
+        assert!(!is_classic_wire(5));
     }
 }

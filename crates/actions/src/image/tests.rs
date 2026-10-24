@@ -686,8 +686,15 @@ fn convolution_and_compound_peak_memory_have_exact_small_boundaries() {
 }
 #[test]
 fn conservative_decode_orientation_and_rgba_overlap_is_reserved() {
-    let meta =
-        nodecraft_media::ImageMeta { mime: "image/png", width: 2, height: 3, color: nodecraft_media::ColorModel::Gray, bits_per_channel: 16, has_alpha: false };
+    let meta = nodecraft_media::ImageMeta {
+        mime: "image/png",
+        width: 2,
+        height: 3,
+        color: nodecraft_media::ColorModel::Gray,
+        bits_per_channel: 16,
+        has_alpha: false,
+        color_tag: None,
+    };
     // Other retained8 + decoded12 + orientation12 + RGBA24 +4096 fixed allowance.
     assert!(matches!(super::decode::reserve(meta, 8, ImageLimits { working_bytes: 4151, ..l() }), Err(ImageError::ScratchLimit)));
     assert_eq!(super::decode::reserve(meta, 8, ImageLimits { working_bytes: 4152, ..l() }).unwrap(), 24);

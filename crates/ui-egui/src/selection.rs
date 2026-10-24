@@ -71,6 +71,10 @@ impl Selection {
         self.nodes.extend(nodes);
         self.edges.extend(edges);
     }
+    /// Deselect these nodes (a collapsed field hides them).
+    pub fn remove_nodes(&mut self, ids: &BTreeSet<NodeId>) {
+        self.nodes.retain(|id| !ids.contains(id));
+    }
     /// Drop ids that no longer exist (after undo, a remove, or a canvas switch).
     pub fn retain_existing(&mut self, canvas: &Canvas) {
         self.nodes.retain(|id| canvas.nodes().contains_key(id));
@@ -115,7 +119,7 @@ pub fn of_kind(canvas: &Canvas, kind: &str) -> BTreeSet<NodeId> {
 }
 
 /// Nodes whose card touches the world-space box (`rect_of` gives a card's world rect).
-pub fn in_box(canvas: &Canvas, world: Rect, rect_of: impl Fn(&Node) -> Rect) -> BTreeSet<NodeId> {
+pub fn in_box(canvas: &Canvas, world: Rect, mut rect_of: impl FnMut(&Node) -> Rect) -> BTreeSet<NodeId> {
     canvas.nodes().values().filter(|node| rect_of(node).intersects(world)).map(|node| node.id).collect()
 }
 

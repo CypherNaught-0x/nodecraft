@@ -9,9 +9,11 @@
 
 pub mod model;
 pub mod pricing;
+pub mod select;
 
 pub use model::{InputRole, ModeSpec, ModelDescriptor};
-pub use pricing::{Price, Pricing, Unit};
+pub use pricing::{LongPrompt, Price, Pricing, TokenRates, Unit};
+pub use select::{Choice, Effort, MAX_MULTIPLE, Rejected, Request, Selection};
 
 use nodecraft_types::{Error, ErrorKind, Modality, ParamValues};
 use serde::Deserialize;
@@ -23,9 +25,24 @@ pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Catalog files shipped with the app, embedded so they work offline and on the web.
 pub const BUILTIN: &[(&str, &str)] = &[
+    ("anthropic.toml", include_str!("../../../assets/catalog/anthropic.toml")),
+    ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
+    ("gemini-images.toml", include_str!("../../../assets/catalog/gemini-images.toml")),
+    ("gemini-video.toml", include_str!("../../../assets/catalog/gemini-video.toml")),
+    ("google-gemini-images.toml", include_str!("../../../assets/catalog/google-gemini-images.toml")),
+    ("google-veo.toml", include_str!("../../../assets/catalog/google-veo.toml")),
+    ("google-tts.toml", include_str!("../../../assets/catalog/google-tts.toml")),
+    ("openai.toml", include_str!("../../../assets/catalog/openai.toml")),
     ("openai-images.toml", include_str!("../../../assets/catalog/openai-images.toml")),
     ("replicate.toml", include_str!("../../../assets/catalog/replicate.toml")),
+    ("seedream.toml", include_str!("../../../assets/catalog/seedream.toml")),
+    ("seedance.toml", include_str!("../../../assets/catalog/seedance.toml")),
+    ("tripo.toml", include_str!("../../../assets/catalog/tripo.toml")),
+    ("elevenlabs.toml", include_str!("../../../assets/catalog/elevenlabs.toml")),
+    ("meshy.toml", include_str!("../../../assets/catalog/meshy.toml")),
+    ("higgsfield.toml", include_str!("../../../assets/catalog/higgsfield.toml")),
+    ("kling.toml", include_str!("../../../assets/catalog/kling.toml")),
 ];
 
 #[derive(Deserialize)]
@@ -41,6 +58,14 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    /// Construct the same validated catalog from host/test descriptors.
+    pub fn from_models(models: impl IntoIterator<Item = ModelDescriptor>) -> Result<Self, Error> {
+        let mut catalog = Self::default();
+        for model in models {
+            catalog.insert(model)?;
+        }
+        Ok(catalog)
+    }
     /// The catalog shipped with this build.
     pub fn builtin() -> Result<Self, Error> {
         let mut catalog = Self::default();
@@ -91,6 +116,11 @@ impl Catalog {
         self.models.values()
     }
 
+    /// The models cards offer: every model but those with `cards = false`.
+    pub fn card_models(&self) -> impl Iterator<Item = &ModelDescriptor> {
+        self.models.values().filter(|model| model.cards)
+    }
+
     pub fn len(&self) -> usize {
         self.models.len()
     }
@@ -99,10 +129,10 @@ impl Catalog {
         self.models.is_empty()
     }
 
-    /// Every model for the picker: compatible ones first, then by provider, quality (best
+    /// Every model for the picker (but those cards don't offer): compatible ones first, then by provider, quality (best
     /// first) and label. Incompatible models carry the reason they're disabled.
     pub fn candidates<'a>(&'a self, wiring: &Wiring) -> Vec<Candidate<'a>> {
-        let mut all: Vec<Candidate<'a>> = self.models.values().map(|model| Candidate { model, fit: wiring.fit(model) }).collect();
+        let mut all: Vec<Candidate<'a>> = self.card_models().map(|model| Candidate { model, fit: wiring.fit(model) }).collect();
         all.sort_by(|a, b| {
             let key = |c: &Candidate<'a>| (c.fit.is_err(), c.model.provider.as_str(), std::cmp::Reverse(c.model.quality), c.model.label.as_str());
             key(a).cmp(&key(b))
@@ -216,6 +246,7 @@ fn word(modality: Modality) -> &'static str {
         Modality::Audio => "audio",
         Modality::Mesh => "3D",
         Modality::Document => "document",
+        Modality::Style => "style",
     }
 }
 

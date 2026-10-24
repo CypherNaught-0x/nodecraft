@@ -2,6 +2,7 @@
 //! exact micros, so a quote never rounds through floating point.
 use nodecraft_types::{Currency, Error, ErrorKind, Money, ParamValues, Rounding, Value};
 use serde::{Deserialize, Deserializer};
+use std::collections::BTreeMap;
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
@@ -51,18 +52,21 @@ pub enum Unit {
     /// the run.
     ThousandTokens,
     ThousandCharacters,
+    /// Priced per 1000 training steps (#167), counted from the trainer's steps setting; known
+    /// before the run, so not usage-based.
+    ThousandSteps,
 }
 
 impl Unit {
     /// How many counted units one priced unit covers.
     fn per(self) -> u64 {
         match self {
-            Self::ThousandTokens | Self::ThousandCharacters => 1000,
+            Self::ThousandTokens | Self::ThousandCharacters | Self::ThousandSteps => 1000,
             Self::Image | Self::Second | Self::Megapixel => 1,
         }
     }
     pub fn usage_based(self) -> bool {
-        self.per() > 1
+        matches!(self, Self::ThousandTokens | Self::ThousandCharacters)
     }
 }
 
@@ -86,6 +90,22 @@ pub enum Pricing {
         #[serde(default)]
         default_count: Option<u64>,
     },
+    /// A price per started second of the source video a mode edits (#179), counted after the
+    /// provider's cut (the mode's [`nodecraft_types::VideoEdit::uses_ms`]). The price is the one
+    /// listed in `prices` for the value of the choice setting `param` (a resolution, say).
+    PerSourceSecond { param: String, prices: BTreeMap<String, Price> },
+    /// [`Self::PerUnit`] counted from parameter `count` (or `default_count`), at the price listed
+    /// in `prices` for the value of the choice setting `param` (#742: a second of video, priced by
+    /// its resolution; #47: one image, priced by its size).
+    PerUnitByChoice {
+        unit: Unit,
+        #[serde(default)]
+        count: Option<String>,
+        #[serde(default)]
+        default_count: Option<u64>,
+        param: String,
+        prices: BTreeMap<String, Price>,
+    },
 }
 
 impl Pricing {
@@ -94,6 +114,7 @@ impl Pricing {
             Self::Free => None,
             Self::ByUsage { currency } => Some(*currency),
             Self::PerCall { price } | Self::PerUnit { price, .. } => Some(price.0.currency),
+            Self::PerSourceSecond { prices, .. } | Self::PerUnitByChoice { prices, .. } => prices.values().next().map(|price| price.0.currency),
         }
     }
 
@@ -101,12 +122,35 @@ impl Pricing {
     /// [`crate::ModelDescriptor::quote`]), rounded up, or `None` when it depends on usage the
     /// run hasn't measured yet. Free models quote zero in `fallback`.
     pub(crate) fn quote(&self, params: &ParamValues, fallback: Currency) -> Result<Option<Money>, Error> {
+        self.quote_lookup(|name| params.get(name), fallback)
+    }
+
+    /// Price already validated, effective visible values without owning a parameter map.
+    /// The caller must apply schema defaults/visibility and descriptor validation first.
+    pub fn quote_lookup<'a>(&self, get: impl Fn(&str) -> Option<&'a Value>, fallback: Currency) -> Result<Option<Money>, Error> {
+        self.quote_source(get, None, fallback)
+    }
+
+    /// [`Self::quote_lookup`] for a job whose source video is `source_ms` long once the provider
+    /// has cut it (#179). A price per source second without that length is `None`: it isn't
+    /// known until the source is.
+    pub fn quote_source<'a>(&self, get: impl Fn(&str) -> Option<&'a Value>, source_ms: Option<u64>, fallback: Currency) -> Result<Option<Money>, Error> {
         match self {
+            Self::PerSourceSecond { param, prices } => {
+                let Some(ms) = source_ms else { return Ok(None) };
+                let price = chosen(&get, param, prices)?;
+                // Started seconds, and never less than one.
+                price.0.checked_mul_ratio(ms.div_ceil(1000).max(1), 1, Rounding::Up).map(Some)
+            }
+            Self::PerUnitByChoice { unit, count, default_count, param, prices } => {
+                let price = *chosen(&get, param, prices)?;
+                Self::PerUnit { unit: *unit, price, count: count.clone(), default_count: *default_count }.quote_source(get, None, fallback)
+            }
             Self::Free => Ok(Some(Money::zero(fallback))),
             Self::ByUsage { .. } => Ok(None),
             Self::PerCall { price } => Ok(Some(price.0)),
             Self::PerUnit { unit, price, count, default_count } => {
-                let value = count.as_ref().and_then(|name| params.get(name));
+                let value = count.as_ref().and_then(|name| get(name));
                 let per = unit.per();
                 match (value, default_count) {
                     (None, Some(n)) => price.0.checked_mul_ratio(*n, per, Rounding::Up).map(Some),
@@ -126,6 +170,55 @@ impl Pricing {
                 }
             }
         }
+    }
+}
+
+/// The price listed for the value of choice setting `param`.
+fn chosen<'p, 'a>(get: &impl Fn(&str) -> Option<&'a Value>, param: &str, prices: &'p BTreeMap<String, Price>) -> Result<&'p Price, Error> {
+    match get(param) {
+        Some(Value::Text(choice)) => prices.get(choice.as_str()).ok_or_else(|| invalid("this setting has no listed price")),
+        _ => Err(invalid("the price depends on a setting that has no value")),
+    }
+}
+
+/// What a chat model bills for the tokens a run reports using (#595), per 1000 tokens. A run is
+/// quoted by [`Pricing`] before it is sent (an upper bound on the reply) and charged at these
+/// rates once the reply says how many tokens it used.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenRates {
+    /// Per 1000 prompt tokens.
+    pub input: Price,
+    /// Per 1000 reply tokens, thinking included.
+    pub output: Price,
+    /// The rates for a long prompt, if the model has them.
+    #[serde(default)]
+    pub long: Option<LongPrompt>,
+}
+
+/// Rates that apply to the whole request once its prompt has more than `above` tokens.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LongPrompt {
+    pub above: u64,
+    pub input: Price,
+    pub output: Price,
+}
+
+impl TokenRates {
+    /// Every price these rates hold.
+    pub(crate) fn prices(&self) -> impl Iterator<Item = Price> + '_ {
+        [self.input, self.output].into_iter().chain(self.long.iter().flat_map(|long| [long.input, long.output]))
+    }
+
+    /// What `input` prompt tokens and `output` reply tokens cost, each part rounded up to the micro.
+    pub fn cost(&self, input: u64, output: u64) -> Result<Money, Error> {
+        let (input_price, output_price) = match &self.long {
+            Some(long) if input > long.above => (long.input, long.output),
+            _ => (self.input, self.output),
+        };
+        let input = input_price.0.checked_mul_ratio(input, 1000, Rounding::Up)?;
+        input.checked_add(output_price.0.checked_mul_ratio(output, 1000, Rounding::Up)?)
     }
 }
 
@@ -221,6 +314,38 @@ mod tests {
     }
 
     #[test]
+    fn a_count_is_priced_by_the_chosen_setting() {
+        let prices = [("720p", "0.10 USD"), ("1080p", "0.12 USD")].map(|(k, v)| (k.to_owned(), v.parse::<Price>().unwrap())).into();
+        let pricing = Pricing::PerUnitByChoice { unit: Unit::Second, count: Some("duration".into()), default_count: None, param: "resolution".into(), prices };
+        let mut params = ParamValues::new();
+        params.insert("duration".into(), Value::Unsigned(Unsigned(8)));
+        assert!(pricing.quote(&params, Currency::USD).is_err(), "no resolution chosen");
+        params.insert("resolution".into(), Value::Text("1080p".into()));
+        assert_eq!(pricing.quote(&params, Currency::USD).unwrap(), Some(usd(960_000)));
+        params.insert("resolution".into(), Value::Text("720p".into()));
+        assert_eq!(pricing.quote(&params, Currency::USD).unwrap(), Some(usd(800_000)));
+        params.insert("resolution".into(), Value::Text("4k".into()));
+        assert!(pricing.quote(&params, Currency::USD).is_err(), "an unlisted choice");
+        params.insert("resolution".into(), Value::Text("720p".into()));
+        params.remove("duration");
+        assert!(pricing.quote(&params, Currency::USD).is_err(), "no count");
+        assert_eq!(pricing.currency(), Some(Currency::USD));
+    }
+
+    #[test]
+    fn a_fixed_count_is_priced_by_the_chosen_setting() {
+        // #47: one image a request, priced by its size.
+        let prices = [("1K", "0.0672 USD"), ("4K", "0.1512 USD")].map(|(k, v)| (k.to_owned(), v.parse::<Price>().unwrap())).into();
+        let pricing = Pricing::PerUnitByChoice { unit: Unit::Image, count: None, default_count: Some(1), param: "image_size".into(), prices };
+        let mut params = ParamValues::new();
+        assert!(pricing.quote(&params, Currency::USD).is_err(), "no size chosen");
+        params.insert("image_size".into(), Value::Text("4K".into()));
+        assert_eq!(pricing.quote(&params, Currency::USD).unwrap(), Some(usd(151_200)));
+        params.insert("image_size".into(), Value::Text("1K".into()));
+        assert_eq!(pricing.quote(&params, Currency::USD).unwrap(), Some(usd(67_200)));
+    }
+
+    #[test]
     fn fractional_counts_convert_exactly_and_round_up() {
         assert_eq!(ceil_micros(2.5), Some(2_500_000));
         assert_eq!(ceil_micros(0.0), Some(0));
@@ -253,5 +378,20 @@ mod tests {
         params.insert("max_tokens".into(), Value::Unsigned(Unsigned(1)));
         assert_eq!(tokens.quote(&params, Currency::USD).unwrap(), Some(usd(2)));
         assert_eq!(Pricing::Free.quote(&ParamValues::new(), Currency::EUR).unwrap(), Some(Money::zero(Currency::EUR)));
+    }
+
+    #[test]
+    fn token_rates_charge_measured_usage_and_switch_for_a_long_prompt() {
+        let rates: TokenRates =
+            toml::from_str("input = \"0.0001 USD\"\noutput = \"0.0005 USD\"\nlong = { above = 100000, input = \"0.0005 USD\", output = \"0.0025 USD\" }")
+                .unwrap();
+        // 1,000 × 0.0001 + 2,000 × 0.0005.
+        assert_eq!(rates.cost(1_000, 2_000).unwrap(), usd(1_100));
+        assert_eq!(rates.cost(100_000, 0).unwrap(), usd(10_000), "at the threshold: the short rate");
+        assert_eq!(rates.cost(100_001, 1_000).unwrap(), usd(50_001 + 2_500), "over it: the long rate for the whole request");
+        assert_eq!(rates.cost(1, 1).unwrap(), usd(2), "each part rounds up");
+        assert_eq!(rates.cost(0, 0).unwrap(), usd(0));
+        assert!(rates.cost(u64::MAX, u64::MAX).is_err());
+        assert!(toml::from_str::<TokenRates>("input = \"1 USD\"\noutput = \"1 USD\"\nper = 5").is_err(), "unknown fields");
     }
 }

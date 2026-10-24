@@ -6,8 +6,8 @@
 //! live in `providers::secrets`, so adapters receive a [`Secret`]; this module adds the OS
 //! keychain and the `keys` host service behind the `keys.*` commands.
 //!
-//! The browser build has no keychain; it will keep keys per origin with a notice (M10). Until then
-//! hosts use a [`MemoryStore`] there (keys last for the session).
+//! The browser build has no keychain: it keeps keys in the browser's storage for that origin only
+//! ([`OriginStore`] over the host's `localStorage`), and the keys panel says so (#118).
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -106,6 +106,7 @@ pub(crate) enum KeyRequest {
     Set { account: String, key: String },
     Remove { account: String },
     Status { account: String },
+    Test { account: String },
 }
 
 /// A key request, checked: what to do to which account.
@@ -113,15 +114,24 @@ enum KeyOp {
     Set(Secret),
     Remove,
     Status,
+    /// Check the stored key with the provider (`keys.test`, #237): needs a host with HTTP.
+    Test,
 }
 
 /// Parses and checks a request without touching the keychain, so bad input fails at once.
 fn parse(request: &Value) -> Result<(Account, KeyOp), Error> {
     let request: KeyRequest = serde_json::from_value(request.clone()).map_err(|_| Error::new(ErrorKind::InvalidInput, "malformed key request"))?;
     Ok(match request {
-        KeyRequest::Set { account, key } => (Account::new(&account).map_err(to_error)?, KeyOp::Set(Secret::new(&key).map_err(to_error)?)),
+        KeyRequest::Set { account, key } => {
+            // A Google Cloud service-account key file is too large for a keychain entry; only
+            // what signing needs is kept (#742).
+            let secret =
+                if account == nodecraft_providers::google_cloud::ACCOUNT { nodecraft_providers::google_cloud::compact(&key) } else { Secret::new(&key) };
+            (Account::new(&account).map_err(to_error)?, KeyOp::Set(secret.map_err(to_error)?))
+        }
         KeyRequest::Remove { account } => (Account::new(&account).map_err(to_error)?, KeyOp::Remove),
         KeyRequest::Status { account } => (Account::new(&account).map_err(to_error)?, KeyOp::Status),
+        KeyRequest::Test { account } => (Account::new(&account).map_err(to_error)?, KeyOp::Test),
     })
 }
 
@@ -137,7 +147,13 @@ fn execute(store: &dyn SecretStore, account: &Account, op: &KeyOp) -> Result<Val
             let found = store.get(account).map_err(to_error)?;
             Ok(json!({ "stored": found.is_some(), "masked": found.map(|s| s.masked()) }))
         }
+        // A check waits on the network; a synchronous service has nowhere to run it.
+        KeyOp::Test => Err(no_test_host()),
     }
+}
+
+fn no_test_host() -> Error {
+    Error::new(ErrorKind::Unsupported, "testing a key needs the desktop app's run host, which isn't running here; this host can't send the check")
 }
 
 /// Registers the `keys` host service on `services`, answering synchronously from `store`. For
@@ -152,14 +168,74 @@ pub fn register_key_service(services: &mut Services, store: Arc<dyn SecretStore>
     })
 }
 
+/// String storage scoped to one web origin (the browser's `localStorage`), as [`OriginStore`]
+/// needs it. The host provides it; this crate has no browser bindings.
+pub trait OriginStorage: Send + Sync {
+    fn get(&self, key: &str) -> Result<Option<String>, SecretError>;
+    fn set(&self, key: &str, value: &str) -> Result<(), SecretError>;
+    fn remove(&self, key: &str) -> Result<(), SecretError>;
+    /// Every key stored for the origin, NodeCraft's or not.
+    fn keys(&self) -> Result<Vec<String>, SecretError>;
+}
+
+/// Where [`OriginStore`] puts a key: this prefix and the account name.
+pub const ORIGIN_KEY_PREFIX: &str = "nodecraft.key.";
+
+/// Keys kept per origin in the browser (#118): readable by anyone using that browser profile, so
+/// the panel says so. Values are checked like a keychain's on the way out.
+pub struct OriginStore<S>(S);
+
+impl<S: OriginStorage> OriginStore<S> {
+    pub fn new(storage: S) -> Self {
+        Self(storage)
+    }
+
+    /// The accounts with a key stored here, for listing them in the panel (the browser build has
+    /// no settings file to remember them in). Entries that aren't valid account names are skipped.
+    pub fn accounts(&self) -> Result<Vec<Account>, SecretError> {
+        let mut accounts: Vec<Account> =
+            self.0.keys()?.iter().filter_map(|key| key.strip_prefix(ORIGIN_KEY_PREFIX)).filter_map(|name| Account::new(name).ok()).collect();
+        accounts.sort();
+        accounts.dedup();
+        Ok(accounts)
+    }
+}
+
+fn origin_key(account: &Account) -> String {
+    format!("{ORIGIN_KEY_PREFIX}{}", account.as_str())
+}
+
+impl<S: OriginStorage> SecretStore for OriginStore<S> {
+    fn get(&self, account: &Account) -> Result<Option<Secret>, SecretError> {
+        match self.0.get(&origin_key(account))? {
+            // Edited by hand or by another page script: never echo it.
+            Some(value) => Secret::new(&value).map(Some).map_err(|_| SecretError::Failed("the stored key can't be used; set it again".into())),
+            None => Ok(None),
+        }
+    }
+    fn set(&self, account: &Account, secret: &Secret) -> Result<(), SecretError> {
+        self.0.set(&origin_key(account), secret.expose())
+    }
+    fn delete(&self, account: &Account) -> Result<bool, SecretError> {
+        let key = origin_key(account);
+        if self.0.get(&key)?.is_none() {
+            return Ok(false);
+        }
+        self.0.remove(&key)?;
+        Ok(true)
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-pub use worker::{KeyOutcome, KeyResults, KeyWorker, register_key_worker};
+pub use worker::{KeyOperation, KeyOutcome, KeyResults, KeyWorker, register_key_worker};
 
 #[cfg(not(target_arch = "wasm32"))]
 mod worker {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+    use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
+
+    use crate::key_test::KeyTestHost;
 
     /// Requests waiting for the keychain; more are refused as busy.
     const QUEUE: usize = 64;
@@ -170,12 +246,22 @@ mod worker {
         op: KeyOp,
     }
 
+    /// The kind of keychain request, without its secret or any other request payload.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum KeyOperation {
+        Set,
+        Remove,
+        Status,
+        Test,
+    }
+
     /// The result of a request handed to the [`KeyWorker`].
     #[derive(Debug, Clone, PartialEq)]
     pub struct KeyOutcome {
         /// The `pending` id the service returned.
         pub id: u64,
         pub account: String,
+        pub operation: KeyOperation,
         /// Same shape as the synchronous service's result; errors never contain the key.
         pub result: Result<Value, Error>,
     }
@@ -186,6 +272,8 @@ mod worker {
     pub struct KeyWorker {
         jobs: SyncSender<Job>,
         next: AtomicU64,
+        /// Whether `keys.test` can run here (the worker was given a [`KeyTestHost`]).
+        tests: bool,
     }
 
     /// Where a [`KeyWorker`]'s results arrive. There is exactly one, held by the host, which routes
@@ -213,6 +301,13 @@ mod worker {
         /// are discarded; a keychain call already running (for example waiting on a prompt)
         /// still finishes first, and its result is dropped.
         pub fn spawn(store: Arc<dyn SecretStore>) -> Result<(Arc<Self>, KeyResults), Error> {
+            Self::spawn_with_tests(store, None)
+        }
+
+        /// [`Self::spawn`], also answering `keys.test` by sending checks through `host`. Without a
+        /// host a test is refused at once as unsupported.
+        pub fn spawn_with_tests(store: Arc<dyn SecretStore>, host: Option<KeyTestHost>) -> Result<(Arc<Self>, KeyResults), Error> {
+            let tests = host.is_some();
             let (jobs, inbox) = sync_channel::<Job>(QUEUE);
             let (outbox, done) = sync_channel::<KeyOutcome>(QUEUE);
             std::thread::Builder::new()
@@ -220,15 +315,24 @@ mod worker {
                 .spawn(move || {
                     for job in inbox {
                         // A keychain backend that panics fails this request, not the worker.
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(store.as_ref(), &job.account, &job.op)))
-                            .unwrap_or_else(|_| Err(Error::new(ErrorKind::Internal, "the keychain call failed unexpectedly")));
-                        if outbox.send(KeyOutcome { id: job.id, account: job.account.as_str().to_owned(), result }).is_err() {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match (&job.op, &host) {
+                            (KeyOp::Test, Some(host)) => test(store.as_ref(), &job.account, host),
+                            _ => execute(store.as_ref(), &job.account, &job.op),
+                        }))
+                        .unwrap_or_else(|_| Err(Error::new(ErrorKind::Internal, "the keychain call failed unexpectedly")));
+                        let operation = match job.op {
+                            KeyOp::Set(_) => KeyOperation::Set,
+                            KeyOp::Remove => KeyOperation::Remove,
+                            KeyOp::Status => KeyOperation::Status,
+                            KeyOp::Test => KeyOperation::Test,
+                        };
+                        if outbox.send(KeyOutcome { id: job.id, account: job.account.as_str().to_owned(), operation, result }).is_err() {
                             break;
                         }
                     }
                 })
                 .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the keychain worker: {e}")))?;
-            Ok((Arc::new(Self { jobs, next: AtomicU64::new(1) }), KeyResults(done)))
+            Ok((Arc::new(Self { jobs, next: AtomicU64::new(1), tests }), KeyResults(done)))
         }
 
         fn submit(&self, account: Account, op: KeyOp) -> Result<u64, Error> {
@@ -248,10 +352,41 @@ mod worker {
     pub fn register_key_worker(services: &mut Services, worker: Arc<KeyWorker>) -> Result<(), Error> {
         services.register(KEY_SERVICE, move |request: &Value| {
             let (account, op) = parse(request)?;
+            if matches!(op, KeyOp::Test) && !worker.tests {
+                return Err(no_test_host());
+            }
             let id = worker.submit(account, op)?;
             Ok(json!({ "pending": id }))
         })
     }
+    /// Runs one `keys.test` on the worker thread: reads the key, sends the check on `host`'s
+    /// runtime and waits for it there, so results keep their order and the queue its bound. That
+    /// wait (at most 25 s) delays key requests queued behind it. The result carries the stored
+    /// key's masked tail, as `keys.status` does, so the panel keeps showing which key it was.
+    fn test(store: &dyn SecretStore, account: &Account, host: &KeyTestHost) -> Result<Value, Error> {
+        let Some(key) = store.get(account).map_err(to_error)? else {
+            return Err(Error::new(ErrorKind::NotFound, format!("no key is stored for {}", account.as_str())));
+        };
+        let masked = key.masked();
+        let (tx, rx) = sync_channel(1);
+        let (account, http) = (account.clone(), Arc::clone(&host.http));
+        host.runtime.spawn(Box::pin(async move {
+            let _ = tx.send(crate::key_test::check(&account, &key, http.as_ref()).await);
+        }));
+        let wait = std::time::Duration::from_millis(crate::key_test::TEST_TIMEOUT_MS.saturating_add(5_000));
+        match rx.recv_timeout(wait) {
+            Ok(result) => result.map(|check| {
+                let mut answer = check.to_json();
+                if let Some(fields) = answer.as_object_mut() {
+                    fields.insert("masked".into(), json!(masked));
+                }
+                answer
+            }),
+            Err(RecvTimeoutError::Timeout) => Err(Error::new(ErrorKind::Timeout, "the provider didn't answer the key check in time")),
+            Err(RecvTimeoutError::Disconnected) => Err(Error::new(ErrorKind::Internal, "the key check stopped before it finished")),
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -365,13 +500,6 @@ mod worker {
     }
 }
 
-/// Checks a chat endpoint's key with a request that costs nothing (listing models). Some servers
-/// list models without any key (Ollama, LM Studio, OpenRouter), so success there only says the
-/// server is reachable; a rejected key is reported as `ErrorKind::Auth`.
-pub async fn test_llm_key(client: &nodecraft_providers::llm::LlmClient) -> Result<usize, nodecraft_providers::ProviderError> {
-    client.list_models().await.map(|models| models.len())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +518,63 @@ mod tests {
         assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "remove", "account": "openai"})).unwrap(), json!({"removed": true}));
         assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "status", "account": "openai"})).unwrap(), json!({"stored": false, "masked": null}));
         assert!(services.invoke(KEY_SERVICE, &json!({"op": "drop_all"})).is_err());
+    }
+
+    use std::collections::BTreeMap;
+
+    /// `localStorage` as a map, with a switch that makes it refuse writes (a full quota).
+    #[derive(Default)]
+    struct Origin(Mutex<BTreeMap<String, String>>, std::sync::atomic::AtomicBool);
+
+    impl OriginStorage for Origin {
+        fn get(&self, key: &str) -> Result<Option<String>, SecretError> {
+            Ok(self.0.lock().unwrap().get(key).cloned())
+        }
+        fn set(&self, key: &str, value: &str) -> Result<(), SecretError> {
+            if self.1.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err(SecretError::Failed("this site's browser storage is full".into()));
+            }
+            self.0.lock().unwrap().insert(key.into(), value.into());
+            Ok(())
+        }
+        fn remove(&self, key: &str) -> Result<(), SecretError> {
+            self.0.lock().unwrap().remove(key);
+            Ok(())
+        }
+        fn keys(&self) -> Result<Vec<String>, SecretError> {
+            Ok(self.0.lock().unwrap().keys().cloned().collect())
+        }
+    }
+
+    #[test]
+    fn origin_keys_round_trip_under_their_own_prefix() {
+        let store = Arc::new(OriginStore::new(Origin::default()));
+        let mut services = Services::default();
+        register_key_service(&mut services, Arc::clone(&store) as Arc<dyn SecretStore>).unwrap();
+        let set = services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "openai", "key": "sk-proj-abcdefghij1234"})).unwrap();
+        assert_eq!(set, json!({"stored": true, "masked": "…1234"}));
+        assert_eq!(store.0.get("nodecraft.key.openai").unwrap().as_deref(), Some("sk-proj-abcdefghij1234"));
+        services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "comfyui:gpu-box:8188", "key": "tok-12345678"})).unwrap();
+        // Other page data and names that aren't accounts are not listed.
+        store.0.set("theme", "dark").unwrap();
+        store.0.set("nodecraft.key.Not Valid", "x").unwrap();
+        let names: Vec<String> = store.accounts().unwrap().iter().map(|a| a.as_str().to_owned()).collect();
+        assert_eq!(names, ["comfyui:gpu-box:8188", "openai"]);
+        assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "remove", "account": "openai"})).unwrap(), json!({"removed": true}));
+        assert_eq!(services.invoke(KEY_SERVICE, &json!({"op": "remove", "account": "openai"})).unwrap(), json!({"removed": false}));
+        assert_eq!(store.0.get("theme").unwrap().as_deref(), Some("dark"), "other entries are left alone");
+    }
+
+    #[test]
+    fn a_damaged_or_refused_origin_key_says_so_without_echoing_it() {
+        let store = OriginStore::new(Origin::default());
+        let account = Account::new("openai").unwrap();
+        store.0.set("nodecraft.key.openai", "sk-leaked with space").unwrap();
+        let err = store.get(&account).unwrap_err();
+        assert!(!err.to_string().contains("sk-leaked"), "{err}");
+        store.0.1.store(true, std::sync::atomic::Ordering::Relaxed);
+        let err = to_error(store.set(&account, &Secret::new("sk-proj-abcdefghij1234").unwrap()).unwrap_err());
+        assert!(err.message.contains("full") && !err.message.contains("abcdefghij"), "{}", err.message);
     }
 
     /// A keychain that takes a while to answer (an unlock prompt).
@@ -444,6 +629,76 @@ mod tests {
         let bad = services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "openai", "key": "sk-secret with space"})).unwrap_err();
         assert!(!bad.to_string().contains("sk-secret"));
         assert!(services.invoke(KEY_SERVICE, &json!({"op": "set", "account": "Not Valid", "key": "x"})).is_err());
+    }
+
+    /// Runs each spawned check on its own thread, like the app's tokio runtime.
+    #[cfg(not(target_arch = "wasm32"))]
+    struct Pool;
+    #[cfg(not(target_arch = "wasm32"))]
+    impl nodecraft_exec::driver::Runtime for Pool {
+        fn spawn(&self, task: nodecraft_exec::driver::TaskFuture<()>) {
+            std::thread::spawn(move || futures::executor::block_on(task));
+        }
+        fn sleep(&self, _: u64) -> nodecraft_exec::driver::TaskFuture<()> {
+            Box::pin(async {})
+        }
+        fn now_ms(&self) -> u64 {
+            0
+        }
+    }
+
+    /// Answers every check with `status`, counting requests and the keys they carried.
+    #[cfg(not(target_arch = "wasm32"))]
+    struct Answer(u16, Mutex<Vec<String>>);
+    #[cfg(not(target_arch = "wasm32"))]
+    impl nodecraft_providers::http::Http for Answer {
+        fn send(
+            &self,
+            _: nodecraft_providers::http::HttpRequest,
+        ) -> nodecraft_providers::BoxFuture<'_, Result<nodecraft_providers::http::HttpResponse, nodecraft_providers::ProviderError>> {
+            panic!("key checks never follow redirects")
+        }
+        fn send_no_redirect(
+            &self,
+            request: nodecraft_providers::http::HttpRequest,
+        ) -> nodecraft_providers::BoxFuture<'_, Result<nodecraft_providers::http::HttpResponse, nodecraft_providers::ProviderError>> {
+            self.1.lock().unwrap().extend(request.headers.into_iter().map(|(_, v)| v));
+            let status = self.0;
+            Box::pin(async move { Ok(nodecraft_providers::http::HttpResponse { status, headers: vec![], body: b"{}".to_vec() }) })
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_key_test_runs_on_the_worker_and_is_unsupported_without_a_host() {
+        let store = Arc::new(MemoryStore::default());
+        store.set(&Account::new("openai").unwrap(), &Secret::new("sk-proj-abcdefghij1234").unwrap()).unwrap();
+        let test = json!({"op": "test", "account": "openai"});
+        // The synchronous service (CLI, MCP, browser) and a worker without a host refuse at once.
+        let mut sync = Services::default();
+        register_key_service(&mut sync, store.clone()).unwrap();
+        assert_eq!(sync.invoke(KEY_SERVICE, &test).unwrap_err().kind, ErrorKind::Unsupported);
+        let (worker, _results) = KeyWorker::spawn(store.clone()).unwrap();
+        let mut bare = Services::default();
+        register_key_worker(&mut bare, worker).unwrap();
+        assert_eq!(bare.invoke(KEY_SERVICE, &test).unwrap_err().kind, ErrorKind::Unsupported);
+
+        for (status, expected) in [(200, Ok(json!({"result": "verified", "masked": "…1234"}))), (401, Err(ErrorKind::Authentication))] {
+            let http = Arc::new(Answer(status, Mutex::new(vec![])));
+            let host = crate::key_test::KeyTestHost { runtime: Arc::new(Pool), http: http.clone() };
+            let (worker, results) = KeyWorker::spawn_with_tests(store.clone(), Some(host)).unwrap();
+            let mut services = Services::default();
+            register_key_worker(&mut services, worker).unwrap();
+            let id = services.invoke(KEY_SERVICE, &test).unwrap()["pending"].as_u64().unwrap();
+            let done = wait(&results, id);
+            assert_eq!(done.operation, KeyOperation::Test);
+            assert_eq!(done.result.map_err(|e| e.kind), expected);
+            assert_eq!(http.1.lock().unwrap().as_slice(), ["Bearer sk-proj-abcdefghij1234"], "the stored key, in its one header");
+            // No stored key: nothing is sent.
+            let missing = services.invoke(KEY_SERVICE, &json!({"op": "test", "account": "anthropic"})).unwrap()["pending"].as_u64().unwrap();
+            assert_eq!(wait(&results, missing).result.unwrap_err().kind, ErrorKind::NotFound);
+            assert_eq!(http.1.lock().unwrap().len(), 1);
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]

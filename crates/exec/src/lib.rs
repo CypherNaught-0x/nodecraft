@@ -5,12 +5,19 @@
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
 mod generation_contract;
+mod partial;
 mod payload;
 
+pub mod admission;
 pub mod cost;
 pub mod driver;
+pub mod fanout;
+pub mod mentions;
+pub mod node_mentions;
 pub mod planner;
 pub mod routing;
 pub mod run;
 pub mod scheduler;
 pub mod staleness;
+pub mod technique;
+pub mod variations;

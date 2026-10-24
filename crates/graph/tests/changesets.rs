@@ -1,7 +1,8 @@
 use nodecraft_graph::{
-    Canvas, Change, Changeset, Comment, Edge, Endpoint, Field, Generation, MAX_CHANGES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS, Node, Port, Position, Project, Tag,
+    Canvas, Change, Changeset, Comment, Edge, Endpoint, Field, Generation, MAX_CHANGES, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS, Node, Port, Position, Project, Skill,
+    SkillSource, Tag,
 };
-use nodecraft_types::{CanvasId, CommentId, EdgeId, FieldId, GenerationId, Modality, NodeId, PortType, ProjectId, TagId, Value};
+use nodecraft_types::{CanvasId, CommentId, EdgeId, FieldId, GenerationId, Modality, NodeId, PortType, ProjectId, SkillId, TagId, Value};
 use proptest::prelude::*;
 
 fn canvas() -> CanvasId {
@@ -119,13 +120,28 @@ fn removing_a_node_restores_all_edges_in_one_inverse_operation() {
 
 #[test]
 fn all_edit_types_and_annotation_stubs_are_reversible() {
-    let field = Field { id: FieldId::from_bytes([1; 16]), title: "Group".into() };
-    let tag = Tag { id: TagId::from_bytes([1; 16]), title: "Tag".into() };
-    let comment = Comment { id: CommentId::from_bytes([1; 16]), text: "Note".into(), pos: Position::default() };
+    let field = Field::new(FieldId::from_bytes([1; 16]), "Group");
+    let tag = Tag { id: TagId::from_bytes([1; 16]), title: "Tag".into(), color: None };
+    let comment = Comment {
+        id: CommentId::from_bytes([1; 16]),
+        text: "Note".into(),
+        pos: Position::default(),
+        node: None,
+        replies: vec![],
+        resolved: false,
+        author: None,
+    };
     let mut replacement = node(1);
     replacement.field = Some(field.id);
     replacement.tag = Some(tag.id);
-    let generation = Generation { id: GenerationId::from_bytes([1; 16]), outputs: vec![Value::Text("result".into())], input_hash: None };
+    let generation = Generation {
+        id: GenerationId::from_bytes([1; 16]),
+        outputs: vec![Value::Text("result".into())],
+        input_hash: None,
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    };
     replacement.active = Some(generation.id);
     replacement.history.push(generation);
     let mut rerouted = edge(1, 1, 3);
@@ -134,6 +150,8 @@ fn all_edit_types_and_annotation_stubs_are_reversible() {
         connected_project(),
         Changeset::new(vec![
             Change::SetCanvasTitle { canvas: canvas(), title: "Renamed".into() },
+            Change::SetCanvasPrivate { canvas: canvas(), private: true },
+            Change::SetCanvasVariationCards { canvas: canvas(), cards: true },
             Change::PutField { canvas: canvas(), field: field.clone() },
             Change::PutTag { canvas: canvas(), tag: tag.clone() },
             Change::PutComment { canvas: canvas(), comment: comment.clone() },
@@ -304,9 +322,53 @@ fn scalar_fast_path_still_enforces_parameter_count_and_atomicity() {
     assert_eq!(project, before);
 }
 
+fn skill(n: u8, name: String) -> Skill {
+    Skill {
+        id: SkillId::from_bytes([n; 16]),
+        version: u32::from(n),
+        name,
+        description: String::new(),
+        instructions: "Do the thing.".into(),
+        requires: Default::default(),
+        source: SkillSource::Written,
+        enabled: true,
+    }
+}
+
+#[test]
+fn skills_put_replace_and_remove_undoably_and_refuse_invalid_ones() {
+    let mut project = connected_project();
+    let start = project.clone();
+    let put = Changeset::new(vec![Change::PutSkill { skill: skill(1, "Storyboard".into()) }, Change::PutSkill { skill: skill(2, "Upscale".into()) }]);
+    let undo = put.apply(&mut project).unwrap();
+    assert_eq!(project.skills().len(), 2);
+    let replace = Change::PutSkill { skill: skill(1, "Boards".into()) }.apply(&mut project).unwrap();
+    assert_eq!(project.skills()[&SkillId::from_bytes([1; 16])].name, "Boards");
+    replace.apply(&mut project).unwrap();
+    assert_eq!(project.skills()[&SkillId::from_bytes([1; 16])].name, "Storyboard");
+    let before = project.clone();
+    for bad in [
+        Change::PutSkill { skill: skill(3, " upscale".into()) },
+        Change::PutSkill { skill: skill(3, String::new()) },
+        Change::PutSkill { skill: skill(0, "Zero".into()) },
+        Change::PutSkill { skill: Skill { instructions: " ".into(), ..skill(3, "Empty".into()) } },
+        Change::RemoveSkill { id: SkillId::from_bytes([9; 16]) },
+    ] {
+        assert!(bad.apply(&mut project).is_err(), "{bad:?}");
+        assert_eq!(project, before);
+    }
+    let removed = Change::RemoveSkill { id: SkillId::from_bytes([2; 16]) }.apply(&mut project).unwrap();
+    assert_eq!(project.skills().len(), 1);
+    removed.apply(&mut project).unwrap();
+    assert_eq!(project, before);
+    undo.apply(&mut project).unwrap();
+    assert_eq!(project, start);
+    assert!(!serde_json::to_string(&project).unwrap().contains("skills"), "a project without skills writes none");
+}
+
 fn arbitrary_change() -> impl Strategy<Value = Change> {
     // Deliberately tiny ID pools generate missing references, collisions, cycles and reuse.
-    (0u8..26, 1u8..5, 1u8..5, 1u8..3, ".{0,16}").prop_map(|(op, n, other, c, text)| {
+    (0u8..30, 1u8..5, 1u8..5, 1u8..3, ".{0,16}").prop_map(|(op, n, other, c, text)| {
         let canvas = CanvasId::from_bytes([c; 16]);
         let id = node_id(n);
         let generation = GenerationId::from_bytes([n; 16]);
@@ -316,7 +378,7 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
             2 => Change::RemoveCanvas { id: canvas },
             3 => Change::SetCanvasTitle { canvas, title: text },
             4 => Change::AddNode { canvas, node: node(n) },
-            5 => Change::RestoreNode { canvas, node: node(n), edges: vec![edge(n, n, other)] },
+            5 => Change::RestoreNode { canvas, node: node(n), edges: vec![edge(n, n, other)], pins: vec![] },
             6 => Change::RemoveNode { canvas, id },
             7 => Change::SetNode { canvas, node: node(n) },
             8 => Change::MoveNode { canvas, id, pos: Position { x: f32::from(other), y: 1.0 } },
@@ -327,7 +389,14 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
                 canvas,
                 id,
                 index: usize::from(other - 1),
-                generation: Generation { id: generation, outputs: vec![Value::Text(text)], input_hash: None },
+                generation: Generation {
+                    id: generation,
+                    outputs: vec![Value::Text(text)],
+                    input_hash: None,
+                    items: Vec::new(),
+                    settings: Vec::new(),
+                    incomplete: None,
+                },
             },
             13 => Change::RemoveGeneration { canvas, id, generation },
             14 => Change::SetActiveGeneration { canvas, id, generation: Some(generation) },
@@ -335,12 +404,29 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
             16 => Change::Connect { canvas, edge: edge(n, n, other) },
             17 => Change::Disconnect { canvas, id: edge_id(n) },
             18 => Change::SetEdge { canvas, edge: edge(n, other, n) },
-            19 => Change::PutField { canvas, field: Field { id: FieldId::from_bytes([n; 16]), title: text } },
+            19 => Change::PutField { canvas, field: Field::new(FieldId::from_bytes([n; 16]), text) },
             20 => Change::RemoveField { canvas, id: FieldId::from_bytes([n; 16]) },
-            21 => Change::PutTag { canvas, tag: Tag { id: TagId::from_bytes([n; 16]), title: text } },
+            21 => Change::PutTag { canvas, tag: Tag { id: TagId::from_bytes([n; 16]), title: text, color: None } },
             22 => Change::RemoveTag { canvas, id: TagId::from_bytes([n; 16]) },
-            23 => Change::PutComment { canvas, comment: Comment { id: CommentId::from_bytes([n; 16]), text, pos: Position::default() } },
-            _ => Change::RemoveComment { canvas, id: CommentId::from_bytes([n; 16]) },
+            23 => Change::PutComment {
+                canvas,
+                comment: Comment {
+                    id: CommentId::from_bytes([n; 16]),
+                    text,
+                    pos: Position::default(),
+                    node: None,
+                    replies: vec![],
+                    resolved: false,
+                    author: None,
+                },
+            },
+            24 => Change::RemoveComment { canvas, id: CommentId::from_bytes([n; 16]) },
+            // Names from the same short text collide, ids from a tiny pool replace each other.
+            25 => Change::PutSkill { skill: skill(n, text) },
+            26 => Change::PutSkill { skill: skill(n, format!("skill {other}")) },
+            27 => Change::SetCanvasPrivate { canvas, private: other % 2 == 0 },
+            28 => Change::SetCanvasVariationCards { canvas, cards: other % 2 == 0 },
+            _ => Change::RemoveSkill { id: SkillId::from_bytes([n; 16]) },
         }
     })
 }
@@ -385,7 +471,14 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
     let mut project = connected_project();
     let mut item = node(1);
     for n in 1..=3 {
-        item.history.push(Generation { id: GenerationId::from_bytes([n; 16]), outputs: vec![Value::Text("old".repeat(10_000))], input_hash: None });
+        item.history.push(Generation {
+            id: GenerationId::from_bytes([n; 16]),
+            outputs: vec![Value::Text("old".repeat(10_000))],
+            input_hash: None,
+            items: Vec::new(),
+            settings: Vec::new(),
+            incomplete: None,
+        });
     }
     item.active = Some(GenerationId::from_bytes([2; 16]));
     Change::SetNode { canvas: canvas(), node: item }.apply(&mut project).unwrap();
@@ -394,7 +487,14 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
         canvas: canvas(),
         id: node_id(1),
         index: 1,
-        generation: Generation { id: GenerationId::from_bytes([4; 16]), outputs: vec![Value::Text("new".into())], input_hash: None },
+        generation: Generation {
+            id: GenerationId::from_bytes([4; 16]),
+            outputs: vec![Value::Text("new".into())],
+            input_hash: None,
+            items: Vec::new(),
+            settings: Vec::new(),
+            incomplete: None,
+        },
     };
     let undo = added.apply(&mut project).unwrap();
     assert!(serde_json::to_string(&undo).unwrap().len() < 300);
@@ -415,13 +515,27 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
             canvas: canvas(),
             id: node_id(2),
             index: 0,
-            generation: Generation { id: GenerationId::from_bytes([1; 16]), outputs: vec![], input_hash: None },
+            generation: Generation {
+                id: GenerationId::from_bytes([1; 16]),
+                outputs: vec![],
+                input_hash: None,
+                items: Vec::new(),
+                settings: Vec::new(),
+                incomplete: None,
+            },
         },
         Change::AddGeneration {
             canvas: canvas(),
             id: node_id(1),
             index: usize::MAX,
-            generation: Generation { id: GenerationId::from_bytes([4; 16]), outputs: vec![], input_hash: None },
+            generation: Generation {
+                id: GenerationId::from_bytes([4; 16]),
+                outputs: vec![],
+                input_hash: None,
+                items: Vec::new(),
+                settings: Vec::new(),
+                incomplete: None,
+            },
         },
     ] {
         assert!(change.apply(&mut project).is_err());
@@ -441,7 +555,7 @@ fn batches_can_swap_input_orders_and_replace_referenced_annotations() {
         project.clone(),
         Changeset::new(vec![Change::SetEdge { canvas: canvas(), edge: first }, Change::SetEdge { canvas: canvas(), edge: second }]),
     );
-    let field = Field { id: FieldId::from_bytes([1; 16]), title: "Old".into() };
+    let field = Field::new(FieldId::from_bytes([1; 16]), "Old");
     let mut item = node(1);
     item.field = Some(field.id);
     Changeset::new(vec![Change::PutField { canvas: canvas(), field: field.clone() }, Change::SetNode { canvas: canvas(), node: item }])
@@ -463,7 +577,7 @@ fn malformed_restore_and_dangling_edge_prefixes_are_atomic() {
     for changes in [
         vec![
             Change::RemoveNode { canvas: canvas(), id: node_id(2) },
-            Change::RestoreNode { canvas: canvas(), node: node(2), edges: vec![edge(1, 1, 2), edge(1, 1, 2)] },
+            Change::RestoreNode { canvas: canvas(), node: node(2), edges: vec![edge(1, 1, 2), edge(1, 1, 2)], pins: vec![] },
         ],
         vec![Change::Connect { canvas: canvas(), edge: edge(3, 3, 4) }, Change::AddNode { canvas: canvas(), node: node(4) }],
     ] {
@@ -493,7 +607,14 @@ fn aggregate_parameters_and_history_are_bounded_together() {
     for n in 0..4 {
         item.params.insert(format!("p{n}"), Value::Text("x".repeat(1024 * 1024)));
     }
-    item.history.push(Generation { id: GenerationId::from_bytes([1; 16]), outputs: vec![Value::Text("x".repeat(1024 * 1024)); 4], input_hash: None });
+    item.history.push(Generation {
+        id: GenerationId::from_bytes([1; 16]),
+        outputs: vec![Value::Text("x".repeat(1024 * 1024)); 4],
+        input_hash: None,
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    });
     assert!(Change::SetNode { canvas: canvas(), node: item }.apply(&mut project).is_err());
     assert_eq!(project, before);
 }
@@ -514,38 +635,8 @@ fn types_and_media_hashes_share_bytes_and_canonical_hex() {
 #[test]
 #[ignore = "manual release performance measurement"]
 fn structural_chain_apply_undo_redo_benchmark() {
-    for count in [500u32, 1000, 2000, 4000] {
-        let mut project = project();
-        let before = project.clone();
-        let mut changes = Vec::new();
-        for n in 1..=count {
-            let mut item = node(1);
-            item.id = NodeId::from_bytes(u128::from(n).to_be_bytes());
-            changes.push(Change::AddNode { canvas: canvas(), node: item });
-        }
-        for n in 2..=count {
-            changes.push(Change::Connect {
-                canvas: canvas(),
-                edge: Edge {
-                    id: EdgeId::from_bytes(u128::from(n).to_be_bytes()),
-                    from: Endpoint { node: NodeId::from_bytes(u128::from(n - 1).to_be_bytes()), port: "out".into() },
-                    to: Endpoint { node: NodeId::from_bytes(u128::from(n).to_be_bytes()), port: "in".into() },
-                    order: 0,
-                },
-            });
-        }
-        let started = std::time::Instant::now();
-        let undo = Changeset::new(changes).apply(&mut project).unwrap();
-        let apply_time = started.elapsed();
-        let expected = project.clone();
-        let started = std::time::Instant::now();
-        let redo = undo.apply(&mut project).unwrap();
-        let undo_time = started.elapsed();
-        assert_eq!(project, before);
-        let started = std::time::Instant::now();
-        redo.apply(&mut project).unwrap();
-        let redo_time = started.elapsed();
-        assert_eq!(project, expected);
-        eprintln!("{count} nodes: apply {apply_time:?}, undo {undo_time:?}, redo {redo_time:?}");
-    }
+    perf152::collect();
 }
+
+#[path = "changesets/perf152.rs"]
+mod perf152;

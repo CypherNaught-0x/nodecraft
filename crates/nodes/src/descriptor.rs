@@ -92,6 +92,9 @@ impl ModeId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+    pub(crate) fn annotation() -> Self {
+        Self("annotation".into())
+    }
     pub(crate) fn source() -> Self {
         Self("source".into())
     }
@@ -99,7 +102,7 @@ impl ModeId {
 impl TryFrom<String> for ModeId {
     type Error = Error;
     fn try_from(value: String) -> Result<Self, Error> {
-        if identifier(&value) { Ok(Self(value)) } else { Err(invalid("invalid mode id")) }
+        if nodecraft_types::model_namespace(&value) { Ok(Self(value)) } else { Err(invalid("invalid mode id")) }
     }
 }
 impl From<ModeId> for String {
@@ -113,18 +116,42 @@ pub struct InputValue {
     pub port: String,
     pub port_type: PortType,
     pub value: Value,
+    /// The upstream node each value came from, in order: one per item of a list input, one for
+    /// a single input. A kind can key per-source state on it (the layer editor's layers, #101);
+    /// it may be empty or shorter when the origin isn't known.
+    pub origins: Vec<NodeId>,
 }
 
 #[derive(Clone, Debug)]
 pub struct PlanCtx<'a> {
     pub node: &'a Node,
     pub inputs: &'a [InputValue],
+    /// Pure endpoint selection, captured before the first planning hook.
+    pub targets: &'a nodecraft_types::TargetSelection,
+}
+
+/// Already-budgeted facts about one connected input whose upstream steps may still be running.
+/// `known` borrows the top-level values the fully folded input will contain. Counts describe
+/// that input's elements: an unresolved scalar contributes one, an unresolved list zero or more.
+#[derive(Debug)]
+pub struct InputFacts<'a> {
+    pub port: &'a str,
+    pub port_type: PortType,
+    pub known: Vec<&'a Value>,
+    pub min_count: usize,
+    pub max_count: Option<usize>,
+}
+
+#[derive(Debug)]
+pub struct PreflightCtx<'a> {
+    pub node: &'a Node,
+    pub inputs: &'a [InputFacts<'a>],
 }
 
 /// Pure job descriptions consumed by the run planner. Source jobs emit existing values/assets;
 /// they perform no decoding, filesystem access or paid provider calls. Generate jobs call a model
-/// through a provider adapter (#79): the host looks the provider up by id, sends it the model,
-/// parameters and role-tagged inputs, and maps what it returns onto `output`.
+/// through a provider adapter (#79): the host uses the authorized captured target binding,
+/// sends its model, parameters and role-tagged inputs, and maps the returned results to outputs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobSpec {
@@ -138,13 +165,26 @@ pub enum JobSpec {
         /// Where results go: each result goes to the first port whose modality it has (several
         /// results on one port make a list output's items). A result no port takes fails the job.
         outputs: Vec<GenerateOutput>,
-        /// The provider adapter's id (`fal`, `comfyui`, `mock`); also the scheduler lane.
+        /// The provider adapter's id (`fal`, `comfyui`, `mock`). The typed target supplies its canonical scheduler lane.
         provider: String,
+        /// Absent means the legacy default instance; every UUID denotes a named instance.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        instance: Option<nodecraft_types::ProviderInstanceId>,
         /// The provider's model id (from the catalog).
         model: String,
         /// The model's parameters, as the node resolved them.
         params: ParamValues,
         inputs: Vec<GenerateInput>,
+    },
+    /// A deterministic local action (#410): `action` names the operation (`image.blur`,
+    /// `text.split`), `params` are the node's visible values, `inputs` the values connected to
+    /// its input port, in order; the result goes to `output`. No provider, no cost.
+    Action {
+        node: NodeId,
+        action: String,
+        params: ParamValues,
+        inputs: Vec<Value>,
+        output: String,
     },
 }
 
@@ -153,6 +193,10 @@ pub enum JobSpec {
 pub struct GenerateOutput {
     pub port: String,
     pub modality: Modality,
+    /// For a style output, the family its trainer trains (#167): a style of any other family is
+    /// refused rather than kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub style_family: Option<String>,
 }
 
 /// One input to a model call, in a role such as `prompt`, `system` or `image`.
@@ -172,6 +216,11 @@ pub struct NodeMigration {
 
 pub trait NodeKind: Send + Sync {
     fn descriptor(&self) -> &NodeDescriptor;
+    /// Runtime-only identity of an immutable definition snapshot. It is not a serialized
+    /// parameter identity or a caller-created capability. Legacy kinds have none.
+    fn definition_snapshot(&self) -> Option<[u8; 32]> {
+        None
+    }
     /// Static palette metadata only. Instance consumers call resolve_instance().
     fn instance<'a>(&'a self, _node: &Node) -> Result<Cow<'a, NodeDescriptor>, Error> {
         Ok(Cow::Borrowed(self.descriptor()))
@@ -192,7 +241,12 @@ pub trait NodeKind: Send + Sync {
         if node.inputs != descriptor.inputs || node.outputs != descriptor.outputs {
             return Err(invalid("node ports do not match its instance descriptor"));
         }
-        descriptor.params.resolve(&node.params, ready)
+        // The contract (#162) decides what is submitted: hidden or disabled values never are.
+        // This is instance_contract on the descriptor already resolved; a kind overriding
+        // instance_contract must override this too (generation does).
+        let contract = self.contract(&descriptor);
+        contract.validate(&descriptor)?;
+        contract.resolve(&node.params, ready)?.into_resolved(ready)
     }
     fn instantiate_instance(&self, id: NodeId, config: BTreeMap<String, Value>, supplied: &ParamValues) -> Result<Node, Error> {
         self.descriptor().validate()?;
@@ -224,11 +278,35 @@ pub trait NodeKind: Send + Sync {
         }
         Ok(migration)
     }
+    /// The descriptor contract (#162) for `descriptor`, this kind's static descriptor or one of
+    /// its instance descriptors. The default is implied by the descriptor; kinds override it to
+    /// add port roles, wire bounds, modes and parameter rules.
+    fn contract(&self, descriptor: &NodeDescriptor) -> crate::NodeContract {
+        crate::NodeContract::derive(descriptor)
+    }
+    /// The checked contract of a stored node. CLI, MCP and UI describe nodes through this.
+    fn instance_contract(&self, node: &Node) -> Result<crate::NodeContract, Error> {
+        let descriptor = self.resolve_instance(node)?;
+        let contract = self.contract(&descriptor);
+        contract.validate(&descriptor)?;
+        Ok(contract)
+    }
     fn mode(&self, inputs: &[PortType]) -> Option<ModeId>;
     /// Dynamic kinds can override input compatibility using their per-instance config.
     fn instance_mode(&self, node: &Node, inputs: &[PortType]) -> Result<Option<ModeId>, Error> {
         self.resolve_instance(node)?;
         Ok(self.mode(inputs))
+    }
+    /// Why a quote can't price `node` beyond its models, when it spends money no catalog price
+    /// covers (a ComfyUI workflow's partner nodes). Its step is then quoted as unpriced, never free.
+    fn unpriced(&self, _node: &Node) -> Option<String> {
+        None
+    }
+    /// Refuse an input problem already proven before upstream work is admitted. This is pure
+    /// and conservative: unavailable values must not be treated as absent. The complete plan
+    /// still runs after all inputs arrive. Legacy kinds need no partial-input implementation.
+    fn check_known_inputs(&self, _ctx: &PreflightCtx<'_>) -> Result<(), Error> {
+        Ok(())
     }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error>;
 }

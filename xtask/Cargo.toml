@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "xtask"
 version.workspace = true
 edition.workspace = true
@@ -10,6 +11,16 @@ workspace = true
 
 [dependencies]
 serde_json = { workspace = true }
+toml = { workspace = true }
+# The signed update feed (#540): the same Ed25519 and BLAKE3 the app verifies with.
+ed25519-dalek = { workspace = true }
+blake3 = { workspace = true }
+getrandom = "=0.3.4"
 
 [dev-dependencies]
 tempfile.workspace = true
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"

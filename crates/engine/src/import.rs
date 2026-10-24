@@ -1,24 +1,23 @@
 //! Files from the operating system (#197): dropped on the canvas, or pasted as image data. Each
 //! file is recognised from its bytes (never its name), media goes into the project's asset store,
 //! and every file that can be held becomes a source node, all added as one undo step through
-//! `canvas.paste`. Files that can't are reported with a reason instead of failing the rest.
+//! `canvas.paste`. Files that can't are reported with a reason instead of failing the rest. A
+//! ComfyUI workflow file becomes the card that runs it once the server's nodes have been read.
 //!
-//! Everything that can refuse a file is checked before any byte is stored: the text a single
-//! paste can carry, and the room left in the asset store. If adding the nodes still fails, what
-//! was stored for them is pruned, so a drop never leaves media behind.
+//! Eligibility and unique retained capacity are planned before one Session-bound import batch.
+//! The candidate store and all nodes publish together through `canvas.paste`; refusing a drop
+//! never logically removes unrelated staged assets. Private cleanup debt can still require retry.
 use crate::Session;
 use nodecraft_format::{MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES};
-use nodecraft_graph::{Node, Position};
-use nodecraft_media::{Limits, MediaKind, Sniffed, probe_image, sniff};
-use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, MediaMeta, Mime, NodeId, ParamValues, Value};
-use serde_json::json;
-use std::collections::BTreeMap;
+use nodecraft_graph::Position;
+use nodecraft_media::{DocumentLimits, Limits, MediaKind, MeshLimits, Sniffed, probe_document, probe_image, probe_mesh, sniff};
+use nodecraft_types::{CanvasId, Error, MediaMeta, Mime, NodeId};
 
 /// Most files one drop adds; the rest are reported as skipped.
 pub const MAX_FILES: usize = 32;
-/// Largest media file a project holds (its per-asset cap).
+/// Per-file limit for this bounded byte/drop adapter; native stream APIs support larger assets.
 pub const MAX_MEDIA_BYTES: usize = MAX_ASSET_BYTES;
-/// All the media a project holds together.
+/// Buffered UI drop acquisition envelope, independent of native retained-project capacity.
 pub const MAX_PROJECT_MEDIA_BYTES: usize = MAX_TOTAL_ASSET_BYTES;
 /// Most text one drop adds, across all its files. A paste is one command, and a command's
 /// strings share a 1 MiB budget; this leaves room for the ids, kinds and media types beside it.
@@ -28,6 +27,36 @@ pub const MAX_DROP_TEXT_BYTES: usize = 960 * 1024;
 pub struct Incoming<'a> {
     pub name: &'a str,
     pub bytes: &'a [u8],
+}
+
+/// Metadata obtained by the native video service for exactly these immutable file bytes.
+/// It cannot be supplied through command JSON or constructed from untrusted metadata alone.
+#[derive(Clone, Debug)]
+pub struct ProbedMovie {
+    hash: nodecraft_types::Blake3,
+    meta: MediaMeta,
+}
+
+impl ProbedMovie {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_video(asset: &nodecraft_media::video::VideoAsset) -> Self {
+        let movie = asset.metadata();
+        let duration_ms = movie.duration_us.div_ceil(1000);
+        Self {
+            hash: nodecraft_types::Blake3::from_bytes(asset.hash().0),
+            meta: MediaMeta { duration_ms: Some(duration_ms), width: Some(movie.width), height: Some(movie.height), ..MediaMeta::default() },
+        }
+    }
+}
+
+fn enrich_movie(hash: nodecraft_types::Blake3, mime: &Mime, meta: &mut MediaMeta, movies: &[ProbedMovie]) {
+    if mime.essence().starts_with("video/")
+        && let Some(movie) = movies.iter().take(MAX_FILES).find(|movie| movie.hash == hash)
+    {
+        meta.duration_ms = meta.duration_ms.or(movie.meta.duration_ms);
+        meta.width = meta.width.or(movie.meta.width);
+        meta.height = meta.height.or(movie.meta.height);
+    }
 }
 
 /// What a drop did: the nodes it added, and why each other file was left out.
@@ -90,7 +119,14 @@ fn text_of(bytes: &[u8], mime: &str, limit: usize) -> Result<String, String> {
 /// What one file will become, decided before anything is stored.
 enum Plan<'a> {
     Text(String),
-    Media { kind: &'static str, mime: Mime, meta: MediaMeta, bytes: &'a [u8] },
+    Media {
+        kind: &'static str,
+        mime: Mime,
+        meta: MediaMeta,
+        bytes: &'a [u8],
+    },
+    /// A ComfyUI workflow file, as the card that runs it (#9).
+    Card(Box<nodecraft_graph::Node>),
 }
 
 /// Images NodeCraft can store but not yet decode (common camera formats): kept without a size.
@@ -98,17 +134,39 @@ fn decodes_later(sniffed: &Sniffed) -> bool {
     matches!(sniffed.mime, "image/heic" | "image/heif" | "image/avif")
 }
 
+/// What a sound's or a movie's headers state: its length (#179, #608), and a sound's sample rate
+/// and channels or a movie's frame size. A model priced per second of source can then quote it,
+/// and one with source limits check it, before anything is paid. Headers that can't be read
+/// leave the fields unknown: the file still imports, and the provider checks it.
+pub(crate) fn timed_meta(mime: &str, bytes: &[u8]) -> MediaMeta {
+    let mut meta = MediaMeta::default();
+    if mime.starts_with("audio/") {
+        let sound = nodecraft_media::probe_sound(bytes);
+        (meta.duration_ms, meta.sample_rate, meta.channels) = (sound.duration_ms, sound.sample_rate, sound.channels);
+    } else if mime.starts_with("video/")
+        && let Ok(movie) = nodecraft_media::probe_movie(bytes)
+    {
+        (meta.duration_ms, meta.width, meta.height) = (movie.duration_ms, movie.width, movie.height);
+    }
+    meta
+}
+
 /// The plan for one file, given the text still allowed in this drop.
 fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     let Some(sniffed) = sniff(file.bytes) else {
         return Err(if file.bytes.is_empty() { "the file is empty".into() } else { "NodeCraft doesn't recognise this kind of file".into() });
     };
+    if matches!(sniffed.mime, "image/x-exr" | "image/vnd.radiance") {
+        return Err("HDR images can't be added yet; convert to PNG or JPEG first".into());
+    }
     let kind = match sniffed.kind {
         MediaKind::Text => return text_of(file.bytes, sniffed.mime, text_left).map(Plan::Text),
         MediaKind::Image => "source.image",
         MediaKind::Video => "source.video",
         MediaKind::Audio => "source.audio",
-        MediaKind::Model3d | MediaKind::Document => return Err("3D models and documents can't be added yet".into()),
+        MediaKind::Model3d => "source.mesh",
+        MediaKind::Document => "source.document",
+        MediaKind::Style => return Err("a style stays on the card that trained it; wire that card instead".into()),
     };
     if file.bytes.len() > MAX_ASSET_BYTES {
         return Err(format!("media over {} MiB can't be added to a project yet", MAX_ASSET_BYTES / (1024 * 1024)));
@@ -116,91 +174,93 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     let mut meta = MediaMeta::default();
     if sniffed.kind == MediaKind::Image {
         match probe_image(file.bytes, &Limits::default()) {
-            Ok(probed) => {
-                meta.width = Some(probed.width);
-                meta.height = Some(probed.height);
-            }
+            // Everything the header proves travels with the asset (#393), and is checked again
+            // whenever the reference is written.
+            Ok(probed) => meta = nodecraft_format::image_header_meta(&probed),
             Err(_) if decodes_later(&sniffed) => {}
             Err(_) => return Err("the image can't be read".into()),
         }
+    }
+    if matches!(sniffed.kind, MediaKind::Video | MediaKind::Audio) {
+        meta = timed_meta(sniffed.mime, file.bytes);
+    }
+    if sniffed.kind == MediaKind::Model3d {
+        // Read the whole model now, so a file that can't be shown (an external buffer, Draco
+        // compression, past the limits) is refused with its reason instead of landing broken.
+        let info = probe_mesh(file.bytes, &MeshLimits::default()).map_err(|error| format!("the 3D model can't be read: {error}"))?;
+        meta.vertices = u32::try_from(info.vertices).ok();
+        meta.triangles = u32::try_from(info.triangles).ok();
+    }
+    if sniffed.kind == MediaKind::Document {
+        // Open it now, so a damaged or password-protected PDF is refused with its reason.
+        let info = probe_document(file.bytes, &DocumentLimits::default()).map_err(|error| format!("the PDF can't be read: {error}"))?;
+        if info.pages == 0 {
+            return Err("the PDF has no pages".into());
+        }
+        meta.page_count = Some(info.pages);
     }
     let mime = sniffed.mime.parse().map_err(|_| "the file type isn't supported".to_owned())?;
     Ok(Plan::Media { kind, mime, meta, bytes: file.bytes })
 }
 
-/// Stores planned media and builds the nodes, the first at `at` and the rest `step` apart.
-fn build(session: &mut Session, plans: Vec<(NodeId, Plan<'_>)>, at: Position, step: f32) -> Result<Vec<Node>, Error> {
-    let mut nodes = Vec::with_capacity(plans.len());
-    for (id, plan) in plans {
-        let (kind, parameter, value) = match plan {
-            Plan::Text(text) => ("source.text", "text", Value::Text(text)),
-            Plan::Media { kind, mime, meta, bytes } => {
-                let hash = session.import_asset(bytes)?;
-                (kind, "asset", Value::Media(AssetRef { hash, mime, meta }))
-            }
-        };
-        let supplied: ParamValues = [(parameter.to_owned(), value)].into_iter().collect();
-        let mut node = session.kinds().get(kind)?.instantiate_instance(id, BTreeMap::new(), &supplied)?;
-        node.pos = Position { x: at.x + step * nodes.len() as f32, y: at.y };
-        nodes.push(node);
-    }
-    Ok(nodes)
+/// One media file stored on its own, for a caller that references it in its next edit (App
+/// mode's form, #95). It is recognised from its bytes as a drop is; text and what a source node
+/// can't hold are refused. Until an edit references it, the asset is collected as any other.
+pub fn import_media(session: &mut Session, file: &Incoming<'_>) -> Result<nodecraft_types::AssetRef, Error> {
+    import_media_with_movie(session, file, None)
 }
 
-/// Adds `files` to `canvas` as source nodes, the first at `at` and the rest in a row `step`
-/// apart, as one undo step. `ids` supplies a fresh id per file (the caller's, so replay stays
-/// deterministic). `Err` only when adding the nodes fails; files that can't be held are listed
-/// in [`Imported::skipped`].
-pub fn import_files(session: &mut Session, canvas: CanvasId, at: Position, step: f32, files: &[Incoming<'_>], ids: &[NodeId]) -> Result<Imported, Error> {
-    if ids.len() < files.len().min(MAX_FILES) {
-        return Err(Error::new(ErrorKind::InvalidInput, "an id is needed for every file"));
+/// As [`import_media`], optionally filling unknown header fields from a matching native probe.
+pub fn import_media_with_movie(session: &mut Session, file: &Incoming<'_>, movie: Option<&ProbedMovie>) -> Result<nodecraft_types::AssetRef, Error> {
+    let refused =
+        |why: String| Error::new(nodecraft_types::ErrorKind::InvalidInput, format!("{} can't be used: {why}.", file.name.chars().take(80).collect::<String>()));
+    if sniff(file.bytes).is_some_and(|sniffed| sniffed.kind == MediaKind::Text) {
+        return Err(refused("it is text, not media".into()));
     }
-    let mut imported = Imported::default();
-    // Decide every file within the drop's text budget and the store's room, storing nothing yet.
-    let mut plans = Vec::new();
-    let mut text_left = MAX_DROP_TEXT_BYTES;
-    let mut store_left = MAX_TOTAL_ASSET_BYTES.saturating_sub(session.assets().byte_len());
-    let mut assets_left = MAX_ASSETS.saturating_sub(session.assets().len());
-    for (index, file) in files.iter().enumerate() {
-        let name = file.name.chars().take(80).collect::<String>();
-        let (Some(id), true) = (ids.get(index), index < MAX_FILES) else {
-            imported.skipped.push((name, format!("at most {MAX_FILES} files are added at once")));
-            continue;
-        };
-        match plan(file, text_left) {
-            Ok(Plan::Text(text)) => {
-                text_left = text_left.saturating_sub(text.len());
-                plans.push((*id, Plan::Text(text)));
+    match plan(file, 0).map_err(refused)? {
+        Plan::Media { mime, mut meta, bytes, .. } => {
+            let hash = session.import_asset(bytes)?;
+            enrich_movie(hash, &mime, &mut meta, movie.map(std::slice::from_ref).unwrap_or_default());
+            Ok(nodecraft_types::AssetRef { hash, mime, meta })
+        }
+        Plan::Text(_) | Plan::Card(_) => Err(refused("it is text, not media".into())),
+    }
+}
+
+/// Adds source nodes through one candidate-store transaction and one undo step. Ineligible
+/// files are skipped in input order; a rejected transaction preserves existing staged assets.
+/// At most 32 node/source plans are admitted, but skipped bookkeeping is O(files.len()).
+pub fn import_files(session: &mut Session, canvas: CanvasId, at: Position, step: f32, files: &[Incoming<'_>], ids: &[NodeId]) -> Result<Imported, Error> {
+    import_files_with_movies(session, canvas, at, step, files, ids, &[])
+}
+
+/// As [`import_files`], preserving one atomic edit while filling unknown video header fields.
+/// Callers obtain probes asynchronously before publication; no tool executes in this function.
+pub fn import_files_with_movies(
+    session: &mut Session,
+    canvas: CanvasId,
+    at: Position,
+    step: f32,
+    files: &[Incoming<'_>],
+    ids: &[NodeId],
+    movies: &[ProbedMovie],
+) -> Result<Imported, Error> {
+    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies));
+    match result {
+        Ok(imported) => Ok(imported),
+        Err(mut error) => {
+            // The candidate has ended before maintenance. This never retains/removes logical
+            // entries or turns successful publication into a refusal. Debt remains charged.
+            if crate::session::guard(|| session.assets().collect_garbage()).is_err() {
+                error.message.push_str(" Asset maintenance also failed; retry maintenance before importing again.");
             }
-            Ok(Plan::Media { bytes, .. }) if bytes.len() > store_left || assets_left == 0 => {
-                imported.skipped.push((name, format!("the project's media is full ({} MiB)", MAX_TOTAL_ASSET_BYTES / (1024 * 1024))));
-            }
-            Ok(media) => {
-                if let Plan::Media { bytes, .. } = &media {
-                    store_left = store_left.saturating_sub(bytes.len());
-                    assets_left = assets_left.saturating_sub(1);
-                }
-                plans.push((*id, media));
-            }
-            Err(why) => imported.skipped.push((name, why)),
+            Err(error)
         }
     }
-    if plans.is_empty() {
-        return Ok(imported);
-    }
-    let added = build(session, plans, at, step).and_then(|nodes| {
-        imported.nodes = nodes.iter().map(|node| node.id).collect();
-        session.dispatch("canvas.paste", &json!({"canvas": canvas, "nodes": nodes, "edges": []}))
-    });
-    if let Err(error) = added {
-        // Nothing refers to what was stored for this drop: don't leave it taking the project's room.
-        // The paste's own error is the one to report, whether or not the prune works.
-        let _ = session.prune_assets();
-        imported.nodes.clear();
-        return Err(error);
-    }
-    Ok(imported)
 }
 
+mod folder;
+mod staged;
+pub use folder::{FolderImported, FolderTarget, import_folder};
 #[cfg(test)]
 mod tests;

@@ -22,6 +22,7 @@ fn modality_name(modality: Modality) -> &'static str {
         Modality::Audio => "audio",
         Modality::Mesh => "mesh",
         Modality::Document => "document",
+        Modality::Style => "style",
     }
 }
 
@@ -29,10 +30,10 @@ fn modality_name(modality: Modality) -> &'static str {
 pub fn modality(node: &Node) -> Result<Modality, Error> {
     match node.config.get(MODALITY) {
         None => Ok(Modality::Text),
-        Some(Value::Text(name)) => [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document]
+        Some(Value::Text(name)) => [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document, Modality::Style]
             .into_iter()
             .find(|m| modality_name(*m) == name)
-            .ok_or_else(|| invalid("a router's modality must be text, image, video, audio, mesh or document")),
+            .ok_or_else(|| invalid("a router's modality must be text, image, video, audio, mesh, document or style")),
         Some(_) => Err(invalid("a router's modality must be a name")),
     }
 }
@@ -100,6 +101,6 @@ mod tests {
         assert!(kind.resolve_instance(&bad).is_err());
         bad.config.insert(MODALITY.into(), Value::Bool(true));
         assert!(kind.resolve_instance(&bad).is_err());
-        assert!(kind.plan(&PlanCtx { node: &text, inputs: &[] }).is_err());
+        assert!(kind.plan(&PlanCtx { targets: &nodecraft_types::EMPTY_TARGET_SELECTION, node: &text, inputs: &[] }).is_err());
     }
 }

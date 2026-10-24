@@ -25,10 +25,21 @@ impl NodeKind for MockGenerator {
             Some(Value::Text(model)) if !model.is_empty() => model.clone(),
             _ => return Err(Error::new(ErrorKind::InvalidInput, "choose a model")),
         };
-        let params = ctx.node.params.iter().filter(|(name, _)| name.as_str() != "model").map(|(k, v)| (k.clone(), v.clone())).collect();
+        let catalog = crate::catalog::mock_catalog()?;
+        let definition = catalog.get(&model).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "unknown mock model"))?;
+        let params = definition.params.resolve(&nodecraft_exec::cost::model_params(ctx.node, definition), true)?.into_visible_values();
+        let model = definition.provider_model.clone();
         let inputs = ctx.inputs.iter().map(|input| GenerateInput { role: "prompt".into(), value: input.value.clone() }).collect();
-        let outputs = vec![GenerateOutput { port: "out".into(), modality: self.1 }];
-        Ok(vec![JobSpec::Generate { node: ctx.node.id, outputs, provider: PROVIDER.into(), model, params, inputs }])
+        let outputs = vec![GenerateOutput { port: "out".into(), modality: self.1, style_family: None }];
+        Ok(vec![JobSpec::Generate {
+            instance: ctx.targets.get(ctx.node.id, PROVIDER).and_then(|target| target.instance()),
+            node: ctx.node.id,
+            outputs,
+            provider: PROVIDER.into(),
+            model,
+            params,
+            inputs,
+        }])
     }
 }
 

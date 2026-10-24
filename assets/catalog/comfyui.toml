@@ -1,6 +1,7 @@
 # Models run by a local or remote ComfyUI server. They are free: they use your own GPU.
 # Format: docs/catalog.md. Check with `cargo xtask catalog-check`.
-# `provider_model` names the workflow template the ComfyUI adapter (#9) runs.
+# `provider_model` names the built-in workflow the ComfyUI adapter (#9) runs: core ComfyUI nodes
+# only, with the checkpoint chosen on the card (`crates/providers/src/comfyui/template.rs`).
 
 [[model]]
 id = "comfyui.flux-dev"
@@ -26,6 +27,13 @@ inputs = [
 ]
 
 [[model.params.params]]
+name = "checkpoint"
+label = "Checkpoint"
+description = "The FLUX checkpoint file on the server (an all-in-one fp8 file); Refresh option lists fetches what it has."
+control = { type = "text", multiline = false, max_bytes = 512 }
+default = { type = "text", value = "flux1-dev-fp8.safetensors" }
+
+[[model.params.params]]
 name = "aspect_ratio"
 label = "Aspect ratio"
 control = { type = "choice", options = [
@@ -48,6 +56,46 @@ name = "seed"
 label = "Seed"
 control = { type = "seed" }
 
+# The checkpoint comes from the server's installed list (#529).
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "comfyui.flux-dev"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "checkpoint"
+options = { id = "comfyui.checkpoints" }
+
+[[model.parameter_contract.schema.params]]
+name = "checkpoint"
+label = "Checkpoint"
+description = "The FLUX checkpoint file on the server (an all-in-one fp8 file); Refresh option lists fetches what it has."
+control = { type = "text", multiline = false, max_bytes = 512 }
+default = { type = "text", value = "flux1-dev-fp8.safetensors" }
+
+[[model.parameter_contract.schema.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [
+  { value = "1:1", label = "Square 1:1" },
+  { value = "4:3", label = "Landscape 4:3" },
+  { value = "16:9", label = "Wide 16:9" },
+  { value = "3:4", label = "Portrait 3:4" },
+  { value = "9:16", label = "Tall 9:16" },
+] }
+default = { type = "text", value = "1:1" }
+
+[[model.parameter_contract.schema.params]]
+name = "steps"
+label = "Steps"
+control = { type = "unsigned", min = "1", max = "100" }
+default = { type = "unsigned", value = "28" }
+
+[[model.parameter_contract.schema.params]]
+name = "seed"
+label = "Seed"
+control = { type = "seed" }
+
 [[model]]
 id = "comfyui.sdxl"
 provider = "comfyui"
@@ -62,6 +110,13 @@ pricing = { type = "free" }
 id = "text-to-image"
 output = "image"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "checkpoint"
+label = "Checkpoint"
+description = "The checkpoint file on the server; Refresh option lists fetches what it has."
+control = { type = "text", multiline = false, max_bytes = 512 }
+default = { type = "text", value = "sd_xl_base_1.0.safetensors" }
 
 [[model.params.params]]
 name = "steps"
@@ -79,3 +134,68 @@ default = { type = "number", value = 7.0 }
 name = "seed"
 label = "Seed"
 control = { type = "seed" }
+
+# The checkpoint comes from the server's installed list (#529): a value it doesn't have is
+# refused once the list has been fetched.
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "comfyui.sdxl"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "checkpoint"
+options = { id = "comfyui.checkpoints" }
+
+[[model.parameter_contract.schema.params]]
+name = "checkpoint"
+label = "Checkpoint"
+description = "The checkpoint file on the server; Refresh option lists fetches what it has."
+control = { type = "text", multiline = false, max_bytes = 512 }
+default = { type = "text", value = "sd_xl_base_1.0.safetensors" }
+
+[[model.parameter_contract.schema.params]]
+name = "steps"
+label = "Steps"
+control = { type = "unsigned", min = "1", max = "80" }
+default = { type = "unsigned", value = "30" }
+
+[[model.parameter_contract.schema.params]]
+name = "cfg"
+label = "Guidance"
+control = { type = "slider", min = 1.0, max = 15.0, step = 0.5 }
+default = { type = "number", value = 7.0 }
+
+[[model.parameter_contract.schema.params]]
+name = "seed"
+label = "Seed"
+control = { type = "seed" }
+
+# The ComfyUI workflow card's model (#9): it runs the workflow imported onto the card, so it has
+# no settings of its own (the card's parameters come from the workflow) and no card but that one
+# offers it.
+[[model]]
+id = "comfyui.workflow"
+provider = "comfyui"
+provider_model = "workflow"
+label = "ComfyUI workflow"
+description = "Runs an imported ComfyUI workflow on your own ComfyUI server."
+latency_s = 60
+quality = 3
+pricing = { type = "free" }
+cards = false
+
+[[model.modes]]
+id = "image"
+output = "image"
+
+[[model.modes]]
+id = "video"
+output = "video"
+
+[[model.modes]]
+id = "audio"
+output = "audio"
+
+[[model.modes]]
+id = "mesh"
+output = "mesh"

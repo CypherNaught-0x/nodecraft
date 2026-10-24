@@ -10,8 +10,32 @@ Request admission checks depth 32, 4,096 aggregate visits (including empty conta
 flattened inputs, and 1 MiB aggregate text per original value. All parameters, input roots and
 repeated flattened roles share a 64 MiB conservative representation/work budget. Strings cost
 6 * UTF8 bytes + 34; values 128; input roots/emitted leaves 64 plus their charged role. Provider, model,
-parameter names and idempotency key count. Media inputs remain unsupported. These logical bounds
+parameter names and idempotency key count. Media inputs need a `MediaSource` (#502): each costs
+512 plus its MIME, and their stored sizes are summed against 64 MiB before any bytes are read. These logical bounds
 are not exact JSON sizes, allocator backing or RSS limits.
+
+The media sum is checked earlier too (#675): for each planned job whose inputs are already known,
+`run.quote` adds a `node <id> [media_too_large]` reason to `blocked` (giving the total in MiB,
+rounded up, and the role of the largest input) and `run.start` refuses the run, so an oversized
+call is caught before its cost is accepted. Each wire counts, even when several wires carry the
+same file. An input whose size can't be found, or one produced by an earlier step of the same run,
+is left to admission when the job runs.
+
+The whole request is checked earlier as well (#307). `generate::check_request` runs the same
+admission without converting anything, using the longest idempotency key (64 bytes), so a request
+it admits is admitted under whatever key the run sends. That key can cost a request about 90 bytes
+more than a typical key, so a request that close to the byte limit is refused before the run.
+For each step whose jobs are already known, `run.quote` returns a `requests` entry for that step's
+largest job, or for its first refused one, listing refused entries first. The entry carries the
+node, the jobs checked out of the step's total, the values, inputs, bytes and media bytes counted
+against their limits, and `refused`. When that request would be refused, `blocked` gets a
+`node <id> [request_refused]` reason and `run.start` refuses the run. This covers parameters that
+pass graph validation one by one but exceed the limits together, and any other reason the call's
+admission would refuse it. An asset whose size can't be found counts as empty there and is left to
+the job itself. On refusal the counts stop at the point where the limit was hit. A quote checks at
+most 4,096 jobs, every step's first job before any step's second; `requests_complete` is false when
+some were left to runtime admission.
+Steps that wait on upstream results are still checked when their jobs are converted.
 
 Results retain the 4,096 item/route ceiling, 1 MiB aggregate routed text, 256 MiB binary item/raw
 aggregate ceiling and 8 MiB converted representation/work budget. Existing route/record/string/media

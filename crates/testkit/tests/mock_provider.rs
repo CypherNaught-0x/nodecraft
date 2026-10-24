@@ -105,7 +105,7 @@ fn starts_with_png_signature(bytes: &[u8]) -> bool {
 }
 
 fn identity_provider() -> MockProvider {
-    let model = |output, polls, fail| MockModel { output, polls, cost: Some(Money::new(Currency::USD, 40_000)), fail };
+    let model = |output, polls, fail| MockModel { output, polls, cost: Some(Money::new(Currency::USD, 40_000)), tokens: None, billable_units: None, fail };
     MockProvider::new(
         "mock",
         [

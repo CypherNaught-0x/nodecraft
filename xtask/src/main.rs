@@ -5,24 +5,45 @@
 
 mod decisions;
 mod layers;
+mod perf;
+mod test_layout;
+mod test_step;
+mod update_feed;
 mod version;
 mod workspace;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+/// Every optional provider adapter: clippy, tests and the wasm check build them all.
+const PROVIDER_FEATURES: &str = "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/seedream,nodecraft-providers/gemini-images,nodecraft-providers/gemini-video,nodecraft-providers/google-veo,nodecraft-providers/google-tts,nodecraft-providers/google-gemini-images,nodecraft-providers/seedance,nodecraft-providers/fal,nodecraft-providers/tripo,nodecraft-providers/meshy,nodecraft-providers/higgsfield,nodecraft-providers/kling,nodecraft-providers/elevenlabs,nodecraft-providers/comfy-cloud";
+
 const USAGE: &str = "\
 usage: cargo xtask <command>
 
 commands:
-  layers          enforce the crate dependency layering (docs/architecture.md)
+  perf            bounded release collect/compare tooling (cargo xtask perf help)
+  layers          enforce the crate dependency layering (docs/architecture.md), and that every
+                  integration test file is built
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
   catalog-check   validate assets/catalog/*.toml and that each file is built in (docs/catalog.md)
   decisions       check docs/decisions/: one dated file per decision, none in decisions.md
-  ci              fmt --check, clippy -D warnings, test, layers, wasm (stops at first failure;
-                  `test` includes catalog-check, `layers` includes decisions)
+  ci [--quick [--base REF]]
+                  fmt --check, clippy -D warnings, test, layers, wasm (stops at first failure;
+                  `test` includes catalog-check, `layers` includes decisions). Run it in full
+                  before a pull request. `--quick` is for iterating: it tests only the packages
+                  changed since REF (default origin/main) and their dependents, leaves out the
+                  slow tests and doctests, and skips wasm. Uses cargo-nextest when installed;
+                  `--quick` requires it
+  slow-tests [--threshold SECS]
+                  time every test and regenerate the slow-test list in .config/nextest.toml
+                  (default 5 seconds)
   version [set X.Y.Z[-pre]]
                   print the workspace version, or set it (Cargo.toml + Cargo.lock)
+  update-key <secret file>
+                  make an update signing key pair: the public key goes in packaging/update-key.pub
+  update-feed <artifact folder> <version>
+                  write and sign the release's update feed (NODECRAFT_UPDATE_SIGNING_KEY)
 ";
 
 fn main() -> ExitCode {
@@ -37,17 +58,30 @@ fn main() -> ExitCode {
         };
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     let result = match args.first().map(String::as_str) {
-        Some(command @ ("layers" | "wasm" | "ci" | "catalog-check" | "decisions" | "version")) => root().and_then(|root| {
-            eprintln!("xtask workspace: {}", root.display());
-            match command {
-                "layers" => cmd_layers(&root),
-                "wasm" => cmd_wasm(&root),
-                "ci" => cmd_ci(&root),
-                "catalog-check" => cmd_catalog_check(&root),
-                "decisions" => decisions::check(&root),
-                _ => version::run(&root, &rest),
-            }
-        }),
+        Some("perf") => {
+            return match root().and_then(|root| perf::run(&root, &rest)) {
+                Ok(code) => ExitCode::from(code),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::from(3)
+                }
+            };
+        }
+        Some(command @ ("layers" | "wasm" | "ci" | "catalog-check" | "decisions" | "slow-tests" | "version" | "update-key" | "update-feed")) => root()
+            .and_then(|root| {
+                eprintln!("xtask workspace: {}", root.display());
+                match command {
+                    "layers" => cmd_layers(&root),
+                    "wasm" => cmd_wasm(&root),
+                    "ci" => cmd_ci(&root, &rest),
+                    "catalog-check" => cmd_catalog_check(&root),
+                    "decisions" => decisions::check(&root),
+                    "slow-tests" => test_step::slow_tests(&root, &rest),
+                    "update-key" => update_feed::key(&root, &rest),
+                    "update-feed" => update_feed::feed(&root, &rest),
+                    _ => version::run(&root, &rest),
+                }
+            }),
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             Ok(())
@@ -113,7 +147,7 @@ fn cmd_layers(root: &Path) -> Result<(), String> {
     println!();
     if violations.is_empty() {
         println!("OK: {} crates, no layering violations.", crates.len());
-        Ok(())
+        test_layout::check(root)
     } else {
         println!("{} violation(s):", violations.len());
         for v in &violations {
@@ -131,9 +165,13 @@ fn wasm_set(root: &Path) -> Result<Vec<String>, String> {
 }
 
 fn cmd_wasm(root: &Path) -> Result<(), String> {
+    // Keep engine's transitive browser types valid without UI feature unification.
+    let mut isolated = cargo(root);
+    isolated.args(["check", "-p", "nodecraft-automation", "--lib", "--target", "wasm32-unknown-unknown"]);
+    run(isolated, "isolated automation/engine wasm check (without UI)")?;
     let set = wasm_set(root)?;
     let mut c = cargo(root);
-    c.args(["check", "--target", "wasm32-unknown-unknown", "--features", "nodecraft-providers/openai-images,nodecraft-providers/replicate"]);
+    c.args(["check", "--target", "wasm32-unknown-unknown", "--features", PROVIDER_FEATURES]);
     for pkg in &set {
         c.args(["-p", pkg]);
     }
@@ -153,8 +191,13 @@ fn cmd_wasm(root: &Path) -> Result<(), String> {
         "nodecraft-providers/testkit",
     ]);
     run(mocks, "cargo check --target wasm32-unknown-unknown -p nodecraft-provider-testkit -p nodecraft-providers --features nodecraft-providers/testkit")?;
+    // The browser app is an app, not a layered crate, but wasm is the only target it has (#99).
+    let mut web = cargo(root);
+    web.args(["check", "--target", "wasm32-unknown-unknown", "-p", "nodecraft-web"]);
+    run(web, "cargo check --target wasm32-unknown-unknown -p nodecraft-web")?;
     println!("\nwasm32-unknown-unknown check: ok for {}", set.join(", "));
     println!("wasm32-unknown-unknown opt-in check: ok for nodecraft-provider-testkit and nodecraft-providers/testkit");
+    println!("wasm32-unknown-unknown app check: ok for nodecraft-web");
     Ok(())
 }
 
@@ -167,7 +210,13 @@ fn cmd_catalog_check(root: &Path) -> Result<(), String> {
     run(c, "cargo test -p nodecraft-catalog --test catalog_files")
 }
 
-fn cmd_ci(root: &Path) -> Result<(), String> {
+fn cmd_ci(root: &Path, args: &[&str]) -> Result<(), String> {
+    let quick = match args {
+        [] => None,
+        ["--quick"] => Some("origin/main"),
+        ["--quick", "--base", base] => Some(*base),
+        _ => return Err("usage: cargo xtask ci [--quick [--base REF]]".into()),
+    };
     type Step<'a> = (&'static str, Box<dyn Fn() -> Result<(), String> + 'a>);
     let cargo_step = |args: &'static [&'static str]| -> Box<dyn Fn() -> Result<(), String> + '_> {
         Box::new(move || {
@@ -176,25 +225,21 @@ fn cmd_ci(root: &Path) -> Result<(), String> {
             run(c, &format!("cargo {}", args.join(" ")))
         })
     };
-    let steps: Vec<Step<'_>> = vec![
+    let mut steps: Vec<Step<'_>> = vec![
         ("fmt", cargo_step(&["fmt", "--all", "--", "--check"])),
+        ("clippy", cargo_step(&["clippy", "--workspace", "--all-targets", "--features", PROVIDER_FEATURES, "--", "-D", "warnings"])),
         (
-            "clippy",
-            cargo_step(&[
-                "clippy",
-                "--workspace",
-                "--all-targets",
-                "--features",
-                "nodecraft-providers/openai-images,nodecraft-providers/replicate",
-                "--",
-                "-D",
-                "warnings",
-            ]),
+            "test",
+            match quick {
+                Some(base) => Box::new(move || test_step::quick(root, base)),
+                None => Box::new(|| test_step::full(root)),
+            },
         ),
-        ("test", cargo_step(&["test", "--workspace", "--features", "nodecraft-providers/openai-images,nodecraft-providers/replicate"])),
         ("layers", Box::new(|| cmd_layers(root).and_then(|()| decisions::check(root)))),
-        ("wasm", Box::new(|| cmd_wasm(root))),
     ];
+    if quick.is_none() {
+        steps.push(("wasm", Box::new(|| cmd_wasm(root))));
+    }
     let mut done = Vec::new();
     for (name, f) in &steps {
         eprintln!("\n=== ci: {name} ===");
@@ -212,5 +257,8 @@ fn cmd_ci(root: &Path) -> Result<(), String> {
         done.push(*name);
     }
     println!("\nCI summary: all {} steps passed ({})", done.len(), done.join(", "));
+    if quick.is_some() {
+        println!("Quick: unaffected packages, slow tests, doctests and wasm were not checked. Run `cargo xtask ci` before a pull request.");
+    }
     Ok(())
 }

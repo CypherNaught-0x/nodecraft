@@ -111,7 +111,7 @@ fn local_no_handle_failure_does_not_delete_other_jobs_shared_accepted_handle() {
     let mut run = runner.run(start(1, "shared"), CancelToken::default());
     assert!(run.as_mut().poll(&mut std::task::Context::from_waker(futures::task::noop_waker_ref())).is_pending());
     runner.register(JobId(2), q(p.clone(), "shared", None));
-    runner.restore_handle("reregister", "shared".into(), JobHandle { remote_id: "accepted".into(), data: serde_json::Value::Null });
+    runner.restore_handle("reregister", "shared".into(), JobHandle { remote_id: "accepted".into(), data: serde_json::Value::Null }).unwrap();
     p.gate.store(true, Ordering::SeqCst);
     assert!(matches!(block_on(run), Outcome::Failed { transient: false, .. }));
     assert_eq!(block_on(runner.run(start(2, "shared"), CancelToken::default())), Outcome::Done);
@@ -128,11 +128,11 @@ fn fresh_start_and_terminal_settle_retire_only_the_scheduler_lease() {
     // Settling leaves an ordinary same-key registration reference intact.
     runner.settle(JobId(1));
     assert!(runner.lock().jobs.get(&JobId(1)).unwrap().scheduler.is_none());
-    assert!(runner.lock().handles.contains_key(&("reregister".into(), "old".into())));
+    assert!(runner.lock().handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance("reregister").unwrap(), "old".into())));
     assert!(matches!(block_on(runner.run(start(1, "old"), CancelToken::default())), Outcome::Failed { transient: true, .. }));
     runner.register(JobId(1), q(p.clone(), "proposed", None));
     runner.settle(JobId(1));
-    assert!(!runner.lock().handles.contains_key(&("reregister".into(), "old".into())));
+    assert!(!runner.lock().handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance("reregister").unwrap(), "old".into())));
     assert_eq!(block_on(runner.run(start(1, "fresh"), CancelToken::default())), Outcome::Done);
     assert_eq!(*p.keys.lock().unwrap(), ["old", "fresh"]);
     assert!(runner.lock().jobs.is_empty() && runner.lock().failures.is_empty() && runner.lock().handles.is_empty());
@@ -334,10 +334,15 @@ fn older_restored_generation_success_preserves_newer_same_base_lease() {
     let mut old = runner.run(start(1, "base"), CancelToken::default());
     let mut cx = std::task::Context::from_waker(futures::task::noop_waker_ref());
     assert!(old.as_mut().poll(&mut cx).is_pending());
-    runner.restore_generation("generations", "base".into(), 1, JobHandle { remote_id: "base#1".into(), data: serde_json::Value::Null });
+    runner.restore_generation("generations", "base".into(), 1, JobHandle { remote_id: "base#1".into(), data: serde_json::Value::Null }).unwrap();
     let mut new = runner.run(start(1, "base"), CancelToken::default());
     assert!(new.as_mut().poll(&mut cx).is_pending());
     let serial = runner.lock().running_serial[&JobId(1)];
+    let refused = runner
+        .restore_generation("invalid-address".repeat(40), "base".into(), u32::MAX, JobHandle { remote_id: "uninstalled".into(), data: serde_json::Value::Null })
+        .unwrap_err();
+    assert_eq!(refused.into_handle().remote_id, "uninstalled");
+    assert_eq!(runner.lock().running_serial[&JobId(1)], serial, "refusal preserves the live replacement");
     p.old_ready.store(true, Ordering::SeqCst);
     assert_eq!(block_on(old), Outcome::Done);
     let retained = runner.lock().jobs.get(&JobId(1)).and_then(|j| j.scheduler.as_ref()).is_some_and(|lease| lease.invocation == serial);
@@ -381,7 +386,7 @@ fn different_key_precancel_preserves_old_retry_until_admission_or_explicit_settl
             let state = runner.lock();
             assert!(state.metadata.is_empty());
             assert!(state.jobs.get(&JobId(1)).unwrap().scheduler.is_none());
-            assert!(!state.handles.contains_key(&("reregister".into(), "old".into())));
+            assert!(!state.handles.contains_key(&(nodecraft_types::ProviderTarget::default_instance("reregister").unwrap(), "old".into())));
             drop(state);
             assert_eq!(block_on(runner.run(start(1, "fresh"), CancelToken::default())), Outcome::Done);
             assert_eq!(*p.keys.lock().unwrap(), ["old", "fresh"], "host acknowledgement ends the old retry lifetime");

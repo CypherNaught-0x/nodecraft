@@ -36,19 +36,21 @@ reference screenshots and docs of other products: **study, never ship or commit 
 Several people and their agents work on NodeCraft at once. A claim keeps two of them from
 building the same thing.
 
-1. **Find an issue.** Work is tracked as GitHub issues, labelled `area:*` and grouped in
-   milestones (`M0 Skeleton`, `M1 Canvas core`, …). Issues labelled `future` are claimable once
-   their dependencies land. Building something bigger than a bug fix with no issue? Open one
-   first.
+1. **Find an issue.** Work is tracked as GitHub issues, labelled `area:*`, carrying exactly one
+   `difficulty:*`, and grouped in milestones (`M0 Skeleton`, `M1 Canvas core`, …). Difficulty says
+   what signing up costs; the rubric is `docs/issue-labels.md`. Issues labelled `future` are
+   claimable once their dependencies land. Building something bigger than a bug fix with no issue?
+   Open one first, and give it an `area:*` and a `difficulty:*`.
 2. **Check nobody has it:** the issue has no assignee and no `in progress` label, and
    `gh pr list --state open --search "#N"` finds no PR for it.
 3. **Comment `/claim`** on the issue. The bot (`scripts/claim/claim.js`) assigns you, adds
    `in progress` and replies with your deadline, or tells you who holds it.
-4. **Open a draft PR within 72 hours**, titled `<summary> (#N)` with `Fixes #N` in the body. An
+4. **Open a draft PR within 24 hours**, titled `<summary> (#N)` with `Fixes #N` in the body. An
    empty commit is fine to start: `git commit --allow-empty -m "claim: #N"`. Without a PR in time
    the claim lapses.
 5. **Push at least every 14 days**; a claim whose PR has had no pushes for 14 days is released by
-   the daily sweep. Prefer pushing work in progress daily.
+   the daily sweep. Both deadlines apply to everyone, including the owner and maintainers.
+   Prefer pushing work in progress daily.
 6. A draft PR is a claim on its own. If two PRs race for one issue, **the lowest-numbered open PR
    wins**; close yours if it lost, or offer to help on the winner.
 7. **`/unclaim`** releases an issue early (claimant or maintainer only).
@@ -124,7 +126,7 @@ on, never a panic.
 
 ```text
 crates/
-  types media                 L0  pure data types; standalone media codecs (no workspace deps)
+  types media plugin          L0  pure data types; standalone media codecs and plugin contract (no workspace deps)
   comfy graph                 L1  ComfyUI client; document model + changesets
   nodes catalog actions       L2  node kinds; model catalog; deterministic actions
   exec providers gpu format   L3  run engine; provider adapters; wgpu; .ncraft files
@@ -134,11 +136,12 @@ crates/
 apps/
   nodecraft                   desktop app (eframe/wgpu)
   nodecraft-cli               headless CLI with the integrated MCP server
+  nodecraft-web               the same app in the browser (wasm preview, built with trunk)
 xtask/                        cargo xtask layers | wasm | ci | version
 packaging/                    per-OS release packaging (docs/releasing.md)
 ```
 
-A crate may depend only on strictly lower layers; `media` depends on no workspace crate;
+A crate may depend only on strictly lower layers; `media` and `plugin` depend on no workspace crate;
 `testkit` is a dev-dependency only.
 
 ## Quality gates
@@ -147,16 +150,20 @@ A crate may depend only on strictly lower layers; `media` depends on no workspac
 and does not affect product code, build configuration, scripts, or executable examples, skip the
 baseline and pre-commit `cargo xtask ci` runs and do not wait for GitHub CI before merging. Run
 `git diff --check` and any relevant documentation validators (for example, `cargo xtask decisions`
-for decision records). The usual review requirement still applies.
+for decision records). The review policy below still applies.
 
-For all other changes, before every commit:
+For all other changes, the full gate must pass before you open a pull request or push to one:
 
 ```sh
-cargo xtask ci        # fmt --check, clippy -D warnings, tests, layers, wasm
+cargo xtask ci           # fmt --check, clippy -D warnings, every test, doctests, layers, wasm
+cargo xtask ci --quick   # while iterating: only the packages you changed and their dependents
 ```
 
-While iterating, `cargo test -p <crate>` and `cargo clippy -p <crate> --all-targets -- -D warnings`
-are enough. Also run, when they apply:
+`--quick` leaves out the tests listed as slow in `.config/nextest.toml`, the doctests and the wasm
+check, so it is not a substitute for the full gate. Both need
+[cargo-nextest](https://nexte.st) to be fast (`cargo install cargo-nextest --locked`; `--quick`
+requires it). Prefer `--quick` over `cargo test -p <crate>`: it builds with the same features as the
+full gate, where `-p` rebuilds dependencies under a different feature set. Also run, when they apply:
 
 ```sh
 cargo test -p nodecraft-engine --test panic_hunt -- --ignored   # added or changed commands
@@ -176,16 +183,31 @@ that drive real pointer and key events through the canvas.
 - PRs with visible changes include real screenshots or a short recording, before and after,
   with a small public-safe example (no private projects, keys, paths or account details).
   Diagrams don't replace evidence of visible behaviour. Attach media to the PR; don't commit it.
+- **Attach media with GitHub CLI.** Use `--attach` on `gh pr create`, `gh pr edit` or
+  `gh pr comment`; check the installed command's help for support. This was verified with
+  GitHub CLI 2.101.0. Pass a Markdown body using `--body-file` and repeat `--attach` for each
+  image or video. Matching local image references in the body are rewritten to uploaded URLs;
+  unreferenced attachments are appended. Image alt text can also follow the file path after
+  `#`. Uploading requires repository push access. Read back the posted body to confirm remote
+  attachment URLs replaced local paths. The local body file is unchanged: fetch the posted
+  body before later edits so they preserve uploaded URLs. See [GitHub's attachment instructions](https://docs.github.com/en/github-cli/github-cli/attaching-files-with-github-cli).
 - Say in the PR what you changed, how you tested it, and what you measured. If something could
   not be verified (e.g. a platform you couldn't run), say so.
 
 ## Landing changes
 
-- **Sub-agent review before every PR, including drafts.** Have a sub-agent review the existing
-  commits on the branch and the newly added code against the intended base before creating the
-  PR. Give the reviewer the issue, acceptance criteria and validation results. Resolve actionable
-  findings, have fixes reviewed again, and record the reviewed commit range and outcome in the PR.
-  Review does not replace the quality gates above.
+- **At most two review rounds.** For changes not exempt below, have an independent sub-agent
+  review the existing branch commits and newly added code against the intended base before
+  creating a PR, including a draft. Give the reviewer the issue, acceptance criteria and
+  validation results; record the reviewed range and outcome in the PR. This is the initial round,
+  followed by at most one verification of the fixes. Read existing PR comments and reviews first;
+  they count toward this limit. Do not restart the review cycle for an already-reviewed PR. Resolve valid findings and run the relevant checks, then land the change without starting
+  another review round. Do not merge a known unresolved correctness defect.
+- **Obvious fixes need no review or approval.** Documentation, formatting, and small, local
+  corrections with clear behavior and focused validation may land without a human or sub-agent
+  review. Once the required quality gates and GitHub checks pass, mark the PR ready and merge
+  without asking for another confirmation. Keep repository-wide protections intact; use a
+  maintainer-authorized exception only when the owner explicitly authorizes it for the PR.
 - **One topic per commit and per PR.** Commits are small, with a clear subject line; a commit
   that fixes an issue says `Fixes #N`.
 - Changes land through **pull requests** and GitHub CI (Linux, Windows, macOS). The owner may push
@@ -209,8 +231,21 @@ that drive real pointer and key events through the canvas.
 
 ## Parallel agents on one machine
 
-- Use your own target dir (`CARGO_TARGET_DIR=target/agent-<name>`) so builds don't wait on
-  Cargo's lock, and delete it when you are done (each is several GB).
+- Work in your own git worktree and build in its own `target/` (Cargo's default), so builds don't
+  wait on another agent's lock and `git worktree remove` takes the build with it. Never point two
+  checkouts at one target dir: Cargo names a workspace crate's artifacts the same in every
+  checkout and judges freshness by file times, so one checkout can link another's stale code.
+  Agents sharing the primary checkout use `CARGO_TARGET_DIR=target/agent-<name>` instead and
+  delete it when they are done.
+- Disk is the scarce resource. Agent worktrees build with `CARGO_INCREMENTAL=0` exported for the
+  whole task: it drops the incremental cache, about half of a worktree's `target/` (some 6 GB), for
+  roughly 30–40 s more per rebuild after an edit to a core crate. Set it before the first build and
+  leave it set; flipping it rebuilds every workspace crate.
+- Build with `cargo xtask ci` and `cargo xtask ci --quick` rather than `cargo test -p <crate>` or
+  `cargo clippy -p <crate>`: every new feature combination keeps another copy of every binary it
+  links.
+- A new integration test file in a crate with `tests/it.rs` gets a `#[path]` line there (or its own
+  `[[test]]` if it must run alone); `cargo xtask layers` fails on one that is in neither.
 - Edit only the files your task owns. Shared registries (the command list in `crates/engine`,
   the node registry in `crates/nodes`, `xtask/src/layers.rs`) get small, surgical edits; re-read
   them right before editing. Put new commands, node kinds and providers in **new modules**.
@@ -232,4 +267,6 @@ that drive real pointer and key events through the canvas.
 | Status | `ROADMAP.md` (update it when a milestone task lands) |
 | MCP server and its tools | `docs/mcp.md` |
 | Control channel (`nodecraft --control`) | `docs/control.md` |
+| HTTP serve mode (`nodecraft-cli serve`) | `docs/serve.md` |
 | Checklists: commands, node kinds, providers | `CONTRIBUTING.md` |
+| Issue difficulty rubric | `docs/issue-labels.md` |

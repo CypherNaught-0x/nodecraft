@@ -2,7 +2,7 @@
 use super::*;
 use std::sync::Arc;
 
-type Identity = [u8; 32];
+pub(super) type Identity = [u8; 32];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChargeOwnership {
@@ -42,6 +42,10 @@ pub(super) struct Ownership {
     pub(super) uncertain: BTreeSet<Identity>,
     pub(super) quarantined: BTreeMap<Identity, UsageEntry>,
     pub(super) groups: BTreeMap<Arc<str>, BTreeMap<Currency, LegacyGroupEvidence>>,
+    /// Confirmed reconciliations of former groups (#325), oldest first.
+    pub(super) records: Vec<super::reconcile::OwnershipReconciliation>,
+    /// Confirmed resolutions of reconciled charges (#332), oldest first.
+    pub(super) resolutions: Vec<super::resolve::ChargeResolution>,
 }
 
 pub(super) fn identity(provider: &str, key: &str) -> Identity {
@@ -51,6 +55,21 @@ pub(super) fn identity(provider: &str, key: &str) -> Identity {
         hash.update(&u64::try_from(text.len()).unwrap_or(u64::MAX).to_le_bytes());
         hash.update(text.as_bytes());
     }
+    *hash.finalize().as_bytes()
+}
+
+pub(super) fn identity_target(provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> Identity {
+    let Some(instance) = instance else {
+        return identity(provider, key);
+    };
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"nodecraft.provider-instance-live.v1\0");
+    hash.update(&u64::try_from(provider.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hash.update(provider.as_bytes());
+    hash.update(&[1]);
+    hash.update(instance.as_bytes());
+    hash.update(&u64::try_from(key.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hash.update(key.as_bytes());
     *hash.finalize().as_bytes()
 }
 
@@ -75,12 +94,29 @@ fn bad(message: &str) -> Error {
 fn amount(totals: Option<&Totals>, currency: Currency) -> u64 {
     totals.and_then(|t| t.get(&currency)).map_or(0, |m| m.micros)
 }
+/// Earlier-held money moved out by saved reconciliations, per currency.
+fn moved_from_earlier(records: &[super::reconcile::OwnershipReconciliation]) -> Result<BTreeMap<Currency, u128>, Error> {
+    let mut moved: BTreeMap<Currency, u128> = BTreeMap::new();
+    for record in records {
+        if record.moved_from_earlier.micros > MAX_TOTAL_MICROS {
+            return Err(bad("invalid ownership reconciliation"));
+        }
+        *moved.entry(record.moved_from_earlier.currency).or_default() += u128::from(record.moved_from_earlier.micros);
+    }
+    Ok(moved)
+}
 fn all_entries(file: &UsageLogFile) -> impl Iterator<Item = &UsageEntry> {
     file.entries.iter().chain(&file.pending).chain(&file.quarantined)
 }
 
 pub(super) fn check_file_bounds(file: &UsageLogFile) -> Result<(), Error> {
-    if file.open_session_ownership > 2 {
+    if file.provider_identity_version > 1 || (file.provider_identity_version == 1 && file.open_session_ownership == 0) {
+        return Err(bad("unsupported or ambiguous provider identity version"));
+    }
+    if file.provider_identity_version == 0 && all_entries(file).any(|e| e.instance.is_some()) {
+        return Err(bad("scoped charges require provider identity version 1"));
+    }
+    if file.open_session_ownership > 4 {
         return Err(bad("unsupported open-session ownership version; use a newer NodeCraft"));
     }
     let retained = file.entries.len().checked_add(file.pending.len()).and_then(|n| n.checked_add(file.quarantined.len()));
@@ -95,17 +131,31 @@ pub(super) fn check_file_bounds(file: &UsageLogFile) -> Result<(), Error> {
     if bytes > MAX_LISTED_TEXT + MAX_PENDING * 4 * MAX_TEXT {
         return Err(bad("too much retained ownership text"));
     }
-    if file.open_session_ownership != 2
+    let records = &file.ownership_reconciliations;
+    let reconciled = records.iter().try_fold(0usize, |n, r| n.checked_add(r.charges.len()));
+    if records.len() > MAX_USAGE_ENTRIES + MAX_PENDING || reconciled.is_none_or(|n| n > MAX_USAGE_ENTRIES + MAX_PENDING) {
+        return Err(bad("too much reconciled ownership history"));
+    }
+    if file.open_session_ownership < 2
         && (!file.uncertain_listed.is_empty() || !file.uncertain_pending.is_empty() || !file.quarantined.is_empty() || !file.legacy_groups.is_empty())
     {
         return Err(bad("ownership sidecars require version 2"));
+    }
+    if (file.open_session_ownership >= 3) == records.is_empty() {
+        return Err(bad("ownership reconciliations require version 3, and version 3 requires them"));
+    }
+    if (file.open_session_ownership == 4) == file.charge_resolutions.is_empty() {
+        return Err(bad("charge resolutions require version 4, and version 4 requires them"));
+    }
+    if file.charge_resolutions.len() > reconciled.unwrap_or(0) {
+        return Err(bad("too many charge resolutions"));
     }
     Ok(())
 }
 
 impl Ownership {
     pub(super) fn is_uncertain(&self, e: &UsageEntry) -> bool {
-        self.uncertain.contains(&identity(&e.provider, &e.idempotency_key))
+        self.uncertain.contains(&identity_target(&e.provider, e.instance, &e.idempotency_key))
     }
     pub(super) fn evidence(&self, e: &UsageEntry) -> Option<&LegacyGroupEvidence> {
         self.groups.get(e.session.as_str())?.get(&e.cost.currency)
@@ -113,6 +163,7 @@ impl Ownership {
 
     pub(super) fn admit(file: &mut UsageLogFile) -> Result<Self, Error> {
         let mut result = Self::default();
+        let mut staged = BTreeMap::new();
         let mut open: BTreeMap<&str, Totals> = BTreeMap::new();
         for e in all_entries(file).filter(|e| e.status != Charge::Actual) {
             add_to(open.entry(&e.session).or_default(), e.cost)?;
@@ -156,13 +207,19 @@ impl Ownership {
             }
             for e in all_entries(file).filter(|e| e.status != Charge::Actual && e.cost.micros > 0) {
                 if result.evidence(e).is_some() {
-                    result.uncertain.insert(identity(&e.provider, &e.idempotency_key));
+                    result.uncertain.insert(identity_target(&e.provider, e.instance, &e.idempotency_key));
                 }
             }
             file.sessions = sessions;
-        } else if file.open_session_ownership == 2 {
+        } else if file.open_session_ownership >= 2 {
             let mut shared: BTreeMap<Currency, (Money, Money, Money, u128)> = BTreeMap::new();
-            for group in &file.legacy_groups {
+            let moved = moved_from_earlier(&file.ownership_reconciliations)?;
+            // Reconciled groups came from the same import: their evidence must agree with the
+            // remaining groups' and count towards the original project. A partial stage repeats
+            // its still-quarantined group's evidence (checked in `admit_records`), so only
+            // closed groups count here.
+            let reconciled = file.ownership_reconciliations.iter().filter(|r| !r.partial).map(|r| (&r.evidence, true));
+            for (group, done) in file.legacy_groups.iter().map(|g| (g, false)).chain(reconciled) {
                 let c = group.original_open.currency;
                 if group.session.is_empty()
                     || group.session.len() > MAX_TEXT
@@ -174,7 +231,8 @@ impl Ownership {
                         .any(|m| m.currency != c || m.micros > MAX_TOTAL_MICROS)
                     || group.original_open.micros > MAX_TOTAL_MICROS
                     || group.original_earlier.micros < group.remaining_earlier_after_exact_migrations.micros
-                    || amount(file.sessions.get(EARLIER_SESSIONS), c) < group.remaining_earlier_after_exact_migrations.micros
+                    || u128::from(amount(file.sessions.get(EARLIER_SESSIONS), c)) + moved.get(&c).copied().unwrap_or(0)
+                        < u128::from(group.remaining_earlier_after_exact_migrations.micros)
                 {
                     return Err(bad("invalid legacy ownership evidence"));
                 }
@@ -185,6 +243,9 @@ impl Ownership {
                 row.3 = row.3.saturating_add(u128::from(group.original_named.micros));
                 if row.3.saturating_add(u128::from(row.1.micros)) > u128::from(row.0.micros) {
                     return Err(bad("ownership evidence exceeds original project"));
+                }
+                if done {
+                    continue;
                 }
                 let owner =
                     result.groups.get_key_value(group.session.as_ref()).map(|(owner, _)| Arc::clone(owner)).unwrap_or_else(|| Arc::clone(&group.session));
@@ -201,40 +262,54 @@ impl Ownership {
                         return Err(bad("ownership indices must be strictly ordered"));
                     }
                     let e = usize::try_from(*index).ok().and_then(|n| entries.get(n)).ok_or_else(|| bad("ownership index out of range"))?;
-                    if e.status == Charge::Actual || e.cost.micros == 0 || result.evidence(e).is_none() {
+                    if e.instance.is_some() || e.status == Charge::Actual || e.cost.micros == 0 || result.evidence(e).is_none() {
                         return Err(bad("invalid uncertain entry"));
                     }
-                    result.uncertain.insert(identity(&e.provider, &e.idempotency_key));
+                    result.uncertain.insert(identity_target(&e.provider, e.instance, &e.idempotency_key));
                     previous = Some(*index);
                 }
             }
             for e in &file.quarantined {
-                if result.evidence(e).is_none() {
+                if e.instance.is_some() || result.evidence(e).is_none() {
                     return Err(bad("quarantined entry has no evidence"));
                 }
-                result.uncertain.insert(identity(&e.provider, &e.idempotency_key));
+                result.uncertain.insert(identity_target(&e.provider, e.instance, &e.idempotency_key));
             }
             let mut sums: BTreeMap<&str, Totals> = BTreeMap::new();
             for e in all_entries(file).filter(|e| result.is_uncertain(e)) {
                 add_to(sums.entry(&e.session).or_default(), e.cost)?;
             }
-            if result.uncertain.is_empty() {
+            if file.open_session_ownership == 2 && result.uncertain.is_empty() {
                 return Err(bad("version 2 requires uncertain charges"));
             }
+            staged = super::reconcile::admit_records(&file.ownership_reconciliations, &result.groups, &result.uncertain)?;
             for groups in result.groups.values() {
                 for group in groups.values() {
-                    if amount(sums.get(group.session.as_ref()), group.original_open.currency) != group.original_open.micros {
+                    let c = group.original_open.currency;
+                    let done = staged.get(&(Arc::clone(&group.session), c)).map_or(0, |s| s.open);
+                    let retained = u128::from(amount(sums.get(group.session.as_ref()), c));
+                    // A group still quarantined keeps at least one charge; otherwise its stages
+                    // would have closed it.
+                    if retained == 0 || retained + done != u128::from(group.original_open.micros) {
                         return Err(bad("ownership evidence does not match retained uncertainty"));
                     }
                 }
             }
         }
-        let mut identities: BTreeMap<Identity, (&str, &str)> = BTreeMap::new();
+        let mut identities: BTreeMap<Identity, (&str, Option<nodecraft_types::ProviderInstanceId>, &str)> = BTreeMap::new();
         for e in all_entries(file) {
-            if identities.insert(identity(&e.provider, &e.idempotency_key), (&e.provider, &e.idempotency_key)).is_some() {
+            if identities.insert(identity_target(&e.provider, e.instance, &e.idempotency_key), (&e.provider, e.instance, &e.idempotency_key)).is_some() {
                 return Err(bad("usage identity collision"));
             }
         }
+        // A group's named floor shrinks by what its partial stages placed in the named total:
+        // those charges are established now and counted with the owned open charges.
+        let floor = |name: &str, currency: Currency| -> u128 {
+            result.groups.get(name).and_then(|g| g.get(&currency)).map_or(0, |g| {
+                let placed = staged.get(&(Arc::clone(&g.session), currency)).map_or(0, |s| s.named);
+                u128::from(g.original_named.micros).saturating_sub(placed)
+            })
+        };
         let mut established: BTreeMap<&str, Totals> = BTreeMap::new();
         for e in all_entries(file).filter(|e| e.status != Charge::Actual && !result.is_uncertain(e)) {
             add_to(established.entry(&e.session).or_default(), e.cost)?;
@@ -244,20 +319,23 @@ impl Ownership {
                 return Err(bad("named session is missing for an owned open charge"));
             }
             for money in totals.values() {
-                let floor = result.groups.get(name).and_then(|g| g.get(&money.currency)).map_or(0, |g| g.original_named.micros);
-                if u128::from(amount(file.sessions.get(name), money.currency)) < u128::from(floor) + u128::from(money.micros) {
+                if u128::from(amount(file.sessions.get(name), money.currency)) < floor(name, money.currency) + u128::from(money.micros) {
                     return Err(bad("named session totals do not cover their owned open charges and legacy floor"));
                 }
             }
         }
         for (name, groups) in &result.groups {
             for g in groups.values() {
-                if amount(file.sessions.get(name.as_ref()), g.original_named.currency) < g.original_named.micros {
+                if u128::from(amount(file.sessions.get(name.as_ref()), g.original_named.currency)) < floor(name, g.original_named.currency) {
                     return Err(bad("legacy named floor was reduced"));
                 }
             }
         }
-        result.quarantined = std::mem::take(&mut file.quarantined).into_iter().map(|e| (identity(&e.provider, &e.idempotency_key), e)).collect();
+        super::resolve::admit_resolutions(file)?;
+        result.resolutions = std::mem::take(&mut file.charge_resolutions);
+        result.records = std::mem::take(&mut file.ownership_reconciliations);
+        result.quarantined =
+            std::mem::take(&mut file.quarantined).into_iter().map(|e| (identity_target(&e.provider, e.instance, &e.idempotency_key), e)).collect();
         Ok(result)
     }
 }

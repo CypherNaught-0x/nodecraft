@@ -1,4 +1,4 @@
-//! `keys.*` commands: store, remove and check provider API keys. They change no document and add
+//! `keys.*` commands: store, remove, look up and test provider API keys. They change no document and add
 //! no undo step; the host's `keys` service ([`crate::secrets::register_key_service`]) talks to the
 //! keychain. Results never contain a key, only a masked tail.
 
@@ -16,7 +16,7 @@ fn account_schema() -> Value {
 fn set_schema() -> Value {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": ["account", "key"], "properties": {
         "account": account_schema(),
-        "key": {"type": "string", "minLength": 1, "maxLength": 1024, "description": "The API key (visible ASCII). Stored in the OS keychain only."}
+        "key": {"type": "string", "minLength": 1, "maxLength": 16384, "description": "The API key (visible ASCII), or for account google-cloud the whole service-account key file (JSON), which is stored compactly. Stored in the OS keychain only."}
     }})
 }
 
@@ -56,6 +56,11 @@ fn status(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
     Ok(Effect::Service { capability: KEY_SERVICE, request: json!({"op": "status", "account": p.account}) })
 }
 
+fn test(_: &Context<'_>, p: &Value) -> Result<Effect, Error> {
+    let p: AccountParams = params(p)?;
+    Ok(Effect::Service { capability: KEY_SERVICE, request: json!({"op": "test", "account": p.account}) })
+}
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec {
@@ -87,6 +92,16 @@ pub fn specs() -> Vec<CommandSpec> {
             params_doc: "{account: string}; whether a key is stored. Returns {stored, masked}, or {pending: id} in the app.",
             enabled: always,
             run: status,
+        },
+        CommandSpec {
+            id: "keys.test",
+            label: "Test provider key",
+            shortcut: None,
+            alternate_shortcuts: &[],
+            input_schema: account_only_schema,
+            params_doc: "{account: string}; checks the stored key with a free request to the provider (sent only to its own API). Returns {result: \"verified\"} or {result: \"unverifiable\", reason}; a rejected key is an Authentication error. In the app returns {pending: id}; hosts that can't send the check (CLI, MCP, browser) answer Unsupported.",
+            enabled: always,
+            run: test,
         },
     ]
 }

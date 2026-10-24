@@ -80,10 +80,26 @@ fn move_node(context: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     }
     Ok(edit(Change::MoveNode { canvas: p.canvas, id: p.id, pos: p.pos }, Value::Null, p.gesture))
 }
-fn connect(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+fn connect(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: ConnectParams = params(value)?;
     let result = json!({"id": p.edge.id});
-    Ok(edit(Change::Connect { canvas: p.canvas, edge: p.edge }, result, None))
+    let upgrade = upgraded(c, p.canvas, p.edge.to.node, &p.edge.to.port);
+    let connect = Change::Connect { canvas: p.canvas, edge: p.edge };
+    Ok(match upgrade {
+        Some(node) => Effect::Edit { changes: Changeset::new(vec![Change::SetNode { canvas: p.canvas, node }, connect]), result, gesture: None },
+        None => edit(connect, result, None),
+    })
+}
+
+/// A card made before its kind gained `port` (a Timeline's sound and picture inputs, #576) takes
+/// the kind's migration in the same edit as the wire, so wiring it is all it takes.
+pub(crate) fn upgraded(c: &Context<'_>, canvas: CanvasId, id: NodeId, port: &str) -> Option<Node> {
+    let node = c.document.canvases().get(&canvas)?.nodes().get(&id)?;
+    if node.inputs.iter().any(|p| p.name == port) {
+        return None;
+    }
+    let migrated = c.kinds.get(&node.kind).ok()?.prepare_migration(node).ok()??.node;
+    migrated.inputs.iter().any(|p| p.name == port).then_some(migrated)
 }
 fn disconnect(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: DisconnectParams = params(value)?;

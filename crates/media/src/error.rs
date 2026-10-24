@@ -15,6 +15,9 @@ pub enum MediaError {
     LimitExceeded(String),
     /// The file is damaged or not what its header claims.
     Decode(String),
+    /// A known format using a feature NodeCraft can't read yet (a compressed glTF, say). The
+    /// message names the feature and is safe to show.
+    UnsupportedFeature(String),
     /// A caller passed a parameter that can't work, such as a zero thumbnail size.
     InvalidParameter(&'static str),
 }
@@ -27,8 +30,9 @@ impl fmt::Display for MediaError {
             }
             Self::Unrecognized => f.write_str("unrecognised media format"),
             Self::Unsupported { mime } => write!(f, "{mime} is not supported here"),
-            Self::LimitExceeded(m) => write!(f, "image exceeds a decode limit: {m}"),
+            Self::LimitExceeded(m) => write!(f, "media exceeds a decode limit: {m}"),
             Self::Decode(m) => write!(f, "could not decode media: {m}"),
+            Self::UnsupportedFeature(m) => f.write_str(m),
             Self::InvalidParameter(m) => write!(f, "invalid parameter: {m}"),
         }
     }

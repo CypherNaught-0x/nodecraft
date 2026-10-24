@@ -1,8 +1,9 @@
-//! Atomic multi-change edits used by the canvas: rewiring a noodle and deleting a selection.
+//! Atomic multi-change edits used by the canvas: rewiring a noodle and deleting a selection
+//! (nodes, noodles and fields).
 //! Each is one changeset, so it is one undo step and either applies completely or not at all.
 
-use nodecraft_graph::{Change, Changeset, Edge, MAX_CHANGES};
-use nodecraft_types::{CanvasId, EdgeId, Error, NodeId};
+use nodecraft_graph::{Change, Changeset, Edge, MAX_CHANGES, NodeFieldAssignment};
+use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, FieldId, NodeId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -27,6 +28,9 @@ pub struct DeleteParams {
     pub nodes: Vec<NodeId>,
     #[serde(default)]
     pub edges: Vec<EdgeId>,
+    /// Fields removed with the selection; their surviving cards stay, unassigned.
+    #[serde(default)]
+    pub fields: Vec<FieldId>,
 }
 
 /// Rewiring touches at most the dragged noodle and the input's current occupant.
@@ -36,7 +40,7 @@ fn edit(changes: Vec<Change>, result: Value) -> Effect {
     Effect::Edit { changes: Changeset::new(changes), result, gesture: None }
 }
 
-fn rewire(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+fn rewire(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: RewireParams = params(value)?;
     if p.replace.len() > MAX_REPLACED {
         return Err(invalid("rewire replaces at most two edges"));
@@ -44,26 +48,51 @@ fn rewire(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let replace: BTreeSet<EdgeId> = p.replace.into_iter().collect();
     let result = json!({"id": p.edge.id});
     let mut changes: Vec<Change> = replace.into_iter().map(|id| Change::Disconnect { canvas: p.canvas, id }).collect();
+    if let Some(node) = crate::graph_cmds::upgraded(c, p.canvas, p.edge.to.node, &p.edge.to.port) {
+        changes.push(Change::SetNode { canvas: p.canvas, node });
+    }
     changes.push(Change::Connect { canvas: p.canvas, edge: p.edge });
     Ok(edit(changes, result))
 }
 
-fn delete(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+fn delete(context: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: DeleteParams = params(value)?;
-    if p.nodes.len().saturating_add(p.edges.len()) > MAX_CHANGES {
+    if p.nodes.len().saturating_add(p.edges.len()).saturating_add(p.fields.len()) > MAX_CHANGES {
         return Err(invalid("delete exceeds the operation limit"));
     }
     let nodes: BTreeSet<NodeId> = p.nodes.into_iter().collect();
     let edges: BTreeSet<EdgeId> = p.edges.into_iter().collect();
-    if nodes.is_empty() && edges.is_empty() {
+    let fields: BTreeSet<FieldId> = p.fields.into_iter().collect();
+    if nodes.is_empty() && edges.is_empty() && fields.is_empty() {
         return Err(invalid("nothing to delete"));
     }
     // Listed edges go first; removing a node then takes its remaining incident edges with it.
-    let changes = edges
+    let mut changes: Vec<Change> = edges
         .into_iter()
         .map(|id| Change::Disconnect { canvas: p.canvas, id })
-        .chain(nodes.into_iter().map(|id| Change::RemoveNode { canvas: p.canvas, id }))
+        .chain(nodes.iter().map(|&id| Change::RemoveNode { canvas: p.canvas, id }))
         .collect();
+    if !fields.is_empty() {
+        let canvas = context.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas not found"))?;
+        if let Some(field) = fields.iter().find(|id| !canvas.fields().contains_key(id)) {
+            return Err(Error::new(ErrorKind::NotFound, format!("field {field} not found")));
+        }
+        // Like `field.remove`: members that survive the delete leave the field before it goes.
+        let assignments: Vec<NodeFieldAssignment> = canvas
+            .nodes()
+            .values()
+            .filter(|n| !nodes.contains(&n.id) && n.field.is_some_and(|f| fields.contains(&f)))
+            .map(|n| NodeFieldAssignment { node: n.id, field: None })
+            .collect();
+        if !assignments.is_empty() {
+            changes.push(Change::SetNodeFields { canvas: p.canvas, assignments });
+        }
+        changes.extend(fields.into_iter().map(|id| Change::RemoveField { canvas: p.canvas, id }));
+    }
+    // Unassigning surviving members is one more change.
+    if changes.len() > MAX_CHANGES {
+        return Err(invalid("delete exceeds the operation limit"));
+    }
     Ok(edit(changes, Value::Null))
 }
 
@@ -83,7 +112,7 @@ fn rewire_schema() -> Value {
     object(json!({"canvas": uuid(), "edge": edge, "replace": ids(MAX_REPLACED)}), &["canvas", "edge"])
 }
 fn delete_schema() -> Value {
-    object(json!({"canvas": uuid(), "nodes": ids(MAX_CHANGES), "edges": ids(MAX_CHANGES)}), &["canvas"])
+    object(json!({"canvas": uuid(), "nodes": ids(MAX_CHANGES), "edges": ids(MAX_CHANGES), "fields": ids(MAX_CHANGES)}), &["canvas"])
 }
 
 fn enabled_edit(context: &Context<'_>, value: &Value, run: fn(&Context<'_>, &Value) -> Result<Effect, Error>) -> Result<(), Error> {
@@ -118,7 +147,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: Some("Delete"),
             alternate_shortcuts: &["Backspace"],
             input_schema: delete_schema,
-            params_doc: "{canvas: CanvasId, nodes?: [NodeId], edges?: [EdgeId]}; removes the edges, then the nodes with their remaining connections, as one undo step.",
+            params_doc: "{canvas: CanvasId, nodes?: [NodeId], edges?: [EdgeId], fields?: [FieldId]}; removes the edges, then the nodes with their remaining connections, then the fields (their remaining cards stay, unassigned), as one undo step.",
             enabled: enabled_delete,
             run: delete,
         },
@@ -251,4 +280,52 @@ mod tests {
         assert_eq!(s.document(), &before);
         assert!(!s.can_undo());
     }
+
+    #[test]
+    fn delete_removes_fields_keeping_surviving_cards_in_one_step() {
+        let mut s = session();
+        let (a, b) = (nodecraft_types::FieldId::from_bytes([20; 16]), nodecraft_types::FieldId::from_bytes([21; 16]));
+        for (field, nodes) in [(a, vec![id(1), id(2)]), (b, vec![id(3)])] {
+            let params = json!({"canvas": C, "field": {"id": field, "title": "F", "rect": {"pos": {"x": 0.0, "y": 0.0}, "width": 100.0, "height": 100.0}}, "nodes": nodes});
+            s.dispatch("field.create", &params).unwrap();
+        }
+        let before = s.document().clone();
+        // Node 2 goes with the fields; node 1 and 3 stay, out of any field.
+        let params = json!({"canvas": C, "nodes": [id(2)], "fields": [a, b, a]});
+        s.enabled("canvas.delete", &params).unwrap();
+        s.dispatch("canvas.delete", &params).unwrap();
+        let canvas = s.document().canvases().get(&C).unwrap();
+        assert!(canvas.fields().is_empty());
+        assert_eq!(canvas.nodes().keys().copied().collect::<Vec<_>>(), vec![id(1), id(3)]);
+        assert!(canvas.nodes().values().all(|n| n.field.is_none()));
+        s.dispatch("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.document(), &before);
+        // A field deleted with all its members needs no unassigning.
+        let params = json!({"canvas": C, "nodes": [id(3)], "fields": [b]});
+        s.dispatch("canvas.delete", &params).unwrap();
+        let canvas = s.document().canvases().get(&C).unwrap();
+        assert_eq!(canvas.fields().keys().copied().collect::<Vec<_>>(), vec![a]);
+        assert!(!canvas.nodes().contains_key(&id(3)));
+        s.dispatch("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.document(), &before);
+        // One unassign change over the limit refuses the delete with its own error.
+        let many: Vec<_> = (0..nodecraft_graph::MAX_CHANGES - 1)
+            .map(|n| {
+                let mut bytes = [0xEE; 16];
+                bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
+                EdgeId::from_bytes(bytes)
+            })
+            .collect();
+        let full = json!({"canvas": C, "edges": many, "nodes": [id(2)], "fields": [a]});
+        assert_eq!(s.dispatch("canvas.delete", &full).unwrap_err().message, "delete exceeds the operation limit");
+        // A missing field refuses the whole delete.
+        let missing = json!({"canvas": C, "nodes": [id(1)], "fields": [nodecraft_types::FieldId::from_bytes([99; 16])]});
+        assert!(s.enabled("canvas.delete", &missing).is_err());
+        assert!(s.dispatch("canvas.delete", &missing).is_err());
+        assert_eq!(s.document(), &before);
+    }
 }
+
+#[cfg(test)]
+#[path = "edge_cmds/ports638_tests.rs"]
+mod ports638_tests;

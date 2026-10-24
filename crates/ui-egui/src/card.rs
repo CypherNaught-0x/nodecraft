@@ -11,10 +11,19 @@ use nodecraft_nodes::NodeDescriptor;
 use nodecraft_types::{Integer, Number, ParamControl, Unsigned, Value};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
 };
 
+mod chips;
+pub(crate) mod generate;
+pub(crate) mod listed;
+pub(crate) mod mention;
+pub use generate::Roles;
+pub use listed::Listed;
+
 pub const BODY_MIN_ZOOM: f32 = 0.55;
+/// What a speech card with no sound yet shows where its sound will play (#875).
+pub const NO_SOUND: &str = "No sound yet";
 pub const MIN_TEXT_PX: f32 = 5.0;
 
 #[derive(Default)]
@@ -24,6 +33,10 @@ pub struct EditorState {
     sliders: BTreeMap<String, SliderDraft>,
     error: Option<(EditTarget, String)>,
     pub hidden_dirty: bool,
+    choices: HashSet<egui::Id>,
+    draft_limit: Option<usize>,
+    focus_request: Option<egui::Id>,
+    text_ids: BTreeMap<String, egui::Id>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum EditTarget {
@@ -44,8 +57,53 @@ struct Draft {
 pub enum Intent {
     Move(Position),
     Title(String),
-    Parameter { name: String, value: Option<Value> },
+    Parameter {
+        name: String,
+        value: Option<Value>,
+    },
+    Model,
     History(HistoryIntent),
+    /// Quote a run of this card and ask before starting it (#83).
+    Generate,
+    /// Record the answer a cancelled or failed run left on this text card (#504).
+    KeepPartial,
+    /// Let that answer go.
+    DiscardPartial,
+    /// Play, pause or scrub the card's video (#105); view state, not an edit.
+    Video(crate::video::VideoIntent),
+    /// Play, pause or seek the card's sound (#106); view state, not an edit.
+    Audio(crate::audio::AudioIntent),
+    /// Bring a plugin card to its plugin's current version (#173).
+    Migrate,
+    /// Make this many variations a run (#81).
+    Variations(u64),
+    /// Put this canvas's extra variations on cards beside their source, or in its history (#808).
+    VariationCards(bool),
+    /// Choose a folder whose files replace the ones this Folder card holds.
+    ImportFolder,
+}
+
+/// What a Folder card holds and gives: "12 of 40 images from Shoot".
+pub fn folder_summary(node: &Node) -> String {
+    use nodecraft_nodes::folder;
+    let (stored, selected) = match (folder::stored(node), folder::selected(node)) {
+        (Ok(stored), Ok(selected)) => (stored.len(), selected.len()),
+        (Err(error), _) | (_, Err(error)) => return error.message,
+    };
+    if stored == 0 {
+        return "Drop a folder here, or import one.".into();
+    }
+    let kind = match folder::modality(node) {
+        Ok(nodecraft_types::Modality::Image) => "images",
+        Ok(nodecraft_types::Modality::Video) => "videos",
+        Ok(nodecraft_types::Modality::Audio) => "sounds",
+        Ok(nodecraft_types::Modality::Mesh) => "3D models",
+        Ok(nodecraft_types::Modality::Document) => "PDFs",
+        _ => "files",
+    };
+    let name: String = folder::folder_name(node).chars().take(48).collect();
+    let from = if name.is_empty() { String::new() } else { format!(" from {name}") };
+    if selected == stored { format!("{stored} {kind}{from}") } else { format!("{selected} of {stored} {kind}{from}") }
 }
 pub struct CardResponse {
     pub response: egui::Response,
@@ -63,7 +121,9 @@ pub const PORT_HIT: f32 = 10.0;
 
 /// Automatic titles are derived view data, never written back during rendering.
 pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
-    let fallback = || descriptor.map_or("Unknown node", |d| d.label.as_str());
+    // A plugin card whose plugin is missing still knows what it was.
+    let lock = descriptor.is_none().then(|| nodecraft_engine::plugin_runtime::PluginLock::of(node)).flatten();
+    let fallback = || descriptor.map_or_else(|| lock.as_ref().map_or("Unknown node", |l| l.label.as_str()), |d| d.label.as_str());
     let text = if node.title.trim().is_empty() {
         ["prompt", "text"]
             .into_iter()
@@ -75,7 +135,7 @@ pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
     } else {
         &node.title
     };
-    let prefix: String = text.chars().take(256).collect();
+    let prefix = nodecraft_nodes::mention::display_start(text, 256);
     let line = prefix.lines().find(|line| !line.trim().is_empty()).unwrap_or_else(fallback).trim();
     let mut chars = line.chars();
     let mut clipped: String = chars.by_ref().take(64).collect();
@@ -85,22 +145,87 @@ pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
     clipped
 }
 
-pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
+/// Position-independent logical metrics, including the node's history strip.
+/// Never recover these by subtracting large coordinates.
+pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Vec2 {
     let count = descriptor.map_or(1, |d| d.params.params.len().min(12));
     let params = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
-    // The history strip sits under the parameters and is never squeezed out by them.
-    let height = params + history::rows(node) as f32 * t.control_row_height;
-    Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::new(t.card_width, height))
+    // The history strip sits under the parameters and is never squeezed out by them; an image
+    // or video or sound or 3D preview sits above them.
+    let shows = nodecraft_engine::split::image_of(node).is_some()
+        // A folder of images shows the images it gives.
+        || node.kind == nodecraft_nodes::folder::ID && nodecraft_engine::split::image_rows(node).1 > 0
+        || crate::video::video_of(node).is_some()
+        || crate::audio::audio_of(node).is_some()
+        || crate::mesh_view::mesh_of(node).is_some()
+        // A speech card always has room for its sound, so the card doesn't jump when a preview
+        // of the first one starts playing (#875).
+        || node.kind == nodecraft_nodes::generation::AUDIO_KIND;
+    let preview = if shows { t.card_preview_height } else { 0.0 };
+    // A text card always has room for its answer, so the card doesn't jump when one starts
+    // streaming in (#504).
+    let answer = if node.kind == nodecraft_nodes::generation::TEXT_KIND { t.card_preview_height } else { 0.0 };
+    let height = params + preview + answer + history::rows(node) as f32 * t.control_row_height;
+    Vec2::new(t.card_width, height)
+}
+pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
+    Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), world_size(node, descriptor, t))
 }
 
 pub struct CardView<'a> {
     pub descriptor: Option<&'a NodeDescriptor>,
+    /// Saved inputs or a checked, warning-free additive migration preview.
+    pub inputs: &'a [nodecraft_graph::Port],
     pub visible: Option<&'a BTreeSet<String>>,
+    /// Resolved editability; disabling retains field drafts.
+    pub enabled: Option<&'a BTreeSet<String>>,
     pub preview_pos: Option<Position>,
+    /// The node's images, when it has any (#386): one row per batch item of a fanned result
+    /// (#519), else one row; and how many images the result holds, shown or not.
+    pub images: (Vec<Vec<crate::preview::Preview>>, usize),
+    /// Rows and columns to draw over the image while a split is being picked (#337), with the
+    /// image's full size when known (so lines fall where the split will cut).
+    pub grid: Option<(u32, u32, Option<[u32; 2]>)>,
+    /// The parameters a generation card's composer draws itself (#83).
+    pub roles: Option<&'a Roles>,
+    /// The enabled parameters drawn from a run-time option list (#676), and the lists the
+    /// host has fetched.
+    pub listed: Option<&'a BTreeMap<String, Listed>>,
+    pub lists: Option<&'a nodecraft_types::OptionLists>,
+    /// A wire feeds the card's prompt port (#84).
+    pub prompt_wired: bool,
+    /// How many Elements go by each lowercased name, for the prompt's mention hint (#104).
+    pub elements: &'a std::collections::BTreeMap<String, usize>,
+    /// The cards on the canvas, for the prompt's `@` mentions (#505).
+    pub mentions: &'a [mention::Candidate],
+    /// Why the card's mentions block its run, when they do (#505).
+    pub mention_blocked: Option<&'a str>,
+    /// A text card's answer still arriving, or cut short (#504).
+    pub partial: Option<generate::Partial<'a>>,
+    /// The node's video and its player, when it has one (#105).
+    pub video: Option<crate::video::VideoView>,
+    /// The node's sound and its player, when it has one (#106).
+    pub audio: Option<crate::audio::AudioView>,
+    /// The node's 3D model, when it has one (#111).
+    pub mesh: Option<crate::mesh_view::CardMesh<'a>>,
+    /// A plugin card its plugin's current version would change (#173): another version's
+    /// ports, lock or settings.
+    pub outdated: bool,
+    /// Where the canvas puts extra variations, and whether this card pins a seed (#808).
+    pub variations: generate::Variations,
 }
 
+/// Positive distances outside the body, including the clipped title/UNSAVED notice and
+/// minimum screen-sized output handle. Called only with a validated canvas zoom.
+pub fn outer_insets(t: &Tokens, zoom: f32, output: bool) -> (f32, f32, f32, f32) {
+    let top = t.label_size.max(t.title_min_screen_px / zoom) + t.label_gap + t.control_gap;
+    let handle = if output { t.handle_radius.max(t.handle_min_screen_radius / zoom) + t.handle_stroke / (2.0 * zoom) } else { 0.0 };
+    // The handle is centered on the right edge. Conservatively include its vertical extent.
+    (0.0, top.max(handle), handle, handle)
+}
 pub fn cull_margin(t: &Tokens, zoom: f32) -> f32 {
-    ((t.label_size * zoom).max(t.title_min_screen_px) + (t.label_gap + t.control_gap) * zoom).max((t.handle_radius * zoom).max(t.handle_min_screen_radius))
+    let (_, top, right, bottom) = outer_insets(t, zoom, true);
+    top.max(right).max(bottom) * zoom
 }
 
 pub fn show(
@@ -112,7 +237,29 @@ pub fn show(
     selected: bool,
     t: &Tokens,
 ) -> Option<CardResponse> {
-    let CardView { descriptor, visible, preview_pos } = card;
+    let CardView {
+        descriptor,
+        inputs,
+        visible,
+        enabled,
+        preview_pos,
+        images,
+        grid,
+        roles,
+        listed: listed_params,
+        lists,
+        prompt_wired,
+        elements,
+        mentions,
+        mention_blocked,
+        partial,
+        video,
+        audio,
+        mesh,
+        outdated,
+        variations,
+    } = card;
+    let composer = descriptor.filter(|d| generate::has_composer(node, d));
     let origin = parent.max_rect().min;
     let mut rect = world_rect(node, descriptor, t);
     if let Some(pos) = preview_pos {
@@ -129,7 +276,7 @@ pub fn show(
     let transform = egui::emath::TSTransform::new(origin.to_vec2() + view.pan, view.zoom);
     parent.ctx().set_transform_layer(layer, transform);
     let label_rect = Rect::from_min_size(
-        rect.left_top() - Vec2::new(0.0, t.label_size.max(t.title_min_screen_px / view.zoom) + t.label_gap + t.control_gap),
+        rect.left_top() - Vec2::new(0.0, outer_insets(t, view.zoom, false).1),
         Vec2::new(rect.width(), t.label_size.max(t.title_min_screen_px / view.zoom) + t.control_gap),
     );
     let mut ui = parent.new_child(egui::UiBuilder::new().id_salt(("node", node.id)).layer_id(layer).max_rect(rect.union(label_rect)));
@@ -210,7 +357,12 @@ pub fn show(
             job.wrap = egui::text::TextWrapping { max_width: label_rect.width(), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
             let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
             ui.painter().with_clip_rect(label_rect.intersect(ui.clip_rect())).galley(label_rect.left_top(), galley, t.text_muted);
-            if r.double_clicked() || (r.has_focus() || response.has_focus()) && ui.input(|i| i.key_pressed(egui::Key::F2) || i.key_pressed(egui::Key::Enter)) {
+            // Enter on a focused generation card generates; elsewhere it renames, as F2 does.
+            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let focused = r.has_focus() || response.has_focus();
+            if composer.is_some() && focused && enter {
+                intents.push(Intent::Generate);
+            } else if r.double_clicked() || focused && (enter || ui.input(|i| i.key_pressed(egui::Key::F2))) {
                 editor.title = Some(Draft { original: node.title.clone(), text: node.title.clone(), focus: true, was_focused: false });
             }
             r.on_hover_text("Double-click or press F2 to rename. Clear the title to use the prompt.");
@@ -232,25 +384,144 @@ pub fn show(
                 intents.push(Intent::History(intent));
             }
         }
+        if !images.0.is_empty() {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            let area = area.shrink2(Vec2::new(0.0, t.control_gap));
+            match images.0.as_slice() {
+                [row] if row.len() == 1 && images.1 == 1 => {
+                    if let Some(image) = row.first() {
+                        show_image(&mut ui, area, image, grid, t);
+                    }
+                }
+                // Picking a split shows the image it cuts, with its grid.
+                rows if grid.is_some() => {
+                    if let Some(image) = rows.first().and_then(|row| row.first()) {
+                        show_image(&mut ui, area, image, grid, t);
+                    }
+                }
+                rows => gallery(&mut ui, area, rows, images.1, t),
+            }
+        } else if let Some(video) = &video {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            show_video(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), video, &mut intents, t);
+        } else if let Some(audio) = &audio {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            show_audio(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), audio, &mut intents, t);
+        } else if let Some(mesh) = mesh {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            crate::mesh_view::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), view.zoom, mesh, t);
+        } else if node.kind == nodecraft_nodes::generation::AUDIO_KIND {
+            // The room `world_size` keeps for the sound to come.
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            show_audio(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &crate::audio::AudioView::Unavailable(NO_SOUND), &mut intents, t);
+        }
+        if node.kind == nodecraft_nodes::generation::TEXT_KIND {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            inner = rest;
+            generate::answer(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), generate::answer_of(node), partial, &mut intents, t);
+        }
+        if let Some(d) = composer {
+            inner = generate::show(
+                &mut ui,
+                inner,
+                generate::Composer {
+                    node,
+                    wired: prompt_wired,
+                    descriptor: d,
+                    roles,
+                    visible,
+                    enabled,
+                    elements,
+                    mentions,
+                    blocked: mention_blocked,
+                    variations,
+                },
+                editor,
+                &mut intents,
+                t,
+            );
+        }
+        let own = |name: &str| composer.is_some() && (name == nodecraft_nodes::generation::PROMPT || roles.and_then(|r| r.count.as_deref()) == Some(name));
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
         egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height()).auto_shrink([false, false]).show(&mut body, |ui| {
             ui.set_width(inner.width());
+            // Another version's ports or settings may not fit this one's schema at all.
+            if outdated {
+                ui.label(egui::RichText::new("This card was made with another version of its plugin.").color(t.text_muted));
+                if ui.button("Update card").clicked() {
+                    intents.push(Intent::Migrate);
+                }
+            }
             match descriptor {
+                None if outdated => {}
+                None if let Some(lock) = nodecraft_engine::plugin_runtime::PluginLock::of(node) => {
+                    ui.label(missing_plugin(&lock));
+                }
                 None => {
                     ui.label("This node kind or its controls are unavailable. Check its schema and view cache budget.");
+                    if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, nodecraft_nodes::generation::MODEL)
+                        && ui.button("Choose supported model…").clicked()
+                    {
+                        intents.push(Intent::Model);
+                    }
                 }
                 Some(d) => {
+                    if node.kind == nodecraft_nodes::folder::ID {
+                        ui.label(folder_summary(node));
+                        let label =
+                            if nodecraft_nodes::folder::stored(node).is_ok_and(|files| files.is_empty()) { "Import folder…" } else { "Import again…" };
+                        if ui.button(label).on_hover_text("Choose a folder; its files replace the ones this card holds").clicked() {
+                            intents.push(Intent::ImportFolder);
+                        }
+                    }
                     for spec in &d.params.params {
-                        if !visible.is_some_and(|visible| visible.contains(&spec.name)) {
+                        if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
+                            continue;
+                        }
+                        // A workflow card's model is fixed: it runs the workflow it holds.
+                        if node.kind == nodecraft_nodes::comfy_workflow::ID && spec.name == nodecraft_nodes::comfy_workflow::MODEL {
                             continue;
                         }
                         ui.push_id(&spec.name, |ui| {
                             let label = ui.label(egui::RichText::new(&spec.label).color(t.text_muted));
                             let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };
                             let value = node.params.get(&spec.name).or(spec.default.as_ref());
-                            if let Some(value) = control(ui, &spec.control, value, &spec.name, editor, label.id, t) {
-                                intents.push(Intent::Parameter { name: spec.name.clone(), value });
+                            let editable = enabled.is_none_or(|names| names.contains(&spec.name));
+                            if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, &spec.name) {
+                                let current = match value {
+                                    Some(Value::Text(id)) => id.as_str(),
+                                    _ => "Unavailable saved model",
+                                };
+                                let preview: String = current.chars().take(t.preview_chars).collect();
+                                ui.label(&preview);
+                                if ui.add_enabled(editable, egui::Button::new("Change model…")).labelled_by(label.id).on_hover_text(&preview).clicked() {
+                                    intents.push(Intent::Model);
+                                }
+                            } else {
+                                let list = listed_params.and_then(|listed| listed.get(&spec.name));
+                                // A stored value of another type (a hand-edited project) keeps the
+                                // ordinary control, which shows it as it is.
+                                let text = value.is_none_or(|value| matches!(value, Value::Text(_)));
+                                let choices = list.filter(|_| text).and_then(|list| list.choices(lists));
+                                // A stored copy of the default (a new card stores its defaults) is not an override.
+                                let overridden = node.params.get(&spec.name).is_some_and(|stored| spec.default.as_ref() != Some(stored));
+                                let changed = match choices {
+                                    Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, overridden, label.id, t)).inner,
+                                    None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
+                                    None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
+                                };
+                                if let Some(hint) = list.filter(|_| text && choices.is_none()).and_then(Listed::hint) {
+                                    ui.label(egui::RichText::new(hint).color(t.text_muted).small());
+                                }
+                                if editable && let Some(value) = changed {
+                                    intents.push(Intent::Parameter { name: spec.name.clone(), value });
+                                }
                             }
                             ui.add_space(t.control_gap);
                         });
@@ -268,13 +539,18 @@ pub fn show(
     }
     let mut ports = Vec::new();
     let hit = PORT_HIT / view.zoom;
-    for (index, port) in node.inputs.iter().enumerate() {
-        let c = noodle::anchor(rect, Side::Input, index, node.inputs.len());
+    for (index, port) in inputs.iter().enumerate() {
+        let c = noodle::anchor(rect, Side::Input, index, inputs.len());
         let radius = t.port_radius.max(t.port_min_radius / view.zoom);
         ui.painter().circle(c, radius, t.card_fill, Stroke::new(t.port_stroke / view.zoom, t.wire(port.port_type.modality)));
         let r = ui.interact(Rect::from_center_size(c, Vec2::splat(radius + hit) * 2.0), ui.id().with(("in", &port.name)), Sense::drag());
         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} input", port.name)));
-        ports.push((Side::Input, port.name.clone(), r.on_hover_text(&port.name)));
+        let hint = if node.inputs.iter().any(|saved| saved == port) {
+            port.name.clone()
+        } else {
+            format!("{}: connect to add the new inputs to this older card. Undo restores its saved inputs.", port.name)
+        };
+        ports.push((Side::Input, port.name.clone(), r.on_hover_text(hint)));
     }
     let radius = t.handle_radius.max(t.handle_min_screen_radius / view.zoom);
     for (index, port) in node.outputs.iter().enumerate() {
@@ -291,6 +567,246 @@ pub fn show(
     Some(CardResponse { response, intents, ports })
 }
 
+/// Several images in `area`, a row each (one per batch item, #519), every tile the same size;
+/// a note says how many more the result holds than fit.
+fn gallery(ui: &mut egui::Ui, area: Rect, rows: &[Vec<crate::preview::Preview>], count: usize, t: &Tokens) {
+    let shown: usize = rows.iter().map(Vec::len).sum();
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    let gap = t.control_gap;
+    // Bounded by the gallery's row and column caps, so the casts are exact.
+    let tile = Vec2::new(
+        ((area.width() - gap * (columns - 1) as f32) / columns as f32).max(1.0),
+        ((area.height() - gap * (rows.len().max(1) - 1) as f32) / rows.len().max(1) as f32).max(1.0),
+    );
+    for (r, row) in rows.iter().enumerate() {
+        for (c, image) in row.iter().enumerate() {
+            let min = area.min + Vec2::new(c as f32 * (tile.x + gap), r as f32 * (tile.y + gap));
+            show_image_with(ui, Rect::from_min_size(min, tile), image, None, (r, c), t);
+        }
+    }
+    if count > shown {
+        let more = format!("+{} more", count - shown);
+        let at = area.right_bottom() - Vec2::splat(gap);
+        let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
+        let text = painter.layout_no_wrap(more.clone(), FontId::proportional(t.label_size), t.text);
+        let backdrop = egui::Align2::RIGHT_BOTTOM.anchor_size(at, text.size()).expand(gap / 2.0);
+        painter.rect_filled(backdrop, t.card_radius, t.card_fill);
+        painter.galley(backdrop.min + Vec2::splat(gap / 2.0), text, t.text);
+        let response = ui.interact(backdrop, ui.id().with("gallery_more"), Sense::hover());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{} more images", count - shown)));
+    }
+}
+
+/// An image preview fitted in `area`, keeping its aspect; or a placeholder saying why not.
+pub(crate) fn show_image(ui: &mut egui::Ui, area: Rect, image: &crate::preview::Preview, grid: Option<(u32, u32, Option<[u32; 2]>)>, t: &Tokens) {
+    show_image_with(ui, area, image, grid, (0, 0), t);
+}
+
+/// [`show_image`] for one of several images on a card, told apart by `tile` (row, column).
+fn show_image_with(
+    ui: &mut egui::Ui,
+    area: Rect,
+    image: &crate::preview::Preview,
+    grid: Option<(u32, u32, Option<[u32; 2]>)>,
+    tile: (usize, usize),
+    t: &Tokens,
+) {
+    use crate::preview::Preview;
+    let response = ui.interact(area, ui.id().with("image").with(tile), Sense::hover());
+    let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
+    match image {
+        Preview::Ready { texture, size, source_size } => {
+            let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
+            let scale = (area.width() / w).min(area.height() / h);
+            let fitted = Rect::from_center_size(area.center(), Vec2::new(w * scale, h * scale));
+            painter.image(*texture, fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
+            if let Some((rows, columns, full)) = grid {
+                draw_grid(&painter, fitted, rows, columns, full.unwrap_or(*source_size), t);
+                let label = format!("Image {}×{}, split preview {rows} rows by {columns} columns", source_size[0], source_size[1]);
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label.clone()));
+            } else {
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("Image {}×{}", source_size[0], source_size[1])));
+            }
+        }
+        Preview::Pending | Preview::Unavailable(_) => {
+            painter.rect_filled(area, t.card_radius, t.canvas_bg);
+            let text = match image {
+                Preview::Unavailable(why) => *why,
+                _ => "Loading preview…",
+            };
+            painter.text(area.center(), egui::Align2::CENTER_CENTER, text, FontId::proportional(t.body_size), t.text_muted);
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, text));
+        }
+    }
+}
+
+/// A card's video (#105): the frame fitted to `area` above a row with play/pause, a scrubber and
+/// the time. Without a frame, why not.
+fn show_video(ui: &mut egui::Ui, area: Rect, video: &crate::video::VideoView, intents: &mut Vec<Intent>, t: &Tokens) {
+    use crate::video::{VideoIntent, VideoView, clock};
+    let button = ui.spacing().interact_size.y;
+    let (picture, controls) = area.split_top_bottom_at_y(area.bottom() - button - t.control_gap);
+    let response = ui.interact(picture, ui.id().with("video"), Sense::hover());
+    let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
+    painter.rect_filled(picture, t.card_radius, t.canvas_bg);
+    let VideoView::Frame { texture, size, position_us, duration_us, playing } = video else {
+        let text = match video {
+            VideoView::Unavailable(why) => *why,
+            _ => "Loading video…",
+        };
+        let galley = painter.layout(text.to_owned(), FontId::proportional(t.body_size), t.text_muted, picture.width() - 2.0 * t.card_padding);
+        painter.galley(picture.center() - galley.size() / 2.0, galley, t.text_muted);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, text));
+        return;
+    };
+    let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
+    let scale = (picture.width() / w).min(picture.height() / h);
+    let fitted = Rect::from_center_size(picture.center(), Vec2::new(w * scale, h * scale));
+    painter.image(*texture, fitted, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), egui::Color32::WHITE);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("Video, {}", clock(*duration_us))));
+    let mut row = ui.new_child(egui::UiBuilder::new().id_salt("video_controls").max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    row.set_clip_rect(controls.intersect(ui.clip_rect()));
+    let name = if *playing { "Pause video" } else { "Play video" };
+    if play_button(&mut row, *playing, name, button).clicked() {
+        intents.push(Intent::Video(VideoIntent::Toggle));
+    }
+    let time = format!("{} / {}", clock(*position_us), clock(*duration_us));
+    let time_width = row.fonts_mut(|f| f.layout_no_wrap(time.clone(), FontId::proportional(t.body_size), t.text_muted).size().x);
+    row.spacing_mut().slider_width = (row.available_width() - time_width - 2.0 * row.spacing().item_spacing.x).max(t.control_row_height);
+    let mut seconds = *position_us as f64 / 1_000_000.0;
+    let end = *duration_us as f64 / 1_000_000.0;
+    let slider = row.add(egui::Slider::new(&mut seconds, 0.0..=end).show_value(false));
+    slider.widget_info(|| egui::WidgetInfo::slider(true, seconds, "Video position"));
+    if slider.changed() && seconds.is_finite() {
+        intents.push(Intent::Video(VideoIntent::Seek((seconds.max(0.0) * 1_000_000.0).min(u64::MAX as f64) as u64)));
+    }
+    row.label(egui::RichText::new(time).color(t.text_muted));
+}
+
+/// A square play or pause button `size` across, named `name`.
+fn play_button(row: &mut egui::Ui, playing: bool, name: &str, size: f32) -> egui::Response {
+    let (square, toggle) = row.allocate_exact_size(Vec2::splat(size), Sense::click());
+    toggle.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    // Drawn, not a glyph: the default fonts have no pause sign.
+    let style = row.style().interact(&toggle);
+    row.painter().rect(square, style.corner_radius, style.weak_bg_fill, style.bg_stroke, StrokeKind::Inside);
+    let icon = Rect::from_center_size(square.center(), Vec2::splat(size * 0.4));
+    if playing {
+        let bar = Vec2::new(icon.width() / 3.0, icon.height());
+        row.painter().rect_filled(Rect::from_min_size(icon.left_top(), bar), 0.0, style.fg_stroke.color);
+        row.painter().rect_filled(Rect::from_min_size(icon.right_top() - Vec2::new(bar.x, 0.0), bar), 0.0, style.fg_stroke.color);
+    } else {
+        let points = vec![icon.left_top(), Pos2::new(icon.right(), icon.center().y), icon.left_bottom()];
+        row.painter().add(egui::Shape::convex_polygon(points, style.fg_stroke.color, Stroke::NONE));
+    }
+    toggle.on_hover_text(name.to_owned())
+}
+
+/// A card's sound (#106): its waveform over `area`, which a click or a drag seeks, above a row
+/// with play/pause and the time. Without the sound, why not.
+fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, intents: &mut Vec<Intent>, t: &Tokens) {
+    use crate::audio::{AudioIntent, AudioView, time_at};
+    use crate::video::clock;
+    let button = ui.spacing().interact_size.y;
+    let (wave, controls) = area.split_top_bottom_at_y(area.bottom() - button - t.control_gap);
+    let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
+    painter.rect_filled(wave, t.card_radius, t.canvas_bg);
+    let AudioView::Sound { peaks, position_us, duration_us, playing, notice } = audio else {
+        let text = match audio {
+            AudioView::Unavailable(why) => *why,
+            _ => "Loading sound…",
+        };
+        let response = ui.interact(wave, ui.id().with("audio"), Sense::hover());
+        let galley = painter.layout(text.to_owned(), FontId::proportional(t.body_size), t.text_muted, wave.width() - 2.0 * t.card_padding);
+        painter.galley(wave.center() - galley.size() / 2.0, galley, t.text_muted);
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+        return;
+    };
+    let (position, duration) = (*position_us, *duration_us);
+    let bars = wave.shrink2(Vec2::new(t.card_padding, t.control_gap));
+    let response = ui.interact(wave, ui.id().with("audio"), Sense::click_and_drag());
+    let seconds = position as f64 / 1_000_000.0;
+    response.widget_info(|| egui::WidgetInfo::slider(true, seconds, format!("Sound, {}", clock(duration))));
+    let moved = response.clicked() || response.drag_started() || (response.dragged() && response.drag_delta().x != 0.0);
+    if let Some(at) = response.interact_pointer_pos().filter(|_| moved) {
+        let target = time_at(at.x, bars.left(), bars.width(), duration);
+        let intent = if response.clicked() { AudioIntent::Seek(target) } else { AudioIntent::PreviewSeek(target) };
+        intents.push(Intent::Audio(intent));
+    }
+    if response.drag_stopped() {
+        intents.push(Intent::Audio(AudioIntent::FinishSeek));
+    }
+    let along = if duration == 0 { 0.0 } else { (position as f64 / duration as f64).clamp(0.0, 1.0) as f32 };
+    let playhead = bars.left() + bars.width() * along;
+    match peaks {
+        Some(peaks) if !peaks.is_empty() => {
+            // A bar and a gap every three points, each the loudest of the slices under it.
+            let count = ((bars.width() / 3.0).floor() as usize).max(1);
+            let width = bars.width() / count as f32;
+            for i in 0..count {
+                let from = i * peaks.len() / count;
+                let to = ((i + 1) * peaks.len() / count).max(from + 1);
+                let peak = peaks.get(from..to.min(peaks.len())).and_then(|s| s.iter().max()).copied().unwrap_or(0);
+                let height = (f32::from(peak) / 255.0 * bars.height()).max(1.0);
+                let x = bars.left() + width * i as f32;
+                let bar = Rect::from_center_size(Pos2::new(x + width / 2.0, bars.center().y), Vec2::new((width - 1.0).max(1.0), height));
+                painter.rect_filled(bar, 0.0, if bar.center().x <= playhead { t.wire_audio } else { t.waveform });
+            }
+        }
+        _ => {
+            painter.hline(bars.x_range(), bars.center().y, Stroke::new(1.0, t.waveform));
+        }
+    }
+    painter.vline(playhead, bars.y_range(), Stroke::new(1.5, t.text));
+    let mut row = ui.new_child(egui::UiBuilder::new().id_salt("audio_controls").max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    row.set_clip_rect(controls.intersect(ui.clip_rect()));
+    let name = if *playing { "Pause sound" } else { "Play sound" };
+    if play_button(&mut row, *playing, name, button).clicked() {
+        intents.push(Intent::Audio(AudioIntent::Toggle));
+    }
+    let time = format!("{} / {}", clock(position), clock(duration));
+    match notice {
+        Some(why) => {
+            row.add(egui::Label::new(egui::RichText::new(*why).color(t.danger)).truncate()).on_hover_text(time);
+        }
+        None => {
+            row.label(egui::RichText::new(time).color(t.text_muted));
+        }
+    }
+}
+
+/// What a plugin card whose plugin isn't here says it needs.
+fn missing_plugin(lock: &nodecraft_engine::plugin_runtime::PluginLock) -> String {
+    if cfg!(target_arch = "wasm32") {
+        format!("This card runs {} {}, and plugins can't run in the browser yet. Its settings and connections are kept.", lock.package, lock.version)
+    } else {
+        format!("This card needs {} {}. Install, grant and enable it to run the card; its settings and connections are kept.", lock.package, lock.version)
+    }
+}
+
+/// Where the split's cuts fall on `fitted`, the image drawn on screen: the same edges
+/// `split_grid` cuts at, scaled from the image's `full` size.
+pub fn grid_lines(fitted: Rect, rows: u32, columns: u32, full: [u32; 2]) -> (Vec<f32>, Vec<f32>) {
+    let at = |length: u32, count: u32, index: u32, start: f32, span: f32| {
+        start + span * nodecraft_engine::split::edge(length, count, index) as f32 / length.max(1) as f32
+    };
+    let xs = (1..columns).map(|i| at(full[0], columns, i, fitted.left(), fitted.width())).collect();
+    let ys = (1..rows).map(|i| at(full[1], rows, i, fitted.top(), fitted.height())).collect();
+    (xs, ys)
+}
+
+fn draw_grid(painter: &egui::Painter, fitted: Rect, rows: u32, columns: u32, full: [u32; 2], t: &Tokens) {
+    let (xs, ys) = grid_lines(fitted, rows, columns, full);
+    let stroke = Stroke::new(t.port_stroke, t.accent);
+    for x in xs {
+        painter.line_segment([Pos2::new(x, fitted.top()), Pos2::new(x, fitted.bottom())], stroke);
+    }
+    for y in ys {
+        painter.line_segment([Pos2::new(fitted.left(), y), Pos2::new(fitted.right(), y)], stroke);
+    }
+    painter.rect_stroke(fitted, 0.0, stroke, StrokeKind::Inside);
+}
+
 fn control(
     ui: &mut egui::Ui,
     control: &ParamControl,
@@ -299,6 +815,21 @@ fn control(
     editor: &mut EditorState,
     label: egui::Id,
     t: &Tokens,
+) -> Option<Option<Value>> {
+    control_with_mode(ui, control, value, name, editor, label, t, false)
+}
+
+/// Bulk Mixed numeric values have no meaningful slider position: enter an exact value instead.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn control_with_mode(
+    ui: &mut egui::Ui,
+    control: &ParamControl,
+    value: Option<&Value>,
+    name: &str,
+    editor: &mut EditorState,
+    label: egui::Id,
+    t: &Tokens,
+    numeric_text: bool,
 ) -> Option<Option<Value>> {
     match control {
         ParamControl::Toggle => {
@@ -316,7 +847,7 @@ fn control(
                 _ => "",
             };
             let mut selected = current.to_owned();
-            egui::ComboBox::from_id_salt("choice")
+            let response = egui::ComboBox::from_id_salt("choice")
                 .selected_text(options.iter().find(|o| o.value == current).map_or("Choose…", |o| o.label.as_str()))
                 .show_ui(ui, |ui| {
                     for option in options {
@@ -325,11 +856,14 @@ fn control(
                 })
                 .response
                 .labelled_by(label);
+            if editor.draft_limit.is_some() {
+                editor.choices.insert(response.id);
+            }
             if selected != current {
                 return Some(Some(Value::Text(selected)));
             }
         }
-        ParamControl::Slider { min: Some(min), max: Some(max), step } => {
+        ParamControl::Slider { min: Some(min), max: Some(max), step } if !numeric_text => {
             let original = match value {
                 Some(Value::Number(n)) => n.get(),
                 _ => min.get(),
@@ -337,13 +871,19 @@ fn control(
             if editor.sliders.get(name).is_some_and(|draft| draft.original != original) {
                 editor.sliders.remove(name);
             }
+            let dragging = editor.sliders.contains_key(name);
             let mut number = editor.sliders.get(name).map_or(original, |draft| draft.value);
             let r = ui.add(egui::Slider::new(&mut number, min.get()..=max.get()).step_by(step.get()).update_while_editing(false)).labelled_by(label);
             if r.dragged() {
                 editor.sliders.insert(name.to_owned(), SliderDraft { original, value: number });
             } else if r.changed() || r.drag_stopped() {
                 editor.sliders.remove(name);
-                if number != original
+                // Only a drag or typing (committed with Enter, which ends the focus) sets a value: the slider snapping a stored value to its
+                // step moves it by a rounding error, and must not edit the document.
+                let by_user = (r.drag_stopped() && dragging) || (r.changed() && (r.has_focus() || r.lost_focus()));
+                let moved = (number - original).abs() > (max.get() - min.get()).abs() * 1e-9;
+                if by_user
+                    && moved
                     && let Ok(n) = Number::new(number)
                 {
                     return Some(Some(Value::Number(n)));
@@ -352,7 +892,11 @@ fn control(
         }
         ParamControl::Asset { modality } => {
             ui.label(match value {
-                Some(Value::Media(asset)) => format!("{} asset", asset.mime.essence()),
+                Some(Value::Media(asset)) => match asset.meta.page_count {
+                    Some(1) if *modality == nodecraft_types::Modality::Document => "PDF, 1 page".to_owned(),
+                    Some(pages) if *modality == nodecraft_types::Modality::Document => format!("PDF, {pages} pages"),
+                    _ => format!("{} asset", asset.mime.essence()),
+                },
                 _ => format!(
                     "No {} selected",
                     match modality {
@@ -362,6 +906,7 @@ fn control(
                         nodecraft_types::Modality::Audio => "audio",
                         nodecraft_types::Modality::Mesh => "3D asset",
                         nodecraft_types::Modality::Document => "document",
+                        nodecraft_types::Modality::Style => "style",
                     }
                 ),
             });
@@ -378,8 +923,14 @@ fn control(
                 _ => Cow::Borrowed(""),
             };
             if !editor.text.contains_key(name) {
-                let mut preview: String = original.chars().take(t.preview_chars).collect();
-                if original.len() > preview.len() {
+                // A prompt's `@` mentions read as `@Title` until it is edited (#505).
+                let mut preview: String = if name == nodecraft_nodes::generation::PROMPT {
+                    nodecraft_nodes::mention::display_start(&original, t.preview_chars.saturating_add(1))
+                } else {
+                    original.chars().take(t.preview_chars.saturating_add(1)).collect()
+                };
+                if preview.chars().count() > t.preview_chars {
+                    preview = preview.chars().take(t.preview_chars).collect();
                     preview.push('…');
                 }
                 let response = ui
@@ -403,6 +954,11 @@ fn control(
                 }
                 return None;
             }
+            let remaining_draft_chars = editor.draft_limit.map(|limit| {
+                let others =
+                    editor.text.iter().filter(|(field, _)| field.as_str() != name).map(|(_, draft)| draft.text.len()).fold(0usize, usize::saturating_add);
+                limit.saturating_sub(others) / 4
+            });
             let draft = editor.text.get_mut(name)?;
             if draft.original != original && draft.text == draft.original {
                 *draft = Draft { original: original.to_string(), text: original.to_string(), focus: false, was_focused: false };
@@ -418,11 +974,29 @@ fn control(
                 ParamControl::Color => 9,
                 _ => 512,
             };
+            let char_limit = remaining_draft_chars.map_or(max, |limit| max.min(limit));
+            // A prompt's `@` mentions are chips while it is edited (#579).
+            let chips = multiline && name == nodecraft_nodes::generation::PROMPT;
+            let old = (chips && draft.text.contains("@[")).then(|| draft.text.clone());
+            let before = old.as_ref().and_then(|_| {
+                egui::TextEdit::load_state(ui.ctx(), ui.make_persistent_id(egui::IdSalt::new("value"))).and_then(|state| state.cursor.char_range())
+            });
+            let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap: f32| chips::layout(ui, text.as_str(), wrap, t);
             let widget =
                 if multiline { egui::TextEdit::multiline(&mut draft.text).desired_rows(t.text_rows) } else { egui::TextEdit::singleline(&mut draft.text) };
-            let r = ui.add(widget.id_salt("value").desired_width(f32::INFINITY).char_limit(max)).labelled_by(label);
+            let widget = if chips { widget.layouter(&mut layouter) } else { widget };
+            let r = ui.add(widget.id_salt("value").desired_width(f32::INFINITY).char_limit(char_limit)).labelled_by(label);
+            if let Some(old) = old {
+                chips::settle(ui, r.id, &old, &mut draft.text, before);
+            }
+            if editor.draft_limit.is_some() {
+                editor.text_ids.insert(name.to_owned(), r.id);
+            }
             if draft.focus {
                 r.request_focus();
+                if editor.draft_limit.is_some() {
+                    editor.focus_request = Some(r.id);
+                }
                 draft.focus = false;
             }
             let owned_focus = r.has_focus() || r.lost_focus() || draft.was_focused;
@@ -463,6 +1037,40 @@ fn control(
 }
 
 impl EditorState {
+    pub(crate) fn field_owns_focus(&self, name: &str, id: egui::Id) -> bool {
+        self.text_ids.get(name) == Some(&id)
+    }
+    pub(crate) fn owns_text_focus(&self, ctx: &egui::Context) -> bool {
+        ctx.memory(|memory| memory.focused()).is_some_and(|id| self.text_ids.values().any(|field| *field == id))
+    }
+    pub(crate) fn take_focus_request(&mut self) -> Option<egui::Id> {
+        self.focus_request.take()
+    }
+    pub(crate) fn set_draft_limit(&mut self, limit: usize) {
+        self.draft_limit = Some(limit);
+    }
+    pub(crate) fn owns_popup(&self, ctx: &egui::Context) -> bool {
+        self.choices.iter().any(|id| egui::ComboBox::is_open(ctx, *id))
+    }
+    pub(crate) fn begin_empty(&mut self, name: &str) {
+        self.text.insert(name.to_owned(), Draft { original: String::new(), text: String::new(), focus: true, was_focused: false });
+    }
+    /// The slider being dragged on this card, and the value it is at (#88): shown as a preview
+    /// until it is released and recorded.
+    pub(crate) fn dragging(&self) -> Option<(&str, f64)> {
+        self.sliders.iter().next().map(|(name, draft)| (name.as_str(), draft.value))
+    }
+    pub(crate) fn error(&self) -> Option<&str> {
+        self.error.as_ref().map(|(_, message)| message.as_str())
+    }
+    /// Drafts remain recoverable view state while a model preview is open. Applying a model
+    /// cannot silently discard them or copy them into a semantically different parameter.
+    pub(crate) fn has_uncommitted(&self) -> bool {
+        self.title.as_ref().is_some_and(|draft| draft.text != draft.original)
+            || self.text.values().any(|draft| draft.text != draft.original)
+            || !self.sliders.is_empty()
+    }
+
     fn hide_fields(&mut self, visible: Option<&BTreeSet<String>>) {
         if self.text.iter().any(|(name, draft)| !visible.is_some_and(|fields| fields.contains(name)) && draft.text != draft.original) {
             self.hidden_dirty = true;
@@ -505,8 +1113,24 @@ impl EditorState {
 }
 
 #[cfg(test)]
+mod audio_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_lines_fall_where_the_split_cuts() {
+        let fitted = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(100.0, 70.0));
+        // A 10×7 image split 2 rows × 3 columns cuts at x = 3, 6 and y = 3 (as split_grid does).
+        let (xs, ys) = grid_lines(fitted, 2, 3, [10, 7]);
+        assert_eq!(xs, [40.0, 70.0]);
+        assert_eq!(ys, [50.0]);
+        let (none_x, none_y) = grid_lines(fitted, 1, 1, [10, 7]);
+        assert!(none_x.is_empty() && none_y.is_empty(), "1×1 has no cuts");
+        let (zero_x, _) = grid_lines(fitted, 1, 2, [0, 0]);
+        assert!(zero_x.iter().all(|x| x.is_finite()), "a zero-size image never divides by zero");
+    }
     #[test]
     fn text_sizes_are_whole_points_and_vanish_when_tiny() {
         assert_eq!(text_px(13.0, 1.07), Some(14.0));
@@ -520,5 +1144,21 @@ mod tests {
         assert_eq!(title(&node, None), format!("{}…", "é".repeat(64)));
         node.title = "My title".into();
         assert_eq!(title(&node, None), "My title");
+    }
+}
+
+#[cfg(test)]
+mod layout_metrics_tests {
+    use super::*;
+    #[test]
+    fn minimum_zoom_outer_metrics_cover_painted_handle_stroke_and_clipped_notice() {
+        let t = &crate::theme::DARK;
+        let zoom = crate::canvas::MIN_ZOOM;
+        let (_, top, right, bottom) = outer_insets(t, zoom, true);
+        let painted = t.handle_radius.max(t.handle_min_screen_radius / zoom) + t.handle_stroke / (2.0 * zoom);
+        assert_eq!(right, painted);
+        assert_eq!(bottom, painted);
+        assert!(top >= t.label_size.max(t.title_min_screen_px / zoom) + t.label_gap + t.control_gap);
+        assert!(cull_margin(t, zoom) >= painted * zoom);
     }
 }

@@ -107,6 +107,7 @@ pub fn modality_phrase(modality: nodecraft_types::Modality) -> &'static str {
         Modality::Audio => "an audio",
         Modality::Mesh => "a 3D",
         Modality::Document => "a document",
+        Modality::Style => "a style",
     }
 }
 

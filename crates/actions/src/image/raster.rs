@@ -72,7 +72,7 @@ thread_local! {static ALLOCATIONS:std::cell::Cell<usize>=const{std::cell::Cell::
 pub(super) fn allocations() -> usize {
     ALLOCATIONS.get()
 }
-pub(super) fn buffer(bytes: usize) -> Result<Vec<u8>, ImageError> {
+pub(crate) fn buffer(bytes: usize) -> Result<Vec<u8>, ImageError> {
     #[cfg(test)]
     ALLOCATIONS.set(ALLOCATIONS.get() + 1);
     let mut out = Vec::new();

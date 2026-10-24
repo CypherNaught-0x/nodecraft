@@ -5,7 +5,11 @@
 //! - `params.workflow`: the API-format workflow (the Workflow node's mapped graph);
 //! - `params.values`: `{"<node>.<input>": value}` overrides, checked against `/object_info`;
 //! - media inputs whose role is `<node>.<input>` (an upload input such as `LoadImage.image`):
-//!   uploaded under a content-hash name, then set to the stored name.
+//!   uploaded under a content-hash name with the extension the loader lists, then set to the
+//!   stored name. A file the loader can't read (a sound for an image loader) is refused first.
+//!
+//! A catalog model's job carries no workflow: [`template`] builds it from the model's
+//! `provider_model` and the card's prompt, image and parameters.
 //!
 //! **Submitting once.** The prompt id is derived from a per-install salt and the job's
 //! idempotency key, so different installs (and sessions using fresh run ids) never share ids. A
@@ -16,23 +20,35 @@
 //!
 //! **Outputs** are the `output`-type files of the finished prompt, downloaded with the server's
 //! auth, capped per file and in total, and sniffed; preview-only workflows fail with a clear
-//! message. Live progress over the WebSocket is not wired yet: polling reports queue position and
-//! completion.
+//! message.
+//!
+//! **Progress.** Polling reports queue position and completion. With [`progress::Feeds`] set
+//! ([`ComfyProvider::with_progress`]), the server's WebSocket is opened before a prompt is queued
+//! and a running prompt also reports how far it is and which node runs ([`progress`]).
 
+use std::hash::BuildHasher;
 use std::sync::{Arc, Mutex, PoisonError};
+
+pub mod progress;
+pub(crate) mod template;
+pub(crate) mod upload;
 
 use serde_json::{Map, Value};
 
-use nodecraft_comfy::{self as comfy, ApiWorkflow, ComfyError, FileRef, HistoryEntry, InputKind, NodeCatalog, PromptRequest, QueueState, Server, UploadKind};
+use nodecraft_comfy::{
+    self as comfy, ApiWorkflow, ComfyError, FileRef, HistoryEntry, InputKind, NodeCatalog, PromptRequest, QueueState, Server, SystemStats, UploadKind,
+};
 
 use crate::http::{Http, HttpMethod, HttpRequest, HttpResponse};
 use crate::provider::{BoxFuture, Completed, JobHandle, JobInput, JobProgress, Output, Provider, ProviderJob, Submission};
 use crate::{ErrorKind, ProviderError};
 
-/// Cap on one downloaded output file.
-pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 512 * 1024 * 1024;
+/// Cap on one downloaded output file. A run keeps at most 256 MiB of results in all (the
+/// engine's `MAX_INLINE_OUTPUT_BYTES`), so a longer video is refused before it is fetched,
+/// not after (#110).
+pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 /// Cap on all output files of one prompt together.
-pub const DEFAULT_MAX_TOTAL_OUTPUT_BYTES: usize = 2 * 1024 * 1024 * 1024;
+pub const DEFAULT_MAX_TOTAL_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 /// Cap on output files of one prompt.
 pub const MAX_OUTPUT_FILES: usize = 512;
 /// How long a fetched `/object_info` is reused before fetching it again.
@@ -43,6 +59,8 @@ const MAX_ATTEMPT_IDS: u32 = 16;
 const DOWNLOAD_TIMEOUT_MS: u64 = 10 * 60 * 1000;
 /// `/queue` lists every pending prompt's workflow; on a busy server it is large.
 const MAX_QUEUE_BYTES: usize = 64 * 1024 * 1024;
+/// `/system_stats` is a few lines per device.
+const MAX_STATS_BYTES: usize = 4 * 1024 * 1024;
 
 /// A ComfyUI server as a provider.
 pub struct ComfyProvider {
@@ -56,6 +74,7 @@ pub struct ComfyProvider {
     max_total_output_bytes: usize,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
     catalog: Mutex<Option<(u64, Arc<NodeCatalog>)>>,
+    live: Option<progress::Live>,
 }
 
 impl std::fmt::Debug for ComfyProvider {
@@ -78,7 +97,7 @@ fn comfy_error(e: ComfyError) -> ProviderError {
     ProviderError::new(kind, e.to_string())
 }
 
-fn uuid_from(seed: &str) -> String {
+pub(crate) fn uuid_from(seed: &str) -> String {
     let h = nodecraft_media::ContentHash::of(seed.as_bytes()).0;
     let hex: String = h.iter().take(16).map(|b| format!("{b:02x}")).collect();
     let part = |a: usize, b: usize| hex.get(a..b).unwrap_or_default().to_owned();
@@ -117,7 +136,10 @@ impl ComfyProvider {
         if let Some((name, value)) = &auth {
             server = server.with_auth_header(name, value).map_err(comfy_error)?;
         }
-        let client_id = format!("nodecraft-{}", uuid_from(&format!("{install_salt}\u{0}client")));
+        // Random per provider: the server keeps one socket per client id, so two processes (the
+        // app and the CLI) sharing one would take each other's progress.
+        let session = std::collections::hash_map::RandomState::new().hash_one(install_salt);
+        let client_id = format!("nodecraft-{}-{session:016x}", uuid_from(&format!("{install_salt}\u{0}client")));
         Ok(Self {
             server,
             auth_name: auth.map(|(name, _)| name.to_ascii_lowercase()),
@@ -128,6 +150,7 @@ impl ComfyProvider {
             max_total_output_bytes: DEFAULT_MAX_TOTAL_OUTPUT_BYTES,
             now_ms,
             catalog: Mutex::new(None),
+            live: None,
         })
     }
 
@@ -135,6 +158,19 @@ impl ComfyProvider {
         self.max_output_bytes = per_file;
         self.max_total_output_bytes = total;
         self
+    }
+
+    /// Reports a running prompt's progress from the server's WebSocket, opened with `feeds`.
+    pub fn with_progress(mut self, feeds: Arc<dyn progress::Feeds>) -> Self {
+        self.live = Some(progress::Live::new(feeds));
+        self
+    }
+
+    /// Opens the progress socket if there is none. Best effort: a failure only means no fraction.
+    async fn connect_progress(&self) {
+        let Some(live) = &self.live else { return };
+        let Ok(url) = self.server.websocket_url(&self.client_id) else { return };
+        live.connect(url.to_string(), self.server.websocket_headers(), (self.now_ms)()).await;
     }
 
     /// Sends a comfy-crate request. Its headers are sent as given, the auth header as a secret.
@@ -200,11 +236,41 @@ impl ComfyProvider {
             let stale = matches!(e, ComfyError::MissingNodes(_) | ComfyError::InvalidInput { .. } | ComfyError::InvalidWorkflow(_));
             (comfy_error(e), stale)
         };
-        let raw = job.params.get("workflow").ok_or_else(|| plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job has no ComfyUI workflow")))?;
-        let bytes = serde_json::to_vec(raw).map_err(|e| plain(ProviderError::new(ErrorKind::UnsupportedInput, e.to_string())))?;
-        let mut workflow = ApiWorkflow::parse(&bytes, Some(catalog)).map_err(from_catalog)?;
+        // A catalog card names a built-in workflow instead of carrying one.
+        let templated;
+        let job = if template::is_templated(job) {
+            templated = template::expand(job, catalog)?;
+            &templated
+        } else {
+            job
+        };
         let empty = Map::new();
-        let values = job.params.get("values").and_then(Value::as_object).unwrap_or(&empty);
+        let carried: Map<String, Value>;
+        let (mut workflow, values) = match (job.params.get("workflow"), template::card_text(job, template::CARD_WORKFLOW)) {
+            (Some(raw), None) => {
+                if template::card_text(job, template::CARD_VALUES).is_some() || template::card_text(job, template::CARD_OUTPUTS).is_some() {
+                    return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job mixes a workflow card's inputs into another workflow")));
+                }
+                let bytes = serde_json::to_vec(raw).map_err(|e| plain(ProviderError::new(ErrorKind::UnsupportedInput, e.to_string())))?;
+                let workflow = ApiWorkflow::parse(&bytes, Some(catalog)).map_err(from_catalog)?;
+                (workflow, job.params.get("values").and_then(Value::as_object).unwrap_or(&empty))
+            }
+            // A workflow card (#9) carries its workflow and values as text inputs.
+            (None, Some(text)) => {
+                if job.params.contains_key("values") {
+                    return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "a workflow card's job carries its values as an input")));
+                }
+                carried = card_values(job).map_err(plain)?;
+                if text.len() > MAX_CARD_TEXT_BYTES {
+                    return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the card's ComfyUI workflow is too large")));
+                }
+                let mut workflow = ApiWorkflow::parse(text.as_bytes(), Some(catalog)).map_err(from_catalog)?;
+                keep_card_outputs(&mut workflow, job, catalog).map_err(plain)?;
+                (workflow, &carried)
+            }
+            (Some(_), Some(_)) => return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job carries two ComfyUI workflows"))),
+            (None, None) => return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job has no ComfyUI workflow"))),
+        };
         for (target, value) in values {
             let (node, input) = split_target(target).map_err(plain)?;
             workflow.set_input(catalog, node, input, value.clone()).map_err(from_catalog)?;
@@ -219,16 +285,35 @@ impl ComfyProvider {
                 .get(node)
                 .map(|n| n.class_type.clone())
                 .ok_or_else(|| plain(ProviderError::new(ErrorKind::UnsupportedInput, format!("no node {node} in the workflow"))))?;
-            let is_upload = catalog.get(&class).and_then(|i| i.input(name)).is_some_and(|spec| matches!(spec.kind, InputKind::Combo { upload: Some(_), .. }));
-            if !is_upload {
+            let loader = catalog.get(&class).and_then(|i| i.input(name)).and_then(|spec| match spec.kind {
+                InputKind::Combo { upload, .. } => upload,
+                _ => None,
+            });
+            let Some(loader) = loader else {
                 return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, format!("{node}.{name} is not a file input"))));
-            }
-            uploads.push((node, name, bytes));
+            };
+            uploads.push((node, name, loader, bytes));
         }
         workflow.check(catalog).into_result().map_err(from_catalog)?;
-        for (node, name, bytes) in uploads {
+        // Every input is checked before any is uploaded: a refused run leaves nothing on the server.
+        let mut checked_uploads = Vec::with_capacity(uploads.len());
+        for (node, name, loader, bytes) in uploads {
             let checked = crate::check_media(bytes, None).map_err(plain)?;
-            let ext = checked.mime.rsplit('/').next().unwrap_or("bin").split(['+', ';']).next().unwrap_or("bin");
+            upload::check_kind(&format!("{node}.{name}"), loader, bytes, checked.mime)
+                .map_err(|e| plain(ProviderError::new(ErrorKind::UnsupportedInput, e)))?;
+            // Recognition isn't upload permission (#394): an HDR input is refused here exactly as it
+            // was before those formats were recognised at all, instead of landing on the user's
+            // server under a name no Comfy loader can read.
+            if nodecraft_media::is_undecoded_image(checked.mime) {
+                return Err(plain(ProviderError::new(
+                    ErrorKind::UnsupportedInput,
+                    format!("can't upload {node}.{name}: NodeCraft can't read {} files yet; convert the input to PNG or JPEG", checked.mime),
+                )));
+            }
+            checked_uploads.push((node, name, bytes, checked));
+        }
+        for (node, name, bytes, checked) in checked_uploads {
+            let ext = upload::extension(checked.mime);
             // Named by content: a name collision means identical bytes, so overwriting is harmless
             // and repeated uploads of the same input dedupe.
             let filename = format!("nodecraft-{}.{ext}", checked.hash.to_hex());
@@ -246,7 +331,14 @@ impl ComfyProvider {
         HistoryEntry::parse(&response.body, prompt_id).map_err(comfy_error)
     }
 
-    async fn queue_state(&self) -> Result<QueueState, ProviderError> {
+    /// The server's health check (#9): its versions, devices and free VRAM.
+    pub async fn system_stats(&self) -> Result<SystemStats, ProviderError> {
+        let response = self.send_ok(self.server.system_stats().map_err(comfy_error)?, MAX_STATS_BYTES).await?;
+        SystemStats::parse(&response.body).map_err(comfy_error)
+    }
+
+    /// The prompts the server is running and has waiting.
+    pub async fn queue_state(&self) -> Result<QueueState, ProviderError> {
         let response = self.send_ok(self.server.queue().map_err(comfy_error)?, MAX_QUEUE_BYTES).await.map_err(|e| {
             // A huge queue on a busy shared server is a passing condition, not a broken reply.
             if e.kind == ErrorKind::Malformed {
@@ -299,6 +391,10 @@ impl ComfyProvider {
             // Files NodeCraft can't show (latents, model files) are skipped, not fatal; a text or
             // HTML body for a file output is a proxy or error page, not a result.
             match nodecraft_media::sniff(&response.body) {
+                // An HDR image is recognised (#394) but has no decoder, so it is skipped like a
+                // latent rather than kept as a result the engine then refuses: one EXR saved next to
+                // the PNG must not cost the user the whole paid run.
+                Some(s) if nodecraft_media::is_undecoded_image(s.mime) => skipped.push(file.filename.clone()),
                 Some(s) if s.kind != nodecraft_media::MediaKind::Text => {
                     outputs.push(Output::Bytes { mime: s.mime.to_owned(), bytes: Arc::from(response.body) });
                 }
@@ -344,7 +440,72 @@ fn looks_textual(name: &str) -> bool {
     matches!(ext.as_str(), "txt" | "json" | "srt" | "vtt" | "csv" | "md" | "obj" | "gltf" | "svg")
 }
 
-fn split_target(target: &str) -> Result<(&str, &str), ProviderError> {
+/// Most bytes of a workflow card's workflow or values text: one text input's limit.
+const MAX_CARD_TEXT_BYTES: usize = 1024 * 1024;
+/// Most values one workflow card sets.
+const MAX_CARD_VALUES: usize = 1024;
+
+/// A workflow card's values (#9): a JSON object of `"<node>.<input>"` to a string, number or
+/// boolean, bounded before it is parsed. No values input means none.
+fn card_values(job: &ProviderJob) -> Result<Map<String, Value>, ProviderError> {
+    let refused = |message: &str| ProviderError::new(ErrorKind::UnsupportedInput, format!("the card's ComfyUI values {message}"));
+    let Some(text) = template::card_text(job, template::CARD_VALUES) else { return Ok(Map::new()) };
+    if text.len() > MAX_CARD_TEXT_BYTES {
+        return Err(refused("are too large"));
+    }
+    // Only scalars are accepted, so serde_json's own nesting limit bounds the parse.
+    let Ok(Value::Object(values)) = serde_json::from_str::<Value>(text) else { return Err(refused("are not a JSON object")) };
+    if values.len() > MAX_CARD_VALUES {
+        return Err(refused("set too many inputs"));
+    }
+    if values.values().any(|v| !(v.is_string() || v.is_number() || v.is_boolean())) {
+        return Err(refused("must be strings, numbers or booleans"));
+    }
+    Ok(values)
+}
+
+/// Keeps only a workflow card's output nodes (#9), named by its outputs input as a JSON list of
+/// node ids: the workflow's other output nodes are dropped before it is queued, so the server
+/// never runs them and no file comes back that the card has no port for. A node another node
+/// reads from is kept. No outputs input keeps every node.
+fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, catalog: &NodeCatalog) -> Result<(), ProviderError> {
+    let refused = |message: String| ProviderError::new(ErrorKind::UnsupportedInput, format!("the card's ComfyUI outputs {message}"));
+    let Some(text) = template::card_text(job, template::CARD_OUTPUTS) else { return Ok(()) };
+    if text.len() > MAX_CARD_TEXT_BYTES {
+        return Err(refused("are too large".into()));
+    }
+    let Ok(kept) = serde_json::from_str::<std::collections::BTreeSet<String>>(text) else {
+        return Err(refused("are not a list of node ids".into()));
+    };
+    if kept.is_empty() {
+        return Err(refused("name no node".into()));
+    }
+    if let Some(missing) = kept.iter().find(|id| !workflow.nodes.contains_key(id.as_str())) {
+        let shown: String = missing.chars().take(64).collect();
+        return Err(refused(format!("name node {shown}, which the workflow doesn't have")));
+    }
+    let read: std::collections::BTreeSet<&str> = workflow
+        .nodes
+        .values()
+        .flat_map(|node| node.inputs.values())
+        .filter_map(|value| match value {
+            comfy::InputValue::Link { node, .. } => Some(node.as_str()),
+            comfy::InputValue::Value(_) => None,
+        })
+        .collect();
+    let dropped: Vec<String> = workflow
+        .nodes
+        .iter()
+        .filter(|(id, node)| !kept.contains(*id) && !read.contains(id.as_str()) && catalog.get(&node.class_type).is_some_and(|info| info.output_node))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in dropped {
+        workflow.nodes.remove(&id);
+    }
+    Ok(())
+}
+
+pub(crate) fn split_target(target: &str) -> Result<(&str, &str), ProviderError> {
     target
         .split_once('.')
         .filter(|(n, i)| !n.is_empty() && !i.is_empty())
@@ -404,10 +565,16 @@ impl Provider for ComfyProvider {
                 }
                 Err((e, false)) => return Err(e),
             };
+            // Opened before queueing: the server sends a prompt's progress only to a socket that
+            // is already open.
+            self.connect_progress().await;
             let mut request = PromptRequest::new(workflow, self.client_id.clone());
             request.prompt_id = Some(prompt_id.clone());
             let response = self.send(self.server.prompt(&request).map_err(comfy_error)?, 4 * 1024 * 1024, None).await?;
             let queued = comfy::parse_prompt_response(response.status, &response.body).map_err(comfy_error)?;
+            if let Some(live) = &self.live {
+                live.track(&queued.prompt_id, &request.workflow);
+            }
             // Older servers ignore a client-chosen id: follow the one they assigned.
             Ok(Submission::Queued(handle_for(&queued.prompt_id)))
         })
@@ -415,9 +582,26 @@ impl Provider for ComfyProvider {
 
     fn poll<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
         Box::pin(async move {
-            match self.locate(&handle.remote_id).await? {
+            let id = &handle.remote_id;
+            let known = self.locate(id).await?;
+            let live = self.live.as_ref();
+            if matches!(known, Known::Pending(_) | Known::Running) && live.is_some_and(progress::Live::wanted) {
+                // The socket was lost: open another (with the same client id the server routes by).
+                self.connect_progress().await;
+            }
+            // Read the socket even while queued, so its messages don't pile up.
+            let now = live.and_then(|live| live.progress(id, (self.now_ms)()));
+            if !matches!(known, Known::Pending(_) | Known::Running)
+                && let Some(live) = live
+            {
+                live.forget(id);
+            }
+            match known {
                 Known::Pending(i) => Ok(JobProgress::Queued { position: u32::try_from(i.saturating_add(1)).ok() }),
-                Known::Running => Ok(JobProgress::Running { fraction: None, message: None, partial: None }),
+                Known::Running => {
+                    let (fraction, message) = now.map_or((None, None), |(fraction, node)| (Some(fraction), node));
+                    Ok(JobProgress::Running { fraction, message, partial: None })
+                }
                 Known::Finished(entry) => match finished(&entry) {
                     Ok(files) => Ok(JobProgress::Done(Completed::new(self.download(&files).await?))),
                     Err(e) => Ok(JobProgress::Failed(e)),
@@ -431,6 +615,9 @@ impl Provider for ComfyProvider {
     fn cancel<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
         Box::pin(async move {
             let id = handle.remote_id.clone();
+            if let Some(live) = &self.live {
+                live.forget(&id);
+            }
             if let Known::Pending(_) = self.locate(&id).await? {
                 self.send_ok(self.server.delete_from_queue(std::slice::from_ref(&id)).map_err(comfy_error)?, 64 * 1024).await?;
             }
@@ -463,10 +650,27 @@ mod tests {
     const OBJECT_INFO: &str = r#"{
       "LoadImage": {"input": {"required": {"image": [["example.png"], {"image_upload": true}]}}, "output": ["IMAGE", "MASK"]},
       "CLIPTextEncode": {"input": {"required": {"text": ["STRING", {"multiline": true}]}}, "output": ["CONDITIONING"]},
-      "SaveImage": {"input": {"required": {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true}
+      "SaveImage": {"input": {"required": {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true},
+      "LoadAudio": {"input": {"required": {"audio": [["a.wav"], {"audio_upload": true}]}}, "output": ["AUDIO"]},
+      "LoadVideo": {"input": {"required": {"file": [["a.mp4"], {"video_upload": true}]}}, "output": ["VIDEO"]},
+      "SaveAudio": {"input": {"required": {"audio": ["AUDIO", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true},
+      "SaveVideo": {"input": {"required": {"video": ["VIDEO", {}], "filename_prefix": ["STRING", {}]}}, "output": [], "output_node": true},
+      "CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [["flux1-dev-fp8.safetensors"]]}}, "output": ["MODEL", "CLIP", "VAE"]},
+      "FluxGuidance": {"input": {"required": {"conditioning": ["CONDITIONING"], "guidance": ["FLOAT", {"default": 3.5}]}}, "output": ["CONDITIONING"]},
+      "ImageScaleToTotalPixels": {"input": {"required": {"image": ["IMAGE"], "upscale_method": [["lanczos"]], "megapixels": ["FLOAT", {}]}}, "output": ["IMAGE"]},
+      "VAEEncode": {"input": {"required": {"pixels": ["IMAGE"], "vae": ["VAE"]}}, "output": ["LATENT"]},
+      "KSampler": {"input": {"required": {
+        "model": ["MODEL"], "positive": ["CONDITIONING"], "negative": ["CONDITIONING"], "latent_image": ["LATENT"],
+        "seed": ["INT", {"min": 0, "max": 18446744073709551615}], "steps": ["INT", {"min": 1, "max": 10000}], "cfg": ["FLOAT", {"min": 0.0, "max": 100.0}],
+        "sampler_name": [["euler"]], "scheduler": [["simple", "normal"]], "denoise": ["FLOAT", {"min": 0.0, "max": 1.0}]
+      }}, "output": ["LATENT"]},
+      "VAEDecode": {"input": {"required": {"samples": ["LATENT"], "vae": ["VAE"]}}, "output": ["IMAGE"]}
     }"#;
     const EMPTY_QUEUE: &str = r#"{"queue_running":[],"queue_pending":[]}"#;
     const SALT: &str = "install-salt";
+    /// The OpenEXR magic plus a version field: all `sniff` reads, and all Comfy can ever be given.
+    const EXR_BYTES: &[u8] = b"\x76\x2f\x31\x01\x02\x00\x00\x00";
+    const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\nimage";
 
     /// A scripted ComfyUI server: answers by path (queue and history answers can be scripted as a
     /// sequence), records requests.
@@ -475,7 +679,11 @@ mod tests {
         history: Mutex<VecDeque<String>>,
         queue: Mutex<VecDeque<String>>,
         view: Mutex<Vec<u8>>,
+        /// `/view` answers by file name, before `view`.
+        files: Mutex<Vec<(String, Vec<u8>)>>,
         object_info_calls: AtomicUsize,
+        /// A checkpoint `/object_info` lists from its second fetch on, as if installed meanwhile.
+        installed_later: Mutex<Option<String>>,
     }
 
     impl FakeServer {
@@ -485,7 +693,9 @@ mod tests {
                 history: Mutex::new(VecDeque::new()),
                 queue: Mutex::new(VecDeque::new()),
                 view: Mutex::new(b"\x89PNG\r\n\x1a\nimage".to_vec()),
+                files: Mutex::new(vec![]),
                 object_info_calls: AtomicUsize::new(0),
+                installed_later: Mutex::new(None),
             })
         }
         /// Next answer from a script; the last one repeats.
@@ -506,8 +716,13 @@ mod tests {
             let path = request.url.split("8188").nth(1).unwrap_or_default().to_owned();
             let body: Vec<u8> = match path.split('?').next().unwrap_or_default() {
                 "/object_info" => {
-                    self.object_info_calls.fetch_add(1, Ordering::SeqCst);
-                    OBJECT_INFO.into()
+                    let earlier = self.object_info_calls.fetch_add(1, Ordering::SeqCst);
+                    match self.installed_later.lock().unwrap().as_deref() {
+                        Some(name) if earlier > 0 => {
+                            OBJECT_INFO.replace(r#"[["flux1-dev-fp8.safetensors"]]"#, &format!(r#"[["flux1-dev-fp8.safetensors", "{name}"]]"#)).into()
+                        }
+                        _ => OBJECT_INFO.into(),
+                    }
                 }
                 "/queue" if request.method == HttpMethod::Get => Self::next(&self.queue, EMPTY_QUEUE).into_bytes(),
                 "/upload/image" => r#"{"name":"stored.png","subfolder":"in","type":"input"}"#.into(),
@@ -515,7 +730,11 @@ mod tests {
                     let v: Value = serde_json::from_slice(&request.body).unwrap();
                     format!(r#"{{"prompt_id":"{}","number":1,"node_errors":{{}}}}"#, v["prompt_id"].as_str().unwrap()).into_bytes()
                 }
-                "/view" => self.view.lock().unwrap().clone(),
+                "/view" => {
+                    let files = self.files.lock().unwrap();
+                    let named = files.iter().find(|(name, _)| path.contains(&format!("filename={name}")));
+                    named.map_or_else(|| self.view.lock().unwrap().clone(), |(_, bytes)| bytes.clone())
+                }
                 p if p.starts_with("/history/") => Self::next(&self.history, "{}").into_bytes(),
                 _ => b"{}".to_vec(),
             };
@@ -601,6 +820,166 @@ mod tests {
     }
 
     #[test]
+    fn a_catalog_card_runs_its_built_in_workflow() {
+        let server = FakeServer::new();
+        let p = provider(server.clone());
+        let card = ProviderJob {
+            model: "flux-dev".into(),
+            params: serde_json::json!({"steps": 20, "seed": 7}).as_object().cloned().unwrap(),
+            inputs: vec![
+                JobInput::Text { role: "prompt".into(), text: "as a watercolour".into() },
+                JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(PNG_BYTES) },
+            ],
+            idempotency_key: "nodecraft:run-uuid:2".into(),
+        };
+        block_on(p.submit(&card)).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let prompt = seen.iter().find(|r| r.url.ends_with("/prompt")).unwrap();
+        let body: Value = serde_json::from_slice(&prompt.body).unwrap();
+        let workflow = &body["prompt"];
+        assert_eq!(workflow["1"]["inputs"]["ckpt_name"], "flux1-dev-fp8.safetensors");
+        assert_eq!(workflow["2"]["inputs"]["text"], "as a watercolour");
+        assert_eq!(workflow["5"]["inputs"]["image"], "in/stored.png", "the input image is uploaded and set on the loader");
+        assert_eq!(workflow["8"]["inputs"]["steps"], 20);
+        assert_eq!(workflow["10"]["class_type"], "SaveImage");
+        drop(seen);
+
+        let mut sdxl = card.clone();
+        sdxl.model = "sdxl-base".into();
+        let e = block_on(p.submit(&sdxl)).unwrap_err();
+        assert!(e.message.contains("sd_xl_base_1.0.safetensors"), "{e}");
+        assert_eq!(server.object_info_calls.load(Ordering::SeqCst), 2, "a missing checkpoint refetches the catalog once");
+
+        // Installed after the catalog was fetched: the refetch finds it and the run is queued.
+        let server = FakeServer::new();
+        *server.installed_later.lock().unwrap() = Some("sd_xl_base_1.0.safetensors".into());
+        let p = provider(server.clone());
+        block_on(p.catalog()).unwrap();
+        block_on(p.submit(&sdxl)).unwrap();
+        assert_eq!(server.object_info_calls.load(Ordering::SeqCst), 2);
+        assert!(server.paths().iter().any(|path| path == "/prompt"));
+    }
+
+    /// A workflow card's job (#9): no parameters, the workflow and values as text inputs.
+    fn card_job(values: &str) -> ProviderJob {
+        let workflow = r#"{
+            "1": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+            "2": {"class_type": "CLIPTextEncode", "inputs": {"text": "old"}},
+            "3": {"class_type": "SaveImage", "inputs": {"images": ["1", 0], "filename_prefix": "NodeCraft"}}
+        }"#;
+        ProviderJob {
+            model: "workflow".into(),
+            params: Map::new(),
+            inputs: vec![
+                JobInput::Text { role: template::CARD_WORKFLOW.into(), text: workflow.into() },
+                JobInput::Text { role: template::CARD_VALUES.into(), text: values.into() },
+                JobInput::Media { role: "1.image".into(), mime: "image/png".into(), bytes: Arc::from(PNG_BYTES) },
+            ],
+            idempotency_key: "nodecraft:run-uuid:9".into(),
+        }
+    }
+
+    #[test]
+    fn a_workflow_card_runs_the_workflow_it_carries() {
+        let server = FakeServer::new();
+        let p = provider(server.clone());
+        let card = card_job(r#"{"2.text": "a red fox"}"#);
+        assert!(!template::is_templated(&card), "a card's workflow is never replaced by a built-in one");
+        block_on(p.submit(&card)).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let prompt = seen.iter().find(|r| r.url.ends_with("/prompt")).unwrap();
+        let body: Value = serde_json::from_slice(&prompt.body).unwrap();
+        assert_eq!(body["prompt"]["2"]["inputs"]["text"], "a red fox", "the card's value is set");
+        assert_eq!(body["prompt"]["1"]["inputs"]["image"], "in/stored.png", "the wired file is uploaded and set");
+        assert_eq!(body["prompt"]["3"]["class_type"], "SaveImage");
+        drop(seen);
+        // Without values the workflow keeps its own.
+        let server = FakeServer::new();
+        let mut plain = card_job("");
+        plain.inputs.retain(|i| !matches!(i, JobInput::Text { role, .. } if role == template::CARD_VALUES));
+        block_on(provider(server.clone()).submit(&plain)).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let body: Value = serde_json::from_slice(&seen.iter().find(|r| r.url.ends_with("/prompt")).unwrap().body).unwrap();
+        assert_eq!(body["prompt"]["2"]["inputs"]["text"], "old");
+    }
+
+    #[test]
+    fn a_workflow_card_with_bad_values_or_workflow_uploads_nothing() {
+        let deep = format!("{{\"2.text\": {}1{}}}", "[".repeat(200), "]".repeat(200));
+        let huge = format!("{{\"2.text\": \"{}\"}}", "x".repeat(MAX_CARD_TEXT_BYTES));
+        let many = format!("{{{}}}", (0..=MAX_CARD_VALUES).map(|n| format!("\"2.t{n}\": 1")).collect::<Vec<_>>().join(","));
+        let bad = [
+            "not json".to_owned(),
+            "[1, 2]".to_owned(),
+            r#"{"2.text": {"nested": 1}}"#.to_owned(),
+            r#"{"nodot": "x"}"#.to_owned(),
+            r#"{"2.missing": "x"}"#.to_owned(),
+            r#"{"9.text": "x"}"#.to_owned(),
+            deep,
+            huge,
+            many,
+        ];
+        for values in bad {
+            let server = FakeServer::new();
+            let e = block_on(provider(server.clone()).submit(&card_job(&values))).unwrap_err();
+            assert_eq!(e.kind, ErrorKind::UnsupportedInput, "{e}");
+            assert!(!server.paths().iter().any(|p| p == "/upload/image" || p == "/prompt"), "nothing uploaded for {}", &values[..values.len().min(40)]);
+        }
+        let mut broken = card_job("{}");
+        broken.inputs[0] = JobInput::Text { role: template::CARD_WORKFLOW.into(), text: "{\"1\": [".into() };
+        let server = FakeServer::new();
+        assert!(block_on(provider(server.clone()).submit(&broken)).is_err());
+        assert!(!server.paths().iter().any(|p| p == "/upload/image"));
+        let mut oversized = card_job("{}");
+        oversized.inputs[0] = JobInput::Text { role: template::CARD_WORKFLOW.into(), text: " ".repeat(MAX_CARD_TEXT_BYTES + 1) };
+        let server = FakeServer::new();
+        assert!(block_on(provider(server.clone()).submit(&oversized)).unwrap_err().message.contains("too large"));
+        assert!(!server.paths().iter().any(|p| p == "/upload/image"));
+        // A job carrying a workflow both ways is ambiguous.
+        let mut both = card_job("{}");
+        both.params = job().params;
+        let server = FakeServer::new();
+        assert!(block_on(provider(server.clone()).submit(&both)).unwrap_err().message.contains("two"));
+        assert!(!server.paths().iter().any(|p| p == "/upload/image"));
+    }
+
+    #[test]
+    fn a_workflow_card_queues_only_the_outputs_it_keeps() {
+        let workflow = r#"{
+            "1": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+            "3": {"class_type": "SaveImage", "inputs": {"images": ["1", 0], "filename_prefix": "kept"}},
+            "4": {"class_type": "SaveImage", "inputs": {"images": ["1", 0], "filename_prefix": "dropped"}}
+        }"#;
+        let with_outputs = |outputs: &str| {
+            let mut job = card_job("{}");
+            job.inputs[0] = JobInput::Text { role: template::CARD_WORKFLOW.into(), text: workflow.into() };
+            job.inputs.push(JobInput::Text { role: template::CARD_OUTPUTS.into(), text: outputs.into() });
+            job
+        };
+        let server = FakeServer::new();
+        block_on(provider(server.clone()).submit(&with_outputs(r#"["3"]"#))).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let body: Value = serde_json::from_slice(&seen.iter().find(|r| r.url.ends_with("/prompt")).unwrap().body).unwrap();
+        assert_eq!(body["prompt"]["3"]["inputs"]["filename_prefix"], "kept");
+        assert!(body["prompt"].get("4").is_none(), "an output the card has no port for never runs");
+        assert!(body["prompt"].get("1").is_some(), "nodes that aren't outputs stay");
+        drop(seen);
+        for bad in ["[]", r#"["9"]"#, "nope", r#"{"3": 1}"#] {
+            let server = FakeServer::new();
+            let e = block_on(provider(server.clone()).submit(&with_outputs(bad))).unwrap_err();
+            assert!(e.message.contains("outputs"), "{bad}: {e}");
+            assert!(!server.paths().iter().any(|p| p == "/upload/image" || p == "/prompt"), "nothing uploaded for {bad}");
+        }
+        // A card's inputs never mix with a workflow carried in the parameters, or the other way.
+        let mut mixed = job();
+        mixed.inputs.push(JobInput::Text { role: template::CARD_OUTPUTS.into(), text: r#"["3"]"#.into() });
+        assert!(block_on(provider(FakeServer::new()).submit(&mixed)).unwrap_err().message.contains("mixes"));
+        let mut mixed = card_job("{}");
+        mixed.params.insert("values".into(), serde_json::json!({"2.text": "x"}));
+        assert!(block_on(provider(FakeServer::new()).submit(&mixed)).unwrap_err().message.contains("as an input"));
+    }
+
+    #[test]
     fn a_retried_submit_does_not_queue_twice_but_a_failed_prompt_runs_again() {
         let server = FakeServer::new();
         let first = prompt_id_for(SALT, "nodecraft:run-uuid:1", 0);
@@ -672,6 +1051,134 @@ mod tests {
     }
 
     #[test]
+    fn a_running_prompt_reports_progress_from_the_socket() {
+        use progress::tests::{Scripted, text};
+        let server = FakeServer::new();
+        let messages = Arc::new(Mutex::new(VecDeque::new()));
+        let feeds = Scripted { messages: messages.clone(), opens: Arc::default(), refuse: false };
+        let opens = feeds.opens.clone();
+        let p = provider(server.clone()).with_progress(Arc::new(feeds));
+        let Submission::Queued(handle) = block_on(p.submit(&job())).unwrap() else { panic!("not queued") };
+        assert_eq!(*opens.lock().unwrap(), 1, "the socket is open before the prompt is queued");
+        let id = handle.remote_id.clone();
+
+        FakeServer::set(&server.queue, &[&format!(r#"{{"queue_running":[],"queue_pending":[[0,"{id}"]]}}"#)]);
+        assert_eq!(block_on(p.poll(&handle)).unwrap(), JobProgress::Queued { position: Some(1) });
+        FakeServer::set(&server.queue, &[&format!(r#"{{"queue_running":[[0,"{id}"]],"queue_pending":[]}}"#)]);
+        assert_eq!(block_on(p.poll(&handle)).unwrap(), JobProgress::Running { fraction: None, message: None, partial: None }, "not started yet");
+        messages.lock().unwrap().extend([
+            text(&format!(r#"{{"type":"execution_start","data":{{"prompt_id":"{id}"}}}}"#)),
+            text(&format!(r#"{{"type":"execution_cached","data":{{"prompt_id":"{id}","nodes":["1"]}}}}"#)),
+            text(&format!(r#"{{"type":"executing","data":{{"node":"2","prompt_id":"{id}"}}}}"#)),
+        ]);
+        let JobProgress::Running { fraction: Some(fraction), message, .. } = block_on(p.poll(&handle)).unwrap() else { panic!("no fraction") };
+        assert!((fraction - 1.0 / 3.0).abs() < 1e-6, "{fraction}");
+        assert_eq!(message.as_deref(), Some("CLIPTextEncode"));
+
+        FakeServer::set(&server.queue, &[EMPTY_QUEUE]);
+        FakeServer::set(&server.history, &[&history_ok(&id, r#"[{"filename":"a.png","subfolder":"","type":"output"}]"#)]);
+        assert!(matches!(block_on(p.poll(&handle)).unwrap(), JobProgress::Done(_)));
+        assert!(!p.live.as_ref().unwrap().wanted(), "a finished prompt is no longer tracked");
+        assert_eq!(*opens.lock().unwrap(), 1, "an open socket is reused");
+    }
+
+    #[test]
+    fn without_a_socket_runs_still_finish_by_polling() {
+        let server = FakeServer::new();
+        let feeds = progress::tests::Scripted { messages: Arc::default(), opens: Arc::default(), refuse: true };
+        let opens = feeds.opens.clone();
+        let p = provider(server.clone()).with_progress(Arc::new(feeds));
+        let Submission::Queued(handle) = block_on(p.submit(&job())).unwrap() else { panic!("not queued") };
+        let id = handle.remote_id.clone();
+        FakeServer::set(&server.queue, &[&format!(r#"{{"queue_running":[[0,"{id}"]],"queue_pending":[]}}"#)]);
+        assert!(matches!(block_on(p.poll(&handle)).unwrap(), JobProgress::Running { fraction: None, .. }));
+        assert_eq!(*opens.lock().unwrap(), 1, "a refused socket isn't retried on every poll");
+    }
+
+    #[test]
+    fn a_cancelled_prompt_is_no_longer_tracked() {
+        let server = FakeServer::new();
+        let feeds = progress::tests::Scripted { messages: Arc::default(), opens: Arc::default(), refuse: false };
+        let p = provider(server.clone()).with_progress(Arc::new(feeds));
+        let Submission::Queued(handle) = block_on(p.submit(&job())).unwrap() else { panic!("not queued") };
+        assert!(p.live.as_ref().unwrap().wanted());
+        FakeServer::set(&server.queue, &[EMPTY_QUEUE]);
+        block_on(p.cancel(&handle)).unwrap();
+        assert!(!p.live.as_ref().unwrap().wanted(), "nothing keeps the socket open");
+    }
+
+    const WAV: &[u8] = include_bytes!("fal/fixtures/tone.wav");
+    const MP4: &[u8] = include_bytes!("fal/fixtures/blue.mp4");
+
+    /// Loads a sound and a video, saves both (#110).
+    fn av_job(sound_to: &str) -> ProviderJob {
+        let workflow = serde_json::json!({
+            "1": {"class_type": "LoadAudio", "inputs": {"audio": "a.wav"}},
+            "2": {"class_type": "LoadVideo", "inputs": {"file": "a.mp4"}},
+            "3": {"class_type": "LoadImage", "inputs": {"image": "example.png"}},
+            "4": {"class_type": "SaveVideo", "inputs": {"video": ["2", 0], "filename_prefix": "NodeCraft"}},
+            "5": {"class_type": "SaveAudio", "inputs": {"audio": ["1", 0], "filename_prefix": "NodeCraft"}}
+        });
+        ProviderJob {
+            model: "comfyui:workflow".into(),
+            params: serde_json::json!({"workflow": workflow}).as_object().cloned().unwrap(),
+            inputs: vec![
+                // The video comes first, so a refused sound shows nothing at all was uploaded.
+                JobInput::Media { role: "2.file".into(), mime: "video/mp4".into(), bytes: Arc::from(MP4) },
+                JobInput::Media { role: sound_to.into(), mime: "audio/wav".into(), bytes: Arc::from(WAV) },
+            ],
+            idempotency_key: "nodecraft:run-uuid:av".into(),
+        }
+    }
+
+    #[test]
+    fn sounds_and_videos_upload_under_the_names_their_loaders_list() {
+        let server = FakeServer::new();
+        block_on(provider(server.clone()).submit(&av_job("1.audio"))).unwrap();
+        let seen = server.seen.lock().unwrap();
+        let names: Vec<String> = seen
+            .iter()
+            .filter(|r| r.url.ends_with("/upload/image"))
+            .map(|r| String::from_utf8_lossy(&r.body).split("filename=\"").nth(1).unwrap_or_default().split('"').next().unwrap_or_default().to_owned())
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names[0].starts_with("nodecraft-") && names[0].ends_with(".mp4") && names[1].ends_with(".wav"), "{names:?}");
+        assert!(seen.iter().any(|r| r.url.ends_with("/prompt")));
+    }
+
+    #[test]
+    fn a_sound_sent_to_an_image_loader_is_refused_before_anything_is_uploaded() {
+        let server = FakeServer::new();
+        let e = block_on(provider(server.clone()).submit(&av_job("3.image"))).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::UnsupportedInput, "{e}");
+        assert_eq!(e.message, "3.image takes an image, not audio/wav");
+        let paths = server.paths();
+        assert!(!paths.iter().any(|p| p.starts_with("/upload") || p == "/prompt"), "{paths:?}");
+    }
+
+    #[test]
+    fn saved_videos_and_sounds_come_back_as_outputs() {
+        let server = FakeServer::new();
+        *server.files.lock().unwrap() = vec![("clip.mp4".into(), MP4.to_vec()), ("line.wav".into(), WAV.to_vec())];
+        // A video saver's files come under `gifs` or `images`, a sound saver's under `audio`.
+        FakeServer::set(
+            &server.history,
+            &[r#"{"av":{"outputs":{"4":{"gifs":[{"filename":"clip.mp4","subfolder":"video","type":"output","format":"video/h264-mp4"}]},
+                "5":{"audio":[{"filename":"line.wav","subfolder":"audio","type":"output"}]}},
+                "status":{"status_str":"success","completed":true,"messages":[]}}}"#],
+        );
+        let JobProgress::Done(Completed { outputs, .. }) = block_on(provider(server).poll(&handle_for("av"))).unwrap() else { panic!("not done") };
+        let mimes: Vec<&str> = outputs
+            .iter()
+            .map(|o| match o {
+                Output::Bytes { mime, .. } => mime.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(mimes, ["video/mp4", "audio/wav"]);
+    }
+
+    #[test]
     fn empty_failed_and_vanished_prompts() {
         let server = FakeServer::new();
         let p = provider(server.clone());
@@ -719,6 +1226,55 @@ mod tests {
         let seen = server.seen.lock().unwrap();
         let view = seen.iter().find(|r| r.url.contains("/view")).unwrap();
         assert_eq!((view.max_response_bytes, view.timeout_ms), (20, DOWNLOAD_TIMEOUT_MS), "capped by the remaining total");
+    }
+
+    /// A server whose finished prompt wrote `out.png` *and* an `out.exr` side by side; `/view`
+    /// answers per file, which one scripted body can't.
+    struct SavesPngAndExr;
+
+    impl Http for SavesPngAndExr {
+        fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+            let path = request.url.split("8188").nth(1).unwrap_or_default().to_owned();
+            let body: Vec<u8> = match path.split('?').next().unwrap_or_default() {
+                "/queue" => EMPTY_QUEUE.as_bytes().to_vec(),
+                "/view" if request.url.contains("filename=out.exr") => EXR_BYTES.to_vec(),
+                "/view" => PNG_BYTES.to_vec(),
+                p if p.starts_with("/history/") => {
+                    history_ok("abc", r#"[{"filename":"out.png","subfolder":"","type":"output"},{"filename":"out.exr","subfolder":"","type":"output"}]"#)
+                        .into_bytes()
+                }
+                _ => b"{}".to_vec(),
+            };
+            Box::pin(async move { Ok(HttpResponse { status: 200, headers: vec![], body }) })
+        }
+    }
+
+    /// #394 made an EXR sniff as an image. Recognition is not permission: the undecodable file is
+    /// skipped, so a workflow that saved a PNG alongside it still delivers that PNG instead of the
+    /// engine refusing the whole (already paid for) run.
+    #[test]
+    fn an_hdr_output_is_skipped_and_the_png_from_the_same_run_lands() {
+        let p = ComfyProvider::new("http://gpu-box:8188", None, SALT, Arc::new(SavesPngAndExr), Arc::new(|| 0)).unwrap();
+        let JobProgress::Done(Completed { outputs, .. }) = block_on(p.poll(&handle_for("abc"))).unwrap() else { panic!("not done") };
+        assert_eq!(outputs.len(), 1, "the EXR must be skipped, not kept: {outputs:?}");
+        assert!(matches!(&outputs[0], Output::Bytes { mime, .. } if mime == "image/png"), "{outputs:?}");
+    }
+
+    /// The same boundary on the way in: an HDR input is refused before `/upload/image`, exactly as
+    /// it was while `sniff` didn't know these bytes at all, so nothing unopenable lands on the
+    /// user's server and the prompt is never queued.
+    #[test]
+    fn an_hdr_input_is_refused_before_it_is_uploaded() {
+        let server = FakeServer::new();
+        let p = provider(server.clone());
+        let mut j = job();
+        j.inputs = vec![JobInput::Media { role: "1.image".into(), mime: "image/x-exr".into(), bytes: Arc::from(EXR_BYTES) }];
+        let e = block_on(p.submit(&j)).unwrap_err();
+        assert_eq!(e.kind, ErrorKind::UnsupportedInput, "{e}");
+        assert!(e.message.contains("1.image") && e.message.contains("image/x-exr") && e.message.contains("PNG"), "{e}");
+        let paths = server.paths();
+        assert!(!paths.iter().any(|p| p.starts_with("/upload")), "recognition grants no upload permission: {paths:?}");
+        assert!(!paths.iter().any(|p| p == "/prompt"), "a run that can't work is never queued: {paths:?}");
     }
 
     #[test]

@@ -1,0 +1,194 @@
+# Seedance video on BytePlus ModelArk (#18), checked 2026-10-23:
+# https://ai.byteplus.com/ark/region:ap-southeast-1/docs/create-video-generation-task-api,
+# https://ai.byteplus.com/ark/region:ap-southeast-1/docs/ModelArk/seedance-2-5 and
+# https://ai.byteplus.com/ark/region:ap-southeast-1/docs/model-pricing (unit prices).
+# The same ModelArk key as Seedream (keychain account "seedream"). BytePlus bills a finished video
+# by its tokens: width x height x frames-per-second (24) x seconds / 1024, at a rate per million
+# tokens. The prices below are that formula at each resolution's largest listed output size, so
+# the quote is an upper bound per second: a square or adaptive clip has fewer pixels and costs
+# less. A failed task isn't billed. Video and audio references need public links and are not
+# offered; nor is draft mode.
+
+[[model]]
+id = "seedance.2-5"
+provider = "seedance"
+provider_model = "dreamina-seedance-2-5-260628"
+label = "Seedance 2.5"
+description = "ByteDance's newest Seedance: a 4 to 30 second clip with sound from a prompt, a first frame (and optionally a last one) or up to 30 reference images. At most 0.23 USD a second at 720p."
+latency_s = 180
+quality = 5
+pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "480p" = "0.107471 USD", "720p" = "0.232577 USD", "1080p" = "0.572261 USD" } }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }, { role = "last_frame", modality = "image", min = 0, max = 1 }]
+[[model.modes]]
+id = "reference-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "reference", modality = "image", min = 1, max = 30 }]
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "480p", label = "480p" }, { value = "720p", label = "720p" }, { value = "1080p", label = "1080p" }] }
+default = { type = "text", value = "720p" }
+[[model.params.params]]
+name = "ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "adaptive", label = "Adaptive" }, { value = "16:9", label = "16:9" }, { value = "4:3", label = "4:3" }, { value = "1:1", label = "1:1" }, { value = "3:4", label = "3:4" }, { value = "9:16", label = "9:16" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "adaptive" }
+[[model.params.params]]
+name = "duration_seconds"
+label = "Duration (s)"
+control = { type = "unsigned", min = "4", max = "30", step = "1" }
+default = { type = "unsigned", value = "5" }
+[[model.params.params]]
+name = "generate_audio"
+label = "Sound"
+control = { type = "toggle" }
+default = { type = "bool", value = true }
+[[model.params.params]]
+name = "seed"
+label = "Seed (optional)"
+control = { type = "unsigned", min = "0", max = "2147483647", step = "1" }
+
+[[model]]
+id = "seedance.2-0"
+provider = "seedance"
+provider_model = "dreamina-seedance-2-0-260128"
+label = "Seedance 2.0"
+description = "Seedance 2.0: a 4 to 15 second clip with sound from a prompt, frames or up to nine reference images, up to 4K. At most 0.15 USD a second at 720p."
+latency_s = 150
+quality = 5
+pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "480p" = "0.070308 USD", "720p" = "0.152153 USD", "1080p" = "0.376616 USD", "4k" = "0.777661 USD" } }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }, { role = "last_frame", modality = "image", min = 0, max = 1 }]
+[[model.modes]]
+id = "reference-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "reference", modality = "image", min = 1, max = 9 }]
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "480p", label = "480p" }, { value = "720p", label = "720p" }, { value = "1080p", label = "1080p" }, { value = "4k", label = "4K" }] }
+default = { type = "text", value = "720p" }
+[[model.params.params]]
+name = "ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "adaptive", label = "Adaptive" }, { value = "16:9", label = "16:9" }, { value = "4:3", label = "4:3" }, { value = "1:1", label = "1:1" }, { value = "3:4", label = "3:4" }, { value = "9:16", label = "9:16" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "adaptive" }
+[[model.params.params]]
+name = "duration_seconds"
+label = "Duration (s)"
+control = { type = "unsigned", min = "4", max = "15", step = "1" }
+default = { type = "unsigned", value = "5" }
+[[model.params.params]]
+name = "generate_audio"
+label = "Sound"
+control = { type = "toggle" }
+default = { type = "bool", value = true }
+[[model.params.params]]
+name = "seed"
+label = "Seed (optional)"
+control = { type = "unsigned", min = "0", max = "2147483647", step = "1" }
+
+[[model]]
+id = "seedance.2-0-fast"
+provider = "seedance"
+provider_model = "dreamina-seedance-2-0-fast-260128"
+label = "Seedance 2.0 Fast"
+description = "A faster, cheaper Seedance 2.0: a 4 to 15 second clip with sound at 480p or 720p. At most 0.12 USD a second at 720p."
+latency_s = 90
+quality = 4
+pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "480p" = "0.056247 USD", "720p" = "0.121723 USD" } }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }, { role = "last_frame", modality = "image", min = 0, max = 1 }]
+[[model.modes]]
+id = "reference-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "reference", modality = "image", min = 1, max = 9 }]
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "480p", label = "480p" }, { value = "720p", label = "720p" }] }
+default = { type = "text", value = "720p" }
+[[model.params.params]]
+name = "ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "adaptive", label = "Adaptive" }, { value = "16:9", label = "16:9" }, { value = "4:3", label = "4:3" }, { value = "1:1", label = "1:1" }, { value = "3:4", label = "3:4" }, { value = "9:16", label = "9:16" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "adaptive" }
+[[model.params.params]]
+name = "duration_seconds"
+label = "Duration (s)"
+control = { type = "unsigned", min = "4", max = "15", step = "1" }
+default = { type = "unsigned", value = "5" }
+[[model.params.params]]
+name = "generate_audio"
+label = "Sound"
+control = { type = "toggle" }
+default = { type = "bool", value = true }
+[[model.params.params]]
+name = "seed"
+label = "Seed (optional)"
+control = { type = "unsigned", min = "0", max = "2147483647", step = "1" }
+
+[[model]]
+id = "seedance.2-0-mini"
+provider = "seedance"
+provider_model = "dreamina-seedance-2-0-mini-260615"
+label = "Seedance 2.0 Mini"
+description = "The cheapest Seedance: a 4 to 15 second clip with sound at 480p or 720p. At most 0.08 USD a second at 720p."
+latency_s = 60
+quality = 3
+pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "480p" = "0.035154 USD", "720p" = "0.076077 USD" } }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }, { role = "last_frame", modality = "image", min = 0, max = 1 }]
+[[model.modes]]
+id = "reference-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "reference", modality = "image", min = 1, max = 9 }]
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "480p", label = "480p" }, { value = "720p", label = "720p" }] }
+default = { type = "text", value = "720p" }
+[[model.params.params]]
+name = "ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "adaptive", label = "Adaptive" }, { value = "16:9", label = "16:9" }, { value = "4:3", label = "4:3" }, { value = "1:1", label = "1:1" }, { value = "3:4", label = "3:4" }, { value = "9:16", label = "9:16" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "adaptive" }
+[[model.params.params]]
+name = "duration_seconds"
+label = "Duration (s)"
+control = { type = "unsigned", min = "4", max = "15", step = "1" }
+default = { type = "unsigned", value = "5" }
+[[model.params.params]]
+name = "generate_audio"
+label = "Sound"
+control = { type = "toggle" }
+default = { type = "bool", value = true }
+[[model.params.params]]
+name = "seed"
+label = "Seed (optional)"
+control = { type = "unsigned", min = "0", max = "2147483647", step = "1" }

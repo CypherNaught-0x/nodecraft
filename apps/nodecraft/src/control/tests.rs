@@ -25,11 +25,11 @@ fn draw(app: &mut NodeCraftApp, ctx: &egui::Context) {
 
 fn run(app: &mut NodeCraftApp, ctx: &egui::Context, connection: &mut Connection, id: &str, params: Value) -> Result<Value, nodecraft_types::Error> {
     let request = request(connection, "command.run", json!({"id":id,"params":params}));
-    answer(app, ctx, &request).unwrap()
+    answer(app, ctx, &FileRoots::default(), &request).unwrap()
 }
 fn list(app: &mut NodeCraftApp, ctx: &egui::Context, connection: &mut Connection) -> Value {
     let request = request(connection, "commands.list", json!({"query":"canvas."}));
-    answer(app, ctx, &request).unwrap().unwrap()
+    answer(app, ctx, &FileRoots::default(), &request).unwrap().unwrap()
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn graph_commands_headless_refusal_and_screenshot_pending_keep_their_paths() {
         let headless = request(&mut connection, "command.run", json!({"id":id,"params":params}));
         assert_eq!(control::answer(&mut app.session, &headless).unwrap().unwrap_err().kind, ErrorKind::Unsupported);
     }
-    assert!(answer(&mut app, &ctx, &Request::Screenshot).is_none(), "the pump still handles screenshots asynchronously");
+    assert!(answer(&mut app, &ctx, &FileRoots::default(), &Request::Screenshot).is_none(), "the pump still handles screenshots asynchronously");
     for id in ["keys.set", "keys.remove"] {
         assert_eq!(run(&mut app, &ctx, &mut connection, id, json!({"account":"fixture"})).unwrap_err().kind, ErrorKind::Unsupported);
     }
@@ -190,7 +190,7 @@ fn active_minimap_drag_refuses_external_navigation_until_release() {
         assert_eq!(entries["commands"].as_array().unwrap().iter().find(|entry| entry["id"] == id).unwrap()["ready"], false);
     }
     // Both external availability and dispatch must reject the internal minimap-pan exemption.
-    let mut live = LiveCommands { app: h.state_mut(), ctx: &ctx };
+    let mut live = LiveCommands { app: h.state_mut(), ctx: &ctx, roots: None };
     assert_eq!(
         nodecraft_automation::commands::CommandHost::enabled(&mut live, "canvas.pan_to", &json!({"x":12345,"y":6789})).unwrap_err().kind,
         ErrorKind::Conflict
@@ -216,4 +216,27 @@ fn active_minimap_drag_refuses_external_navigation_until_release() {
     assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
     let restored = h.state_mut().session.swap_resource::<NavigationContext>(None).unwrap();
     assert!(restored.blocked && !restored.viewport_available && !restored.fit_all && !restored.fit_selection);
+}
+
+mod files423;
+mod host360;
+mod search;
+
+#[test]
+fn live_navigation_is_judged_a_read_and_moves_nothing() {
+    use nodecraft_automation::commands::CommandHost;
+    use nodecraft_engine::impact::Impact;
+    let mut app = NodeCraftApp::headless().unwrap();
+    let ctx = egui::Context::default();
+    draw(&mut app, &ctx);
+    let (view, revision) = (app.view, app.session.revision());
+    let mut live = LiveCommands { app: &mut app, ctx: &ctx, roots: None };
+    assert_eq!(live.impact("canvas.pan_to", &json!({"x":1234,"y":-567})).unwrap(), Impact::Read);
+    assert_eq!(live.impact("canvas.minimap_toggle", &json!({})).unwrap(), Impact::Read);
+    assert_eq!(
+        live.impact("node.title", &json!({"canvas": live.app.canvas, "id": nodecraft_types::NodeId::from_bytes([9; 16]), "title": "x"})).unwrap_err().kind,
+        nodecraft_types::ErrorKind::NotFound
+    );
+    assert_eq!(app.view, view, "judging a pan doesn't pan");
+    assert_eq!(app.session.revision(), revision);
 }

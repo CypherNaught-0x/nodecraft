@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 use common::*;
 use nodecraft_engine::{
     Session,
@@ -96,7 +96,14 @@ fn safe_decode_errors_identify_field_and_category_without_echoing_values_or_keys
 fn caller_generation_history_and_invalid_noop_gestures_are_rejected() {
     let mut session = Session::new(project()).unwrap();
     let mut candidate = node(3);
-    candidate.history.push(nodecraft_graph::Generation { id: nodecraft_types::GenerationId::from_bytes([4; 16]), outputs: vec![], input_hash: None });
+    candidate.history.push(nodecraft_graph::Generation {
+        id: nodecraft_types::GenerationId::from_bytes([4; 16]),
+        outputs: vec![],
+        input_hash: None,
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+    });
     assert!(session.dispatch("node.add", &json!({"canvas":canvas(),"node":candidate})).is_err());
     assert!(session.dispatch("node.move", &move_params(1, 0, "")).is_err());
     assert_eq!(session.revision(), 0);
@@ -118,7 +125,15 @@ fn replace_comment(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     Ok(Effect::Edit {
         changes: Changeset::new(vec![Change::PutComment {
             canvas: canvas(),
-            comment: Comment { id: CommentId::from_bytes([4; 16]), text: value.as_str().unwrap().repeat(1024 * 1024), pos: Position::default() },
+            comment: Comment {
+                id: CommentId::from_bytes([4; 16]),
+                text: value.as_str().unwrap().repeat(1024 * 1024),
+                pos: Position::default(),
+                node: None,
+                replies: vec![],
+                resolved: false,
+                author: None,
+            },
         }]),
         result: Value::Null,
         gesture: None,
@@ -127,9 +142,20 @@ fn replace_comment(_: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 #[test]
 fn aggregate_history_byte_budget_evicts_oldest_complete_steps() {
     let mut original = project();
-    Change::PutComment { canvas: canvas(), comment: Comment { id: CommentId::from_bytes([4; 16]), text: "a".repeat(1024 * 1024), pos: Position::default() } }
-        .apply(&mut original)
-        .unwrap();
+    Change::PutComment {
+        canvas: canvas(),
+        comment: Comment {
+            id: CommentId::from_bytes([4; 16]),
+            text: "a".repeat(1024 * 1024),
+            pos: Position::default(),
+            node: None,
+            replies: vec![],
+            resolved: false,
+            author: None,
+        },
+    }
+    .apply(&mut original)
+    .unwrap();
     let mut registry = registry();
     let spec = *registry.get("test.service_1").unwrap();
     registry.register(CommandSpec { id: "test.comment", run: replace_comment, ..spec }).unwrap();
@@ -153,7 +179,7 @@ fn all_builtin_schemas_declare_required_properties_and_shortcuts() {
     for spec in session.registry().specs() {
         let schema = (spec.input_schema)();
         assert_eq!(schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
-        if spec.id.starts_with("edit.") || spec.id == "file.save" {
+        if spec.id.starts_with("edit.") || spec.id == "file.save" || spec.id == "file.cancel" {
             assert_eq!(schema["anyOf"][0]["type"], "null");
         } else {
             assert_eq!(schema["type"], "object");

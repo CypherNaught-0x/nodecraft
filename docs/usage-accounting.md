@@ -14,10 +14,47 @@ Project admission uses exact project spend. `budget_view` exposes both values ex
 Wire marker 1 means established ownership. Marker 2 additionally retains group evidence and
 uncertain identities, including entries evicted from the ordinary FIFO. The original named
 floor plus established open charges must remain covered. Cross-group evidence for one
-currency must agree. A marker-2 file cannot be loaded by the older strict wire reader.
+currency must agree. A marker-2 file cannot be loaded by the older strict wire reader, nor a marker-3 file by a
+marker-2 reader.
 `write_csv` exports ordinary listed entries; `write_quarantine_csv` separately exports retained
 uncertain entries, including those outside the FIFO. Neither export invents a currency or
 turns an unknown cost into zero.
+
+A person can resolve a group after checking their own provider records (#325):
+`usage.ownership` lists the groups, then one group's evidence, totals and charges with a token;
+`usage.reconcile_ownership` (human only) states which total holds each charge, as a default
+holder plus at most 1,000 exceptions. A large group is decided in stages: `only` lists at most
+1,000 charges for one stage, the rest stay quarantined under the same evidence, and each stage
+is reviewed against a fresh token. The decision is refused when the token is stale, when
+named-held charges exceed the named total at import, when earlier-held charges exceed what the
+earlier total held at import or holds now (less what folded sessions' listed charges need
+from it), or when the named total would not cover its open charges. `dry_run: true` reports the
+record and resulting totals first. Earlier-held money moves to the named session with the project unchanged; the charges
+become established and settle or release normally afterwards. Reconciliation itself settles
+nothing. Marker 3 adds the immutable audit records, one per stage. On load, a group's stages
+carry its evidence unchanged, their named-held sum stays within the named total at import (the
+group's named floor shrinks by it while the rest is quarantined), and the staged charges plus
+the still-quarantined ones equal the open amount at import, each charge once; see
+[the decision](decisions/2026-10-18-ownership-reconciliation.md).
+
+In the desktop app, "Review quarantined charges" in the palette opens a panel for this (#362).
+It lists the groups, shows one group's evidence, totals and charges, and requires a preview
+before Confirm is enabled. The run host applies a confirmed decision to a copy of the usage log
+and saves the copy in the run journal before the live log takes it. A failed save therefore
+leaves both unchanged, and the same review can be confirmed again. See
+[the decision](decisions/2026-10-20-ownership-host.md).
+
+A reconciled charge is established again, but no run is left to settle it: the run that held it
+ended in an older NodeCraft. A person states its outcome after checking their provider's records
+(#332). `usage.unsettled` lists these charges, each with a token over the charge as reviewed;
+`usage.resolve_charge` (human only) records it as `settled` at the billed amount, as an actual
+charge, or `released` because it was never billed, which takes it out of the totals. Releasing
+an unresolved charge is allowed here, unlike the automatic path, because a person confirmed it.
+A changed charge is refused as stale, and `dry_run: true` reports the session and project totals
+afterwards. Each decision is final and kept as an immutable audit record (marker 4), at most one
+per reconciled charge. A charge a saved run still follows is refused, since that run settles it
+when it resumes. The desktop lists these charges below the quarantined groups. See
+[the decision](decisions/2026-10-20-charge-resolution.md).
 
 Unknown-price jobs reserve metadata capacity before invoking the provider. A non-cloneable
 permit captures a live ledger identity, exact provider/key, metadata and one serial. Its
@@ -41,7 +78,12 @@ explicit accounting result. An accounting failure retains the output and origina
 then reports a non-transient scheduler failure. A supplied retry capability performs only
 accounting against that captured identity/report: it never invokes a provider, restarts a
 scheduler job or redelivers output. A currency mismatch is a failure, not an estimated-currency
-actual charge. No reported or estimated cost is explicitly unknown, not free. Existing
+actual charge. No reported or estimated cost is explicitly unknown, not free. A job whose
+provider reports tokens but no cost, in an authorized run of one model with catalog token
+rates, is charged those tokens at the rates (#595); otherwise it is charged its estimate. A job
+resumed after a restart carries no rates, and token counts too large to price fall back to the
+estimate. Because prompt tokens are now charged, a run with a long prompt can settle above the
+quote, which bounds output only. Existing
 provider idempotency and handle behavior remain separate from this accounting capability;
 this does not provide durable restart recovery or fix handle re-registration issue #290.
 
@@ -116,3 +158,29 @@ failed unknown-price invocation proves neither billing nor nonbilling and record
 Actual. Completed output still carries its typed accounting result exactly once. See
 [provider delivery contracts](providers.md) for audited LLM/native opt-in and conservative
 legacy, Comfy and browser paths.
+
+## Billable-unit evidence
+
+A provider may report how many of its own units it billed a job (fal's `X-Fal-Billable-Units`,
+#437) without saying what they cost. `providers::Usage::billable_units` carries that count as a
+`nodecraft_types::BillableUnits`: millionths of a unit, at most a billion units, a decimal string
+in JSON. The run records it as `billable_units` on the job's `JobSettings` in the result's history
+entry, beside the provider and model that give it meaning, and a result recorded after a restart
+keeps it too. It is evidence, not money: it never settles a charge, enters the usage log, or
+replaces the unknown-price job count a run is accepted with, so a `NoReportedCost` completion
+stays unpriced. A missing or untrusted report leaves the field out and keeps the result. A
+mapping layer (#489) should map units into this shape rather than into tokens or cost.
+
+The field records what one result was billed, not a ledger to add up. A result the cache copies
+onto another node carries no units, since nothing was billed for the copy. A result too large to
+keep its settings drops them, units included. Duplicating a node copies its history as it is.
+
+## Held results
+
+A paid result the run can't keep on its card is held by the run host, not dropped (#369; see
+`docs/decisions/2026-10-21-held-results.md`). Its charge is settled as for any finished job: it
+is in the usage log once. Retrying, placing or discarding it never calls the provider and never
+charges again. The run host's write-ahead refuses every new job, before it is sent, while
+`MAX_HELD` results wait. The write-ahead runs for every job that has no provider handle yet,
+priced or not. A fanned step's jobs are held together as one result when the step can't be
+recorded (#611).

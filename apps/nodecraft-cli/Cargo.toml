@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "nodecraft-cli"
 version.workspace = true
 edition.workspace = true
@@ -14,7 +15,46 @@ workspace = true
 [dependencies]
 nodecraft-automation = { workspace = true }
 nodecraft-engine = { workspace = true }
+# Plugin authoring (#175): `plugin pack|inventory|lint`, and the package limits it reads within.
+nodecraft-plugin = { workspace = true }
+nodecraft-plugin-store = { workspace = true }
+# Pinned exactly: the OS random source for new plugin signing keys (#866).
+getrandom = "=0.3.4"
+nodecraft-exec = { workspace = true }
+nodecraft-format = { workspace = true }
+nodecraft-graph = { workspace = true }
+nodecraft-nodes = { workspace = true }
+nodecraft-providers = { workspace = true }
 nodecraft-types = { workspace = true }
+serde_json = { workspace = true }
+# Relay (#119): rooms of shared projects, over WebSockets on std threads.
+nodecraft-sync = { workspace = true }
+tungstenite = { workspace = true }
+# Serve webhooks (#632): signed with HMAC-SHA256, sent with a pinned address and no redirects.
+hmac = { workspace = true }
+# TLS comes from nodecraft-providers, which turns on reqwest's native-tls (desktop) or rustls
+# features per target; this crate needs no TLS feature of its own.
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+# Runs (#97): jobs are driven on a tokio runtime, as the app's are.
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "sync", "signal"] }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+blake3 = { workspace = true }
+nodecraft-catalog = { workspace = true }
+nodecraft-provider-testkit = { workspace = true }
+nodecraft-graph = { workspace = true }
+nodecraft-testkit = { workspace = true }
+tempfile = { workspace = true }
+
+# Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+# Its own binary: every process it creates must take its spawn lock, which tests sharing the
+# binary would bypass.
+[[test]]
+name = "control_stdio"
+path = "tests/control_stdio.rs"

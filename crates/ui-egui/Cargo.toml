@@ -12,9 +12,18 @@ workspace = true
 
 [dependencies]
 nodecraft-engine = { workspace = true }
+nodecraft-catalog.workspace = true
 nodecraft-graph.workspace = true
 nodecraft-types.workspace = true
 nodecraft-nodes.workspace = true
+nodecraft-actions.workspace = true
+nodecraft-format.workspace = true
+nodecraft-media = { workspace = true, features = ["pdf"] }
+# The 3D preview renderer (#111), drawn through eframe's wgpu paint callbacks.
+nodecraft-gpu.workspace = true
+nodecraft-plugin-store.workspace = true
+# Sharing a project live (#698): the frames a relay connection carries.
+nodecraft-sync.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 egui = { workspace = true, features = ["default_fonts"] }
@@ -22,7 +31,96 @@ eframe = { workspace = true, features = ["wgpu", "accesskit"] }
 craft-ui = { workspace = true }
 craft-quit = { workspace = true }
 log = { workspace = true }
+getrandom.workspace = true
+# The run host's runtime types and budgets (#409).
+nodecraft-exec = { workspace = true }
+# Runs (#409): provider adapters over reqwest, on desktop and in the browser (#118).
+nodecraft-providers = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Native async sheets/portals stay at the UI layer and on its main thread (#407).
+rfd = "=0.17.2"
+# Copied images (#319): egui-winit only hands the app clipboard text. Pinned to the version
+# egui-winit already links, with the same features, so no second copy is built.
+arboard = { version = "=3.7.0", default-features = false, features = ["image-data"] }
+# Runs (#409): driven on a tokio runtime the app owns.
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+# Video playback on cards (#105), through installed ffmpeg/ffprobe the settings name.
+nodecraft-media = { workspace = true, features = ["video"] }
+# Sound playback on cards (#106): the platform's audio output (CoreAudio, WASAPI, ALSA) has no
+# safe std API, so this small audited crate wraps it. Pinned exactly: it owns a realtime callback
+# thread, and a new release should be tried before it plays through people's speakers.
+cpal = "=0.18.2"
+# Installing updates (#540): the zipped macOS app bundle (ditto deflates it) and the release keys.
+zip = { workspace = true, features = ["deflate-flate2-zlib-rs"] }
+ed25519-dalek = { workspace = true }
+# The connection to a live-sharing relay (#698), on its own thread.
+tungstenite = { workspace = true }
+# How much room the temporary folder has for assets coming in to a live-sharing session (#842): std
+# has no safe call for it, so this small crate wraps statvfs/GetDiskFreeSpaceEx. Pinned exactly.
+fs4 = { version = "=1.1.0", default-features = false, features = ["sync"] }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Browser drops (#319): a dropped file's size before reading it, and the read on the browser's queue.
+# Provider keys in the origin's `localStorage` (#118). Project files (#118): the file pickers,
+# reached through `js-sys` reflection since `web-sys` gates them, a file field and a download.
+# Recovery (#717): IndexedDB for unsaved work, Web Locks (reflected too) to tell tabs apart.
+# Runs (#118): spawned on the page's queue, timed by `setTimeout` and `performance.now()`.
+# Live sharing (#699): the page's `WebSocket` to the relay, and `web-time`'s clock (egui's own),
+# since `std`'s isn't there.
+wasm-bindgen-futures = "0.4.79"
+web-time = "1.1.0"
+js-sys = "0.3.106"
+web-sys = { version = "0.3.106", features = [
+    "BeforeUnloadEvent",
+    "BinaryType",
+    "Blob",
+    "BlobPropertyBag",
+    "CloseEvent",
+    "Document",
+    "DomException",
+    "DomStringList",
+    "Element",
+    "Event",
+    "EventTarget",
+    "File",
+    "FileList",
+    "HtmlAnchorElement",
+    "HtmlElement",
+    "HtmlInputElement",
+    "IdbCursor",
+    "IdbCursorWithValue",
+    "IdbDatabase",
+    "IdbFactory",
+    "IdbKeyRange",
+    "IdbObjectStore",
+    "IdbOpenDbRequest",
+    "IdbRequest",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "Location",
+    "MessageEvent",
+    "Navigator",
+    "Performance",
+    "Storage",
+    "Url",
+    "WebSocket",
+    "Window",
+] }
+
+# Only for the O_NONBLOCK open flag, so a dropped FIFO can't block the drop worker (#335).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
 
 [dev-dependencies]
-egui_kittest = { workspace = true }
-nodecraft-media = { workspace = true }
+# Generate-from-card tests run a quoted run against the mock provider (#83); never a real one.
+nodecraft-testkit = { workspace = true }
+nodecraft-provider-testkit = { workspace = true }
+nodecraft-catalog.workspace = true
+nodecraft-format.workspace = true
+# Plugin card tests build a text action package (#173).
+nodecraft-plugin.workspace = true
+nodecraft-media = { workspace = true, features = ["fixtures"] }
+egui_kittest = { workspace = true, features = ["wgpu"] }
+# The staged-update tests hash their payloads like the signed feed does (#567).
+blake3.workspace = true
+tempfile.workspace = true

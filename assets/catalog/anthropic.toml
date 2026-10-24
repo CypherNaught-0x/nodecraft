@@ -1,0 +1,197 @@
+# Anthropic Messages API (`providers::llm`, Anthropic dialect), checked 2026-10-21.
+# Models, ids and limits: https://platform.claude.com/docs/en/about-claude/models/overview
+# Prices: https://platform.claude.com/docs/en/about-claude/pricing (standard, global routing; verified 2026-10-21)
+# Image input (all these models): https://platform.claude.com/docs/en/build-with-claude/vision (checked
+# 2026-10-21): PNG, JPEG, GIF, WebP; 10 MB base64 per image, 32 MB per request.
+# The quote is the output-token price per 1000 tokens counted on `max_tokens`: an upper bound on
+# the reply (adaptive thinking counts as output and toward max_tokens). Input tokens are billed on
+# top and are NOT in the quote, except a wired PDF's counted pages, estimated at the mode's
+# `tokens_per_page` and the input rate (#591); the run's measured usage is what the provider charges.
+# These models reject sampling parameters (temperature, top_p), so none is offered.
+# max_tokens: 1..128000 (synchronous Messages API max output); the Messages API requires a value,
+# and the default 16000 matches the adapter's DEFAULT_MAX_TOKENS.
+
+# Claude Opus 5.5: 4 USD / MTok input, 20 USD / MTok output (verified 2026-10-21).
+[[model]]
+id = "anthropic.claude-opus-5-5"
+provider = "anthropic"
+provider_model = "claude-opus-5-5"
+label = "Claude Opus 5.5"
+description = "Anthropic's recommended model for most work. Quoted up to max output tokens at 20 USD per million output tokens; input billed on top."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 30
+quality = 5
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.02 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.004 USD", output = "0.02 USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+# Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
+# both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
+[[model.modes]]
+id = "image-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
+
+# Reads up to 5 PDFs with the prompt, as documents: each page's text and picture (#591). At most
+# 100 pages a request, the APIs' document limit. The quote adds 5000 input tokens a page, a high
+# estimate of a dense page's text plus its picture (typically 1500-3000 text tokens and about
+# 1600 for the picture); a PDF whose pages aren't counted yet is quoted at the full 100 pages.
+[[model.modes]]
+id = "document-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "document", modality = "document", min = 1, max = 5 }]
+document = { role = "document", max_pages = 100, tokens_per_page = 5000 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, adaptive thinking included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "16000" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "anthropic.claude-opus-5-5"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, adaptive thinking included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "16000" }
+
+# Claude Sonnet 5.5: 2 USD / MTok input, 10 USD / MTok output (verified 2026-10-21).
+[[model]]
+id = "anthropic.claude-sonnet-5-5"
+provider = "anthropic"
+provider_model = "claude-sonnet-5-5"
+label = "Claude Sonnet 5.5"
+description = "Fast and capable. Quoted up to max output tokens at 10 USD per million output tokens; input billed on top."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 15
+quality = 4
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.01 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.002 USD", output = "0.01 USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+# Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
+# both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
+[[model.modes]]
+id = "image-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
+
+# Reads up to 5 PDFs with the prompt, as documents: each page's text and picture (#591). At most
+# 100 pages a request, the APIs' document limit. The quote adds 5000 input tokens a page, a high
+# estimate of a dense page's text plus its picture (typically 1500-3000 text tokens and about
+# 1600 for the picture); a PDF whose pages aren't counted yet is quoted at the full 100 pages.
+[[model.modes]]
+id = "document-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "document", modality = "document", min = 1, max = 5 }]
+document = { role = "document", max_pages = 100, tokens_per_page = 5000 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, adaptive thinking included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "16000" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "anthropic.claude-sonnet-5-5"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, adaptive thinking included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "16000" }
+
+# Claude Haiku 5.5 is priced by prompt length: up to 100,000 prompt tokens 0.10 / 0.50 USD per MTok
+# (input / output), over that 0.50 / 2.50. The quote uses the higher output rate so it stays an
+# upper bound for the reply whatever the prompt length (verified 2026-10-21).
+[[model]]
+id = "anthropic.claude-haiku-5-5"
+provider = "anthropic"
+provider_model = "claude-haiku-5-5"
+label = "Claude Haiku 5.5"
+description = "Fastest, for short high-volume tasks. Quoted up to max output tokens at the long-prompt rate (2.50 USD per million output tokens); input billed on top."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 5
+quality = 3
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0025 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.0001 USD", output = "0.0005 USD", long = { above = 100000, input = "0.0005 USD", output = "0.0025 USD" } }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+# Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
+# both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
+[[model.modes]]
+id = "image-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
+
+# Reads up to 5 PDFs with the prompt, as documents: each page's text and picture (#591). At most
+# 100 pages a request, the APIs' document limit. The quote adds 5000 input tokens a page, a high
+# estimate of a dense page's text plus its picture (typically 1500-3000 text tokens and about
+# 1600 for the picture); a PDF whose pages aren't counted yet is quoted at the full 100 pages.
+[[model.modes]]
+id = "document-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "document", modality = "document", min = 1, max = 5 }]
+document = { role = "document", max_pages = 100, tokens_per_page = 5000 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, adaptive thinking included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "16000" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "anthropic.claude-haiku-5-5"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, adaptive thinking included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "16000" }

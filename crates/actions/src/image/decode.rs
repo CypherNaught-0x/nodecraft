@@ -150,6 +150,7 @@ fn meta(image: &DynamicImage) -> Result<ImageMeta, E> {
         color,
         bits_per_channel: bits,
         has_alpha: matches!(color, ColorModel::GrayAlpha | ColorModel::Rgba),
+        color_tag: None,
     })
 }
 impl ImageRequest {

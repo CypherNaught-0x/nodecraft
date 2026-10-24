@@ -3,18 +3,22 @@ resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
-version = "0.2.0-rc.1"
+version = "0.5.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
 repository = "https://github.com/CypherNaught-0x/nodecraft"
 
 [workspace.dependencies]
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
 # internal (layers: docs/architecture.md, enforced by `cargo xtask layers`)
 nodecraft-types = { path = "crates/types" }
 nodecraft-media = { path = "crates/media" }
+nodecraft-plugin = { path = "crates/plugin" }
+nodecraft-plugin-store = { path = "crates/plugin-store" }
 nodecraft-comfy = { path = "crates/comfy" }
 nodecraft-graph = { path = "crates/graph" }
+nodecraft-sync = { path = "crates/sync" }
 nodecraft-nodes = { path = "crates/nodes" }
 nodecraft-catalog = { path = "crates/catalog" }
 nodecraft-actions = { path = "crates/actions" }
@@ -43,6 +47,12 @@ eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
 image = { version = "0.25", default-features = false }
+# The layer editor's compositor and text (#101). Keep harfrust and skrifa on read-fonts 0.43.3 or
+# later, which stops a damaged font's empty glyph from panicking (#705); epaint's older copies only
+# ever see the bundled fonts.
+harfrust = { version = "0.13.3", default-features = false, features = ["std"] }
+skrifa = { version = "0.46.2", default-features = false, features = ["std"] }
+vello_cpu = { version = "0.1", default-features = false, features = ["std", "u8_pipeline"] }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
@@ -56,10 +66,34 @@ tempfile = "3"
 uuid = { version = "1", default-features = false, features = ["serde"] }
 mime = "0.3"
 proptest = "1"
+# Live collaboration (#119): a Yjs-compatible CRDT (MIT) and, for the relay, WebSocket framing
+# (MIT/Apache-2.0).
+yrs = "0.28.0"
+tungstenite = { version = "0.29.0", default-features = false, features = ["handshake"] }
 regex-syntax = "0.8"
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode", "perf"] }
 
 zip = { version = "9.0.4", default-features = false }
+# Backup encryption (#182): RustCrypto, MIT/Apache-2.0, pure Rust (also wasm).
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
+# Plugin package signatures (#171): Ed25519, BSD-3-Clause, pure Rust (also wasm); verify only.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std"] }
+# Serve webhook signatures (#632): HMAC-SHA256, RustCrypto, MIT/Apache-2.0, pure Rust.
+hmac = "0.13"
+sha2 = { version = "0.11", default-features = false }
+
+# craft-pdf's reader and rasteriser use craft-libs' patched Hayro trees. Cargo ignores a git
+# dependency's own [patch] section, so its consumers repeat it at the same rev (crates/pdf/README.md,
+# "Backend provenance and consumer pins"). Bump together with the craft-pdf pin.
+[patch.crates-io]
+hayro = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+# craft-pdf's writer (page extraction, #590) requires its unwind-safe Krilla patch.
+krilla = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", version = "=0.8.2" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -11,6 +11,29 @@ impl VideoAsset {
     }
 }
 #[derive(Clone)]
+pub enum AudioAsset {}
+impl AudioAsset {
+    pub fn metadata(&self) -> &AudioMetadata {
+        match *self {}
+    }
+    pub fn hash(&self) -> crate::ContentHash {
+        match *self {}
+    }
+}
+#[derive(Clone)]
+pub enum StillAsset {}
+impl StillAsset {
+    pub fn width(&self) -> u32 {
+        match *self {}
+    }
+    pub fn height(&self) -> u32 {
+        match *self {}
+    }
+    pub fn hash(&self) -> crate::ContentHash {
+        match *self {}
+    }
+}
+#[derive(Clone)]
 pub struct VideoFrame {
     pub width: u32,
     pub height: u32,
@@ -48,6 +71,19 @@ impl RenderedVideo {
         match *self {}
     }
 }
+#[derive(Clone)]
+pub enum RenderedAudio {}
+impl RenderedAudio {
+    pub fn asset(&self) -> &AudioAsset {
+        match *self {}
+    }
+    pub fn bytes(&self) -> u64 {
+        match *self {}
+    }
+    pub fn hash(&self) -> crate::ContentHash {
+        match *self {}
+    }
+}
 pub enum VideoOpening {}
 impl VideoOpening {
     pub fn try_result(&mut self) -> Result<Option<VideoService>> {
@@ -62,13 +98,37 @@ impl VideoService {
     pub fn import(&self, source: Arc<[u8]>, _: ColorPolicy) -> std::result::Result<VideoJob<VideoAsset>, (VideoError, Arc<[u8]>)> {
         Err((VideoError::Unsupported, source))
     }
+    pub fn import_audio(&self, source: Arc<[u8]>) -> std::result::Result<VideoJob<AudioAsset>, (VideoError, Arc<[u8]>)> {
+        Err((VideoError::Unsupported, source))
+    }
+    pub fn stage_still(&self, rgba: Arc<[u8]>, _: u32, _: u32) -> std::result::Result<VideoJob<StillAsset>, (VideoError, Arc<[u8]>)> {
+        Err((VideoError::Unsupported, rgba))
+    }
     pub fn frame(&self, _: &VideoAsset, _: FrameRequest) -> Result<VideoJob<VideoFrame>> {
         Err(VideoError::Unsupported)
     }
     pub fn render(&self, _: RenderSpec) -> Result<(FrameSender, VideoJob<RenderedVideo>)> {
         Err(VideoError::Unsupported)
     }
+    pub fn compose(&self, _: ComposeSpec) -> Result<VideoJob<RenderedVideo>> {
+        Err(VideoError::Unsupported)
+    }
     pub fn read_chunk(&self, _: &VideoAsset, _: u64, _: usize) -> Result<VideoJob<VideoChunk>> {
+        Err(VideoError::Unsupported)
+    }
+    pub fn read_audio_chunk(&self, _: &AudioAsset, _: u64, _: usize) -> Result<VideoJob<VideoChunk>> {
+        Err(VideoError::Unsupported)
+    }
+    pub fn scenes(&self, _: &VideoAsset, _: u16) -> Result<VideoJob<Vec<u64>>> {
+        Err(VideoError::Unsupported)
+    }
+    pub fn extract_audio(&self, _: &VideoAsset) -> Result<VideoJob<RenderedAudio>> {
+        Err(VideoError::Unsupported)
+    }
+    pub fn waveform(&self, _: &AudioAsset, _: usize) -> Result<VideoJob<Waveform>> {
+        Err(VideoError::Unsupported)
+    }
+    pub fn pcm(&self, _: &AudioAsset, _: u64, _: u64) -> Result<VideoJob<PcmChunk>> {
         Err(VideoError::Unsupported)
     }
     pub fn statistics(&self) -> (usize, usize) {

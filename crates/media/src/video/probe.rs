@@ -184,7 +184,109 @@ pub(super) fn parse(bytes: &[u8], policy: ColorPolicy) -> Result<VideoMetadata> 
         stream_start,
         timebase: tb,
         frames: text(s, "nb_read_frames").and_then(|v| v.parse().ok()),
+        audio: audio(streams),
     })
+}
+/// The first audio stream, if its codec is one of the few we decode; any other audio is ignored.
+fn audio(streams: &[Value]) -> Option<(u32, &'static str)> {
+    let s = streams.iter().find(|s| text(s, "codec_type") == Some("audio"))?;
+    Some((u32::try_from(number(s, "index").ok()?).ok()?, decoder(text(s, "codec_name")?)?))
+}
+/// The FFmpeg decoder for an audio codec we decode.
+fn decoder(codec: &str) -> Option<&'static str> {
+    Some(match codec {
+        "aac" => "aac",
+        "opus" => "opus",
+        "vorbis" => "vorbis",
+        "mp3" => "mp3",
+        "flac" => "flac",
+        "pcm_s16le" => "pcm_s16le",
+        "pcm_s24le" => "pcm_s24le",
+        "pcm_f32le" => "pcm_f32le",
+        "pcm_u8" => "pcm_u8",
+        _ => return None,
+    })
+}
+/// The demuxer a sound file of this sniffed type is read with; any other type is refused.
+pub(super) fn audio_demuxer(mime: &str) -> Option<&'static str> {
+    Some(match mime {
+        "audio/wav" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/flac" => "flac",
+        "audio/mpeg" => "mp3",
+        "audio/aac" => "aac",
+        "audio/mp4" | "video/mp4" | "video/quicktime" => "mov",
+        "video/webm" | "video/x-matroska" => "matroska",
+        _ => return None,
+    })
+}
+/// A sound file's metadata, from ffprobe's JSON: its first audio stream, refused when that
+/// stream's codec isn't one we decode.
+/// Any picture (cover art, a video track) is ignored.
+pub(super) fn parse_audio(bytes: &[u8]) -> Result<AudioMetadata> {
+    if bytes.len() > 262144 {
+        return Err(VideoError::Limit);
+    }
+    preflight_json(bytes)?;
+    let v: Value = serde_json::from_slice(bytes).map_err(|_| VideoError::InvalidMetadata)?;
+    let streams = v.get("streams").and_then(Value::as_array).ok_or(VideoError::InvalidMetadata)?;
+    if streams.len() > 16 {
+        return Err(VideoError::Limit);
+    }
+    let s = streams.iter().find(|s| text(s, "codec_type") == Some("audio")).ok_or(VideoError::Unsupported)?;
+    let codec = text(s, "codec_name").and_then(decoder).ok_or(VideoError::Unsupported)?;
+    let rate = number(s, "sample_rate")?;
+    let channels = number(s, "channels")?;
+    if !(8000..=384_000).contains(&rate) || !(1..=8).contains(&channels) {
+        return Err(VideoError::Unsupported);
+    }
+    let format = v.get("format").ok_or(VideoError::InvalidMetadata)?;
+    // Raw streams (ADTS, some WAVs) may not say where they start: they start at 0.
+    let format_start = text(format, "start_time").map(micros).transpose()?.unwrap_or(0);
+    let stream_start = text(s, "start_time").map(micros).transpose()?.unwrap_or(format_start);
+    if !(-3_600_000_000..=3_600_000_000).contains(&format_start) || !(-3_600_000_000..=3_600_000_000).contains(&stream_start) || stream_start < format_start {
+        return Err(VideoError::Unsupported);
+    }
+    let duration = match text(s, "duration").map(micros).transpose()? {
+        Some(duration) => duration,
+        None => {
+            let offset = stream_start.checked_sub(format_start).ok_or(VideoError::InvalidMetadata)?;
+            micros(text(format, "duration").ok_or(VideoError::Unsupported)?)?.checked_sub(offset).ok_or(VideoError::InvalidMetadata)?
+        }
+    };
+    if duration <= 0 || duration > i128::from(MAX_AUDIO_DURATION_US) {
+        return Err(VideoError::Unsupported);
+    }
+    Ok(AudioMetadata {
+        duration_us: u64::try_from(duration).map_err(|_| VideoError::InvalidMetadata)?,
+        stream: u32::try_from(number(s, "index")?).map_err(|_| VideoError::Limit)?,
+        codec,
+        format_start,
+        stream_start,
+        sample_rate: u32::try_from(rate).map_err(|_| VideoError::Limit)?,
+        channels: u32::try_from(channels).map_err(|_| VideoError::Limit)?,
+    })
+}
+/// The bounded input options for a sound file read with `demuxer`.
+pub(super) fn audio_input_args(demuxer: &'static str) -> Vec<std::ffi::OsString> {
+    let mut a = process::args(&[
+        "-protocol_whitelist",
+        "file,pipe",
+        "-probesize",
+        "8388608",
+        "-analyzeduration",
+        "5000000",
+        "-max_probe_packets",
+        "2048",
+        "-threads",
+        "2",
+        "-f",
+        demuxer,
+    ]);
+    if demuxer == "mov" {
+        a.extend(process::args(&["-enable_drefs", "0", "-use_absolute_path", "0"]));
+    }
+    a
 }
 pub(super) fn input_args(mov: bool) -> Vec<std::ffi::OsString> {
     let mut a = process::args(&[
@@ -356,5 +458,31 @@ mod tests {
         }
         value["format"]["duration"] = "8".into();
         assert_eq!(parse(&serde_json::to_vec(&value).unwrap(), ColorPolicy::RequireDeclared).unwrap().duration_us, 3_000_000);
+    }
+    #[test]
+    fn only_known_audio_codecs_are_kept() {
+        let mut value = metadata();
+        assert_eq!(parse(&serde_json::to_vec(&value).unwrap(), ColorPolicy::RequireDeclared).unwrap().audio, None);
+        let streams = value["streams"].as_array_mut().unwrap();
+        streams.push(serde_json::json!({"index":1,"codec_type":"audio","codec_name":"ac3"}));
+        streams.push(serde_json::json!({"index":2,"codec_type":"audio","codec_name":"aac"}));
+        assert_eq!(parse(&serde_json::to_vec(&value).unwrap(), ColorPolicy::RequireDeclared).unwrap().audio, None);
+        value["streams"][1]["codec_name"] = "opus".into();
+        assert_eq!(parse(&serde_json::to_vec(&value).unwrap(), ColorPolicy::RequireDeclared).unwrap().audio, Some((1, "opus")));
+    }
+    #[test]
+    fn sound_files_take_their_first_decodable_audio_stream() {
+        let json = br#"{"streams":[{"index":0,"codec_type":"video","codec_name":"mjpeg"},{"index":1,"codec_type":"audio","codec_name":"pcm_s16le","sample_rate":"44100","channels":2}],"format":{"duration":"2.500000"}}"#;
+        let m = parse_audio(json).unwrap();
+        assert_eq!((m.duration_us, m.stream, m.codec, m.stream_start), (2_500_000, 1, "pcm_s16le", 0), "cover art ignored, raw start at 0");
+        let alac = br#"{"streams":[{"index":0,"codec_type":"audio","codec_name":"alac","sample_rate":"44100","channels":2,"duration":"1.0"}],"format":{}}"#;
+        assert_eq!(parse_audio(alac).err(), Some(VideoError::Unsupported));
+        let surround = br#"{"streams":[{"index":0,"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":12,"duration":"1.0"}],"format":{}}"#;
+        assert_eq!(parse_audio(surround).err(), Some(VideoError::Unsupported));
+        let silent = br#"{"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}],"format":{"duration":"1.0"}}"#;
+        assert_eq!(parse_audio(silent).err(), Some(VideoError::Unsupported));
+        assert_eq!(audio_demuxer("audio/mpeg"), Some("mp3"));
+        assert_eq!(audio_demuxer("image/png"), None);
+        assert!(audio_input_args("mov").iter().any(|a| a == "-enable_drefs"));
     }
 }

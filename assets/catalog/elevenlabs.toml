@@ -1,0 +1,508 @@
+# ElevenLabs official API and pricing checked 2026-10-21.
+# https://elevenlabs.io/pricing/api
+# https://elevenlabs.io/docs/api-reference/text-to-speech/convert
+# https://elevenlabs.io/docs/api-reference/text-to-sound-effects/convert
+# https://elevenlabs.io/docs/api-reference/music/compose
+# https://elevenlabs.io/docs/api-reference/speech-to-speech/convert
+# Speech is priced per 1000 characters sent, so its price is known only once the prompt is.
+# Sound effects are 0.12 USD per minute of generated sound (0.002 USD per second), so the
+# quote follows the chosen duration.
+# Every output is MP3 at 44.1 kHz, 128 kbps.
+
+[[model]]
+id="elevenlabs.v3"
+provider="elevenlabs"
+provider_model="eleven_v3"
+label="Eleven v3"
+description="Expressive speech in 70+ languages, up to 5000 characters. Priced per 1000 characters."
+latency_s=10
+quality=5
+pricing={type="per_unit",unit="thousand_characters",price="0.08 USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="EXAVITQu4vr4xnSDxMaL",label="Sarah"},{value="JBFqnCBsd6RMkjVDRZzb",label="George"},{value="XB0fDUnXU5powFXDhCwa",label="Charlotte"},{value="onwK4e9ZLuTAKqWW03F9",label="Daniel"},{value="Xb7hH8MSUJpSbSDYk0k2",label="Alice"},{value="nPczCjzI2devNBz1zQrb",label="Brian"},{value="pFZP5JQG7iQjIQuC4Bku",label="Lily"},{value="XrExE9yKIg1WjnnlVkGX",label="Matilda"},{value="TX3LPaxmHKxFdv7VOQHJ",label="Liam"},{value="cgSgspJ2msm6clMCkdW9",label="Jessica"}]}
+default={type="text",value="EXAVITQu4vr4xnSDxMaL"}
+
+[[model.params.params]]
+name="voice_id"
+label="Your voice (overrides Voice)"
+description="A voice your ElevenLabs account can use, by id: your own, or one added from the library. Refresh option lists fetches them by name."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="stability"
+label="Stability"
+# Eleven v3 takes only 0 (creative), 0.5 (natural) and 1 (robust).
+control={type="slider",min=0.0,max=1.0,step=0.5}
+default={type="number",value=0.5}
+
+[[model.params.params]]
+name="similarity_boost"
+label="Similarity"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.75}
+
+[[model.params.params]]
+name="style"
+label="Style"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.0}
+
+[[model.params.params]]
+name="speed"
+label="Speed"
+control={type="slider",min=0.7,max=1.2,step=0.05}
+default={type="number",value=1.0}
+
+[[model.params.params]]
+name="language_code"
+label="Language (ISO 639-1, optional)"
+control={type="text",multiline=false,max_bytes=8}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+# The account's voices are fetched on Refresh option lists (#670).
+[model.parameter_contract]
+version={major=1,minor=0}
+namespace="elevenlabs.v3"
+owner="model"
+
+[[model.parameter_contract.rules]]
+param="voice_id"
+options={id="elevenlabs.voices"}
+
+[[model.parameter_contract.schema.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="EXAVITQu4vr4xnSDxMaL",label="Sarah"},{value="JBFqnCBsd6RMkjVDRZzb",label="George"},{value="XB0fDUnXU5powFXDhCwa",label="Charlotte"},{value="onwK4e9ZLuTAKqWW03F9",label="Daniel"},{value="Xb7hH8MSUJpSbSDYk0k2",label="Alice"},{value="nPczCjzI2devNBz1zQrb",label="Brian"},{value="pFZP5JQG7iQjIQuC4Bku",label="Lily"},{value="XrExE9yKIg1WjnnlVkGX",label="Matilda"},{value="TX3LPaxmHKxFdv7VOQHJ",label="Liam"},{value="cgSgspJ2msm6clMCkdW9",label="Jessica"}]}
+default={type="text",value="EXAVITQu4vr4xnSDxMaL"}
+
+[[model.parameter_contract.schema.params]]
+name="voice_id"
+label="Your voice (overrides Voice)"
+description="A voice your ElevenLabs account can use, by id: your own, or one added from the library. Refresh option lists fetches them by name."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.parameter_contract.schema.params]]
+name="stability"
+label="Stability"
+# Eleven v3 takes only 0 (creative), 0.5 (natural) and 1 (robust).
+control={type="slider",min=0.0,max=1.0,step=0.5}
+default={type="number",value=0.5}
+
+[[model.parameter_contract.schema.params]]
+name="similarity_boost"
+label="Similarity"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.75}
+
+[[model.parameter_contract.schema.params]]
+name="style"
+label="Style"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.0}
+
+[[model.parameter_contract.schema.params]]
+name="speed"
+label="Speed"
+control={type="slider",min=0.7,max=1.2,step=0.05}
+default={type="number",value=1.0}
+
+[[model.parameter_contract.schema.params]]
+name="language_code"
+label="Language (ISO 639-1, optional)"
+control={type="text",multiline=false,max_bytes=8}
+
+[[model.parameter_contract.schema.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="elevenlabs.multilingual-v2"
+provider="elevenlabs"
+provider_model="eleven_multilingual_v2"
+label="Eleven Multilingual v2"
+description="Natural, consistent speech in 29 languages, up to 10000 characters. Priced per 1000 characters."
+latency_s=10
+quality=4
+pricing={type="per_unit",unit="thousand_characters",price="0.08 USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="EXAVITQu4vr4xnSDxMaL",label="Sarah"},{value="JBFqnCBsd6RMkjVDRZzb",label="George"},{value="XB0fDUnXU5powFXDhCwa",label="Charlotte"},{value="onwK4e9ZLuTAKqWW03F9",label="Daniel"},{value="Xb7hH8MSUJpSbSDYk0k2",label="Alice"},{value="nPczCjzI2devNBz1zQrb",label="Brian"},{value="pFZP5JQG7iQjIQuC4Bku",label="Lily"},{value="XrExE9yKIg1WjnnlVkGX",label="Matilda"},{value="TX3LPaxmHKxFdv7VOQHJ",label="Liam"},{value="cgSgspJ2msm6clMCkdW9",label="Jessica"}]}
+default={type="text",value="EXAVITQu4vr4xnSDxMaL"}
+
+[[model.params.params]]
+name="voice_id"
+label="Your voice (overrides Voice)"
+description="A voice your ElevenLabs account can use, by id: your own, or one added from the library. Refresh option lists fetches them by name."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="stability"
+label="Stability"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.5}
+
+[[model.params.params]]
+name="similarity_boost"
+label="Similarity"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.75}
+
+[[model.params.params]]
+name="style"
+label="Style"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.0}
+
+[[model.params.params]]
+name="speed"
+label="Speed"
+control={type="slider",min=0.7,max=1.2,step=0.05}
+default={type="number",value=1.0}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+# The account's voices are fetched on Refresh option lists (#670).
+[model.parameter_contract]
+version={major=1,minor=0}
+namespace="elevenlabs.multilingual-v2"
+owner="model"
+
+[[model.parameter_contract.rules]]
+param="voice_id"
+options={id="elevenlabs.voices"}
+
+[[model.parameter_contract.schema.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="EXAVITQu4vr4xnSDxMaL",label="Sarah"},{value="JBFqnCBsd6RMkjVDRZzb",label="George"},{value="XB0fDUnXU5powFXDhCwa",label="Charlotte"},{value="onwK4e9ZLuTAKqWW03F9",label="Daniel"},{value="Xb7hH8MSUJpSbSDYk0k2",label="Alice"},{value="nPczCjzI2devNBz1zQrb",label="Brian"},{value="pFZP5JQG7iQjIQuC4Bku",label="Lily"},{value="XrExE9yKIg1WjnnlVkGX",label="Matilda"},{value="TX3LPaxmHKxFdv7VOQHJ",label="Liam"},{value="cgSgspJ2msm6clMCkdW9",label="Jessica"}]}
+default={type="text",value="EXAVITQu4vr4xnSDxMaL"}
+
+[[model.parameter_contract.schema.params]]
+name="voice_id"
+label="Your voice (overrides Voice)"
+description="A voice your ElevenLabs account can use, by id: your own, or one added from the library. Refresh option lists fetches them by name."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.parameter_contract.schema.params]]
+name="stability"
+label="Stability"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.5}
+
+[[model.parameter_contract.schema.params]]
+name="similarity_boost"
+label="Similarity"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.75}
+
+[[model.parameter_contract.schema.params]]
+name="style"
+label="Style"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.0}
+
+[[model.parameter_contract.schema.params]]
+name="speed"
+label="Speed"
+control={type="slider",min=0.7,max=1.2,step=0.05}
+default={type="number",value=1.0}
+
+[[model.parameter_contract.schema.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="elevenlabs.flash-v2-5"
+provider="elevenlabs"
+provider_model="eleven_flash_v2_5"
+label="Eleven Flash v2.5"
+description="Fast, low-cost speech in 32 languages, up to 40000 characters. Priced per 1000 characters."
+latency_s=5
+quality=3
+pricing={type="per_unit",unit="thousand_characters",price="0.04 USD"}
+
+[[model.modes]]
+id="text-to-speech"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="EXAVITQu4vr4xnSDxMaL",label="Sarah"},{value="JBFqnCBsd6RMkjVDRZzb",label="George"},{value="XB0fDUnXU5powFXDhCwa",label="Charlotte"},{value="onwK4e9ZLuTAKqWW03F9",label="Daniel"},{value="Xb7hH8MSUJpSbSDYk0k2",label="Alice"},{value="nPczCjzI2devNBz1zQrb",label="Brian"},{value="pFZP5JQG7iQjIQuC4Bku",label="Lily"},{value="XrExE9yKIg1WjnnlVkGX",label="Matilda"},{value="TX3LPaxmHKxFdv7VOQHJ",label="Liam"},{value="cgSgspJ2msm6clMCkdW9",label="Jessica"}]}
+default={type="text",value="EXAVITQu4vr4xnSDxMaL"}
+
+[[model.params.params]]
+name="voice_id"
+label="Your voice (overrides Voice)"
+description="A voice your ElevenLabs account can use, by id: your own, or one added from the library. Refresh option lists fetches them by name."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="stability"
+label="Stability"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.5}
+
+[[model.params.params]]
+name="similarity_boost"
+label="Similarity"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.75}
+
+[[model.params.params]]
+name="style"
+label="Style"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.0}
+
+[[model.params.params]]
+name="speed"
+label="Speed"
+control={type="slider",min=0.7,max=1.2,step=0.05}
+default={type="number",value=1.0}
+
+[[model.params.params]]
+name="language_code"
+label="Language (ISO 639-1, optional)"
+control={type="text",multiline=false,max_bytes=8}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+# The account's voices are fetched on Refresh option lists (#670).
+[model.parameter_contract]
+version={major=1,minor=0}
+namespace="elevenlabs.flash-v2-5"
+owner="model"
+
+[[model.parameter_contract.rules]]
+param="voice_id"
+options={id="elevenlabs.voices"}
+
+[[model.parameter_contract.schema.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="EXAVITQu4vr4xnSDxMaL",label="Sarah"},{value="JBFqnCBsd6RMkjVDRZzb",label="George"},{value="XB0fDUnXU5powFXDhCwa",label="Charlotte"},{value="onwK4e9ZLuTAKqWW03F9",label="Daniel"},{value="Xb7hH8MSUJpSbSDYk0k2",label="Alice"},{value="nPczCjzI2devNBz1zQrb",label="Brian"},{value="pFZP5JQG7iQjIQuC4Bku",label="Lily"},{value="XrExE9yKIg1WjnnlVkGX",label="Matilda"},{value="TX3LPaxmHKxFdv7VOQHJ",label="Liam"},{value="cgSgspJ2msm6clMCkdW9",label="Jessica"}]}
+default={type="text",value="EXAVITQu4vr4xnSDxMaL"}
+
+[[model.parameter_contract.schema.params]]
+name="voice_id"
+label="Your voice (overrides Voice)"
+description="A voice your ElevenLabs account can use, by id: your own, or one added from the library. Refresh option lists fetches them by name."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.parameter_contract.schema.params]]
+name="stability"
+label="Stability"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.5}
+
+[[model.parameter_contract.schema.params]]
+name="similarity_boost"
+label="Similarity"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.75}
+
+[[model.parameter_contract.schema.params]]
+name="style"
+label="Style"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.0}
+
+[[model.parameter_contract.schema.params]]
+name="speed"
+label="Speed"
+control={type="slider",min=0.7,max=1.2,step=0.05}
+default={type="number",value=1.0}
+
+[[model.parameter_contract.schema.params]]
+name="language_code"
+label="Language (ISO 639-1, optional)"
+control={type="text",multiline=false,max_bytes=8}
+
+[[model.parameter_contract.schema.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="elevenlabs.sound-effects"
+provider="elevenlabs"
+provider_model="eleven_text_to_sound_v2"
+label="Eleven Sound Effects"
+description="A sound effect from a description, 0.5 to 30 seconds, optionally looping."
+latency_s=10
+quality=4
+pricing={type="per_unit",unit="second",price="0.002 USD",count="duration_seconds"}
+
+[[model.modes]]
+id="text-to-audio"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="duration_seconds"
+label="Duration (s)"
+control={type="slider",min=0.5,max=30.0,step=0.5}
+default={type="number",value=5.0}
+
+[[model.params.params]]
+name="prompt_influence"
+label="Prompt influence"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.3}
+
+[[model.params.params]]
+name="loop"
+label="Loop"
+control={type="toggle"}
+default={type="bool",value=false}
+
+[[model]]
+id="elevenlabs.music"
+provider="elevenlabs"
+provider_model="music_v1"
+label="Eleven Music"
+description="A song or instrumental from a description, 3 seconds to 10 minutes."
+latency_s=60
+quality=4
+pricing={type="per_unit",unit="second",price="0.0025 USD",count="duration"}
+
+[[model.modes]]
+id="text-to-audio"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="duration"
+label="Duration (s)"
+control={type="unsigned",min="3",max="600",step="1"}
+default={type="unsigned",value="30"}
+
+[[model.params.params]]
+name="force_instrumental"
+label="Instrumental only"
+control={type="toggle"}
+default={type="bool",value=false}
+
+[[model]]
+id="elevenlabs.voice-changer"
+provider="elevenlabs"
+provider_model="eleven_multilingual_sts_v2"
+label="Eleven Voice Changer"
+description="Speech re-voiced in another voice, keeping its timing and delivery. Priced per minute of input; unknown before execution."
+latency_s=15
+quality=4
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="audio-to-audio"
+output="audio"
+inputs=[{role="audio",modality="audio",min=1,max=1}]
+
+[[model.params.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="EXAVITQu4vr4xnSDxMaL",label="Sarah"},{value="JBFqnCBsd6RMkjVDRZzb",label="George"},{value="XB0fDUnXU5powFXDhCwa",label="Charlotte"},{value="onwK4e9ZLuTAKqWW03F9",label="Daniel"},{value="Xb7hH8MSUJpSbSDYk0k2",label="Alice"},{value="nPczCjzI2devNBz1zQrb",label="Brian"},{value="pFZP5JQG7iQjIQuC4Bku",label="Lily"},{value="XrExE9yKIg1WjnnlVkGX",label="Matilda"},{value="TX3LPaxmHKxFdv7VOQHJ",label="Liam"},{value="cgSgspJ2msm6clMCkdW9",label="Jessica"}]}
+default={type="text",value="EXAVITQu4vr4xnSDxMaL"}
+
+[[model.params.params]]
+name="voice_id"
+label="Your voice (overrides Voice)"
+description="A voice your ElevenLabs account can use, by id: your own, or one added from the library. Refresh option lists fetches them by name."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="stability"
+label="Stability"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.5}
+
+[[model.params.params]]
+name="similarity_boost"
+label="Similarity"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.75}
+
+[[model.params.params]]
+name="remove_background_noise"
+label="Remove background noise"
+control={type="toggle"}
+default={type="bool",value=false}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+# The account's voices are fetched on Refresh option lists (#670).
+[model.parameter_contract]
+version={major=1,minor=0}
+namespace="elevenlabs.voice-changer"
+owner="model"
+
+[[model.parameter_contract.rules]]
+param="voice_id"
+options={id="elevenlabs.voices"}
+
+[[model.parameter_contract.schema.params]]
+name="voice"
+label="Voice"
+control={type="choice",options=[{value="EXAVITQu4vr4xnSDxMaL",label="Sarah"},{value="JBFqnCBsd6RMkjVDRZzb",label="George"},{value="XB0fDUnXU5powFXDhCwa",label="Charlotte"},{value="onwK4e9ZLuTAKqWW03F9",label="Daniel"},{value="Xb7hH8MSUJpSbSDYk0k2",label="Alice"},{value="nPczCjzI2devNBz1zQrb",label="Brian"},{value="pFZP5JQG7iQjIQuC4Bku",label="Lily"},{value="XrExE9yKIg1WjnnlVkGX",label="Matilda"},{value="TX3LPaxmHKxFdv7VOQHJ",label="Liam"},{value="cgSgspJ2msm6clMCkdW9",label="Jessica"}]}
+default={type="text",value="EXAVITQu4vr4xnSDxMaL"}
+
+[[model.parameter_contract.schema.params]]
+name="voice_id"
+label="Your voice (overrides Voice)"
+description="A voice your ElevenLabs account can use, by id: your own, or one added from the library. Refresh option lists fetches them by name."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.parameter_contract.schema.params]]
+name="stability"
+label="Stability"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.5}
+
+[[model.parameter_contract.schema.params]]
+name="similarity_boost"
+label="Similarity"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.75}
+
+[[model.parameter_contract.schema.params]]
+name="remove_background_noise"
+label="Remove background noise"
+control={type="toggle"}
+default={type="bool",value=false}
+
+[[model.parameter_contract.schema.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="4294967295",step="1"}

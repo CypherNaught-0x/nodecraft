@@ -9,7 +9,11 @@ use egui::{Pos2, Rect, Vec2};
 use nodecraft_engine::Session;
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, ProjectId};
 use serde_json::{Value, json};
-use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 // A private host resource, never serialized. Retaining its Arc in the cache keeps
 // the previous allocation alive, so a replacement Session cannot reuse its identity.
@@ -18,7 +22,10 @@ pub(crate) struct SessionIdentity;
 pub struct Geometry {
     key: Option<(ProjectId, CanvasId, u64, ThemeKind)>,
     session_identity: Option<Arc<SessionIdentity>>,
+    generation_definition: Option<[u8; 32]>,
     pub rects: BTreeMap<NodeId, Rect>,
+    /// Checked instance sizes for layout (two scalars), excluding navigation placeholders.
+    pub sizes: BTreeMap<NodeId, Vec2>,
     /// Checked instance labels: at most256bytes per actual node; no descriptor bodies retained.
     pub labels: BTreeMap<NodeId, String>,
     pub error: bool,
@@ -33,27 +40,37 @@ impl Geometry {
     }
     pub fn refresh(&mut self, session: &mut Session, canvas: CanvasId, theme: ThemeKind) {
         let identity = Self::identity(session);
+        let generation_definition = crate::app::admission::definition_snapshot(session);
         let document = session.document();
         let Some(scene) = document.canvases().get(&canvas) else {
             self.rects.clear();
+            self.sizes.clear();
             self.labels.clear();
             self.key = None;
             self.error = true;
             return;
         };
         let key = (document.id(), canvas, session.revision(), theme);
-        if self.key == Some(key) && self.session_identity.as_ref().is_some_and(|previous| Arc::ptr_eq(previous, &identity)) {
+        if self.key == Some(key)
+            && self.generation_definition == generation_definition
+            && self.session_identity.as_ref().is_some_and(|previous| Arc::ptr_eq(previous, &identity))
+        {
             return;
         }
         self.key = Some(key);
+        self.generation_definition = generation_definition;
         self.session_identity = Some(identity);
         self.rects.clear();
+        self.sizes.clear();
         self.labels.clear();
         self.error = false;
         let mut validated = ValidatedDescriptors::default();
         for node in scene.nodes().values() {
             match instance_info(session, node, theme.tokens(), &mut validated) {
-                Ok((rect, label)) => {
+                Ok((rect, size, label)) => {
+                    if let Some(size) = size {
+                        self.sizes.insert(node.id, size);
+                    }
                     self.rects.insert(node.id, rect);
                     self.labels.insert(node.id, label);
                 }
@@ -93,13 +110,13 @@ fn instance_info<'a>(
     node: &nodecraft_graph::Node,
     t: &Tokens,
     validated: &mut ValidatedDescriptors<'a>,
-) -> Result<(Rect, String), Error> {
+) -> Result<(Rect, Option<Vec2>, String), Error> {
     node.validate_payload()?;
     // Match painting's bounded placeholder on every schema-resolution/admission failure.
     let placeholder = || {
         let rect = card::world_rect(node, None, t);
         if valid_rect(rect) {
-            Ok((rect, if crate::search::fallback_label(node) { "Unknown node".to_owned() } else { String::new() }))
+            Ok((rect, None, if crate::search::fallback_label(node) { "Unknown node".to_owned() } else { String::new() }))
         } else {
             Err(Error::new(ErrorKind::InvalidInput, "node placeholder geometry is unavailable"))
         }
@@ -107,6 +124,21 @@ fn instance_info<'a>(
     let Ok(kind) = session.kinds().get(&node.kind) else {
         return placeholder();
     };
+    if nodecraft_nodes::generation::is_generation(&node.kind) {
+        // The model-owned conditions and current definition binding are the same
+        // authority used by painting and marquee admission, including placeholders.
+        let Some(admitted) = crate::app::admission::admit_uncached(session, node) else { return placeholder() };
+        let descriptor = admitted.descriptor;
+        let rect = card::world_rect(node, Some(&descriptor), t);
+        if !valid_rect(rect) {
+            return Err(Error::new(ErrorKind::InvalidInput, "node geometry is unavailable"));
+        }
+        return Ok((
+            rect,
+            Some(card::world_size(node, Some(&descriptor), t)),
+            if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() },
+        ));
+    }
     let Ok(descriptor) = kind.instance(node) else {
         return placeholder();
     };
@@ -162,11 +194,11 @@ fn instance_info<'a>(
     if !valid_rect(rect) {
         return Err(Error::new(ErrorKind::InvalidInput, "node geometry is unavailable"));
     }
-    Ok((rect, if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }))
+    Ok((rect, Some(card::world_size(node, Some(&descriptor), t)), if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }))
 }
 #[cfg(test)]
 fn instance_rect<'a>(session: &'a Session, node: &nodecraft_graph::Node, t: &Tokens, validated: &mut ValidatedDescriptors<'a>) -> Result<Rect, Error> {
-    instance_info(session, node, t, validated).map(|(rect, _)| rect)
+    instance_info(session, node, t, validated).map(|(rect, _, _)| rect)
 }
 /// Includes the painted title/unsaved label, body and handles at ordinary zoom. Additional
 /// screen padding in fit accounts for minimum screen-sized text/handles at low zoom.
@@ -244,7 +276,12 @@ pub struct OverlayInput<'a> {
     pub selection_enabled: bool,
     pub toggle_enabled: bool,
     pub pan_enabled: bool,
+    /// A live app freezes fresh-press admission before clipboard/quick-add; isolated overlays use None.
+    pub press_admitted: Option<bool>,
     pub preview: Option<(NodeId, Vec2)>,
+    /// Cards in collapsed fields, which the canvas doesn't draw, and those fields' header rects.
+    pub hidden: &'a BTreeSet<NodeId>,
+    pub collapsed: &'a [Rect],
     pub canvas_gesture: bool,
     pub tokens: &'a Tokens,
 }
@@ -253,21 +290,61 @@ impl Navigation {
         let top = layout(viewport, self.visible, t).overlay.top();
         Rect::from_min_max(viewport.min, Pos2::new(viewport.max.x, top - t.navigation_gap))
     }
+    /// Shared with early canvas-key admission: a fresh map press owns the whole frame,
+    /// even when a key event precedes that press in the platform's event list.
+    pub(crate) fn press_pending(&self, ctx: &egui::Context, viewport: Rect, pan_enabled: bool, t: &Tokens) -> bool {
+        self.visible
+            && pan_enabled
+            && self.drag.is_none()
+            && ctx.input(|i| {
+                // A batch may include movement after the press. The first primary
+                // press owns this frame; later presses cannot transfer that ownership.
+                i.events
+                    .iter()
+                    .find_map(|event| match event {
+                        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
+                        _ => None,
+                    })
+                    .is_some_and(|pos| layout(viewport, self.visible, t).map.contains(pos))
+            })
+    }
+    /// What the minimap draws, in world space: each card the canvas draws (moved by a card drag's
+    /// `preview`) and each collapsed field's header (`None`), matching the canvas.
+    pub fn shapes(&self, preview: Option<(NodeId, Vec2)>, hidden: &BTreeSet<NodeId>, collapsed: &[Rect]) -> Vec<(Option<NodeId>, Rect)> {
+        let cards = self.geometry.rects.iter().filter(|(id, _)| !hidden.contains(id)).map(|(id, body)| {
+            let body = match preview {
+                Some((moving, delta)) if moving == *id => body.translate(delta),
+                _ => *body,
+            };
+            (Some(*id), body)
+        });
+        collapsed.iter().map(|header| (None, *header)).chain(cards).collect()
+    }
     pub fn show(&mut self, ui: &mut egui::Ui, input: OverlayInput<'_>) -> (bool, Vec<(&'static str, Value)>) {
-        let OverlayInput { view, viewport, selection, all_enabled, selection_enabled, toggle_enabled, pan_enabled, preview, canvas_gesture, tokens: t } = input;
+        let OverlayInput {
+            view,
+            viewport,
+            selection,
+            all_enabled,
+            selection_enabled,
+            toggle_enabled,
+            pan_enabled,
+            press_admitted,
+            preview,
+            hidden,
+            collapsed,
+            canvas_gesture,
+            tokens: t,
+        } = input;
         let layout = layout(viewport, self.visible, t);
         let mut actions = Vec::new();
         let visible = view.visible_world(viewport);
-        let node_bounds = self.geometry.bounds(None, t);
-        let mut domain = node_bounds.map_or(visible, |nodes| if valid_rect(visible) { nodes.union(visible) } else { nodes });
-        if let Some((id, delta)) = preview
-            && let Some(body) = self.geometry.rects.get(&id)
-        {
-            domain = domain.union(decorated(body.translate(delta), t));
-        }
+        let shapes = self.shapes(preview, hidden, collapsed);
+        let node_bounds = if self.geometry.error { None } else { shapes.iter().map(|(_, rect)| decorated(*rect, t)).reduce(|a, b| a.union(b)) };
+        let domain = node_bounds.map_or(visible, |nodes| if valid_rect(visible) { nodes.union(visible) } else { nodes });
         let mapping = self.drag.or_else(|| Mapping::new(domain, layout.map.shrink(t.navigation_gap)));
         let pointer = ui.input(|i| i.pointer.interact_pos());
-        if self.visible && pan_enabled && self.drag.is_none() && ui.input(|i| i.pointer.primary_pressed()) && pointer.is_some_and(|p| layout.map.contains(p)) {
+        if self.drag.is_none() && press_admitted.unwrap_or_else(|| self.press_pending(ui.ctx(), viewport, pan_enabled, t)) {
             self.drag = mapping;
             self.pointer_owned = self.drag.is_some();
         }
@@ -289,22 +366,20 @@ impl Navigation {
                         ui.interact(layout.map, ui.id().with("minimap"), if pan_enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() });
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, pan_enabled, "Minimap: click or drag to pan canvas"));
                     if let Some(mapping) = mapping {
-                        for (id, body) in &self.geometry.rects {
-                            let body = if let Some((preview_id, delta)) = preview
-                                && preview_id == *id
-                            {
-                                body.translate(delta)
-                            } else {
-                                *body
-                            };
-                            let mut rect = mapping.rect(body);
+                        for (id, body) in &shapes {
+                            let mut rect = mapping.rect(*body);
                             if rect.width() < t.minimap_node_min {
                                 rect = rect.expand2(Vec2::new(t.minimap_node_min * 0.5, 0.0));
                             }
                             if rect.height() < t.minimap_node_min {
                                 rect = rect.expand2(Vec2::new(0.0, t.minimap_node_min * 0.5));
                             }
-                            painter.rect_filled(rect.intersect(layout.map), t.panel_radius, if selection.contains(*id) { t.accent } else { t.text_muted });
+                            let fill = match id {
+                                Some(id) if selection.contains(*id) => t.accent,
+                                Some(_) => t.text_muted,
+                                None => t.panel_stroke,
+                            };
+                            painter.rect_filled(rect.intersect(layout.map), t.panel_radius, fill);
                         }
                         if valid_rect(visible) {
                             painter.rect(

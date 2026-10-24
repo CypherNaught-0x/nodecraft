@@ -16,6 +16,11 @@ use std::{
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod probe;
+mod timeline;
+pub use timeline::{
+    ComposeCaption, ComposeClip, ComposeSpec, Effect, Key, Look, MAX_BLUR, MAX_CAPTIONS, MAX_CLIPS, MAX_DURATION_US, MAX_PLACED_SIDE, MAX_SPEED, MAX_VOLUME,
+    MIN_SPEED, MIN_TRANSITION_US, Placement, Quality, Source, layer_room_us,
+};
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
 mod quota;
@@ -116,6 +121,14 @@ impl VideoLimits {
         self.input = bytes;
         Ok(self)
     }
+    /// Caps each rendered file, so an encode stops once it outgrows what the caller keeps.
+    pub fn lower_output(mut self, bytes: u64) -> Result<Self> {
+        if bytes == 0 || bytes > self.output {
+            return Err(VideoError::Invalid);
+        }
+        self.output = bytes;
+        Ok(self)
+    }
 }
 #[derive(Clone, Debug)]
 pub struct ToolPaths {
@@ -179,7 +192,68 @@ pub struct VideoMetadata {
     pub(crate) stream_start: i128,
     pub(crate) timebase: (u64, u64),
     pub(crate) frames: Option<u64>,
+    /// First decodable audio stream: its index and FFmpeg decoder name.
+    pub(crate) audio: Option<(u32, &'static str)>,
 }
+impl VideoMetadata {
+    pub fn has_audio(&self) -> bool {
+        self.audio.is_some()
+    }
+}
+/// A sound-only file's first decodable audio stream.
+#[derive(Clone, Debug)]
+pub struct AudioMetadata {
+    pub duration_us: u64,
+    pub(crate) stream: u32,
+    /// FFmpeg decoder name.
+    pub(crate) codec: &'static str,
+    pub(crate) format_start: i128,
+    pub(crate) stream_start: i128,
+    /// Samples per second, 8000..=384000.
+    pub sample_rate: u32,
+    /// 1..=8.
+    pub channels: u32,
+}
+/// Maximum accepted/replayed sound duration, including decoding beyond a container's hint.
+pub const MAX_AUDIO_DURATION_US: u64 = 3_600_000_000;
+/// The most slices a [`Waveform`] may have.
+pub const MAX_WAVEFORM_BUCKETS: usize = 4096;
+/// The longest sound a [`Waveform`] is made for: a few hours.
+pub const MAX_WAVEFORM_US: u64 = 4 * 3600 * 1_000_000;
+/// The rate [`PcmChunk`]s are decoded at, in frames per second.
+pub const PCM_RATE: u32 = 48_000;
+/// The channels of a [`PcmChunk`]: stereo, interleaved left then right.
+pub const PCM_CHANNELS: u16 = 2;
+/// The longest [`PcmChunk`] one request decodes.
+pub const MAX_PCM_US: u64 = 4_000_000;
+
+/// A sound's loudness at a glance: the largest absolute sample of each of its equal slices,
+/// on a scale from silence (0) to full scale (255).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Waveform {
+    pub peaks: Vec<u8>,
+}
+
+/// Interleaved stereo signed 16-bit samples at [`PCM_RATE`], from `start_us` into a sound.
+#[derive(Clone, Debug)]
+pub struct PcmChunk {
+    pub start_us: u64,
+    samples: Arc<[i16]>,
+}
+impl PcmChunk {
+    pub(crate) fn new(start_us: u64, samples: Arc<[i16]>) -> Self {
+        Self { start_us, samples }
+    }
+    /// Left, right, left, right, …: always whole frames.
+    pub fn samples(&self) -> &[i16] {
+        &self.samples
+    }
+    /// How many stereo frames it holds.
+    pub fn frames(&self) -> usize {
+        self.samples.len() / usize::from(PCM_CHANNELS)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameRequest {
     pub(crate) time_us: u64,
@@ -206,6 +280,7 @@ pub struct RenderSpec {
     pub(crate) fps: (u32, u32),
     pub(crate) count: u32,
     pub(crate) background: [u8; 3],
+    pub(crate) quality: Quality,
 }
 impl RenderSpec {
     pub fn new(width: u32, height: u32, fps: (u32, u32), count: u32, background: [u8; 3]) -> Result<Self> {
@@ -228,7 +303,11 @@ impl RenderSpec {
         {
             return Err(VideoError::Invalid);
         }
-        Ok(Self { width, height, fps, count, background })
+        Ok(Self { width, height, fps, count, background, quality: Quality::default() })
+    }
+    pub fn with_quality(mut self, quality: Quality) -> Self {
+        self.quality = quality;
+        self
     }
     pub(crate) fn bytes(self) -> Result<usize> {
         usize::try_from(u64::from(self.width) * u64::from(self.height) * 4).map_err(|_| VideoError::Limit)
@@ -270,8 +349,8 @@ impl<T> Drop for VideoJob<T> {
 }
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{
-    FramePacket, FrameSender, RenderedVideo, ScrubSession, ShutdownReport, ShutdownTicket, ShutdownWaitError, TrySendFrameError, VideoAsset, VideoChunk,
-    VideoFrame, VideoOpening, VideoService,
+    AudioAsset, FramePacket, FrameSender, RenderedAudio, RenderedVideo, ScrubSession, ShutdownReport, ShutdownTicket, ShutdownWaitError, StillAsset,
+    TrySendFrameError, VideoAsset, VideoChunk, VideoFrame, VideoOpening, VideoService,
 };
 #[cfg(target_arch = "wasm32")]
 mod unsupported;

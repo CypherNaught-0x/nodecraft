@@ -9,6 +9,8 @@ use nodecraft_types::{CanvasId, EdgeId, NodeId, ProjectId, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+thread_local! { pub(crate) static PROJECTED_NODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 pub const FORMAT: &str = "nodecraft.nodes";
 pub const VERSION: u32 = 1;
 /// Largest clipboard text read as nodes; anything bigger is not parsed.
@@ -21,8 +23,7 @@ pub const MAX_ITEMS: usize = nodecraft_graph::MAX_CHANGES;
 pub struct Payload {
     pub format: String,
     pub version: u32,
-    /// The project it was copied from: media references only resolve there until assets travel
-    /// with copies.
+    /// Informational origin only; destination bytes, not this UUID, prove media availability.
     #[serde(default)]
     pub project: Option<ProjectId>,
     pub nodes: Vec<Node>,
@@ -32,14 +33,77 @@ pub struct Payload {
 
 /// The selected nodes and every edge between two of them, without generation results.
 pub fn payload(project: ProjectId, canvas: &Canvas, selection: &Selection) -> Option<Payload> {
-    let nodes: Vec<Node> =
-        selection.nodes().iter().filter_map(|id| canvas.nodes().get(id)).map(|node| Node { history: Vec::new(), active: None, ..node.clone() }).collect();
+    projection::check(project, canvas, selection).ok()?;
+    build(project, canvas, selection)
+}
+/// The actual UI path additionally verifies references before constructing projected nodes.
+pub(crate) fn checked_payload(session: &nodecraft_engine::Session, canvas: CanvasId, selection: &Selection) -> Result<Option<Payload>, nodecraft_types::Error> {
+    let Some(scene) = session.document().canvases().get(&canvas) else { return Ok(None) };
+    projection::check(session.document().id(), scene, selection).map_err(|_| {
+        nodecraft_types::Error::new(nodecraft_types::ErrorKind::InvalidInput, "This selection is too large to copy and paste back in one go; copy fewer nodes.")
+    })?;
+    for id in selection.nodes() {
+        if let Some(node) = scene.nodes().get(id) {
+            validate_assets(session, node.params.values().chain(node.config.values()))?;
+        }
+    }
+    Ok(build(session.document().id(), scene, selection))
+}
+pub(crate) fn validate_assets<'a>(session: &nodecraft_engine::Session, roots: impl Iterator<Item = &'a Value>) -> Result<(), nodecraft_types::Error> {
+    for root in roots {
+        let mut stack = vec![(root, 0usize)];
+        let mut seen = 0usize;
+        while let Some((value, depth)) = stack.pop() {
+            seen = seen.saturating_add(1);
+            if depth > nodecraft_graph::MAX_VALUE_DEPTH || seen > nodecraft_graph::MAX_VALUE_ITEMS {
+                return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::InvalidInput, "clipboard values exceed limits"));
+            }
+            match value {
+                Value::Media(asset) => session.validate_asset(asset)?,
+                Value::List(values) => {
+                    if seen.saturating_add(stack.len()).saturating_add(values.len()) > nodecraft_graph::MAX_VALUE_ITEMS {
+                        return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::InvalidInput, "clipboard values exceed limits"));
+                    }
+                    stack.extend(values.iter().map(|v| (v, depth.saturating_add(1))));
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+fn build(project: ProjectId, canvas: &Canvas, selection: &Selection) -> Option<Payload> {
+    let nodes: Vec<Node> = selection
+        .nodes()
+        .iter()
+        .filter_map(|id| canvas.nodes().get(id))
+        .map(|node| {
+            #[cfg(test)]
+            PROJECTED_NODES.with(|n| n.set(n.get() + 1));
+            let Node { id, kind, title, pos, params, config, inputs, outputs, history: _, active: _, tag, field } = node;
+            Node {
+                id: *id,
+                kind: kind.clone(),
+                title: title.clone(),
+                pos: *pos,
+                params: params.clone(),
+                config: config.clone(),
+                inputs: inputs.clone(),
+                outputs: outputs.clone(),
+                history: Vec::new(),
+                active: None,
+                tag: *tag,
+                field: *field,
+            }
+        })
+        .collect();
     if nodes.is_empty() {
         return None;
     }
     let edges = canvas.edges().values().filter(|e| selection.contains(e.from.node) && selection.contains(e.to.node)).cloned().collect();
     Some(Payload { format: FORMAT.into(), version: VERSION, project: Some(project), nodes, edges })
 }
+mod projection;
 
 pub fn to_text(payload: &Payload) -> Option<String> {
     serde_json::to_string(payload).ok()

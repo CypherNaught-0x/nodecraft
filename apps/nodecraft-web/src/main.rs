@@ -1,0 +1,97 @@
+//! NodeCraft in the browser (#99): the egui shell on eframe's `WebRunner`, drawn into the
+//! `<canvas>` of `index.html`. Built with trunk (`packaging/web/package.sh`). Provider keys are
+//! kept in the site's browser storage (#118); project files and runs are not available yet (the
+//! shell says so where it matters).
+
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
+
+/// The canvas `index.html` gives the app, and the element that shows a failed start.
+#[cfg(target_arch = "wasm32")]
+const CANVAS_ID: &str = "nodecraft_canvas";
+#[cfg(target_arch = "wasm32")]
+const STATUS_ID: &str = "nodecraft_status";
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    // A second logger can only come from a reload in the same module instance; keep the first.
+    let _ = eframe::WebLogger::init(log::LevelFilter::Info);
+    log::info!("NodeCraft {} (web preview)", env!("CARGO_PKG_VERSION"));
+    wasm_bindgen_futures::spawn_local(async {
+        let message = match start().await {
+            // The canvas is drawing; the loading note goes.
+            Ok(()) => None,
+            Err(message) => {
+                log::error!("NodeCraft did not start: {message}");
+                Some(format!("NodeCraft could not start: {message}"))
+            }
+        };
+        show_status(message.as_deref());
+    });
+}
+
+/// What the page says once the app has panicked. The browser can't unwind a panic, so the
+/// command guard that keeps the desktop's document can't run here (#701); the app stops instead,
+/// and says so rather than leaving a canvas that no longer answers.
+#[cfg(target_arch = "wasm32")]
+const STOPPED: &str = "NodeCraft stopped after an error it couldn't recover from. Reload the page to go on.";
+
+/// Shows [`STOPPED`] after a panic, once the hooks before this one (eframe's) have run.
+#[cfg(target_arch = "wasm32")]
+fn show_panics() {
+    let earlier = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        earlier(info);
+        show_status(Some(STOPPED));
+        if let Some(status) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id(STATUS_ID)) {
+            status.set_class_name("stopped");
+        }
+    }));
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn start() -> Result<(), String> {
+    use eframe::wasm_bindgen::JsCast as _;
+    let document = web_sys::window().and_then(|w| w.document()).ok_or("the page has no document")?;
+    let canvas = document
+        .get_element_by_id(CANVAS_ID)
+        .ok_or_else(|| format!("the page has no #{CANVAS_ID} canvas"))?
+        .dyn_into::<web_sys::HtmlCanvasElement>()
+        .map_err(|_| format!("#{CANVAS_ID} is not a canvas"))?;
+    let runner = eframe::WebRunner::new();
+    show_panics();
+    runner
+        .start(
+            canvas,
+            eframe::WebOptions::default(),
+            Box::new(|cc| {
+                let mut app = nodecraft_ui_egui::NodeCraftApp::new(&cc.egui_ctx)?;
+                // 3D models on cards draw with the same wgpu renderer (#111).
+                if let Some(render) = cc.wgpu_render_state.as_ref() {
+                    app.install_mesh_renderer(render);
+                }
+                Ok(Box::new(app))
+            }),
+        )
+        .await
+        // WebGPU and WebGL both missing is the usual cause; the browser's message says which.
+        .map_err(|e| e.as_string().unwrap_or_else(|| format!("{e:?}")))
+}
+
+/// Shows `message` in the status line, or empties it once the app draws; it stays, for a panic.
+#[cfg(target_arch = "wasm32")]
+fn show_status(message: Option<&str>) {
+    let Some(status) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id(STATUS_ID)) else {
+        return;
+    };
+    match message {
+        Some(message) => status.set_text_content(Some(message)),
+        None => status.set_text_content(None),
+    }
+}
+
+/// Native builds of this crate only point at the web packaging.
+#[cfg(not(target_arch = "wasm32"))]
+fn main() -> std::process::ExitCode {
+    eprintln!("nodecraft-web runs in a browser: build it with packaging/web/package.sh (trunk), or run `cargo run -p nodecraft` for the desktop app");
+    std::process::ExitCode::FAILURE
+}

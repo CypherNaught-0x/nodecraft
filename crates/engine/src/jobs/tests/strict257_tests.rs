@@ -50,6 +50,8 @@ fn one_slot() -> UsageLog {
     file.sessions.insert(String::new(), [(nodecraft_types::Currency::USD, usd(n - 1))].into());
     file.quarantined = (0..count)
         .map(|i| UsageEntry {
+            project: None,
+            instance: None,
             at_ms: 0,
             session: "a".into(),
             node: NodeId::from_bytes([1; 16]),
@@ -92,6 +94,8 @@ fn blocked_unknown_price_holds_last_slot_and_completed_actual_cannot_be_displace
             .lock()
             .unwrap()
             .record(UsageEntry {
+                project: None,
+                instance: None,
                 at_ms: 1,
                 session: "now".into(),
                 node: NodeId::from_bytes([1; 16]),
@@ -234,7 +238,7 @@ fn historical_uncertainty_cannot_bypass_ownership_with_an_unpriced_facade_or_han
     let mut queued = priced(provider.clone(), None);
     queued.price = None;
     runner.register(JobId(1), queued);
-    runner.restore_handle("held", "old".into(), JobHandle { remote_id: "existing".into(), data: serde_json::Value::Null });
+    runner.restore_handle("held", "old".into(), JobHandle { remote_id: "existing".into(), data: serde_json::Value::Null }).unwrap();
     assert!(matches!(
         block_on(runner.run(Start { idempotency_key: "old".into(), ..job(1) }, CancelToken::default())),
         Outcome::Failed { transient: false, .. }

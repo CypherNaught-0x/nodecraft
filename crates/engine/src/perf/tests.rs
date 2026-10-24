@@ -64,7 +64,7 @@ fn nothing_is_recorded_while_stopped_and_no_clock_means_unsupported_not_zero() {
     assert_eq!((save.supported, save.samples, save.p50), (false, 0, None));
     assert!(report.workload.is_none());
     let json = serde_json::to_value(&report).unwrap();
-    assert_eq!(json["schema"], "nodecraft.perf/1");
+    assert_eq!(json["schema"], "nodecraft.perf/3");
     assert!(json["metrics"][0]["p50"].is_null(), "unmeasured is null, never 0");
 }
 
@@ -104,7 +104,7 @@ fn commands_start_stop_and_report_and_dispatch_is_timed_without_document_content
 
 #[test]
 #[ignore = "overhead measurement, run on demand"]
-fn recording_overhead_on_and_off() {
+fn recorder_push_microbenchmark_on_and_off() {
     let mut r = Recorder::default();
     let started = std::time::Instant::now();
     for us in 0..1_000_000u64 {
@@ -117,7 +117,7 @@ fn recording_overhead_on_and_off() {
         r.record(Metric::Dispatch, us % 20_000);
     }
     let on = started.elapsed();
-    eprintln!("1M samples: off {off:?}, on {on:?}");
+    eprintln!("recorder-only (no callbacks or workload collection), 1M pushes: off {off:?}, on {on:?}");
 }
 
 #[test]
@@ -135,4 +135,57 @@ fn idle_gaps_are_not_frames_and_intervals_get_jitter_room() {
     assert_eq!(metric(&report, Metric::FramePrepare).idle, None);
     r.set_renderer(Some("Test GPU\n(Metal)".into()));
     assert_eq!(r.report().environment.renderer.as_deref(), Some("Test GPU(Metal)"));
+}
+
+#[test]
+fn failed_clock_latches_unavailable_without_erasing_samples_or_retrying_on_clear() {
+    let calls = Rc::new(Cell::new(0));
+    let counter = calls.clone();
+    let mut r = Recorder::default();
+    r.set_clock(Some(Box::new(move || {
+        counter.set(counter.get() + 1);
+        panic!("fixture clock failure")
+    })));
+    r.set_enabled(true);
+    r.record(Metric::FramePrepare, 12);
+    assert_eq!(r.now(), None);
+    assert!(!r.has_clock());
+    let report = r.report();
+    assert!(!report.clock);
+    let frame = metric(&report, Metric::FramePrepare);
+    assert_eq!((frame.supported, frame.samples, frame.p50), (false, 1, Some(12)));
+    r.record_since(Metric::FramePrepare, 0);
+    assert_eq!(metric(&r.report(), Metric::FramePrepare).samples, 1);
+    r.set_enabled(false);
+    r.set_enabled(true);
+    r.clear();
+    assert_eq!(r.now(), None);
+    assert_eq!(calls.get(), 1);
+    assert!(!r.report().clock);
+    r.set_clock(Some(Box::new(|| 20)));
+    assert!(r.has_clock());
+    r.record_since(Metric::FramePrepare, 10);
+    assert_eq!(metric(&r.report(), Metric::FramePrepare).p50, Some(10));
+    r.set_clock(None);
+    assert_eq!(r.now(), None);
+}
+#[test]
+fn direct_frame_record_since_contains_callback_failure_and_disabled_capture_never_calls() {
+    let calls = Rc::new(Cell::new(0));
+    let counter = calls.clone();
+    let mut r = Recorder::default();
+    r.set_clock(Some(Box::new(move || {
+        counter.set(counter.get() + 1);
+        panic!("frame clock failure")
+    })));
+    assert_eq!(r.now(), None);
+    r.record_since(Metric::FrameInterval, 1);
+    assert_eq!(calls.get(), 0);
+    r.set_enabled(true);
+    r.record_since(Metric::FramePrepare, 1);
+    let frame = metric(&r.report(), Metric::FramePrepare).samples;
+    assert_eq!(frame, 0);
+    assert_eq!(calls.get(), 1);
+    assert_eq!(r.now(), None);
+    assert_eq!(calls.get(), 1);
 }

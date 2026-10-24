@@ -1,0 +1,269 @@
+# Higgsfield platform API (https://docs.higgsfield.ai) checked 2026-10-21. Higgsfield bills in
+# credits whose price depends on the account's plan, so the catalog carries no price; the adapter
+# can ask Higgsfield for an estimate of the exact request it will send.
+
+[[model]]
+id="higgsfield.soul-2"
+provider="higgsfield"
+provider_model="higgsfield-ai/soul/v2/standard"
+label="Higgsfield SOUL 2"
+description="Photographic images from a prompt, one or four at a time. Billed in Higgsfield credits; price unknown before execution."
+latency_s=40
+quality=4
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="1:1",label="1:1"},{value="16:9",label="16:9"},{value="9:16",label="9:16"},{value="4:3",label="4:3"},{value="3:4",label="3:4"},{value="3:2",label="3:2"},{value="2:3",label="2:3"}]}
+default={type="text",value="1:1"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+[[model.params.params]]
+name="batch_size"
+label="Images"
+control={type="choice",options=[{value="1",label="1"},{value="4",label="4"}]}
+default={type="text",value="1"}
+
+[[model.params.params]]
+name="enhance_prompt"
+label="Enhance prompt"
+control={type="toggle"}
+default={type="bool",value=false}
+
+# An unsigned control, not a run seed: run seeds may draw 0, which SOUL refuses.
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="1",max="1000000",step="1"}
+
+# A Soul ID is an identity trained on the Higgsfield account (#180). Refresh option lists fetches
+# the account's ready SOUL 2 ones; the adapter confirms the one a run names is ready before paying.
+[[model.params.params]]
+name="custom_reference_id"
+label="Soul ID (optional)"
+description="An identity trained on your Higgsfield account; Refresh option lists fetches the ready ones."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="custom_reference_strength"
+label="Soul ID strength"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=1.0}
+
+[model.parameter_contract]
+version={major=1,minor=0}
+namespace="higgsfield.soul-2"
+owner="model"
+
+[[model.parameter_contract.rules]]
+param="custom_reference_id"
+options={id="higgsfield.soul_ids"}
+
+# The strength is sent only with a Soul ID.
+[[model.parameter_contract.rules]]
+param="custom_reference_strength"
+enabled_when={op="present",param="custom_reference_id"}
+
+[[model.parameter_contract.schema.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="1:1",label="1:1"},{value="16:9",label="16:9"},{value="9:16",label="9:16"},{value="4:3",label="4:3"},{value="3:4",label="3:4"},{value="3:2",label="3:2"},{value="2:3",label="2:3"}]}
+default={type="text",value="1:1"}
+
+[[model.parameter_contract.schema.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+[[model.parameter_contract.schema.params]]
+name="batch_size"
+label="Images"
+control={type="choice",options=[{value="1",label="1"},{value="4",label="4"}]}
+default={type="text",value="1"}
+
+[[model.parameter_contract.schema.params]]
+name="enhance_prompt"
+label="Enhance prompt"
+control={type="toggle"}
+default={type="bool",value=false}
+
+[[model.parameter_contract.schema.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="1",max="1000000",step="1"}
+
+[[model.parameter_contract.schema.params]]
+name="custom_reference_id"
+label="Soul ID (optional)"
+description="An identity trained on your Higgsfield account; Refresh option lists fetches the ready ones."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.parameter_contract.schema.params]]
+name="custom_reference_strength"
+label="Soul ID strength"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=1.0}
+
+[[model]]
+id="higgsfield.kling-2.5-turbo-i2v"
+provider="higgsfield"
+provider_model="kling-video/v2.5-turbo/pro/image-to-video"
+label="Kling 2.5 Turbo Pro image to video (Higgsfield)"
+description="Animates one image, PNG, JPEG or WebP up to 20 MiB, into a 5 or 10 second clip. Billed in Higgsfield credits; price unknown before execution."
+latency_s=120
+quality=4
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="image-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1},{role="image",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="duration"
+label="Duration"
+control={type="choice",options=[{value="5",label="5 s"},{value="10",label="10 s"}]}
+default={type="text",value="5"}
+
+[[model.params.params]]
+name="cfg_scale"
+label="Prompt adherence"
+control={type="slider",min=0.0,max=1.0,step=0.05}
+default={type="number",value=0.5}
+
+# Genjutsu source video edits (#179). Higgsfield lists these at a price per started second of
+# source, after it cuts the source to its first 30 s; the plan's credits can make it cheaper, so
+# the catalog price is the most a run can cost. Its uploads take MP4 sources only.
+[[model]]
+id="higgsfield.genjutsu-motion-transfer"
+provider="higgsfield"
+provider_model="higgsfield/genjutsu/motion-transfer/v1.0"
+label="Genjutsu motion transfer (Higgsfield)"
+description="Moves the subjects of one to eight reference images the way the source video moves. The source is an MP4 of at least 4 s and, with the images, at most 64 MiB; only its first 30 s is used. Priced per second of source at Higgsfield's list price, the most a run can cost."
+latency_s=300
+quality=4
+pricing={type="per_source_second",param="resolution",prices={"480p"="0.318 USD","720p"="0.681 USD","1080p"="1.632 USD"}}
+
+[[model.modes]]
+id="motion-transfer"
+output="video"
+inputs=[{role="prompt",modality="text",min=0,max=1,inline=true},{role="source",modality="video",min=1,max=1},{role="image",modality="image",min=1,max=8}]
+edit={operation="motion_transfer",role="source",min_ms=4000,uses_ms=30000,formats=["video/mp4"],sound="unknown"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+[[model]]
+id="higgsfield.genjutsu-object-swap"
+provider="higgsfield"
+provider_model="higgsfield/genjutsu/object-swap/v1.0"
+label="Genjutsu object swap (Higgsfield)"
+description="Replaces an object in the source video with the one in one to eight reference images. The source is an MP4 of at least 4 s with frames of at least 409,600 pixels and, with the images, at most 64 MiB; only its first 30 s is used. Priced per second of source at Higgsfield's list price, the most a run can cost."
+latency_s=300
+quality=4
+pricing={type="per_source_second",param="resolution",prices={"480p"="0.318 USD","720p"="0.681 USD","1080p"="1.632 USD"}}
+
+[[model.modes]]
+id="object-swap"
+output="video"
+inputs=[{role="prompt",modality="text",min=0,max=1,inline=true},{role="source",modality="video",min=1,max=1},{role="image",modality="image",min=1,max=8}]
+edit={operation="object_swap",role="source",min_ms=4000,uses_ms=30000,min_pixels=409600,formats=["video/mp4"],sound="unknown"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+# Restyle redraws the source in one of Higgsfield's presets, which its API lists; Refresh option
+# lists fetches them as an option list whose values are preset ids and whose labels are their names.
+[[model]]
+id="higgsfield.genjutsu-restyle"
+provider="higgsfield"
+provider_model="higgsfield/genjutsu/restyle/v1.0"
+label="Genjutsu restyle (Higgsfield)"
+description="Redraws the source video in a Higgsfield preset style, optionally guided by up to five reference images, and keeps its sound. The source is an MP4 of at least 4 s and, with the images, at most 64 MiB; only its first 30 s is used. Priced per second of source at Higgsfield's list price, the most a run can cost."
+latency_s=300
+quality=4
+pricing={type="per_source_second",param="resolution",prices={"480p"="0.318 USD","720p"="0.681 USD","1080p"="1.632 USD"}}
+
+[[model.modes]]
+id="restyle"
+output="video"
+inputs=[{role="prompt",modality="text",min=0,max=1,inline=true},{role="source",modality="video",min=1,max=1},{role="image",modality="image",min=0,max=5}]
+edit={operation="restyle",role="source",min_ms=4000,uses_ms=30000,formats=["video/mp4"],sound="source"}
+
+[[model.params.params]]
+name="preset_id"
+label="Preset"
+description="The Higgsfield restyle preset; Refresh option lists fetches them."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+[model.parameter_contract]
+version={major=1,minor=0}
+namespace="higgsfield.genjutsu-restyle"
+owner="model"
+
+[[model.parameter_contract.rules]]
+param="preset_id"
+options={id="higgsfield.restyle_presets"}
+
+[[model.parameter_contract.schema.params]]
+name="preset_id"
+label="Preset"
+description="The Higgsfield restyle preset; Refresh option lists fetches them."
+control={type="text",multiline=false,max_bytes=64}
+
+[[model.parameter_contract.schema.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+# Soul ID training (#680), checked 2026-10-22 against
+# https://open.higgsfield.ai/models/soul-id/api-reference, which lists 2.50 USD a training. Higgsfield
+# documents no idempotency key for it: the adapter tags each name with the run's key and lists the
+# account before sending, so a lost reply is found rather than paid for twice.
+[[model]]
+id="higgsfield.soul-id-trainer"
+provider="higgsfield"
+provider_model="higgsfield/soul-id/v2"
+label="Higgsfield Soul ID training"
+description="Trains a SOUL 2 identity from 1 to 100 photos of one person (5 to 20 varied ones work best); it stays on your Higgsfield account. 2.50 USD a training, dated 2026-10-22."
+latency_s=600
+quality=4
+style_family="soul-2"
+pricing={type="per_call",price="2.5 USD"}
+
+[[model.modes]]
+id="images-to-soul-id"
+output="style"
+inputs=[{role="images",modality="image",min=1,max=100}]
+
+[[model.params.params]]
+name="name"
+label="Name"
+description="How the Soul ID is listed on Higgsfield and in SOUL 2's picker, up to 84 characters."
+control={type="text",multiline=false,max_bytes=336}
+default={type="text",value=""}

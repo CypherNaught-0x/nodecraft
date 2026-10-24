@@ -92,7 +92,8 @@ impl Account {
     }
 }
 
-/// Why a keychain operation failed. Messages are safe to show and never contain the secret.
+/// Why a key storage operation failed (the OS keychain, or the browser's storage). Messages are
+/// safe to show and never contain the secret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SecretError {
@@ -110,9 +111,9 @@ impl fmt::Display for SecretError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(m) => write!(f, "{m}"),
-            Self::Unavailable(m) => write!(f, "no keychain available: {m}"),
-            Self::Denied(m) => write!(f, "keychain access denied: {m}"),
-            Self::Failed(m) => write!(f, "keychain error: {m}"),
+            Self::Unavailable(m) => write!(f, "key storage unavailable: {m}"),
+            Self::Denied(m) => write!(f, "key storage access denied: {m}"),
+            Self::Failed(m) => write!(f, "key storage error: {m}"),
         }
     }
 }
@@ -131,7 +132,7 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, account: &Account) -> Result<bool, SecretError>;
 }
 
-/// Keys in memory: tests, and the browser build until per-origin storage lands.
+/// Keys in memory: tests, and hosts with nowhere to keep them (keys last for the session).
 #[derive(Default)]
 pub struct MemoryStore(Mutex<BTreeMap<Account, Secret>>);
 

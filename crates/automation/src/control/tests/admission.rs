@@ -96,11 +96,16 @@ fn busy_retries_and_backoff_share_the_admission_deadline() {
     let peer = std::thread::spawn(move || {
         let end = Instant::now() + Duration::from_secs(2);
         let mut attempts = 0;
-        while !stopped.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < end {
+        let mut operations = 0;
+        let mut expired_connections = 0;
+        while Instant::now() < end {
             let (mut socket, _) = match listener.accept() {
                 Ok(pair) => pair,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(1));
+                    if stopped.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::yield_now();
                     continue;
                 }
                 other => panic!("{other:?}"),
@@ -108,22 +113,42 @@ fn busy_retries_and_backoff_share_the_admission_deadline() {
             socket.set_nonblocking(false).unwrap();
             socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             socket.set_write_timeout(Some(Duration::from_millis(200))).unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
             let mut hello = String::new();
-            BufReader::new(socket.try_clone().unwrap()).read_line(&mut hello).unwrap();
-            assert!(hello.contains("hello"));
+            reader.read_line(&mut hello).unwrap();
+            if hello.is_empty() {
+                // TCP connect can succeed just before the one deadline expires; no hello is required then.
+                expired_connections += 1;
+                continue;
+            }
+            assert!(hello.contains("\"method\":\"hello\""), "unexpected admission message: {hello}");
             let reply = if attempts == 0 { json!({"id":1,"result":{"protocol":PROTOCOL}}) } else { error_reply(Value::Null, "busy", "busy") };
             let _ = writeln!(socket, "{reply}");
             attempts += 1;
+            let mut request = String::new();
+            // A client whose deadline ran out after its hello closes the socket; our busy reply then
+            // draws a reset, which some platforms (Windows) report on this read. That is no operation.
+            match reader.read_line(&mut request) {
+                Ok(_) => {}
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => {}
+                Err(e) => panic!("{e:?}"),
+            }
+            operations += usize::from(!request.is_empty());
         }
-        attempts
+        (attempts, operations, expired_connections)
     });
     let mut client = crate::control::Client::connect(addr, &token().to_hex()).unwrap();
+    // An expired admission must not write a requested operation on the still-live first socket.
+    assert!(client.exchange_until("state.get", Map::new(), Some(Instant::now())).is_err());
     let result = client.reconnect_until(Instant::now() + Duration::from_millis(60));
-    stop.store(true, std::sync::atomic::Ordering::SeqCst);
-    let attempts = peer.join().unwrap();
     assert!(result.is_err());
-    assert!(attempts > 1 && attempts <= RECONNECT_ATTEMPTS as usize, "{attempts}");
     assert!(client.broken);
     // Expired admission may not even send another hello, much less a requested operation.
     assert!(client.reconnect_until(Instant::now()).is_err());
+    drop(client);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (attempts, operations, expired_connections) = peer.join().unwrap();
+    // A reconnect that connected but expired before its hello still retried within the one deadline.
+    assert!(attempts + expired_connections > 1 && attempts < RECONNECT_ATTEMPTS as usize, "{attempts} {expired_connections}");
+    assert_eq!(operations, 0, "admission must never send the requested operation after expiry");
 }

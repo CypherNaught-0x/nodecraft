@@ -18,6 +18,8 @@ pub enum ErrorKind {
     Busy,
     Budget,
     ContentBlocked,
+    /// The caller's role doesn't allow it (a view-only or comment-only share, #121).
+    Forbidden,
     Internal,
     /// A newer peer supplied a category this build does not recognize; retain its message.
     #[serde(other)]

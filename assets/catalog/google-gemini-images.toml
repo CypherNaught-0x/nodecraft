@@ -1,0 +1,157 @@
+# Gemini image models on Google Cloud Vertex AI (#47), checked 2026-10-23:
+# https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-1-flash-image (and
+# 3-pro-image, 3-1-flash-lite-image, nano-banana-2-1, 2-5-flash-image),
+# https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/image-generation
+# and https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing (Vertex AI's
+# pricing page under its new name, Standard PayGo, global endpoint; not the Gemini API's page).
+# Signed in with a service account's key file (keychain account "google-cloud"); runs in the
+# account's own project on the global endpoint, the only one the Gemini 3 image models are served on.
+#
+# Google bills tokens: input per million, and image output per million at a fixed number of
+# tokens per image by size. The quote is one image at that size:
+#   3.1 Flash Image   60 USD/M image out: 1K 1120 tokens 0.0672, 2K 1680 0.1008, 4K 2520 0.1512
+#   3 Pro Image      120 USD/M:           1K and 2K 1120 tokens 0.1344, 4K 2000 0.24
+#   Nano Banana 2.1   30 USD/M:           1K 1120 tokens 0.0336, 2K 1680 0.0504, 4K 3780 0.1134
+#   3.1 Flash-Lite    30 USD/M:           1K 1120 tokens 0.0336 (1K only)
+#   2.5 Flash Image   30 USD/M:           1290 tokens 0.0387 (one size)
+# A finished run is charged what the reply measured at `usage` (per 1000 tokens): the prompt,
+# reference images included (1120 tokens each, 560 on Pro), at the input rate, and every reply
+# token at the image rate. That covers references and a reply with several images; the reply's
+# few text tokens are charged at the image rate (a little over), and thinking tokens, billed at
+# the text rate, aren't charged (a little under). 3.1 Flash's 512 size isn't offered: Vertex AI's
+# imageConfig documents 1K, 2K and 4K only.
+
+[[model]]
+id = "google-gemini-images.3.1-flash"
+provider = "google-gemini-images"
+provider_model = "gemini-3.1-flash-image"
+label = "Gemini 3.1 Flash Image (Vertex AI)"
+description = "Nano Banana 2 on Google Cloud: images from a prompt and up to 14 reference images. 0.0672 USD an image at 1K, 0.1008 at 2K, 0.1512 at 4K."
+latency_s = 60
+quality = 4
+pricing = { type = "per_unit_by_choice", unit = "image", default_count = 1, param = "image_size", prices = { "1K" = "0.0672 USD", "2K" = "0.1008 USD", "4K" = "0.1512 USD" } }
+usage = { input = "0.0005 USD", output = "0.06 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "edit"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 14 }]
+[[model.params.params]]
+name = "image_size"
+label = "Image size"
+control = { type = "choice", options = [{ value = "1K", label = "1K" }, { value = "2K", label = "2K" }, { value = "4K", label = "4K" }] }
+default = { type = "text", value = "1K" }
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "1:1", label = "1:1" }, { value = "3:2", label = "3:2" }, { value = "2:3", label = "2:3" }, { value = "3:4", label = "3:4" }, { value = "4:3", label = "4:3" }, { value = "4:5", label = "4:5" }, { value = "5:4", label = "5:4" }, { value = "9:16", label = "9:16" }, { value = "16:9", label = "16:9" }, { value = "21:9", label = "21:9" }, { value = "1:4", label = "1:4" }, { value = "4:1", label = "4:1" }, { value = "1:8", label = "1:8" }, { value = "8:1", label = "8:1" }] }
+default = { type = "text", value = "1:1" }
+
+[[model]]
+id = "google-gemini-images.3-pro"
+provider = "google-gemini-images"
+provider_model = "gemini-3-pro-image"
+label = "Gemini 3 Pro Image (Vertex AI)"
+description = "Nano Banana Pro on Google Cloud: Google's best image model, from a prompt and up to 14 reference images. 0.1344 USD an image at 1K or 2K, 0.24 at 4K."
+latency_s = 60
+quality = 5
+pricing = { type = "per_unit_by_choice", unit = "image", default_count = 1, param = "image_size", prices = { "1K" = "0.1344 USD", "2K" = "0.1344 USD", "4K" = "0.24 USD" } }
+usage = { input = "0.002 USD", output = "0.12 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "edit"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 14 }]
+[[model.params.params]]
+name = "image_size"
+label = "Image size"
+control = { type = "choice", options = [{ value = "1K", label = "1K" }, { value = "2K", label = "2K" }, { value = "4K", label = "4K" }] }
+default = { type = "text", value = "1K" }
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "1:1", label = "1:1" }, { value = "3:2", label = "3:2" }, { value = "2:3", label = "2:3" }, { value = "3:4", label = "3:4" }, { value = "4:3", label = "4:3" }, { value = "4:5", label = "4:5" }, { value = "5:4", label = "5:4" }, { value = "9:16", label = "9:16" }, { value = "16:9", label = "16:9" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "1:1" }
+
+[[model]]
+id = "google-gemini-images.nano-banana-2.1"
+provider = "google-gemini-images"
+provider_model = "gemini-nano-banana-2.1"
+label = "Gemini Nano Banana 2.1 (Vertex AI)"
+description = "Nano Banana 2.1 on Google Cloud: images from a prompt and up to 14 reference images. 0.0336 USD an image at 1K, 0.0504 at 2K, 0.1134 at 4K."
+latency_s = 60
+quality = 4
+pricing = { type = "per_unit_by_choice", unit = "image", default_count = 1, param = "image_size", prices = { "1K" = "0.0336 USD", "2K" = "0.0504 USD", "4K" = "0.1134 USD" } }
+usage = { input = "0.0015 USD", output = "0.03 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "edit"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 14 }]
+[[model.params.params]]
+name = "image_size"
+label = "Image size"
+control = { type = "choice", options = [{ value = "1K", label = "1K" }, { value = "2K", label = "2K" }, { value = "4K", label = "4K" }] }
+default = { type = "text", value = "1K" }
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "1:1", label = "1:1" }, { value = "3:2", label = "3:2" }, { value = "2:3", label = "2:3" }, { value = "3:4", label = "3:4" }, { value = "4:3", label = "4:3" }, { value = "4:5", label = "4:5" }, { value = "5:4", label = "5:4" }, { value = "9:16", label = "9:16" }, { value = "16:9", label = "16:9" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "1:1" }
+
+[[model]]
+id = "google-gemini-images.3.1-flash-lite"
+provider = "google-gemini-images"
+provider_model = "gemini-3.1-flash-lite-image"
+label = "Gemini 3.1 Flash-Lite Image (Vertex AI)"
+description = "The fastest, cheapest Gemini image model on Google Cloud: 1K images from a prompt and up to 14 reference images. 0.0336 USD an image."
+latency_s = 60
+quality = 3
+pricing = { type = "per_unit", unit = "image", price = "0.0336 USD", default_count = 1 }
+usage = { input = "0.00025 USD", output = "0.03 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "edit"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 14 }]
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "1:1", label = "1:1" }, { value = "3:2", label = "3:2" }, { value = "2:3", label = "2:3" }, { value = "3:4", label = "3:4" }, { value = "4:3", label = "4:3" }, { value = "4:5", label = "4:5" }, { value = "5:4", label = "5:4" }, { value = "9:16", label = "9:16" }, { value = "16:9", label = "16:9" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "1:1" }
+
+[[model]]
+id = "google-gemini-images.2.5-flash"
+provider = "google-gemini-images"
+provider_model = "gemini-2.5-flash-image"
+label = "Gemini 2.5 Flash Image (Vertex AI)"
+description = "The first Nano Banana on Google Cloud, deprecated by Google and retiring 2027-03-15: images from a prompt and up to 3 reference images. 0.0387 USD an image."
+latency_s = 60
+quality = 3
+pricing = { type = "per_unit", unit = "image", price = "0.0387 USD", default_count = 1 }
+usage = { input = "0.0003 USD", output = "0.03 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "edit"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 3 }]
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "1:1", label = "1:1" }, { value = "3:2", label = "3:2" }, { value = "2:3", label = "2:3" }, { value = "3:4", label = "3:4" }, { value = "4:3", label = "4:3" }, { value = "4:5", label = "4:5" }, { value = "5:4", label = "5:4" }, { value = "9:16", label = "9:16" }, { value = "16:9", label = "16:9" }, { value = "21:9", label = "21:9" }] }
+default = { type = "text", value = "1:1" }

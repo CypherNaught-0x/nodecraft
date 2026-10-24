@@ -4,6 +4,9 @@
 use crate::provider::{BoxFuture, MaybeSendSync};
 use crate::{ErrorKind, ProviderError};
 
+mod public_only;
+pub use public_only::public_address;
+
 /// The User-Agent every request carries: generic, nothing about the user or machine.
 pub const USER_AGENT: &str = concat!("NodeCraft/", env!("CARGO_PKG_VERSION"));
 
@@ -221,6 +224,21 @@ pub trait Http: MaybeSendSync {
         Box::pin(async { Err(ProviderError::new(ErrorKind::UnsupportedInput, "this transport cannot send without following redirects")) })
     }
 
+    /// [`Http::send_no_redirect`] with a successful (2xx) body handed to `on_chunk` as it
+    /// arrives, as [`Http::send_streaming`] does; an error status's body is returned whole. The
+    /// default waits for the whole body and hands it over at once, so it never follows a redirect
+    /// either.
+    fn send_streaming_no_redirect<'a>(&'a self, request: HttpRequest, on_chunk: &'a mut ChunkSink<'a>) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+        Box::pin(async move {
+            let mut response = self.send_no_redirect(request).await?;
+            if response.is_success() {
+                on_chunk(&response.body)?;
+                response.body.clear();
+            }
+            Ok(response)
+        })
+    }
+
     /// Request-local evidence. Legacy implementations are unknown before future construction.
     fn send_with_delivery<'a>(&'a self, request: HttpRequest, context: &'a crate::RequestContext) -> BoxFuture<'a, Result<HttpResponse, crate::HttpFailure>> {
         context.unknown();
@@ -284,6 +302,9 @@ mod reqwest_impl {
     #[derive(Debug, Clone)]
     pub struct ReqwestHttp {
         client: reqwest::Client,
+        /// Built by [`Self::public_only`]: a URL naming a non-public address is refused too,
+        /// since the resolver never sees an address literal.
+        public_only: bool,
     }
 
     impl ReqwestHttp {
@@ -292,7 +313,22 @@ mod reqwest_impl {
             #[cfg(not(target_arch = "wasm32"))]
             let builder = builder.redirect(reqwest::redirect::Policy::none());
             let client = builder.build().map_err(|e| ProviderError::new(ErrorKind::Network, format!("HTTP client: {e}")))?;
-            Ok(Self { client })
+            Ok(Self { client, public_only: false })
+        }
+
+        /// A transport for requests a package shapes (#174): no redirects, no proxy (a proxy
+        /// would resolve names itself), and names resolved only to public addresses
+        /// ([`public_address`]). Native only; the browser resolves names itself.
+        #[cfg(not(target_arch = "wasm32"))]
+        pub fn public_only() -> Result<Self, ProviderError> {
+            let client = reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .dns_resolver(super::public_only::PublicOnly)
+                .build()
+                .map_err(|e| ProviderError::new(ErrorKind::Network, format!("HTTP client: {e}")))?;
+            Ok(Self { client, public_only: true })
         }
 
         /// Sends the request (following redirects on native) and returns the final response with
@@ -321,6 +357,17 @@ mod reqwest_impl {
         }
 
         async fn send_once(&self, request: &HttpRequest, context: Option<&crate::RequestContext>) -> Result<reqwest::Response, ProviderError> {
+            if self.public_only {
+                let host = url::Url::parse(&request.url).ok().and_then(|u| u.host().map(|h| h.to_owned()));
+                let literal = match host {
+                    Some(url::Host::Ipv4(ip)) => Some(std::net::IpAddr::V4(ip)),
+                    Some(url::Host::Ipv6(ip)) => Some(std::net::IpAddr::V6(ip)),
+                    _ => None,
+                };
+                if literal.is_some_and(|ip| !super::public_address(ip)) {
+                    return Err(ProviderError::new(ErrorKind::Network, "refused to connect to a private or local address"));
+                }
+            }
             let method = match request.method {
                 HttpMethod::Get => reqwest::Method::GET,
                 HttpMethod::Head => reqwest::Method::HEAD,
@@ -358,6 +405,10 @@ mod reqwest_impl {
             "the request timed out"
         } else if e.is_body() || e.is_decode() {
             "the connection dropped while reading the reply"
+        } else if cfg!(target_arch = "wasm32") {
+            // The browser reports a refused cross-origin request (CORS) the same as any other
+            // failure, and refusing it is what most providers do to a web page (#118).
+            "the browser couldn't reach the provider; it may not accept requests from web pages"
         } else {
             "the request failed"
         };
@@ -412,29 +463,40 @@ mod reqwest_impl {
         ) -> Result<HttpResponse, ProviderError> {
             let cap = request.max_response_bytes;
             let (response, status, headers) = self.open(request, context).await?;
-            if !(200..300).contains(&status) {
-                let body = read_body(response, cap).await?;
-                return Ok(HttpResponse { status, headers, body });
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                let mut response = response;
-                let mut total = 0usize;
-                while let Some(chunk) = response.chunk().await.map_err(|e| network(&e))? {
-                    total = total.saturating_add(chunk.len());
-                    if total > cap {
-                        return Err(too_large(cap));
-                    }
-                    on_chunk(&chunk)?;
-                }
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                let body = read_body(response, cap).await?;
-                on_chunk(&body)?;
-            }
-            Ok(HttpResponse { status, headers, body: Vec::new() })
+            stream_body(response, status, headers, cap, on_chunk).await
         }
+    }
+
+    /// A 2xx body to `on_chunk` as it arrives, refused past `cap`; any other status's body whole.
+    async fn stream_body(
+        response: reqwest::Response,
+        status: u16,
+        headers: Vec<(String, String)>,
+        cap: usize,
+        on_chunk: &mut ChunkSink<'_>,
+    ) -> Result<HttpResponse, ProviderError> {
+        if !(200..300).contains(&status) {
+            let body = read_body(response, cap).await?;
+            return Ok(HttpResponse { status, headers, body });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut response = response;
+            let mut total = 0usize;
+            while let Some(chunk) = response.chunk().await.map_err(|e| network(&e))? {
+                total = total.saturating_add(chunk.len());
+                if total > cap {
+                    return Err(too_large(cap));
+                }
+                on_chunk(&chunk)?;
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let body = read_body(response, cap).await?;
+            on_chunk(&body)?;
+        }
+        Ok(HttpResponse { status, headers, body: Vec::new() })
     }
     impl Http for ReqwestHttp {
         fn send_no_redirect(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
@@ -453,6 +515,28 @@ mod reqwest_impl {
             {
                 let _ = request;
                 Box::pin(async { Err(ProviderError::new(ErrorKind::UnsupportedInput, "no-redirect image requests need a native or audited host transport")) })
+            }
+        }
+        fn send_streaming_no_redirect<'a>(
+            &'a self,
+            request: HttpRequest,
+            on_chunk: &'a mut ChunkSink<'a>,
+        ) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+            #[cfg(not(target_arch = "wasm32"))]
+            return Box::pin(async move {
+                let cap = request.max_response_bytes;
+                let response = self.send_once(&request, None).await?;
+                let status = response.status().as_u16();
+                let headers = response.headers().iter().filter_map(|(n, v)| Some((n.as_str().to_ascii_lowercase(), v.to_str().ok()?.to_owned()))).collect();
+                drop(request);
+                stream_body(response, status, headers, cap, on_chunk).await
+            });
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = (request, on_chunk);
+                Box::pin(async {
+                    Err(ProviderError::new(ErrorKind::UnsupportedInput, "no-redirect streamed requests need a native or audited host transport"))
+                })
             }
         }
         fn send(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {

@@ -4,15 +4,11 @@
 //! Tiles are row-major (left to right, then top to bottom). When the image doesn't divide evenly,
 //! tile edges are spread so that tiles differ by at most one pixel and together cover the image
 //! exactly: nothing is cropped away or padded. Each tile is a PNG copy in the project's asset
-//! store. Everything is decoded, cut and encoded, and its size checked against the store's room,
-//! before anything is stored.
+//! store. One Session-bound candidate publishes all tiles atomically; refusal never prunes
+//! unrelated staged assets. Input materialization is private, explicit and decoder-cap bounded.
 use crate::Session;
-use nodecraft_format::{MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES};
-use nodecraft_graph::{Node, Position};
-use nodecraft_media::{Limits, decode_image, encode_png};
-use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, MediaMeta, NodeId, ParamValues, Value};
-use serde_json::json;
-use std::collections::BTreeMap;
+use nodecraft_graph::{Generation, Node};
+use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, NodeId, Value};
 
 /// Most rows, and most columns, a split makes.
 pub const MAX_SIDE: u32 = 16;
@@ -28,23 +24,84 @@ fn invalid(message: impl Into<String>) -> Error {
 /// Image types a split can decode.
 const SPLITTABLE: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/tiff"];
 
-/// The image a node shows, if it can be split: a Source image's asset, else the first image of
-/// its active result, of a type NodeCraft decodes.
-pub fn image_of(node: &Node) -> Option<&AssetRef> {
-    let is_image = |asset: &&AssetRef| SPLITTABLE.contains(&asset.mime.essence());
-    if let Some(Value::Media(asset)) = node.params.get("asset").filter(|_| node.kind == "source.image") {
-        return Some(asset).filter(is_image);
-    }
-    let active = node.active?;
-    node.history.iter().find(|g| g.id == active)?.outputs.iter().find_map(|value| match value {
-        Value::Media(asset) => Some(asset).filter(is_image),
+pub(crate) fn image(value: &Value) -> Option<&AssetRef> {
+    match value {
+        Value::Media(asset) if SPLITTABLE.contains(&asset.mime.essence()) => Some(asset),
         _ => None,
+    }
+}
+
+/// Most rows of images a card shows, and most images in a row.
+pub const GALLERY_ROWS: usize = 4;
+pub const GALLERY_COLUMNS: usize = 4;
+
+/// The images a node shows, in rows: a Source image's asset; else the images of its active
+/// result's first output that has any, one row per batch item when a batch fanned it out (#519)
+/// and one row otherwise. Only types NodeCraft decodes; at most [`GALLERY_ROWS`] rows of
+/// [`GALLERY_COLUMNS`]. The count is every such image, shown or not.
+pub fn image_rows(node: &Node) -> (Vec<Vec<&AssetRef>>, usize) {
+    if node.kind == "source.image" {
+        let asset = node.params.get("asset").and_then(image);
+        return (asset.map(|a| vec![vec![a]]).unwrap_or_default(), usize::from(asset.is_some()));
+    }
+    // A folder of images shows the files it gives, after its filters and order.
+    if node.kind == nodecraft_nodes::folder::ID {
+        let images: Vec<&AssetRef> = folder_images(node).collect();
+        let rows = images.chunks(GALLERY_COLUMNS).take(GALLERY_ROWS).map(<[&AssetRef]>::to_vec).collect();
+        return (rows, images.len());
+    }
+    let Some(result) = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)) else {
+        return (Vec::new(), 0);
+    };
+    result_rows(result)
+}
+
+/// The images `result` shows, in rows, as [`image_rows`] gives them for a node's active result.
+pub fn result_rows(result: &Generation) -> (Vec<Vec<&AssetRef>>, usize) {
+    let fanned = !result.items.is_empty();
+    for value in &result.outputs {
+        let rows: Vec<&[Value]> = match value {
+            Value::List(items) if fanned => {
+                items.iter().map(|item| if let Value::List(inner) = item { inner.as_slice() } else { std::slice::from_ref(item) }).collect()
+            }
+            Value::List(items) => vec![items.as_slice()],
+            single => vec![std::slice::from_ref(single)],
+        };
+        let count = rows.iter().map(|row| row.iter().filter_map(image).count()).sum();
+        if count > 0 {
+            let shown = rows.iter().map(|row| row.iter().filter_map(image).take(GALLERY_COLUMNS).collect::<Vec<_>>()).filter(|row| !row.is_empty());
+            return (shown.take(GALLERY_ROWS).collect(), count);
+        }
+    }
+    (Vec::new(), 0)
+}
+
+/// The image a node shows first, if it can be split: a Source image's asset, else the first
+/// image of its active result (inside a list too), of a type NodeCraft decodes: the first of
+/// [`image_rows`], found without walking the rest (cards ask for it every frame).
+pub fn image_of(node: &Node) -> Option<&AssetRef> {
+    if node.kind == "source.image" {
+        return node.params.get("asset").and_then(image);
+    }
+    let result = node.history.iter().find(|g| Some(g.id) == node.active)?;
+    let fanned = !result.items.is_empty();
+    result.outputs.iter().find_map(|value| match value {
+        Value::List(items) => items.iter().find_map(|item| match item {
+            Value::List(inner) if fanned => inner.iter().find_map(image),
+            single => image(single),
+        }),
+        single => image(single),
     })
+}
+
+/// The images a folder gives, in its order; none when its settings can't be read.
+fn folder_images(node: &Node) -> impl Iterator<Item = &AssetRef> {
+    nodecraft_nodes::folder::selected(node).unwrap_or_default().into_iter().filter_map(|entry| image(entry.value))
 }
 
 /// Where tile `index` of `count` starts along a side `length` long: edges are spread evenly, so
 /// tiles differ by at most one pixel and the last ends exactly at `length`.
-fn edge(length: u32, count: u32, index: u32) -> u32 {
+pub fn edge(length: u32, count: u32, index: u32) -> u32 {
     let at = u64::from(length).saturating_mul(u64::from(index)) / u64::from(count.max(1));
     u32::try_from(at).unwrap_or(length)
 }
@@ -62,81 +119,23 @@ pub struct Split<'a> {
 }
 
 /// Cuts the node's image into tiles and adds them as Image nodes, in one undo step. Returns the
-/// new nodes, row-major. Nothing is stored or added when any tile can't be made.
+/// new nodes, row-major. No tiles or document edits publish when any tile cannot be made.
 pub fn split_grid(session: &mut Session, split: &Split<'_>) -> Result<Vec<NodeId>, Error> {
-    let tiles = split.rows.checked_mul(split.columns).filter(|n| (1..=MAX_TILES).contains(n));
-    let Some(tiles) = tiles.filter(|_| (1..=MAX_SIDE).contains(&split.rows) && (1..=MAX_SIDE).contains(&split.columns)) else {
-        return Err(invalid(format!("split into 1 to {MAX_SIDE} rows and columns, at most {MAX_TILES} tiles")));
-    };
-    if split.ids.len() != tiles as usize {
-        return Err(invalid("an id is needed for every tile"));
-    }
-    let canvas = session.document().canvases().get(&split.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
-    let source = canvas.nodes().get(&split.node).ok_or_else(|| Error::new(ErrorKind::NotFound, "node does not exist"))?;
-    let asset = image_of(source).ok_or_else(|| invalid("this node has no image to split"))?;
-    let origin = source.pos;
-    let bytes = session.assets().get(&asset.hash).ok_or_else(|| Error::new(ErrorKind::NotFound, "the image's data isn't in this project"))?;
-    let (_, image) = decode_image(bytes, &Limits::default()).map_err(|error| invalid(format!("the image can't be read: {error}")))?;
-    // No full RGBA copy: each tile is cut from the decoded image and converted on its own, so
-    // peak memory stays near the decode (`media`'s limits) plus one tile.
-    let (width, height) = (image.width(), image.height());
-    if width < split.columns || height < split.rows {
-        return Err(invalid("the image is smaller than one pixel per tile"));
-    }
-    // The tiles land to the right of the source and below it: refuse before any work if the
-    // grid would leave the canvas.
-    let far = (origin.x + split.step.0 * split.columns as f32, origin.y + split.step.1 * split.rows.saturating_sub(1) as f32);
-    if !(far.0.is_finite() && far.1.is_finite() && far.0.abs() <= MAX_COORDINATE && far.1.abs() <= MAX_COORDINATE) {
-        return Err(invalid("the tiles would land outside the canvas; move the node and try again"));
-    }
-    // Cut and encode every tile, stopping as soon as they can't fit the store, before storing
-    // anything. (Identical tiles are counted twice, so this errs on the safe side.)
-    let store_left = MAX_TOTAL_ASSET_BYTES.saturating_sub(session.assets().byte_len());
-    if MAX_ASSETS.saturating_sub(session.assets().len()) < tiles as usize {
-        return Err(Error::new(ErrorKind::Conflict, "the tiles don't fit in the project's media"));
-    }
-    let mut encoded = Vec::with_capacity(tiles as usize);
-    let mut total = 0usize;
-    for row in 0..split.rows {
-        let (top, bottom) = (edge(height, split.rows, row), edge(height, split.rows, row + 1));
-        for column in 0..split.columns {
-            let (left, right) = (edge(width, split.columns, column), edge(width, split.columns, column + 1));
-            let (w, h) = (right.saturating_sub(left), bottom.saturating_sub(top));
-            let tile = image.crop_imm(left, top, w, h).to_rgba8();
-            let png = encode_png(w, h, tile.as_raw(), &Limits::default()).map_err(|error| invalid(format!("a tile can't be encoded: {error}")))?;
-            if png.len() > MAX_ASSET_BYTES {
-                return Err(invalid("a tile is too large to store"));
+    let result = crate::session::guard(|| staged::run(session, split));
+    match result {
+        Ok(ids) => Ok(ids),
+        Err(mut error) => {
+            // All uncommitted candidate/input owners ended before this non-logical maintenance.
+            // Logical pruning is never operation rollback; failed owned cleanup stays charged.
+            if crate::session::guard(|| session.assets().collect_garbage()).is_err() {
+                error.message.push_str(" Asset maintenance also failed; retry maintenance before splitting again.");
             }
-            total = total.saturating_add(png.len());
-            if total > store_left {
-                return Err(Error::new(ErrorKind::Conflict, "the tiles don't fit in the project's media"));
-            }
-            encoded.push((png, w, h));
+            Err(error)
         }
     }
-    // Store the tiles and add their nodes.
-    let added = (|| {
-        let mut nodes = Vec::with_capacity(encoded.len());
-        for (index, ((png, w, h), id)) in encoded.into_iter().zip(split.ids).enumerate() {
-            let hash = session.import_asset(&png)?;
-            let meta = MediaMeta { width: Some(w), height: Some(h), ..MediaMeta::default() };
-            let asset = AssetRef { hash, mime: "image/png".parse()?, meta };
-            let supplied: ParamValues = [("asset".to_owned(), Value::Media(asset))].into_iter().collect();
-            let mut node = session.kinds().get("source.image")?.instantiate_instance(*id, BTreeMap::new(), &supplied)?;
-            let (row, column) = (index as u32 / split.columns, index as u32 % split.columns);
-            node.pos = Position { x: origin.x + split.step.0 * (column as f32 + 1.0), y: origin.y + split.step.1 * row as f32 };
-            nodes.push(node);
-        }
-        let ids: Vec<NodeId> = nodes.iter().map(|node| node.id).collect();
-        session.dispatch("canvas.paste", &json!({"canvas": split.canvas, "nodes": nodes, "edges": []}))?;
-        Ok(ids)
-    })();
-    if added.is_err() {
-        // Nothing refers to the tiles stored so far: don't leave them taking the project's room.
-        let _ = session.prune_assets();
-    }
-    added
 }
+
+mod staged;
 
 #[cfg(test)]
 mod tests;
