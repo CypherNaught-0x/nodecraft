@@ -533,9 +533,7 @@ fn selected_card_in_distant_collapsed_field(h: &mut Harness<'static, NodeCraftAp
     let card = *h.state().navigation.geometry.rects.get(&node).unwrap();
     let canvas_id = h.state().canvas;
     let rect = json!({"pos": {"x": card.min.x - 40.0, "y": card.min.y - 3000.0}, "width": card.width() + 80.0, "height": 3000.0 + card.height() + 40.0});
-    // Select background padding, not the compact card's generated text controls.
-    let screen = h.state().view.rect_to_screen(h.state().viewport.min, card);
-    let target = Pos2::new(screen.center().x, screen.top() + h.state().theme.tokens().card_padding * h.state().view.zoom * 0.5);
+    let target = self::card(h).unwrap().min + Vec2::new(150.0, 30.0);
     press(h, target, egui::PointerButton::Primary, true);
     press(h, target, egui::PointerButton::Primary, false);
     assert!(h.state().selection.contains(node), "pointer selects the member card");

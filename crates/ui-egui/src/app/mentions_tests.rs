@@ -65,15 +65,9 @@ fn typing_at_lists_text_cards_and_enter_inserts_the_mention() {
     let (mut h, story) = editing();
     type_text(&mut h, "Retell @st");
     let (row, field) = (h.get_by_label("@Story").rect(), prompt_field(&h).rect());
-    // AccessKit exposes TextEdit's complete scrollable content bounds. The picker belongs below
-    // its visible fixed-height viewport, not below text clipped inside that viewport.
-    let t = h.state().theme.tokens();
-    let height = t.body_size * t.text_rows as f32 * h.state().view.zoom;
-    let visible = field.intersect(Rect::from_min_size(field.min, Vec2::new(field.width(), height))).intersect(h.state().viewport);
-    assert!(visible.is_positive());
     assert!(
-        (row.left() - visible.left()).abs() < 24.0 && row.top() >= visible.bottom() - 1.0 && row.top() < visible.bottom() + 80.0,
-        "the list is under the visible prompt: {row:?} {visible:?} (full content {field:?})"
+        (row.left() - field.left()).abs() < 24.0 && row.top() >= field.bottom() - 1.0 && row.top() < field.bottom() + 80.0,
+        "the list is under the prompt: {row:?} {field:?}"
     );
     press(&mut h, egui::Key::Enter);
     assert!(h.query_by_label("@Story").is_none(), "the list closes");

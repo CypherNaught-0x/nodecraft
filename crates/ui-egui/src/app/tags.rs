@@ -121,15 +121,16 @@ impl NodeCraftApp {
     pub(super) fn tag_rect(&self) -> Rect {
         let t = self.theme.tokens();
         let available = (self.viewport.width() - 2.0 * t.navigation_margin).max(1.0);
-        let left = if self.tag_filter.open {
+        let left = if self.tag_filter.open && self.comments.open {
+            let discussion_width = t.comments_width.min(((available - t.navigation_gap) / 2.0).max(1.0));
+            self.viewport.min.x + t.navigation_margin + discussion_width + t.navigation_gap
+        } else if self.tag_filter.open {
             self.viewport.min.x + t.navigation_margin
         } else {
             (self.search_rect().left() - t.navigation_gap - t.search_button_width).max(self.viewport.min.x + t.navigation_margin)
         };
-        let width_limit = if self.tag_filter.open && self.comments.open { ((available - t.navigation_gap) / 2.0).max(1.0) } else { available };
-        let width = if self.tag_filter.open { t.tag_panel_width } else { t.search_button_width }
-            .min(width_limit)
-            .min((self.viewport.max.x - t.navigation_margin - left).max(1.0));
+        let width =
+            if self.tag_filter.open { t.tag_panel_width } else { t.search_button_width }.min((self.viewport.max.x - t.navigation_margin - left).max(1.0));
         let top = if self.search.open {
             self.search_rect().bottom() + t.navigation_gap
         } else {

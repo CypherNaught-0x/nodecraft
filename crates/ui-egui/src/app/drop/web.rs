@@ -143,17 +143,7 @@ impl NodeCraftApp {
         let result = if incoming.is_empty() {
             Ok(Imported::default())
         } else {
-            let t = self.theme.tokens();
-            nodecraft_engine::import::import_files_positioned(
-                &mut self.session,
-                pending.canvas,
-                pending.position,
-                pending.step,
-                &incoming,
-                &new_ids,
-                &[],
-                &|node, kinds| Self::creation_position(node, kinds, t),
-            )
+            nodecraft_engine::import::import_files(&mut self.session, pending.canvas, pending.position, pending.step, &incoming, &new_ids)
         };
         match result {
             Ok(mut imported) => {

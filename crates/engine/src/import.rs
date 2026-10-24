@@ -245,23 +245,7 @@ pub fn import_files_with_movies(
     ids: &[NodeId],
     movies: &[ProbedMovie],
 ) -> Result<Imported, Error> {
-    import_files_positioned(session, canvas, at, step, files, ids, movies, &|node, _| node.pos)
-}
-
-/// As [`import_files_with_movies`], with pure placement of each fully resolved payload before
-/// the existing single paste/import transaction. Headless callers retain top-left semantics.
-#[allow(clippy::too_many_arguments)]
-pub fn import_files_positioned(
-    session: &mut Session,
-    canvas: CanvasId,
-    at: Position,
-    step: f32,
-    files: &[Incoming<'_>],
-    ids: &[NodeId],
-    movies: &[ProbedMovie],
-    position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
-) -> Result<Imported, Error> {
-    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies, position));
+    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies));
     match result {
         Ok(imported) => Ok(imported),
         Err(mut error) => {

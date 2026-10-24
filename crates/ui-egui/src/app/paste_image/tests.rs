@@ -56,8 +56,7 @@ fn a_copied_image_becomes_an_image_node_at_the_pointer_as_one_undo_step() {
     assert_eq!(added[0].kind, "source.image");
     let world = h.state().view.to_world(h.state().viewport.min, at);
     let t = *h.state().theme.tokens();
-    let rect = super::super::payload_rect(&h.state().session, &added[0], &t);
-    assert!((rect.center() - world).length() < 1.0, "actual image body centered under pointer");
+    assert!((added[0].pos.x + t.card_width * 0.5 - world.x).abs() < 1.0, "centred under the pointer");
     assert_eq!(h.state().selection.nodes(), &added.iter().map(|n| n.id).collect());
     assert!(h.state().notice.is_none());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);

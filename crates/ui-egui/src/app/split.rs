@@ -26,21 +26,7 @@ impl NodeCraftApp {
             }
         }
         // Tiles are new Image cards, so space them by an Image card's size, not the source's.
-        let tile = nodecraft_engine::create_cmds::instance(self.session.kinds(), "source.image", node).map(|mut tile| {
-            if let Some(asset) = document.canvases().get(&self.canvas).and_then(|canvas| canvas.nodes().get(&node)).and_then(nodecraft_engine::split::image_of)
-            {
-                tile.params.insert("asset".into(), nodecraft_types::Value::Media(asset.clone()));
-            }
-            tile
-        });
-        let size = match tile {
-            Ok(tile) => super::payload_rect(&self.session, &tile, t).size(),
-            Err(error) => {
-                self.notice = Some(error.message);
-                return;
-            }
-        };
-        let step = (size.x + t.card_padding * 4.0, size.y + t.card_padding * 4.0);
+        let step = (t.card_width + t.card_padding * 4.0, t.card_min_height + t.card_padding * 4.0);
         let split = Split { canvas: self.canvas, node, rows, columns, ids: &new_ids, step };
         match split_grid(&mut self.session, &split) {
             Ok(made) => {

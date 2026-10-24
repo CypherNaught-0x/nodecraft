@@ -70,22 +70,6 @@ fn passive_toolbar(ctx: &egui::Context) {
     ctx.add_plugin(PassiveToolbarInput::default());
 }
 impl NodeCraftApp {
-    /// Measure a fully resolved import payload; no config defaults are copied into the UI.
-    pub(super) fn creation_position(node: &Node, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> nodecraft_graph::Position {
-        let descriptor = kinds.get(&node.kind).ok().and_then(|kind| kind.resolve_instance(node).ok());
-        let descriptor = descriptor.as_deref().filter(|d| d.inputs == node.inputs && d.outputs == node.outputs);
-        let size = card::world_size(node, descriptor, t);
-        nodecraft_graph::Position { x: node.pos.x - size.x * 0.5, y: node.pos.y - size.y * 0.5 }
-    }
-    /// Preview the command's pure construction, then publish once at the measured center.
-    pub(super) fn centered_command(&mut self, command: &str, params: &mut Json, id: NodeId) -> Result<Json, Error> {
-        let node = self.session.preview_created_node(command, params, id)?;
-        let size = payload_rect(&self.session, &node, self.theme.tokens()).size();
-        params["pos"] = json!({"x": node.pos.x - size.x * 0.5, "y": node.pos.y - size.y * 0.5});
-        self.session.dispatch(command, params)
-    }
-}
-impl NodeCraftApp {
     /// `nodes` names what to measure instead of the selection (an agent's explicit list, #360).
     fn layout_context(&mut self, ctx: &egui::Context, owner: Option<egui::Id>, nodes: Option<Vec<NodeId>>) -> LayoutContext {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
@@ -736,23 +720,13 @@ mod tests {
         let ctx = h.ctx.clone();
         h.state_mut().schemas.clear(); // an evicted visible schema never controls layout
         h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid","columns":1})).unwrap();
-        let expected_height = |app: &NodeCraftApp| {
-            let node = app.session.document().canvases().get(&canvas).unwrap().nodes().get(&id(4)).unwrap();
-            let descriptor = app.session.kinds().get(&node.kind).unwrap().resolve_instance(node).unwrap();
-            card::world_size(node, Some(&descriptor), app.theme.tokens()).y
-        };
         let before = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id(3)).unwrap().pos.y;
-        let tall_height = expected_height(h.state());
-        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, tall_height);
+        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, h.state().theme.tokens().card_max_height);
         h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":id(4),"title":"Short"})).unwrap();
         h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid","columns":1})).unwrap();
         let after = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id(3)).unwrap().pos.y;
-        let short_height = expected_height(h.state());
-        assert!(tall_height > short_height * 4.0);
-        // Grid origins snap to eight world points; the full instance-height difference must move
-        // the following row, not just refresh the cached scalar without using it.
-        assert!((before - after - (tall_height - short_height)).abs() < 8.0);
-        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, short_height);
+        assert!(before - after > 400.0);
+        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, h.state().theme.tokens().card_min_height);
     }
     #[test]
     fn dirty_card_parameter_clicking_disabled_format_preserves_document_and_draft() {

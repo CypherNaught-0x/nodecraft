@@ -29,7 +29,7 @@ fn config_for(kind: &str, output: PortType) -> BTreeMap<String, Value> {
 }
 
 /// A new node of `kind` set up to take `output`, and the input it takes it on.
-pub fn instance_for(kinds: &Registry, kind: &str, id: NodeId, output: PortType) -> Result<(Node, String), Error> {
+fn instance_for(kinds: &Registry, kind: &str, id: NodeId, output: PortType) -> Result<(Node, String), Error> {
     let node = kinds.get(kind)?.instantiate_instance(id, config_for(kind, output), &ParamValues::new())?;
     let input = node.inputs.iter().find(|input| compatible(output, input.port_type)).map(|input| input.name.clone());
     match input {

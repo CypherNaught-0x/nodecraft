@@ -141,7 +141,7 @@ impl NodeCraftApp {
         }
     }
 
-    fn start_image_paste(&mut self, ctx: &egui::Context, centre: Pos2, _t: &Tokens) {
+    fn start_image_paste(&mut self, ctx: &egui::Context, centre: Pos2, t: &Tokens) {
         if self.image_paste.pending.is_some() {
             self.notice = Some("The copied image is still being read; try again in a moment.".into());
             return;
@@ -165,7 +165,7 @@ impl NodeCraftApp {
             project: self.session.document().id(),
             canvas: self.canvas,
             revision: self.session.revision(),
-            position: Position { x: centre.x, y: centre.y },
+            position: Position { x: centre.x - t.card_width * 0.5, y: centre.y - t.card_min_height * 0.5 },
         });
         self.notice = Some("Reading the copied image…".into());
     }
@@ -210,10 +210,7 @@ impl NodeCraftApp {
             return;
         };
         let incoming = [Incoming { name: "Pasted image.png", bytes: &png }];
-        let t = self.theme.tokens();
-        match nodecraft_engine::import::import_files_positioned(&mut self.session, pending.canvas, at, 0.0, &incoming, &[id], &[], &|node, kinds| {
-            Self::creation_position(node, kinds, t)
-        }) {
+        match nodecraft_engine::import::import_files(&mut self.session, pending.canvas, at, 0.0, &incoming, &[id]) {
             Ok(imported) => {
                 if let Some((_, why)) = imported.skipped.first() {
                     self.notice = Some(format!("The copied image wasn't added: {why}."));

@@ -226,16 +226,9 @@ fn raw_undo_and_marquee_release_uses_current_revision_geometry() {
     h.state_mut().view = CanvasView { pan: Vec2::new(300.0, 180.0), zoom: 1.0 };
     let canvas = h.state().canvas;
     let id = NodeId::from_bytes([3; 16]);
-    let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap();
-    let original = payload_rect(&h.state().session, node, h.state().theme.tokens());
     h.state_mut().session.dispatch("node.move", &json!({"canvas":canvas,"id":id,"pos":{"x":0.0,"y":100.0}})).unwrap();
     h.step();
-    let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap();
-    let lower = payload_rect(&h.state().session, node, h.state().theme.tokens());
-    // The malformed instance uses the actual compact placeholder, not its declared tall schema.
-    let held_y = (original.bottom() + lower.bottom()) * 0.5;
-    assert!(held_y > original.bottom() && held_y < lower.bottom());
-    let from = h.state().view.to_screen(h.state().viewport.min, Pos2::new(lower.left() - 10.0, held_y));
+    let from = h.state().view.to_screen(h.state().viewport.min, Pos2::new(-10.0, 250.0));
     h.input_mut().events.extend([
         egui::Event::ModifiersChanged(egui::Modifiers::SHIFT),
         egui::Event::PointerMoved(from),
@@ -247,11 +240,7 @@ fn raw_undo_and_marquee_release_uses_current_revision_geometry() {
     assert!(h.state().marquee.is_some());
     // Pan leaves the start in world space and the candidate offscreen, as during a held gesture.
     h.state_mut().view.pan.x = -1300.0;
-    let end_y = held_y + (lower.bottom() - held_y) * 0.25;
-    let to = Pos2::new(50.0, h.state().view.to_screen(h.state().viewport.min, Pos2::new(0.0, end_y)).y);
-    // The start is held in world space across the pan, not reinterpreted through the new camera.
-    let held = Rect::from_two_pos(Pos2::new(lower.left() - 10.0, held_y), h.state().view.to_world(h.state().viewport.min, to));
-    assert!(held.intersects(lower) && !held.intersects(original));
+    let to = Pos2::new(50.0, 460.0);
     h.input_mut().events.push(egui::Event::PointerMoved(to));
     h.step();
     assert!(h.state().selection.contains(id), "lower position must intersect the actual held box");

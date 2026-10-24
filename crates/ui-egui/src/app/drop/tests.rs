@@ -82,12 +82,7 @@ fn dropped_files_become_nodes_at_the_pointer_as_one_undo_step() {
     assert!(added.iter().any(|n| n.kind == "source.image"));
     let world = h.state().view.to_world(h.state().viewport.min, at);
     let t = *h.state().theme.tokens();
-    for (index, kind) in ["source.text", "source.image"].into_iter().enumerate() {
-        let node = added.iter().find(|node| node.kind == kind).unwrap();
-        let rect = super::super::payload_rect(&h.state().session, node, &t);
-        let expected = world + egui::Vec2::new(index as f32 * (t.card_width + t.card_padding * 4.0), 0.0);
-        assert!((rect.center() - expected).length() < 1.0, "actual {kind} geometry must center under pointer/grid");
-    }
+    assert!((text.pos.x + t.card_width * 0.5 - world.x).abs() < 1.0, "centred under the pointer");
     assert_eq!(h.state().selection.nodes(), &added.iter().map(|n| n.id).collect());
     assert!(h.state().notice.is_none());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
