@@ -145,7 +145,7 @@ fn bfl33_invalid_input_stays_unsent() {
         assert!(scope.finish_error().is_some());
     }
     let scope = SubmitContext::new();
-    let p = Bfl::new(Secret::new("k".repeat(257)).unwrap(), wire.clone());
+    let p = Bfl::new(Secret::new(&"k".repeat(257)).unwrap(), wire.clone());
     assert!(block_on(p.submit_with_delivery(&job(), &scope)).is_err());
     assert!(scope.finish_error().is_some());
     assert!(wire.requests.lock().unwrap().is_empty());

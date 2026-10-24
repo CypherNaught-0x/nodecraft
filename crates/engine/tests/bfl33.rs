@@ -124,7 +124,8 @@ fn run(lost: bool) {
     } else {
         assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: CARD }), "{notices:?}");
         let output = &node.history.last().unwrap().outputs;
-        assert!(matches!(output.as_slice(),[Value::Media(asset)] if asset.mime.as_str()=="image/png"));
+        let [Value::List(images)] = output.as_slice() else { panic!("image generation must retain its list port: {output:?}") };
+        assert!(matches!(images.as_slice(), [Value::Media(asset)] if asset.mime.as_str() == "image/png"));
     }
     let requests = http.requests.lock().unwrap();
     assert_eq!(requests.len(), if lost { 1 } else { 3 }, "uncertain paid submissions must not retry even with max_attempts=3");
