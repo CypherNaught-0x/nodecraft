@@ -1435,7 +1435,9 @@ impl NodeCraftApp {
             // it yields to exactly what the quick-add letters yield to — a focused text field, the
             // palette, the "Turn into" menu, an open popup, a panel that owns canvas input and a
             // gesture in flight — and it is never taken from any of them unconsumed.
-            let overlays_offered = !self.canvas_letter_keys_blocked(ui, minimap_held, model_blocks, bulk_blocks);
+            // An egui drag (a slider or DragValue, for example) owns the keyboard too, and the
+            // navigation command refuses while one is active, so H must not be consumed into that.
+            let overlays_offered = !self.canvas_letter_keys_blocked(ui, minimap_held, model_blocks, bulk_blocks) && ui.ctx().dragged_id().is_none();
             let (select_all, escape, delete, overlays) = ui.input_mut(|i| {
                 (
                     i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
