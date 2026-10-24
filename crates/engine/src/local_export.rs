@@ -508,18 +508,17 @@ pub fn specs() -> Vec<CommandSpec> {
 /// is the intentionally documented weaker guarantee for systems without atomic no-replace links.
 pub(crate) fn run(assets: &nodecraft_format::AssetStore, plan: &ExportPlan, host: &ExportHost) -> Result<ExportOutcome, Error> {
     #[cfg(unix)]
-    let destination = host.pinned_destination(&plan.destination)?;
+    {
+        let outcome = host.pinned_destination(&plan.destination).and_then(|destination| run_pinned(assets, plan, host.cancel(), &destination));
+        // A cancel stops the export it was pressed for, and must not stop the next one, even when
+        // this one was refused before it began.
+        host.cancel().reset();
+        outcome
+    }
     #[cfg(not(unix))]
     {
         let _ = (assets, plan, host);
         Err(unsupported("secure folder export requires descriptor-relative no-follow file operations on this platform"))
-    }
-    #[cfg(unix)]
-    {
-        let outcome = run_pinned(assets, plan, host.cancel(), &destination);
-        // A cancel stops the export it was pressed for, and must not stop the next one.
-        host.cancel().reset();
-        outcome
     }
 }
 
@@ -620,11 +619,17 @@ fn assign_names(names: &[&ExportName], collision: Collision, taken: &dyn Fn(&str
     for name in names {
         let choice = choose(name, collision, &claimed, taken);
         if let Ok(Some(file)) = &choice {
-            claimed.insert(file.clone());
+            claimed.insert(folded(file));
         }
         assigned.push(choice);
     }
     assigned
+}
+
+/// A name as the claimed set compares it. macOS and Windows folders are case-insensitive by
+/// default, so `Hero.png` and `hero.png` are one file there and must be one name here too.
+fn folded(name: &str) -> String {
+    name.to_lowercase()
 }
 
 fn choose(
@@ -636,10 +641,10 @@ fn choose(
     let intended = name.file_name();
     if collision == Collision::Overwrite {
         // Overwrite may replace a file already on disk, but never one this batch has written.
-        return if claimed.contains(&intended) { Err(reasons::DUPLICATE_NAME.to_owned()) } else { Ok(Some(intended)) };
+        return if claimed.contains(&folded(&intended)) { Err(reasons::DUPLICATE_NAME.to_owned()) } else { Ok(Some(intended)) };
     }
     // An uncertain lookup is an error, never a guess that the name is free.
-    let occupied = |candidate: &str| -> Result<bool, String> { Ok(claimed.contains(candidate) || taken(candidate)?) };
+    let occupied = |candidate: &str| -> Result<bool, String> { Ok(claimed.contains(&folded(candidate)) || taken(candidate)?) };
     if !occupied(&intended)? {
         return Ok(Some(intended));
     }

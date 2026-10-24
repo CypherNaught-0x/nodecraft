@@ -820,6 +820,18 @@ fn a_name_repeated_in_one_batch_follows_the_policy_and_never_replaces_its_own_fi
 }
 
 #[test]
+fn names_that_differ_only_in_case_are_one_file_on_case_insensitive_folders() {
+    let (upper, lower) = (nodecraft_format::export::ExportName { stem: "Hero".to_owned(), extension: Some("png".to_owned()) }, named("hero"));
+    let free = |_: &str| -> Result<bool, String> { Ok(false) };
+    assert_eq!(
+        super::assign_names(&[&upper, &lower], Collision::Overwrite, &free),
+        vec![Ok(Some("Hero.png".to_owned())), Err(reasons::DUPLICATE_NAME.to_owned())],
+        "macOS and Windows would replace Hero.png with hero.png, so the repeat is refused"
+    );
+    assert_eq!(super::assign_names(&[&upper, &lower], Collision::Skip, &free), vec![Ok(Some("Hero.png".to_owned())), Ok(None)]);
+}
+
+#[test]
 fn numbered_reports_when_no_suffix_is_free() {
     let only = named("hero");
     let everything_taken = |_: &str| -> Result<bool, String> { Ok(true) };

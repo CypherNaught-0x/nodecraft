@@ -136,19 +136,23 @@ fn export_destination() -> std::path::PathBuf {
 }
 
 /// Hunts currently holding the shared export folder. The last one out removes it, even when an
-/// assertion fails, so parallel hunts never pull the folder away from each other.
-static HUNTS_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// assertion fails. The count and the removal share one lock, so a hunt starting as the last one
+/// leaves cannot have the folder removed under it.
+static HUNTS_IN_FLIGHT: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 
 struct RemoveExportFolder;
 impl RemoveExportFolder {
     fn hold() -> Self {
-        HUNTS_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut count = HUNTS_IN_FLIGHT.lock().unwrap_or_else(|poison| poison.into_inner());
+        *count += 1;
         Self
     }
 }
 impl Drop for RemoveExportFolder {
     fn drop(&mut self) {
-        if HUNTS_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+        let mut count = HUNTS_IN_FLIGHT.lock().unwrap_or_else(|poison| poison.into_inner());
+        *count -= 1;
+        if *count == 0 {
             let _ = std::fs::remove_dir_all(export_destination());
         }
     }

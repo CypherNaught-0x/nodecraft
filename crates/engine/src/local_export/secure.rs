@@ -122,7 +122,7 @@ impl<'a> Destination<'a> {
             // The replacement keeps the existing file's permission bits, as the single-file writer does.
             let existing = match fs::statat(&self.parent, name, AtFlags::SYMLINK_NOFOLLOW) {
                 Ok(meta) if fs::FileType::from_raw_mode(meta.st_mode).is_symlink() => return Err(Error::new(ErrorKind::InvalidInput, LINK)),
-                Ok(meta) => Some(Mode::from_raw_mode(meta.st_mode & 0o7777)),
+                Ok(meta) => Some(Mode::from_raw_mode(meta.st_mode & 0o777)),
                 Err(rustix::io::Errno::NOENT) => None,
                 Err(err) => return Err(error(err)),
             };
