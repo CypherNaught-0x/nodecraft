@@ -159,7 +159,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   option lists are desktop only for now (#721), and so is video. Unsaved work is kept in the
   site's storage and offered back after a crash or a closed tab (#717); leaving with unsaved work
   still asks first. Files dropped in a browser are read asynchronously and added as nodes (#319);
-  pasting a copied image works in the desktop app only.
+  clipboard media acquisition adds browser PNG paste and native copied-file references (#633).
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
   and ffprobe discovered on `PATH`, set under `[media]` in settings, or overridden with
   `NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` (#411); it does not bundle them.

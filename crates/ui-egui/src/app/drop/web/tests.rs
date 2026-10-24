@@ -9,6 +9,7 @@ fn nodes(h: &Harness<'static, NodeCraftApp>) -> Vec<nodecraft_graph::Node> {
 }
 /// A browser drop as `start_web_drop` leaves it, with `reads` as the tasks fill them.
 fn pending(h: &mut Harness<'static, NodeCraftApp>, reads: Vec<(&str, Slot)>, skipped: Vec<(&str, &str)>) -> Rc<RefCell<Vec<(String, Slot)>>> {
+    let deadline = h.ctx.input(|i| i.time) + READ_SECONDS;
     let app = h.state_mut();
     let reads = Rc::new(RefCell::new(reads.into_iter().map(|(n, s)| (n.to_owned(), s)).collect::<Vec<_>>()));
     let identity = crate::navigation::Geometry::identity(&mut app.session);
@@ -21,6 +22,7 @@ fn pending(h: &mut Harness<'static, NodeCraftApp>, reads: Vec<(&str, Slot)>, ski
         revision: app.session.revision(),
         position: Position { x: 100.0, y: 100.0 },
         step: 300.0,
+        deadline,
     });
     reads
 }
@@ -75,6 +77,28 @@ fn a_browser_drop_waits_for_every_read_then_imports_as_one_undo_step() {
 }
 
 #[test]
+fn a_completed_read_survives_a_browser_drop_frame_after_the_deadline() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    let old = nodes(&h).len();
+    let png = nodecraft_media::encode_png(4, 4, &[90; 64], &Default::default()).unwrap();
+    let reads = pending(&mut h, vec![("note.txt", None), ("pic.png", None)], vec![]);
+    // FileReader callbacks settle while requestAnimationFrame is paused in a background tab.
+    reads.borrow_mut()[0].1 = Some(Ok(b"Finished before the tab returned".to_vec()));
+    reads.borrow_mut()[1].1 = Some(Ok(png));
+    let deadline = h.state().web_drop.as_ref().unwrap().deadline;
+    h.input_mut().time = Some(deadline + READ_SECONDS);
+    h.step();
+    assert!(h.ctx.input(|i| i.time) > deadline);
+    assert_eq!(nodes(&h).len(), old + 2, "completed bytes must survive the delayed frame: {:?}", h.state().notice);
+    assert!(h.state().web_drop.is_none());
+    assert!(h.state().notice.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before, "the completed batch still imports as one undo step");
+}
+
+#[test]
 fn skipped_failed_and_grown_files_are_named_and_the_rest_still_land() {
     let mut h = harness();
     let count = nodes(&h).len();
@@ -109,5 +133,74 @@ fn an_edit_while_files_are_read_wins() {
     h.run();
     assert_eq!(nodes(&h).len(), count);
     assert_eq!(h.state().notice.as_deref(), Some("The document changed while reading files; nothing was added. Drop them again."));
+    assert!(h.state().web_drop.is_none());
+}
+
+#[test]
+fn a_stuck_browser_read_expires_and_a_late_result_cannot_import() {
+    let mut h = harness();
+    let before = h.state().session.document().clone();
+    let reads = pending(&mut h, vec![("late.txt", None)], vec![]);
+    h.state_mut().web_drop.as_mut().unwrap().deadline = -1.0;
+    h.step();
+    assert!(!h.state().drop_pending());
+    assert_eq!(h.state().notice.as_deref(), Some("The browser didn't finish reading files; nothing was added. Drop them again."));
+    reads.borrow_mut()[0].1 = Some(Ok(b"too late".to_vec()));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+    pending(&mut h, vec![("fresh.txt", Some(Ok(b"fresh read".to_vec())))], vec![]);
+    h.run();
+    assert_eq!(nodes(&h).len(), before.canvases().get(&h.state().canvas).unwrap().nodes().len() + 1);
+    assert!(h.state().notice.is_none());
+}
+
+#[test]
+fn escape_cancels_a_pending_browser_read_without_clearing_selection_or_accepting_late_bytes() {
+    let mut h = harness();
+    let first = nodes(&h).first().unwrap().id;
+    h.state_mut().selection.replace([first].into());
+    let before = h.state().session.document().clone();
+    let reads = pending(&mut h, vec![("late.txt", None)], vec![]);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().drop_pending());
+    assert!(h.state().selection.nodes().contains(&first), "the pending read owns this Escape");
+    assert_eq!(h.state().notice.as_deref(), Some("File reading was cancelled; nothing was added."));
+    reads.borrow_mut()[0].1 = Some(Ok(b"too late".to_vec()));
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+fn a_document_replacement_cancels_even_a_browser_read_that_never_settles() {
+    let mut h = harness();
+    pending(&mut h, vec![("never.txt", None)], vec![]);
+    let canvas = h.state().canvas;
+    let node = nodecraft_graph::Node::new(nodecraft_types::NodeId::from_bytes([79; 16]), "fixture.unknown");
+    h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas":canvas,"node":node})).unwrap();
+    h.step();
+    assert!(h.state().web_drop.is_none());
+    assert_eq!(h.state().notice.as_deref(), Some("The document changed while reading files; nothing was added. Drop them again."));
+}
+
+#[test]
+fn escape_with_a_search_button_focused_closes_search_and_preserves_the_pending_read() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    h.run();
+    assert!(h.state().search.open);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Close search").focus();
+    h.run();
+    assert!(!crate::canvas::text_input_focused(&h.ctx));
+    let before = h.state().session.document().clone();
+    let reads = pending(&mut h, vec![("public.png", None)], vec![]);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().search.open);
+    assert!(h.state().web_drop.is_some(), "Escape belongs to search, not the drop");
+    assert_eq!(h.state().session.document(), &before);
+    reads.borrow_mut()[0].1 = Some(Err("fixture ended".into()));
+    h.run();
     assert!(h.state().web_drop.is_none());
 }
