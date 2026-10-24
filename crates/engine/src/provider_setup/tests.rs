@@ -79,9 +79,21 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
 fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     let catalog = Catalog::builtin().unwrap();
     let keys = MemoryStore::default();
-    for account in
-        ["openai", "anthropic", "replicate", "seedream", "gemini", "fal", "tripo", "meshy", "higgsfield", "kling", "elevenlabs", "comfyui:gpu-box:8188"]
-    {
+    for account in [
+        "openai",
+        "anthropic",
+        "replicate",
+        "seedream",
+        "gemini",
+        "fal",
+        "tripo",
+        "meshy",
+        "higgsfield",
+        "huggingface",
+        "kling",
+        "elevenlabs",
+        "comfyui:gpu-box:8188",
+    ] {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
     }
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
@@ -108,6 +120,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "tripo",
         "meshy",
         "higgsfield",
+        "huggingface",
         "kling",
         "elevenlabs",
         "comfyui",
@@ -320,4 +333,29 @@ fn each_server_is_its_own_instance_with_its_own_cap() {
     assert_eq!(routing.find_parts("comfyui", laptop.instance()).unwrap().limit(), None);
     assert!(setup.routing_for([(NODE, "comfyui@elsewhere")], &settings).is_err(), "a slot not set up isn't routed");
     assert_eq!(http.0.load(Ordering::SeqCst), 0, "building sends nothing");
+}
+
+#[test]
+fn huggingface48_host_uses_huggingface_key_and_reports_missing_setup() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    assert!(matches!(make("huggingface",&env(&keys,&http,&settings)),Err(Readiness::NeedsKey{account}) if account=="huggingface"));
+    assert_eq!(key_account("huggingface"), Some("huggingface"));
+    keys.set(&Account::new("huggingface").unwrap(), &Secret::new("public-huggingface-key").unwrap()).unwrap();
+    let provider = make("huggingface", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "huggingface");
+    assert!(!provider.retry_ambiguous_submit());
+    let job = ProviderJob {
+        model: nodecraft_providers::huggingface::MODEL.into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A public harbour".into() }],
+        idempotency_key: "fixture".into(),
+    };
+    assert!(futures::executor::block_on(provider.submit(&job)).is_err());
+    assert_eq!(http.0.load(Ordering::SeqCst), 1);
+    let requests = http.1.lock().unwrap();
+    let request = &requests[0];
+    assert_eq!(request.url, "https://router.huggingface.co/v1/chat/completions");
+    assert!(request.headers.iter().any(|(name, value)| name == "Authorization" && value == "Bearer public-huggingface-key"));
 }
