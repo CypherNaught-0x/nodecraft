@@ -26,6 +26,7 @@ pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 /// Catalog files shipped with the app, embedded so they work offline and on the web.
 pub const BUILTIN: &[(&str, &str)] = &[
     ("anthropic.toml", include_str!("../../../assets/catalog/anthropic.toml")),
+    ("deepgram.toml", include_str!("../../../assets/catalog/deepgram.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
     ("gemini-images.toml", include_str!("../../../assets/catalog/gemini-images.toml")),

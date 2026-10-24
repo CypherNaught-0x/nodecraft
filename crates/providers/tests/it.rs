@@ -22,3 +22,6 @@ mod llm_stream;
 mod no_redirect;
 #[path = "reqwest_http.rs"]
 mod reqwest_http;
+
+#[path = "live_deepgram.rs"]
+mod live_deepgram;
