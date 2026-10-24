@@ -159,13 +159,13 @@ keep the editable text control and Refresh guidance. Reset is disabled without a
   the edit costs about 2× a move at 200 nodes and about 3× at 1,000. The gap grows with node count
   because the edit runs the O(nodes) `live_actions::pending` path that a move skips. The move half
   also lands on the #549 line above, 2.3 and 7.8 ms, within 0.2 ms, which is what makes the two
-  worth reading together. #203's 1.82 ms (200 nodes) and 6.21 ms (1,000 nodes) at 1 pixel
-  per point are **release-mode move frames**, not `node.param_set` frames: its 60-frame
+  worth reading together. #203's first 1-pixel-per-point replay run, 1.85 ms (200 nodes) and 6.21 ms
+  (1,000 nodes), is a set of **release-mode move frames**, not `node.param_set` frames: its 60-frame
   "after an edit" loop dispatched `node.move` on successive nodes. Its grid shape, 10% zoom,
   moving pointer, egui-plus-tessellation span and pixels-per-point settings match the present
   move control, but the parameter-edit command and live-recompute work are different. Neither
   a quiet parameter-edit result nor these loaded runs can be interpreted as a before/after
-  regression against #203's *parameter-edit* baseline; there is no such baseline. The #203
+  regression against #203's *parameter-edit* baseline, because #203 has no parameter-edit run. The #203
   report also did not record its macOS version or 1/5/15-minute load averages, preventing a
   load-matched historical comparison. A quiet re-measure is tracked in #743. The spread matters
   as much as the figures: runs taken earlier the same day, while other builds held the load
