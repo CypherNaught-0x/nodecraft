@@ -74,6 +74,18 @@ pub enum Outcome {
 }
 
 impl Palette {
+    pub(crate) fn query_id() -> egui::Id {
+        egui::Id::new("quick_add_palette_query")
+    }
+
+    pub(crate) fn owns_text_focus(ctx: &egui::Context) -> bool {
+        ctx.memory(|memory| memory.has_focus(Self::query_id()))
+    }
+
+    pub(crate) fn release_text_focus(ctx: &egui::Context) {
+        ctx.memory_mut(|memory| memory.surrender_focus(Self::query_id()));
+    }
+
     pub fn new(world: Pos2, screen: Pos2) -> Self {
         Self { world, screen, query: String::new(), highlighted: 0, focus: true }
     }
@@ -113,7 +125,7 @@ impl Palette {
                     ui.set_width(t.card_width);
                     let edit = ui.add(
                         egui::TextEdit::singleline(&mut self.query)
-                            .id_salt("query")
+                            .id(Self::query_id())
                             .hint_text("Add a node or run a command…")
                             .desired_width(f32::INFINITY)
                             .char_limit(128),

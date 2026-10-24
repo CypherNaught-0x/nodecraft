@@ -378,6 +378,7 @@ mod option_fetch;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
 mod ownership_panel;
+mod palette_navigation;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
 #[cfg(not(target_arch = "wasm32"))]
@@ -2428,7 +2429,7 @@ impl NodeCraftApp {
             self.drop_files(ui, viewport, t);
         }
         if let Some(mut open) = self.palette.take() {
-            let entries = self.palette_entries();
+            let entries = self.live_palette_entries(ui.ctx());
             match open.show(ui.ctx(), &entries, t) {
                 palette::Outcome::Open => self.palette = Some(open),
                 palette::Outcome::Closed => {}
@@ -2446,13 +2447,13 @@ impl NodeCraftApp {
                     if matches!(id, "file.open" | "file.save" | "file.save_as") {
                         self.begin_file(id, ui.ctx());
                     } else {
-                        self.dispatch_palette_command(id);
+                        self.dispatch_live_palette_command(ui.ctx(), id);
                     }
                     #[cfg(target_arch = "wasm32")]
                     if matches!(id, "file.open" | "file.save" | "file.save_as") {
                         self.web_file(id, ui.ctx());
                     } else {
-                        self.dispatch_palette_command(id);
+                        self.dispatch_live_palette_command(ui.ctx(), id);
                     }
                 }
             }
@@ -2978,6 +2979,10 @@ impl NodeCraftApp {
             .registry()
             .specs()
             .filter(|spec| {
+                // Live view commands are admitted separately with fresh shell context.
+                if Self::is_navigation_command(spec.id) {
+                    return false;
+                }
                 // They pick their file when chosen.
                 if matches!(spec.id, "file.open" | "file.save" | "file.save_as") {
                     return self.session.file_status().available;

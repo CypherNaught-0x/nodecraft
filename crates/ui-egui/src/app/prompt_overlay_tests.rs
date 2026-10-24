@@ -223,7 +223,7 @@ fn h_shortcut_dispatches_a_command_instead_of_flipping_view_state_inline() {
 }
 
 #[test]
-fn navigation_service_family_is_not_in_the_unscoped_palette() {
+fn unscoped_palette_helpers_never_grant_live_navigation_capabilities() {
     let mut h = image();
     let entries = h.state().palette_entries();
     for id in ["canvas.minimap_toggle", "canvas.prompt_overlays_toggle"] {
@@ -238,6 +238,42 @@ fn navigation_service_family_is_not_in_the_unscoped_palette() {
     }
     assert!(h.state().navigation.visible, "minimap stayed visible");
     assert!(h.state().prompt_overlays, "overlays stayed visible");
+}
+
+#[test]
+fn live_palette_choices_toggle_the_rendered_overlay_by_enter_and_pointer() {
+    let mut h = image();
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let history = (h.state().session.can_undo(), h.state().session.can_redo());
+    let events = h.state().session.events_since(0).unwrap();
+    for click in [false, true] {
+        for _ in 0..30 {
+            h.step();
+        }
+        double_click(&mut h, Pos2::new(80.0, 450.0));
+        assert!(h.state().palette.is_some());
+        h.event(egui::Event::Text("Toggle prompt overlays".into()));
+        h.run();
+        assert!(Palette::owns_text_focus(&h.ctx));
+        h.state_mut().session.perf_mut().set_enabled(true);
+        h.state_mut().session.perf_mut().clear();
+        if click {
+            h.get_by_label_contains("Toggle prompt overlays").click();
+        } else {
+            h.key_press(egui::Key::Enter);
+        }
+        h.run();
+        assert!(h.state().palette.is_none());
+        assert_eq!(overlay(&h), [click; 3], "the chosen command changes the actual prompt, counter and Generate widgets");
+        assert_eq!(h.state().prompt_overlays, click);
+        assert_eq!(h.state().session.document(), &document);
+        assert_eq!(h.state().session.revision(), revision);
+        assert_eq!((h.state().session.can_undo(), h.state().session.can_redo()), history);
+        assert_eq!(h.state().session.events_since(0).unwrap(), events);
+        let dispatched = h.state().session.perf().report().metrics.into_iter().find(|metric| metric.metric == nodecraft_engine::perf::Metric::Dispatch);
+        assert_eq!(dispatched.map(|metric| metric.recorded), Some(1), "the palette must dispatch the engine command");
+    }
 }
 
 #[test]

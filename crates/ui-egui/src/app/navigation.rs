@@ -13,6 +13,9 @@ impl NodeCraftApp {
         matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" | "canvas.pan_to")
     }
     fn navigation_contexts(&mut self, ctx: &egui::Context) -> [NavigationContext; 4] {
+        self.navigation_contexts_for_input(ctx, false)
+    }
+    fn navigation_contexts_for_input(&mut self, ctx: &egui::Context, palette_query: bool) -> [NavigationContext; 4] {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let t = self.theme.tokens();
         let viewport = self.navigation.usable(self.viewport, t);
@@ -27,8 +30,7 @@ impl NodeCraftApp {
             || egui::Popup::is_any_open(ctx)
             || self.model_choice.is_some()
             || self.model_frame_owned
-            || self.text_focused
-            || canvas::text_input_focused(ctx)
+            || (!palette_query && (self.text_focused || canvas::text_input_focused(ctx)))
             || self.wiring.is_some()
             || self.drag.is_some()
             || self.marquee.is_some()
@@ -85,7 +87,10 @@ impl NodeCraftApp {
         visible.into_iter().chain(hidden).map(|rect| crate::navigation::decorated(rect, t)).reduce(|a, b| a.union(b))
     }
     fn navigation_context(&mut self, ctx: &egui::Context, id: &str, params: &Json) -> NavigationContext {
-        let [all, mut selected, toggle, pan] = self.navigation_contexts(ctx);
+        self.navigation_context_for_input(ctx, id, params, false)
+    }
+    fn navigation_context_for_input(&mut self, ctx: &egui::Context, id: &str, params: &Json, palette_query: bool) -> NavigationContext {
+        let [all, mut selected, toggle, pan] = self.navigation_contexts_for_input(ctx, palette_query);
         if id == "canvas.fit_selection"
             && let Some(nodes) = nodecraft_engine::navigation_cmds::requested_nodes(params)
         {
@@ -113,6 +118,15 @@ impl NodeCraftApp {
             return Err(Error::new(ErrorKind::InvalidInput, "not a canvas navigation command"));
         }
         let context = self.navigation_context(ctx, id, params);
+        self.navigation_enabled_with_context(context, id, params)
+    }
+    /// Only the palette's own query can yield text ownership to its command rows.
+    pub(super) fn palette_navigation_enabled(&mut self, ctx: &egui::Context, id: &str, params: &Json) -> Result<(), Error> {
+        // Pointer press can blur the query before this frame builds the rows. Its cached
+        // ownership must yield too, but only while no other widget has acquired focus.
+        let query_focus =
+            Palette::owns_text_focus(ctx) || (ctx.memory(|memory| memory.focused()).is_none() && self.last_text_focus == Some(Palette::query_id()));
+        let context = self.navigation_context_for_input(ctx, id, params, query_focus);
         self.navigation_enabled_with_context(context, id, params)
     }
     /// Dispatch through the same engine command/service path used by buttons and shortcuts,
