@@ -82,6 +82,7 @@ fn current_writers_admit_new_values_while_v1_envelopes_refuse_every_replay_role(
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         };
         let mut canvas_data = Canvas::new(canvas(), "Canvas");
@@ -250,6 +251,7 @@ fn typed_generation_hashes_require_v2_but_absent_hash_stays_genuine_v1() {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     };
     assert!(serde_json::to_value(&generation).unwrap().get("input_hash").is_none());

@@ -1618,6 +1618,7 @@ mod tests {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             });
         }
@@ -1629,6 +1630,7 @@ mod tests {
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         };
         let changes = Changeset::new(vec![Change::AddGeneration { canvas, id, index: 3, generation }]);
@@ -1685,6 +1687,7 @@ mod tests {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             });
         }
@@ -1716,6 +1719,7 @@ mod tests {
                 mime: "text/plain".parse().unwrap(),
                 meta: Default::default(),
             })])],
+            source_versions: Vec::new(),
             incomplete: None,
         };
         let changes = Changeset::new(vec![
