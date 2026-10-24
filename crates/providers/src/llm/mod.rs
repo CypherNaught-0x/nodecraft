@@ -22,6 +22,7 @@ mod stream_tests;
 mod turns_tests;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
+pub use azure::validate_azure_deployment;
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;

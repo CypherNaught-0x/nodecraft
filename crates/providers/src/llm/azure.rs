@@ -3,6 +3,15 @@
 use super::{ApiKey, ChatRequest, Endpoint, LlmClient, chat_request};
 use crate::{ErrorKind, ProviderError, ProviderJob};
 
+/// Shared by quote admission and the submit backstop. Deployment names are customer resource
+/// identifiers, not arbitrary model URLs or paths; errors never echo the supplied value.
+pub fn validate_azure_deployment(deployment: &str) -> Result<(), ProviderError> {
+    if deployment.is_empty() || deployment.len() > 64 || !deployment.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.')) {
+        return Err(ProviderError::new(ErrorKind::UnsupportedInput, "set an Azure deployment name: 1–64 letters, digits, hyphens, underscores or dots"));
+    }
+    Ok(())
+}
+
 impl LlmClient {
     /// Only the generic Azure catalog card uses a parameter as its deployment. Other host
     /// catalogs and providers keep their literal provider_model; no cross-provider override.
@@ -14,12 +23,7 @@ impl LlmClient {
             } else {
                 &job.model
             };
-            if deployment.is_empty() || deployment.len() > 64 || !deployment.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.')) {
-                return Err(ProviderError::new(
-                    ErrorKind::UnsupportedInput,
-                    "set an Azure deployment name: 1–64 letters, digits, hyphens, underscores or dots",
-                ));
-            }
+            validate_azure_deployment(deployment)?;
             request.model = deployment.to_owned();
         }
         Ok(request)

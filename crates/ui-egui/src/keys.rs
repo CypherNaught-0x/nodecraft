@@ -39,7 +39,7 @@ pub const STORED_WHERE: &str = "Keys are kept in this browser's storage for this
 
 /// Common providers, offered as quick picks.
 const PRESETS: &[&str] =
-    &["openai", "anthropic", "openrouter", "litellm", "fal", "replicate", "seedream", "tripo", "meshy", "higgsfield", "kling", "elevenlabs"];
+    &["openai", "azure-openai", "anthropic", "openrouter", "litellm", "fal", "replicate", "seedream", "tripo", "meshy", "higgsfield", "kling", "elevenlabs"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyStatus {

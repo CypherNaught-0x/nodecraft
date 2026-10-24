@@ -22,26 +22,17 @@ impl Http for NoHttp {
     }
 }
 
-#[test]
-fn azure_card_requires_explicit_unknown_price_acceptance() {
+fn session(deployment: Option<&str>) -> (Session, Arc<AtomicUsize>, CanvasId, NodeId) {
     let canvas = CanvasId::from_bytes([45; 16]);
     let node = NodeId::from_bytes([46; 16]);
     let snapshot = GenerationCatalog::builtin().unwrap();
     let kinds = snapshot.registry().unwrap();
-    let card = kinds
-        .get(nodecraft_nodes::generation::TEXT_KIND)
-        .unwrap()
-        .instantiate_instance(
-            node,
-            Default::default(),
-            &[
-                ("model".into(), Value::Text("azure-openai.deployment".into())),
-                ("deployment".into(), Value::Text("public-chat".into())),
-                ("prompt".into(), Value::Text("A harbour".into())),
-            ]
-            .into(),
-        )
-        .unwrap();
+    let mut values: nodecraft_types::ParamValues =
+        [("model".into(), Value::Text("azure-openai.deployment".into())), ("prompt".into(), Value::Text("A harbour".into()))].into();
+    if let Some(deployment) = deployment {
+        values.insert("deployment".into(), Value::Text(deployment.into()));
+    }
+    let card = kinds.get(nodecraft_nodes::generation::TEXT_KIND).unwrap().instantiate_instance(node, Default::default(), &values).unwrap();
     let mut project = Project::new(ProjectId::from_bytes([47; 16]), "Azure public fixture").unwrap();
     Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
     Change::AddNode { canvas, node: card }.apply(&mut project).unwrap();
@@ -63,6 +54,12 @@ fn azure_card_requires_explicit_unknown_price_acceptance() {
             Ok(json!({"run": "fixture"}))
         })
         .unwrap();
+    (session, starts, canvas, node)
+}
+
+#[test]
+fn azure_card_requires_explicit_unknown_price_acceptance() {
+    let (mut session, starts, canvas, node) = session(Some("public-chat"));
     let mut request = json!({"canvas": canvas, "mode": "selected", "nodes": [node]});
     let quote = session.dispatch("run.quote", &request).unwrap();
     assert_eq!(quote["allowed"], true, "{quote}");
@@ -77,4 +74,19 @@ fn azure_card_requires_explicit_unknown_price_acceptance() {
     request["accept"]["unpriced_jobs"] = json!(1);
     session.dispatch("run.start", &request).unwrap();
     assert_eq!(starts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn azure_missing_or_invalid_deployments_fail_before_price_consent() {
+    for deployment in [None, Some(""), Some(" "), Some("path/name"), Some("two words"), Some("雪")] {
+        let (mut session, starts, canvas, node) = session(deployment);
+        let request = json!({"canvas":canvas,"mode":"selected","nodes":[node]});
+        let error = session.dispatch("run.quote", &request).unwrap_err();
+        assert_eq!(error.kind, nodecraft_types::ErrorKind::InvalidInput);
+        assert!(error.message.contains("set an Azure deployment name"), "{error:?}");
+        assert_eq!(starts.load(Ordering::SeqCst), 0, "invalid setup must not become a failed paid job");
+    }
+    let valid = "a".repeat(64);
+    let (mut session, _, canvas, node) = session(Some(&valid));
+    assert_eq!(session.dispatch("run.quote", &json!({"canvas":canvas,"mode":"selected","nodes":[node]})).unwrap()["allowed"], true);
 }
