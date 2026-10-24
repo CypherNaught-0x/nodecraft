@@ -1,7 +1,9 @@
-//! Bounded fal queue adapter for ten explicitly selected live model aliases.
+//! Bounded fal queue adapter for explicitly selected live model aliases.
 //! No remote deduplication guarantee; accepted handles resume, ambiguous creates never replay.
 mod json;
 mod limits;
+#[cfg(test)]
+mod luma_tests;
 mod media;
 #[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
 mod native_tests;
@@ -21,6 +23,10 @@ use limits::reserve;
 use nodecraft_types::BillableUnits;
 use std::sync::Arc;
 pub const FLUX: &str = "fal-ai/flux/schnell";
+/// Luma Ray 3.2 and Photon through fal's existing queue (#26).
+pub const LUMA_RAY: &str = "luma/agent/ray/v3.2/text-to-video";
+pub const LUMA_RAY_I2V: &str = "luma/agent/ray/v3.2/image-to-video";
+pub const LUMA_PHOTON: &str = "fal-ai/luma-photon";
 pub const WAN: &str = "fal-ai/wan/v2.2-a14b/text-to-video";
 /// Wan 2.2 from a first frame, with an optional last frame (#607).
 pub const WAN_I2V: &str = "fal-ai/wan/v2.2-a14b/image-to-video";
@@ -95,6 +101,9 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Model {
+    RayText,
+    RayFrames,
+    Photon,
     Image,
     Video,
     /// Image to video: a first frame and an optional last frame.
@@ -113,6 +122,9 @@ enum Model {
 impl Model {
     fn read(s: &str) -> Result<Self, ProviderError> {
         match s {
+            LUMA_RAY => Ok(Self::RayText),
+            LUMA_RAY_I2V => Ok(Self::RayFrames),
+            LUMA_PHOTON => Ok(Self::Photon),
             FLUX => Ok(Self::Image),
             WAN => Ok(Self::Video),
             WAN_I2V => Ok(Self::Frames),
@@ -123,11 +135,14 @@ impl Model {
             BRIA_REMOVE => Ok(Self::RemoveBackground),
             FLUX_LORA_TRAINER => Ok(Self::Train),
             FLUX_LORA => Ok(Self::Styled),
-            _ => Err(invalid("choose one of the ten supported fal models")),
+            _ => Err(invalid("choose a supported fal model")),
         }
     }
     fn wire(self) -> &'static str {
         match self {
+            Self::RayText => LUMA_RAY,
+            Self::RayFrames => LUMA_RAY_I2V,
+            Self::Photon => LUMA_PHOTON,
             Self::Image => FLUX,
             Self::Video => WAN,
             Self::Frames => WAN_I2V,
@@ -142,10 +157,12 @@ impl Model {
     }
     /// Whether the model makes one MP4 clip.
     fn video(self) -> bool {
-        matches!(self, Self::Video | Self::Frames | Self::Speech)
+        matches!(self, Self::Video | Self::Frames | Self::Speech | Self::RayText | Self::RayFrames)
     }
     fn root(self) -> &'static str {
         match self {
+            Self::RayText | Self::RayFrames => "luma/agent",
+            Self::Photon => LUMA_PHOTON,
             Self::Image => "fal-ai/flux",
             Self::Video | Self::Frames | Self::Speech => "fal-ai/wan",
             Self::Audio => "fal-ai/kokoro",
@@ -156,9 +173,9 @@ impl Model {
             Self::Styled => FLUX_LORA,
         }
     }
-    /// Whether the model makes FLUX images, which fal lists under `images`.
+    /// Whether fal lists this model's images under `images`.
     fn images(self) -> bool {
-        matches!(self, Self::Image | Self::Styled)
+        matches!(self, Self::Image | Self::Styled | Self::Photon)
     }
 }
 #[derive(Clone, Copy)]
@@ -228,7 +245,7 @@ impl Record {
             width: num("width")?,
             height: num("height")?,
         };
-        if !(1..=if model.images() { 4 } else { 1 }).contains(&record.requested)
+        if !(1..=if matches!(model, Model::Image | Model::Styled) { 4 } else { 1 }).contains(&record.requested)
             || (model == Model::Upscale
                 && (record.width == 0
                     || record.height == 0
@@ -450,7 +467,9 @@ impl Fal {
             if f.mime.as_deref().is_some_and(|m| m != mime) {
                 return Err(malformed("fal output MIME disagrees with actual bytes"));
             }
-            if matches!(record.model, Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground) && (f.width.is_some() || f.height.is_some()) {
+            if matches!(record.model, Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon)
+                && (f.width.is_some() || f.height.is_some())
+            {
                 let meta =
                     nodecraft_media::probe_image(&reply.body, &self.limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
                 if f.width.is_some_and(|w| w != u64::from(meta.width)) || f.height.is_some_and(|h| h != u64::from(meta.height)) {
