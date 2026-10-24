@@ -239,6 +239,46 @@ fn a_job_cut_off_by_a_kill_is_followed_after_restart_charged_once_and_recorded()
 }
 
 #[test]
+fn a_legacy_identity_job_is_reported_and_never_assigned_to_a_migrated_project() {
+    let legacy = ProjectId::from_bytes([2; 16]);
+    let mock = slow_mock();
+    let journal = MemoryJournal::default();
+    let kinds = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap().registry().unwrap();
+    let mut old = project(&kinds);
+    Change::SetProjectId { id: legacy }.apply(&mut old).unwrap();
+    let (mut first, opened) = launch(&mock, &journal, Some(old), 50);
+    opened.unwrap();
+    start(&mut first);
+    pump_until(&mut first, "the legacy job's handle was never saved", |_| journal.saved().is_some_and(|saved| !saved.submitted.is_empty()));
+    first.runtime.kill();
+    let snapshot = nodecraft_format::Snapshot { project: first.session.document().clone(), assets: first.session.assets().clone(), epoch: 0 };
+    drop(first);
+    let migrated = Session::with_storage_origin(
+        snapshot,
+        Box::<nodecraft_format::MemoryStorage>::default(),
+        nodecraft_format::StorageLocation::from_command("legacy.ncraft".into()).unwrap(),
+    )
+    .unwrap();
+    let id = migrated.document().id();
+    assert_ne!(id, legacy);
+    let (mut second, opened) = launch(&mock, &journal, Some(migrated.document().clone()), 0);
+    opened.unwrap();
+    second.host.resume(&second.session, &second.binding);
+    let notices = second.host.pump(&mut second.session);
+    assert!(notices.iter().any(|notice| matches!(notice, RunNotice::Failed { reason, .. } if reason.contains("legacy starter identity") && reason.contains("will not be reassigned"))), "{notices:?}");
+    assert!(second.host.has_waiting());
+    assert!(!second.host.is_busy());
+    assert!(second.host.waiting_targets(id).is_empty());
+    assert!(history(&second.session).is_empty());
+    assert_eq!(mock.requests().len(), 1, "migration must never replay a paid submit");
+    let saved = journal.saved().unwrap();
+    assert_eq!(saved.submitted.len(), 1);
+    assert_eq!(saved.submitted[0].project, legacy);
+    assert!(saved.usage.spent_in("resume", Some(id)).this_project.is_empty());
+    assert_eq!(saved.usage.spent_in("resume", Some(legacy)).this_project.get(&Currency::USD).unwrap().micros, 10_000);
+}
+
+#[test]
 fn an_estimate_left_open_without_a_handle_is_charged_as_unresolved() {
     // A submit that may or may not have reached the provider before the kill: its estimate was
     // saved but no handle came back, so the job can't be followed.
