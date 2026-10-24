@@ -23,7 +23,7 @@ pub(super) enum Status {
 }
 
 pub(super) fn task_id(id: &str, key: &Secret) -> Result<(), ProviderError> {
-    if id.is_empty() || id.len() > 128 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') || id.contains(key.expose()) {
+    if id.is_empty() || id.len() > 128 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')) || id.contains(key.expose()) {
         return Err(malformed("Black Forest Labs task identifier refused"));
     }
     Ok(())

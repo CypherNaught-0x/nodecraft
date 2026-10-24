@@ -6,8 +6,8 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 const KEY: &str = "public-bfl-fixture";
-const ID: &str = "public-task-33";
-const POLL: &str = "https://api.eu1.bfl.ai/v1/get_result?id=public-task-33";
+const ID: &str = "public_task_33";
+const POLL: &str = "https://api.eu1.bfl.ai/v1/get_result?id=public_task_33";
 const IMAGE: &str = "https://delivery.eu1.bfl.ai/image.png?signature=public";
 struct Wire {
     requests: Mutex<Vec<HttpRequest>>,
@@ -63,13 +63,14 @@ fn handle() -> JobHandle {
 }
 
 #[test]
-fn bfl33_queue_resume_download_and_credential_boundary() {
+fn bfl33_underscore_task_queue_resume_download_and_credential_boundary() {
     let wire = Wire::new([receipt(), status("Pending"), status("Reasoning"), status("Generating"), ready(IMAGE), png()]);
     let p = provider(wire.clone());
     let Submission::Queued(handle) = block_on(p.submit(&job())).unwrap() else { panic!("queue") };
     let saved = serde_json::to_string(&handle).unwrap();
     assert!(!saved.contains(KEY));
     let restored: JobHandle = serde_json::from_str(&saved).unwrap();
+    assert_eq!(restored.remote_id, ID);
     assert!(matches!(block_on(p.poll(&restored)).unwrap(), JobProgress::Queued { .. }));
     for _ in 0..2 {
         assert!(matches!(block_on(p.poll(&restored)).unwrap(), JobProgress::Running { fraction: None, .. }));
@@ -153,18 +154,18 @@ fn bfl33_invalid_input_stays_unsent() {
 #[test]
 fn bfl33_forged_receipts_and_saved_handles_cannot_send_keys_elsewhere() {
     for url in [
-        "https://evil.test/v1/get_result?id=public-task-33",
-        "http://api.bfl.ai/v1/get_result?id=public-task-33",
-        "https://api.bfl.ai.evil.test/v1/get_result?id=public-task-33",
-        "https://api.foo.bar.bfl.ai/v1/get_result?id=public-task-33",
-        "https://api.eu1.bfl.ai:8443/v1/get_result?id=public-task-33",
-        "https://u@api.bfl.ai/v1/get_result?id=public-task-33",
+        "https://evil.test/v1/get_result?id=public_task_33",
+        "http://api.bfl.ai/v1/get_result?id=public_task_33",
+        "https://api.bfl.ai.evil.test/v1/get_result?id=public_task_33",
+        "https://api.foo.bar.bfl.ai/v1/get_result?id=public_task_33",
+        "https://api.eu1.bfl.ai:8443/v1/get_result?id=public_task_33",
+        "https://u@api.bfl.ai/v1/get_result?id=public_task_33",
         "https://api.bfl.ai/v1/get_result?id=other",
-        "https://api.bfl.ai/v1/get_result?id=public-task-33&extra=1",
-        "https://api.bfl.ai/v1/get_result?id=public-task-33#fragment",
+        "https://api.bfl.ai/v1/get_result?id=public_task_33&extra=1",
+        "https://api.bfl.ai/v1/get_result?id=public_task_33#fragment",
         "https://api.bfl.ai/v1/get_result?id=public-bfl-fixture",
-        "https://api.bfl.ai/v1/other?id=public-task-33",
-        "https://127.0.0.1/v1/get_result?id=public-task-33",
+        "https://api.bfl.ai/v1/other?id=public_task_33",
+        "https://127.0.0.1/v1/get_result?id=public_task_33",
     ] {
         let wire = Wire::new([reply(json!({"id":ID,"polling_url":url}))]);
         let p = provider(wire.clone());
