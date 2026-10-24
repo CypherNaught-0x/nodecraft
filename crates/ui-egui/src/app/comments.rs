@@ -16,7 +16,9 @@ fn projected_marker(anchor: Pos2, body: Rect, decorated: Rect, viewport: Rect, t
     let y = anchor.y.clamp(body.top(), (body.bottom() - size).max(body.top()));
     let right = Pos2::new(decorated.right() + clearance, y);
     let shown = |at| Rect::from_min_size(at, Vec2::splat(size)).expand(t.comment_marker_ring);
-    if viewport.contains_rect(shown(right)) {
+    // Reachability is for visible cards, not an offscreen-node indicator. Keep the
+    // ordinary projection and natural culling when the entire decorated card is gone.
+    if !decorated.intersects(viewport) || viewport.contains_rect(shown(right)) {
         return right;
     }
     let x =

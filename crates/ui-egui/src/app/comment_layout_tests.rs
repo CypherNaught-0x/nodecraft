@@ -4,6 +4,69 @@ use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 
 #[test]
+fn fully_offscreen_cards_keep_natural_projection_in_all_four_directions() {
+    let t = crate::theme::ThemeKind::default().tokens();
+    let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 800.0));
+    for min in [Pos2::new(-1000.0, 300.0), Pos2::new(1300.0, 300.0), Pos2::new(400.0, -1000.0), Pos2::new(400.0, 1000.0)] {
+        let body = Rect::from_min_size(min, Vec2::new(320.0, 140.0));
+        let decorated = body.expand(26.0);
+        assert!(!decorated.intersects(viewport));
+        let at = projected_marker(body.min, body, decorated, viewport, t);
+        let ordinary = Pos2::new(decorated.right() + t.comment_marker_gap + t.comment_marker_ring, body.top());
+        assert_eq!(at, ordinary, "offscreen cards must not acquire viewport-edge pins: {body:?}");
+        assert!(!viewport.expand(t.comment_marker_size).contains(at));
+    }
+}
+
+#[test]
+fn panning_a_commented_card_offscreen_removes_ghost_pins_and_panning_back_restores_it() {
+    for (zoom, pixels_per_point) in [(0.1, 1.0), (1.0, 2.0), (4.0, 1.0)] {
+        for delta in [Vec2::new(-2500.0, 0.0), Vec2::new(2500.0, 0.0), Vec2::new(0.0, -2500.0), Vec2::new(0.0, 2500.0)] {
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(1800.0, 1000.0))
+                .with_pixels_per_point(pixels_per_point)
+                .with_max_steps(200)
+                .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap());
+            let canvas = h.state().canvas;
+            let node = NodeId::from_bytes([3; 16]);
+            let id = CommentId::from_bytes([111; 16]);
+            let body = h.state().navigation.geometry.rects[&node];
+            h.state_mut().view.zoom = zoom;
+            h.state_mut().view.pan = Vec2::new(100.0 - body.left() * zoom, 240.0 - body.top() * zoom);
+            h.state_mut()
+                .session
+                .dispatch("comment.create", &json!({"canvas":canvas,"id":id,"node":node,"text":"Pan visibility","pos":{"x":0,"y":0}}))
+                .unwrap();
+            h.run();
+            let document = h.state().session.document().clone();
+            let label = format!("Discussion pin {id}");
+            h.get_by_role_and_label(Role::Button, &label);
+            let original_view = h.state().view;
+            for pan in [delta, -delta] {
+                h.hover_at(Pos2::new(40.0, 850.0));
+                h.event(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    phase: egui::TouchPhase::Move,
+                    delta: pan,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                h.run();
+                let offscreen = pan == delta;
+                let shown = h.state().view.rect_to_screen(h.state().viewport.min, body);
+                if offscreen {
+                    assert!(!shown.expand(40.0).intersects(h.state().viewport), "real pan must move card offscreen: {shown:?}");
+                    assert!(h.query_by_role_and_label(Role::Button, &label).is_none(), "no ghost after {delta:?}, zoom={zoom}, dpi={pixels_per_point}");
+                } else {
+                    h.get_by_role_and_label(Role::Button, &label);
+                    assert!((h.state().view.pan - original_view.pan).length() < 1.0);
+                }
+                assert_eq!(h.state().session.document(), &document);
+            }
+        }
+    }
+}
+
+#[test]
 fn exact_fractional_clamp_repro_orders_bounds_after_subtraction() {
     let t = crate::theme::ThemeKind::default().tokens();
     let body = Rect::from_min_size(Pos2::new(50.0, -13.97), Vec2::new(32.0, 14.1));
