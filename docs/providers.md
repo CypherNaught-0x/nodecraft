@@ -1197,8 +1197,8 @@ NODECRAFT_LIVE_HIGGSFIELD=1 NODECRAFT_LIVE_HIGGSFIELD_ACKNOWLEDGE_COST=1 HIGGSFI
 ## ElevenLabs speech, sound and music
 
 The adapter tracker [#20](https://github.com/CypherNaught-0x/nodecraft/issues/20) is implemented
-across the following merged changes. These are desktop capabilities; the host limits below
-still apply.
+across the following merged changes. Generation works in the desktop app and headless CLI.
+The account voice list and streamed previews are desktop-only; the host limits below apply.
 
 | Tracker requirement | Implementation and offline coverage |
 |---|---|
