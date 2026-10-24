@@ -131,6 +131,7 @@ pub fn finish(session: &mut Session, id: u64, fetched: Result<Fetched, Error>) -
     let report = match fetched {
         Ok(Fetched { nodes, health }) => {
             let count = nodes.len();
+            crate::comfy_partner_quotes::keep(session, None, &nodes);
             session.swap_resource(Some(ComfyNodes(nodes)));
             Report { id, nodes: Some(count), error: None, server: health }
         }
@@ -143,6 +144,7 @@ pub fn finish(session: &mut Session, id: u64, fetched: Result<Fetched, Error>) -
 /// Drops the installed node list, the last outcome and the ComfyUI option lists (checkpoints,
 /// LoRAs, samplers), for when the server changes: they were another server's.
 pub fn forget(session: &mut Session) {
+    crate::comfy_partner_quotes::forget(session, None);
     session.swap_resource::<ComfyNodes>(None);
     session.swap_resource::<LastFetch>(None);
     if let Some(mut lists) = session.swap_resource::<OptionLists>(None) {
