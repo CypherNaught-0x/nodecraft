@@ -823,6 +823,27 @@ impl Session {
         })
     }
 
+    /// Inspect the exact fresh node described by a creation command, without publishing or
+    /// executing services. Hosts can measure it before supplying the final position.
+    pub fn preview_created_node(&self, command: &str, params: &Value, id: nodecraft_types::NodeId) -> Result<nodecraft_graph::Node, Error> {
+        guard(|| {
+            let spec = self.registry.get(command)?;
+            let effect = Self::describe(spec, &self.context(Phase::Preview), params)?;
+            let changes = match effect {
+                Effect::Edit { changes, .. } | Effect::Place { changes, .. } => changes,
+                _ => return Err(invalid("command does not describe a node creation")),
+            };
+            changes
+                .changes
+                .into_iter()
+                .find_map(|change| match change {
+                    Change::AddNode { node, .. } if node.id == id => Some(node),
+                    _ => None,
+                })
+                .ok_or_else(|| invalid("command does not create that node"))
+        })
+    }
+
     /// What dispatching `id` with `params` would do, without doing it (#114). The handler runs
     /// as dispatch would run it, so a run is classified by the run it would really start and
     /// what it accepted; the effect is then dropped, never applied.

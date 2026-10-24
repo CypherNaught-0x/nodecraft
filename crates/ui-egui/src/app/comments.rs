@@ -6,6 +6,45 @@ use nodecraft_graph::Position;
 use nodecraft_types::CommentId;
 use serde_json::Value as Json;
 
+/// Prefer the ordinary right-side placement, but keep a projected pin reachable when
+/// a card reaches a viewport edge. Never clamp a foreground Area across a port hit cell.
+fn projected_marker(anchor: Pos2, body: Rect, decorated: Rect, viewport: Rect, t: &Tokens) -> Pos2 {
+    let size = t.comment_marker_size;
+    let clearance = t.comment_marker_gap + t.comment_marker_ring;
+    // Subtract first, then order the endpoints. (top + size) - size can round below
+    // top (e.g. -13.97 with size 30), which makes f32::clamp panic at overview zoom.
+    let y = anchor.y.clamp(body.top(), (body.bottom() - size).max(body.top()));
+    let right = Pos2::new(decorated.right() + clearance, y);
+    let shown = |at| Rect::from_min_size(at, Vec2::splat(size)).expand(t.comment_marker_ring);
+    if viewport.contains_rect(shown(right)) {
+        return right;
+    }
+    let x =
+        anchor.x.clamp(viewport.left() + t.comment_marker_ring, (viewport.right() - size - t.comment_marker_ring).max(viewport.left() + t.comment_marker_ring));
+    let y = y.clamp(viewport.top() + t.comment_marker_ring, (viewport.bottom() - size - t.comment_marker_ring).max(viewport.top() + t.comment_marker_ring));
+    for candidate in [
+        Pos2::new(right.x, y),
+        Pos2::new(decorated.left() - clearance - size, y),
+        Pos2::new(x, decorated.top() - clearance - size),
+        Pos2::new(x, decorated.bottom() + clearance),
+    ] {
+        if viewport.contains_rect(shown(candidate)) && !decorated.intersects(shown(candidate)) {
+            return candidate;
+        }
+    }
+    // A zoomed-in card can fill the entire viewport: no exterior position exists.
+    // Prefer a visible interior pin away from BOTH side hit strips in that case.
+    let side = (decorated.right() - body.right()).max(body.left() - decorated.left());
+    let interior = body.shrink(side + clearance).intersect(viewport.shrink(t.comment_marker_ring));
+    if interior.width() >= size && interior.height() >= size {
+        return Pos2::new(
+            x.clamp(interior.left(), (interior.right() - size).max(interior.left())),
+            y.clamp(interior.top(), (interior.bottom() - size).max(interior.top())),
+        );
+    }
+    right
+}
+
 enum Action {
     Open(CommentId),
     Compose(Option<NodeId>),
@@ -151,8 +190,10 @@ impl NodeCraftApp {
         let outputs =
             self.session.document().canvases().get(&self.canvas).and_then(|canvas| canvas.nodes().get(&node)).is_some_and(|node| !node.outputs.is_empty());
         let size = rect.size();
-        let right = if outputs { t.handle_radius.max(t.handle_min_screen_radius / self.view.zoom) + card::PORT_HIT / self.view.zoom } else { 0.0 };
-        let offset = Position { x: size.x + right + (t.comment_marker_gap + t.comment_marker_ring) / self.view.zoom, y: size.y * 0.5 };
+        // Persist world geometry only. Minimum screen-size hit targets belong to drawing,
+        // otherwise composing at overview zoom permanently pushes the anchor far off-card.
+        let right = if outputs { t.handle_radius + card::PORT_HIT } else { 0.0 };
+        let offset = Position { x: size.x + right + t.comment_marker_gap + t.comment_marker_ring, y: size.y * 0.5 };
         if let Err(error) = self.dispatch_comments_scoped(ctx, "comment.compose", &json!({"node":node,"pos":offset}), owner) {
             self.notice = Some(error.message);
         }
@@ -496,6 +537,7 @@ impl NodeCraftApp {
         // Never infer a body from declared parameter counts or persist this display correction.
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let membership = self.membership();
+        let field_shift = self.field_shift();
         self.comments.marker_ids.clear();
         if let Some(scene) = self.session.document().canvases().get(&self.canvas) {
             let mut visible = 0usize;
@@ -514,33 +556,31 @@ impl NodeCraftApp {
                         drag.pos
                     }
                 });
-                let pos = if let Some(drag) = self.drag.as_ref().filter(|drag| Some(drag.id) == root.node) {
-                    Position { x: drag.pos.x + root.pos.x, y: drag.pos.y + root.pos.y }
-                } else {
-                    pos
-                };
+                let node_preview = root.node.and_then(|id| scene.nodes().get(&id)).and_then(|node| {
+                    self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos).or_else(|| Self::field_preview(field_shift, node))
+                });
+                let pos = node_preview.map_or(pos, |preview| Position { x: preview.x + root.pos.x, y: preview.y + root.pos.y });
                 let mut screen = self.view.to_screen(self.viewport.min, Pos2::new(pos.x, pos.y));
                 let anchor_screen = screen;
                 let mut node_bounds = None;
+                let mut projection = None;
                 if let Some(node) = root.node.and_then(|id| scene.nodes().get(&id)) {
                     if membership.hidden.contains(&node.id) {
                         continue;
                     }
                     if let Some(rect) = self.navigation.geometry.rects.get(&node.id) {
-                        let shift = self
-                            .drag
-                            .as_ref()
-                            .filter(|drag| drag.id == node.id)
-                            .map_or(Vec2::ZERO, |drag| Vec2::new(drag.pos.x - node.pos.x, drag.pos.y - node.pos.y));
+                        let shift = node_preview.map_or(Vec2::ZERO, |preview| Vec2::new(preview.x - node.pos.x, preview.y - node.pos.y));
                         let body = self.view.rect_to_screen(self.viewport.min, rect.translate(shift));
-                        let right =
-                            if node.outputs.is_empty() { 0.0 } else { (t.handle_radius * self.view.zoom).max(t.handle_min_screen_radius) + card::PORT_HIT };
+                        let hit = (t.handle_radius * self.view.zoom).max(t.handle_min_screen_radius) + card::PORT_HIT;
+                        let right = if node.outputs.is_empty() { 0.0 } else { hit };
+                        // Input-only instances need their left hit cells protected as well.
+                        let left = if node.inputs.is_empty() { right } else { hit };
                         let top = card::outer_insets(t, self.view.zoom, !node.outputs.is_empty()).1 * self.view.zoom;
-                        let decorated = Rect::from_min_max(body.min - Vec2::new(right, top), body.max + Vec2::new(right, right));
+                        let decorated = Rect::from_min_max(body.min - Vec2::new(left, top), body.max + Vec2::new(right, right));
                         node_bounds = Some(decorated);
                         if decorated.intersects(Rect::from_min_size(screen, Vec2::splat(t.comment_marker_size)).expand(t.comment_marker_ring)) {
-                            screen.x = body.right() + right + t.comment_marker_gap + t.comment_marker_ring;
-                            screen.y = screen.y.clamp(body.top(), body.bottom().max(body.top() + t.comment_marker_size) - t.comment_marker_size);
+                            screen = projected_marker(screen, body, decorated, self.viewport, t);
+                            projection = Some((body, decorated));
                         }
                     }
                 }
@@ -551,8 +591,23 @@ impl NodeCraftApp {
                     .filter(|(placed, position, _)| *placed == *id && *position == root.pos && self.comments.open && self.comments.active == Some(*id));
                 let key = ((screen.x / t.comment_marker_size).floor() as i32, (screen.y / t.comment_marker_size).floor() as i32);
                 let count = coincident.entry(key).or_default();
-                screen.x += (*count % 4) as f32 * t.navigation_gap;
-                screen.y += (*count / 4) as f32 * t.navigation_gap;
+                let mut jitter = Vec2::new((*count % 4) as f32 * t.navigation_gap, (*count / 4) as f32 * t.navigation_gap);
+                if let Some((body, bounds)) = projection {
+                    // A left/above fallback must scatter away from, not back into, port cells.
+                    if screen.x + t.comment_marker_size < bounds.left() {
+                        jitter.x = -jitter.x;
+                    }
+                    if screen.y + t.comment_marker_size < bounds.top() {
+                        jitter.y = -jitter.y;
+                    }
+                    screen += jitter;
+                    let marker = Rect::from_min_size(screen, Vec2::splat(t.comment_marker_size)).expand(t.comment_marker_ring);
+                    if !self.viewport.contains_rect(marker) || bounds.intersects(marker) {
+                        screen = projected_marker(screen, body, bounds, self.viewport, t);
+                    }
+                } else {
+                    screen += jitter;
+                }
                 *count = count.saturating_add(1);
                 // Keep the selected bubble visible beside its panel. A leader preserves
                 // the actual persisted anchor; this displacement is view state only.

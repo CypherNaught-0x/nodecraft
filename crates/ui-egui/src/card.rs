@@ -340,7 +340,7 @@ pub fn show(
             // The card reserves `strip`; the strip itself sits on the card's bottom edge.
             let (params, reserved) = inner.split_top_bottom_at_y(inner.bottom() - strip);
             inner = params;
-            let height = (history::height(ui.spacing())).min(reserved.height());
+            let height = history::height(t).min(reserved.height());
             let results = Rect::from_min_max(Pos2::new(reserved.left(), reserved.bottom() - height), reserved.max);
             let mut strip_ui = ui.new_child(egui::UiBuilder::new().id_salt("history").max_rect(results));
             strip_ui.set_clip_rect(results.intersect(ui.clip_rect()));
@@ -840,16 +840,13 @@ pub(crate) fn control_with_mode(
                 .show_ui(ui, |ui| {
                     let row = ui.spacing().interact_size.y;
                     ui.set_width((width - ui.spacing().menu_margin.sum().x).max(row));
-                    egui::ScrollArea::vertical().id_salt("choices").max_height(t.card_preview_height).show_rows(ui, row, options.len(), |ui, range| {
-                        for index in range {
-                            let Some(option) = options.get(index) else { continue };
-                            if ui.add_sized([ui.available_width(), row], egui::Button::selectable(option.value == current, &option.label).truncate()).clicked()
-                            {
-                                selected = option.value.clone();
-                                ui.close();
-                            }
+                    // ComboBox owns the popup's only vertical scroll area.
+                    for option in options {
+                        if ui.add_sized([ui.available_width(), row], egui::Button::selectable(option.value == current, &option.label).truncate()).clicked() {
+                            selected = option.value.clone();
+                            ui.close();
                         }
-                    });
+                    }
                 })
                 .response
                 .labelled_by(label);
@@ -1188,4 +1185,9 @@ mod layout_metrics_tests {
         assert!(top >= t.label_size.max(t.title_min_screen_px / zoom) + t.label_gap + t.control_gap);
         assert!(cull_margin(t, zoom) >= painted * zoom);
     }
+}
+
+/// Conservative schema-free bounds shared by renderer culling and marquee admission.
+pub(crate) fn broadphase_size(node: &Node, t: &Tokens) -> Vec2 {
+    layout::broadphase_size(node, t)
 }

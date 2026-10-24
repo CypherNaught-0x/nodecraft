@@ -70,6 +70,22 @@ fn passive_toolbar(ctx: &egui::Context) {
     ctx.add_plugin(PassiveToolbarInput::default());
 }
 impl NodeCraftApp {
+    /// Measure a fully resolved import payload; no config defaults are copied into the UI.
+    pub(super) fn creation_position(node: &Node, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> nodecraft_graph::Position {
+        let descriptor = kinds.get(&node.kind).ok().and_then(|kind| kind.resolve_instance(node).ok());
+        let descriptor = descriptor.as_deref().filter(|d| d.inputs == node.inputs && d.outputs == node.outputs);
+        let size = card::world_size(node, descriptor, t);
+        nodecraft_graph::Position { x: node.pos.x - size.x * 0.5, y: node.pos.y - size.y * 0.5 }
+    }
+    /// Preview the command's pure construction, then publish once at the measured center.
+    pub(super) fn centered_command(&mut self, command: &str, params: &mut Json, id: NodeId) -> Result<Json, Error> {
+        let node = self.session.preview_created_node(command, params, id)?;
+        let size = payload_rect(&self.session, &node, self.theme.tokens()).size();
+        params["pos"] = json!({"x": node.pos.x - size.x * 0.5, "y": node.pos.y - size.y * 0.5});
+        self.session.dispatch(command, params)
+    }
+}
+impl NodeCraftApp {
     /// `nodes` names what to measure instead of the selection (an agent's explicit list, #360).
     fn layout_context(&mut self, ctx: &egui::Context, owner: Option<egui::Id>, nodes: Option<Vec<NodeId>>) -> LayoutContext {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);

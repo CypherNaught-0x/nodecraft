@@ -107,7 +107,7 @@ struct State {
     preview_inputs: Option<Vec<nodecraft_graph::Port>>,
 }
 fn harness(zoom: f32, ppp: f32, control: ParamControl, enabled: bool) -> Harness<'static, State> {
-    let mut h = Harness::builder().with_size(Vec2::new(1200.0, 1100.0) * ppp).build_ui_state(
+    let mut h = Harness::builder().with_max_steps(120).with_size(Vec2::new(1200.0, 1100.0) * ppp).build_ui_state(
         move |ui, state: &mut State| {
             let t = &crate::theme::DARK;
             let view = CanvasView { zoom, pan: Vec2::new(80.0, 80.0) };
@@ -413,4 +413,74 @@ fn disabled_full_width_slider_cannot_publish_edits() {
     h.run();
     assert!(!h.state().intents.iter().any(|intent| matches!(intent, Intent::Parameter { .. })));
     assert!(h.state().editor.dragging().is_none());
+}
+
+#[test]
+fn broadphase_covers_full_section_budgets_and_capped_port_layout() {
+    let t = &crate::theme::DARK;
+    let mut node = Node::new(NodeId::from_bytes([81; 16]), nodecraft_nodes::generation::TEXT_KIND);
+    let mut descriptor = descriptor(slider());
+    descriptor.params.params = (0..100)
+        .map(|i| {
+            let mut spec = descriptor.params.params[0].clone();
+            spec.name = format!("p{i}");
+            spec
+        })
+        .collect();
+    let asset = nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([7; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
+    node.history.push(nodecraft_graph::Generation::new(nodecraft_types::GenerationId::from_bytes([9; 16]), vec![Value::Media(asset)]));
+    node.active = node.history.first().map(|generation| generation.id);
+    for count in [0, 1, 25, 32, 256, 300] {
+        node.outputs = (0..count).map(|i| port(format!("out{i}"))).collect();
+        descriptor.outputs = node.outputs.clone();
+        assert!(broadphase_size(&node, t).y >= world_size(&node, Some(&descriptor), t).y);
+    }
+    let capped = broadphase_size(&node, t);
+    node.outputs.truncate(256);
+    assert_eq!(broadphase_size(&node, t), capped, "hostile counts cannot widen layout beyond validated cap");
+    assert_eq!(layout::Metrics::of(&node, Some(&descriptor), t).history, history::height(t) + t.control_gap);
+}
+
+#[test]
+fn composer_budget_is_independent_of_legacy_creation_seed_height() {
+    let mut t = crate::theme::DARK;
+    let node = Node::new(NodeId::from_bytes([82; 16]), nodecraft_nodes::generation::TEXT_KIND);
+    let mut descriptor = descriptor(ParamControl::Text { multiline: true, max_bytes: 4096 });
+    descriptor.params.params[0].name = nodecraft_nodes::generation::PROMPT.into();
+    let original = world_size(&node, Some(&descriptor), &t);
+    t.card_min_height += 100.0;
+    assert_eq!(world_size(&node, Some(&descriptor), &t), original);
+    t.composer_body_height += 50.0;
+    assert_eq!(world_size(&node, Some(&descriptor), &t).y, original.y + 50.0);
+}
+
+#[test]
+fn long_choice_popup_scrolls_once_and_last_choice_remains_clickable() {
+    let options = (0..80).map(|index| nodecraft_types::Choice { value: format!("v{index}"), label: format!("Choice {index:02}") }).collect();
+    let mut h = harness(1.0, 1.0, ParamControl::Choice { options }, true);
+    h.get_by_role(egui::accesskit::Role::ComboBox).click();
+    h.run();
+    let at = h.get_by_label("Choice 00").rect().center();
+    h.hover_at(at);
+    h.run();
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        phase: egui::TouchPhase::Move,
+        delta: Vec2::new(0.0, -10000.0),
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run();
+    for _ in 0..20 {
+        h.step();
+    }
+    let at = h.get_by_label("Choice 79").rect().center();
+    assert!(h.ctx.viewport_rect().contains(at), "last choice must scroll into the visible popup");
+    pointer_click(&mut h, at);
+    assert_eq!(h.state().node.params.get("value"), Some(&Value::Text("v79".into())));
+    assert!(
+        h.state()
+            .intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::Parameter { name, value: Some(Value::Text(value)) } if name == "value" && value == "v79"))
+    );
 }

@@ -3,6 +3,135 @@ use super::*;
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 
+#[test]
+fn exact_fractional_clamp_repro_orders_bounds_after_subtraction() {
+    let t = crate::theme::ThemeKind::default().tokens();
+    let body = Rect::from_min_size(Pos2::new(50.0, -13.97), Vec2::new(32.0, 14.1));
+    assert!((body.top() + 30.0) - 30.0 < body.top(), "pin the original f32 cancellation");
+    let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 800.0));
+    let at = projected_marker(body.min, body, body.expand(14.0), viewport, t);
+    assert!(viewport.contains_rect(Rect::from_min_size(at, Vec2::splat(t.comment_marker_size))));
+}
+
+#[test]
+fn projected_marker_uses_a_visible_interior_when_the_card_fills_the_viewport() {
+    let t = crate::theme::ThemeKind::default().tokens();
+    let viewport = Rect::from_min_size(Pos2::ZERO, Vec2::new(420.0, 360.0));
+    let body = Rect::from_min_max(Pos2::new(-100.0, -100.0), Pos2::new(800.0, 700.0));
+    let at = projected_marker(body.min, body, body.expand(26.0), viewport, t);
+    let marker = Rect::from_min_size(at, Vec2::splat(t.comment_marker_size)).expand(t.comment_marker_ring);
+    assert!(viewport.contains_rect(marker));
+    assert!(marker.left() > body.left() + 26.0 && marker.right() < body.right() - 26.0);
+}
+
+#[test]
+fn fractional_overview_card_top_does_not_panic_while_projecting_a_marker() {
+    let mut h = harness(Vec2::new(1100.0, 800.0));
+    let node = NodeId::from_bytes([3; 16]);
+    let canvas = h.state().canvas;
+    let body = h.state().navigation.geometry.rects[&node];
+    h.state_mut().view.zoom = 0.1;
+    // Find a representable pan whose *actual transformed* top triggers the -13.97/30
+    // cancellation. The viewport origin can otherwise round that literal away.
+    let size = h.state().theme.tokens().comment_marker_size;
+    let pan = (-20000..0)
+        .map(|n| n as f32 / 1000.0 - h.state().viewport.top() - body.top() * 0.1)
+        .find(|pan| {
+            let top = (h.state().viewport.top() + pan) + body.top() * 0.1;
+            (top + size) - size < top
+        })
+        .unwrap();
+    h.state_mut().view.pan = Vec2::new(100.0 - body.left() * 0.1, pan);
+    let id = CommentId::from_bytes([101; 16]);
+    h.state_mut().session.dispatch("comment.create", &json!({"canvas":canvas,"id":id,"text":"Fractional overview","node":node,"pos":{"x":0,"y":0}})).unwrap();
+    h.run();
+    h.get_by_role_and_label(Role::Button, &format!("Discussion pin {id}"));
+}
+
+#[test]
+fn composed_node_anchor_is_world_only_at_every_zoom() {
+    let mut saved = None;
+    for zoom in [0.1, 0.5, 1.0, 2.0, 4.0] {
+        let mut h = harness(Vec2::new(1800.0, 900.0));
+        let node = NodeId::from_bytes([3; 16]);
+        h.state_mut().view.zoom = zoom;
+        let ctx = h.ctx.clone();
+        h.state_mut().compose_on_node(&ctx, node, None);
+        let key = h.state().comments.editing.unwrap();
+        h.state_mut().comments.drafts.get_mut(&key).unwrap().text = "World anchor".into();
+        let id = h.state().comments.drafts[&key].target.root();
+        h.state_mut().save_discussion(&ctx, false);
+        let anchor = root(&h, id).pos;
+        assert_eq!(*saved.get_or_insert(anchor), anchor, "saved anchor must not depend on zoom={zoom}");
+        h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+        assert!(!h.state().session.document().canvases()[&h.state().canvas].comments().contains_key(&id));
+    }
+}
+
+#[test]
+fn minimap_whitespace_below_actual_short_discussion_panel_still_pans() {
+    for (pixels_per_point, one_thread) in [(1.0, false), (2.0, false), (1.0, true), (2.0, true)] {
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(420.0, 360.0))
+            .with_pixels_per_point(pixels_per_point)
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap());
+        if one_thread {
+            let canvas = h.state().canvas;
+            h.state_mut()
+                .session
+                .dispatch("comment.create", &json!({"canvas":canvas,"id":CommentId::from_bytes([107;16]),"text":"One thread","pos":{"x":-1000,"y":-1000}}))
+                .unwrap();
+        }
+        h.state_mut().comments.open = true;
+        h.run();
+        let actual = h.ctx.memory(|m| m.area_rect(egui::Id::new("discussions_panel"))).unwrap();
+        let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+        let at = Pos2::new(map.center().x, map.bottom() - 8.0);
+        assert!(h.state().discussion_rect().contains(at) && !actual.contains(at), "actual={actual:?}, map={map:?}");
+        let before = h.state().view;
+        pointer(&mut h, at, true);
+        pointer(&mut h, at, false);
+        assert_ne!(h.state().view, before, "unpainted panel budget must not steal minimap clicks");
+    }
+}
+
+#[test]
+fn field_drag_preview_moves_attached_badge_and_one_undo_restores_everything() {
+    for (zoom, pixels_per_point) in [(0.1, 1.0), (0.5, 2.0), (1.0, 1.0), (2.0, 2.0), (4.0, 1.0)] {
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(1800.0, 1100.0))
+            .with_pixels_per_point(pixels_per_point)
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap());
+        let canvas = h.state().canvas;
+        let node = NodeId::from_bytes([3; 16]);
+        let id = CommentId::from_bytes([102; 16]);
+        let field = nodecraft_types::FieldId::from_bytes([103; 16]);
+        let pos = h.state().session.document().canvases()[&canvas].nodes()[&node].pos;
+        h.state_mut().view.zoom = zoom;
+        h.state_mut().view.pan = Vec2::new(240.0 - pos.x * zoom, 280.0 - pos.y * zoom);
+        h.state_mut().session.dispatch("field.create", &json!({"canvas":canvas,"field":{"id":field,"title":"Badge group","rect":{"pos":{"x":pos.x-100.0/zoom,"y":pos.y-100.0/zoom},"width":400,"height":380}},"nodes":[node]})).unwrap();
+        h.state_mut().session.dispatch("comment.create", &json!({"canvas":canvas,"id":id,"text":"Moving member","node":node,"pos":{"x":0,"y":0}})).unwrap();
+        h.run();
+        let before = h.state().session.document().clone();
+        let label = format!("Discussion pin {id}");
+        let badge = h.get_by_role_and_label(Role::Button, &label).rect().min;
+        let grab = h.get_by_role_and_label(Role::Button, "Field Badge group").rect().left_center() + Vec2::new(30.0, 0.0);
+        pointer(&mut h, grab, true);
+        let delta = Vec2::new(70.0, 45.0);
+        h.hover_at(grab + delta);
+        h.run();
+        assert!(h.state().fields.drag.is_some(), "zoom={zoom}");
+        assert_eq!(h.state().session.document(), &before, "preview must not mutate the document");
+        let moved = h.get_by_role_and_label(Role::Button, &label).rect().min;
+        assert!((moved - badge - delta).length() < 1.0, "badge follows field preview at zoom={zoom}: {badge:?} -> {moved:?}");
+        pointer(&mut h, grab + delta, false);
+        assert_eq!(root(&h, id).pos, Position::default());
+        h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+        h.run();
+        assert_eq!(h.state().session.document(), &before, "field and pin restore in one undo");
+    }
+}
+
 fn harness(size: Vec2) -> Harness<'static, NodeCraftApp> {
     Harness::builder().with_size(size).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap())
 }
@@ -126,14 +255,24 @@ fn right_viewport_edge_never_clamps_a_projected_badge_back_over_the_output() {
     h.state_mut().view.zoom = 1.0;
     let origin = h.state().viewport.right() - 20.0 - body.width();
     h.state_mut().view.pan = Vec2::new(origin - body.left() - h.state().viewport.left(), 180.0 - body.top());
-    let id = CommentId::from_bytes([99; 16]);
+    let ids = [99, 108, 109, 110].map(|n| CommentId::from_bytes([n; 16]));
     let offset = Position { x: body.width(), y: body.height() * 0.5 };
-    h.state_mut().session.dispatch("comment.create", &json!({"canvas":canvas,"id":id,"text":"Edge output","node":node,"pos":offset})).unwrap();
+    for id in ids {
+        h.state_mut().session.dispatch("comment.create", &json!({"canvas":canvas,"id":id,"text":"Edge output","node":node,"pos":offset})).unwrap();
+    }
     h.run();
     let screen_body = h.state().view.rect_to_screen(h.state().viewport.min, body);
     assert!((screen_body.right() - (h.state().viewport.right() - 20.0)).abs() < 1.0);
-    let badge = h.get_by_role_and_label(Role::Button, &format!("Discussion pin {id}")).rect();
-    assert!(badge.left() > h.state().viewport.right(), "the offscreen badge must not be clamped back onto the visible card: {badge:?}");
+    for id in ids {
+        let badge = h.get_by_role_and_label(Role::Button, &format!("Discussion pin {id}")).rect();
+        let t = h.state().theme.tokens();
+        let hit = t.handle_radius.max(t.handle_min_screen_radius) + card::PORT_HIT;
+        assert!(h.state().viewport.contains_rect(badge), "the projected badge must remain reachable: {badge:?}");
+        assert!(
+            !badge.expand(t.comment_marker_ring).intersects(screen_body.expand(hit)),
+            "coincident left fallbacks must not scatter into input hits: {badge:?}"
+        );
+    }
     let output = crate::noodle::anchor(screen_body, crate::noodle::Side::Output, 0, 1);
     let before = h.state().session.document().clone();
     pointer(&mut h, output, true);
@@ -174,6 +313,63 @@ fn attached_marker_over_output_does_not_steal_the_real_wire_drag() {
         h.run();
         pointer(&mut h, output + Vec2::new(40.0, 30.0), false);
         assert_eq!(h.state().session.document(), &before);
+    }
+}
+
+#[test]
+fn edge_projected_pin_stays_reachable_without_stealing_either_port_at_all_zoom_and_dpi() {
+    for zoom in [0.1, 0.5, 1.0, 2.0, 4.0] {
+        for pixels_per_point in [1.0, 2.0] {
+            for right_edge in [false, true] {
+                let mut h = Harness::builder()
+                    .with_size(Vec2::new(1800.0, 1000.0))
+                    .with_pixels_per_point(pixels_per_point)
+                    .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap());
+                let canvas = h.state().canvas;
+                let source = NodeId::from_bytes([3; 16]);
+                let node = NodeId::from_bytes([104; 16]);
+                let id = CommentId::from_bytes([105; 16]);
+                let router =
+                    h.state().session.kinds().get("structure.router").unwrap().instantiate_instance(node, Default::default(), &Default::default()).unwrap();
+                h.state_mut().session.dispatch("node.add", &json!({"canvas":canvas,"node":router})).unwrap();
+                h.state_mut().session.dispatch("edge.connect", &json!({"canvas":canvas,"edge":{"id":nodecraft_types::EdgeId::from_bytes([106;16]),"from":{"node":source,"port":"out"},"to":{"node":node,"port":"in"},"order":0}})).unwrap();
+                h.run();
+                let world = h.state().navigation.geometry.rects[&node];
+                h.state_mut().view.zoom = zoom;
+                let left = if right_edge { h.state().viewport.right() - 20.0 - world.width() * zoom } else { h.state().viewport.left() + 20.0 };
+                h.state_mut().view.pan = Vec2::new(left - h.state().viewport.left() - world.left() * zoom, 220.0 - world.top() * zoom);
+                h.state_mut()
+                    .session
+                    .dispatch(
+                        "comment.create",
+                        &json!({"canvas":canvas,"id":id,"text":"Port ownership","node":node,"pos":{"x":world.width(),"y":world.height()/2.0}}),
+                    )
+                    .unwrap();
+                h.run();
+                let label = format!("Discussion pin {id}");
+                let badge = h.get_by_role_and_label(Role::Button, &label).rect();
+                assert!(h.state().viewport.contains_rect(badge), "zoom={zoom}, dpi={pixels_per_point}, right={right_edge}: {badge:?}");
+                let body = h.state().view.rect_to_screen(h.state().viewport.min, world);
+                let before = h.state().session.document().clone();
+                for side in [crate::noodle::Side::Output, crate::noodle::Side::Input] {
+                    let port = crate::noodle::anchor(body, side, 0, 1);
+                    assert!(!badge.expand(h.state().theme.tokens().comment_marker_ring).contains(port));
+                    pointer(&mut h, port, true);
+                    h.hover_at(port + Vec2::new(if right_edge { -40.0 } else { 40.0 }, 30.0));
+                    h.run();
+                    assert!(h.state().wiring.is_some(), "port retains drag: zoom={zoom}, dpi={pixels_per_point}, right={right_edge}, side={side:?}");
+                    assert!(h.state().comments.drag.is_none());
+                    h.key_press(egui::Key::Escape);
+                    h.run();
+                    pointer(&mut h, port, false);
+                    assert_eq!(h.state().session.document(), &before);
+                }
+                h.get_by_role_and_label(Role::Button, &label).click();
+                h.run();
+                assert_eq!(h.state().comments.active, Some(id), "fallback pin is actually clickable");
+                assert_eq!(h.state().session.document(), &before);
+            }
+        }
     }
 }
 

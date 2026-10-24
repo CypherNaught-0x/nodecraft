@@ -128,8 +128,10 @@ pub struct Tokens {
     pub card_width: f32,
     /// Duplicate displacement in world points, independent of zoom.
     pub duplicate_offset: f32,
-    /// Generation composer body budget (including card padding); ordinary cards size to controls.
+    /// Legacy creation seed baseline; not a card geometry or placement budget.
     pub card_min_height: f32,
+    /// Generation composer body budget including card padding.
+    pub composer_body_height: f32,
     /// Maximum parameter body, including padding; previews and history reserve separate space.
     pub card_max_height: f32,
     /// Height of the image preview at the top of a card that shows an image (#386).
@@ -290,6 +292,7 @@ pub const DARK: Tokens = Tokens {
     card_width: 320.0,
     duplicate_offset: 40.0,
     card_min_height: 220.0,
+    composer_body_height: 220.0,
     card_max_height: 720.0,
     card_preview_height: 180.0,
     dialog_width: 440.0,

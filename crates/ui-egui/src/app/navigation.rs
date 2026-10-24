@@ -188,7 +188,10 @@ impl NodeCraftApp {
                 _ => None,
             })
         });
-        if discussion_press.is_some_and(|pos| self.comments_toolbar_rect().contains(pos) || self.comments.open && self.discussion_rect().contains(pos)) {
+        // Area remembers the actual content-shrunk response bounds, not the panel's
+        // maximum scrolling budget. Before its first draw retain conservative ownership.
+        let panel = ctx.memory(|memory| memory.area_rect(egui::Id::new("discussions_panel"))).unwrap_or_else(|| self.discussion_rect());
+        if discussion_press.is_some_and(|pos| self.comments_toolbar_rect().contains(pos) || self.comments.open && panel.contains(pos)) {
             return false;
         }
         let context = self.navigation_context(ctx, "canvas.pan_to", &json!({"x":0,"y":0}));

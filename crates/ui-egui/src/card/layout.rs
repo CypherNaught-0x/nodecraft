@@ -50,7 +50,7 @@ impl Metrics {
                 })
                 .sum::<f32>()
         });
-        let composer = if composer { t.card_min_height - t.card_padding * 2.0 } else { 0.0 };
+        let composer = if composer { t.composer_body_height - t.card_padding * 2.0 } else { 0.0 };
         let parameters = (controls + composer).max(t.control_row_height / 2.0).min(t.card_max_height - t.card_padding * 2.0);
         let shows = nodecraft_engine::split::image_of(node).is_some()
             // The app previews a PDF source's first page through the image renderer too.
@@ -73,11 +73,24 @@ impl Metrics {
             preview: if shows { t.card_preview_height } else { 0.0 },
             answer: if node.kind == nodecraft_nodes::generation::TEXT_KIND { t.card_preview_height } else { 0.0 },
             // Two compact history button rows, plus separation from the parameters.
-            history: if node.history.is_empty() { 0.0 } else { (t.body_size + t.control_gap) * history::ROWS as f32 + t.control_gap * 2.0 },
+            history: if node.history.is_empty() { 0.0 } else { history::height(t) + t.control_gap },
         }
     }
 
     pub fn size(&self, t: &Tokens) -> Vec2 {
         Vec2::new(t.card_width, (t.card_padding * 2.0 + self.parameters + self.preview + self.answer + self.history).max(self.port_minimum))
     }
+}
+
+/// Cheap broadphase for admitted instances and placeholders. Parameter budgets are capped;
+/// both output regions can coexist, and history is independent. Admission requires the
+/// resolved ports to equal the saved ports, so these counts also bound instance schemas.
+pub(super) fn broadphase_size(node: &Node, t: &Tokens) -> Vec2 {
+    let ports = port_minimum(node.inputs.len(), t.port_radius.max(t.port_min_radius), t).max(port_minimum(
+        node.outputs.len(),
+        t.handle_radius.max(t.handle_min_screen_radius),
+        t,
+    ));
+    let body = t.card_max_height + t.card_preview_height * 2.0 + if node.history.is_empty() { 0.0 } else { history::height(t) + t.control_gap };
+    Vec2::new(t.card_width, body.max(ports))
 }
