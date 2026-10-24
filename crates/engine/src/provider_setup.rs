@@ -58,6 +58,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
         "openai" | "openai-images" => Some("openai"),
         "anthropic" => Some("anthropic"),
+        "huggingface" => Some("huggingface"),
         "litellm" => Some("litellm"),
         "replicate" => Some("replicate"),
         "seedream" => Some("seedream"),
@@ -250,6 +251,7 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         // Chat models (#503): the LLM client, keyed by its endpoint id.
         "openai" => Arc::new(llm(Endpoint::openai(ApiKey::from(&needs_key(env.keys, "openai")?)), env)),
         "anthropic" => Arc::new(llm(Endpoint::anthropic(ApiKey::from(&needs_key(env.keys, "anthropic")?)), env)),
+        "huggingface" => Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&needs_key(env.keys, "huggingface")?, env.http.clone())),
         "litellm" => {
             let url = crate::browser_providers::server_url(env.settings.litellm_url.as_deref())
                 .map_err(|_| Readiness::NotSetUp("set a valid LiteLLM server address without credentials; keep its virtual key in API keys".into()))?

@@ -36,6 +36,8 @@ pub mod google_cloud;
 #[cfg(feature = "higgsfield")]
 pub mod higgsfield;
 pub mod http;
+#[cfg(feature = "huggingface")]
+pub mod huggingface;
 #[cfg(feature = "kling")]
 pub mod kling;
 #[cfg(feature = "llm")]
