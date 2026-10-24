@@ -188,6 +188,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "node.cache_set",
     "node.variations_set",
     "canvas.set_variation_cards",
+    // Refills a Folder card with files already in the project; one undoable edit.
+    "folder.fill",
     "node.shader_set",
     "shader.write",
     "shader.apply",
