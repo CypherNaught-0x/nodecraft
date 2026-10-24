@@ -253,7 +253,12 @@ fn a_legacy_identity_job_is_reported_and_never_assigned_to_a_migrated_project() 
     first.runtime.kill();
     let snapshot = nodecraft_format::Snapshot { project: first.session.document().clone(), assets: first.session.assets().clone(), epoch: 0 };
     drop(first);
-    let migrated = Session::with_storage(snapshot, Box::<nodecraft_format::MemoryStorage>::default()).unwrap();
+    let migrated = Session::with_storage_origin(
+        snapshot,
+        Box::<nodecraft_format::MemoryStorage>::default(),
+        nodecraft_format::StorageLocation::from_command("legacy.ncraft".into()).unwrap(),
+    )
+    .unwrap();
     let id = migrated.document().id();
     assert_ne!(id, legacy);
     let (mut second, opened) = launch(&mock, &journal, Some(migrated.document().clone()), 0);

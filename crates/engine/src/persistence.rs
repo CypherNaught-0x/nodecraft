@@ -123,7 +123,8 @@ fn read(storage: &mut dyn ProjectStorage, location: &StorageLocation, control: &
     let prepared = (|| {
         let prepared = guard(|| storage.prepare_open_snapshot(location, cancel, metrics))?;
         let (snapshot, checkpoint, access) = prepared.into_parts();
-        let document = project_identity::prepare(snapshot)?;
+        let scope = if snapshot.project.id() == project_identity::LEGACY { Some(guard(|| storage.project_identity_scope(location))?) } else { None };
+        let document = project_identity::prepare(snapshot, scope)?;
         let checkpoint = if document.migration.is_some() {
             let capability = guard(|| Ok(storage.capability()))?;
             CheckpointPlan::new(ArchivePlan::prepare(&document.snapshot, capability, cancel, metrics)?)?
@@ -207,8 +208,13 @@ pub(crate) struct Persistence {
     metrics: StreamMetrics,
 }
 impl Persistence {
-    pub fn new(mut store: Store, snapshot: Snapshot) -> Result<(Self, OpenedDocument), Error> {
-        let mut document = project_identity::prepare(snapshot)?;
+    pub fn new(mut store: Store, snapshot: Snapshot, origin: Option<StorageLocation>) -> Result<(Self, OpenedDocument), Error> {
+        let scope = if snapshot.project.id() == project_identity::LEGACY {
+            origin.as_ref().map(|location| guard(|| store.get()?.project_identity_scope(location))).transpose()?
+        } else {
+            None
+        };
+        let mut document = project_identity::prepare(snapshot, scope)?;
         let snapshot = &mut document.snapshot;
         let cancel = TransferCancel::default();
         let metrics = StreamMetrics::default();
@@ -253,6 +259,9 @@ impl Persistence {
     }
     pub(crate) fn capability(&self) -> StorageCapability {
         self.capability
+    }
+    pub(crate) fn project_identity_scope(&mut self, location: &StorageLocation) -> Result<Blake3, Error> {
+        guard(|| self.store.get()?.project_identity_scope(location))
     }
     pub(crate) fn metrics(&self) -> StreamMetrics {
         self.metrics.clone()

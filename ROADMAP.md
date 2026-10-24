@@ -287,8 +287,8 @@ The near-term order follows the remaining open issues, not an already-finished w
   raise a cap.
 - **2026-10-23** — the spending log records each charge's project, so the open project has its
   own cap beside the total (#847); the CSV export gains a `project` column.
-- **2026-10-24** — opening or recovering a project with the old starter identity assigns a
-  fresh identity in one undoable change (#879), separating future project spending. Save As
+- **2026-10-24** — opening or recovering a located project with the old starter identity assigns
+  a stable identity in one undoable change (#879), separating future project spending. Save As
   preserves identity; saved jobs under the ambiguous legacy identity remain parked with an
   explicit explanation, and their charges stay attributed to that legacy identity.
 - **2026-10-23** — rendered videos and extracted sound share a per-run staging budget (#584):

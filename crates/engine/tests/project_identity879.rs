@@ -2,7 +2,7 @@
 use crate::common;
 use nodecraft_engine::Session;
 use nodecraft_exec::cost::{Charge, UsageEntry, UsageLog};
-use nodecraft_format::{AssetStore, MemoryStorage, ProjectStorage, Snapshot, StorageLocation};
+use nodecraft_format::{AssetStore, LoadedProject, MemoryStorage, ProjectAccess, ProjectStorage, Snapshot, StorageLocation};
 use nodecraft_graph::Change;
 use nodecraft_types::{Currency, Error, ErrorKind, Money, ProjectId};
 use serde_json::json;
@@ -14,10 +14,16 @@ const LEGACY: ProjectId = ProjectId::from_bytes([2; 16]);
 struct State {
     memory: MemoryStorage,
     fail_checkpoint: bool,
+    read_only: bool,
 }
 #[derive(Clone, Default)]
 struct Store(Arc<Mutex<State>>);
 impl ProjectStorage for Store {
+    fn prepare_open(&mut self, location: &StorageLocation) -> Result<LoadedProject, Error> {
+        let bytes = self.load(location)?;
+        let access = if self.0.lock().unwrap().read_only { ProjectAccess::ReadOnly } else { ProjectAccess::ReadWrite };
+        Ok(LoadedProject { bytes, access })
+    }
     fn load(&mut self, location: &StorageLocation) -> Result<Vec<u8>, Error> {
         self.0.lock().unwrap().memory.load(location)
     }
@@ -46,8 +52,11 @@ fn snapshot(legacy: bool) -> Snapshot {
     Snapshot { project, assets: AssetStore::default(), epoch: 0 }
 }
 fn setup() -> (Session, Store) {
+    setup_named("old.ncraft")
+}
+fn setup_named(name: &str) -> (Session, Store) {
     let mut storage = Store::default();
-    storage.save(&StorageLocation::from_command("old.ncraft".into()).unwrap(), &nodecraft_format::encode(&snapshot(true)).unwrap()).unwrap();
+    storage.save(&StorageLocation::from_command(name.into()).unwrap(), &nodecraft_format::encode(&snapshot(true)).unwrap()).unwrap();
     let session = Session::with_storage(snapshot(false), Box::new(storage.clone())).unwrap();
     (session, storage)
 }
@@ -64,9 +73,9 @@ fn saved(storage: &Store, name: &str) -> Snapshot {
 #[test]
 fn legacy_files_open_with_separate_project_totals_and_one_replayable_undo_step() {
     let (mut a, store_a) = setup();
-    let (mut b, _) = setup();
+    let (mut b, _) = setup_named("other.ncraft");
     let receipt = open(&mut a);
-    open(&mut b);
+    b.dispatch("file.open", &json!({"location":"other.ncraft", "discard_dirty":true})).unwrap();
     let (a_id, b_id) = (a.document().id(), b.document().id());
     assert_ne!(a_id, LEGACY);
     assert_ne!(a_id, b_id);
@@ -143,7 +152,8 @@ fn recovered_legacy_projects_migrate_but_joining_a_live_project_keeps_its_identi
 #[test]
 fn save_as_keeps_identity_and_storage_constructors_migrate_local_snapshots() {
     let storage = Store::default();
-    let mut session = Session::with_storage(snapshot(true), Box::new(storage.clone())).unwrap();
+    let mut session =
+        Session::with_storage_origin(snapshot(true), Box::new(storage.clone()), StorageLocation::from_command("source.ncraft".into()).unwrap()).unwrap();
     let id = session.document().id();
     assert_ne!(id, LEGACY);
     assert!(session.can_undo());
@@ -195,4 +205,88 @@ fn background_open_publishes_the_migration_only_after_its_checkpoint_succeeds() 
             assert_eq!(recovered(&store).project, *session.document());
         }
     }
+}
+
+#[test]
+fn legacy_reopen_discard_and_read_only_keep_the_project_cap() {
+    use nodecraft_exec::cost::{self, Block, Budgets, Quote, Scope};
+    for read_only in [false, true] {
+        let (mut session, store) = setup();
+        store.0.lock().unwrap().read_only = read_only;
+        open(&mut session);
+        let id = session.document().id();
+        let mut log = UsageLog::default();
+        log.record(UsageEntry {
+            at_ms: 0,
+            session: "previous".into(),
+            node: common::node_id(1),
+            provider: "mock".into(),
+            instance: None,
+            project: Some(id),
+            model: "fixture".into(),
+            cost: Money::new(Currency::USD, 100),
+            idempotency_key: "spent".into(),
+            status: Charge::Actual,
+        })
+        .unwrap();
+        let budgets = Budgets { this_project: Some(Money::new(Currency::USD, 100)), ..Default::default() };
+        let quote = Quote { steps: vec![], totals: [(Currency::USD, Money::new(Currency::USD, 1))].into() };
+        for _ in 0..3 {
+            open(&mut session);
+            assert_eq!(session.document().id(), id);
+            assert_eq!(session.file_status().read_only, read_only);
+            let admission = cost::check(&quote, &budgets, &log.spent_in("next", Some(session.document().id()))).unwrap();
+            assert!(matches!(admission.blocks.as_slice(), [Block::Over { scope: Scope::ThisProject, .. }]));
+        }
+        let mut second = Session::with_storage(snapshot(false), Box::new(store.clone())).unwrap();
+        open(&mut second);
+        assert_eq!(second.document().id(), id, "another window or process uses the same scope");
+        assert_eq!(saved(&store, "old.ncraft").project.id(), LEGACY, "no source save required");
+    }
+}
+
+#[test]
+fn recovery_and_located_constructor_agree_and_unlocated_snapshots_stay_conservative() {
+    let location = StorageLocation::from_command("old.ncraft".into()).unwrap();
+    let (mut opened, _) = setup();
+    open(&mut opened);
+    let (mut recovered, _) = setup();
+    recovered.recover(snapshot(true), Some(location.clone())).unwrap();
+    let constructed = Session::with_storage_origin(snapshot(true), Box::<MemoryStorage>::default(), location).unwrap();
+    assert_eq!(opened.document().id(), recovered.document().id());
+    assert_eq!(opened.document().id(), constructed.document().id());
+    for _ in 0..2 {
+        let unlocated = Session::with_storage(snapshot(true), Box::<MemoryStorage>::default()).unwrap();
+        assert_eq!(unlocated.document().id(), LEGACY, "unknown origins must not reset spending");
+        assert!(!unlocated.can_undo());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_legacy_aliases_read_only_and_distinct_files_have_stable_scopes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy.ncraft");
+    let other = dir.path().join("other.ncraft");
+    let bytes = nodecraft_format::encode(&snapshot(true)).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    std::fs::write(&other, &bytes).unwrap();
+    let original = std::fs::metadata(&path).unwrap().permissions();
+    let mut readonly = original.clone();
+    readonly.set_readonly(true);
+    std::fs::set_permissions(&path, readonly).unwrap();
+    let storage = nodecraft_format::NativeStorage::new(dir.path().join("recovery")).unwrap();
+    let mut session = Session::with_storage(snapshot(false), Box::new(storage)).unwrap();
+    session.dispatch("file.open", &json!({"location":path,"discard_dirty":true})).unwrap();
+    let id = session.document().id();
+    assert!(session.file_status().read_only);
+    let alias = dir.path().join(".").join("legacy.ncraft");
+    session.dispatch("file.open", &json!({"location":alias,"discard_dirty":true})).unwrap();
+    assert_eq!(session.document().id(), id);
+    let located = Session::with_storage_origin(snapshot(true), Box::<MemoryStorage>::default(), StorageLocation::Path(path.canonicalize().unwrap())).unwrap();
+    assert_eq!(located.document().id(), id, "native and canonical headless origins agree");
+    session.dispatch("file.open", &json!({"location":other,"discard_dirty":true})).unwrap();
+    assert_ne!(session.document().id(), id, "identical legacy bytes at separate locations do not pool");
+    drop(session);
+    std::fs::set_permissions(&path, original).unwrap();
 }

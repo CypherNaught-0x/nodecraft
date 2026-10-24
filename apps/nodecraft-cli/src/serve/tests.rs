@@ -42,7 +42,7 @@ fn loaded() -> Result<Loaded, nodecraft_types::Error> {
     let maker = || -> Result<Box<crate::quote::Maker<'static>>, nodecraft_types::Error> {
         Ok(Box::new(|_: &str| Err(nodecraft_engine::provider_setup::Readiness::NotSetUp("no providers in tests".into()))))
     };
-    Ok(Loaded { snapshot: snapshot(), maker: Box::new(maker) })
+    Ok(Loaded { snapshot: snapshot(), origin: None, maker: Box::new(maker) })
 }
 
 struct Served {
