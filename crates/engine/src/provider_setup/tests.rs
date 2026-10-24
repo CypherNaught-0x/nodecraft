@@ -80,7 +80,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     let catalog = Catalog::builtin().unwrap();
     let keys = MemoryStore::default();
     for account in
-        ["openai", "anthropic", "replicate", "seedream", "gemini", "fal", "tripo", "meshy", "higgsfield", "kling", "elevenlabs", "comfyui:gpu-box:8188"]
+        ["openai", "anthropic", "replicate", "seedream", "gemini", "fal", "tripo", "meshy", "higgsfield", "kling", "elevenlabs", "bfl", "comfyui:gpu-box:8188"]
     {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
     }
@@ -110,6 +110,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "higgsfield",
         "kling",
         "elevenlabs",
+        "bfl",
         "comfyui",
     ]
     .into_iter()
@@ -320,4 +321,17 @@ fn each_server_is_its_own_instance_with_its_own_cap() {
     assert_eq!(routing.find_parts("comfyui", laptop.instance()).unwrap().limit(), None);
     assert!(setup.routing_for([(NODE, "comfyui@elsewhere")], &settings).is_err(), "a slot not set up isn't routed");
     assert_eq!(http.0.load(Ordering::SeqCst), 0, "building sends nothing");
+}
+
+#[test]
+fn bfl33_host_uses_its_keychain_account() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    assert!(matches!(make("bfl",&env(&keys,&http,&settings)),Err(Readiness::NeedsKey {account}) if account=="bfl"));
+    keys.set(&Account::new("bfl").unwrap(), &Secret::new("public-bfl-fixture").unwrap()).unwrap();
+    let provider = make("bfl", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "bfl");
+    assert_eq!(key_account("bfl"), Some("bfl"));
+    assert_eq!(http.0.load(Ordering::SeqCst), 0);
 }
