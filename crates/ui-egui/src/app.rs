@@ -330,7 +330,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
     if let Some(rect) = painted.get(&node.id) {
         return *rect;
     }
-    let largest = Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), Vec2::new(t.card_width, t.card_max_height));
+    let largest = Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), card::broadphase_size(node, t));
     if !largest.intersects(world) {
         return largest;
     }
@@ -1664,7 +1664,7 @@ impl NodeCraftApp {
                 let preview = self.drag.as_ref().filter(|drag| drag.id == node.id).map(|drag| drag.pos).or_else(|| Self::field_preview(field_shift, node));
                 // Cull conservatively before resolving potentially large instance schemas.
                 let position = preview.unwrap_or(node.pos);
-                let bounds = Rect::from_min_size(Pos2::new(position.x, position.y), Vec2::new(t.card_width, t.card_max_height + t.card_preview_height));
+                let bounds = Rect::from_min_size(Pos2::new(position.x, position.y), card::broadphase_size(node, t));
                 if !self.view.rect_to_screen(viewport.min, bounds).expand(card::cull_margin(t, self.view.zoom)).intersects(viewport) {
                     if let Some(editor) = self.editors.get_mut(&node.id) {
                         editor.mark_hidden();
@@ -2829,18 +2829,37 @@ impl NodeCraftApp {
                     self.notice = Some("Couldn't find a free id for the extracted result".into());
                     return None;
                 };
-                // Beside the node, stepping down past earlier extracts rather than on top of them.
-                let x = source.pos.x + t.card_width + t.card_padding * 4.0;
-                let step = t.card_min_height + t.card_padding * 2.0;
-                let taken = |y: f32| canvas.nodes().values().any(|n| (n.pos.x - x).abs() < t.card_width / 2.0 && (n.pos.y - y).abs() < step / 2.0);
-                let y = (0..64u8).map(|row| source.pos.y + f32::from(row) * step).find(|y| !taken(*y)).unwrap_or(source.pos.y);
-                let mut params = json!({"canvas": self.canvas, "id": id, "generation": generation, "node": node, "pos": {"x": x, "y": y}});
+                let mut params = json!({"canvas": self.canvas, "id": id, "generation": generation, "node": node, "pos": source.pos});
                 if let Some(port) = port {
                     params["port"] = json!(port);
                 }
                 if let Some(item) = item {
                     params["item"] = json!(item);
                 }
+                let extracted = match self.session.preview_created_node("history.extract", &params, node) {
+                    Ok(extracted) => extracted,
+                    Err(error) => {
+                        self.notice = Some(error.message);
+                        return None;
+                    }
+                };
+                let size = payload_rect(&self.session, &extracted, t).size();
+                let source_rect = payload_rect(&self.session, source, t);
+                let x = source_rect.right() + t.card_padding * 4.0;
+                let step = size.y + t.card_padding * 2.0;
+                // Resolve neighboring columns once, not every schema for every candidate row.
+                let occupied: Vec<_> = canvas
+                    .nodes()
+                    .values()
+                    .filter(|existing| existing.pos.x < x + size.x + t.card_padding && existing.pos.x + t.card_width > x - t.card_padding)
+                    .map(|existing| payload_rect(&self.session, existing, t))
+                    .collect();
+                let taken = |y: f32| {
+                    let candidate = Rect::from_min_size(Pos2::new(x, y), size).expand(t.card_padding);
+                    occupied.iter().any(|rect| candidate.intersects(*rect))
+                };
+                let y = (0..64u8).map(|row| source.pos.y + f32::from(row) * step).find(|y| !taken(*y)).unwrap_or(source.pos.y);
+                params["pos"] = json!({"x": x, "y": y});
                 ("history.extract", params)
             }
             HistoryIntent::Export { generation, port, item, name } => {
@@ -2891,6 +2910,17 @@ impl NodeCraftApp {
         }
     }
 
+    /// Resolve the same default instance that creation commands use, without publishing it.
+    fn creation_size(&self, kind: &str, id: NodeId, pos: nodecraft_graph::Position, output: Option<PortType>, t: &Tokens) -> Result<Vec2, Error> {
+        let mut node = match output {
+            Some(output) => nodecraft_engine::turn_into_cmds::instance_for(self.session.kinds(), kind, id, output)?.0,
+            None => nodecraft_engine::create_cmds::instance(self.session.kinds(), kind, id)?,
+        };
+        node.pos = pos;
+        let admitted = admission::admit_uncached(&self.session, &node);
+        Ok(card::world_size(&node, admitted.as_ref().map(|a| a.descriptor.as_ref()), t))
+    }
+
     /// Create a node of `kind` centred on `world`, select it, and report failures as a notice.
     fn create_node(&mut self, kind: &str, world: Pos2) {
         let t = self.theme.tokens();
@@ -2900,6 +2930,15 @@ impl NodeCraftApp {
             self.notice = Some("Couldn't allocate a node id; try again.".into());
             return;
         };
+        // Keep id allocation stable, but center the actual default card, not the old baseline.
+        let size = match self.creation_size(kind, id, pos, None, t) {
+            Ok(size) => size,
+            Err(error) => {
+                self.notice = Some(error.message);
+                return;
+            }
+        };
+        let pos = nodecraft_graph::Position { x: world.x - size.x * 0.5, y: world.y - size.y * 0.5 };
         match self.session.dispatch("node.create", &json!({"canvas": self.canvas, "id": id, "kind": kind, "pos": pos})) {
             Ok(_) => {
                 self.notice = None;
@@ -2920,6 +2959,14 @@ impl NodeCraftApp {
             self.notice = Some("Couldn't allocate a node id; try again.".into());
             return;
         };
+        let size = match self.creation_size(kind, id, pos, Some(menu.output), t) {
+            Ok(size) => size,
+            Err(error) => {
+                self.notice = Some(error.message);
+                return;
+            }
+        };
+        let pos = nodecraft_graph::Position { x: menu.world.x, y: menu.world.y - size.y * 0.5 };
         let params = json!({"canvas": self.canvas, "id": id, "kind": kind, "pos": pos, "from": menu.from, "edge": edge});
         match self.session.dispatch("node.create_connected", &params) {
             Ok(_) => {
@@ -3304,6 +3351,8 @@ fn starter_id() -> [u8; 16] {
 fn starter_id() -> [u8; 16] {
     [2; 16]
 }
+#[cfg(test)]
+mod centering_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

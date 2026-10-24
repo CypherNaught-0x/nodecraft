@@ -16,6 +16,9 @@ use std::{
 
 mod chips;
 pub(crate) mod generate;
+mod layout;
+#[cfg(test)]
+mod layout_tests;
 pub(crate) mod listed;
 pub(crate) mod mention;
 pub use generate::Roles;
@@ -123,23 +126,7 @@ pub fn title(node: &Node, descriptor: Option<&NodeDescriptor>) -> String {
 /// Position-independent logical metrics, including the node's history strip.
 /// Never recover these by subtracting large coordinates.
 pub fn world_size(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Vec2 {
-    let count = descriptor.map_or(1, |d| d.params.params.len().min(12));
-    let params = (t.card_min_height + count.saturating_sub(1) as f32 * t.control_row_height).min(t.card_max_height);
-    // The history strip sits under the parameters and is never squeezed out by them; an image
-    // or video or sound or 3D preview sits above them.
-    let shows = nodecraft_engine::split::image_of(node).is_some()
-        || crate::video::video_of(node).is_some()
-        || crate::audio::audio_of(node).is_some()
-        || crate::mesh_view::mesh_of(node).is_some()
-        // A speech card always has room for its sound, so the card doesn't jump when a preview
-        // of the first one starts playing (#875).
-        || node.kind == nodecraft_nodes::generation::AUDIO_KIND;
-    let preview = if shows { t.card_preview_height } else { 0.0 };
-    // A text card always has room for its answer, so the card doesn't jump when one starts
-    // streaming in (#504).
-    let answer = if node.kind == nodecraft_nodes::generation::TEXT_KIND { t.card_preview_height } else { 0.0 };
-    let height = params + preview + answer + history::rows(node) as f32 * t.control_row_height;
-    Vec2::new(t.card_width, height)
+    layout::Metrics::of(node, descriptor, t).size(t)
 }
 pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Rect {
     Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), world_size(node, descriptor, t))
@@ -268,6 +255,9 @@ pub fn show(
     ui.set_clip_rect(transform.inverse() * parent.clip_rect());
     ui.style_mut().override_font_id = Some(FontId::proportional(t.body_size));
     ui.style_mut().spacing.item_spacing = Vec2::splat(t.control_gap);
+    // Match the pure row metrics rather than inheriting host-dependent widget heights.
+    ui.style_mut().spacing.interact_size.y = t.body_size + t.control_gap;
+    ui.style_mut().spacing.button_padding.y = t.control_vertical_padding;
     let response = ui.interact(rect, ui.id().with("card"), Sense::click_and_drag());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), format!("Node {}", title(node, descriptor))));
     if response.clicked() {
@@ -344,12 +334,13 @@ pub fn show(
     editor.hide_fields(visible);
     if view.zoom >= BODY_MIN_ZOOM {
         let mut inner = rect.shrink(t.card_padding);
-        let strip = history::rows(node) as f32 * t.control_row_height;
+        let metrics = layout::Metrics::of(node, descriptor, t);
+        let strip = metrics.history;
         if strip > 0.0 {
             // The card reserves `strip`; the strip itself sits on the card's bottom edge.
             let (params, reserved) = inner.split_top_bottom_at_y(inner.bottom() - strip);
             inner = params;
-            let height = (history::height(ui.spacing())).min(reserved.height());
+            let height = history::height(t).min(reserved.height());
             let results = Rect::from_min_max(Pos2::new(reserved.left(), reserved.bottom() - height), reserved.max);
             let mut strip_ui = ui.new_child(egui::UiBuilder::new().id_salt("history").max_rect(results));
             strip_ui.set_clip_rect(results.intersect(ui.clip_rect()));
@@ -357,8 +348,8 @@ pub fn show(
                 intents.push(Intent::History(intent));
             }
         }
-        if !images.0.is_empty() {
-            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+        if !images.0.is_empty() && metrics.preview > 0.0 {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
             inner = rest;
             let area = area.shrink2(Vec2::new(0.0, t.control_gap));
             match images.0.as_slice() {
@@ -376,25 +367,29 @@ pub fn show(
                 rows => gallery(&mut ui, area, rows, images.1, t),
             }
         } else if let Some(video) = &video {
-            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
             inner = rest;
             show_video(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), video, &mut intents, t);
         } else if let Some(audio) = &audio {
-            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
             inner = rest;
             show_audio(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), audio, &mut intents, t);
         } else if let Some(mesh) = mesh {
-            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
             inner = rest;
             crate::mesh_view::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), view.zoom, mesh, t);
         } else if node.kind == nodecraft_nodes::generation::AUDIO_KIND {
             // The room `world_size` keeps for the sound to come.
-            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
             inner = rest;
             show_audio(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &crate::audio::AudioView::Unavailable(NO_SOUND), &mut intents, t);
+        } else if metrics.preview > 0.0 {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
+            inner = rest;
+            show_image(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &crate::preview::Preview::Unavailable("No preview yet"), None, t);
         }
         if node.kind == nodecraft_nodes::generation::TEXT_KIND {
-            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + t.card_preview_height);
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.answer);
             inner = rest;
             generate::answer(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), generate::answer_of(node), partial, &mut intents, t);
         }
@@ -422,82 +417,87 @@ pub fn show(
         let own = |name: &str| composer.is_some() && (name == nodecraft_nodes::generation::PROMPT || roles.and_then(|r| r.count.as_deref()) == Some(name));
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
-        egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height()).auto_shrink([false, false]).show(&mut body, |ui| {
-            ui.set_width(inner.width());
-            // Another version's ports or settings may not fit this one's schema at all.
-            if outdated {
-                ui.label(egui::RichText::new("This card was made with another version of its plugin.").color(t.text_muted));
-                if ui.button("Update card").clicked() {
-                    intents.push(Intent::Migrate);
-                }
-            }
-            match descriptor {
-                None if outdated => {}
-                None if let Some(lock) = nodecraft_engine::plugin_runtime::PluginLock::of(node) => {
-                    ui.label(missing_plugin(&lock));
-                }
-                None => {
-                    ui.label("This node kind or its controls are unavailable. Check its schema and view cache budget.");
-                    if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, nodecraft_nodes::generation::MODEL)
-                        && ui.button("Choose supported model…").clicked()
-                    {
-                        intents.push(Intent::Model);
+        egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height().min(metrics.parameters)).auto_shrink([false, false]).show(
+            &mut body,
+            |ui| {
+                ui.set_width(inner.width());
+                // Another version's ports or settings may not fit this one's schema at all.
+                if outdated {
+                    ui.label(egui::RichText::new("This card was made with another version of its plugin.").color(t.text_muted));
+                    if ui.button("Update card").clicked() {
+                        intents.push(Intent::Migrate);
                     }
                 }
-                Some(d) => {
-                    for spec in &d.params.params {
-                        if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
-                            continue;
+                match descriptor {
+                    None if outdated => {}
+                    None if let Some(lock) = nodecraft_engine::plugin_runtime::PluginLock::of(node) => {
+                        ui.label(missing_plugin(&lock));
+                    }
+                    None => {
+                        ui.label("This node kind or its controls are unavailable. Check its schema and view cache budget.");
+                        if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, nodecraft_nodes::generation::MODEL)
+                            && ui.button("Choose supported model…").clicked()
+                        {
+                            intents.push(Intent::Model);
                         }
-                        // A workflow card's model is fixed: it runs the workflow it holds.
-                        if node.kind == nodecraft_nodes::comfy_workflow::ID && spec.name == nodecraft_nodes::comfy_workflow::MODEL {
-                            continue;
-                        }
-                        ui.push_id(&spec.name, |ui| {
-                            let label = ui.label(egui::RichText::new(&spec.label).color(t.text_muted));
-                            let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };
-                            let value = node.params.get(&spec.name).or(spec.default.as_ref());
-                            let editable = enabled.is_none_or(|names| names.contains(&spec.name));
-                            if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, &spec.name) {
-                                let current = match value {
-                                    Some(Value::Text(id)) => id.as_str(),
-                                    _ => "Unavailable saved model",
-                                };
-                                let preview: String = current.chars().take(t.preview_chars).collect();
-                                ui.label(&preview);
-                                if ui.add_enabled(editable, egui::Button::new("Change model…")).labelled_by(label.id).on_hover_text(&preview).clicked() {
-                                    intents.push(Intent::Model);
-                                }
-                            } else {
-                                let list = listed_params.and_then(|listed| listed.get(&spec.name));
-                                // A stored value of another type (a hand-edited project) keeps the
-                                // ordinary control, which shows it as it is.
-                                let text = value.is_none_or(|value| matches!(value, Value::Text(_)));
-                                let choices = list.filter(|_| text).and_then(|list| list.choices(lists));
-                                // A stored copy of the default (a new card stores its defaults) is not an override.
-                                let overridden = node.params.get(&spec.name).is_some_and(|stored| spec.default.as_ref() != Some(stored));
-                                let changed = match choices {
-                                    Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, overridden, label.id, t)).inner,
-                                    None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
-                                    None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
-                                };
-                                if let Some(hint) = list.filter(|_| text && choices.is_none()).and_then(Listed::hint) {
-                                    ui.label(egui::RichText::new(hint).color(t.text_muted).small());
-                                }
-                                if editable && let Some(value) = changed {
-                                    intents.push(Intent::Parameter { name: spec.name.clone(), value });
-                                }
+                    }
+                    Some(d) => {
+                        for spec in &d.params.params {
+                            if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
+                                continue;
                             }
-                            ui.add_space(t.control_gap);
-                        });
+                            // A workflow card's model is fixed: it runs the workflow it holds.
+                            if node.kind == nodecraft_nodes::comfy_workflow::ID && spec.name == nodecraft_nodes::comfy_workflow::MODEL {
+                                continue;
+                            }
+                            ui.push_id(&spec.name, |ui| {
+                                let label = ui.add_sized(
+                                    [ui.available_width(), t.body_size + t.control_gap],
+                                    egui::Label::new(egui::RichText::new(&spec.label).color(t.text_muted)).truncate().halign(egui::Align::LEFT),
+                                );
+                                let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };
+                                let value = node.params.get(&spec.name).or(spec.default.as_ref());
+                                let editable = enabled.is_none_or(|names| names.contains(&spec.name));
+                                if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, &spec.name) {
+                                    let current = match value {
+                                        Some(Value::Text(id)) => id.as_str(),
+                                        _ => "Unavailable saved model",
+                                    };
+                                    let preview: String = current.chars().take(t.preview_chars).collect();
+                                    ui.add_sized([ui.available_width(), t.body_size + t.control_gap], egui::Label::new(&preview).truncate());
+                                    if ui.add_enabled(editable, egui::Button::new("Change model…")).labelled_by(label.id).on_hover_text(&preview).clicked() {
+                                        intents.push(Intent::Model);
+                                    }
+                                } else {
+                                    let list = listed_params.and_then(|listed| listed.get(&spec.name));
+                                    // A stored value of another type (a hand-edited project) keeps the
+                                    // ordinary control, which shows it as it is.
+                                    let text = value.is_none_or(|value| matches!(value, Value::Text(_)));
+                                    let choices = list.filter(|_| text).and_then(|list| list.choices(lists));
+                                    // A stored copy of the default (a new card stores its defaults) is not an override.
+                                    let overridden = node.params.get(&spec.name).is_some_and(|stored| spec.default.as_ref() != Some(stored));
+                                    let changed = match choices {
+                                        Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, overridden, label.id, t)).inner,
+                                        None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
+                                        None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
+                                    };
+                                    if let Some(hint) = list.filter(|_| text && choices.is_none()).and_then(Listed::hint) {
+                                        ui.label(egui::RichText::new(hint).color(t.text_muted).small());
+                                    }
+                                    if editable && let Some(value) = changed {
+                                        intents.push(Intent::Parameter { name: spec.name.clone(), value });
+                                    }
+                                }
+                            });
+                        }
                     }
                 }
-            }
 
-            if let Some((_, error)) = &editor.error {
-                ui.label(error);
-            }
-        });
+                if let Some((_, error)) = &editor.error {
+                    ui.label(error);
+                }
+            },
+        );
     }
     if view.zoom < BODY_MIN_ZOOM {
         editor.mark_hidden();
@@ -508,7 +508,7 @@ pub fn show(
         let c = noodle::anchor(rect, Side::Input, index, inputs.len());
         let radius = t.port_radius.max(t.port_min_radius / view.zoom);
         ui.painter().circle(c, radius, t.card_fill, Stroke::new(t.port_stroke / view.zoom, t.wire(port.port_type.modality)));
-        let r = ui.interact(Rect::from_center_size(c, Vec2::splat(radius + hit) * 2.0), ui.id().with(("in", &port.name)), Sense::drag());
+        let r = ui.interact(port_hit_rect(rect, c, radius + hit, index, inputs.len()), ui.id().with(("in", &port.name)), Sense::drag());
         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} input", port.name)));
         let hint = if node.inputs.iter().any(|saved| saved == port) {
             port.name.clone()
@@ -525,11 +525,30 @@ pub fn show(
             let arm = axis * radius * 0.5;
             ui.painter().line_segment([c - arm, c + arm], Stroke::new(t.handle_stroke / view.zoom, t.handle_glyph));
         }
-        let r = ui.interact(Rect::from_center_size(c, Vec2::splat(radius + hit) * 2.0), ui.id().with(("out", &port.name)), Sense::drag());
+        let r = ui.interact(port_hit_rect(rect, c, radius + hit, index, node.outputs.len()), ui.id().with(("out", &port.name)), Sense::drag());
         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} output", port.name)));
         ports.push((Side::Output, port.name.clone(), r.on_hover_text(format!("Drag to connect {}", port.name))));
     }
     Some(CardResponse { response, intents, ports })
+}
+
+// At overview zoom, and for additive migration input previews, screen-sized hit targets can
+// overlap several anchors. Keep the original x envelope and outer tails, but split neighboring
+// y targets halfway between centers so a later registered port cannot steal an earlier one.
+fn port_hit_rect(body: Rect, center: Pos2, reach: f32, index: usize, count: usize) -> Rect {
+    let mut hit = Rect::from_center_size(center, Vec2::splat(reach) * 2.0);
+    if count > 1 {
+        let pitch = body.height() / count.saturating_add(1) as f32;
+        if pitch.is_finite() && pitch > 0.0 {
+            if index > 0 {
+                hit.min.y = hit.min.y.max(center.y - pitch * 0.5);
+            }
+            if index.saturating_add(1) < count {
+                hit.max.y = hit.max.y.min(center.y + pitch * 0.5);
+            }
+        }
+    }
+    hit
 }
 
 /// Several images in `area`, a row each (one per batch item, #519), every tile the same size;
@@ -812,11 +831,21 @@ pub(crate) fn control_with_mode(
                 _ => "",
             };
             let mut selected = current.to_owned();
+            let width = ui.available_width();
             let response = egui::ComboBox::from_id_salt("choice")
+                .width(width)
+                .height(t.card_preview_height)
+                .wrap_mode(egui::TextWrapMode::Truncate)
                 .selected_text(options.iter().find(|o| o.value == current).map_or("Choose…", |o| o.label.as_str()))
                 .show_ui(ui, |ui| {
+                    let row = ui.spacing().interact_size.y;
+                    ui.set_width((width - ui.spacing().menu_margin.sum().x).max(row));
+                    // ComboBox owns the popup's only vertical scroll area.
                     for option in options {
-                        ui.selectable_value(&mut selected, option.value.clone(), &option.label);
+                        if ui.add_sized([ui.available_width(), row], egui::Button::selectable(option.value == current, &option.label).truncate()).clicked() {
+                            selected = option.value.clone();
+                            ui.close();
+                        }
                     }
                 })
                 .response
@@ -838,25 +867,37 @@ pub(crate) fn control_with_mode(
             }
             let dragging = editor.sliders.contains_key(name);
             let mut number = editor.sliders.get(name).map_or(original, |draft| draft.value);
-            let r = ui.add(egui::Slider::new(&mut number, min.get()..=max.get()).step_by(step.get()).update_while_editing(false)).labelled_by(label);
+            // Separate the track from exact entry: both use the complete usable width, rather
+            // than egui's intrinsic slider width plus a variably-sized trailing DragValue.
+            ui.spacing_mut().slider_width = ui.available_width();
+            let r = ui.add(egui::Slider::new(&mut number, min.get()..=max.get()).step_by(step.get()).show_value(false)).labelled_by(label);
+            let mut committed = None;
             if r.dragged() {
                 editor.sliders.insert(name.to_owned(), SliderDraft { original, value: number });
             } else if r.changed() || r.drag_stopped() {
                 editor.sliders.remove(name);
-                // Only a drag or typing (committed with Enter, which ends the focus) sets a value: the slider snapping a stored value to its
-                // step moves it by a rounding error, and must not edit the document.
+                // Only a finished drag or focused keyboard change sets a value: snapping a
+                // stored value to the step by a rounding error must not edit the document.
                 let by_user = (r.drag_stopped() && dragging) || (r.changed() && (r.has_focus() || r.lost_focus()));
                 let moved = (number - original).abs() > (max.get() - min.get()).abs() * 1e-9;
                 if by_user
                     && moved
                     && let Ok(n) = Number::new(number)
                 {
-                    return Some(Some(Value::Number(n)));
+                    committed = Some(Some(Value::Number(n)));
                 }
+            }
+            // Show the live pointer value without replacing a dirty exact-entry draft. Always
+            // draw this row, including the release frame, so controls below it never jump.
+            let preview = r.dragged().then(|| Number::new(number).ok().map(Value::Number)).flatten();
+            let entry_value = if editor.text.contains_key(name) { value } else { preview.as_ref().or(value) };
+            let typed = control_with_mode(ui, control, entry_value, name, editor, label, t, true);
+            if let Some(value) = committed.or(typed) {
+                return Some(value);
             }
         }
         ParamControl::Asset { modality } => {
-            ui.label(match value {
+            let summary = match value {
                 Some(Value::Media(asset)) => match asset.meta.page_count {
                     Some(1) if *modality == nodecraft_types::Modality::Document => "PDF, 1 page".to_owned(),
                     Some(pages) if *modality == nodecraft_types::Modality::Document => format!("PDF, {pages} pages"),
@@ -874,7 +915,8 @@ pub(crate) fn control_with_mode(
                         nodecraft_types::Modality::Style => "style",
                     }
                 ),
-            });
+            };
+            ui.add_sized([ui.available_width(), t.body_size + t.control_gap], egui::Label::new(summary).truncate());
             if value.is_some() && ui.small_button("Remove").clicked() {
                 return Some(None);
             }
@@ -898,19 +940,21 @@ pub(crate) fn control_with_mode(
                     preview = preview.chars().take(t.preview_chars).collect();
                     preview.push('…');
                 }
-                let response = ui
-                    .add_sized(
-                        Vec2::new(
-                            ui.available_width(),
-                            if matches!(control, ParamControl::Text { multiline: true, .. }) {
-                                t.body_size * t.text_rows as f32
-                            } else {
-                                t.control_row_height / 2.0
-                            },
-                        ),
-                        egui::Button::new(preview).frame(false).wrap(),
-                    )
-                    .labelled_by(label);
+                let response = if matches!(control, ParamControl::Text { multiline: true, .. }) {
+                    // A wrapping Button treats add_sized as a minimum and can grow beyond the
+                    // card. Keep native button focus/input but paint the wrapped preview ourselves.
+                    let response = ui.add_sized([ui.available_width(), t.body_size * t.text_rows as f32], egui::Button::new("").frame(false));
+                    let area = response.rect;
+                    let mut job = egui::text::LayoutJob::simple(preview, FontId::proportional(t.body_size), t.text, area.width());
+                    job.wrap.max_rows = t.text_rows;
+                    job.wrap.overflow_character = Some('…');
+                    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+                    ui.painter().with_clip_rect(area.intersect(ui.clip_rect())).galley(area.min, galley, t.text);
+                    response
+                } else {
+                    ui.add_sized(Vec2::new(ui.available_width(), t.control_row_height / 2.0), egui::Button::new(preview).frame(false).truncate())
+                }
+                .labelled_by(label);
                 response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, ui.is_enabled(), ""));
                 ui.ctx().accesskit_node_builder(response.id, |node| node.clear_label());
                 if response.clicked() || response.has_focus() {
@@ -950,7 +994,22 @@ pub(crate) fn control_with_mode(
             let widget =
                 if multiline { egui::TextEdit::multiline(&mut draft.text).desired_rows(t.text_rows) } else { egui::TextEdit::singleline(&mut draft.text) };
             let widget = if chips { widget.layouter(&mut layouter) } else { widget };
-            let r = ui.add(widget.id_salt("value").desired_width(f32::INFINITY).char_limit(char_limit)).labelled_by(label);
+            // TextEdit's desired_rows is a minimum, not a limit. Keep long drafts inside
+            // their own bounded viewport, without changing the field's persistent identity
+            // (prompt mentions and exact cursor restoration use that identity).
+            let id = ui.make_persistent_id(egui::IdSalt::new("value"));
+            let widget = widget.id(id).desired_width(f32::INFINITY).char_limit(char_limit);
+            let r = if multiline {
+                egui::ScrollArea::vertical()
+                    .id_salt("text_scroll")
+                    .max_height(t.body_size * t.text_rows as f32)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| ui.add(widget))
+                    .inner
+            } else {
+                ui.add_sized(Vec2::new(ui.available_width(), t.control_row_height / 2.0), widget)
+            }
+            .labelled_by(label);
             if let Some(old) = old {
                 chips::settle(ui, r.id, &old, &mut draft.text, before);
             }
@@ -1126,4 +1185,9 @@ mod layout_metrics_tests {
         assert!(top >= t.label_size.max(t.title_min_screen_px / zoom) + t.label_gap + t.control_gap);
         assert!(cull_margin(t, zoom) >= painted * zoom);
     }
+}
+
+/// Conservative schema-free bounds shared by renderer culling and marquee admission.
+pub(crate) fn broadphase_size(node: &Node, t: &Tokens) -> Vec2 {
+    layout::broadphase_size(node, t)
 }
