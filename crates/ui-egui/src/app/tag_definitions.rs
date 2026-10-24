@@ -351,7 +351,10 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let mut h = harness_with_render(ThemeKind::Dark, true);
         let before = h.state().session.document().clone();
-        controls(&mut h, "Blue", "Rename tag…");
+        keyboard_controls(&mut h, "Blue");
+        h.render().unwrap().save(folder.join("keyboard-menu.png")).unwrap();
+        h.key_press(egui::Key::Enter);
+        h.run();
         h.render().unwrap().save(folder.join("rename.png")).unwrap();
         h.get_by_role_and_label(Role::Button, "Cancel tag edit").click();
         h.run();
