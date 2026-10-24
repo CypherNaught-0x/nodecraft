@@ -106,3 +106,35 @@ fn turntable_actual_frames_repeat_and_form_an_ordinary_video() {
     }
     assert!(cleanup, "the owned test video service cleaned up");
 }
+
+#[test]
+#[ignore = "real Metal GPU and ffmpeg wall-clock measurement; dedicated M3 Pro runs, not CI"]
+fn turntable_default_settings_real_gpu_budget() {
+    use nodecraft_types::{AssetRef, MediaMeta};
+    use std::{path::PathBuf, time::Instant};
+
+    let tools =
+        (PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap()), PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFPROBE").unwrap()));
+    // A real, asymmetric OBJ is decoded, uploaded, drawn through the production offscreen
+    // renderer, read back for each frame and streamed through the production WebM encoder.
+    let obj =
+        b"v 0 0 0\nv 2 0 0\nv 2 1 0\nv 0 1 0\nv 0 0 0.5\nv 2 0 0.5\nv 2 1 0.5\nv 0 1 0.5\nf 1 2 3 4\nf 5 8 7 6\nf 1 5 6 2\nf 2 6 7 3\nf 3 7 8 4\nf 5 1 4 8\n";
+    let mut assets = nodecraft_format::AssetStore::default();
+    let model = Value::Media(AssetRef { hash: assets.insert(obj).unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
+    let actions = LocalActions::new(assets).with_video_tools(Some(tools));
+    let p = params(); // Saved node defaults: 512x512, 30 fps, 6 s, 180 frames, shaded.
+    assert_eq!((sequence(&p).unwrap().size(), sequence(&p).unwrap().frames()), ([512, 512], 180));
+    assert_eq!(p.get("style"), Some(&Value::Text("shaded".into())));
+    let started = Instant::now();
+    let output = actions.execute(nodecraft_nodes::mesh::TURNTABLE, &p, &[model]).unwrap();
+    let elapsed = started.elapsed();
+    let Value::Media(video) = output else { panic!("a real encoded video") };
+    assert_eq!(video.mime.essence(), "video/webm");
+    assert_eq!((video.meta.width, video.meta.height, video.meta.duration_ms), (Some(512), Some(512), Some(6000)));
+    eprintln!("NODECRAFT_TURNTABLE_DEFAULT_SECONDS={:.3}", elapsed.as_secs_f64());
+    // Five post-build M3 Pro/Metal runs on 2026-10-23 took 5.977, 6.059,
+    // 5.678, 8.502 and 7.565 s (at most 8.502 s: 31.498 s below 40 s).
+    // Allow up to 35 s here, preserving 5 s ahead of the actual deadline;
+    // other machines and shared CI runners have not established this margin.
+    assert!(elapsed.as_secs_f64() < 35.0, "default 3D turntable took {elapsed:?}; the capture budget is 40 s");
+}
