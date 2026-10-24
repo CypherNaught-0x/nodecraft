@@ -50,6 +50,6 @@ MCP exposes only `tag.put`, `tag.remove` and `node.tag_set`. The five tag-filter
 
 ## Rename and delete
 
-Right-click a tag row in **Tag filter** to choose **Rename tag…** or **Delete tag…**. Rename opens a bounded name draft; Save uses `tag.put`, preserves its color and ID, and creates one undo step. Cancel or Escape discards the draft. A replaced session, different canvas, or changed/removed definition also discards it instead of overwriting newer metadata.
+Right-click a tag row in **Tag filter**, or Tab to it and press Shift+F10, to choose **Rename tag…** or **Delete tag…**. The menu focuses Rename; Tab reaches Delete and Enter activates the focused choice. Rename opens a bounded name draft; Save or Enter uses `tag.put`, preserves its color and ID, and creates one undo step. Cancel or Escape discards the draft. A replaced session, different canvas, or changed/removed definition also discards it instead of overwriting newer metadata.
 
 Delete asks for confirmation before `tag.remove` atomically removes the definition and its card memberships. Undo restores both in one step. Deletion drops that tag’s transient filter choice; undo does not select it again. This keeps document undo independent of later filter choices and avoids retaining deleted IDs. The confirmation explains this policy. Existing selected cards stay selected through rename and delete.

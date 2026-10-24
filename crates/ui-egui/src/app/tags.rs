@@ -42,27 +42,32 @@ pub(super) fn tag_menu(ui: &mut egui::Ui, canvas: &Canvas, selection: &Selection
         }
         // Sorted presentation retains IDs and at most 128 characters of each displayed title.
 
-        egui::ScrollArea::vertical().id_salt("assign_tags").max_height(t.tag_panel_height).show_rows(ui, t.tag_row_height * 2.0, order.len(), |ui, range| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            for id in order.get(range.clone()).unwrap_or(&[]) {
-                let Some(tag) = canvas.tags().get(id) else {
-                    continue;
-                };
-                let count = counts.get(&tag.id).copied().unwrap_or(0);
-                let state = if count == 0 {
-                    ""
-                } else if count == selection.len() {
-                    " ✓"
-                } else {
-                    " (mixed)"
-                };
-                let text = tag_definitions::row_text(ui, tag, state, t);
-                if tag_definitions::row(ui, !selection.is_empty(), egui::Button::new(text).truncate(), t).clicked() {
-                    action = Some(TagAction::Existing(tag.id));
-                    ui.close();
+        egui::ScrollArea::vertical().id_salt("assign_tags").max_height(t.tag_panel_height).show_rows(
+            ui,
+            t.tag_definition_row_height,
+            order.len(),
+            |ui, range| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                for id in order.get(range.clone()).unwrap_or(&[]) {
+                    let Some(tag) = canvas.tags().get(id) else {
+                        continue;
+                    };
+                    let count = counts.get(&tag.id).copied().unwrap_or(0);
+                    let state = if count == 0 {
+                        ""
+                    } else if count == selection.len() {
+                        " ✓"
+                    } else {
+                        " (mixed)"
+                    };
+                    let text = tag_definitions::row_text(ui, tag, state, t);
+                    if tag_definitions::row(ui, !selection.is_empty(), egui::Button::new(text).truncate(), t).clicked() {
+                        action = Some(TagAction::Existing(tag.id));
+                        ui.close();
+                    }
                 }
-            }
-        });
+            },
+        );
     });
     action
 }
@@ -328,12 +333,12 @@ impl NodeCraftApp {
                         format!("{} tag matches", self.tag_filter.results.len())
                     };
                     ui.label(status);
-                    ui.label(egui::RichText::new("Right-click a tag to rename or delete").small().color(t.text_muted));
+                    ui.label(egui::RichText::new("Right-click or Shift+F10: rename or delete").small().color(t.text_muted));
                     if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                         egui::ScrollArea::vertical()
                             .id_salt("filter_tags")
                             .max_height((rect.bottom() - ui.cursor().min.y - t.navigation_gap).max(1.0))
-                            .show_rows(ui, t.tag_row_height * 2.0, self.tag_filter.presentation.len(), |ui, range| {
+                            .show_rows(ui, t.tag_definition_row_height, self.tag_filter.presentation.len(), |ui, range| {
                                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                                 for id in self.tag_filter.presentation.get(range.clone()).unwrap_or(&[]) {
                                     let Some(tag) = canvas.tags().get(id) else {
@@ -342,8 +347,16 @@ impl NodeCraftApp {
                                     let mut selected = self.tag_filter.tags.contains(&tag.id);
                                     let text = tag_definitions::row_text(ui, tag, "", t);
                                     let r = tag_definitions::row(ui, allowed, egui::Checkbox::new(&mut selected, text), t);
-                                    r.context_menu(|ui| {
-                                        if ui.button("Rename tag…").clicked() {
+                                    let keyboard_menu = allowed && r.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
+                                    if keyboard_menu {
+                                        egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&r));
+                                    }
+                                    egui::Popup::context_menu(&r).anchor(&r).show(|ui| {
+                                        let rename = ui.button("Rename tag…");
+                                        if keyboard_menu {
+                                            rename.request_focus();
+                                        }
+                                        if rename.clicked() {
                                             definition = Some((tag.clone(), false));
                                             ui.close();
                                         }

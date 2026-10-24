@@ -73,6 +73,9 @@ pub struct Tokens {
     pub tag_panel_width: f32,
     pub tag_panel_height: f32,
     pub tag_row_height: f32,
+    /// Two-line tag definition rows and their exact identity text.
+    pub tag_definition_row_height: f32,
+    pub tag_identity_size: f32,
 
     /// Fields (#66): header band, padding round members, smallest resize, and fill alpha.
     pub field_header_height: f32,
@@ -242,6 +245,8 @@ pub const DARK: Tokens = Tokens {
     tag_panel_width: 280.0,
     tag_panel_height: 320.0,
     tag_row_height: 24.0,
+    tag_definition_row_height: 48.0,
+    tag_identity_size: 7.875,
     field_header_height: 32.0,
     field_padding: 32.0,
     field_min_width: 160.0,

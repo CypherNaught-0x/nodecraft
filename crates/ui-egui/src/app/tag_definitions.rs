@@ -24,7 +24,7 @@ pub(super) fn row_text(ui: &egui::Ui, tag: &Tag, state: &str, t: &theme::Tokens)
     job.append(
         &format!("{}\n", tag.id),
         0.0,
-        egui::TextFormat { font_id: egui::FontId::monospace(t.label_size * 0.75), color: t.text_muted, ..Default::default() },
+        egui::TextFormat { font_id: egui::FontId::monospace(t.tag_identity_size), color: t.text_muted, ..Default::default() },
     );
     job.append(
         &format!("{}{state}", crate::tags::label(&tag.title)),
@@ -43,7 +43,7 @@ pub(super) fn row_text(ui: &egui::Ui, tag: &Tag, state: &str, t: &theme::Tokens)
 
 /// `show_rows` virtualizes using this exact height; natural text height is smaller.
 pub(super) fn row(ui: &mut egui::Ui, enabled: bool, widget: impl egui::Widget, t: &theme::Tokens) -> egui::Response {
-    ui.add_enabled_ui(enabled, |ui| ui.add_sized([ui.available_width(), t.tag_row_height * 2.0], widget)).inner
+    ui.add_enabled_ui(enabled, |ui| ui.add_sized([ui.available_width(), t.tag_definition_row_height], widget)).inner
 }
 
 pub(super) fn match_cue(ui: &mut egui::Ui, painter: &egui::Painter, view: &CanvasView, viewport: Rect, rect: Rect, id: NodeId, t: &theme::Tokens) {
@@ -92,6 +92,9 @@ impl NodeCraftApp {
                 if editor.focus {
                     response.request_focus();
                     editor.focus = false;
+                }
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && editor.title.len() <= 4096 {
+                    submit = true;
                 }
                 if editor.title.len() > 4096 {
                     ui.label("Use a name of at most 4096 UTF-8 bytes.");
@@ -191,6 +194,71 @@ mod tests {
         }
         h.get_by_role_and_label(Role::Button, button).click();
         h.run();
+    }
+
+    fn keyboard_controls(h: &mut Harness<'static, NodeCraftApp>, title: &str) {
+        for _ in 0..40 {
+            if h.get_by_label(&row(title)).is_focused() {
+                break;
+            }
+            h.key_press(egui::Key::Tab);
+            h.run();
+        }
+        assert!(h.get_by_label(&row(title)).is_focused(), "Tab reaches the tag row");
+        h.event(egui::Event::Key { key: egui::Key::F10, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::SHIFT });
+        h.run();
+        assert!(h.get_by_role_and_label(Role::Button, "Rename tag…").is_focused());
+    }
+
+    #[test]
+    fn keyboard_rename_enter_and_delete_confirmation_keep_selection_and_undo() {
+        for theme in [ThemeKind::Dark, ThemeKind::Light] {
+            let mut h = harness(theme);
+            let original = h.state().session.document().clone();
+            let selected = h.state().selection.clone();
+            keyboard_controls(&mut h, "Blue");
+            h.key_press(egui::Key::Enter);
+            h.run();
+            assert!(h.get_by_role_and_label(Role::TextInput, "Tag name").is_focused());
+            h.event(egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
+            h.event(egui::Event::Text("Zinc".into()));
+            h.run();
+            h.key_press(egui::Key::Enter);
+            h.run();
+            assert!(h.state().tag_definition.is_none());
+            h.get_by_label(&row("Zinc"));
+            assert_eq!(h.state().selection, selected);
+            keyboard_controls(&mut h, "Zinc");
+            h.key_press(egui::Key::Tab);
+            h.run();
+            assert!(h.get_by_role_and_label(Role::Button, "Delete tag…").is_focused());
+            h.key_press(egui::Key::Enter);
+            h.run();
+            assert!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().tags().contains_key(&TAG));
+            h.key_press(egui::Key::Escape);
+            h.run();
+            assert!(h.state().tag_definition.is_none());
+            keyboard_controls(&mut h, "Zinc");
+            h.key_press(egui::Key::Tab);
+            h.run();
+            h.key_press(egui::Key::Enter);
+            h.run();
+            for _ in 0..4 {
+                if h.get_by_role_and_label(Role::Button, "Delete tag").is_focused() {
+                    break;
+                }
+                h.key_press(egui::Key::Tab);
+                h.run();
+            }
+            assert!(h.get_by_role_and_label(Role::Button, "Delete tag").is_focused());
+            h.key_press(egui::Key::Enter);
+            h.run();
+            assert!(!h.state().session.document().canvases().get(&h.state().canvas).unwrap().tags().contains_key(&TAG));
+            assert_eq!(h.state().selection, selected);
+            h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+            h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+            assert_eq!(h.state().session.document(), &original);
+        }
     }
 
     #[test]
