@@ -31,8 +31,9 @@ use std::{
 pub const MAX_DEPTH: usize = 8;
 /// Most folder entries looked at, files and folders, hidden or not.
 pub const MAX_LISTED: usize = 20_000;
-/// Most bytes one folder import reads.
-pub const MAX_READ_BYTES: u64 = 1024 * 1024 * 1024;
+/// Most bytes one folder import reads. The import that follows hashes and stores them on the UI
+/// thread, as a drop's does, so this also bounds how long that takes.
+pub const MAX_READ_BYTES: u64 = 256 * 1024 * 1024;
 /// Files an operating system leaves in folders, never imported.
 const CLUTTER: [&str; 3] = ["thumbs.db", "desktop.ini", "icon\r"];
 
@@ -110,14 +111,14 @@ fn read_file(path: &Path, room: u64) -> Result<Vec<u8>, &'static str> {
     let file = options.open(path).map_err(|_| "the file can't be read")?;
     let metadata = file.metadata().map_err(|_| "the file can't be read")?;
     if !metadata.is_file() {
-        return Err("only files are read, not links to folders or devices");
+        return Err("only regular files are read, not devices or pipes");
     }
     let length = metadata.len();
     if length > MAX_MEDIA_BYTES as u64 {
         return Err("files over 16 MiB can't be added");
     }
     if length > room {
-        return Err("a folder import reads at most 1 GiB");
+        return Err("a folder import reads at most 256 MiB");
     }
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(usize::try_from(length).map_err(|_| "the file is too large")?).map_err(|_| "there isn't enough memory to read the file")?;
@@ -154,15 +155,20 @@ pub(super) fn read_folder(root: &Path, cancel: &AtomicBool, read: &AtomicUsize) 
                 break 'walk;
             }
             let Ok(entry) = entry else { continue };
-            let file = clean(&entry.file_name().to_string_lossy());
+            let raw = entry.file_name().to_string_lossy().to_lowercase();
+            let file = clean(&raw);
             // Hidden files and folders, and what the system leaves in folders, are never wanted.
-            if file.is_empty() || file.starts_with('.') || CLUTTER.contains(&file.to_lowercase().as_str()) {
+            if file.is_empty() || file.starts_with('.') || CLUTTER.contains(&raw.as_str()) {
                 continue;
             }
+            let file = clean(&entry.file_name().to_string_lossy());
             let path = if prefix.is_empty() { file } else { format!("{prefix}/{file}") };
-            // The entry's own type: a link to a folder is not followed, so a folder can't loop.
+            // The entry's own type. Links are never followed: one to a folder could loop, and one
+            // to a file could bring in something outside the folder, such as a key file.
             let Ok(kind) = entry.file_type() else { continue };
-            if kind.is_dir() {
+            if kind.is_symlink() {
+                skipped.push((path, "links aren't followed; only files inside the folder are read".into()));
+            } else if kind.is_dir() {
                 if depth < MAX_DEPTH {
                     queue.push_back((entry.path(), path, depth.saturating_add(1)));
                 } else {

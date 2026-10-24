@@ -122,3 +122,14 @@ fn importing_again_refills_the_card_and_keeps_its_settings_and_wires() {
     let other = NodeId::from_bytes([1; 16]);
     assert!(import_folder(&mut s, FolderTarget::Existing { canvas: C, id: other }, "Words", &words).is_err());
 }
+
+#[test]
+fn a_folder_too_large_for_one_command_leaves_files_out_instead_of_failing() {
+    let mut s = session();
+    let names: Vec<String> = (0..folder::MAX_FILES).map(|n| format!("{n:04}{}.txt", "n".repeat(folder::MAX_NAME_BYTES - 8))).collect();
+    let files: Vec<Incoming<'_>> = names.iter().map(|name| Incoming { name, bytes: b"words" }).collect();
+    let imported = import_folder(&mut s, NEW, "Many", &files).unwrap();
+    assert!(imported.files > 0 && imported.files < folder::MAX_FILES, "{}", imported.files);
+    assert_eq!(imported.files + imported.skipped.len(), folder::MAX_FILES);
+    assert!(imported.notice().unwrap().contains("names and text"));
+}

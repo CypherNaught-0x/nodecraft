@@ -38,6 +38,10 @@ impl FolderImported {
     }
 }
 
+/// What each file's entry costs of a command's text besides its name: its value's framing, and a
+/// media reference's hash and type.
+const ENTRY_BYTES: usize = 160;
+
 fn invalid(message: impl Into<String>) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
 }
@@ -138,10 +142,21 @@ fn run(session: &mut Session, target: FolderTarget, name: &str, files: &[Incomin
             }
             Some(_) => {}
         }
-        if file.name.is_empty() || file.name.len() > folder::MAX_NAME_BYTES || file.name.chars().any(char::is_control) || !names.insert(file.name) {
-            skipped.push((shown, "its name is empty, too long or repeated".into()));
+        if file.name.is_empty() || file.name.len() > folder::MAX_NAME_BYTES || file.name.chars().any(char::is_control) {
+            skipped.push((shown, format!("its path in the folder is longer than {} bytes", folder::MAX_NAME_BYTES)));
             continue;
         }
+        if !names.insert(file.name) {
+            skipped.push((shown, "another file has the same name once shortened".into()));
+            continue;
+        }
+        // The card goes in one command, whose text is bounded: names and each entry's framing
+        // count against it as file text does, so a large folder leaves files out, not fails.
+        let Some(left) = text_left.checked_sub(file.name.len().saturating_add(ENTRY_BYTES)) else {
+            skipped.push((shown, format!("a folder adds at most {} KiB of names and text", MAX_DROP_TEXT_BYTES / 1024)));
+            continue;
+        };
+        text_left = left;
         let value = match plan(file, text_left) {
             Err(why) => {
                 skipped.push((shown, why));
@@ -158,11 +173,18 @@ fn run(session: &mut Session, target: FolderTarget, name: &str, files: &[Incomin
             Ok(Plan::Media { mime, meta, bytes, .. }) => {
                 let length = u64::try_from(bytes.len()).map_err(|_| invalid("import length cannot be represented"))?;
                 let hash = Blake3::from_bytes(*blake3::hash(bytes).as_bytes());
-                let known = unique.iter().any(|file| file.hash == hash) || session.assets().descriptor(&hash).is_some_and(|existing| existing.bytes == length);
-                if !known {
-                    if session.assets().descriptor(&hash).is_some() {
+                // As for a drop: every distinct file goes through preparation, which also checks
+                // one the project already holds against these bytes.
+                if let Some(existing) = unique.iter().find(|file| file.hash == hash) {
+                    if existing.bytes.len() != bytes.len() {
+                        return Err(invalid("duplicate import has inconsistent content length"));
+                    }
+                } else if let Some(existing) = session.assets().descriptor(&hash) {
+                    if existing.bytes != length {
                         return Err(invalid("existing import has inconsistent content length"));
                     }
+                    unique.push(Unique { hash, bytes });
+                } else {
                     let count = retained_count.checked_add(1).ok_or_else(|| invalid("import count overflow"))?;
                     let total = retained_bytes.checked_add(length).ok_or_else(|| invalid("import size overflow"))?;
                     if count > MAX_ASSETS || total > cap {

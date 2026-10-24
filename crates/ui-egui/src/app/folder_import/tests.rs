@@ -49,6 +49,7 @@ fn shoot(test: &str) -> Scratch {
     scratch.write(".DS_Store", b"\0\0\0\x01Bud1");
     scratch.write(".hidden/shot.png", &png(40));
     scratch.write("Thumbs.db", b"thumbs");
+    scratch.write("Icon\r", b"icon");
     scratch.write("notes.txt", b"not a picture");
     scratch
 }
@@ -76,10 +77,16 @@ fn a_folder_is_read_in_natural_order_without_hidden_entries() {
 fn links_to_folders_and_special_files_are_left_out_with_reasons() {
     let scratch = shoot("links");
     std::os::unix::fs::symlink(&scratch.0, scratch.0.join("loop")).unwrap();
+    // A link to a file outside the folder could bring in a secret: it isn't followed either.
+    let outside = Scratch::new("links-outside");
+    outside.write("credentials", b"secret");
+    std::os::unix::fs::symlink(outside.0.join("credentials"), scratch.0.join("notes2.txt")).unwrap();
     let status = std::process::Command::new("mkfifo").arg(scratch.0.join("pipe")).status();
     let folder = read_folder(&scratch.0, &AtomicBool::new(false), &AtomicUsize::new(0)).unwrap();
     assert_eq!(folder.files.len(), 4, "a link back to the folder isn't followed");
-    assert!(folder.skipped.iter().any(|(name, why)| name == "loop" && why.contains("only files")), "{:?}", folder.skipped);
+    assert!(folder.skipped.iter().any(|(name, why)| name == "loop" && why.contains("links aren't followed")), "{:?}", folder.skipped);
+    assert!(folder.skipped.iter().any(|(name, _)| name == "notes2.txt"), "{:?}", folder.skipped);
+    assert!(folder.files.iter().all(|(_, bytes)| bytes != b"secret"));
     if status.is_ok_and(|s| s.success()) {
         assert!(folder.skipped.iter().any(|(name, _)| name == "pipe"), "{:?}", folder.skipped);
     }

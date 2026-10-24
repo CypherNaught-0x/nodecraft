@@ -16,19 +16,28 @@
   `;`-separated, case ignored; a pattern with `/` matches the path, others the file name), an order
   (natural, alphabetical, as imported, or a seeded shuffle that doesn't depend on import order),
   reverse, skip the first N, take every Nth, at most N, and what names give (file name, without
-  extension, or path).
+  extension, or path). Matching is bounded: each pass lowercases each name once and stops with
+  an error past 4 million matching steps, so a hostile project's filters can't stall the canvas.
 - **Four outputs.** `file` and `name` loop: the planner reads them as a batch's items, so every
   node with a single input fed by them runs once per file, and a list input collects them. Both
   share the files' item ids, so a node fed by a file and its name runs once per file, not N × N.
   Their `pairing` setting pairs them with batches or other folders as a batch's does. `files` and
   `names` give every file or name at once as one list. A batch collects a folder's lists, not its
-  looping outputs; mentions don't read a folder (it gives several values).
+  looping outputs; mentions don't read a folder (it gives several values). A card whose filters
+  keep no file blocks what it feeds, with that reason, rather than giving an empty list.
 - **Reading is bounded and off the canvas frame.** A folder is read on its own thread: hidden
-  entries and system clutter skipped, links to folders not followed, subfolders 8 levels deep, at
-  most 20,000 entries looked at and the first 1,000 files (natural order) read, each at most
-  16 MiB through `File::take` after a regular-file check, at most 1 GiB in all. It can be
-  cancelled; nothing is added until it is read. The import itself (hashing and storing) then runs
-  once, synchronously, as a drop's does.
+  entries and system clutter skipped, no link followed (one to a folder could loop, one to a file
+  could bring in something from outside the folder, such as a key file), subfolders 8 levels
+  deep, at most 20,000 entries looked at and the first 1,000 files (natural order) read, each at
+  most 16 MiB through `File::take` after a regular-file check, at most 256 MiB in all. It can be
+  cancelled; nothing is added until it is read.
+- **The import is synchronous and bounded.** Recognising, probing, hashing and storing the read
+  files then runs once on the UI thread, as a drop's does, but for up to 1,000 files and 256 MiB
+  rather than 32 files and 48 MiB, so a large folder can pause the window for a few seconds.
+  Moving that work off the UI thread is left for later. The card is added in one command, whose
+  text is bounded, so file names, text and each entry's framing share a 960 KiB budget; files past
+  it are left out with a reason instead of failing the import. One folder can use up to 1,000 of
+  a project's 1,024 asset slots.
 - **Not yet.** Browser drops of folders (the web build reads drops asynchronously and has no
   folder entries yet), refreshing from the same path without picking it again, and a CLI or MCP
   way to read a folder from disk (`folder.fill` takes media already in the project).

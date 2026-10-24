@@ -282,14 +282,21 @@ pub fn pairing(node: &Node) -> Result<crate::batch::Pairing, Error> {
     }
 }
 
-/// Whether `name` matches `pattern`: `*` is any run of characters, `?` any one, case ignored.
-/// Linear backtracking to the last `*`, so no pattern makes it slow.
-pub fn wildcard(pattern: &str, name: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().flat_map(char::to_lowercase).collect();
-    let name: Vec<char> = name.chars().flat_map(char::to_lowercase).collect();
+/// Most matching steps one pass over a folder's files may take: generous for real filters, and
+/// a bound on what a hostile project's filters can cost.
+pub const MAX_MATCH_STEPS: u64 = 4_000_000;
+
+fn lower(text: &str) -> Vec<char> {
+    text.chars().flat_map(char::to_lowercase).collect()
+}
+
+/// Whether `name` matches `pattern` (both lowercased): `*` is any run of characters, `?` any
+/// one. Backtracks only to the last `*`; every step is charged to `budget`, `None` once spent.
+fn matches(pattern: &[char], name: &[char], budget: &mut u64) -> Option<bool> {
     let (mut p, mut n) = (0usize, 0usize);
     let mut star: Option<(usize, usize)> = None;
     while n < name.len() {
+        *budget = budget.checked_sub(1)?;
         match pattern.get(p) {
             Some('*') => {
                 star = Some((p, n));
@@ -305,21 +312,33 @@ pub fn wildcard(pattern: &str, name: &str) -> bool {
                     n = from + 1;
                     star = Some((at, from + 1));
                 }
-                None => return false,
+                None => return Some(false),
             },
         }
     }
-    pattern.get(p..).is_some_and(|rest| rest.iter().all(|c| *c == '*'))
+    Some(pattern.get(p..).is_some_and(|rest| rest.iter().all(|c| *c == '*')))
 }
 
-/// Whether `entry` matches any of `patterns` (`;`-separated). A pattern with a `/` matches the
-/// path inside the folder; others match the file name.
-fn matches_any(patterns: &str, entry: &Entry<'_>) -> bool {
-    patterns.split(';').map(str::trim).filter(|p| !p.is_empty()).any(|p| wildcard(p, if p.contains('/') { entry.name } else { entry.file_name() }))
+/// Whether `name` matches `pattern`: `*` is any run of characters, `?` any one, case ignored.
+pub fn wildcard(pattern: &str, name: &str) -> bool {
+    let mut unbounded = u64::MAX;
+    matches(&lower(pattern), &lower(name), &mut unbounded).unwrap_or(false)
 }
 
-fn has_patterns(patterns: &str) -> bool {
-    patterns.split(';').any(|p| !p.trim().is_empty())
+/// `;`-separated patterns, lowercased, each with whether it matches the path (it has a `/`)
+/// rather than the file name.
+fn patterns(text: &str) -> Vec<(Vec<char>, bool)> {
+    text.split(';').map(str::trim).filter(|p| !p.is_empty()).map(|p| (lower(p), p.contains('/'))).collect()
+}
+
+/// Whether any of `patterns` matches `path` or `file` (lowercased); `None` once `budget` is spent.
+fn matches_any(patterns: &[(Vec<char>, bool)], path: &[char], file: &[char], budget: &mut u64) -> Option<bool> {
+    for (pattern, whole) in patterns {
+        if matches(pattern, if *whole { path } else { file }, budget)? {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 /// Natural order: runs of digits compare by value, so `img2` comes before `img10`; letters
@@ -367,6 +386,10 @@ fn split_mix(state: &mut u64) -> u64 {
     z ^ (z >> 31)
 }
 
+fn too_complex() -> Error {
+    invalid("the folder's name filters take too long to match its files; use fewer * in them")
+}
+
 /// The files the folder gives, in order: those its filters keep, sorted, then its range.
 pub fn selected(node: &Node) -> Result<Vec<Entry<'_>>, Error> {
     let mut entries = stored(node)?;
@@ -374,13 +397,23 @@ pub fn selected(node: &Node) -> Result<Vec<Entry<'_>>, Error> {
     if include.len() > MAX_PATTERN_BYTES || exclude.len() > MAX_PATTERN_BYTES {
         return Err(Error::new(ErrorKind::InvalidInput, format!("a folder's name filters are at most {MAX_PATTERN_BYTES} bytes")));
     }
-    if has_patterns(include) {
-        entries.retain(|entry| matches_any(include, entry));
+    let (include, exclude) = (patterns(include), patterns(exclude));
+    if !include.is_empty() || !exclude.is_empty() {
+        let mut budget = MAX_MATCH_STEPS;
+        let mut kept = Vec::with_capacity(entries.len());
+        for entry in entries {
+            // Each name is lowercased once, whatever the number of patterns.
+            let (path, file) = (lower(entry.name), lower(entry.file_name()));
+            let wanted = include.is_empty() || matches_any(&include, &path, &file, &mut budget).ok_or_else(too_complex)?;
+            if wanted && !matches_any(&exclude, &path, &file, &mut budget).ok_or_else(too_complex)? {
+                kept.push(entry);
+            }
+        }
+        entries = kept;
     }
-    entries.retain(|entry| !matches_any(exclude, entry));
     match text(node, "sort", "natural")? {
         "natural" => entries.sort_by(|a, b| natural(a.name, b.name).then_with(|| a.name.cmp(b.name))),
-        "name" => entries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.name.cmp(b.name))),
+        "name" => entries.sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.name)),
         "imported" => {}
         "shuffle" => {
             // Fisher–Yates from the files in natural order, so the same files and seed always

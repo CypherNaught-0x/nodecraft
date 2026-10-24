@@ -6,7 +6,7 @@ fn image(n: u8) -> Value {
 }
 
 fn folder(names: &[&str], params: &[(&str, Value)]) -> Node {
-    let files = names.iter().enumerate().map(|(n, name)| ((*name).to_owned(), image(u8::try_from(n).unwrap()))).collect();
+    let files = names.iter().enumerate().map(|(n, name)| ((*name).to_owned(), image((n % 256) as u8))).collect();
     let mut node = kind().instantiate_instance(NodeId::from_bytes([1; 16]), config(Modality::Image, "shots", files).unwrap(), &Default::default()).unwrap();
     for (name, value) in params {
         node.params.insert((*name).into(), value.clone());
@@ -152,4 +152,18 @@ fn bad_stored_files_are_refused() {
     assert!(selected(&bad).is_err());
     bad.params.insert("sort".into(), number(1));
     assert!(selected(&bad).is_err());
+}
+
+#[test]
+fn hostile_filters_are_refused_within_a_bound() {
+    let names: Vec<String> = (0..MAX_FILES).map(|n| format!("{n:04}{}", "a".repeat(MAX_NAME_BYTES - 4))).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    // One star, then a long run that almost matches from every position: the matcher's worst case.
+    let pattern = format!("*{}b", "a".repeat(MAX_PATTERN_BYTES - 2));
+    let started = std::time::Instant::now();
+    let error = selected(&folder(&refs, &[("include", text(&pattern))])).unwrap_err();
+    assert!(error.message.contains("too long to match"), "{}", error.message);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "bounded: {:?}", started.elapsed());
+    // Ordinary filters over the same files stay within it.
+    assert_eq!(selected(&folder(&refs, &[("include", text("00*")), ("exclude", text("*b"))])).unwrap().len(), 100);
 }

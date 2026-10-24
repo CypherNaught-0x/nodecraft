@@ -438,6 +438,7 @@ impl NodeCraftApp {
         let mut remove = None;
         let mut clear = false;
         let mut import_folder = false;
+        let importing = self.folder_import_busy();
         egui::Window::new("Project files")
             .id(egui::Id::new("project_files407"))
             .open(&mut self.files.menu_open)
@@ -454,7 +455,11 @@ impl NodeCraftApp {
                     }
                 }
                 ui.separator();
-                import_folder = ui.button("Import folder…").on_hover_text("Add a folder's files as one Folder card").clicked();
+                import_folder = ui
+                    .add_enabled(!importing, egui::Button::new("Import folder…"))
+                    .on_hover_text("Add a folder's files as one Folder card")
+                    .on_disabled_hover_text("A folder is being imported")
+                    .clicked();
                 ui.separator();
                 ui.label("Recent projects");
                 let paths = self.files.projects.recent();
