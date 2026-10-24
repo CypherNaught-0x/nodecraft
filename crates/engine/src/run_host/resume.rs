@@ -326,7 +326,7 @@ pub(super) fn record_alone(
             Err(error) => return Err(error.message),
         }
     }
-    let generation = recipe.assemble_with_execution(produced.outputs, completed.usage.billable_units, completed.usage.execution_ms)?;
+    let generation = recipe.assemble(produced.outputs, completed.usage.billable_units, completed.usage.execution_ms)?;
     // A variation that isn't the last goes on its own card on a canvas that lays them out so (#808).
     let as_cards = session.document().canvases().get(&canvas).is_some_and(nodecraft_graph::Canvas::variation_cards);
     let entry = match as_cards && !recipe.later.is_empty() {

@@ -80,18 +80,8 @@ impl Run {
 
 impl ResumeRecipe {
     /// The generation to record from the job's `outputs` (`(output port, value)`), like the run
-    /// assembles a single-job step, with the units its provider said it billed (#437).
-    pub fn assemble(&self, outputs: Vec<(String, Value)>, billable_units: Option<BillableUnits>) -> Result<Generation, String> {
-        self.assemble_with_execution(outputs, billable_units, None)
-    }
-
-    /// Assembles a resumed result with its provider-reported execution time (#339).
-    pub fn assemble_with_execution(
-        &self,
-        outputs: Vec<(String, Value)>,
-        billable_units: Option<BillableUnits>,
-        execution_ms: Option<u64>,
-    ) -> Result<Generation, String> {
+    /// assembles a single-job step, with provider-reported units and execution time (#339).
+    pub fn assemble(&self, outputs: Vec<(String, Value)>, billable_units: Option<BillableUnits>, execution_ms: Option<u64>) -> Result<Generation, String> {
         let mut per_port: Vec<Vec<Value>> = vec![Vec::new(); self.ports.len()];
         for (port, value) in outputs {
             let index = self.ports.iter().position(|p| p.name == port).ok_or_else(|| format!("a job produced an unknown output {port}"))?;

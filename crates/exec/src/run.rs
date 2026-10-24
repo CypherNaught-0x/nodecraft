@@ -145,6 +145,7 @@ struct JobState {
     outputs: Vec<(String, Value)>,
     /// The units its provider said it billed (#437), recorded with its settings.
     billable_units: Option<BillableUnits>,
+    /// Provider-reported execution duration in milliseconds; never a monetary charge.
     execution_ms: Option<u64>,
     /// The key it may have been billed under without finishing (#517), kept with its item when
     /// the item fails.

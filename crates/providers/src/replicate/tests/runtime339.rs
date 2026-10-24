@@ -121,3 +121,16 @@ fn runtime339_optional_execution_metrics_never_become_money_or_discard_valid_out
         assert!(done.usage.cost.is_none());
     }
 }
+
+#[test]
+fn runtime339_duplicate_root_metrics_keep_paid_output_with_unknown_duration() {
+    for first in ["null", "{}", r#"{"predict_time":1}"#] {
+        let duplicate = metrics(metrics(prediction(HELLO, "succeeded", serde_json::json!("retained")), first), r#"{"predict_time":2}"#);
+        let (provider, http) = fixture(vec![prediction(HELLO, "starting", serde_json::Value::Null), duplicate]);
+        let done = block_on(crate::run_to_completion(&provider, &job(HELLO), &NotCancelled, &Time::default(), RunLimits::default(), |_| {})).unwrap();
+        assert_eq!(done.outputs, [Output::Text("retained".into())]);
+        assert_eq!(done.usage.execution_ms, None);
+        assert_eq!(done.usage.cost, None);
+        assert_eq!(http.seen.lock().unwrap().len(), 2, "one create and one successful poll");
+    }
+}
