@@ -340,7 +340,11 @@ impl Meshes {
                 _ => Err(Failure::permanent("3D preview not available here")),
             };
             self.finish(hash, result);
-            self.request(ctx, asset, || Err(nodecraft_format::PreviewReadError::Unavailable))
+            // A concrete callback type keeps this cached-state re-entry from recursively
+            // instantiating a new generic closure type during wasm code generation.
+            let unavailable: fn() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError> =
+                || Err(nodecraft_format::PreviewReadError::Unavailable);
+            self.request(ctx, asset, unavailable)
         }
     }
 
