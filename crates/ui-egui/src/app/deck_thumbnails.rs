@@ -118,7 +118,7 @@ fn scale(frame: Frame, area: Rect, count: usize) -> f64 {
 
 /// Every card shares a fixed texture budget among its vector layers. Hostile geometry draws
 /// a placeholder under these bounds rather than allocating full-resolution slide textures.
-fn render(ctx: &egui::Context, layer: &Layer, scale: f64, fonts: &Fonts<'_>, fonts_key: u64, count: usize) -> Rendered {
+fn render(ctx: &egui::Context, layer: &Layer, scale: f64, fonts: &Fonts<'_>, key: u64, count: usize) -> Rendered {
     let pixels = CARD_TEXTURE_BYTES / 4 / count.max(1) as u64;
     let side = (pixels as f64).sqrt().floor().min(512.0) as u32;
     let limits = nodecraft_actions::image::ImageLimits {
@@ -127,7 +127,6 @@ fn render(ctx: &egui::Context, layer: &Layer, scale: f64, fonts: &Fonts<'_>, fon
         working_bytes: pixels.saturating_mul(16),
         ..Default::default()
     };
-    let key = render_key(layer, scale, fonts_key);
     match layers::render_layer(layer, fonts, scale, limits) {
         Ok((raster, pad)) => {
             let image = egui::ColorImage::from_rgba_unmultiplied([raster.width() as usize, raster.height() as usize], raster.pixels());
@@ -147,7 +146,22 @@ impl Cache {
         #[cfg(test)]
         self.ready_images.insert(input.node.id, Vec::new());
         let id = (input.canvas.id(), input.node.id);
-        let mut entry = self.entries.iter().position(|entry| entry.id == id).and_then(|at| self.entries.remove(at)).unwrap_or_else(|| Entry {
+        let at = self.entries.iter().position(|entry| entry.id == id);
+        if at.is_none() && self.entries.len() >= MAX_CARDS {
+            // Keep this and the previous frame's resident cards. FIFO in paint order makes
+            // every card miss forever when one more than the capacity is visible.
+            if let Some(old) = self.entries.iter().position(|entry| entry.used.saturating_add(1) < input.clock) {
+                self.entries.remove(old);
+            } else {
+                let label = "Zoom in to preview slides";
+                painter.text(area.center(), egui::Align2::CENTER_CENTER, label, FontId::proportional(t.body_size), t.text_muted);
+                let response = ui.interact(input.view.rect_to_screen(input.origin, area), ui.id().with(("deck_thumbnail_limit", id)), Sense::hover());
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, label));
+                response.on_hover_text("Up to 16 visible Deck cards show slide previews at once. Pan or zoom to focus on fewer cards.");
+                return;
+            }
+        }
+        let mut entry = at.and_then(|at| self.entries.remove(at)).unwrap_or_else(|| Entry {
             id,
             revision: None,
             parsed: None,
@@ -157,9 +171,6 @@ impl Cache {
             missing_font: false,
             used: 0,
         });
-        while self.entries.len() >= MAX_CARDS {
-            self.entries.pop_front();
-        }
         let gap = entry.used.saturating_add(1) != input.clock;
         entry.used = input.clock;
         if entry.revision != Some(input.session.revision()) {
@@ -190,14 +201,23 @@ impl Cache {
         // Budget changes invalidate failed/large previews too, even if their content is unchanged.
         vectors.hash(&mut hash);
         let stamp = hash.finish();
-        let dirty = entry.font_stamp != Some(stamp)
-            || entry.missing_font && gap
-            || parsed.slides.iter().zip(&drawn).any(|(slide, d)| {
-                d.layers.iter().any(|layer| {
-                    matches!(layer.content, Content::Text { .. } | Content::Shape { .. })
-                        && entry.textures.get(&(slide.id.clone(), layer.id.clone())).is_none_or(|r| r.key != render_key(layer, render_at, entry.fonts_key))
+        let layer_keys = |fonts_key| {
+            parsed
+                .slides
+                .iter()
+                .zip(&drawn)
+                .flat_map(|(slide, drawn)| {
+                    drawn
+                        .layers
+                        .iter()
+                        .filter(|layer| matches!(layer.content, Content::Text { .. } | Content::Shape { .. }))
+                        .map(move |layer| ((slide.id.clone(), layer.id.clone()), render_key(layer, render_at, fonts_key)))
                 })
-            });
+                .collect::<HashMap<_, _>>()
+        };
+        let mut keys = layer_keys(entry.fonts_key);
+        let dirty =
+            entry.font_stamp != Some(stamp) || entry.missing_font && gap || keys.iter().any(|(id, key)| entry.textures.get(id).is_none_or(|r| r.key != *key));
         let mut files = FontFiles::default();
         if dirty {
             files.load(input.session.assets(), &held);
@@ -205,7 +225,11 @@ impl Cache {
             let mut key = std::collections::hash_map::DefaultHasher::new();
             files.render_key(&held).hash(&mut key);
             vectors.hash(&mut key);
-            entry.fonts_key = key.finish();
+            let fonts_key = key.finish();
+            if entry.fonts_key != fonts_key {
+                keys = layer_keys(fonts_key);
+            }
+            entry.fonts_key = fonts_key;
             entry.font_stamp = Some(stamp);
         }
         let fonts = files.fonts(&held);
@@ -244,8 +268,10 @@ impl Cache {
                     Content::Source { fit, .. } => Art::Image { texture: None, fit: *fit },
                     Content::Text { .. } | Content::Shape { .. } => {
                         let id = (slide.id.clone(), layer.id.clone());
-                        if entry.textures.get(&id).is_none_or(|r| r.key != render_key(layer, render_at, entry.fonts_key)) {
-                            entry.textures.insert(id.clone(), render(ui.ctx(), layer, render_at, &fonts, entry.fonts_key, vectors));
+                        if let Some(key) = keys.get(&id)
+                            && entry.textures.get(&id).is_none_or(|r| r.key != *key)
+                        {
+                            entry.textures.insert(id.clone(), render(ui.ctx(), layer, render_at, &fonts, *key, vectors));
                             #[cfg(test)]
                             {
                                 self.renders = self.renders.saturating_add(1);

@@ -62,6 +62,57 @@ fn headless() -> Harness<'static, NodeCraftApp> {
     h
 }
 
+fn crowded() -> NodeCraftApp {
+    let mut app = NodeCraftApp::headless().unwrap();
+    populate(&mut app);
+    let canvas = app.canvas;
+    for id in [IMAGE, DECK] {
+        app.session.dispatch("node.remove", &json!({"canvas":canvas,"id":id})).unwrap();
+    }
+    app.session.dispatch("node.move", &json!({"canvas":canvas,"id":TEXT,"pos":{"x":-10000,"y":-10000}})).unwrap();
+    for n in 0..17u8 {
+        let id = NodeId::from_bytes([100 + n; 16]);
+        let pos = json!({"x":-780 + 320 * i32::from(n % 5), "y":-820 + 450 * i32::from(n / 5)});
+        app.session.dispatch("deck.create", &json!({"canvas":canvas,"id":id,"pos":pos,"title":format!("Public deck {:02}", n + 1),"nodes":[TEXT]})).unwrap();
+    }
+    // The offscreen source must not move the startup home away from the storyboard.
+    app.centred = true;
+    app.view = CanvasView { pan: Vec2::new(850.0, 900.0), zoom: 1.0 };
+    app
+}
+
+#[test]
+fn deck695_seventeen_visible_cards_keep_resident_textures_and_admit_after_pan() {
+    let mut h = Harness::builder().with_size(Vec2::new(1900.0, 2000.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), crowded());
+    h.run_steps(4);
+    let renders = h.state().deck_thumbnails.renders;
+    h.run_steps(4);
+    assert_eq!(h.state().deck_thumbnails.renders, renders, "17 visible cards must not evict every resident each idle frame");
+    assert_eq!(renders, 16, "only the bounded resident cards render");
+    assert!(h.query_by_label("Zoom in to preview slides").is_some(), "one overflow card explains how to see its slides");
+    let canvas = h.state().canvas;
+    h.state_mut().session.dispatch("node.move", &json!({"canvas":canvas,"id":NodeId::from_bytes([100;16]),"pos":{"x":-10000,"y":-10000}})).unwrap();
+    h.run_steps(4);
+    assert!(h.query_by_label("Zoom in to preview slides").is_none(), "the overflow card enters after a resident leaves view");
+    assert_eq!(h.state().deck_thumbnails.renders, renders + 1);
+}
+
+#[test]
+#[ignore = "actual GPU capture; DECK695_CROWD_RENDER_DIR and optional DECK695_CROWD_BASELINE"]
+fn deck695_crowded_visual() {
+    let output = std::path::PathBuf::from(std::env::var_os("DECK695_CROWD_RENDER_DIR").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let baseline = std::env::var_os("DECK695_CROWD_BASELINE").is_some();
+    let mut h = Harness::builder().wgpu().with_size(Vec2::new(1900.0, 2000.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), crowded());
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run_steps(4);
+    let renders = h.state().deck_thumbnails.renders;
+    h.run_steps(2);
+    assert_eq!(h.state().deck_thumbnails.renders > renders, baseline, "only the old FIFO repaints on idle frames");
+    assert_eq!(h.query_by_label("Zoom in to preview slides").is_some(), !baseline);
+    h.render().unwrap().save(output.join(if baseline { "before.png" } else { "after.png" })).unwrap();
+}
+
 #[test]
 fn deck695_card_shows_first_three_slides_and_reuses_vectors_until_source_content_changes() {
     let mut h = headless();
