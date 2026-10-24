@@ -401,6 +401,17 @@ fn submit(ui: &mut egui::Ui, t: &Tokens) -> egui::Response {
     let size = Vec2::splat(t.submit_size);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Generate"));
+    // Test-only: expose the actual egui hit/click response, not the un-clipped AccessKit bounds.
+    #[cfg(test)]
+    {
+        let clicked = response.clicked();
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(egui::Id::new("nodecraft-test-generate-response"), response.clone());
+            if clicked {
+                data.insert_temp(egui::Id::new("nodecraft-test-generate-clicked"), true);
+            }
+        });
+    }
     let painter = ui.painter();
     let fill = if response.hovered() { t.accent } else { t.text };
     painter.circle_filled(rect.center(), rect.width() / 2.0, fill);
