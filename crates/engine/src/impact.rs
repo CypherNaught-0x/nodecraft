@@ -42,6 +42,7 @@ impl Impact {
             }
             Effect::Open { .. }
             | Effect::CancelFile
+            | Effect::CancelExport { .. }
             | Effect::Save { .. }
             | Effect::Service { .. }
             | Effect::Export { .. }

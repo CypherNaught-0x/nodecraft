@@ -1269,6 +1269,7 @@ impl NodeCraftApp {
         self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
         self.poll_export(ui.ctx());
+        let file_owns_input = self.export_overlay(ui.ctx()) || file_owns_input;
         self.videos.poll(ui.ctx());
         self.audios.poll(ui.ctx());
         self.meshes.poll();
@@ -1392,7 +1393,13 @@ impl NodeCraftApp {
         }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
-        if !model_blocks && !self.drop_pointer_owned() && !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
+        if !model_blocks
+            && !file_owns_input
+            && !self.drop_pointer_owned()
+            && !canvas::text_input_focused(ui.ctx())
+            && self.palette.is_none()
+            && self.turn_into.is_none()
+        {
             // Held minimap input owns mutation keys through release. Fresh presses still
             // use the post-undo/delete admission below, since those edits can change availability.
             let minimap_held = self.navigation.pointer_owned || self.navigation.drag.is_some();

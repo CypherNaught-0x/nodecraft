@@ -228,7 +228,7 @@ fn export(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: ExportParams = params(value)?;
     crate::export::check(&p.path)?;
     let (_, bundle) = bundle(c, p.canvas, p.id)?;
-    Ok(Effect::Export { what: crate::export::Exported::Bundle(Box::new(bundle)), path: p.path, overwrite: p.overwrite })
+    Ok(Effect::Export { what: crate::export::Exported::Bundle(Box::new(bundle)), path: p.path, overwrite: p.overwrite, background: false })
 }
 
 fn preview_enabled(c: &Context<'_>, value: &Json) -> Result<(), Error> {
