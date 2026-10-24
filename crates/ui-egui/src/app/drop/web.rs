@@ -8,6 +8,10 @@ use nodecraft_engine::import::{Imported, Incoming, MAX_FILES, MAX_MEDIA_BYTES, M
 use nodecraft_graph::Position;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+#[cfg(target_arch = "wasm32")]
+pub(in crate::app) mod reader;
+const READ_SECONDS: f64 = 10.0;
+
 /// Longest name kept for a dropped file, in characters.
 const NAME_CHARS: usize = 80;
 
@@ -61,7 +65,7 @@ pub(super) fn name(path: &std::path::Path) -> String {
 }
 
 /// One admitted file's read, filled in by its task.
-pub(super) type Slot = Option<Result<Vec<u8>, String>>;
+pub(in crate::app) type Slot = Option<Result<Vec<u8>, String>>;
 
 /// A browser drop being read: the files in drop order, and where they go.
 pub(crate) struct Pending {
@@ -75,6 +79,9 @@ pub(crate) struct Pending {
     pub(super) revision: u64,
     pub(super) position: Position,
     pub(super) step: f32,
+    pub(super) deadline: f64,
+    #[cfg(target_arch = "wasm32")]
+    _readers: Vec<reader::Reader>,
 }
 impl Pending {
     fn current(&self, app: &mut NodeCraftApp) -> bool {
@@ -90,16 +97,38 @@ impl Pending {
 
 impl NodeCraftApp {
     /// Imports a browser drop whose reads have all finished; keeps it while any is still reading.
-    pub(super) fn poll_web_drop(&mut self) {
+    pub(super) fn poll_web_drop(&mut self, ctx: &egui::Context) {
         let Some(pending) = self.web_drop.take() else {
             return;
         };
-        if !pending.done() {
-            self.web_drop = Some(pending);
-            return;
-        }
         if !pending.current(self) {
             self.notice = Some("The document changed while reading files; nothing was added. Drop them again.".into());
+            return;
+        }
+        let other_owner = crate::canvas::text_input_focused(ctx)
+            || egui::Popup::is_any_open(ctx)
+            || self.keys.open
+            || self.search.open
+            || self.palette.is_some()
+            || self.turn_into.is_some()
+            || self.drag.is_some()
+            || self.wiring.is_some()
+            || self.reordering.is_some()
+            || self.marquee.is_some()
+            || self.navigation.pointer_owned
+            || self.comments.drag.is_some()
+            || self.comments.gesture_cancelled;
+        if !other_owner && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.notice = Some("File reading was cancelled; nothing was added.".into());
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        if !now.is_finite() || !pending.deadline.is_finite() || now >= pending.deadline {
+            self.notice = Some("The browser didn't finish reading files; nothing was added. Drop them again.".into());
+            return;
+        }
+        if !pending.done() {
+            self.web_drop = Some(pending);
             return;
         }
         let Ok(reads) = pending.reads.try_borrow() else {
@@ -165,7 +194,7 @@ impl NodeCraftApp {
             self.notice = Some("File reading is still finishing. Try again in a moment.".into());
             return;
         }
-        let admissions = admit(files.iter().map(|file| file.web_file().map(|f| f.size())));
+        let admissions = admit(files.iter().take(MAX_FILES).map(|file| file.web_file().map(|f| f.size())));
         let mut skipped = Vec::new();
         let mut reads = Vec::new();
         let mut started = Vec::new();
@@ -174,24 +203,29 @@ impl NodeCraftApp {
             match admission {
                 Admission::Skip(why) => skipped.push((name, why)),
                 Admission::Read => {
-                    started.push((reads.len(), Arc::clone(file)));
+                    started.push((reads.len(), file.web_file().cloned()));
                     reads.push((name, None));
                 }
             }
         }
+        if files.len() > MAX_FILES {
+            skipped.push(("More files".into(), format!("at most {MAX_FILES} files are added at once")));
+        }
         let reads = Rc::new(RefCell::new(reads));
+        let mut readers = Vec::new();
         for (slot, file) in started {
-            let reads = Rc::clone(&reads);
-            let ctx = ctx.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let read = file.bytes_async().await;
-                if let Ok(mut reads) = reads.try_borrow_mut()
-                    && let Some((_, entry)) = reads.get_mut(slot)
-                {
-                    *entry = Some(read);
+            let result =
+                file.ok_or_else(|| "the file can't be read".to_owned()).and_then(|file| reader::Reader::start(&file, Rc::downgrade(&reads), slot, ctx.clone()));
+            match result {
+                Ok(reader) => readers.push(reader),
+                Err(error) => {
+                    if let Ok(mut reads) = reads.try_borrow_mut()
+                        && let Some((_, entry)) = reads.get_mut(slot)
+                    {
+                        *entry = Some(Err(error));
+                    }
                 }
-                ctx.request_repaint();
-            });
+            }
         }
         let identity = crate::navigation::Geometry::identity(&mut self.session);
         self.web_drop = Some(Pending {
@@ -203,6 +237,8 @@ impl NodeCraftApp {
             revision: self.session.revision(),
             position,
             step,
+            deadline: ctx.input(|i| i.time) + READ_SECONDS,
+            _readers: readers,
         });
         self.notice = Some("Reading dropped files…".into());
     }
