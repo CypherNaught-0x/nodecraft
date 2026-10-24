@@ -5,8 +5,8 @@
 //! The fixtures hold **media** results, because `history.export` (#557) refuses a text result and
 //! this command reuses that refusal; [`a_text_result_is_refused_the_way_557_refuses_it`] pins that.
 use crate::Session;
-use crate::local_export::{ExportHost, MAX_SOURCES};
-use nodecraft_format::export::reasons;
+use crate::local_export::{ExportHost, MAX_ROOTS, MAX_SOURCES};
+use nodecraft_format::export::{Collision, reasons};
 use nodecraft_graph::{Canvas, Change, Generation, Node, Port, Project};
 use nodecraft_types::{AssetRef, Blake3, CanvasId, ErrorKind, GenerationId, Modality, NodeId, PortType, ProjectId, Value};
 use serde_json::{Value as Json, json};
@@ -799,4 +799,118 @@ fn batch_and_single_file_export_share_verified_copy_without_sharing_path_publica
     assert_eq!(batch["counts"]["written"], 1);
     assert_eq!(files_in(dir.path()), vec!["hero-out-1.png".to_owned(), "picked.png".to_owned()]);
     assert_eq!(std::fs::read(&chosen).expect("read"), HERO);
+}
+
+fn named(stem: &str) -> nodecraft_format::export::ExportName {
+    nodecraft_format::export::ExportName { stem: stem.to_owned(), extension: Some("png".to_owned()) }
+}
+
+#[test]
+fn a_name_repeated_in_one_batch_follows_the_policy_and_never_replaces_its_own_file() {
+    let (first, second) = (named("hero"), named("hero"));
+    let batch = [&first, &second];
+    let free = |_: &str| -> Result<bool, String> { Ok(false) };
+    assert_eq!(
+        super::assign_names(&batch, Collision::Overwrite, &free),
+        vec![Ok(Some("hero.png".to_owned())), Err(reasons::DUPLICATE_NAME.to_owned())],
+        "overwrite refuses the repeat rather than replacing the first result"
+    );
+    assert_eq!(super::assign_names(&batch, Collision::Skip, &free), vec![Ok(Some("hero.png".to_owned())), Ok(None)]);
+    assert_eq!(super::assign_names(&batch, Collision::Numbered, &free), vec![Ok(Some("hero.png".to_owned())), Ok(Some(first.with_suffix(2)))]);
+}
+
+#[test]
+fn numbered_reports_when_no_suffix_is_free() {
+    let only = named("hero");
+    let everything_taken = |_: &str| -> Result<bool, String> { Ok(true) };
+    assert_eq!(super::assign_names(&[&only], Collision::Numbered, &everything_taken), vec![Err(reasons::NO_FREE_NAME.to_owned())]);
+}
+
+#[cfg(unix)]
+#[test]
+fn two_results_with_one_name_never_replace_each_other_in_a_run() {
+    let dir = tempfile::tempdir().expect("temp");
+    let mut s = session_with(vec![ran(1, "hero", HERO), ran(2, "hero", WIDE)], &[HERO, WIDE]);
+    s.swap_resource(Some(ExportHost::authorize(dir.path()).expect("authorize")));
+    let mut params = request(sources(&[json!({"node": id(1), "port": "out"}), json!({"node": id(2), "port": "out"})]), dir.path());
+    params["template"] = json!("{title}");
+    params["on_collision"] = json!("overwrite");
+
+    let preview = s.dispatch("export.local_plan", &params).expect("preview");
+    let run = s.dispatch("export.local_run", &params).expect("run");
+    assert_eq!(run["counts"]["written"], 1);
+    assert_eq!(run["counts"]["failed"], 1);
+    assert_eq!(names(&run), names(&preview), "the preview names the same files the run writes");
+    assert_eq!(std::fs::read(dir.path().join("hero.png")).expect("read"), HERO, "the first result survives the repeat");
+    assert!(reasons_of(&run).contains(&reasons::DUPLICATE_NAME.to_owned()));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_cancel_stops_one_run_and_not_the_run_after_it() {
+    let dir = tempfile::tempdir().expect("temp");
+    let host = ExportHost::authorize(dir.path()).expect("authorize");
+    let cancel = host.cancel().clone();
+    let mut s = session();
+    s.swap_resource(Some(host));
+    let params = request(sources(&[json!({"node": id(1), "port": "out"})]), dir.path());
+
+    cancel.cancel();
+    let stopped = s.dispatch("export.local_run", &params).expect("stopped run");
+    assert_eq!(stopped["cancelled"], true);
+    assert_eq!(stopped["counts"]["not_started"], 1);
+
+    let next = s.dispatch("export.local_run", &params).expect("next run");
+    assert_eq!(next["cancelled"], false, "the cancel did not outlive the run it stopped");
+    assert_eq!(next["counts"]["written"], 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_export_file_gets_the_umask_mode_and_an_overwrite_keeps_the_existing_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("temp");
+    let control = dir.path().join("control");
+    std::fs::write(&control, b"x").expect("control");
+    let umask_mode = std::fs::metadata(&control).expect("metadata").permissions().mode() & 0o777;
+    let target = dir.path().join("hero-out-1.png");
+    let mode = |path: &std::path::Path| std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+
+    let mut s = session();
+    s.swap_resource(Some(ExportHost::authorize(dir.path()).expect("authorize")));
+    let mut params = request(sources(&[json!({"node": id(1), "port": "out"})]), dir.path());
+    s.dispatch("export.local_run", &params).expect("first run");
+    assert_eq!(mode(&target), umask_mode, "a new export file gets the same permissions a plain file gets");
+
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).expect("chmod");
+    params["on_collision"] = json!("overwrite");
+    s.dispatch("export.local_run", &params).expect("overwrite");
+    assert_eq!(mode(&target), 0o640, "an overwrite keeps the mode of the file it replaces");
+}
+
+#[test]
+fn an_app_authorizes_at_most_sixteen_folders() {
+    let dir = tempfile::tempdir().expect("temp");
+    let roots = vec![dir.path().to_path_buf(); MAX_ROOTS + 1];
+    let error = ExportHost::new(roots, nodecraft_format::asset_source::TransferCancel::default()).err().expect("refused");
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_grant_root_replaced_after_authorization_writes_nothing_into_the_replacement() {
+    let parent = tempfile::tempdir().expect("temp");
+    let root = parent.path().join("grant");
+    std::fs::create_dir(&root).expect("grant");
+    let mut s = session();
+    s.swap_resource(Some(ExportHost::authorize(&root).expect("authorize")));
+    // The person's folder is moved away and a new folder takes its name: the grant must not follow
+    // the name to the impostor.
+    std::fs::rename(&root, parent.path().join("moved")).expect("move");
+    std::fs::create_dir(&root).expect("replacement");
+
+    let run = s.dispatch("export.local_run", &request(sources(&[json!({"node": id(1), "port": "out"})]), &root)).expect("run");
+    assert_eq!(run["counts"]["written"], 0);
+    assert_eq!(run["counts"]["failed"], 1);
+    assert_eq!(files_in(&root), Vec::<String>::new(), "the replacement folder receives nothing");
 }

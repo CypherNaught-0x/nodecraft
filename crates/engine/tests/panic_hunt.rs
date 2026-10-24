@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 #[test]
 #[ignore = "adversarial command corpus; run explicitly when commands change"]
 fn panic_hunt() {
+    let _cleanup = RemoveExportFolder::hold();
     let original = common::project();
     let mut session = Session::new(original.clone()).unwrap();
     plugins::register(&mut session);
@@ -122,12 +123,35 @@ fn gen_id(n: u8) -> nodecraft_types::GenerationId {
 /// left where a leaked `TempDir` would be, for the OS to sweep.
 fn export_destination() -> std::path::PathBuf {
     static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
-        let path = std::env::temp_dir().join(format!("nodecraft-panic-hunt-export-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&path);
-        std::fs::canonicalize(&path).unwrap_or(path)
-    })
-    .clone()
+    let path = DIR
+        .get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("nodecraft-panic-hunt-export-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&path);
+            std::fs::canonicalize(&path).unwrap_or(path)
+        })
+        .clone();
+    // A hunt that finished may have removed the folder, so recreate it for the next user.
+    let _ = std::fs::create_dir_all(&path);
+    path
+}
+
+/// Hunts currently holding the shared export folder. The last one out removes it, even when an
+/// assertion fails, so parallel hunts never pull the folder away from each other.
+static HUNTS_IN_FLIGHT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct RemoveExportFolder;
+impl RemoveExportFolder {
+    fn hold() -> Self {
+        HUNTS_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+impl Drop for RemoveExportFolder {
+    fn drop(&mut self) {
+        if HUNTS_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            let _ = std::fs::remove_dir_all(export_destination());
+        }
+    }
 }
 
 fn template(id: &str) -> (Session, Value) {
@@ -729,6 +753,7 @@ fn template(id: &str) -> (Session, Value) {
 #[test]
 #[ignore = "valid command templates with individual field mutations"]
 fn typed_template_panic_hunt() {
+    let _cleanup = RemoveExportFolder::hold();
     let ids: Vec<_> = Session::new(common::project()).unwrap().registry().specs().map(|spec| spec.id).collect();
     let mut successes = 0;
     for id in ids {

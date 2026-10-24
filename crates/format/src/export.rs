@@ -3,13 +3,21 @@
 //! This module is the platform-neutral half: it decides *what* an export means (a name, a
 //! collision policy, an output-format operation, a stable source mapping) and never touches a
 //! filesystem, so the browser build compiles and can say what it cannot do. The bytes are written
-//! by `engine`'s `local_export`, which reuses the same verifying, stage-and-link single-file
-//! writer `history.export` (#557) uses — one file per planned entry, one shared publication path.
+//! by `engine`'s `local_export`. It verifies each asset with the same copy primitive `history.export`
+//! (#557) uses, but publishes through pinned folder descriptors rather than `history.export`'s
+//! pathname writer, so a granted folder cannot be escaped through a link or a swapped directory.
+//!
+//! The completeness guarantee is qualified, and the decision record is its source of truth:
+//!
+//! * **An overwrite replaces a file only once the new bytes are complete.** It is staged under a
+//!   random name and renamed over the target, so a cancel, a full disk or a failing read leaves the
+//!   old file untouched.
+//! * **A new file is created exclusively under its final name.** It can be visible while it is being
+//!   copied, and a crash or a failed cleanup can leave a partial file behind.
 //!
 //! Two properties are the contract, and everything below exists to keep them true:
 //!
-//! * **A published file is a complete file.** A cancel, a full disk or a failing read never leaves
-//!   a half-written file at the final name, and never leaves a stray temporary behind.
+//! * **Nothing is half-written over an existing file.** Overwrite replaces only a complete file.
 //! * **Nothing is invented.** What is written is the stored result, byte for byte, and the export
 //!   reports that it was a pass-through. Conversion, vectorisation, cloud destinations and
 //!   timeline interchange (#166) are refused with an actionable error rather than approximated.
@@ -84,6 +92,9 @@ pub mod reasons {
     pub const NO_FREE_NAME: &str = "too many files already use this name for the numbered policy to find a free one";
     /// The `skip` policy left an existing file alone.
     pub const SKIPPED: &str = "a file with this name already exists and on_collision is skip";
+    /// An earlier result in this same export already uses this file name, and `overwrite` would
+    /// replace that file. The later result is refused instead of silently replacing it.
+    pub const DUPLICATE_NAME: &str = "an earlier result in this export already uses this file name; choose a template with {index} or {output}";
     /// The export stopped before this entry was attempted.
     pub const NOT_STARTED: &str = "the export stopped before this file was started";
     /// The destination is not inside a folder the app authorized.

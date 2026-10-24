@@ -34,11 +34,10 @@
 use crate::commands::{CommandSpec, Context, Effect, params};
 use nodecraft_format::asset_source::TransferCancel;
 use nodecraft_format::export::{
-    Collision, EntryOutcome, EntryState, ExportOutcome, ExportPlan, ExportSource, FORMAT_CAPABILITY, FormatAction, MAX_DESTINATION_BYTES, MAX_ENTRIES,
-    MAX_ITEM_INDEX, MAX_MIME_BYTES, MAX_NAME_BYTES, MAX_TEMPLATE_BYTES, NameFields, PlannedEntry, TEMPLATE_TOKENS, Template, media_for, reasons,
+    Collision, EntryOutcome, EntryState, ExportName, ExportOutcome, ExportPlan, ExportSource, FORMAT_CAPABILITY, FormatAction, MAX_COLLISION_SUFFIX,
+    MAX_DESTINATION_BYTES, MAX_ENTRIES, MAX_ITEM_INDEX, MAX_MIME_BYTES, MAX_NAME_BYTES, MAX_TEMPLATE_BYTES, NameFields, PlannedEntry, TEMPLATE_TOKENS,
+    Template, media_for, reasons,
 };
-#[cfg(unix)]
-use nodecraft_format::export::{ExportName, MAX_COLLISION_SUFFIX};
 use nodecraft_graph::Node;
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId};
 use serde::Deserialize;
@@ -175,6 +174,12 @@ impl ExportHost {
         }
         if path.components().any(|component| component == std::path::Component::ParentDir) {
             return Err(Error::new(ErrorKind::InvalidInput, "the export destination cannot contain '..'; choose a folder inside the authorized root"));
+        }
+        // Decide the grant from the spelled path before touching the filesystem, so a destination
+        // outside every grant gets the same refusal whether or not it exists.
+        #[cfg(unix)]
+        if !self.authorizes(path) {
+            return Err(unsupported(reasons::UNSUPPORTED_TARGET));
         }
         let resolved = std::fs::canonicalize(path).map_err(|_| Error::new(ErrorKind::InvalidInput, reasons::DESTINATION_MISSING))?;
         if !self.roots.iter().any(|root| resolved.starts_with(root)) {
@@ -343,23 +348,36 @@ fn resolve(
 /// destination is not echoed back: the caller named it, and a project's folder path has no reason
 /// to travel through a command result.
 fn planned_json(plan: &ExportPlan) -> Value {
+    // The folder is not read here, so each name is predicted from the batch alone: a repeated name
+    // follows the collision policy exactly as `run` applies it, but whether a file already exists
+    // on disk is only known when the export runs.
+    let ready = ready_names(plan);
+    let mut assigned = assign_names(&ready, plan.collision, &|_| Ok(false)).into_iter();
     let entries = plan
         .entries
         .iter()
         .map(|entry| match entry {
-            PlannedEntry::Ready { source, name, mime, bytes, action, .. } => json!({
-                "source_id": source.stable_id(),
-                "canvas": source.canvas.to_string(),
-                "node": source.node.to_string(),
-                "port": source.port,
-                "item": source.item,
-                "generation": source.generation.map(|id| id.to_string()),
-                "file": name.file_name(),
-                "mime": mime,
-                "bytes": bytes,
-                "action": action.name(),
-                "state": "planned",
-            }),
+            PlannedEntry::Ready { source, name, mime, bytes, action, .. } => {
+                let (file, state, reason) = match assigned.next().unwrap_or_else(|| Err(reasons::NAME_FAILED.to_owned())) {
+                    Ok(Some(file)) => (file, "planned", None),
+                    Ok(None) => (name.file_name(), "skipped", Some(reasons::SKIPPED.to_owned())),
+                    Err(reason) => (name.file_name(), "unavailable", Some(reason)),
+                };
+                json!({
+                    "source_id": source.stable_id(),
+                    "canvas": source.canvas.to_string(),
+                    "node": source.node.to_string(),
+                    "port": source.port,
+                    "item": source.item,
+                    "generation": source.generation.map(|id| id.to_string()),
+                    "file": file,
+                    "mime": mime,
+                    "bytes": bytes,
+                    "action": action.name(),
+                    "state": state,
+                    "reason": reason,
+                })
+            }
             PlannedEntry::Failed { source, reason } => json!({
                 "source_id": source.stable_id(),
                 "canvas": source.canvas.to_string(),
@@ -430,7 +448,7 @@ fn request_schema() -> Value {
         "destination":{"type":"string","minLength":1,"maxLength":MAX_DESTINATION_BYTES,
             "description":"An absolute folder the app has authorized for export; export never creates it."},
         "template":{"type":"string","minLength":1,"maxLength":MAX_TEMPLATE_BYTES,
-            "description":"A file-name pattern. Tokens: {index}, {node}, {generation}, {kind}, {title}, {output}, {item}, {hash}. Literal separators and `..` are refused; unsafe characters from document values become `_`."},
+            "description":"A file-name pattern. Tokens: {index}, {node}, {generation}, {kind}, {title}, {output}, {item}, {hash}. Literal separators and `..` in the pattern are refused. A node title, kind or output containing a separator or `..` refuses that result; other unsafe characters in those values become `_`."},
         "on_collision":{"enum":["skip","overwrite","numbered"],"default":"skip",
             "description":"skip leaves an existing file alone; overwrite replaces it atomically; numbered writes `name (2)`, `name (3)` and so on. New files are exclusive but can be visible while copying; a crash can leave a partial file."},
         "format":{"type":"object","properties":{
@@ -445,14 +463,16 @@ const PLAN_DOC: &str = "Preview a batch local export without writing anything. P
     port:string, item?:int}], destination:string, template?:string, on_collision?:skip|overwrite|numbered, \
     format?:{mode:original|convert|vectorise, mime?:string}}. A source's active generation is its payload; history \
     is never exported, and a text result is refused exactly as history.export refuses it. Returns each file's name \
-    with the node and generation it came from, and why any source cannot be written. Pass-through only: no \
-    conversion is performed or implied.";
+    with the node and generation it came from, and why any source cannot be written. Names are predicted from the \
+    batch alone: whether a file already exists in the folder is only checked when the export runs. Pass-through \
+    only: no conversion is performed or implied.";
 
 const RUN_DOC: &str = "Write a batch of results into a folder the app has authorized. Same params as \
     export.local_plan. Each asset is hash-verified and copied through a pinned folder descriptor. Overwrite stages \
     and renames; skip and numbered use exclusive creation, which can be visible partially during copying and can \
-    remain incomplete after a crash or failed cleanup. An entry failure does not stop the others; the result names \
-    every entry and why. The destination folder must exist. Cancel stops the run between files.";
+    remain incomplete after a crash or failed cleanup. Two results that render to one name follow on_collision as if \
+    the earlier file existed, and overwrite refuses the repeat. An entry failure does not stop the others; the result \
+    names every entry and why. The destination folder must exist. Cancel stops the run between files.";
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -495,7 +515,12 @@ pub(crate) fn run(assets: &nodecraft_format::AssetStore, plan: &ExportPlan, host
         Err(unsupported("secure folder export requires descriptor-relative no-follow file operations on this platform"))
     }
     #[cfg(unix)]
-    run_pinned(assets, plan, host.cancel(), &destination)
+    {
+        let outcome = run_pinned(assets, plan, host.cancel(), &destination);
+        // A cancel stops the export it was pressed for, and must not stop the next one.
+        host.cancel().reset();
+        outcome
+    }
 }
 
 #[cfg(unix)]
@@ -510,6 +535,10 @@ fn run_pinned(
     let mut stopped = cancel.check().is_err();
     outcome.cancelled = stopped;
 
+    let ready = ready_names(plan);
+    let taken = |candidate: &str| destination.taken(candidate).map_err(|error| error.message);
+    let mut assigned = assign_names(&ready, plan.collision, &taken).into_iter();
+
     for entry in &plan.entries {
         if stopped {
             outcome.entries.push(not_started(entry));
@@ -517,7 +546,8 @@ fn run_pinned(
         }
         match entry {
             PlannedEntry::Ready { source, name, action, asset, .. } => {
-                let target = match resolve_name(destination, name, plan.collision) {
+                let choice = assigned.next().unwrap_or_else(|| Err(reasons::NAME_FAILED.to_owned()));
+                let target = match choice {
                     Err(reason) => {
                         outcome.entries.push(outcome_of(source, Some(name.file_name()), EntryState::Failed, Some(reason.as_str()), 0, None));
                         continue;
@@ -563,29 +593,64 @@ fn not_started(entry: &PlannedEntry) -> EntryOutcome {
     outcome_of(source, file, EntryState::NotStarted, Some(reasons::NOT_STARTED), 0, None)
 }
 
-/// The name this entry actually uses under `plan.collision`, or `None` when the policy says to
-/// leave the existing file alone.
+/// The names of the entries that can become files, in request order.
+fn ready_names(plan: &ExportPlan) -> Vec<&ExportName> {
+    plan.entries
+        .iter()
+        .filter_map(|entry| match entry {
+            PlannedEntry::Ready { name, .. } => Some(name),
+            PlannedEntry::Failed { .. } => None,
+        })
+        .collect()
+}
+
+/// The file each name in `names` will use under `collision`, in order. `Ok(None)` means the policy
+/// leaves that entry out; `Err` means it cannot be named.
 ///
-/// Selection is only advisory: `O_EXCL` in the pinned parent is the final no-replace authority.
-#[cfg(unix)]
-fn resolve_name(destination: &secure::Destination<'_>, name: &ExportName, collision: Collision) -> Result<Option<String>, String> {
-    if collision == Collision::Overwrite {
-        return Ok(Some(name.file_name()));
+/// `taken` says whether a name already exists in the folder. A name this batch has already claimed
+/// counts as taken as well, so two results that render to one name never replace each other. Run
+/// passes the pinned folder; a preview passes nothing, and its names are predicted from the batch
+/// alone.
+///
+/// Selection is only advisory on disk: `O_EXCL` in the pinned parent remains the final no-replace
+/// authority for new names.
+fn assign_names(names: &[&ExportName], collision: Collision, taken: &dyn Fn(&str) -> Result<bool, String>) -> Vec<Result<Option<String>, String>> {
+    let mut claimed = std::collections::BTreeSet::new();
+    let mut assigned = Vec::with_capacity(names.len());
+    for name in names {
+        let choice = choose(name, collision, &claimed, taken);
+        if let Ok(Some(file)) = &choice {
+            claimed.insert(file.clone());
+        }
+        assigned.push(choice);
     }
-    // An uncertain lookup is an error, never a guess that the destination is free.
-    let taken = |candidate: &str| destination.taken(candidate).map_err(|error| error.message);
+    assigned
+}
+
+fn choose(
+    name: &ExportName,
+    collision: Collision,
+    claimed: &std::collections::BTreeSet<String>,
+    taken: &dyn Fn(&str) -> Result<bool, String>,
+) -> Result<Option<String>, String> {
     let intended = name.file_name();
-    if !taken(&intended)? {
+    if collision == Collision::Overwrite {
+        // Overwrite may replace a file already on disk, but never one this batch has written.
+        return if claimed.contains(&intended) { Err(reasons::DUPLICATE_NAME.to_owned()) } else { Ok(Some(intended)) };
+    }
+    // An uncertain lookup is an error, never a guess that the name is free.
+    let occupied = |candidate: &str| -> Result<bool, String> { Ok(claimed.contains(candidate) || taken(candidate)?) };
+    if !occupied(&intended)? {
         return Ok(Some(intended));
     }
     match collision {
         Collision::Skip => Ok(None),
-        Collision::Overwrite => Ok(Some(intended)),
+        Collision::Overwrite => Err(reasons::DUPLICATE_NAME.to_owned()),
         Collision::Numbered => {
             let mut suffix = 2_u32;
             while suffix <= MAX_COLLISION_SUFFIX {
                 let candidate = name.with_suffix(suffix);
-                if !taken(&candidate)? {
+                if !occupied(&candidate)? {
                     return Ok(Some(candidate));
                 }
                 suffix = suffix.saturating_add(1);

@@ -10,6 +10,9 @@ use std::sync::Arc;
 
 const CHANGED: &str = "the export folder changed during export; choose the folder again";
 const LINK: &str = "an export folder or file name is a symbolic link; choose another name";
+/// The mode a new export file is created with. `openat` applies the process umask to it, so a
+/// batch file gets the same permissions `history.export` gives a file.
+const PUBLIC_MODE: Mode = Mode::from_bits_truncate(0o666);
 
 fn error(error: rustix::io::Errno) -> Error {
     if error == rustix::io::Errno::NOSYS || error == rustix::io::Errno::OPNOTSUPP {
@@ -116,19 +119,23 @@ impl<'a> Destination<'a> {
             return Err(Error::new(ErrorKind::InvalidInput, "the export file name is invalid"));
         }
         if overwrite {
+            // The replacement keeps the existing file's permission bits, as the single-file writer does.
+            let existing = match fs::statat(&self.parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(meta) if fs::FileType::from_raw_mode(meta.st_mode).is_symlink() => return Err(Error::new(ErrorKind::InvalidInput, LINK)),
+                Ok(meta) => Some(Mode::from_raw_mode(meta.st_mode & 0o7777)),
+                Err(rustix::io::Errno::NOENT) => None,
+                Err(err) => return Err(error(err)),
+            };
             // A random, exclusively-created staging name cannot alias an existing user file.
             let mut nonce = [0_u8; 16];
             getrandom::fill(&mut nonce).map_err(|_| Error::new(ErrorKind::Internal, "could not generate an export staging name"))?;
             let staging = format!(".nodecraft-export-{}", hex_name(&nonce));
-            let fd = fs::openat(
-                &self.parent,
-                staging.as_str(),
-                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::RUSR | Mode::WUSR,
-            )
-            .map_err(error)?;
+            let fd =
+                fs::openat(&self.parent, staging.as_str(), OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC, PUBLIC_MODE)
+                    .map_err(error)?;
             let mut file = File::from(fd);
-            let result = crate::export::copy_asset_to(assets, asset, &mut file);
+            let kept = existing.map_or(Ok(()), |mode| fs::fchmod(&file, mode).map_err(error));
+            let result = kept.and_then(|()| crate::export::copy_asset_to(assets, asset, &mut file));
             let result = result.and_then(|bytes| {
                 file.sync_all().map_err(|err| crate::export::io_error(err.kind()))?;
                 before_publish();
@@ -149,9 +156,8 @@ impl<'a> Destination<'a> {
         } else {
             // Never silently use a path-based fallback when link/rename primitives are missing.
             // An exclusive final descriptor rules out dangling and existing symlinks as targets.
-            let fd =
-                fs::openat(&self.parent, name, OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::RUSR | Mode::WUSR)
-                    .map_err(error)?;
+            let fd = fs::openat(&self.parent, name, OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC, PUBLIC_MODE)
+                .map_err(error)?;
             let mut file = File::from(fd);
             let result = crate::export::copy_asset_to(assets, asset, &mut file).and_then(|bytes| {
                 file.sync_all().map_err(|err| crate::export::io_error(err.kind()))?;
