@@ -96,7 +96,7 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
     let written = if overwrite { craft_atomic::atomic_write_with(path, fill) } else { craft_atomic::write_new_with(path, fill) };
     match written {
         Ok(()) => copied.map(|bytes| match (what, &drawn) {
-            (Exported::Slides(slides), Some(drawn)) => slides.result(bytes, &drawn.unreadable),
+            (Exported::Slides(slides), Some(drawn)) => slides.result(bytes, &drawn.unreadable, &drawn.font_fallbacks),
             _ => serde_json::json!({"bytes": bytes}),
         }),
         // A write that failed inside the copy says why the file did; else the copy's own error.

@@ -3231,6 +3231,8 @@ mod copy_result_tests;
 #[cfg(test)]
 mod deck_editor_tests;
 #[cfg(test)]
+mod deck_fonts_tests;
+#[cfg(test)]
 mod deck_presenter_tests;
 #[cfg(test)]
 mod element_library_view_tests;
