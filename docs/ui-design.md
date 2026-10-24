@@ -337,7 +337,7 @@ capability before widgets render; keyboard, scroll, other buttons and popup owne
 
 ### Colour tags
 
-Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_width`, `tag_panel_width`, `tag_panel_height` and `tag_row_height`. Dark and light colors are deliberately distinct; unknown/missing palette identifiers use `text_muted`. A marker identifies the tag independently of the selected border. Filter matches use the existing accent token, while nonmatches use the quiet panel stroke without fading text. Behavior, command inventory and persistence compatibility are specified in [color-tags.md](color-tags.md).
+Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_width`, `tag_panel_width`, `tag_panel_height` and `tag_row_height`. Dark and light colors are deliberately distinct; unknown/missing palette identifiers use `text_muted`. A marker identifies the tag independently of the selected border. Filter matches use the existing accent token plus dashed inset corners, while nonmatches use the quiet panel stroke without fading text. Selected-card borders remain intact. Tag lists use two-row-height entries, with the exact stable ID above the bounded title; definition controls are on the row’s context menu. Behavior, command inventory and persistence compatibility are specified in [color-tags.md](color-tags.md).
 
 ### Presence
 
