@@ -30,6 +30,15 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Kling** | `kling` (feature `kling`) | API key (`Authorization: Bearer`), or access key and secret key stored as `ak:sk`, which sign a 30-minute HS256 token per request | Kling 2.5 Turbo, 2.1 Master and 1.6 text → video and start frame (+ end frame) → video; Kling 1.6 up to four references → video; Kling Image 2.1 text → image | Billed in prepaid Kling units, so no quote before the run. One create per job carrying an `external_task_id` from the idempotency key; never replayed automatically; no remote cancellation. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
 
+## Retired APIs
+
+**OpenAI Sora (#28):** as verified on October 24, 2026, OpenAI's Videos API and Sora 2 models
+were shut down on September 24, 2026. The official
+[deprecation notice](https://developers.openai.com/api/docs/deprecations#2026-03-24-sora-2-video-generation-models-and-videos-api)
+lists no replacement. NodeCraft has no Sora adapter or catalog entry; this retired API is not
+an available generation option. Other video adapters retain their own documented models,
+credentials and pricing. Any future Sora integration needs a newly verified supported API.
+
 ## Image facts on inputs and outputs
 
 An imported image's reference says whether it has an alpha channel, its stored bits per channel
