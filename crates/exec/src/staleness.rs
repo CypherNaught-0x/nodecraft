@@ -461,6 +461,9 @@ impl InputHasher {
                                     for input in &mut contract.inputs {
                                         input.fans_out = false;
                                     }
+                                    if node.kind == nodecraft_nodes::generation::MESH_KIND {
+                                        nodecraft_nodes::mesh::view::strip_identity_contract(&mut contract.params);
+                                    }
                                     w.generation_contract(&contract, &mut self.meter)?;
                                 }
                                 for (name, value) in &resolved.values {

@@ -171,6 +171,9 @@ impl NodeCraftApp {
             self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
             return;
         }
+        if !self.commit_mesh_views(ctx, true) {
+            return;
+        }
         self.files.own_frame(ctx);
         self.notice = None;
         let status = self.session.file_status();

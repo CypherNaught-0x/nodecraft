@@ -163,7 +163,7 @@ fn template(id: &str) -> (Session, Value) {
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(0x5a),"kind":"image.shader","pos":{"x":0,"y":0}})).unwrap();
         document = seed.document().clone();
     }
-    if id == "mesh.capture" {
+    if matches!(id, "mesh.capture" | "mesh.view_set") {
         let mut seed = Session::new(document.clone()).unwrap();
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"source.mesh","pos":{"x":0,"y":0}})).unwrap();
         document = seed.document().clone();
@@ -693,6 +693,7 @@ fn template(id: &str) -> (Session, Value) {
         "document.extract_text" => json!({"canvas":canvas(),"node":node_id(5),"page":1,"region":[0.0,0.0,1.0,1.0],"id":node_id(7),"at":{"x":400,"y":20}}),
         "mesh.capture" => json!({"canvas":canvas(),"from":{"node":node_id(5),"port":"out"},"shot":"views","id":node_id(7),
             "edge":nodecraft_types::EdgeId::from_bytes([0x77; 16]),"pos":{"x":1,"y":2},"yaw":200.0,"pitch":95.0,"zoom":3.33,"style":"wireframe"}),
+        "mesh.view_set" => json!({"canvas":canvas(),"id":node_id(5),"view":{"yaw":200.0,"pitch":45.0,"zoom":3.33,"style":"wireframe"}}),
         _ => panic!("missing valid template for {id}"),
     };
     (session, params)

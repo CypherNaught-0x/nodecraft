@@ -256,6 +256,9 @@ impl NodeCraftApp {
             self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
             return;
         }
+        if !self.commit_mesh_views(ctx, true) {
+            return;
+        }
         let status = self.session.file_status();
         let current = status.location.as_ref().and_then(|location| key(location).ok()).map(str::to_owned);
         match id {

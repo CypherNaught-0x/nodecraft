@@ -4,8 +4,8 @@
 //! The decoded models are kept in a bounded cache here; their GPU buffers and each card's
 //! offscreen images live in the egui renderer's callback resources ([`MeshResources`]), put there
 //! by [`install`]. Without that (tests, a renderer that isn't wgpu) the card says what the model
-//! is instead of drawing it. The camera and style are view state: turning a model changes nothing
-//! in the document.
+//! is instead of drawing it. Built-in 3D cards save their camera and style through one command
+//! per gesture; the renderer keeps only the current gesture's preview locally.
 use eframe::egui_wgpu::{self, wgpu};
 use egui::{FontId, Rect, Sense, Vec2};
 use nodecraft_gpu::mesh::{GpuMesh, MeshData, MeshRenderer, Orbit, Style, Target, View};
@@ -15,6 +15,7 @@ use nodecraft_types::{AssetRef, Blake3, Value};
 use std::{collections::HashMap, sync::Arc};
 
 use crate::theme::Tokens;
+mod saved;
 
 /// Decoded models kept at once, in bytes.
 pub const MAX_MODEL_BYTES: usize = 512 * 1024 * 1024;
@@ -145,13 +146,14 @@ impl Failure {
     }
 }
 
-/// How one card looks at its model: view state, never saved.
+/// A card's current camera, including an unfinished gesture over its saved presentation.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct MeshView {
     pub orbit: Orbit,
     pub style: Style,
     /// A capture asked for from the card, taken by the app after the frame's cards (#112).
     pub capture: Option<Capture>,
+    saved: saved::Saved,
 }
 
 /// What the card's capture buttons ask for: a node that draws the model as the viewer shows it.
@@ -382,6 +384,7 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
     let text = |text: &str| painter.text(area.center(), egui::Align2::CENTER_CENTER, text, FontId::proportional(t.body_size), t.text_muted);
     let label = match &preview {
         MeshPreview::Ready { hash, model } => {
+            let before = (view.orbit, view.style);
             if response.dragged() {
                 let delta = response.drag_delta();
                 let turn = std::f32::consts::PI;
@@ -397,6 +400,8 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
                 let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                 if scroll != 0.0 && ui.input(|i| i.modifiers.alt) {
                     view.orbit = view.orbit.zoomed((scroll / 200.0).exp());
+                    view.scrolling(ui.input(|i| i.time));
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
                 }
             }
             let style = match view.style {
@@ -437,6 +442,10 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
                 text(&format!("3D model · {triangles} triangles"));
             }
             controls(ui, area, view, t);
+            if before != (view.orbit, view.style) {
+                view.changed(response.dragged());
+                ui.ctx().request_repaint();
+            }
             format!("3D model, {triangles} triangles, {style} view")
         }
         MeshPreview::Pending => {

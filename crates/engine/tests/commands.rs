@@ -349,6 +349,7 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "mask.create",
         "mask.margins_set",
         "mesh.capture",
+        "mesh.view_set",
         "document.use_pages",
         "document.extract_page",
         "document.extract_text",
@@ -448,7 +449,7 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     }
     assert_eq!(
         registry.specs().count(),
-        225,
+        226,
         "canvas.auto_format, 9 sheet, 8 technique, 8 tag/filter, 5 field, 10 discussion, 7 graph, 3 node editing, 2 model migration, node.prompt_assist, 3 edge, node.create, node.create_connected, canvas.paste, 4 keys, 2 provider settings, 4 library, canvas.stale, node.describe, node.options, 2 option fetch, 3 ComfyUI workflow import, comfy.server.use, 2 update check, 2 update install, 4 navigation, 5 search, 4 file, 4 run/usage, run.estimate, 2 usage ownership, 2 charge resolution, 4 held results, 8 history, 4 perf, 14 plugin, 2 cache commands, 2 variation commands, node.shader_set, 2 shader writing, 5 shader library, 6 mask, 2 image tools, 7 layer, 2 layer font, 9 deck, 3 element, 9 Elements library, 3 style, 2 app mode, mesh.capture, 3 document commands, 11 timeline, 2 timeline interchange, 4 share link, canvas.set_private, 4 live sharing, 8 skill and node.migrate"
     );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);

@@ -108,7 +108,11 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
                 assert!(result.unwrap().is_empty());
             }
             "structure.router" | "structure.batch" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
-            "source.image" | "source.video" | "source.audio" | "source.mesh" | "source.document" => {
+            "source.mesh" => {
+                assert_eq!(node.params, nodecraft_nodes::mesh::view::State::default().params().unwrap());
+                assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput, "saved viewer defaults do not supply a model");
+            }
+            "source.image" | "source.video" | "source.audio" | "source.document" => {
                 assert!(node.params.is_empty());
                 assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);
             }

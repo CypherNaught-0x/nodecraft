@@ -210,6 +210,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "mask.status",
     // A 3D capture only adds and wires a card; the card runs through run.start.
     "mesh.capture",
+    "mesh.view_set",
     // A page range is an ordinary, undoable parameter edit.
     "document.use_pages",
     // Project-owned media only; bounded extractions publish one undoable changeset, no dialog.

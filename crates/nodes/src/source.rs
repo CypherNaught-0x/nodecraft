@@ -14,7 +14,7 @@ impl SourceKind {
             Modality::Text => ("text", ParamControl::Text { multiline: true, max_bytes: 1024 * 1024 }, Some(Value::Text(String::new()))),
             _ => ("asset", ParamControl::Asset { modality }, None),
         };
-        Self {
+        let mut source = Self {
             descriptor: NodeDescriptor {
                 id: id.into(),
                 label: label.into(),
@@ -35,7 +35,11 @@ impl SourceKind {
                 quick_add: Some(shortcut.into()),
             },
             parameter,
+        };
+        if modality == Modality::Mesh {
+            source.descriptor.params.params.extend(crate::mesh::view::schema());
         }
+        source
     }
 }
 
@@ -59,6 +63,9 @@ impl NodeKind for SourceKind {
             .iter()
             .map(|spec| ParamRule { affects: Affects { shape: true, ..Affects::default() }, ..ParamRule::implied(&spec.name) })
             .collect();
+        if descriptor.id == crate::mesh::SOURCE {
+            crate::mesh::view::contract(&mut contract.params);
+        }
         contract
     }
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, nodecraft_types::Error> {

@@ -371,6 +371,7 @@ mod mask_badges;
 mod mask_editor;
 mod mentions;
 mod mesh_capture;
+mod mesh_saved;
 mod metrics;
 mod models;
 mod navigation;
@@ -998,6 +999,7 @@ impl NodeCraftApp {
         }
         self.selection.clear();
         self.editors.clear();
+        self.mesh_views.clear();
         self.centred = false;
         if let Some(runs) = &self.runs {
             runs.project_opened(&mut self.session);
@@ -1217,6 +1219,7 @@ impl NodeCraftApp {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let started = self.frame_started(ui.ctx().current_pass_index() == 0);
         self.show_frame(ui);
+        self.commit_mesh_views(ui.ctx(), false);
         self.deliver_copy(ui.ctx());
         self.frame_finished(started);
         self.pumped = self.frame_pump && self.session.perf().enabled();
@@ -1726,7 +1729,9 @@ impl NodeCraftApp {
                     Some(asset) if self.view.zoom >= card::BODY_MIN_ZOOM => {
                         let assets = self.session.assets();
                         let preview = self.meshes.request(ui.ctx(), asset, || assets.preview_read(asset));
-                        Some(crate::mesh_view::CardMesh { preview, view: self.mesh_views.entry(node.id).or_default(), gpu: self.mesh_gpu })
+                        let view = self.mesh_views.entry(node.id).or_default();
+                        view.bind(self.session.document().id(), self.canvas, node);
+                        Some(crate::mesh_view::CardMesh { preview, view, gpu: self.mesh_gpu })
                     }
                     _ => None,
                 };
