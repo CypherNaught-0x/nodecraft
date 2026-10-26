@@ -406,6 +406,7 @@ mod stale_badges;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
 mod styles;
+mod tag_definitions;
 mod tags;
 mod technique_menu;
 mod timeline_editor;
@@ -430,6 +431,7 @@ pub struct NodeCraftApp {
     pub navigation: Navigation,
     pub search: crate::search::Search,
     pub tag_filter: crate::tags::TagFilter,
+    tag_definition: Option<tag_definitions::Editor>,
     tag_focus_ids: Vec<egui::Id>,
     tag_focused: bool,
     tag_session_identity: Option<Arc<()>>,
@@ -1076,6 +1078,7 @@ impl NodeCraftApp {
             navigation: Navigation::default(),
             search: crate::search::Search::default(),
             tag_filter: crate::tags::TagFilter::default(),
+            tag_definition: None,
             tag_focus_ids: Vec::new(),
             tag_focused: false,
             tag_session_identity: None,
@@ -1336,6 +1339,7 @@ impl NodeCraftApp {
         model_blocks |= self.deck_editor_overlay(ui);
         model_blocks |= self.deck_overlay(ui);
         model_blocks |= self.timeline_overlay(ui);
+        model_blocks |= self.tag_definition_overlay(ui);
         if self.on_sheet() {
             self.sheet_frame(ui, viewport, model_blocks || file_owns_input || file_menu_owns_input);
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
@@ -1881,6 +1885,9 @@ impl NodeCraftApp {
                     }
                     if self.tag_filter.active() {
                         let matches = self.tag_filter.matches(node.id);
+                        if matches {
+                            tag_definitions::match_cue(ui, &tag_painter, &self.view, viewport, r.rect, node.id, t);
+                        }
                         tag_painter.rect_stroke(
                             r.rect.expand(t.tag_marker_width),
                             t.card_radius,
