@@ -10,7 +10,7 @@ use std::error::Error;
 
 use nodecraft_engine::import::{Incoming, import_files};
 use nodecraft_graph::Position;
-use nodecraft_types::{CanvasId, CommentId, EdgeId, Modality, NodeId, TagId, Unsigned, Value};
+use nodecraft_types::{CanvasId, CommentId, EdgeId, FieldId, Modality, NodeId, TagId, Unsigned, Value};
 use nodecraft_ui_egui::NodeCraftApp;
 use serde_json::json;
 
@@ -43,8 +43,8 @@ pub fn comment_id(key: Key) -> CommentId {
 
 /// The text of the note card, and the prompt the whole scene is built around.
 pub const PROMPT: &str = "A quiet forest at dawn, soft light through the trees.";
-pub const NOTE: &str = "Dawn pass: keep the warm horizon, lift the shadows once, then hold the \
-                        tree line crisp. Grade on plate 01 only; the aurora plate is a look test.";
+pub const NOTE: &str = "Three original plates, one local look lab. Branch dawn into soft and noir looks; \
+                        tint the aurora, mirror the bloom, then recombine. No model calls.";
 
 /// An app plus the canvas a showcase is built on.
 pub struct Stage {
@@ -146,6 +146,18 @@ impl Stage {
         self.dispatch("node.tag_set", json!({"canvas": self.canvas, "nodes": ids, "tag": tag}))
     }
 
+    /// A persistent coloured zone and its membership, through `field.create`.
+    pub fn field(&mut self, key: Key, title: &str, color: &str, rect: (f32, f32, f32, f32), nodes: &[Key]) -> Result<(), Fail> {
+        let ids: Vec<NodeId> = nodes.iter().copied().map(node_id).collect();
+        self.dispatch(
+            "field.create",
+            json!({"canvas": self.canvas, "field": {
+            "id": FieldId::from_bytes([key; 16]), "title": title, "color": color,
+            "rect": {"pos": {"x": rect.0, "y": rect.1}, "width": rect.2, "height": rect.3}
+        }, "nodes": ids}),
+        )
+    }
+
     /// `comment.create`: a discussion pinned at world `x`,`y`, or beside a card when anchored.
     pub fn comment(&mut self, key: Key, text: &str, anchor: Option<Key>, offset: (f32, f32)) -> Result<(), Fail> {
         self.dispatch(
@@ -174,11 +186,16 @@ impl Stage {
 /// Whether the live pass has recorded a result on a card yet. Worker-thread work lands a frame
 /// or two after the edit, so the renderer waits on this instead of guessing a delay.
 pub fn has_result(app: &NodeCraftApp, key: Key) -> bool {
-    app.session.document().canvases().get(&app.canvas).and_then(|canvas| canvas.nodes().get(&node_id(key))).is_some_and(|node| !node.history.is_empty())
+    app.session
+        .document()
+        .canvases()
+        .get(&app.canvas)
+        .and_then(|canvas| canvas.nodes().get(&node_id(key)))
+        .is_some_and(|node| nodecraft_engine::split::image_of(node).is_some())
 }
 
-/// The showcase document: a dawn-plate look-development pass with a text chain beside it, three
-/// colour tags, a discussion, and the modality pairs that show off the wire palette.
+/// The showcase document: three original plates, branching deterministic looks and two-input
+/// composites, organised in coloured fields; text, notes and typed routing remain nearby.
 ///
 /// Shared by every shot, so all the images in the README are the same workflow seen from
 /// different distances — and each card is real, placed by a command.
@@ -190,28 +207,31 @@ pub fn showcase(plates: &[(&str, Vec<u8>)]) -> Result<Stage, Fail> {
 
     // Top row: the words. One prompt feeds a splitter and a rewrite; both join into one list
     // input, which is what makes the numbered order badges appear on the noodles.
-    stage.node(1, "source.text", -1_020.0, -560.0)?;
+    stage.node(1, "source.text", -1_020.0, -1_660.0)?;
     stage.text(1, "text", PROMPT)?;
     stage.title(1, "Idea")?;
-    stage.node(2, "text.split", -460.0, -620.0)?;
+    stage.node(2, "text.split", -460.0, -1_720.0)?;
     stage.title(2, "Beat sheet")?;
     stage.text(2, "mode", "separator")?;
     stage.text(2, "separator", " | ")?;
     stage.count(2, "max_parts", 8)?;
-    stage.node(3, "text.replace", 100.0, -600.0)?;
+    stage.node(3, "text.replace", 100.0, -1_700.0)?;
     stage.title(3, "Rewrite")?;
     stage.text(3, "find", "quiet")?;
     stage.text(3, "replacement", "still")?;
-    stage.node(4, "text.concat", 660.0, -560.0)?;
+    stage.node(4, "text.concat", 660.0, -1_660.0)?;
     stage.title(4, "Final copy")?;
     stage.text(4, "separator", "\n")?;
     stage.toggle(4, "trim", true)?;
 
     // Bottom row: the picture. The plate is imported, so its card shows a real decoded preview,
     // and the three action cards recompute for real (the app's live pass, #88).
-    if let Some((name, bytes)) = plates.first() {
-        stage.import_image(5, name, bytes, -1_020.0, 120.0)?;
-        stage.title(5, "Plate 01")?;
+    if plates.len() != 3 {
+        return Err(fail("the showcase needs exactly three original plates: dawn, aurora, bloom"));
+    }
+    for ((key, title, y), (name, bytes)) in [(5, "01 / Dawn", 120.0), (17, "02 / Aurora", 1_040.0), (19, "03 / Bloom", 1_960.0)].into_iter().zip(plates) {
+        stage.import_image(key, name, bytes, -1_020.0, y)?;
+        stage.title(key, title)?;
     }
     stage.node(6, "image.grade", -460.0, 100.0)?;
     stage.title(6, "Colour grade")?;
@@ -227,23 +247,54 @@ pub fn showcase(plates: &[(&str, Vec<u8>)]) -> Result<Stage, Fail> {
     stage.text(8, "ratio", "landscape16_9")?;
     stage.text(8, "mode", "crop")?;
 
-    // Annotations and the modality palette: a note card, and routers that carry the two
-    // modalities no builtin action produces.
-    stage.node(9, "structure.note", -1_020.0, -1_020.0)?;
+    // Parallel local treatments, then two real two-input recombinations.
+    stage.node(16, "image.filter", 100.0, 1_040.0)?;
+    stage.title(16, "Noir / alternate")?;
+    stage.text(16, "preset", "noir")?;
+    stage.number(16, "intensity", 0.92)?;
+    stage.node(18, "image.tint", -460.0, 1_040.0)?;
+    stage.title(18, "Aurora / violet screen")?;
+    stage.text(18, "color", "#9966ff")?;
+    stage.text(18, "blend", "screen")?;
+    stage.number(18, "intensity", 0.38)?;
+    stage.node(20, "image.flip", -460.0, 1_960.0)?;
+    stage.title(20, "Bloom / mirror")?;
+    stage.text(20, "axis", "horizontal")?;
+    stage.node(21, "image.overlay", 660.0, 1_040.0)?;
+    stage.title(21, "Noir + aurora / inset")?;
+    stage.text(21, "anchor", "top_right")?;
+    stage.number(21, "size", 0.48)?;
+    stage.number(21, "opacity", 0.88)?;
+    stage.node(22, "image.overlay", 100.0, 1_960.0)?;
+    stage.title(22, "Look board / bloom inset")?;
+    stage.text(22, "anchor", "bottom_left")?;
+    stage.number(22, "size", 0.42)?;
+    stage.number(22, "opacity", 0.94)?;
+    stage.node(23, "image.resize", 660.0, 1_960.0)?;
+    stage.title(23, "Review / half resolution")?;
+    stage.number(23, "factor", 0.5)?;
+    stage.text(23, "resampling", "area")?;
+
+    // A separate typed-routing explainer uses real text and a real imported image, never empty
+    // video/audio cards that could be mistaken for working media or provider output.
+    stage.node(9, "structure.note", -1_020.0, -2_120.0)?;
     stage.title(9, "Notes")?;
     stage.text(9, "text", NOTE)?;
-    stage.router(10, Modality::Mesh, 3_600.0, 140.0)?;
-    stage.title(10, "3D pass")?;
-    stage.router(11, Modality::Document, 3_600.0, -260.0)?;
-    stage.title(11, "Brief")?;
-    stage.node(12, "source.video", 2_200.0, -260.0)?;
-    stage.title(12, "Clip 01")?;
-    stage.node(13, "source.audio", 2_200.0, 140.0)?;
-    stage.title(13, "Bed 01")?;
-    stage.router(14, Modality::Video, 2_760.0, -260.0)?;
-    stage.title(14, "Edit conform")?;
-    stage.router(15, Modality::Audio, 2_760.0, 140.0)?;
-    stage.title(15, "Bed mix")?;
+    stage.router(10, Modality::Text, 3_320.0, -260.0)?;
+    stage.title(10, "Copy / routed")?;
+    stage.router(11, Modality::Image, 3_320.0, 140.0)?;
+    stage.title(11, "Plate / routed")?;
+    stage.node(12, "source.text", 2_200.0, -260.0)?;
+    stage.title(12, "Copy / source")?;
+    stage.text(12, "text", "Original plates. Local actions. Repeatable looks.")?;
+    if let Some((name, bytes)) = plates.first() {
+        stage.import_image(13, name, bytes, 2_200.0, 140.0)?;
+    }
+    stage.title(13, "Dawn / source")?;
+    stage.router(14, Modality::Text, 2_760.0, -260.0)?;
+    stage.title(14, "Text / cable tie")?;
+    stage.router(15, Modality::Image, 2_760.0, 140.0)?;
+    stage.title(15, "Image / cable tie")?;
 
     stage.wire(1, (1, "out"), (2, "text"), 0)?;
     stage.wire(2, (1, "out"), (3, "text"), 0)?;
@@ -254,8 +305,22 @@ pub fn showcase(plates: &[(&str, Vec<u8>)]) -> Result<Stage, Fail> {
     stage.wire(7, (7, "out"), (8, "image"), 0)?;
     stage.wire(8, (12, "out"), (14, "in"), 0)?;
     stage.wire(9, (13, "out"), (15, "in"), 0)?;
+    stage.wire(10, (14, "out"), (10, "in"), 0)?;
+    stage.wire(11, (15, "out"), (11, "in"), 0)?;
+    stage.wire(12, (6, "out"), (16, "image"), 0)?;
+    stage.wire(13, (17, "out"), (18, "image"), 0)?;
+    stage.wire(14, (19, "out"), (20, "image"), 0)?;
+    stage.wire(15, (16, "out"), (21, "image"), 0)?;
+    stage.wire(16, (18, "out"), (21, "overlay"), 0)?;
+    stage.wire(17, (21, "out"), (22, "image"), 0)?;
+    stage.wire(18, (20, "out"), (22, "overlay"), 0)?;
+    stage.wire(19, (22, "out"), (23, "image"), 0)?;
 
-    stage.tag(1, "Look", "green", &[5, 6, 7, 8])?;
+    stage.field(1, "01 / DAWN — branch the grade", "orange", (-1_110.0, -10.0, 2_180.0, 890.0), &[5, 6, 7, 8])?;
+    stage.field(2, "02 / AURORA — tint + recombine", "blue", (-1_110.0, 910.0, 2_180.0, 890.0), &[17, 18, 16, 21])?;
+    stage.field(3, "03 / BLOOM — mirror + deliver", "pink", (-1_110.0, 1_830.0, 2_180.0, 890.0), &[19, 20, 22, 23])?;
+
+    stage.tag(1, "Look", "green", &[5, 6, 7, 8, 16, 17, 18, 19, 20, 21, 22, 23])?;
     stage.tag(2, "Copy", "blue", &[2, 3, 4])?;
     stage.tag(3, "Draft", "pink", &[1])?;
 

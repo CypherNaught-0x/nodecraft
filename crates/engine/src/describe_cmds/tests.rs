@@ -71,6 +71,7 @@ fn describes_the_settings_the_active_result_was_made_with() {
         inputs: Vec::new(),
         item: None,
         billable_units: None,
+        execution_ms: None,
     };
     let result = |n: u8, model: &str| nodecraft_graph::Generation {
         settings: vec![job(model)],

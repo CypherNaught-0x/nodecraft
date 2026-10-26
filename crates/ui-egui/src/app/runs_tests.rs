@@ -1120,6 +1120,7 @@ fn queue82_visual() {
 
 #[test]
 fn the_toolbar_downloads_the_shown_result_once_there_is_one() {
+    let _serial = super::export_tests::EXPORT_TESTS.lock().unwrap();
     let mock = image(MockModel::new(MockOutput::Image));
     let mut h = scene(making(mock));
     h.state_mut().selection.only(N);
@@ -1133,8 +1134,8 @@ fn the_toolbar_downloads_the_shown_result_once_there_is_one() {
     let path = dir.path().join("take.png");
     h.state_mut().exports.answer = Some(path.clone());
     press(&mut h, Role::Button, "Download");
-    h.run();
-    h.run();
+    h.step();
+    super::export_tests::finish(&mut h);
     let outputs = node(h.state()).history.first().map(|g| g.outputs.clone()).unwrap_or_default();
     let asset = match outputs.first() {
         Some(Value::Media(asset)) => asset.clone(),

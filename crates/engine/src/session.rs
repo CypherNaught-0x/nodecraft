@@ -186,6 +186,7 @@ pub struct Session {
     assets: AssetStore,
     persistence: Option<crate::persistence::Persistence>,
     save_runner: Option<Arc<dyn crate::save_runner::SaveRunner>>,
+    exports: crate::export_job::Exports,
     /// A background save or open still running: what to finish once it has.
     pending: Option<PendingFile>,
     /// The outcome of a background save that an edit waited for, until the host polls it.
@@ -246,6 +247,7 @@ impl Session {
             assets: AssetStore::default(),
             persistence: None,
             save_runner: None,
+            exports: Default::default(),
             pending: None,
             settled: None,
             status_revision: 0,
@@ -458,6 +460,18 @@ impl Session {
     /// #367).
     pub fn set_save_runner(&mut self, runner: Arc<dyn crate::save_runner::SaveRunner>) {
         self.save_runner = Some(runner);
+    }
+    /// Installs a host executor for read-only exports; exports never lend project storage or
+    /// make subsequent document edits wait. A rejected job is never run inline.
+    pub fn set_export_runner(&mut self, runner: Arc<dyn crate::save_runner::SaveRunner>) {
+        self.exports.set_runner(runner);
+    }
+    pub fn export_status(&self) -> Option<crate::export_job::ExportStatus> {
+        self.exports.status()
+    }
+    /// Observe this export's cleanup even if another document replaces the Session.
+    pub fn export_watch(&self) -> Option<crate::export_job::ExportWatch> {
+        self.exports.watch()
     }
     /// The latest background save's or open's outcome once it has finished, the same value
     /// `file.save` or `file.open` returns inline; `None` while it is still running or when
@@ -777,6 +791,7 @@ impl Session {
     pub(crate) fn context(&self, phase: Phase) -> Context<'_> {
         Context {
             assets: &self.assets,
+            exports: &self.exports,
             routing: &self.routing,
             document: &self.document,
             revision: self.revision,
@@ -810,6 +825,7 @@ impl Session {
                 | Effect::Export { .. }
                 | Effect::Copy { .. }
                 | Effect::CancelFile
+                | Effect::CancelExport { .. }
                 | Effect::Elements { .. } => Ok(()),
                 // Dispatch refuses everything else until the open settles.
                 _ if matches!(self.pending, Some(PendingFile::Open(_))) => Err(opening()),
@@ -820,6 +836,27 @@ impl Session {
                 }
                 _ => Ok(()),
             }
+        })
+    }
+
+    /// Inspect the exact fresh node described by a creation command, without publishing or
+    /// executing services. Hosts can measure it before supplying the final position.
+    pub fn preview_created_node(&self, command: &str, params: &Value, id: nodecraft_types::NodeId) -> Result<nodecraft_graph::Node, Error> {
+        guard(|| {
+            let spec = self.registry.get(command)?;
+            let effect = Self::describe(spec, &self.context(Phase::Preview), params)?;
+            let changes = match effect {
+                Effect::Edit { changes, .. } | Effect::Place { changes, .. } => changes,
+                _ => return Err(invalid("command does not describe a node creation")),
+            };
+            changes
+                .changes
+                .into_iter()
+                .find_map(|change| match change {
+                    Change::AddNode { node, .. } if node.id == id => Some(node),
+                    _ => None,
+                })
+                .ok_or_else(|| invalid("command does not create that node"))
         })
     }
 
@@ -845,6 +882,7 @@ impl Session {
                     | Effect::Export { .. }
                     | Effect::Copy { .. }
                     | Effect::CancelFile
+                    | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
             )
         {
@@ -974,6 +1012,7 @@ impl Session {
                     | Effect::Export { .. }
                     | Effect::Copy { .. }
                     | Effect::CancelFile
+                    | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
             ),
         };
@@ -988,6 +1027,7 @@ impl Session {
                     | Effect::Export { .. }
                     | Effect::Copy { .. }
                     | Effect::CancelFile
+                    | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
             )
         {
@@ -1046,7 +1086,15 @@ impl Session {
                 }
                 return Ok(crate::perf_cmds::applied(action, self.perf.enabled()));
             }
-            Effect::Export { what, path, overwrite } => {
+            Effect::CancelExport { id } => {
+                self.exports.cancel(id)?;
+                return Ok(serde_json::json!({"cancelling":true}));
+            }
+            Effect::Export { what, path, overwrite, background } => {
+                if background {
+                    let id = self.exports.start(&self.assets, what, path, overwrite)?;
+                    return Ok(serde_json::json!({"pending":id}));
+                }
                 return guard(|| crate::export::write(&self.assets, &what, &path, overwrite));
             }
             Effect::Copy { what } => {
@@ -1071,6 +1119,24 @@ impl Session {
                     validate_json(&result)?;
                     Ok(result)
                 });
+            }
+            Effect::LocalExport { plan } => {
+                // Export changes no document, so nothing is staged and there is nothing to undo.
+                // Authority is enforced here as well as where the plan was built, because this is
+                // where the writing happens: the folder must still be one the app authorized, and
+                // without an authorized folder this session writes nothing anywhere.
+                let host = self
+                    .resources
+                    .get::<crate::local_export::ExportHost>()
+                    .ok_or_else(|| Error::new(ErrorKind::Unsupported, nodecraft_format::export::reasons::NO_HOST))?;
+                if !host.authorizes(&plan.destination) {
+                    return Err(Error::new(ErrorKind::Unsupported, nodecraft_format::export::reasons::UNSUPPORTED_TARGET));
+                }
+                // Publication retains the host's pinned root descriptor throughout the run.
+                let outcome = guard(|| crate::local_export::run(&self.assets, &plan, host))?;
+                let result = crate::local_export::outcome_json(&outcome);
+                validate_json(&result)?;
+                return Ok(result);
             }
             Effect::Save { location, background } => {
                 let next = self.execution.next()?;
@@ -1349,10 +1415,12 @@ impl Session {
             | Effect::Service { .. }
             | Effect::Export { .. }
             | Effect::Copy { .. }
+            | Effect::LocalExport { .. }
             | Effect::Open { .. }
             | Effect::Save { .. }
             | Effect::Perf { .. }
             | Effect::CancelFile
+            | Effect::CancelExport { .. }
             | Effect::Elements { .. }
             | Effect::Place { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));

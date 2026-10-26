@@ -58,12 +58,15 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
         "openai" | "openai-images" | "openai-audio" => Some("openai"),
         "anthropic" => Some("anthropic"),
+        "huggingface" => Some("huggingface"),
         "litellm" => Some("litellm"),
         "replicate" => Some("replicate"),
+        "runway" => Some("runway"),
         "seedream" => Some("seedream"),
+        "bfl" => Some("bfl"),
         // Seedance runs on the same BytePlus ModelArk key (#18).
         "seedance" => Some("seedream"),
-        "gemini-images" => Some("gemini"),
+        "gemini-images" | "gemini-llm" => Some("gemini"),
         "gemini-video" => Some("gemini"),
         "google-veo" | "google-tts" | "google-gemini-images" => Some(nodecraft_providers::google_cloud::ACCOUNT),
         "fal" => Some("fal"),
@@ -250,6 +253,7 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         // Chat models (#503): the LLM client, keyed by its endpoint id.
         "openai" => Arc::new(llm(Endpoint::openai(ApiKey::from(&needs_key(env.keys, "openai")?)), env)),
         "anthropic" => Arc::new(llm(Endpoint::anthropic(ApiKey::from(&needs_key(env.keys, "anthropic")?)), env)),
+        "huggingface" => Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&needs_key(env.keys, "huggingface")?, env.http.clone())),
         "litellm" => {
             let url = crate::browser_providers::server_url(env.settings.litellm_url.as_deref())
                 .map_err(|_| Readiness::NotSetUp("set a valid LiteLLM server address without credentials; keep its virtual key in API keys".into()))?
@@ -273,7 +277,10 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         "openai-audio" => Arc::new(nodecraft_providers::openai_audio::OpenAiAudio::new(needs_key(env.keys, "openai")?, env.http.clone())),
         "replicate" => Arc::new(nodecraft_providers::replicate::Replicate::new(needs_key(env.keys, "replicate")?, env.http.clone())),
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),
+        "bfl" => Arc::new(nodecraft_providers::bfl::Bfl::new(needs_key(env.keys, "bfl")?, env.http.clone())),
+        "runway" => Arc::new(nodecraft_providers::runway::Runway::new(needs_key(env.keys, "runway")?, env.http.clone())),
         "seedance" => Arc::new(nodecraft_providers::seedance::Seedance::new(needs_key(env.keys, "seedream")?, env.http.clone())),
+        "gemini-llm" => Arc::new(nodecraft_providers::gemini_llm::GeminiLlm::new(&needs_key(env.keys, "gemini")?, env.http.clone())),
         "gemini-images" => Arc::new(nodecraft_providers::gemini_images::GeminiImages::new(needs_key(env.keys, "gemini")?, env.http.clone())),
         "gemini-video" => Arc::new(nodecraft_providers::gemini_video::GeminiVideo::new(needs_key(env.keys, "gemini")?, env.http.clone())),
         "google-veo" => Arc::new(google_veo(env)?),

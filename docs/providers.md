@@ -6,8 +6,10 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
+| **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B text → PNG | Direct queued generation with resumable cluster polling, bounded downloads and unknown usage price; no automatic ambiguous submit replay or remote cancellation. See below. |
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
 | **OpenAI Audio** | `openai-audio` | existing `openai` API key (`Authorization: Bearer`) | text → MP3, audio file → text | Unknown upfront usage price; no automatic paid replay. Speech model shuts down January 6, 2027; Realtime is not supported. See below. |
+| **Hugging Face Inference Providers** | `huggingface` | HF token with Inference Providers permission, keychain account `huggingface` | text → text, streaming | GPT OSS 120B through the explicit Groq route; direct router with the existing chat client, unknown usage price, no ambiguous replay. See below. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
 | **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and ordered reference editing | Three stable Gemini models, unknown usage price; bounded inline JPEG outputs. |
 | **Gemini Video** | `gemini-video` | supplied Gemini API key (`x-goog-api-key`), same `gemini` account | Omni Flash text, first/last frame and reference images → video with sound | Veo on the Gemini API is shut down; Veo now runs on Google Cloud (`google-veo`). Paid tier only; charged by measured tokens, no price before the run. See below. |
@@ -28,6 +30,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
 | **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video); Soul ID training (images → identity) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
+| **Runway** | `runway` (feature `runway`) | API key (`Authorization: Bearer`, keychain account `runway`) | Gen-4.5 text or first frame → video; Gen-4 Turbo first frame → video | Standard MP4, 2–10 seconds. 0.12/0.05 USD per second before tax. No submission deduplication; uncertain creates are never replayed. See below. |
 | **Kling** | `kling` (feature `kling`) | API key (`Authorization: Bearer`), or access key and secret key stored as `ak:sk`, which sign a 30-minute HS256 token per request | Kling 2.5 Turbo, 2.1 Master and 1.6 text → video and start frame (+ end frame) → video; Kling 1.6 up to four references → video; Kling Image 2.1 text → image | Billed in prepaid Kling units, so no quote before the run. One create per job carrying an `external_task_id` from the idempotency key; never replayed automatically; no remote cancellation. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
 
@@ -564,14 +567,24 @@ The ignored live smoke test requires both explicit environment opt-ins and fresh
 permission; ordinary tests use synthetic fixtures and local listeners only.
 
 Replicate asks for a 2-second queued/running poll interval, subject to the host's existing maximum
-interval and retry/backoff policy. `Cancel-After` can bound server lifetime from prediction creation
-(5 seconds to 24 hours); it is not the synchronous wait duration or a proof of nonbilling. This
-adapter does not add that header: `RunLimits::deadline_ms` is a local polling deadline that is not
-passed to Provider::submit, so equating those clocks would be misleading. The existing local
-deadline still requests best-effort cancellation when a handle exists. Provider-reported
-`metrics.predict_time` measures execution seconds, not tokens or money; current Usage has no
-duration field, so it remains ignored and cost stays unknown. Neither future deadline propagation
-nor a typed runtime-usage schema is supplied by this safety follow-up.
+interval and retry/backoff policy. Creation sends `Cancel-After` using the host's
+`RunLimits::deadline_ms` duration, rounded upward to whole seconds. Durations outside 5 seconds
+to 24 hours are rejected before sending a prediction. Direct `Provider::submit` uses the usual
+one-hour default. This is a server lifetime measured from prediction creation, whereas the local
+deadline begins when polling starts; they are separate clocks. Neither is proof of nonbilling.
+Polling, restored handles, output downloads and cancellation never reset the server lifetime.
+The local deadline still requests best-effort cancellation when a handle exists.
+
+On successful completion, `metrics.predict_time` becomes optional `Usage.execution_ms`, rounded
+to milliseconds. It measures execution rather than queue time, tokens or money. Missing or
+malformed optional metrics remain unknown without discarding valid outputs; negative, nonfinite
+or over-24-hour values are not retained. Failed/canceled predictions still report their failure,
+without a completed-result usage record. Cost stays unknown. The engine retains this evidence
+in result job settings, held results and resumed jobs; copying a cached result does not claim
+another execution. Older records without it remain readable.
+
+Contract checked 2026-10-24: [prediction deadlines](https://replicate.com/docs/topics/predictions/create-a-prediction)
+and [HTTP API metrics](https://replicate.com/docs/reference/http).
 
 
 ## Gemini Images (`gemini-images` feature)
@@ -1360,3 +1373,132 @@ billing and actual canvas runs in both directions. The ignored `live_openai_audi
 two paid requests only with separately authorized spending, `OPENAI_API_KEY`, and both
 `NODECRAFT_LIVE_OPENAI_AUDIO=1` and `NODECRAFT_LIVE_OPENAI_AUDIO_ACKNOWLEDGE_COST=1`.
 No live service availability or quality claim follows from offline tests.
+
+## Black Forest Labs: direct FLUX.2 klein 4B (#33)
+
+In **API keys**, save your Black Forest Labs key under account `bfl`, then select
+**FLUX.2 klein 4B (BFL)** on an image generation card. This uses BFL directly, with no
+aggregator account. The built-in catalog supports one text prompt (up to 16 KiB), optional
+32-bit seed, and width/height from 64 to 1984 pixels in steps of 16. It requests one PNG.
+Image references, editing, webhooks and custom endpoints are not exposed by this adapter.
+
+The [official generation API](https://docs.bfl.ai/quick_start/generating_images) returns a
+job and its cluster polling URL. NodeCraft validates and saves those, polls the same task
+after restart, then downloads the signed result immediately. Only BFL API cluster hosts
+receive the key; image downloads use the documented `delivery.*.bfl.ai` service without
+credentials or redirects. Replies are capped at 64 KiB, image bytes at 32 MiB, decoded
+image allocation at 64 MiB, and output geometry must match the request. Native desktop
+transport is supported; the built-in browser transport returns an unsupported error.
+
+[BFL pricing](https://bfl.ai/pricing?category=flux.2) depends on pixels and credits.
+NodeCraft currently marks the cost as unknown usage pricing. Running requires explicit
+acceptance of an unpriced job; a finite budget cannot admit it. The API's credit fields
+are not recorded as dollars. Once the paid request is sent, lost replies are never retried
+automatically: BFL documents no idempotency key. Cancellation stops local waiting but
+cannot confirm a remote stop or prevent billing. A successful saved handle can be resumed
+without sending another create request.
+
+Offline fixtures exercise request bounds, queued/running/failure states, saved handles,
+credential isolation, corrupt/oversized output, ambiguous paid replies and the real RunHost.
+An ignored paid smoke test requires both explicit spending authorization and
+`NODECRAFT_LIVE_BFL=1` with `BFL_API_KEY` supplied privately. It is never run in CI.
+The current endpoint and statuses were verified against the
+[official OpenAPI](https://api.bfl.ai/openapi.json) on 2026-10-24.
+
+## Runway video (#25)
+
+Store a Runway developer API key under `runway` in API keys. The desktop, CLI and headless
+provider setup route the builtin `runway.gen4-5` and `runway.gen4-turbo` models to the same
+adapter. Gen-4.5 accepts a prompt alone or a prompt with one first-frame image; Turbo requires
+that image. Prompts are limited to 1,000 UTF-16 units. Inputs are PNG/JPEG/WebP, at most 3 MiB
+and 4096 pixels per side. These are NodeCraft's local bounds; larger inputs must be resized.
+The catalog offers Gen-4.5's shared landscape/portrait sizes and Turbo's six frame sizes.
+Video editing, reference sets, audio generation and premium output formats are not offered.
+
+Duration is sent explicitly (2–10 seconds) and the catalog quotes standard MP4 at 0.12 USD per
+second for Gen-4.5 and 0.05 USD per second for Turbo, excluding tax. Sources checked 2026-10-24:
+[Runway pricing](https://docs.dev.runwayml.com/guides/pricing/) and
+[the API schema](https://docs.dev.runwayml.com/openapi.json). The API's optional terminal
+nonnegative credit count is recorded as cost at 0.01 USD/credit when representable. Missing cost,
+negative credit adjustments or an overflowing conversion leave usage unknown and retain the
+conservative estimate; they do not discard a successful video. Turbo omits the unsupported
+`outputFormat` field and uses its standard MP4 default.
+Input safety refusals may be billed. No paid live verification was performed for this change.
+
+One paid create returns a resumable UUID. The shared runner polls at five-second intervals.
+A lost reply may hide a billed task: Runway has no documented submission deduplication, so an
+uncertain create is not retried. A failed result download resumes the task and obtains a fresh
+link. JSON replies are limited to 64 KiB; videos to 256 MiB. The downloaded MP4 must have readable
+headers, dimensions no greater than 4096 pixels and duration no greater than 60 seconds; this
+checks the container metadata, not every encoded frame. Only public CloudFront HTTPS result
+links are admitted. API credentials never accompany downloads and redirects are refused.
+The builtin browser transport cannot provide no-redirect requests, so it refuses this adapter;
+wasm compilation is supported for hosts with an audited transport.
+
+Cancellation reads the task first and refuses to delete an already completed video. Runway's
+DELETE can still race completion and remove that result; cancellation does not guarantee a
+refund. Already missing/cancelled tasks count as stopped. See
+[Runway task management](https://docs.dev.runwayml.com/api/).
+
+`live_runway` is ignored and requires `NODECRAFT_LIVE_RUNWAY=1`,
+`NODECRAFT_LIVE_RUNWAY_ACKNOWLEDGE_COST=1`, and `RUNWAYML_API_SECRET`; run it only with spending
+authorization. It requests one 2-second Gen-4.5 clip (0.24 USD before tax), never in CI.
+
+## Hugging Face text (`huggingface` feature)
+
+The builtin GPT OSS 120B (Groq) card calls
+`https://router.huggingface.co/v1/chat/completions` using the existing OpenAI-compatible
+chat client. Its explicit model id `openai/gpt-oss-120b:groq` selects Groq through the HF
+router; it does not select whichever provider is fastest or cheapest. The public router
+model listing reported this route live on 2026-10-24. Availability can still change.
+
+In the native app, save an HF token with Inference Providers permission in API keys under
+`huggingface`. It is sent only as a secret Authorization bearer header. Project files never
+contain the token. The browser has no builtin transport/key setup for this catalog provider.
+
+The card accepts text only: at most 64 turns and 1 MiB total text. Requested completion tokens
+are limited to 1–8,192, default 2,048; reasoning can consume part of the allowance. The existing
+client bounds responses and streaming, retains token usage, and maps payment-required to Budget,
+auth failures to Auth and ordinary 429s to RateLimited (quota-coded 429s to Budget).
+Pricing is explicitly ByUsage: account credits, changing rates and provider-specific usage mean
+this adapter does not claim a dollar quote or actual charge. Normal unknown-price acceptance is
+required. No ambiguous paid submit is replayed, no polling handle exists and local cancellation
+cannot confirm a remote stop or refund. Images, tools, embeddings and other HF tasks are outside
+this text adapter.
+
+Offline fixtures cover routing, request bounds, streaming, errors, real host admission and the
+lost-reply driver path. The opt-in smoke test requires `NODECRAFT_LIVE_HUGGINGFACE=1` and
+`HF_TOKEN`; ordinary tests do not make paid requests.
+
+Contract references: [router and provider selection](https://huggingface.co/docs/inference-providers/en/index),
+[chat request schema](https://huggingface.co/docs/inference-providers/tasks/chat-completion),
+[billing](https://huggingface.co/docs/inference-providers/pricing).
+
+## Gemini text (`gemini-llm` feature)
+
+The Gemini 3.8 Flash text card (#44) calls Google directly through its documented
+OpenAI-compatible chat endpoint. Add the API key to the existing `gemini` account in
+API keys, choose **Gemini 3.8 Flash** on a text generation card, and accept the usage-based
+price before running. No gateway or new SDK is needed. The native host is wired; browser
+provider settings do not expose this adapter yet.
+
+Only text is advertised: at most 64 input turns and 1 MiB total text, with a requested
+`max_tokens` between 1 and 65,536 (default 4,096). The host's usual streaming text path is
+supported. Images, PDFs, tools, thought-signature replay, grounding and Interactions state
+are outside this card's scope. Output uses the shared chat response/stream byte caps.
+
+Google returns token usage; this adapter does not infer an exact dollar cost across account
+tiers and thinking usage. Quotes therefore remain explicitly unknown, never free. Lost,
+malformed or interrupted replies are never automatically resubmitted. A sent synchronous
+request cannot confirm remote cancellation and has no resumable polling handle. Credentials
+use secret headers and the shared transport's redirect protections.
+
+Offline contract, real host-routing, unknown-price admission, lost-reply driver and actual
+picker tests run in CI. The opt-in smoke test makes one real request and may cost money:
+`NODECRAFT_LIVE_GEMINI_LLM=1 GEMINI_API_KEY=… cargo test -p nodecraft-providers --features
+http,gemini-llm --test live_llm live_gemini44`. It is disabled unless explicitly enabled.
+
+Contract checked 2026-10-24: [compatibility API](https://ai.google.dev/gemini-api/docs/openai),
+[model limits](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash),
+[pricing](https://ai.google.dev/gemini-api/docs/pricing). This implements #44 by adapter reuse,
+not a new native `generateContent` or Interactions dialect; #489 remains a separate discussion.
