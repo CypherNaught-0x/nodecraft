@@ -323,6 +323,20 @@ pub(crate) fn validate_plan(
             Some(nodecraft_types::Value::Text(id)) => id,
             _ => return Err(Error::new(ErrorKind::InvalidInput, "generation model selection is missing")),
         };
+        if let Some(definition) = catalog.model(&node.kind, model).filter(|model| model.provider == "azure-openai") {
+            // Resolve the same defaults, conditions and submission values as the generation
+            // job, including when upstream media defers planning that job until later.
+            let submitted = definition.parameters.resolve_selected(&node.params, true)?.submission()?;
+            let deployment = if definition.remote == "nodecraft-deployment" {
+                match submitted.get("deployment") {
+                    Some(nodecraft_types::Value::Text(name)) => name.as_str(),
+                    _ => "",
+                }
+            } else {
+                definition.remote.as_str()
+            };
+            nodecraft_providers::llm::validate_azure_deployment(deployment).map_err(|error| Error::new(ErrorKind::InvalidInput, error.message))?;
+        }
         let contract = catalog.kind(&node.kind)?.model_contract(model).ok_or_else(|| {
             Error::new(
                 ErrorKind::Unsupported,

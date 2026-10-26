@@ -52,9 +52,9 @@ fn typed(node: &Node) -> Option<&str> {
 }
 
 /// The output a mention of `node` reads: its first single text output. A router passes on
-/// whatever reaches it and a batch gives several values, so neither is read.
+/// whatever reaches it and a batch or a folder gives several values, so none is read.
 pub fn text_output(node: &Node) -> Option<&str> {
-    if node.kind == router::ID || node.kind == batch::ID {
+    if node.kind == router::ID || node.kind == batch::ID || node.kind == nodecraft_nodes::folder::ID {
         return None;
     }
     node.outputs.iter().find(|port| port.port_type.modality == Modality::Text && !port.port_type.many).map(|port| port.name.as_str())

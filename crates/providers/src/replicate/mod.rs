@@ -3,6 +3,7 @@
 mod receipt;
 mod request;
 mod response;
+mod runtime;
 #[cfg(test)]
 mod tests;
 
@@ -205,15 +206,22 @@ impl Replicate {
     fn authenticate(&self, request: HttpRequest) -> HttpRequest {
         request.secret_header("Authorization", format!("Bearer {}", self.key.expose()))
     }
-    async fn create(&self, job: &ProviderJob) -> Result<Submission, ProviderError> {
+    async fn create(&self, job: &ProviderJob, deadline_ms: u64, context: Option<&crate::SubmitContext>) -> Result<Submission, ProviderError> {
+        let lifetime = runtime::cancel_after(deadline_ms)?;
         let prepared = request::prepare(job, self.limits)?;
         let record = prepared.record;
         let body = prepared.encode(self.limits)?;
         let req = self.authenticate(HttpRequest {
             method: HttpMethod::Post,
             body,
-            ..HttpRequest::get(self.endpoint("predictions")).header("Content-Type", "application/json").max_response_bytes(self.limits.response_bytes)
+            ..HttpRequest::get(self.endpoint("predictions"))
+                .header("Content-Type", "application/json")
+                .header("Cancel-After", lifetime)
+                .max_response_bytes(self.limits.response_bytes)
         });
+        if let Some(context) = context {
+            context.unknown();
+        }
         let reply = self.http.send_no_redirect(req).await.map_err(transport)?;
         let receipt = reply.is_success().then(|| receipt::parse(&reply.body, self.limits.response_bytes)).flatten();
         let admitted = response::parse(&reply, record, self.limits).and_then(|parsed| {
@@ -257,7 +265,9 @@ impl Replicate {
                 let outputs = response::outputs(parsed.output, record, self.limits)?;
                 let done = self.materialize(outputs, self.limits).await?;
                 observe(6);
-                Ok(JobProgress::Done(Completed::new(done)))
+                let mut completed = Completed::new(done);
+                completed.usage.execution_ms = runtime::execution_ms(parsed.metrics);
+                Ok(JobProgress::Done(completed))
             }
             "failed" => Ok(JobProgress::Failed(ProviderError::new(
                 ErrorKind::JobFailed,
@@ -331,7 +341,11 @@ impl Provider for Replicate {
         2_000
     }
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
-        Box::pin(self.create(job))
+        Box::pin(self.create(job, crate::DEFAULT_JOB_DEADLINE_MS, None))
+    }
+    fn submit_with_delivery<'a>(&'a self, job: &'a ProviderJob, context: &'a crate::SubmitContext) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+        context.arm();
+        Box::pin(self.create(job, context.poll_deadline_ms().unwrap_or(crate::DEFAULT_JOB_DEADLINE_MS), Some(context)))
     }
     fn poll<'a>(&'a self, h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
         Box::pin(self.progress(h))

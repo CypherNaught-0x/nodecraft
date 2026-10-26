@@ -14,6 +14,9 @@ pub mod backup;
 mod checkpoint_plan;
 mod compatibility;
 pub mod disk_quota;
+/// Local batch export (#98): names, collision policy and output-format capability. The write
+/// itself is `engine`'s, sharing `history.export`'s (#557) verifying atomic writer.
+pub mod export;
 mod frame_plan;
 pub mod interchange;
 pub mod journal;

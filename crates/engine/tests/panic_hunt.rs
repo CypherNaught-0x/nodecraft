@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 #[test]
 #[ignore = "adversarial command corpus; run explicitly when commands change"]
 fn panic_hunt() {
+    let _cleanup = RemoveExportFolder::hold();
     let original = common::project();
     let mut session = Session::new(original.clone()).unwrap();
     plugins::register(&mut session);
@@ -115,6 +116,46 @@ fn panic_hunt() {
 
 fn gen_id(n: u8) -> nodecraft_types::GenerationId {
     nodecraft_types::GenerationId::from_bytes([n; 16])
+}
+
+/// The folder `export.*` templates write into: one directory in the system temporary folder per
+/// test process, so a hunt that reaches the real write path stays out of the repository. It is
+/// left where a leaked `TempDir` would be, for the OS to sweep.
+fn export_destination() -> std::path::PathBuf {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let path = DIR
+        .get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("nodecraft-panic-hunt-export-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&path);
+            std::fs::canonicalize(&path).unwrap_or(path)
+        })
+        .clone();
+    // A hunt that finished may have removed the folder, so recreate it for the next user.
+    let _ = std::fs::create_dir_all(&path);
+    path
+}
+
+/// Hunts currently holding the shared export folder. The last one out removes it, even when an
+/// assertion fails. The count and the removal share one lock, so a hunt starting as the last one
+/// leaves cannot have the folder removed under it.
+static HUNTS_IN_FLIGHT: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+struct RemoveExportFolder;
+impl RemoveExportFolder {
+    fn hold() -> Self {
+        let mut count = HUNTS_IN_FLIGHT.lock().unwrap_or_else(|poison| poison.into_inner());
+        *count += 1;
+        Self
+    }
+}
+impl Drop for RemoveExportFolder {
+    fn drop(&mut self) {
+        let mut count = HUNTS_IN_FLIGHT.lock().unwrap_or_else(|poison| poison.into_inner());
+        *count -= 1;
+        if *count == 0 {
+            let _ = std::fs::remove_dir_all(export_destination());
+        }
+    }
 }
 
 fn template(id: &str) -> (Session, Value) {
@@ -260,6 +301,9 @@ fn template(id: &str) -> (Session, Value) {
     } else {
         Session::new(document).unwrap()
     };
+    if id == "file.focus_owner" {
+        session.register_host_service(nodecraft_engine::storage_window_cmds::SERVICE, |_| Ok(json!({"requested":true}))).unwrap();
+    }
     if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" | "canvas.pan_to") {
         session.swap_resource(Some(nodecraft_engine::navigation_cmds::NavigationContext {
             canvas: canvas(),
@@ -303,6 +347,11 @@ fn template(id: &str) -> (Session, Value) {
             blocked: false,
         }));
         session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
+    if id.starts_with("export.local_") {
+        // A real destination, so the hunt reaches name rendering and the write path rather than
+        // stopping at the host check. It is in the system temporary folder, never the repository.
+        session.swap_resource(Some(nodecraft_engine::local_export::ExportHost::authorize(&export_destination()).unwrap()));
     }
     if id.starts_with("run.") || id == "usage.export_csv" {
         use nodecraft_engine::run_cmds::*;
@@ -539,6 +588,16 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
         }
         "usage.export_csv" => json!({}),
+        // A real folder plus the fixture's own node, so a hunt reaches name rendering, collision
+        // and per-entry failure rather than stopping at the host check.
+        "export.local_plan" | "export.local_run" => json!({
+            "canvas":canvas(),
+            "sources":[{"node":node_id(1),"port":"out"},{"node":node_id(2),"port":"out","item":0}],
+            "destination":export_destination().display().to_string(),
+            "template":"{title}-{index}",
+            "on_collision":"numbered",
+            "format":{"mode":"original"}
+        }),
         "perf.start" | "perf.clear" | "perf.report" => json!({}),
         // Stop needs a running capture; the hunt checks the refusal never panics.
         "perf.stop" => json!({}),
@@ -567,6 +626,8 @@ fn template(id: &str) -> (Session, Value) {
         "history.copy" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         // A text result never writes, so the hunt leaves no files behind.
         "history.export" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"path":"/nodecraft-panic-hunt/out.png"}),
+        "export.status" => json!({}),
+        "export.cancel" => json!({"id":1}),
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),
         "node.create_connected" => json!({"canvas":canvas(),"id":node_id(7),"kind":"structure.router","pos":{"x":1,"y":2},
             "from":{"node":node_id(1),"port":"out"},"edge":nodecraft_types::EdgeId::from_bytes([0x77; 16])}),
@@ -590,7 +651,7 @@ fn template(id: &str) -> (Session, Value) {
         "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
         "file.save" => Value::Null,
         "file.save_as" => json!({"location":"new.ncraft"}),
-        "file.cancel" => json!({}),
+        "file.cancel" | "file.focus_owner" => json!({}),
         // Real memory store and private package files, never caller-selected filesystem paths.
         "plugins.list" | "plugins.prune" => json!({}),
         "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),
@@ -641,6 +702,8 @@ fn template(id: &str) -> (Session, Value) {
         "layers.align" => json!({"canvas":canvas(),"id":node_id(9),"layers":["t1"],"to":"center"}),
         "layers.font_add" => json!({"canvas":canvas(),"id":node_id(9),"font":{"hash":"00".repeat(32),"mime":"font/ttf"}}),
         "layers.font_remove" => json!({"canvas":canvas(),"id":node_id(9),"name":"Lato"}),
+        "deck.font_add" => json!({"canvas":canvas(),"id":node_id(9),"font":{"hash":"00".repeat(32),"mime":"font/ttf"}}),
+        "deck.font_remove" => json!({"canvas":canvas(),"id":node_id(9),"name":"Lato"}),
         "deck.create" => json!({"canvas":canvas(),"id":node_id(9),"pos":{"x":1,"y":2},"title":"Pitch","nodes":[node_id(1),node_id(2)]}),
         "deck.list" => json!({"canvas":canvas(),"id":node_id(9)}),
         "deck.set" => json!({"canvas":canvas(),"id":node_id(9),"slides":[{"id":"s1","name":"One","layers":[]},{"name":"Two"}]}),
@@ -688,6 +751,8 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"style":node_id(6),"id":node_id(7),"edge":nodecraft_types::EdgeId::from_bytes([0x79; 16]),"pos":{"x":1,"y":2}})
         }
         "style.use" => json!({"canvas":canvas(),"style":node_id(6),"target":node_id(5),"edge":nodecraft_types::EdgeId::from_bytes([0x79; 16])}),
+        "folder.fill" => json!({"canvas":canvas(),"id":node_id(5),"folder":"Shots","modality":"text",
+            "files":[{"name":"a.txt","value":{"type":"text","value":"first"}},{"name":"b/c.txt","value":{"type":"text","value":"second"}}]}),
         "document.use_pages" => json!({"canvas":canvas(),"node":node_id(5),"first":2,"last":3}),
         "document.extract_page" => json!({"canvas":canvas(),"node":node_id(5),"page":1,"id":node_id(7),"at":{"x":400,"y":20}}),
         "document.extract_text" => json!({"canvas":canvas(),"node":node_id(5),"page":1,"region":[0.0,0.0,1.0,1.0],"id":node_id(7),"at":{"x":400,"y":20}}),
@@ -701,6 +766,7 @@ fn template(id: &str) -> (Session, Value) {
 #[test]
 #[ignore = "valid command templates with individual field mutations"]
 fn typed_template_panic_hunt() {
+    let _cleanup = RemoveExportFolder::hold();
     let ids: Vec<_> = Session::new(common::project()).unwrap().registry().specs().map(|spec| spec.id).collect();
     let mut successes = 0;
     for id in ids {
@@ -859,7 +925,8 @@ fn typed_template_panic_hunt() {
                         assert_ne!(after, before, "a successful paste is a document edit");
                         assert_eq!(session.revision(), revision + 1);
                     }
-                    if id.starts_with("file.") {
+                    if id.starts_with("file.") || id.starts_with("export.") {
+                        // File and export commands write outside the project; neither edits it.
                         assert_eq!(after, before);
                         continue;
                     }

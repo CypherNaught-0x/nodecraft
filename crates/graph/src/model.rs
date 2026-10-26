@@ -149,6 +149,10 @@ pub struct JobSettings {
     /// for `model`, so this is never read as money.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billable_units: Option<BillableUnits>,
+    /// Execution time reported by the provider in milliseconds, excluding queue time (#339).
+    /// Never interpreted as money; absent for old results or when the provider does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_ms: Option<u64>,
 }
 
 /// One input a provider job was given, in a role such as `prompt` or `image`.

@@ -1,0 +1,43 @@
+# Direct Google compatibility API; verified 2026-10-24.
+# https://ai.google.dev/gemini-api/docs/openai
+# https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
+# Account tiers and thinking usage prevent this adapter from promising an exact dollar quote.
+[[model]]
+id = "gemini-llm.3.8-flash"
+provider = "gemini-llm"
+provider_model = "gemini-3.8-flash"
+label = "Gemini 3.8 Flash"
+description = "Google text generation with the Gemini API key. Charged by usage; dollar cost is unknown before and after the run."
+latency_s = 15
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Thinking can use part of the output allowance."
+control = { type = "unsigned", min = "1", max = "65536" }
+default = { type = "unsigned", value = "4096" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "gemini-llm.3.8-flash"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Thinking can use part of the output allowance."
+control = { type = "unsigned", min = "1", max = "65536" }
+default = { type = "unsigned", value = "4096" }

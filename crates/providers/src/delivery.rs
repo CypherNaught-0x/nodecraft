@@ -26,6 +26,7 @@ struct Operation {
 /// ```
 pub struct SubmitContext {
     state: Arc<Mutex<Operation>>,
+    poll_deadline_ms: Option<u64>,
     /// Text streamed so far and not yet reported, when the runner asked for it (#504).
     text: Option<Mutex<Streamed>>,
     /// Where a paid request is saved before it is sent, when the runner keeps them (#664).
@@ -96,11 +97,20 @@ pub(crate) struct SubmitNotAccepted;
 
 impl SubmitContext {
     pub(crate) fn new() -> Self {
-        Self { state: Arc::default(), text: None, stager: None, preview: None }
+        Self { state: Arc::default(), poll_deadline_ms: None, text: None, stager: None, preview: None }
     }
     /// A context that collects a text answer as it streams, for [`Self::take_text`].
     pub(crate) fn streaming_text() -> Self {
-        Self { state: Arc::default(), text: Some(Mutex::default()), stager: None, preview: None }
+        Self { state: Arc::default(), poll_deadline_ms: None, text: Some(Mutex::default()), stager: None, preview: None }
+    }
+    /// The host's local polling duration, for adapters that also support server lifetime limits.
+    /// Server creation and local polling start at different instants.
+    pub(crate) fn with_poll_deadline(mut self, milliseconds: u64) -> Self {
+        self.poll_deadline_ms = Some(milliseconds);
+        self
+    }
+    pub(crate) fn poll_deadline_ms(&self) -> Option<u64> {
+        self.poll_deadline_ms
     }
     /// Saves staged requests with `stager` (see [`Self::stage`]).
     pub(crate) fn with_stager(mut self, stager: Option<Arc<crate::Stager>>) -> Self {
