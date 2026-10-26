@@ -57,7 +57,8 @@ fn crossing_curve_with_both_cards_outside_has_visible_workload() {
     assert_eq!(report["workload"]["visible_edges"], 1, "a painted crossing curve cannot disappear from workload just because both cards are outside");
     // The draw loop excludes a moving committed edge even if a transient preview is shown.
     h.state_mut().wiring = Some(super::super::Wiring {
-        from: nodecraft_graph::Endpoint { node: nodecraft_types::NodeId::from_bytes([1; 16]), port: "out".into() },
+        side: crate::noodle::Side::Output,
+        anchor: nodecraft_graph::Endpoint { node: nodecraft_types::NodeId::from_bytes([1; 16]), port: "out".into() },
         port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: false },
         moving: Some(nodecraft_types::EdgeId::from_bytes([10; 16])),
     });

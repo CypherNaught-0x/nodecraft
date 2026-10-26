@@ -124,7 +124,7 @@ fn tall_lower_ports_survive_broadphase_and_start_their_own_wire() {
         pointer(&mut h, at, true);
         h.hover_at(at + Vec2::new(5.0, 0.0));
         h.run();
-        assert!(matches!(&h.state().wiring, Some(wiring) if wiring.from.node == id && wiring.from.port == format!("out{}", count - 1)));
+        assert!(matches!(&h.state().wiring, Some(wiring) if wiring.anchor.node == id && wiring.anchor.port == format!("out{}", count - 1)));
         pointer(&mut h, at + Vec2::new(5.0, 0.0), false);
     }
 }

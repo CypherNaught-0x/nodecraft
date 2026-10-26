@@ -247,9 +247,10 @@ struct Marquee {
     cancelled: bool,
 }
 
-/// A noodle being dragged from an output port, or picked up by its input end to reroute it.
+/// A new wire from either port side, or an existing wire picked up to reroute its input end.
 struct Wiring {
-    from: Endpoint,
+    anchor: Endpoint,
+    side: Side,
     port_type: PortType,
     /// The existing edge being rerouted; dropping it on empty canvas disconnects it.
     moving: Option<EdgeId>,
@@ -396,6 +397,7 @@ mod queue_panel;
 mod reader;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
+mod reverse_wiring;
 mod runs;
 mod search;
 mod shader_editor;
@@ -2125,15 +2127,31 @@ impl NodeCraftApp {
                         }
                         self.wiring = match side {
                             Side::Output => node.outputs.iter().find(|p| p.name == *port).map(|p| Wiring {
-                                from: Endpoint { node: node.id, port: port.clone() },
+                                anchor: Endpoint { node: node.id, port: port.clone() },
+                                side: Side::Output,
                                 port_type: p.port_type,
                                 moving: None,
                             }),
                             // Grabbing a connected input picks up its last noodle to reroute it.
-                            Side::Input => noodle::into_port(canvas, &Endpoint { node: node.id, port: port.clone() }).last().and_then(|edge| {
-                                let source = canvas.nodes().get(&edge.from.node)?.outputs.iter().find(|p| p.name == edge.from.port)?;
-                                Some(Wiring { from: edge.from.clone(), port_type: source.port_type, moving: Some(edge.id) })
-                            }),
+                            Side::Input => {
+                                let to = Endpoint { node: node.id, port: port.clone() };
+                                match noodle::into_port(canvas, &to).last() {
+                                    Some(edge) => canvas.nodes().get(&edge.from.node).and_then(|source| {
+                                        source.outputs.iter().find(|p| p.name == edge.from.port).map(|source| Wiring {
+                                            anchor: edge.from.clone(),
+                                            side: Side::Output,
+                                            port_type: source.port_type,
+                                            moving: Some(edge.id),
+                                        })
+                                    }),
+                                    None => self.input_ports.get(node).iter().find(|p| p.name == *port).map(|input| Wiring {
+                                        anchor: to,
+                                        side: Side::Input,
+                                        port_type: input.port_type,
+                                        moving: None,
+                                    }),
+                                }
+                            }
                         };
                     }
                     // A Choice popup can close while producing its parameter intent over the
@@ -2193,7 +2211,10 @@ impl NodeCraftApp {
                 }
             }
             // A noodle whose source node or picked-up edge vanished mid-drag (Delete, undo) is dropped.
-            if self.wiring.as_ref().is_some_and(|w| !canvas.nodes().contains_key(&w.from.node) || w.moving.is_some_and(|id| !canvas.edges().contains_key(&id)))
+            if self
+                .wiring
+                .as_ref()
+                .is_some_and(|w| !canvas.nodes().contains_key(&w.anchor.node) || w.moving.is_some_and(|id| !canvas.edges().contains_key(&id)))
             {
                 self.wiring = None;
             }
@@ -3026,14 +3047,47 @@ impl NodeCraftApp {
     }
 
     /// Resolve the same default instance that creation commands use, without publishing it.
-    fn creation_size(&self, kind: &str, id: NodeId, pos: nodecraft_graph::Position, output: Option<PortType>, t: &Tokens) -> Result<Vec2, Error> {
-        let mut node = match output {
-            Some(output) => nodecraft_engine::turn_into_cmds::instance_for(self.session.kinds(), kind, id, output)?.0,
-            None => nodecraft_engine::create_cmds::instance(self.session.kinds(), kind, id)?,
+    fn creation_size(&self, kind: &str, id: NodeId, pos: nodecraft_graph::Position, connection: Option<(Side, PortType)>, t: &Tokens) -> Result<Vec2, Error> {
+        self.creation_geometry(kind, id, pos, connection, t).map(|(size, _)| size)
+    }
+
+    fn creation_geometry(
+        &self,
+        kind: &str,
+        id: NodeId,
+        pos: nodecraft_graph::Position,
+        connection: Option<(Side, PortType)>,
+        t: &Tokens,
+    ) -> Result<(Vec2, Option<Vec2>), Error> {
+        let (mut node, port) = match connection {
+            Some((Side::Output, output)) => {
+                let (node, name) = nodecraft_engine::turn_into_cmds::instance_for(self.session.kinds(), kind, id, output)?;
+                (node, Some((Side::Input, name)))
+            }
+            Some((Side::Input, input)) => {
+                let (node, name) = nodecraft_engine::turn_into_cmds::instance_feeding(self.session.kinds(), kind, id, input)?;
+                (node, Some((Side::Output, name)))
+            }
+            None => (nodecraft_engine::create_cmds::instance(self.session.kinds(), kind, id)?, None),
         };
         node.pos = pos;
         let admitted = admission::admit_uncached(&self.session, &node);
-        Ok(card::world_size(&node, admitted.as_ref().map(|a| a.descriptor.as_ref()), t))
+        let size = card::world_size(&node, admitted.as_ref().map(|a| a.descriptor.as_ref()), t);
+        let anchor = match port {
+            Some((side, name)) => {
+                let ports = match side {
+                    Side::Input => &node.inputs,
+                    Side::Output => &node.outputs,
+                };
+                let index = ports
+                    .iter()
+                    .position(|port| port.name == name)
+                    .ok_or_else(|| Error::new(ErrorKind::Conflict, "That node's compatible port is unavailable."))?;
+                Some(noodle::anchor(Rect::from_min_size(Pos2::ZERO, size), side, index, ports.len()).to_vec2())
+            }
+            None => None,
+        };
+        Ok((size, anchor))
     }
 
     /// Create a node of `kind` centred on `world`, select it, and report failures as a notice.
@@ -3066,23 +3120,33 @@ impl NodeCraftApp {
     /// Creates `kind` where the "Turn into" menu opened, fed by its noodle, as one undo step.
     fn create_connected(&mut self, kind: &str, menu: &TurnInto) {
         let t = self.theme.tokens();
-        // The new card's input side sits where the noodle was dropped.
-        let pos = nodecraft_graph::Position { x: menu.world.x, y: menu.world.y - t.card_min_height * 0.5 };
+        let left = if menu.side == Side::Input { menu.world.x - t.card_width } else { menu.world.x };
+        let pos = nodecraft_graph::Position { x: left, y: menu.world.y - t.card_min_height * 0.5 };
         let document = self.session.document();
         let seed = ("turn-into", kind, self.session.revision(), pos.x.to_bits(), pos.y.to_bits());
         let (Some(id), Some(edge)) = (ids::node_id(document, seed), ids::edge_id(document, seed)) else {
             self.notice = Some("Couldn't allocate a node id; try again.".into());
             return;
         };
-        let size = match self.creation_size(kind, id, pos, Some(menu.output), t) {
-            Ok(size) => size,
+        let (size, anchor) = match self.creation_geometry(kind, id, pos, Some((menu.side, menu.port_type)), t) {
+            Ok(geometry) => geometry,
             Err(error) => {
                 self.notice = Some(error.message);
                 return;
             }
         };
-        let pos = nodecraft_graph::Position { x: menu.world.x, y: menu.world.y - size.y * 0.5 };
-        let params = json!({"canvas": self.canvas, "id": id, "kind": kind, "pos": pos, "from": menu.from, "edge": edge});
+        let pos = if menu.side == Side::Input {
+            let Some(anchor) = anchor else {
+                self.notice = Some("That node's compatible port is unavailable.".into());
+                return;
+            };
+            nodecraft_graph::Position { x: menu.world.x - anchor.x, y: menu.world.y - anchor.y }
+        } else {
+            // Preserve the existing downstream-placement convention.
+            nodecraft_graph::Position { x: menu.world.x, y: menu.world.y - size.y * 0.5 }
+        };
+        let mut params = json!({"canvas": self.canvas, "id": id, "kind": kind, "pos": pos, "edge": edge});
+        params[if menu.side == Side::Input { "to" } else { "from" }] = json!(menu.anchor);
         match self.session.dispatch("node.create_connected", &params) {
             Ok(_) => {
                 self.notice = None;
@@ -3133,23 +3197,26 @@ impl NodeCraftApp {
         pointer: Pos2,
         t: &Tokens,
     ) -> (Option<(&'static str, serde_json::Value)>, Option<String>, Option<TurnInto>) {
+        if wiring.side == Side::Input {
+            return self.wire_from_input(ui, canvas, wiring, pointer, t);
+        }
         let kinds = self.session.kinds();
         let origin = self.viewport.min;
         let Some(start) = canvas
             .nodes()
-            .get(&wiring.from.node)
-            .and_then(|source| noodle::port_anchor(source, card_geometry(&self.painted, kinds, source, t), Side::Output, &wiring.from.port))
+            .get(&wiring.anchor.node)
+            .and_then(|source| noodle::port_anchor(source, card_geometry(&self.painted, kinds, source, t), Side::Output, &wiring.anchor.port))
         else {
             return (None, None, None);
         };
         // Nodes that already feed the source: connecting into any of them would close a loop.
-        let feeding = selection::upstream(canvas, &[wiring.from.node].into_iter().collect());
+        let feeding = selection::upstream(canvas, &[wiring.anchor.node].into_iter().collect());
         // Inputs this output already feeds (other than the noodle being moved), built once so
         // each candidate input is a set lookup rather than a scan of every edge.
         let fed: std::collections::BTreeSet<(NodeId, &str)> =
-            canvas.edges().values().filter(|e| e.from == wiring.from && Some(e.id) != wiring.moving).map(|e| (e.to.node, e.to.port.as_str())).collect();
+            canvas.edges().values().filter(|e| e.from == wiring.anchor && Some(e.id) != wiring.moving).map(|e| (e.to.node, e.to.port.as_str())).collect();
         let accepts = |node: &Node, input: &nodecraft_graph::Port| -> Result<(), String> {
-            if node.id == wiring.from.node {
+            if node.id == wiring.anchor.node {
                 Err("A node can't connect to itself.".into())
             } else if !noodle::compatible(wiring.port_type, input.port_type) {
                 Err(if wiring.port_type.modality == input.port_type.modality {
@@ -3207,7 +3274,7 @@ impl NodeCraftApp {
             if on_card || !on_canvas {
                 return (None, None, None);
             }
-            return (None, None, Some(TurnInto::new(self.session.kinds(), wiring.from.clone(), wiring.port_type, world, pointer)));
+            return (None, None, Some(TurnInto::new(self.session.kinds(), wiring.anchor.clone(), wiring.port_type, world, pointer)));
         };
         if let Err(message) = accepts(node, input) {
             return (None, Some(message), None);
@@ -3228,10 +3295,10 @@ impl NodeCraftApp {
             replace.extend(occupants.first().map(|e| e.id));
             0
         };
-        let Some(id) = wiring.moving.or_else(|| noodle::new_edge_id(self.session.document(), &wiring.from, &to, self.session.revision())) else {
+        let Some(id) = wiring.moving.or_else(|| noodle::new_edge_id(self.session.document(), &wiring.anchor, &to, self.session.revision())) else {
             return (None, Some("Couldn't allocate a connection id; try again.".into()), None);
         };
-        let edge = json!({"id": id, "from": wiring.from, "to": to, "order": order});
+        let edge = json!({"id": id, "from": wiring.anchor, "to": to, "order": order});
         if replace.is_empty() {
             (Some(("edge.connect", json!({"canvas": self.canvas, "edge": edge}))), None, None)
         } else {
@@ -3515,6 +3582,8 @@ mod video_tests;
 mod marquee_tests;
 #[cfg(test)]
 mod palette_scroll_tests;
+#[cfg(test)]
+mod reverse_wiring_tests;
 #[cfg(test)]
 mod turn_into_tests;
 

@@ -44,6 +44,11 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 
 ## Limits
 
+`node.create_connected` accepts exactly one existing endpoint: `from` creates a node that consumes
+an output, while `to` creates a node that feeds an input. Both take fresh node/edge IDs and an
+explicit position, and add the node and wire in one undo step. `to` refuses an occupied single
+input and appends to a list input in order. `commands.list` exposes the complete parameter schema.
+
 `canvas.paste` accepts original node payloads with an optional `node_ids` object mapping every
 original node ID to a unique fresh ID. It rebases node IDs, wire endpoints and supported Deck
 source references together, as one undo step. Wire IDs must already be fresh. Omit `node_ids`

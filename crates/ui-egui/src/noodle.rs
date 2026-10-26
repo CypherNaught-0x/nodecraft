@@ -114,7 +114,7 @@ pub fn modality_phrase(modality: nodecraft_types::Modality) -> &'static str {
 /// The same typing rule the document enforces: equal modality, and a list output only into a
 /// list input.
 pub fn compatible(output: PortType, input: PortType) -> bool {
-    output.modality == input.modality && (!output.many || input.many)
+    nodecraft_engine::turn_into_cmds::compatible(output, input)
 }
 
 /// Edges currently feeding `to`, in input order.

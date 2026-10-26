@@ -764,14 +764,28 @@ fn template(id: &str) -> (Session, Value) {
     (session, params)
 }
 
+fn connected_template(id: &str, feeding: bool) -> (Session, Value) {
+    let (mut session, mut params) = template(id);
+    if feeding {
+        assert_eq!(id, "node.create_connected");
+        let edge = common::edge();
+        session.dispatch("edge.disconnect", &json!({"canvas":common::canvas(),"id":edge.id})).unwrap();
+        params.as_object_mut().unwrap().remove("from");
+        params["to"] = json!(edge.to);
+        params["kind"] = json!("source.text");
+    }
+    (session, params)
+}
+
 #[test]
 #[ignore = "valid command templates with individual field mutations"]
 fn typed_template_panic_hunt() {
     let _cleanup = RemoveExportFolder::hold();
-    let ids: Vec<_> = Session::new(common::project()).unwrap().registry().specs().map(|spec| spec.id).collect();
+    let mut ids: Vec<_> = Session::new(common::project()).unwrap().registry().specs().map(|spec| (spec.id, false)).collect();
+    ids.push(("node.create_connected", true));
     let mut successes = 0;
-    for id in ids {
-        let (_, valid) = template(id);
+    for (id, feeding) in ids {
+        let (_, valid) = connected_template(id, feeding);
         let mut cases = vec![valid.clone()];
         if let Some(object) = valid.as_object() {
             for key in object.keys() {
@@ -799,6 +813,10 @@ fn typed_template_panic_hunt() {
             "/edge/from/port",
             "/edge/to/node",
             "/edge/order",
+            "/from/node",
+            "/from/port",
+            "/to/node",
+            "/to/port",
             "/tag/id",
             "/tag/title",
             "/tag/color",
@@ -819,7 +837,7 @@ fn typed_template_panic_hunt() {
             }
         }
         for mut params in cases {
-            let (mut session, fresh) = template(id);
+            let (mut session, fresh) = connected_template(id, feeding);
             // Keep the valid token bound to this exact template Session; preserve deliberately
             // mutated/missing tokens and all other mutations for the adversarial cases.
             if id == "run.start" && params.pointer("/accept/token") == valid.pointer("/accept/token") {
@@ -836,6 +854,9 @@ fn typed_template_panic_hunt() {
             let events = session.events_since(0).unwrap();
             let history = (session.can_undo(), session.can_redo());
             let result = session.dispatch(id, &params);
+            if feeding && params == valid {
+                assert!(result.is_ok(), "the valid upstream-creation template must reach the new command path: {result:?}");
+            }
             // The font commands need a font file the template's project doesn't hold; their own
             // tests cover a valid add and remove.
             let needs_font = matches!(id, "layers.font_add" | "layers.font_remove");

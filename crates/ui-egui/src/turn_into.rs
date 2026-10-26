@@ -1,6 +1,7 @@
 //! "Turn into" (#60): dropping a new noodle on empty canvas opens a menu of the node kinds that
 //! can take it. A kind's quick-add key, or ↑/↓ and ↵, or a click picks one; the app then runs
 //! `node.create_connected`, so the node and its connection are one undo step.
+use crate::noodle::Side;
 use crate::theme::Tokens;
 use egui::{Pos2, Vec2};
 use nodecraft_graph::Endpoint;
@@ -18,6 +19,14 @@ pub struct Entry {
 /// What a noodle carrying `output` can turn into, with each kind's single-key shortcut.
 pub fn entries(kinds: &Registry, output: PortType) -> Vec<Entry> {
     nodecraft_engine::turn_into_cmds::kinds_accepting(kinds, output)
+        .into_iter()
+        .map(|d| Entry { kind: d.id.clone(), label: d.label.clone(), key: single_key(d.quick_add.as_deref()) })
+        .collect()
+}
+
+/// Kinds that can provide a compatible output for an existing input.
+pub fn feeding_entries(kinds: &Registry, input: PortType) -> Vec<Entry> {
+    nodecraft_engine::turn_into_cmds::kinds_feeding(kinds, input)
         .into_iter()
         .map(|d| Entry { kind: d.id.clone(), label: d.label.clone(), key: single_key(d.quick_add.as_deref()) })
         .collect()
@@ -45,8 +54,9 @@ pub enum Outcome {
 /// An open menu: the noodle it continues and where the new node goes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TurnInto {
-    pub from: Endpoint,
-    pub output: PortType,
+    pub anchor: Endpoint,
+    pub side: Side,
+    pub port_type: PortType,
     /// World position the new node goes to.
     pub world: Pos2,
     /// Screen position of the menu's top-left corner.
@@ -60,7 +70,19 @@ pub struct TurnInto {
 
 impl TurnInto {
     pub fn new(kinds: &Registry, from: Endpoint, output: PortType, world: Pos2, screen: Pos2) -> Self {
-        Self { from, output, world, screen, highlighted: 0, entries: entries(kinds, output), opened: true }
+        Self::for_port(kinds, from, Side::Output, output, world, screen)
+    }
+
+    pub fn feeding(kinds: &Registry, to: Endpoint, input: PortType, world: Pos2, screen: Pos2) -> Self {
+        Self::for_port(kinds, to, Side::Input, input, world, screen)
+    }
+
+    fn for_port(kinds: &Registry, anchor: Endpoint, side: Side, port_type: PortType, world: Pos2, screen: Pos2) -> Self {
+        let entries = match side {
+            Side::Output => entries(kinds, port_type),
+            Side::Input => feeding_entries(kinds, port_type),
+        };
+        Self { anchor, side, port_type, world, screen, highlighted: 0, entries, opened: true }
     }
 
     /// One frame: a kind's key, or ↑/↓ and ↵, or a click picks; Escape or a click elsewhere closes.
@@ -72,6 +94,10 @@ impl TurnInto {
     }
 
     fn frame(&mut self, ctx: &egui::Context, entries: &[Entry], t: &Tokens) -> Outcome {
+        let title = match self.side {
+            Side::Output => "Turn into",
+            Side::Input => "Connect from",
+        };
         // Letters typed into a focused text field (search, a card) are that field's, not picks.
         let field_focused = crate::canvas::text_input_focused(ctx);
         let (up, down, enter, escape, typed) = ctx.input_mut(|i| {
@@ -114,9 +140,13 @@ impl TurnInto {
                 .inner_margin(t.control_gap * 2.0)
                 .show(ui, |ui| {
                     ui.set_width(t.card_width * 0.75);
-                    ui.label(egui::RichText::new("Turn into").color(t.text_muted));
+                    ui.label(egui::RichText::new(title).color(t.text_muted));
                     if entries.is_empty() {
-                        ui.label(egui::RichText::new("No node takes this connection yet").color(t.text_muted));
+                        let message = match self.side {
+                            Side::Output => "No node takes this connection yet",
+                            Side::Input => "No node has a compatible output",
+                        };
+                        ui.label(egui::RichText::new(message).color(t.text_muted));
                     }
                     let row_height = ui.spacing().interact_size.y;
                     let stride = row_height + ui.spacing().item_spacing.y;
@@ -136,7 +166,7 @@ impl TurnInto {
                             let response = ui
                                 .add(egui::Button::selectable(row == self.highlighted, text).truncate().min_size(Vec2::new(ui.available_width(), row_height)));
                             response.widget_info(|| {
-                                egui::WidgetInfo::selected(egui::WidgetType::Button, true, row == self.highlighted, format!("Turn into {}", entry.label))
+                                egui::WidgetInfo::selected(egui::WidgetType::Button, true, row == self.highlighted, format!("{title} {}", entry.label))
                             });
                             if response.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
                                 self.highlighted = row;
