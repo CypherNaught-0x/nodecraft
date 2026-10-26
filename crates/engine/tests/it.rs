@@ -162,3 +162,6 @@ mod video_generation559;
 
 #[path = "huggingface48.rs"]
 mod huggingface48;
+
+#[path = "gemini44.rs"]
+mod gemini44;

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 /// Every optional provider adapter: clippy, tests and the wasm check build them all.
-const PROVIDER_FEATURES: &str = "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/runway,nodecraft-providers/seedream,nodecraft-providers/bfl,nodecraft-providers/gemini-images,nodecraft-providers/huggingface,nodecraft-providers/gemini-video,nodecraft-providers/google-veo,nodecraft-providers/google-tts,nodecraft-providers/google-gemini-images,nodecraft-providers/seedance,nodecraft-providers/fal,nodecraft-providers/tripo,nodecraft-providers/meshy,nodecraft-providers/higgsfield,nodecraft-providers/kling,nodecraft-providers/elevenlabs,nodecraft-providers/comfy-cloud";
+const PROVIDER_FEATURES: &str = "nodecraft-providers/openai-images,nodecraft-providers/replicate,nodecraft-providers/runway,nodecraft-providers/seedream,nodecraft-providers/bfl,nodecraft-providers/gemini-images,nodecraft-providers/gemini-llm,nodecraft-providers/huggingface,nodecraft-providers/gemini-video,nodecraft-providers/google-veo,nodecraft-providers/google-tts,nodecraft-providers/google-gemini-images,nodecraft-providers/seedance,nodecraft-providers/fal,nodecraft-providers/tripo,nodecraft-providers/meshy,nodecraft-providers/higgsfield,nodecraft-providers/kling,nodecraft-providers/elevenlabs,nodecraft-providers/comfy-cloud";
 
 const USAGE: &str = "\
 usage: cargo xtask <command>

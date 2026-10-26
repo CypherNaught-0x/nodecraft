@@ -1431,3 +1431,32 @@ lost-reply driver path. The opt-in smoke test requires `NODECRAFT_LIVE_HUGGINGFA
 Contract references: [router and provider selection](https://huggingface.co/docs/inference-providers/en/index),
 [chat request schema](https://huggingface.co/docs/inference-providers/tasks/chat-completion),
 [billing](https://huggingface.co/docs/inference-providers/pricing).
+
+## Gemini text (`gemini-llm` feature)
+
+The Gemini 3.8 Flash text card (#44) calls Google directly through its documented
+OpenAI-compatible chat endpoint. Add the API key to the existing `gemini` account in
+API keys, choose **Gemini 3.8 Flash** on a text generation card, and accept the usage-based
+price before running. No gateway or new SDK is needed. The native host is wired; browser
+provider settings do not expose this adapter yet.
+
+Only text is advertised: at most 64 input turns and 1 MiB total text, with a requested
+`max_tokens` between 1 and 65,536 (default 4,096). The host's usual streaming text path is
+supported. Images, PDFs, tools, thought-signature replay, grounding and Interactions state
+are outside this card's scope. Output uses the shared chat response/stream byte caps.
+
+Google returns token usage; this adapter does not infer an exact dollar cost across account
+tiers and thinking usage. Quotes therefore remain explicitly unknown, never free. Lost,
+malformed or interrupted replies are never automatically resubmitted. A sent synchronous
+request cannot confirm remote cancellation and has no resumable polling handle. Credentials
+use secret headers and the shared transport's redirect protections.
+
+Offline contract, real host-routing, unknown-price admission, lost-reply driver and actual
+picker tests run in CI. The opt-in smoke test makes one real request and may cost money:
+`NODECRAFT_LIVE_GEMINI_LLM=1 GEMINI_API_KEY=… cargo test -p nodecraft-providers --features
+http,gemini-llm --test live_llm live_gemini44`. It is disabled unless explicitly enabled.
+
+Contract checked 2026-10-24: [compatibility API](https://ai.google.dev/gemini-api/docs/openai),
+[model limits](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash),
+[pricing](https://ai.google.dev/gemini-api/docs/pricing). This implements #44 by adapter reuse,
+not a new native `generateContent` or Interactions dialect; #489 remains a separate discussion.

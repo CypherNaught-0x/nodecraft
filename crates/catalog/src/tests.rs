@@ -256,6 +256,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.wan22", false),
             ("fal.wan22-i2v", false),
             ("fal.wan22-s2v", false),
+            ("gemini-llm.3.8-flash", false),
             ("gemini-video.omni-flash", false),
             ("google-tts.gemini-2.5-pro", false),
             ("google-tts.chirp3-hd", false),

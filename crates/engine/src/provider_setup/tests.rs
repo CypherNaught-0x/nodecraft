@@ -377,3 +377,28 @@ fn huggingface48_host_uses_huggingface_key_and_reports_missing_setup() {
     assert_eq!(request.url, "https://router.huggingface.co/v1/chat/completions");
     assert!(request.headers.iter().any(|(name, value)| name == "Authorization" && value == "Bearer public-huggingface-key"));
 }
+
+#[test]
+fn gemini44_host_uses_shared_gemini_key_and_reports_missing_setup() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    assert!(matches!(make("gemini-llm",&env(&keys,&http,&settings)),Err(Readiness::NeedsKey{account}) if account=="gemini"));
+    assert_eq!(key_account("gemini-llm"), Some("gemini"));
+    keys.set(&Account::new("gemini").unwrap(), &Secret::new("public-gemini-key").unwrap()).unwrap();
+    let provider = make("gemini-llm", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "gemini-llm");
+    assert!(!provider.retry_ambiguous_submit());
+    let job = ProviderJob {
+        model: nodecraft_providers::gemini_llm::MODEL.into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A public harbour".into() }],
+        idempotency_key: "fixture".into(),
+    };
+    assert!(futures::executor::block_on(provider.submit(&job)).is_err());
+    assert_eq!(http.0.load(Ordering::SeqCst), 1);
+    let requests = http.1.lock().unwrap();
+    let request = &requests[0];
+    assert_eq!(request.url, "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
+    assert!(request.headers.iter().any(|(name, value)| name == "Authorization" && value == "Bearer public-gemini-key"));
+}

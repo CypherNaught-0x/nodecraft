@@ -341,3 +341,6 @@ mod bfl33_tests;
 
 #[cfg(test)]
 mod huggingface48_tests;
+
+#[cfg(test)]
+mod gemini44_tests;
