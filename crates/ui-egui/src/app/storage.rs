@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// Writes saves on a thread of their own (#461), so a save's durability syncs never hold up
 /// a frame.
-struct ThreadSaves;
+pub(super) struct ThreadSaves;
 impl nodecraft_engine::save_runner::SaveRunner for ThreadSaves {
     fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
         // The job stays reachable here, so a thread that can't start hands it back to run inline.
@@ -182,6 +182,43 @@ fn keep_unrecovered(recovery: &std::path::Path, storage: &NativeStorage) -> Resu
 }
 
 impl NodeCraftApp {
+    /// Shared startup path, also exercised without keychain/network workers in UI tests.
+    pub(super) fn from_storage_setup(
+        services: nodecraft_engine::commands::Services,
+        setup: Option<StorageSetup>,
+        missing_reason: &str,
+    ) -> Result<(Self, Option<PathBuf>, bool), Error> {
+        match setup.map(Self::storage_session) {
+            Some(Ok((session, canvas, kept, open_error))) => {
+                let mut app = Self::from_session(session.with_services(services), canvas)?;
+                if let Some(error) = open_error {
+                    app.notice = Some(format!(
+                        "That project couldn't be opened: {}. The new project can still be saved; use File > Open to choose another file.",
+                        error.message
+                    ));
+                }
+                Ok((app, kept, true))
+            }
+            failed => {
+                let (reason, owner_busy) = match failed {
+                    Some(Err(error)) => {
+                        log::error!("project storage unavailable: {}", error.message);
+                        let busy = error.kind == ErrorKind::Busy && error.message == "recovery location is already in use";
+                        let action = if busy {
+                            "Another NodeCraft window holds the recovery journal. Focus that window and use its File menu to open or save a project. This window's edits cannot be saved."
+                        } else {
+                            "Storage could not start. Check the recovery folder's access and free space, then close this window and reopen NodeCraft. This window's edits cannot be saved."
+                        };
+                        (format!("Project files are unavailable: {}. {action}", error.message), busy)
+                    }
+                    _ => (missing_reason.to_owned(), false),
+                };
+                let mut app = Self::with_services(services)?;
+                app.notice = Some(app.remember_storage_problem(reason, owner_busy));
+                Ok((app, None, false))
+            }
+        }
+    }
     /// A session over native storage, starting from the sample project or the file in `setup`,
     /// and the canvas to show, plus where an earlier session's unrecovered journal was kept.
     pub(super) fn storage_session(setup: StorageSetup) -> Result<(Session, nodecraft_types::CanvasId, Option<PathBuf>, Option<Error>), Error> {

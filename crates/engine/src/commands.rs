@@ -125,6 +125,7 @@ pub enum Phase {
 
 pub struct Context<'a> {
     pub(crate) assets: &'a nodecraft_format::AssetStore,
+    pub(crate) exports: &'a crate::export_job::Exports,
     pub(crate) routing: &'a crate::provider_routing::RoutingAuthority,
     pub(crate) execution: &'a crate::execution_identity::ExecutionSource,
     pub document: &'a Project,
@@ -178,6 +179,9 @@ pub enum Effect {
     },
     /// Ask the background save or open to stop (`file.cancel`); never waits for it.
     CancelFile,
+    CancelExport {
+        id: u64,
+    },
     Save {
         location: Option<nodecraft_format::StorageLocation>,
         /// Write on the host's save runner, when it has one, instead of inline.
@@ -185,6 +189,16 @@ pub enum Effect {
     },
     PreparedRun {
         prepared: Box<crate::run_cmds::PreparedRun>,
+    },
+    /// Write a batch of results into an app-authorized folder (`export.local_run`, #98). The
+    /// session performs the writes because handlers must not do I/O; the document is not involved
+    /// either way. Distinct from `Export` below, which is `history.export` (#557) writing one file.
+    ///
+    /// Unlike `Export`, this one is not in the pending-open bypass lists: a batch writes many
+    /// files, so it settles a pending save first and refuses to run while a project open is in
+    /// flight rather than reading a store that is being replaced.
+    LocalExport {
+        plan: nodecraft_format::export::ExportPlan,
     },
     Service {
         capability: &'static str,
@@ -206,6 +220,7 @@ pub enum Effect {
         what: crate::export::Exported,
         path: std::path::PathBuf,
         overwrite: bool,
+        background: bool,
     },
     /// Put a text or image result on the OS clipboard (`history.copy`).
     Copy {
@@ -252,7 +267,7 @@ impl Registry {
         let mut registry = Self::default();
         // A flat list rather than a chain of iterators: one `Chain` per module nests the
         // iterator type deeper than the compiler's recursion limit.
-        let groups: [fn() -> Vec<CommandSpec>; 67] = [
+        let groups: [fn() -> Vec<CommandSpec>; 70] = [
             crate::graph_cmds::specs,
             crate::node_cmds::specs,
             crate::assist_cmds::specs,
@@ -279,12 +294,15 @@ impl Registry {
             crate::clipboard_cmds::specs,
             crate::search_cmds::specs,
             crate::file_cmds::specs,
+            crate::storage_window_cmds::specs,
+            crate::local_export::specs,
             crate::layout_cmds::specs,
             crate::comment_cmds::specs,
             crate::run_cmds::specs,
             crate::perf_cmds::specs,
             crate::cache_cmds::specs,
             crate::variation_cmds::specs,
+            crate::folder_cmds::specs,
             crate::shader_cmds::specs,
             crate::shader_assist_cmds::specs,
             crate::shader_library_cmds::specs,

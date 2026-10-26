@@ -348,8 +348,12 @@ impl NodeCraftApp {
                 egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding * 0.5).show(ui, |ui| {
                     ui.add_enabled_ui(!self.web_files.blocking() && self.model_choice.is_none() && !self.model_frame_owned, |ui| {
                         ui.menu_button("File", |ui| {
-                            for (id, label) in [("file.open", "Open project…"), ("file.save", "Save project"), ("file.save_as", "Save project as…")] {
-                                if ui.button(label).clicked() {
+                            for (id, label, icon) in [
+                                ("file.open", "Open project…", crate::icons::Icon::Open),
+                                ("file.save", "Save project", crate::icons::Icon::Save),
+                                ("file.save_as", "Save project as…", crate::icons::Icon::Save),
+                            ] {
+                                if ui.add(icon.button(ui, label, t)).clicked() {
                                     chosen = Some(id);
                                     ui.close();
                                 }

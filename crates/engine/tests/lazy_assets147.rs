@@ -808,6 +808,70 @@ mod import_composition147;
 mod split_composition342;
 
 #[test]
+fn background_export_admission_never_verifies_an_indexed_body_or_waits_before_editing() {
+    use nodecraft_engine::{
+        export_job::{ExportPhase, ExportResult},
+        save_runner::{SaveJob, SaveRunner},
+    };
+    use nodecraft_format::asset_source::AssetRange;
+    use std::sync::{Arc, Mutex};
+    #[derive(Default)]
+    struct Held(Mutex<Option<SaveJob>>);
+    impl SaveRunner for Held {
+        fn spawn(&self, job: SaveJob) -> Result<(), SaveJob> {
+            *self.0.lock().unwrap() = Some(job);
+            Ok(())
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut producer = NativeStorage::new(dir.path().join("producer-recovery")).unwrap();
+    let mut assets = AssetStore::with_context(producer.asset_context().unwrap());
+    let cancel = TransferCancel::default();
+    let metrics = StreamMetrics::default();
+    let bytes = 20 * 1024 * 1024 + 1;
+    let hash = assets.import_stream(&AssetRange::new(Arc::new(Padded { bytes, fill: 47 }), 0, bytes).unwrap(), &cancel, &metrics).unwrap();
+    let snapshot = history_snapshot(assets, &[hash]);
+    let archive = ArchivePlan::prepare(&snapshot, StorageCapability::StreamingV2, &cancel, &metrics).unwrap();
+    let input = dir.path().join("large.ncraft");
+    producer.save_plan(&StorageLocation::Path(input.clone()), &archive, &cancel, &metrics).unwrap();
+    drop((snapshot, archive, producer));
+    let native = host(dir.path());
+    let mut session = Session::with_storage(snapshot_empty(), Box::new(native)).unwrap();
+    session.dispatch("file.open", &json!({"location":input,"discard_dirty":true})).unwrap();
+    let runner = Arc::new(Held::default());
+    session.set_export_runner(runner.clone());
+    let output = dir.path().join("result.png");
+    let params = json!({"canvas":C,"id":N,"generation":generation(1),"path":output,"background":true});
+    assert_eq!(session.assets().context().storage_usage().unwrap().verified, 0);
+    session.enabled("history.export", &params).unwrap();
+    let receipt = session.dispatch("history.export", &params).unwrap();
+    assert_eq!(session.export_status().unwrap().phase, ExportPhase::Queued);
+    assert_eq!(session.assets().context().storage_usage().unwrap().verified, 0, "enabled and admission must not copy or authenticate indexed media");
+    assert!(!output.exists());
+    let revision = session.revision();
+    session.dispatch("node.move", &movement(17)).unwrap();
+    assert_eq!(session.revision(), revision + 1, "an edit must not settle this read-only export");
+    assert_eq!(session.assets().context().storage_usage().unwrap().verified, 0);
+    runner.0.lock().unwrap().take().unwrap().run();
+    let status = session.export_status().unwrap();
+    assert_eq!(serde_json::json!(status.id), receipt["pending"]);
+    assert_eq!(status.result, Some(ExportResult::Exported { bytes }));
+    assert_eq!(std::fs::metadata(&output).unwrap().len(), bytes);
+    let mut file = std::fs::File::open(&output).unwrap();
+    let mut hash_out = blake3::Hasher::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        use std::io::Read;
+        let read = file.read(&mut buffer).unwrap();
+        if read == 0 {
+            break;
+        }
+        hash_out.update(&buffer[..read]);
+    }
+    assert_eq!(hash_out.finalize().as_bytes(), hash.as_bytes());
+}
+
+#[test]
 fn native_small_save_opens_in_distinct_memory_session_and_keeps_asset_history() {
     let dir = tempfile::tempdir().unwrap();
     let native = host(dir.path());

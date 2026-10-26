@@ -6,6 +6,11 @@ parameters store yaw/elevation in degrees, zoom and shading. Old projects withou
 original three-quarter view. `mesh.view_set` validates and changes all four through one changeset,
 so command clients and pointer gestures use the same undo and persistence path.
 
+Each completed orbit drag, scroll group, shading change or reset intentionally makes the
+project unsaved and adds one undo step. This makes the displayed view reproducible after
+reopening and lets Undo restore it. Continuous movement within a gesture stays a local preview;
+separate browsing gestures remain separate edits, as required by #928.
+
 The renderer retains a transient preview while dragging or scrolling. Release ends a drag;
 250 ms of scroll inactivity ends an Alt-scroll group. Saving finishes any pending viewer edit
 before taking a snapshot. Undo or an external parameter change replaces an outdated local

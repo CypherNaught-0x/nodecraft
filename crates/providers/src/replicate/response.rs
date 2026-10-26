@@ -293,6 +293,10 @@ pub(super) struct Prediction<'a> {
     pub(super) data_removed: bool,
     #[serde(borrow, default)]
     pub(super) output: Option<&'a RawValue>,
+    // Optional telemetry is read separately, so even duplicate root metrics cannot
+    // discard a valid paid output. Identity/status/output retain strict decoding.
+    #[serde(skip)]
+    pub(super) metrics: Option<&'a RawValue>,
 }
 impl Prediction<'_> {
     pub(super) fn identity(&self, id: Option<&str>, record: Record) -> Result<(), ProviderError> {
@@ -365,7 +369,14 @@ pub(super) fn parse(reply: &crate::HttpResponse, record: Record, l: Limits) -> R
     status(reply, l)?;
     let text = preflight(&reply.body, record, l)?;
     observe(5);
-    serde_json::from_str(text).map_err(|_| malformed("invalid Replicate prediction fields"))
+    let mut prediction: Prediction<'_> = serde_json::from_str(text).map_err(|_| malformed("invalid Replicate prediction fields"))?;
+    #[derive(Deserialize)]
+    struct Telemetry<'a> {
+        #[serde(borrow)]
+        metrics: Option<&'a RawValue>,
+    }
+    prediction.metrics = serde_json::from_str::<Telemetry<'_>>(text).ok().and_then(|telemetry| telemetry.metrics);
+    Ok(prediction)
 }
 #[derive(Deserialize)]
 #[serde(transparent)]

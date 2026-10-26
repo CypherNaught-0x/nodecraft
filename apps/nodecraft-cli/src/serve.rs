@@ -250,7 +250,7 @@ pub fn load(path: &Path) -> Result<Loaded, Error> {
     let maker = || -> Result<Box<crate::quote::Maker<'static>>, Error> {
         Ok(Box::new(crate::providers::keychain_maker(nodecraft_engine::settings::peek().providers)?))
     };
-    Ok(Loaded { snapshot, maker: Box::new(maker) })
+    Ok(Loaded { snapshot, origin: Some(crate::project::origin(path)?), maker: Box::new(maker) })
 }
 
 #[cfg(test)]

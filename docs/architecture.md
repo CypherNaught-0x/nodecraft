@@ -258,7 +258,10 @@ The pending view polls a bounded result and offers Cancel; only a current Sessio
 project/canvas and revision can accept it through the existing synchronous `import_files` route.
 A blocked filesystem call cannot be interrupted portably: abandonment ends the pending view, but
 keeps the process slot busy until that call returns or the process restarts. No replacement worker
-is spawned. Browser file drops remain unsupported. See the
+is spawned. Browser drops use owned, abortable FileReaders with the same 16 MiB/file and
+48 MiB aggregate body limits, a ten-second deadline and Escape cancellation. Browser PNG paste
+starts Clipboard.read only after a user paste is admitted to the canvas; native copied file
+references reuse the native drop worker. Late results cannot mutate a replaced or edited document. See the
 [native drop decision](decisions/2026-10-18-bounded-native-drop-acquisition.md) for resource bounds
 and the distinction between acquisition and synchronous engine import.
 
@@ -282,6 +285,22 @@ and no retry is automatic. A callback error, invalid response or panic can occur
 side effect commits; hosts must reconcile it. The session guarantees only document/history/event
 preservation, not rollback of external effects. This seam does not itself implement settings persistence or job enqueue.
 `Effect::None` returns a bounded result without document, history, revision or event changes.
+`Effect::Export` writes one result's bytes to one path a person chose (`history.export`, #557).
+`Effect::LocalExport` is the batch (#98): the handler resolves each requested result against the
+immutable document and returns a bounded plan of names and references, and the session publishes
+each one into a folder the app authorized — through a pinned root descriptor and the same
+hash-verifying asset copy as `Effect::Export`, but not its path-based publisher. Existing files are
+replaced through a staged rename; new names use exclusive creation and may be visible during copy
+or left partial after a crash/failed cleanup (see the [batch decision](decisions/2026-10-21-batch-folder-export.md)).
+Like a save, neither changes a document,
+history, revision or event, so neither is an undo step. Writing there is authority the app grants by
+injecting `local_export::ExportHost` after a person chooses a folder — a destination named in a
+parameter is never authority — and without it `export.local_plan` and `export.local_run` return
+Unsupported. The desktop injection and `media.export` node are not yet implemented (#746).
+One entry failing reports that entry and lets the others run. Unlike `Effect::Export`,
+the batch does not bypass a pending file operation: it settles a pending save first and refuses to
+run while a project open is in flight. Both write stored bytes unchanged: conversion and
+vectorisation return Unsupported rather than approximating, and a text result is refused.
 Consecutive effective moves coalesce across redundant pointer samples and non-document effects.
 Selection deletion belongs to the canvas selection command; single-node removal has no Delete
 binding. Frontends can map redo's Ctrl+Y alternate in addition to its primary shortcut.

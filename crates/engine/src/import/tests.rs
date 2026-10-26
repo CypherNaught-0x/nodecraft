@@ -146,7 +146,7 @@ fn a_drops_text_shares_one_budget_and_media_is_only_stored_for_added_nodes() {
         [Incoming { name: "one.txt", bytes: big.as_bytes() }, Incoming { name: "pic.png", bytes: &image }, Incoming { name: "two.txt", bytes: big.as_bytes() }];
     let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(3)).unwrap();
     assert_eq!(imported.nodes, [ids(3)[0], ids(3)[1]], "the paste fits: one big text and the picture");
-    assert_eq!(imported.skipped, [("two.txt".to_owned(), "a drop adds at most 960 KiB of text".to_owned())]);
+    assert_eq!(imported.skipped, [("two.txt".to_owned(), "at most 960 KiB of text can be added at once".to_owned())]);
     assert_eq!(s.assets().len(), 1);
     // Undo, then redo: the picture's bytes are still there for it.
     s.dispatch("edit.undo", &json!({})).unwrap();
@@ -367,4 +367,29 @@ fn a_workflow_card_too_large_for_the_drop_is_skipped_not_the_whole_drop() {
     let small = [Incoming { name: "Fox.JSON", bytes: WORKFLOW.as_bytes() }];
     import_files(&mut s, C, AT, 300.0, &small, &ids(1)).unwrap();
     assert_eq!(node(&s, ids(1)[0]).title, "Fox");
+}
+
+#[test]
+fn positioned_import_measures_complete_payloads_and_rejects_before_publication() {
+    let mut s = session();
+    let before = s.document().clone();
+    let image = png();
+    let files = [Incoming { name: "image.png", bytes: &image }];
+    let position = |node: &Node, kinds: &nodecraft_nodes::Registry| {
+        assert!(matches!(node.params.get("asset"), Some(Value::Media(_))));
+        assert_eq!(kinds.get(&node.kind).unwrap().resolve_instance(node).unwrap().outputs, node.outputs);
+        Position { x: node.pos.x - 160.0, y: node.pos.y - 143.5 }
+    };
+    import_files_positioned(&mut s, C, AT, 300.0, &files, &ids(1), &[], &position).unwrap();
+    assert_eq!(node(&s, ids(1)[0]).pos, Position { x: AT.x - 160.0, y: AT.y - 143.5 });
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document(), &before);
+    // A separate empty session proves a rejected geometry plan cannot publish its candidate assets.
+    let mut s = session();
+    let bad = |_: &Node, _: &nodecraft_nodes::Registry| Position { x: f32::NAN, y: 0.0 };
+    assert!(import_files_positioned(&mut s, C, AT, 300.0, &files, &ids(1), &[], &bad).is_err());
+    assert_eq!(s.document(), &before);
+    assert!(s.assets().is_empty());
+    assert_eq!(s.revision(), 0);
+    assert!(!s.can_undo());
 }

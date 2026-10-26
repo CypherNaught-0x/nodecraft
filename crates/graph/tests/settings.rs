@@ -23,6 +23,7 @@ fn job(item: Option<u32>) -> JobSettings {
         inputs: vec![JobInput { role: "prompt".into(), value: Value::Text("a cat".into()) }],
         item,
         billable_units: None,
+        execution_ms: Some(1234),
     }
 }
 
@@ -44,6 +45,19 @@ fn settings_round_trip_and_results_without_them_keep_their_shape() {
     // A file without the field reads as no settings.
     let old: Generation = serde_json::from_value(serde_json::json!({"id": GenerationId::from_bytes([5; 16]), "outputs": []})).unwrap();
     assert!(old.settings.is_empty());
+}
+
+#[test]
+fn runtime339_old_settings_have_unknown_execution_time_and_invalid_counts_are_rejected() {
+    let mut raw = serde_json::to_value(job(None)).unwrap();
+    raw.as_object_mut().unwrap().remove("execution_ms");
+    let old: JobSettings = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(old.execution_ms, None);
+    assert!(serde_json::to_value(old).unwrap().get("execution_ms").is_none());
+    for bad in [serde_json::json!(-1), serde_json::json!(1.5), serde_json::json!("1234")] {
+        raw["execution_ms"] = bad;
+        assert!(serde_json::from_value::<JobSettings>(raw.clone()).is_err());
+    }
 }
 
 #[test]

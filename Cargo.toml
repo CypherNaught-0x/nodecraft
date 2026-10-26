@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
-version = "0.2.0-rc.1"
+version = "0.5.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -43,6 +43,7 @@ craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "8f5a283161
 # external
 blake3 = { version = "1.8", default-features = false, features = ["std"] }
 egui = { version = "0.36", default-features = false }   # the version craft-ui builds against
+egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }

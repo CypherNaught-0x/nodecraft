@@ -10,6 +10,7 @@ use std::process::ExitCode;
 mod agent_panel;
 mod control;
 mod shell;
+mod storage_window;
 mod video_tools;
 
 /// Stable application id: the Wayland app id and X11 WM class, which must match the `.desktop`
@@ -165,7 +166,14 @@ fn main() -> ExitCode {
             if storage.is_none() && join.is_none() {
                 log::warn!("no settings folder: project files are unavailable in this window");
             }
+            let recovery_path = storage.as_ref().map(|setup| setup.recovery.clone());
             let mut app = nodecraft_ui_egui::NodeCraftApp::with_settings_and_storage(&cc.egui_ctx, store, storage)?;
+            let storage_window = recovery_path.as_ref().and_then(|path| {
+                storage_window::StorageWindow::start(&mut app, &cc.egui_ctx, path)
+                    .map_err(|error| log::warn!("storage window focus unavailable: {}", error.message))
+                    .ok()
+                    .flatten()
+            });
             match tools {
                 Ok(tools) => app.set_media_tools(tools.tools()),
                 Err(problem) => {
@@ -197,7 +205,7 @@ fn main() -> ExitCode {
                 .then(|| control::Channel::start(&cc.egui_ctx, dir, roots).map_err(|e| log::error!("control channel not started: {}", e.message)).ok())
                 .flatten();
             let agent = agent_panel::AgentPanel::live(&cc.egui_ctx, app.agent_settings());
-            Ok(Box::new(shell::Shell { app, agent, channel }))
+            Ok(Box::new(shell::Shell { app, agent, channel, storage_window }))
         }),
     );
     match result {

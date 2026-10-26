@@ -756,7 +756,9 @@ impl InputHasher {
                 self.fanned.insert(at, false);
                 continue;
             };
-            if node.kind == nodecraft_nodes::batch::ID {
+            // A folder's looping outputs fan out as a batch does; its list outputs, which don't,
+            // only add the marker to what they feed.
+            if node.kind == nodecraft_nodes::batch::ID || node.kind == nodecraft_nodes::folder::ID {
                 self.fanned.insert(at, true);
                 continue;
             }

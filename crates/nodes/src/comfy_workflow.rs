@@ -5,7 +5,7 @@
 //!
 //! A run sends the stored workflow to the `comfyui` provider with the card's parameter values
 //! and the media wired into its ports; the provider checks it against the server, uploads the
-//! media and queues it. It is free (it runs on your own server), so its catalog model
+//! media and queues it. Local nodes are free; partner nodes spend credits. Its catalog model
 //! [`MODEL_ID`] takes no parameters and is never offered on other cards.
 use crate::technique::slug;
 use crate::{Category, GenerateInput, GenerateOutput, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx, descriptor::invalid};
@@ -52,7 +52,7 @@ const MAX_PARAMS: usize = 200;
 const MAX_OUTPUTS: usize = 64;
 /// Most partner node classes a mapping names.
 const MAX_PARTNERS: usize = 64;
-/// Most instance descriptors kept, and most mapping text they hold together.
+/// Most instance descriptors kept, and their retained text, mapping and descriptor storage.
 const CACHED: usize = 32;
 const MAX_CACHED_BYTES: usize = 4 * 1024 * 1024;
 /// Longest workflow node id or input name a mapping names.
@@ -410,7 +410,23 @@ pub fn propose(workflow: &ApiWorkflow, exposed: &Exposed) -> Result<Proposal, Er
     if classes.len() > MAX_PARTNERS {
         return Err(Error::new(ErrorKind::Overflow, "this ComfyUI workflow uses too many kinds of partner node to place as a card"));
     }
-    mapping.partners = classes.into_iter().map(|class| bounded(class, MAX_TARGET_BYTES)).collect();
+    let mut unnamed = false;
+    mapping.partners = classes
+        .into_iter()
+        .filter_map(|class| {
+            if class.trim().is_empty() || class.chars().any(char::is_control) {
+                unnamed = true;
+                None
+            } else {
+                Some(bounded(class, MAX_TARGET_BYTES))
+            }
+        })
+        .collect();
+    if unnamed {
+        // Omit the malformed class name, never the evidence that this workflow costs credits.
+        mapping.partners.push("Unidentified partner node".into());
+        warnings.push("a partner node's invalid class name was omitted; its credit cost is still unknown".into());
+    }
     if let Some(list) = partner_list(&mapping.partners) {
         warnings.push(format!("this workflow uses ComfyUI partner nodes ({list}), which spend your comfy.org credits; NodeCraft can't price them"));
     }
@@ -471,6 +487,7 @@ struct Cached {
     text: Arc<str>,
     mapping: Arc<Mapping>,
     descriptor: Arc<NodeDescriptor>,
+    bytes: usize,
 }
 
 pub struct ComfyWorkflowKind {
@@ -507,14 +524,21 @@ impl ComfyWorkflowKind {
         }
         let mapping = Arc::new(mapping(node)?);
         let descriptor = Arc::new(descriptor(Some(&mapping)));
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.insert(0, Cached { hash, text: Arc::from(text.as_str()), mapping: mapping.clone(), descriptor: descriptor.clone() });
+        descriptor.validate()?;
+        let bytes = cache_bytes::retained(text, &mapping, &descriptor);
+        if bytes <= MAX_CACHED_BYTES
+            && let Ok(mut cache) = self.cache.lock()
+        {
+            if cache.len() >= CACHED {
+                cache.pop();
+            }
+            cache.insert(0, Cached { hash, text: Arc::from(text.as_str()), mapping: mapping.clone(), descriptor: descriptor.clone(), bytes });
             let mut bytes = 0usize;
             let keep = cache.iter().take(CACHED).take_while(|c| {
-                bytes = bytes.saturating_add(c.text.len());
+                bytes = bytes.saturating_add(c.bytes);
                 bytes <= MAX_CACHED_BYTES
             });
-            let keep = keep.count().max(1);
+            let keep = keep.count();
             cache.truncate(keep);
         }
         Ok((mapping, descriptor))
@@ -616,6 +640,8 @@ impl NodeKind for ComfyWorkflowKind {
         }])
     }
 }
+
+mod cache_bytes;
 
 #[cfg(test)]
 mod tests;

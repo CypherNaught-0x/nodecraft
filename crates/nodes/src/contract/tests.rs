@@ -58,7 +58,7 @@ fn every_builtin_kind_has_a_valid_contract_matching_its_schema() {
 fn source_contracts_declare_their_single_mode() {
     let registry = Registry::builtins().unwrap();
     let sources: Vec<_> = registry.descriptors().filter(|descriptor| descriptor.category == Category::Source).map(|descriptor| descriptor.id.clone()).collect();
-    assert_eq!(sources.len(), 6);
+    assert_eq!(sources.len(), 7);
     for id in sources {
         let contract = registry.contract(&id).unwrap();
         let kind = registry.get(&id).unwrap();
@@ -69,7 +69,9 @@ fn source_contracts_declare_their_single_mode() {
             let viewer = id == crate::mesh::SOURCE && crate::mesh::view::NAMES.contains(&spec.name.as_str());
             assert_eq!(contract.params.rule(&spec.name).unwrap().affects.shape, !viewer, "{id}: {}", spec.name);
         }
-        assert!(contract.params.resolve(&Default::default(), true).unwrap().issues.is_empty() == (id == "source.text"), "{id}: media sources need an asset");
+        // A folder keeps its files in config, so its settings all have defaults.
+        let settled = id == "source.text" || id == crate::folder::ID;
+        assert!(contract.params.resolve(&Default::default(), true).unwrap().issues.is_empty() == settled, "{id}: media sources need an asset");
     }
 }
 

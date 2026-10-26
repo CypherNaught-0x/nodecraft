@@ -59,7 +59,7 @@ struct State {
     base_backings: u64,
 }
 #[derive(Clone)]
-pub struct DiskQuota(Arc<Mutex<State>>, Arc<Mutex<()>>);
+pub struct DiskQuota(Arc<Mutex<State>>, Arc<Mutex<()>>, #[cfg(not(target_arch = "wasm32"))] Arc<Mutex<()>>);
 impl Default for DiskQuota {
     fn default() -> Self {
         Self(
@@ -72,6 +72,8 @@ impl Default for DiskQuota {
                 backings: 0,
                 base_backings: 0,
             })),
+            Arc::new(Mutex::new(())),
+            #[cfg(not(target_arch = "wasm32"))]
             Arc::new(Mutex::new(())),
         )
     }
@@ -88,6 +90,8 @@ impl DiskQuota {
         Ok(Self(
             Arc::new(Mutex::new(State { used: DiskUsage::default(), limits, total, reservations: 0, cleanup_retained: 0, backings: 0, base_backings: 0 })),
             Arc::new(Mutex::new(())),
+            #[cfg(not(target_arch = "wasm32"))]
+            Arc::new(Mutex::new(())),
         ))
     }
     /// Serialize the shared staging pool without holding accounting state during I/O.
@@ -97,6 +101,13 @@ impl DiskQuota {
             TryLockError::WouldBlock => Error::new(ErrorKind::Busy, "another storage transfer is using the staging pool; retry after it finishes"),
             TryLockError::Poisoned(_) => error("storage staging gate is unavailable"),
         })
+    }
+    /// One separate export transfer may run alongside a live transfer. Every export scope
+    /// shares this same gate, and all bytes, backing files and cleanup charges still use
+    /// the session's accounting and lowered limits.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn for_export(&self) -> Self {
+        Self(Arc::clone(&self.0), Arc::clone(&self.2), Arc::clone(&self.2))
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn stage_operation(&self) -> Result<StageOperation<'_>, Error> {

@@ -41,9 +41,14 @@ fn a_sound_card_has_room_for_its_waveform() {
     let sound = node("source.audio", &[("asset", media("audio/wav"))]);
     let empty = node("source.audio", &[]);
     let kinds = nodecraft_nodes::Registry::builtins().unwrap();
-    let d = kinds.get("source.audio").ok().map(|k| k.descriptor());
-    let grown = crate::card::world_size(&sound, d, &t).y - crate::card::world_size(&empty, d, &t).y;
-    assert_eq!(grown, t.card_preview_height);
+    let kind = kinds.get("source.audio").unwrap();
+    let configured = kind.resolve_instance(&sound).unwrap();
+    let unconfigured = kind.resolve_instance(&empty).unwrap();
+    let grown = crate::card::world_size(&sound, Some(&configured), &t).y - crate::card::world_size(&empty, Some(&unconfigured), &t).y;
+    // A configured asset adds its real Remove button row as well as the media region.
+    let remove_row = t.body_size + t.control_gap * 2.0;
+    assert_eq!(remove_row, 25.0);
+    assert_eq!(grown, t.card_preview_height + remove_row);
 }
 
 #[test]
