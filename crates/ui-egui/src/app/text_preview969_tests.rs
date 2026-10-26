@@ -111,3 +111,28 @@ fn render_local_text_previews() {
         h.render().unwrap().save(root.join(format!("{name}.png"))).unwrap();
     }
 }
+
+#[test]
+fn batch_items_include_their_upstream_values_and_own_text_in_both_actions() {
+    for (kind, port, expected) in [("text.concat", "texts", "alpha|gamma|delta"), ("text.template", "values", "alpha + gamma + delta")] {
+        let mut h = harness(kind, "{{1}} + {{2}} + {{3}}", "alpha", None);
+        let canvas = h.state().canvas;
+        let source = *h.state().session.document().canvases().get(&canvas).unwrap().nodes().keys().find(|id| **id != ACTION).unwrap();
+        h.state_mut().session.dispatch("edge.disconnect", &json!({"canvas":canvas,"id":EdgeId::from_bytes([90;16])})).unwrap();
+        let batch = NodeId::from_bytes([110; 16]);
+        h.state_mut().session.dispatch("node.create", &json!({"canvas":canvas,"id":batch,"kind":"structure.batch","pos":{"x":100,"y":500}})).unwrap();
+        h.state_mut()
+            .session
+            .dispatch("node.param_set", &json!({"canvas":canvas,"id":batch,"name":"text","value":Value::Text("gamma\ndelta".into())}))
+            .unwrap();
+        for (edge, from, output, to, input) in [(111, source, "out", batch, "in"), (112, batch, "item", ACTION, port)] {
+            h.state_mut().session.dispatch("edge.connect", &json!({"canvas":canvas,"edge":{"id":EdgeId::from_bytes([edge;16]),"from":{"node":from,"port":output},"to":{"node":to,"port":input},"order":0}})).unwrap();
+        }
+        wait(&mut h, |h| h.query_by_label(expected).is_some());
+        h.get_by_label("alpha\ngamma\ndelta");
+        h.get_by_label(&format!("Expand Input {port} · 1 · Batch")).click();
+        h.run();
+        h.get_by_label("Close text preview");
+        assert!(h.query_all_by_label("alpha\ngamma\ndelta").count() >= 1);
+    }
+}

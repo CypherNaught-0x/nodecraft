@@ -5,7 +5,11 @@ use nodecraft_engine::Session;
 use nodecraft_graph::Canvas;
 use nodecraft_nodes::{Category, JobSpec, PlanCtx, Registry};
 use nodecraft_types::{Blake3, CanvasId, NodeId, Value};
-use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 const MAX_ROWS: usize = 16_384;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -49,20 +53,108 @@ pub(crate) struct Cache {
     pub rebuilds: usize,
 }
 
-fn value<'a>(canvas: &'a Canvas, kinds: &Registry, reference: &Reference) -> Option<Cow<'a, Value>> {
+struct ReadBudget {
+    values: usize,
+    bytes: usize,
+}
+
+fn charge(value: &Value, budget: &mut ReadBudget) -> Option<()> {
+    let mut stack = vec![value];
+    while let Some(value) = stack.pop() {
+        budget.values = budget.values.checked_sub(1)?;
+        budget.bytes = budget.bytes.checked_sub(std::mem::size_of::<Value>())?;
+        match value {
+            Value::Text(text) => budget.bytes = budget.bytes.checked_sub(text.len())?,
+            Value::List(values) => {
+                if stack.len().saturating_add(values.len()) > budget.values {
+                    return None;
+                }
+                stack.extend(values);
+            }
+            _ => {}
+        }
+    }
+    Some(())
+}
+
+fn value<'a>(canvas: &'a Canvas, kinds: &Registry, reference: &Reference, routing: Option<&nodecraft_exec::routing::Incoming<'_>>) -> Option<Cow<'a, Value>> {
+    read_value(canvas, kinds, reference, routing, &mut BTreeSet::new(), &mut ReadBudget { values: MAX_ROWS * 4, bytes: FULL_BYTES })
+}
+
+fn read_value<'a>(
+    canvas: &'a Canvas,
+    kinds: &Registry,
+    reference: &Reference,
+    routing: Option<&nodecraft_exec::routing::Incoming<'_>>,
+    seen: &mut BTreeSet<NodeId>,
+    budget: &mut ReadBudget,
+) -> Option<Cow<'a, Value>> {
+    budget.values = budget.values.checked_sub(1)?;
     let node = canvas.nodes().get(&reference.node)?;
     let index = node.outputs.iter().position(|port| port.name == reference.port)?;
-    // The common source is borrowed, including megabyte texts shared by many actions.
     if node.kind == "source.text" && reference.port == "out" {
         return Some(node.params.get("text").map(Cow::Borrowed).unwrap_or_else(|| Cow::Owned(Value::Text(String::new()))));
+    }
+    if node.kind == nodecraft_nodes::batch::ID {
+        if seen.len() >= 32 || !seen.insert(node.id) {
+            return None;
+        }
+        kinds.get(&node.kind).ok()?.validate_instance(node, true).ok()?;
+        let routing = routing?;
+        if routing.invalid.keys().any(|(target, _)| *target == node.id) {
+            return None;
+        }
+        let mut wired = Vec::new();
+        for (_, _, from, port) in routing.feeds.get(&node.id).into_iter().flatten() {
+            let source = Reference { node: *from, port: (*port).into() };
+            let read = read_value(canvas, kinds, &source, Some(routing), seen, budget)?;
+            charge(&read, budget)?;
+            let upstream = canvas.nodes().get(from)?;
+            let list = upstream.outputs.iter().find(|p| p.name == *port).is_some_and(|p| p.port_type.many);
+            let fanned = upstream.history.iter().find(|g| Some(g.id) == upstream.active).is_some_and(|g| !g.items.is_empty());
+            match read.into_owned() {
+                Value::List(values) if list && fanned => {
+                    for value in values {
+                        match value {
+                            Value::List(values) => wired.extend(values),
+                            value => wired.push(value),
+                        }
+                    }
+                }
+                Value::List(values) if list || fanned || upstream.kind == nodecraft_nodes::batch::ID => wired.extend(values),
+                value => wired.push(value),
+            }
+            if wired.len() > nodecraft_nodes::batch::MAX_ITEMS {
+                return None;
+            }
+        }
+        for parameter in node.params.values() {
+            charge(parameter, budget)?;
+        }
+        let items = nodecraft_nodes::batch::items(node, wired).ok()?;
+        seen.remove(&node.id);
+        return Some(Cow::Owned(Value::List(items)));
     }
     if let Ok(kind) = kinds.get(&node.kind)
         && kind.descriptor().category == Category::Source
     {
-        return kind.plan(&PlanCtx { node, inputs: &[], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).ok()?.into_iter().find_map(|job| match job {
-            JobSpec::Source { output, value, .. } if output == reference.port => Some(Cow::Owned(value)),
-            _ => None,
-        });
+        for parameter in node.params.values() {
+            charge(parameter, budget)?;
+        }
+        if nodecraft_nodes::folder::loops_over(node, &reference.port) {
+            return nodecraft_nodes::folder::items(node, &reference.port).ok().map(|items| Cow::Owned(Value::List(items)));
+        }
+        let jobs = kind.plan(&PlanCtx { node, inputs: &[], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).ok()?;
+        let mut values = Vec::new();
+        for job in jobs {
+            if let JobSpec::Source { output, value, .. } = job
+                && output == reference.port
+            {
+                charge(&value, budget)?;
+                values.push(value);
+            }
+        }
+        return if node.outputs.get(index)?.port_type.many { Some(Cow::Owned(Value::List(values))) } else { values.into_iter().next().map(Cow::Owned) };
     }
     let generation = node.history.iter().find(|g| Some(g.id) == node.active && !g.is_partial() && g.outputs.len() == node.outputs.len())?;
     generation.outputs.get(index).map(Cow::Borrowed)
@@ -128,6 +220,7 @@ fn full_text(value: &Value) -> String {
     let mut out = String::new();
     let mut stack = vec![value];
     let mut visits = 0usize;
+    let mut emitted = false;
     while let Some(value) = stack.pop() {
         visits = visits.saturating_add(1);
         if visits > MAX_ROWS {
@@ -135,11 +228,12 @@ fn full_text(value: &Value) -> String {
         }
         match value {
             Value::List(values) if stack.len().saturating_add(values.len()) <= MAX_ROWS => stack.extend(values.iter().rev()),
-            Value::Text(text) if out.len().saturating_add(text.len()).saturating_add(1) <= FULL_BYTES => {
-                if !out.is_empty() {
+            Value::Text(text) if out.len().saturating_add(text.len()).saturating_add(usize::from(emitted)) <= FULL_BYTES => {
+                if emitted {
                     out.push('\n');
                 }
                 out.push_str(text);
+                emitted = true;
             }
             _ => return "Value exceeds the full text preview limits.".into(),
         }
@@ -218,7 +312,7 @@ impl Cache {
                     break;
                 }
                 let reference = Reference { node: node.id, port: port.name.clone() };
-                let output = value(canvas, &kinds, &reference);
+                let output = value(canvas, &kinds, &reference, routing.as_ref().ok());
                 let stale = node.history.iter().find(|g| Some(g.id) == node.active).is_some_and(|g| g.input_hash != hash);
                 limited = !admit(
                     &mut rows,
@@ -246,7 +340,8 @@ impl Cache {
                             let summary = memo
                                 .entry((*from, (*output).to_owned()))
                                 .or_insert_with(|| {
-                                    value(canvas, &kinds, &reference).map_or_else(|| "No completed value yet".into(), |v| excerpt(&v, t.preview_chars, 3))
+                                    value(canvas, &kinds, &reference, Some(routing))
+                                        .map_or_else(|| "Value unavailable: no completed result or preview limit".into(), |v| excerpt(&v, t.preview_chars, 3))
                                 })
                                 .clone();
                             let source = canvas.nodes().get(from).map_or("Missing source", |n| {
@@ -302,7 +397,8 @@ impl Cache {
             }
         }
         if let Some(full) = &mut self.full {
-            full.text = value(canvas, &kinds, &full.reference).map_or_else(|| "This value is no longer available.".into(), |v| full_text(&v));
+            full.text =
+                value(canvas, &kinds, &full.reference, routing.as_ref().ok()).map_or_else(|| "This value is no longer available.".into(), |v| full_text(&v));
         }
     }
 
@@ -314,7 +410,9 @@ impl Cache {
         let Some(row) = self.entries.get(&node).and_then(|rows| rows.get(row)) else { return };
         let Some(reference) = row.reference.clone() else { return };
         let Some(canvas) = self.canvas.and_then(|id| session.document().canvases().get(&id)) else { return };
-        let text = value(canvas, session.kinds(), &reference).map_or_else(|| "No completed value yet".into(), |v| full_text(&v));
+        let routing = nodecraft_exec::routing::incoming(canvas, session.kinds()).ok();
+        let text = value(canvas, session.kinds(), &reference, routing.as_ref())
+            .map_or_else(|| "Value unavailable: no completed result or preview limit".into(), |v| full_text(&v));
         self.full = Some(Full { reference, title: row.label.clone(), text });
     }
 
@@ -429,7 +527,7 @@ mod tests {
         let mut s = session();
         let reference = Reference { node: S, port: "out".into() };
         let canvas = s.document().canvases().get(&C).unwrap();
-        let read = value(canvas, s.kinds(), &reference).unwrap();
+        let read = value(canvas, s.kinds(), &reference, None).unwrap();
         assert!(matches!(read, Cow::Borrowed(_)));
         assert!(std::ptr::eq(read.as_ref(), canvas.nodes().get(&S).unwrap().params.get("text").unwrap()));
         let router = NodeId::from_bytes([7; 16]);
@@ -460,7 +558,30 @@ mod tests {
         assert_eq!(excerpt(&Value::Text("a\nb\nc\nd".into()), 256, 3), "a\nb\nc…");
         assert_eq!(excerpt(&Value::Text(String::new()), 256, 3), "(empty)");
         assert_eq!(excerpt(&Value::List(vec![]), 256, 3), "(empty list)");
+        assert_eq!(full_text(&Value::List(vec![Value::Text(String::new()), Value::Text("beta".into())])), "\nbeta");
+        assert_eq!(full_text(&Value::List(vec![Value::Text(String::new()), Value::Text(String::new())])), "\n");
         let huge = Value::List(vec![Value::List(vec![]); MAX_ROWS + 1]);
         assert!(excerpt(&huge, 256, 3).contains("limit"));
+    }
+
+    #[test]
+    fn folder_list_and_looping_names_preview_every_source_value() {
+        let mut s = session();
+        let id = NodeId::from_bytes([40; 16]);
+        let config = nodecraft_nodes::folder::config(
+            nodecraft_types::Modality::Text,
+            "Public samples",
+            vec![("alpha.txt".into(), Value::Text("a".into())), ("beta.txt".into(), Value::Text("b".into()))],
+        )
+        .unwrap();
+        let node = s.kinds().get(nodecraft_nodes::folder::ID).unwrap().instantiate_instance(id, config, &Default::default()).unwrap();
+        let expected = nodecraft_nodes::folder::values(&node, nodecraft_nodes::folder::ALL_NAMES).unwrap();
+        assert_eq!(expected.len(), 2);
+        s.dispatch("node.add", &json!({"canvas":C,"node":node})).unwrap();
+        let canvas = s.document().canvases().get(&C).unwrap();
+        for port in [nodecraft_nodes::folder::ALL_NAMES, nodecraft_nodes::folder::NAME] {
+            let read = value(canvas, s.kinds(), &Reference { node: id, port: port.into() }, None).unwrap();
+            assert_eq!(read.as_ref(), &Value::List(expected.clone()));
+        }
     }
 }

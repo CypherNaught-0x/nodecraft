@@ -9,7 +9,10 @@ threshold still applies.
 The shell caches excerpts by session identity, registry, canvas and document revision. It reads
 the stored active result rather than running an action for its preview. Ordinary Text source
 values stay borrowed; other source kinds use their pure source plan. Resolved router feeds and
-their ordering come from the same routing function the planner uses. Input hashes share one
+their ordering come from the same routing function the planner uses. Batch items use the existing
+batch parser, including upstream values; list source outputs retain every matching source job.
+Batch traversal is cycle/depth guarded and shares a value/byte budget per read. Expanded lists
+preserve leading and trailing empty text items. Input hashes share one
 bounded hasher to validate retained failures and mark older outputs as updating.
 
 Excerpts take at most 256 characters and three lines; rendering further limits them to three
