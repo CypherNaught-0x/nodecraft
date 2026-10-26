@@ -51,6 +51,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     let setup = build(&catalog, |adapter| make(adapter, &env));
     let all: Vec<_> = setup.adapters().map(|(a, r)| (a.to_owned(), r.clone())).collect();
     assert!(all.len() >= 5, "every adapter the catalog names: {all:?}");
+    assert_eq!(setup.readiness("openai-audio"), Some(&Readiness::NeedsKey { account: "openai".into() }));
     assert_eq!(setup.readiness("openai-images"), Some(&Readiness::NeedsKey { account: "openai".into() }));
     assert_eq!(setup.readiness("openai"), Some(&Readiness::NeedsKey { account: "openai".into() }));
     assert_eq!(setup.readiness("anthropic"), Some(&Readiness::NeedsKey { account: "anthropic".into() }));
@@ -108,6 +109,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         assert_eq!(readiness, &Readiness::Ready, "{adapter}");
     }
     let selections: Vec<_> = [
+        "openai-audio",
         "openai-images",
         "openai",
         "anthropic",

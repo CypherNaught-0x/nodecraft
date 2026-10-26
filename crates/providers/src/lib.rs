@@ -53,6 +53,8 @@ pub mod meshy;
 pub mod mock;
 #[cfg(any(feature = "tripo", feature = "meshy", feature = "higgsfield", feature = "seedance", feature = "kling"))]
 mod model_file;
+#[cfg(feature = "openai-audio")]
+pub mod openai_audio;
 #[cfg(feature = "openai-images")]
 pub mod openai_images;
 mod provider;

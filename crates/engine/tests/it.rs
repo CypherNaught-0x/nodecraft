@@ -165,3 +165,6 @@ mod huggingface48;
 
 #[path = "gemini44.rs"]
 mod gemini44;
+
+#[path = "openai_audio39.rs"]
+mod openai_audio39;

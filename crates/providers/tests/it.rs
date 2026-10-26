@@ -24,3 +24,6 @@ mod llm_stream;
 mod no_redirect;
 #[path = "reqwest_http.rs"]
 mod reqwest_http;
+
+#[path = "live_openai_audio.rs"]
+mod live_openai_audio;

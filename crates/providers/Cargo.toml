@@ -17,6 +17,8 @@ default = ["http", "llm", "comfyui"]
 http = ["dep:reqwest"]
 # Chat endpoints: OpenAI-compatible (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, LiteLLM) and Anthropic.
 llm = []
+# Synchronous OpenAI speech synthesis and file transcription.
+openai-audio = []
 # Direct Google text through the existing OpenAI-compatible chat client.
 gemini-llm = ["llm"]
 # Direct Hugging Face text through the existing OpenAI-compatible chat client.
