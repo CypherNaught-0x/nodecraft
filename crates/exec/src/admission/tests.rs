@@ -157,7 +157,8 @@ fn a_result_records_the_settings_its_job_was_submitted_with() {
             params: params.clone(),
             inputs,
             item: None,
-            billable_units: None
+            billable_units: None,
+            execution_ms: None
         }]
     );
     assert_eq!(params.get("count"), Some(&Value::Unsigned(Unsigned(2))));

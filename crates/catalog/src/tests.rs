@@ -212,6 +212,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     assert_eq!(
         order,
         vec![
+            ("bfl.flux-2-klein-4b", true),
             ("comfyui.flux-dev", true),
             ("comfyui.sdxl", true),
             ("fal.flux-schnell", true),

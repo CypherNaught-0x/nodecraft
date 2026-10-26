@@ -40,6 +40,7 @@ impl Impact {
             Effect::PreparedRun { prepared } => {
                 Self::Run(RunImpact { ceiling: prepared.ceiling()?, partial: prepared.partial(), unpriced_jobs: prepared.unpriced_jobs() })
             }
+            // A batch export is the same kind of host effect as `history.export`.
             Effect::Open { .. }
             | Effect::CancelFile
             | Effect::CancelExport { .. }
@@ -47,6 +48,7 @@ impl Impact {
             | Effect::Service { .. }
             | Effect::Export { .. }
             | Effect::Copy { .. }
+            | Effect::LocalExport { .. }
             | Effect::Perf { .. }
             | Effect::Elements { .. } => Self::Host,
         })

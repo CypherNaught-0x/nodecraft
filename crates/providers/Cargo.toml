@@ -33,6 +33,8 @@ fal = ["dep:base64", "dep:zip"]
 seedance = ["dep:base64"]
 # Dated Seedream text generation and ordered multi-reference edits.
 seedream = ["dep:base64"]
+# Black Forest Labs' direct FLUX queue and bounded PNG delivery.
+bfl = []
 # Tripo text, image and multiview to 3D: uploads, a paid task, polling and the GLB download.
 tripo = []
 # Meshy text, image and multi-image to 3D, retexture and remesh: one paid task, polling and the GLB download.

@@ -6,6 +6,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
+| **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B text → PNG | Direct queued generation with resumable cluster polling, bounded downloads and unknown usage price; no automatic ambiguous submit replay or remote cancellation. See below. |
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
 | **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and ordered reference editing | Three stable Gemini models, unknown usage price; bounded inline JPEG outputs. |
@@ -563,14 +564,24 @@ The ignored live smoke test requires both explicit environment opt-ins and fresh
 permission; ordinary tests use synthetic fixtures and local listeners only.
 
 Replicate asks for a 2-second queued/running poll interval, subject to the host's existing maximum
-interval and retry/backoff policy. `Cancel-After` can bound server lifetime from prediction creation
-(5 seconds to 24 hours); it is not the synchronous wait duration or a proof of nonbilling. This
-adapter does not add that header: `RunLimits::deadline_ms` is a local polling deadline that is not
-passed to Provider::submit, so equating those clocks would be misleading. The existing local
-deadline still requests best-effort cancellation when a handle exists. Provider-reported
-`metrics.predict_time` measures execution seconds, not tokens or money; current Usage has no
-duration field, so it remains ignored and cost stays unknown. Neither future deadline propagation
-nor a typed runtime-usage schema is supplied by this safety follow-up.
+interval and retry/backoff policy. Creation sends `Cancel-After` using the host's
+`RunLimits::deadline_ms` duration, rounded upward to whole seconds. Durations outside 5 seconds
+to 24 hours are rejected before sending a prediction. Direct `Provider::submit` uses the usual
+one-hour default. This is a server lifetime measured from prediction creation, whereas the local
+deadline begins when polling starts; they are separate clocks. Neither is proof of nonbilling.
+Polling, restored handles, output downloads and cancellation never reset the server lifetime.
+The local deadline still requests best-effort cancellation when a handle exists.
+
+On successful completion, `metrics.predict_time` becomes optional `Usage.execution_ms`, rounded
+to milliseconds. It measures execution rather than queue time, tokens or money. Missing or
+malformed optional metrics remain unknown without discarding valid outputs; negative, nonfinite
+or over-24-hour values are not retained. Failed/canceled predictions still report their failure,
+without a completed-result usage record. Cost stays unknown. The engine retains this evidence
+in result job settings, held results and resumed jobs; copying a cached result does not claim
+another execution. Older records without it remain readable.
+
+Contract checked 2026-10-24: [prediction deadlines](https://replicate.com/docs/topics/predictions/create-a-prediction)
+and [HTTP API metrics](https://replicate.com/docs/reference/http).
 
 
 ## Gemini Images (`gemini-images` feature)
@@ -1317,3 +1328,35 @@ The live smoke test only reads the node list, so it spends no credits:
 NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
   cargo test -p nodecraft-providers --features http,comfy-cloud --test live_comfy_cloud -- --ignored
 ```
+
+
+## Black Forest Labs: direct FLUX.2 klein 4B (#33)
+
+In **API keys**, save your Black Forest Labs key under account `bfl`, then select
+**FLUX.2 klein 4B (BFL)** on an image generation card. This uses BFL directly, with no
+aggregator account. The built-in catalog supports one text prompt (up to 16 KiB), optional
+32-bit seed, and width/height from 64 to 1984 pixels in steps of 16. It requests one PNG.
+Image references, editing, webhooks and custom endpoints are not exposed by this adapter.
+
+The [official generation API](https://docs.bfl.ai/quick_start/generating_images) returns a
+job and its cluster polling URL. NodeCraft validates and saves those, polls the same task
+after restart, then downloads the signed result immediately. Only BFL API cluster hosts
+receive the key; image downloads use the documented `delivery.*.bfl.ai` service without
+credentials or redirects. Replies are capped at 64 KiB, image bytes at 32 MiB, decoded
+image allocation at 64 MiB, and output geometry must match the request. Native desktop
+transport is supported; the built-in browser transport returns an unsupported error.
+
+[BFL pricing](https://bfl.ai/pricing?category=flux.2) depends on pixels and credits.
+NodeCraft currently marks the cost as unknown usage pricing. Running requires explicit
+acceptance of an unpriced job; a finite budget cannot admit it. The API's credit fields
+are not recorded as dollars. Once the paid request is sent, lost replies are never retried
+automatically: BFL documents no idempotency key. Cancellation stops local waiting but
+cannot confirm a remote stop or prevent billing. A successful saved handle can be resumed
+without sending another create request.
+
+Offline fixtures exercise request bounds, queued/running/failure states, saved handles,
+credential isolation, corrupt/oversized output, ambiguous paid replies and the real RunHost.
+An ignored paid smoke test requires both explicit spending authorization and
+`NODECRAFT_LIVE_BFL=1` with `BFL_API_KEY` supplied privately. It is never run in CI.
+The current endpoint and statuses were verified against the
+[official OpenAPI](https://api.bfl.ai/openapi.json) on 2026-10-24.
