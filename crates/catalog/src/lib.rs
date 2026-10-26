@@ -37,6 +37,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("openai-images.toml", include_str!("../../../assets/catalog/openai-images.toml")),
     ("replicate.toml", include_str!("../../../assets/catalog/replicate.toml")),
     ("seedream.toml", include_str!("../../../assets/catalog/seedream.toml")),
+    ("bfl.toml", include_str!("../../../assets/catalog/bfl.toml")),
     ("seedance.toml", include_str!("../../../assets/catalog/seedance.toml")),
     ("tripo.toml", include_str!("../../../assets/catalog/tripo.toml")),
     ("elevenlabs.toml", include_str!("../../../assets/catalog/elevenlabs.toml")),

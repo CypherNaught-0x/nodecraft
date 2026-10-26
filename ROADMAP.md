@@ -118,6 +118,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   package's actions become cards that stop running when the grant is revoked (#172, #173); in
   the browser, packages last only for the session and never run (#823). Built-in image actions
   run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
+- **Black Forest Labs**: desktop Generate image and the CLI can use the direct FLUX.2 klein 4B
+  text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
+  Pixel-based credits remain an unknown monetary price and require consent. Image editing and
+  other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a

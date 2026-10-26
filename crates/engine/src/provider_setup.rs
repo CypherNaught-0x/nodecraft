@@ -61,6 +61,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "litellm" => Some("litellm"),
         "replicate" => Some("replicate"),
         "seedream" => Some("seedream"),
+        "bfl" => Some("bfl"),
         // Seedance runs on the same BytePlus ModelArk key (#18).
         "seedance" => Some("seedream"),
         "gemini-images" => Some("gemini"),
@@ -272,6 +273,7 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         "openai-images" => Arc::new(nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone())),
         "replicate" => Arc::new(nodecraft_providers::replicate::Replicate::new(needs_key(env.keys, "replicate")?, env.http.clone())),
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),
+        "bfl" => Arc::new(nodecraft_providers::bfl::Bfl::new(needs_key(env.keys, "bfl")?, env.http.clone())),
         "seedance" => Arc::new(nodecraft_providers::seedance::Seedance::new(needs_key(env.keys, "seedream")?, env.http.clone())),
         "gemini-images" => Arc::new(nodecraft_providers::gemini_images::GeminiImages::new(needs_key(env.keys, "gemini")?, env.http.clone())),
         "gemini-video" => Arc::new(nodecraft_providers::gemini_video::GeminiVideo::new(needs_key(env.keys, "gemini")?, env.http.clone())),
