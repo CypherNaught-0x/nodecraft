@@ -65,6 +65,9 @@ impl Metrics {
             // their one region from the declared output, never from transient renderer state.
             || descriptor.is_some_and(|d| d.category == nodecraft_nodes::Category::Action
                 && d.outputs.iter().any(|port| port.port_type.modality == nodecraft_types::Modality::Image));
+        // A legacy or malformed stored result must not add a third media region to a card
+        // whose descriptor promises only text. Its text preview explains the mismatched value.
+        let shows = shows && !crate::text_preview::eligible(descriptor);
         Self {
             parameters,
             // Ordinary anchors need enough logical room for their nominal hit envelopes. Take
@@ -73,7 +76,13 @@ impl Metrics {
             port_minimum: port_minimum(node.inputs.len().max(descriptor.map_or(0, |d| d.inputs.len())), t.port_radius.max(t.port_min_radius), t)
                 .max(port_minimum(node.outputs.len().max(descriptor.map_or(0, |d| d.outputs.len())), t.handle_radius.max(t.handle_min_screen_radius), t)),
             preview: if shows { t.card_preview_height } else { 0.0 },
-            answer: if node.kind == nodecraft_nodes::generation::TEXT_KIND { t.card_preview_height } else { 0.0 },
+            answer: if crate::text_preview::eligible(descriptor) {
+                t.card_preview_height * 2.0
+            } else if node.kind == nodecraft_nodes::generation::TEXT_KIND {
+                t.card_preview_height
+            } else {
+                0.0
+            },
             // Two compact history button rows, plus separation from the parameters.
             history: if node.history.is_empty() { 0.0 } else { history::height(t) + t.control_gap },
         }

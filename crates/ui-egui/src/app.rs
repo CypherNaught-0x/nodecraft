@@ -383,6 +383,7 @@ mod ownership_panel;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
 mod paste_media;
+mod paste_workflow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perf_run;
 mod plugin_cards;
@@ -433,6 +434,7 @@ pub struct NodeCraftApp {
     tag_focus_pending: bool,
     tag_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     search_focused: bool,
+    search_focus_pending: bool,
     search_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     pub comments: crate::comments::Discussions,
     comments_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
@@ -487,6 +489,7 @@ pub struct NodeCraftApp {
     recovery: Option<recovery::RecoveryOffer>,
     /// Live recompute of action nodes (#88).
     live: live::Live,
+    text_previews: crate::text_preview::Cache,
     /// Recovered work's kept journal, removed once that work is saved (#408).
     #[cfg(not(target_arch = "wasm32"))]
     recovered: Option<recovery::RecoveredWork>,
@@ -1092,6 +1095,7 @@ impl NodeCraftApp {
             tag_focus_pending: false,
             tag_mailbox,
             search_focused: false,
+            search_focus_pending: false,
             search_mailbox,
             comments: crate::comments::Discussions::default(),
             comments_mailbox,
@@ -1133,6 +1137,7 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             recovery: None,
             live: Default::default(),
+            text_previews: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             recovered: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1237,6 +1242,8 @@ impl NodeCraftApp {
         let started = self.frame_started(ui.ctx().current_pass_index() == 0);
         self.show_frame(ui);
         self.deliver_copy(ui.ctx());
+        #[cfg(not(target_arch = "wasm32"))]
+        self.export_close_overlay(ui.ctx());
         self.frame_finished(started);
         self.pumped = self.frame_pump && self.session.perf().enabled();
         if self.pumped {
@@ -1290,6 +1297,13 @@ impl NodeCraftApp {
         self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
         self.poll_export(ui.ctx());
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.export_close_owns_input() {
+            // Continue the worker while the close prompt owns every UI input. The modal
+            // is painted last by show(), above any document editor or canvas gesture.
+            return;
+        }
+        let file_owns_input = self.export_overlay(ui.ctx()) || file_owns_input;
         self.videos.poll(ui.ctx());
         self.audios.poll(ui.ctx());
         self.meshes.poll();
@@ -1306,6 +1320,7 @@ impl NodeCraftApp {
             self.marquee_geometry.clear();
         }
         self.schemas.refresh_generation(&self.session);
+        self.text_previews.prepare(&mut self.session, self.canvas, &self.live.errors, self.theme.tokens());
         self.fields_sync();
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
@@ -1324,6 +1339,7 @@ impl NodeCraftApp {
             self.centred = true;
         }
         let mut model_blocks = self.model_overlay(ui);
+        model_blocks |= self.text_previews.overlay(ui.ctx(), t);
         // Before the price confirmation, which a run from the form opens on top of it.
         model_blocks |= self.app_overlay(ui);
         model_blocks |= self.run_overlay(ui);
@@ -1414,7 +1430,13 @@ impl NodeCraftApp {
         }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
-        if !model_blocks && !self.drop_pointer_owned() && !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
+        if !model_blocks
+            && !file_owns_input
+            && !self.drop_pointer_owned()
+            && !canvas::text_input_focused(ui.ctx())
+            && self.palette.is_none()
+            && self.turn_into.is_none()
+        {
             // Held minimap input owns mutation keys through release. Fresh presses still
             // use the post-undo/delete admission below, since those edits can change availability.
             let minimap_held = self.navigation.pointer_owned || self.navigation.drag.is_some();
@@ -1592,9 +1614,17 @@ impl NodeCraftApp {
             self.navigation.geometry.rects.iter().any(|(id, rect)| !collapsed.contains(id) && self.view.rect_to_screen(viewport.min, *rect).contains(pointer))
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
-        let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
+        // Menus draw later in the frame. Leave their wheel input untouched and keep their world
+        // insertion point fixed, including when the pointer is outside or a zoom modifier is held.
+        let scroll_navigation = if self.palette.is_some() || self.turn_into.is_some() {
+            canvas::ScrollNavigation::Disabled
+        } else if !over_card || self.view.zoom < card::BODY_MIN_ZOOM {
+            canvas::ScrollNavigation::PanAndZoom
+        } else {
+            canvas::ScrollNavigation::ZoomOnly
+        };
         if !canvas_blocks {
-            canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
+            canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, scroll_navigation, self.marquee.is_none());
         }
         // The palette and "Turn into" create at the world point they opened on; once the view
         // moves, close them.
@@ -1801,6 +1831,7 @@ impl NodeCraftApp {
                         mentions: mention_cards,
                         mention_blocked: mention_blocked.get(&node.id).map(String::as_str),
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
+                        local_text: self.text_previews.rows(node.id),
                         video,
                         audio,
                         mesh,
@@ -2363,6 +2394,10 @@ impl NodeCraftApp {
                     continue;
                 }
                 Intent::Title(title) => ("node.title", json!({"canvas":self.canvas,"id":id,"title":title}), Some(EditTarget::Title)),
+                Intent::InspectLocalText(row) => {
+                    self.text_previews.open(&self.session, id, row);
+                    continue;
+                }
                 Intent::Parameter { name, value } => {
                     ("node.param_set", json!({"canvas":self.canvas,"id":id,"name":name,"value":value}), Some(EditTarget::Parameter(name)))
                 }
@@ -2697,7 +2732,7 @@ impl NodeCraftApp {
                         self.share_button(ui, t);
                         self.browser_providers_button(ui, t);
                         if ui
-                            .add(egui::Button::new(egui::RichText::new("Budgets").color(t.text_muted)).frame(false))
+                            .add(crate::icons::Icon::Wallet.button(ui, egui::RichText::new("Budgets").color(t.text_muted), t).frame(false))
                             .on_hover_text("The most runs may spend per call, per session and in total")
                             .clicked()
                         {
@@ -2708,7 +2743,7 @@ impl NodeCraftApp {
                             }
                         }
                         if ui
-                            .add(egui::Button::new(egui::RichText::new("API keys").color(t.text_muted)).frame(false))
+                            .add(crate::icons::Icon::Key.button(ui, egui::RichText::new("API keys").color(t.text_muted), t).frame(false))
                             .on_hover_text("Add, check and remove provider keys")
                             .clicked()
                         {
@@ -2939,9 +2974,9 @@ impl NodeCraftApp {
         })
     }
 
-    /// Paste plain text as a Text node centred on `centre`.
+    /// Paste a recognized workflow as its card, otherwise plain text as a Text node.
     fn paste_text(&mut self, text: &str, centre: Pos2) {
-        if text.trim().is_empty() {
+        if text.trim().is_empty() || self.paste_workflow_text(text, centre) {
             return;
         }
         let t = self.theme.tokens();
@@ -3310,7 +3345,9 @@ impl eframe::App for NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_plugins(ctx);
         self.tick_sharing(ctx);
-        // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
+        #[cfg(not(target_arch = "wasm32"))]
+        self.export_close_request(ctx);
+        // Last, so the native quit respects the export's CancelClose decision.
         craft_quit::on_close_request(ctx);
     }
 
@@ -3354,6 +3391,8 @@ mod comfy_workflow9_tests;
 mod copy_result_tests;
 #[cfg(test)]
 mod deck_editor_tests;
+#[cfg(test)]
+mod deck_fonts_tests;
 #[cfg(test)]
 mod deck_presenter_tests;
 #[cfg(test)]
@@ -3437,6 +3476,8 @@ mod tests;
 #[cfg(test)]
 mod text_card_tests;
 #[cfg(test)]
+mod text_preview969_tests;
+#[cfg(test)]
 mod timeline_editor_tests;
 #[cfg(test)]
 mod video559_tests;
@@ -3445,6 +3486,8 @@ mod video_tests;
 
 #[cfg(test)]
 mod marquee_tests;
+#[cfg(test)]
+mod palette_scroll_tests;
 #[cfg(test)]
 mod turn_into_tests;
 

@@ -78,7 +78,7 @@ impl Imported {
 }
 
 fn too_much_text() -> String {
-    format!("a drop adds at most {} KiB of text", MAX_DROP_TEXT_BYTES / 1024)
+    format!("at most {} KiB of text can be added at once", MAX_DROP_TEXT_BYTES / 1024)
 }
 
 /// Text from a file's bytes, at most `limit` bytes of UTF-8: UTF-8, or UTF-16 with a byte-order

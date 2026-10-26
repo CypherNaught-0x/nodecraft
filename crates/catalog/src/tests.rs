@@ -55,6 +55,8 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::zero(Currency::USD)));
         } else if model.id == "fal.trellis2" {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if matches!(model.id.as_str(), "fal.luma-ray32" | "fal.luma-ray32-i2v") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 500_000)));
         } else if model.id == "fal.bria-rmbg" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 18_000)));
@@ -153,6 +155,14 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 assert_eq!(price.0, Money::new(Currency::USD, micros), "{}", model.id);
             }
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{}", model.id);
+        } else if model.provider == "runway" {
+            let rate = match model.id.as_str() {
+                "runway.gen4-5" => 120_000,
+                "runway.gen4-turbo" => 50_000,
+                other => panic!("{other}: no verified Runway price"),
+            };
+            assert!(matches!(&model.pricing, Pricing::PerUnit { unit: Unit::Second, .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, rate * 5)));
         } else if model.provider == "seedance" {
             // Per second by resolution (#18); quoted in seedance_is_quoted_per_second_at_its_largest_size.
             assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
@@ -212,9 +222,11 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     assert_eq!(
         order,
         vec![
+            ("bfl.flux-2-klein-4b", true),
             ("comfyui.flux-dev", true),
             ("comfyui.sdxl", true),
             ("fal.flux-schnell", true),
+            ("fal.luma-photon", true),
             ("gemini-images.pro", true),
             ("gemini-images.nano-banana-2.1", true),
             ("gemini-images.flash-lite", true),
@@ -232,6 +244,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("anthropic.claude-opus-5-5", false),
             ("anthropic.claude-sonnet-5-5", false),
             ("anthropic.claude-haiku-5-5", false),
+            ("azure-openai.deployment", false),
+            ("deepgram.nova-3", false),
             ("elevenlabs.v3", false),
             ("elevenlabs.multilingual-v2", false),
             ("elevenlabs.music", false),
@@ -243,10 +257,13 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.esrgan", false),
             ("fal.flux-lora-trainer", false),
             ("fal.kokoro", false),
+            ("fal.luma-ray32", false),
+            ("fal.luma-ray32-i2v", false),
             ("fal.trellis2", false),
             ("fal.wan22", false),
             ("fal.wan22-i2v", false),
             ("fal.wan22-s2v", false),
+            ("gemini-llm.3.8-flash", false),
             ("gemini-video.omni-flash", false),
             ("google-tts.gemini-2.5-pro", false),
             ("google-tts.chirp3-hd", false),
@@ -265,6 +282,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("higgsfield.genjutsu-restyle", false),
             ("higgsfield.soul-id-trainer", false),
             ("higgsfield.kling-2.5-turbo-i2v", false),
+            ("huggingface.gpt-oss-120b-groq", false),
             ("kling.v2_1_master", false),
             ("kling.v2_5_turbo", false),
             ("kling.v1_6", false),
@@ -277,7 +295,11 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("openai.gpt-6.1-sol", false),
             ("openai.gpt-6-luna", false),
             ("openai.gpt-4.1-mini", false),
+            ("openai-audio.transcribe", false),
+            ("openai-audio.mini-tts", false),
             ("replicate.hello", false),
+            ("runway.gen4-5", false),
+            ("runway.gen4-turbo", false),
             ("seedance.2-0", false),
             ("seedance.2-5", false),
             ("seedance.2-0-fast", false),

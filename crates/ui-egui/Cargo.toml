@@ -27,6 +27,8 @@ nodecraft-sync.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 egui = { workspace = true, features = ["default_fonts"] }
+# Embedded control icons only: SVG loader, with no file, HTTP, image-codec or system-font loaders.
+egui_extras.workspace = true
 eframe = { workspace = true, features = ["wgpu", "accesskit"] }
 craft-ui = { workspace = true }
 craft-quit = { workspace = true }

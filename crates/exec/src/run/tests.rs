@@ -534,6 +534,7 @@ fn inputs_are_dropped_before_the_parameters_so_a_drawn_seed_survives() {
         inputs: vec![nodecraft_graph::JobInput { role: "prompt".into(), value: Value::Text(format!("{n}{}", "x".repeat(1_000_000))) }],
         item: None,
         billable_units: None,
+        execution_ms: None,
     };
     let large = Generation { settings: (0..9).map(job).collect(), ..Generation::new(GenerationId::from_bytes([1; 16]), vec![Value::Text("made".into())]) };
     let kept = super::recordable(large.clone()).unwrap();
@@ -563,6 +564,7 @@ fn a_result_that_fits_beside_the_active_one_only_without_its_settings_is_recorde
         inputs: Vec::new(),
         item: None,
         billable_units: None,
+        execution_ms: None,
     };
     let result = Generation { settings: (0..3).map(job).collect(), ..Generation::new(GenerationId::from_bytes([2; 16]), vec![text(9)]) };
     let changes = record_changes(C, &node, result.clone()).unwrap();
@@ -1067,6 +1069,7 @@ fn settings_too_large_to_keep_are_dropped_but_a_result_too_large_still_fails() {
         inputs: Vec::new(),
         item: None,
         billable_units: None,
+        execution_ms: None,
     };
     let small = Generation { settings: vec![job(0)], ..Generation::new(GenerationId::from_bytes([1; 16]), vec![Value::Text("made".into())]) };
     assert_eq!(super::recordable(small.clone()).unwrap(), small);

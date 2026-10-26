@@ -266,6 +266,11 @@ fn amount(money: Money) -> String {
 }
 fn price_label(model: &ModelDescriptor) -> String {
     use nodecraft_catalog::Pricing;
+    // The picker describes a catalog rate, without a workflow's runtime server evidence.
+    // This model's Free rate covers local nodes only, never paid partner nodes (#872).
+    if model.id == nodecraft_nodes::comfy_workflow::MODEL_ID {
+        return "Workflow dependent; partner cost unknown".into();
+    }
     match &model.pricing {
         Pricing::Free => "Free".into(),
         Pricing::ByUsage { currency } => format!("Usage based ({})", String::from(*currency)),
@@ -335,3 +340,15 @@ fn model_details(ui: &mut egui::Ui, model: &ModelDescriptor) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod bfl33_tests;
+
+#[cfg(test)]
+mod huggingface48_tests;
+
+#[cfg(test)]
+mod gemini44_tests;
+
+#[cfg(test)]
+mod deepgram40_tests;
