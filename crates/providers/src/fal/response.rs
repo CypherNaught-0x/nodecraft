@@ -42,14 +42,17 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         return Err(malformed("fal result contains an error instead of a complete output"));
     }
     let name = match r.model {
-        Model::Image | Model::Styled => "images",
+        Model::Image | Model::Styled | Model::Photon => "images",
         Model::Train => "diffusers_lora_file",
-        Model::Video | Model::Frames | Model::Speech => "video",
+        Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames => "video",
         Model::Audio => "audio",
         Model::Mesh => "model_glb",
         Model::Upscale | Model::RemoveBackground => "image",
     };
     // Multiple model envelopes or unexpected top-level media cannot be filtered away.
+    if matches!(r.model, Model::RayText | Model::RayFrames) && root.get("exr_file").is_some_and(|v| v.get() != "null") {
+        return Err(malformed("Luma returned an unrequested EXR sidecar"));
+    }
     for k in ["images", "video", "audio", "model_glb", "image", "diffusers_lora_file"] {
         if k != name && root.get(k).is_some() {
             return Err(malformed("fal conflicting output envelopes"));
@@ -100,7 +103,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         }
         let width = f.optional_u64("width")?;
         let height = f.optional_u64("height")?;
-        if r.model.images() && (width.is_none() || height.is_none()) {
+        if matches!(r.model, Model::Image | Model::Styled) && (width.is_none() || height.is_none()) {
             return Err(malformed("fal image dimensions required"));
         }
         if width.is_some_and(|n| n == 0 || n > u64::from(l.output_width)) || height.is_some_and(|n| n == 0 || n > u64::from(l.output_height)) {
@@ -113,14 +116,15 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
                 .filter(|n| *n <= l.total_pixels)
                 .ok_or_else(|| malformed("fal declared aggregate geometry exceeds quota"))?;
         }
-        let expected = match r.model {
-            Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => "image/png",
-            Model::Video | Model::Frames | Model::Speech => "video/mp4",
-            Model::Audio => "audio/wav",
-            Model::Mesh => "model/gltf-binary",
+        let allowed: &[&str] = match r.model {
+            Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => &["image/png"],
+            Model::Photon => &["image/png", "image/jpeg", "image/webp"],
+            Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames => &["video/mp4"],
+            Model::Audio => &["audio/wav"],
+            Model::Mesh => &["model/gltf-binary"],
             Model::Train => return Err(malformed("fal trained weights are never downloaded")),
         };
-        if mime.as_deref().is_some_and(|s| s != expected) {
+        if mime.as_deref().is_some_and(|s| !allowed.contains(&s)) {
             return Err(malformed("fal output category/MIME refused before download"));
         }
         out.push(File { url: url.into_owned(), mime: mime.map(|s| s.into_owned()), size, width, height });

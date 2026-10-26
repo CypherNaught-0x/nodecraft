@@ -42,6 +42,26 @@ const NODE: NodeId = NodeId::from_bytes([9; 16]);
 const SERVICE_ACCOUNT: &str = "gsa1:fixture@nodecraft-test.iam.gserviceaccount.com:nodecraft-test:0123456789abcdef0123456789abcdef01234567:7eGpEZd-MjEQRmjRJKQk23e1n4UNmiEbwk1_ndJvOvoMVMEbMoujF0rau_cbfj3_tq2ZwDvMDwLJYE535QzffIhyKiXLcL97BCr1-aO2s7ycnuu-nYGmhSH8hWfsLP3DhdTt1f_khooZFdqpYsAc-d68dmkqNyEoeUVgwUYa46c:0Ld7HsEvX0LP4wAadYUD7Qd4JGr80ZVgc_deaETVGTaWYHYuWnA2JxFws7HSvR-znh29y10sAEu1aRf7Xe0-vJiR-GsOFhqpBA96xC6T4gin-aDi48TKnHh0NrnncJVNh-r3jd94Dq5IHqpaIse2oM-Le_TtoX8yaAGQpDXaIu0";
 
 #[test]
+fn luma26_catalog_models_reuse_the_fal_key_and_shipping_factory() {
+    let catalog = Catalog::builtin().unwrap();
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    let missing = env(&keys, &http, &settings);
+    assert_eq!(build(&catalog, |adapter| make(adapter, &missing)).readiness("fal"), Some(&Readiness::NeedsKey { account: "fal".into() }));
+    keys.set(&Account::new("fal").unwrap(), &Secret::new("luma26-public-fixture-not-a-key").unwrap()).unwrap();
+    let ready = env(&keys, &http, &settings);
+    let setup = build(&catalog, |adapter| make(adapter, &ready));
+    for model in ["fal.luma-ray32", "fal.luma-ray32-i2v", "fal.luma-photon"] {
+        let descriptor = catalog.get(model).unwrap();
+        assert_eq!(descriptor.provider, "fal");
+        assert_eq!(setup.readiness(&descriptor.provider), Some(&Readiness::Ready));
+        assert!(setup.routing([(NODE, descriptor.provider.as_str())]).is_ok());
+    }
+    assert_eq!(http.0.load(Ordering::SeqCst), 0, "choosing a catalog model performs no paid request");
+}
+
+#[test]
 fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_sent() {
     let catalog = Catalog::builtin().unwrap();
     let keys = MemoryStore::default();

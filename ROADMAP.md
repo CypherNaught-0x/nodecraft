@@ -101,7 +101,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   are a fanned step's results, as one (#611). The desktop saves held results so they survive a
   restart (#614).
   A fal result's `X-Fal-Billable-Units` header is kept, exactly, with the job's settings in the
-  project as evidence of what was billed; it is never turned into money (#437). Run quotes also
+  project as evidence of what was billed; it is never turned into money (#437).
+  Luma Ray 3.2 text/frame video and Photon text-to-image reuse fal's queue and key (#26);
+  Ray is quoted by duration/resolution and Photon keeps an unknown upfront megapixel charge. Run quotes also
   surface aggregate admission feedback before confirmation (#307). Imported video and audio
   sources probe duration (#608); ComfyUI accepts video and audio workflows (#110). Plugin cards
   keep their package identity, migrate with their package, and survive uninstall (#173). Plugin

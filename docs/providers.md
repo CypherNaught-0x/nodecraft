@@ -26,7 +26,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Azure OpenAI** (v1 Chat Completions) | `llm` | resource API key (`Authorization: Bearer`) | text chat and streaming | Reuses `LlmClient` through `Endpoint::azure_openai`; the **Azure OpenAI deployment** card sends the configured deployment name as `model`. Unknown usage price requires explicit acceptance. No dated `api-version` or Azure SDK. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file on the canvas does the same. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
-| **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Wan text/image/speech to video, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Ten explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Trellis, style training and image-only Bria; other quotes are by usage. |
+| **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Wan and Luma Ray video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
@@ -855,7 +855,8 @@ before fetch; successful wasm compilation does not imply browser fal networking 
 
 Operation limits are lower-only: one PNG/JPEG/WebP input at most 1 MiB / 1024²; aggregate text and
 parameter strings 16 KiB; serialized request 2 MiB; API body 2 MiB; metadata 256 KiB; JSON depth 32 and
-4096 items. Four output files maximum, 16 MiB each / 48 MiB total; image axes 4096 and aggregate
+4096 items. Four output files maximum, 16 MiB each / 48 MiB total, except one Luma Ray clip may use
+256 MiB for both the file and total download; image axes 4096 and aggregate
 16,777,216 pixels. Every descriptor is admitted before downloads; actual HTTP body caps shrink
 with remaining aggregate capacity. Full image codecs and actual geometry are checked; WAV,
 MP4 and GLB2 receive bounded container-envelope validation, not complete audio/video/mesh codec
@@ -871,9 +872,9 @@ Known logical-payload worksheet (MiB), with phase overlap rather than a sum acro
 | Input inspection | Inspection 2 + combined decoded/orientation rasters 128 + scratch 1 | 131 |
 | Request/receipt | URI, request, native request clone, API reply, metadata and scratch | 12 |
 | Result metadata | Bounded descriptors and parsing payload | 6 |
-| Download validation | Validation 2 + metadata 1 + API reply 2 + outputs 48 + Vec-to-Arc live-byte overlap 16 + combined rasters 128 + scratch 1 | 198 |
+| Image download validation | Validation 2 + metadata 1 + API reply 2 + outputs 48 + Vec-to-Arc live-byte overlap 16 + combined rasters 128 + scratch 1 | 198 |
 
-A separate container/admin payload allowance of 4 gives a 202 MiB logical-payload worksheet,
+A separate container/admin payload allowance of 4 gives a 202 MiB image-path logical-payload worksheet,
 not an allocation or RSS ceiling. HTTP body **length** is bounded; transport `Vec` capacity may
 exceed that length through allocator growth and is additional, including its overlap with Arc
 conversion. The adapter must not reject already-paid valid bytes merely because capacity grew.
@@ -882,6 +883,10 @@ are included in known raster owners. Existing media preflight uses decoder.total
 orientation copy against 128 MiB; most codecs ignore their private allocation limit.
 Codec-private workspace, spare transport capacity, allocator overhead, transport/TLS/kernel
 buffering, caller graph/history and concurrent jobs are outside this worksheet.
+
+Ray instead admits one MP4 body up to 256 MiB and a possible 256 MiB Vec-to-Arc live-byte
+overlap. Its container-envelope check does not allocate image codec rasters. These payloads
+replace the image download/codec owners above; the 202 MiB image worksheet is not a Ray cap.
 
 HTTP errors preserve optional integer Retry-After seconds only when checked conversion fits
 within one hour. Optional `X-Fal-Billable-Units` evidence is tracked in #437; it is not tokens or
@@ -1382,6 +1387,48 @@ NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
   cargo test -p nodecraft-providers --features http,comfy-cloud --test live_comfy_cloud -- --ignored
 ```
 
+## Luma through fal (#26)
+
+Use the existing `fal` API key account. The Luma catalog entries reuse fal's shipping adapter,
+queue, cancellation and resumable handles; they do not need a separate Luma key. The aliases
+are live rather than pinned model versions:
+
+| Model | Admitted input | Standard output and quote |
+|---|---|---|
+| Luma Ray 3.2 | One prompt | 5 or 10-second MP4; 540p, 720p or 1080p at 0.10, 0.20 or 0.40 USD/second |
+| Luma Ray 3.2 frames | Prompt, first frame, optional last frame | 5-second MP4 at the same resolution rates |
+| Luma Photon | One prompt | One image; 0.019 USD/megapixel, but dimensions are service-selected, so the upfront quote is unknown |
+
+Prices and request contracts were checked 2026-10-24 against the official
+[Ray text](https://fal.ai/models/luma/agent/ray/v3.2/text-to-video),
+[Ray frames API](https://fal.ai/models/luma/agent/ray/v3.2/image-to-video/api), and
+[Photon](https://fal.ai/models/fal-ai/luma-photon) pages. Ray duration is sent explicitly.
+Loops require five seconds and no last frame. Ten-second frame animation requires the service's
+multi-keyframe API, which is not offered here. HDR, EXR, references and editing are also outside
+these modes. Safety screening keeps the service default.
+
+Ray prompts are 1–6,000 characters and Photon prompts 3–5,000, after surrounding whitespace is
+trimmed. The shared aggregate text-metadata limit is still 16 KiB. Frames must be PNG/JPEG/WebP,
+at most 1 MiB and 1024 pixels per side; they are decoded before payment. Results keep fal's
+16 MiB per-file cap for Photon. Ray text/frame clips instead have a 256 MiB per-file and
+aggregate cap, also when resumed from a saved handle. Application limits may lower either cap.
+Photon images are decoded under the 4096-pixel/16,777,216-total-pixel bounds,
+and may be PNG, JPEG or WebP. The generic Photon file schema need not report dimensions; actual
+bytes determine them. Ray uses the existing bounded MP4 container check, not a full video decode.
+
+Submissions use the full model path, while Ray's authenticated queue routes use `luma/agent`
+and Photon uses `fal-ai/luma-photon`, following the
+[queue contract](https://fal.ai/docs/inference-api/queue/submit-path).
+Downloads use the existing credential-free HTTPS `fal.media` allowlist and refuse redirects.
+An ambiguous paid submission is never replayed. Cancellation is best effort and does not prove
+a refund. Returned billable units remain evidence, not an invented monetary invoice. The builtin
+browser transport cannot provide no-redirect requests, so these modes require an audited native
+transport even though the library builds for wasm.
+
+No paid live calls were made for this change. Ignored `live_luma` tests require both
+`NODECRAFT_LIVE_LUMA=1` and `NODECRAFT_LIVE_LUMA_ACKNOWLEDGE_COST=1`, an explicit `FAL_KEY`, and
+spending authorization. The Ray smoke requests a 0.50 USD clip; Photon has no exact upfront
+total. They never run in CI.
 
 ## Deepgram file transcription (`deepgram` feature)
 

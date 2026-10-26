@@ -286,3 +286,47 @@ fn a_fresh_query_and_enter_use_this_frames_matches_and_escape_closes() {
     h.run();
     assert_eq!(h.state().outcome, Outcome::Closed);
 }
+
+fn luma26_view(output: Modality) -> View {
+    let catalog = Catalog::builtin().unwrap();
+    let mut picker = ModelPicker::new(&catalog, &Wiring::new(output).with_inline_prompt(), |_| Ok(())).unwrap();
+    picker.set_query("Luma").unwrap();
+    picker.refilter(&catalog);
+    View { catalog, picker, outcome: Outcome::Open }
+}
+
+#[test]
+fn luma26_real_picker_selects_photon_and_ray_for_the_matching_output() {
+    for (output, label, id) in [(Modality::Image, "Luma Photon (fal)", "fal.luma-photon"), (Modality::Video, "Luma Ray 3.2 (fal)", "fal.luma-ray32")] {
+        let mut h = Harness::builder().with_size(egui::vec2(1100.0, 800.0)).build_ui_state(
+            |ui, view: &mut View| {
+                if view.outcome == Outcome::Open {
+                    view.outcome = view.picker.show(ui.ctx(), &view.catalog, &crate::theme::DARK);
+                }
+            },
+            luma26_view(output),
+        );
+        h.run();
+        h.get_by_label(label).click();
+        h.run();
+        assert_eq!(h.state().outcome, Outcome::Chosen(id.into()));
+    }
+}
+
+#[test]
+#[ignore = "actual GPU capture; LUMA26_RENDER_DIR and optional LUMA26_BASELINE"]
+fn luma26_visual() {
+    let output = std::path::PathBuf::from(std::env::var_os("LUMA26_RENDER_DIR").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let baseline = std::env::var_os("LUMA26_BASELINE").is_some();
+    let mut h = Harness::builder().wgpu().with_size(egui::vec2(1100.0, 800.0)).build_ui_state(
+        |ui, view: &mut View| {
+            view.outcome = view.picker.show(ui.ctx(), &view.catalog, &crate::theme::DARK);
+        },
+        luma26_view(Modality::Image),
+    );
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run_steps(4);
+    assert_eq!(h.query_by_label("Luma Photon (fal)").is_some(), !baseline);
+    h.render().unwrap().save(output.join(if baseline { "before.png" } else { "after.png" })).unwrap();
+}

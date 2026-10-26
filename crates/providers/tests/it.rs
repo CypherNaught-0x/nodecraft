@@ -12,6 +12,8 @@ mod live_bfl;
 mod live_fal;
 #[path = "live_gemini_images.rs"]
 mod live_gemini_images;
+#[path = "live_luma.rs"]
+mod live_luma;
 #[path = "live_openai_images.rs"]
 mod live_openai_images;
 #[path = "live_replicate.rs"]
