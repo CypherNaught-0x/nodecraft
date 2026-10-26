@@ -18,5 +18,7 @@ mod same_but_layout;
 mod scalars;
 #[path = "settings.rs"]
 mod settings;
+#[path = "source_versions.rs"]
+mod source_versions;
 #[path = "tags.rs"]
 mod tags;

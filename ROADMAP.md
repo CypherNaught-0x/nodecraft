@@ -195,6 +195,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   and input paths stay short, keeping full timelines within Windows' command limit (#642).
   Export for another editor carries its captions as FCPXML titles and a SubRip companion,
   with style and placement differences listed in the report (#649).
+  Regenerated sources keep stored trims;
+  the editor warns when they no longer fit, records each rendered clip's source version and
+  reuses canvas stale badges for unrendered edits (#578).
 - **Live sharing works from the desktop app and the browser.** Sessions are shared through `nodecraft-cli relay`
   (#119), with every edit merged and images passed along. Share links let someone view, comment
   on or edit a shared project, with signed discussions and expiry and revocation (`share.link_*`,

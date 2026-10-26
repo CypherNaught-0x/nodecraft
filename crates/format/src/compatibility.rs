@@ -72,7 +72,12 @@ fn node(item: &Value) -> Result<(), Error> {
 fn generation(item: &Value) -> Result<(), Error> {
     // Item tags (#92), job settings (#162) and partial results (#480) are as unknown to version 1
     // as input hashes.
-    if item.get("input_hash").is_some() || item.get("items").is_some() || item.get("settings").is_some() || item.get("incomplete").is_some() {
+    if item.get("input_hash").is_some()
+        || item.get("items").is_some()
+        || item.get("settings").is_some()
+        || item.get("incomplete").is_some()
+        || item.get("source_versions").is_some()
+    {
         return Err(unsupported());
     }
     if let Some(outputs) = item.get("outputs").and_then(Value::as_array) {
@@ -266,11 +271,13 @@ pub(crate) fn project(project: &nodecraft_graph::Project) -> Result<(), Error> {
             if !node.config.is_empty() || node.kind == "structure.note" {
                 return Err(unsupported());
             }
-            if node
-                .history
-                .iter()
-                .any(|generation| generation.input_hash.is_some() || !generation.items.is_empty() || !generation.settings.is_empty() || generation.is_partial())
-            {
+            if node.history.iter().any(|generation| {
+                generation.input_hash.is_some()
+                    || !generation.items.is_empty()
+                    || !generation.settings.is_empty()
+                    || !generation.source_versions.is_empty()
+                    || generation.is_partial()
+            }) {
                 return Err(unsupported());
             }
             for value in node.params.values().chain(node.history.iter().flat_map(|generation| &generation.outputs)) {
@@ -303,6 +310,7 @@ mod tests {
             input_hash: Some(nodecraft_types::Blake3::from_bytes([6; 32])),
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         });
         nodes.push(hashed);
@@ -315,6 +323,7 @@ mod tests {
             input_hash: None,
             items: vec![vec![key]],
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         });
         let mut v1 = Project::new(ProjectId::from_bytes([4; 16]), "Items").unwrap();
@@ -337,6 +346,11 @@ mod tests {
         });
         set.history.push(job);
         nodes.push(set);
+        let mut rendered = nodes[0].clone();
+        let mut generation = Generation::new(GenerationId::from_bytes([5; 16]), vec![]);
+        generation.source_versions.push(nodecraft_graph::SourceVersion { role: "clip".into(), hash: nodecraft_types::Blake3::from_bytes([6; 32]), item: None });
+        rendered.history.push(generation);
+        nodes.push(rendered);
         for value in [
             serde_json::json!({"type":"bool","value":true}),
             serde_json::json!({"type":"number","value":1.5}),
@@ -356,6 +370,7 @@ mod tests {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             });
             nodes.push(output);

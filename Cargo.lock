@@ -3395,6 +3395,7 @@ dependencies = [
  "allocation-counter",
  "blake3",
  "futures",
+ "log",
  "nodecraft-actions",
  "nodecraft-catalog",
  "nodecraft-graph",
