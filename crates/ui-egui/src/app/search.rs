@@ -260,7 +260,7 @@ impl NodeCraftApp {
                 if !self.search.open {
                     if ui
                         .add_enabled_ui(open_enabled, |ui| {
-                            ui.put(rect, egui::Button::new(if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" }))
+                            ui.put(rect, crate::icons::Icon::Search.button(ui, if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" }, t))
                         })
                         .inner
                         .on_hover_text("Finish any active node editor or gesture before opening canvas search.")

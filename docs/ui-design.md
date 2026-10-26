@@ -420,3 +420,32 @@ takes the rest of the window. Its header shows the mode (Assist/Auto) and Clear,
 with the model and what auto mode has accepted of its budget; notices use `danger`. Steps waiting
 for approval show what they would do (read, change the project, run and its price) with Approve
 and Decline; Esc or Cancel stops the agent while it works.
+
+## Control icons
+
+Controls use Tabler outline SVGs through `icons::Icon`, prepared by the pinned Craft SVG
+catalog and loaded by egui's SVG loader. The loader rasterizes at the requested display pixel
+size on desktop and WebAssembly. It loads only embedded bytes; no network or filesystem access
+is enabled. Source files stay unchanged under `assets/icons/tabler/`, with the MIT license beside
+them and one attribution row per file. See the [choice and comparison](decisions/2026-10-26-tabler-control-icons.md).
+
+| Icon variant | SVG | Initial use |
+| --- | --- | --- |
+| `Search` | `search.svg` | canvas Search button |
+| `Comments` | `message-circle.svg` | Comments button |
+| `Key` | `key.svg` | API keys button |
+| `Wallet` | `wallet.svg` | Budgets button |
+| `Open` | `folder-open.svg` | Open project and Import folder |
+| `Save` | `device-floppy.svg` | Save project and Save project as |
+
+Use `Icon::button` for an icon beside action text; it retains the ordinary Button label,
+keyboard behavior and disabled state. For an icon-only control use `Icon::icon_button`, which
+requires an action label and supplies both its screen-reader label and hover tooltip (an empty
+label falls back to the icon's action name). Standalone images also carry an alternative label.
+Buttons keep their existing enabled conditions, commands and action tooltips.
+
+The `icon_size` and `icon_large_size` tokens are 16 and 24 screen points. `icon_stroke` is `"2"`
+in the source SVG's 24-unit coordinates; it is textual because the shared SVG preparation API
+substitutes that exact attribute. Both themes share this stroke. The intermediate white mask
+is tinted with the theme's `text` colour at draw time, including inside disabled controls.
+Never add a coloured icon asset or bake a fixed-resolution icon bitmap into a control.
