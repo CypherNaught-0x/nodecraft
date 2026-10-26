@@ -17,6 +17,8 @@ default = ["http", "llm", "comfyui"]
 http = ["dep:reqwest"]
 # Chat endpoints: OpenAI-compatible (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, LiteLLM) and Anthropic.
 llm = []
+# Direct Hugging Face text through the existing OpenAI-compatible chat client.
+huggingface = ["llm"]
 # ComfyUI servers (local or remote) through the `comfy` protocol crate, with live progress over
 # its WebSocket on the desktop.
 comfyui = ["dep:tungstenite"]

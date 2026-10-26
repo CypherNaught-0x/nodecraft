@@ -1,0 +1,43 @@
+# Hugging Face router, explicit Groq route; availability verified 2026-10-24.
+# https://huggingface.co/docs/inference-providers/en/index
+# https://router.huggingface.co/v1/models
+# Account credits and route prices can change, so dollar cost stays unknown.
+[[model]]
+id = "huggingface.gpt-oss-120b-groq"
+provider = "huggingface"
+provider_model = "openai/gpt-oss-120b:groq"
+label = "GPT OSS 120B (Groq)"
+description = "Hugging Face text generation through Groq using an HF token. Charged by usage; dollar cost is unknown before and after the run."
+latency_s = 15
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Thinking can use part of the output allowance."
+control = { type = "unsigned", min = "1", max = "8192" }
+default = { type = "unsigned", value = "2048" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "huggingface.gpt-oss-120b-groq"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Thinking can use part of the output allowance."
+control = { type = "unsigned", min = "1", max = "8192" }
+default = { type = "unsigned", value = "2048" }
