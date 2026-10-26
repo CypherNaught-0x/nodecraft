@@ -153,6 +153,14 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 assert_eq!(price.0, Money::new(Currency::USD, micros), "{}", model.id);
             }
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{}", model.id);
+        } else if model.provider == "runway" {
+            let rate = match model.id.as_str() {
+                "runway.gen4-5" => 120_000,
+                "runway.gen4-turbo" => 50_000,
+                other => panic!("{other}: no verified Runway price"),
+            };
+            assert!(matches!(&model.pricing, Pricing::PerUnit { unit: Unit::Second, .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, rate * 5)));
         } else if model.provider == "seedance" {
             // Per second by resolution (#18); quoted in seedance_is_quoted_per_second_at_its_largest_size.
             assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
@@ -279,6 +287,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("openai.gpt-6-luna", false),
             ("openai.gpt-4.1-mini", false),
             ("replicate.hello", false),
+            ("runway.gen4-5", false),
+            ("runway.gen4-turbo", false),
             ("seedance.2-0", false),
             ("seedance.2-5", false),
             ("seedance.2-0-fast", false),
