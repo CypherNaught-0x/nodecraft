@@ -8,6 +8,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 |---|---|---|---|---|
 | **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B text → PNG | Direct queued generation with resumable cluster polling, bounded downloads and unknown usage price; no automatic ambiguous submit replay or remote cancellation. See below. |
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
+| **Hugging Face Inference Providers** | `huggingface` | HF token with Inference Providers permission, keychain account `huggingface` | text → text, streaming | GPT OSS 120B through the explicit Groq route; direct router with the existing chat client, unknown usage price, no ambiguous replay. See below. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
 | **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and ordered reference editing | Three stable Gemini models, unknown usage price; bounded inline JPEG outputs. |
 | **Gemini Video** | `gemini-video` | supplied Gemini API key (`x-goog-api-key`), same `gemini` account | Omni Flash text, first/last frame and reference images → video with sound | Veo on the Gemini API is shut down; Veo now runs on Google Cloud (`google-veo`). Paid tier only; charged by measured tokens, no price before the run. See below. |
@@ -1361,6 +1362,7 @@ An ignored paid smoke test requires both explicit spending authorization and
 `NODECRAFT_LIVE_BFL=1` with `BFL_API_KEY` supplied privately. It is never run in CI.
 The current endpoint and statuses were verified against the
 [official OpenAPI](https://api.bfl.ai/openapi.json) on 2026-10-24.
+
 ## Runway video (#25)
 
 Store a Runway developer API key under `runway` in API keys. The desktop, CLI and headless
@@ -1399,3 +1401,33 @@ refund. Already missing/cancelled tasks count as stopped. See
 `live_runway` is ignored and requires `NODECRAFT_LIVE_RUNWAY=1`,
 `NODECRAFT_LIVE_RUNWAY_ACKNOWLEDGE_COST=1`, and `RUNWAYML_API_SECRET`; run it only with spending
 authorization. It requests one 2-second Gen-4.5 clip (0.24 USD before tax), never in CI.
+
+## Hugging Face text (`huggingface` feature)
+
+The builtin GPT OSS 120B (Groq) card calls
+`https://router.huggingface.co/v1/chat/completions` using the existing OpenAI-compatible
+chat client. Its explicit model id `openai/gpt-oss-120b:groq` selects Groq through the HF
+router; it does not select whichever provider is fastest or cheapest. The public router
+model listing reported this route live on 2026-10-24. Availability can still change.
+
+In the native app, save an HF token with Inference Providers permission in API keys under
+`huggingface`. It is sent only as a secret Authorization bearer header. Project files never
+contain the token. The browser has no builtin transport/key setup for this catalog provider.
+
+The card accepts text only: at most 64 turns and 1 MiB total text. Requested completion tokens
+are limited to 1–8,192, default 2,048; reasoning can consume part of the allowance. The existing
+client bounds responses and streaming, retains token usage, and maps payment-required to Budget,
+auth failures to Auth and ordinary 429s to RateLimited (quota-coded 429s to Budget).
+Pricing is explicitly ByUsage: account credits, changing rates and provider-specific usage mean
+this adapter does not claim a dollar quote or actual charge. Normal unknown-price acceptance is
+required. No ambiguous paid submit is replayed, no polling handle exists and local cancellation
+cannot confirm a remote stop or refund. Images, tools, embeddings and other HF tasks are outside
+this text adapter.
+
+Offline fixtures cover routing, request bounds, streaming, errors, real host admission and the
+lost-reply driver path. The opt-in smoke test requires `NODECRAFT_LIVE_HUGGINGFACE=1` and
+`HF_TOKEN`; ordinary tests do not make paid requests.
+
+Contract references: [router and provider selection](https://huggingface.co/docs/inference-providers/en/index),
+[chat request schema](https://huggingface.co/docs/inference-providers/tasks/chat-completion),
+[billing](https://huggingface.co/docs/inference-providers/pricing).

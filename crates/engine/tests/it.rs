@@ -159,3 +159,6 @@ mod token_rates595;
 mod trained_styles167;
 #[path = "video_generation559.rs"]
 mod video_generation559;
+
+#[path = "huggingface48.rs"]
+mod huggingface48;
