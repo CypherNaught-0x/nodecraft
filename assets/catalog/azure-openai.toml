@@ -1,0 +1,33 @@
+# Azure OpenAI v1 Chat Completions, checked 2026-10-24:
+# https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle?tabs=key
+# A customer's deployment, not a fixed underlying model. No universal rate is assumed:
+# https://azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service/
+# ByUsage requires explicit unknown-price admission; usage reports tokens, not a dollar charge.
+[[model]]
+id = "azure-openai.deployment"
+provider = "azure-openai"
+provider_model = "nodecraft-deployment"
+label = "Azure OpenAI deployment"
+description = "Your Azure chat deployment. Set its deployment name and resource endpoint. Cost depends on the deployment; no price estimate or final monetary charge is available."
+# Generic discovery hints, not a benchmark or a claim about a specific deployment.
+latency_s = 20
+quality = 2
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "deployment"
+label = "Azure deployment name"
+description = "Exact deployment name from your Azure resource (not necessarily the underlying model name)."
+control = { type = "text", multiline = false, max_bytes = 64 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Caps completion tokens, including reasoning. Your deployment may require a smaller limit."
+control = { type = "unsigned", min = "1", max = "128000" }
+default = { type = "unsigned", value = "1024" }

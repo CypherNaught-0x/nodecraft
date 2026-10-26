@@ -1,7 +1,7 @@
 //! What NodeCraft sends Comfy Cloud: the checked workflow, its inputs as assets, the idempotency key.
 use super::*;
 use crate::JobInput;
-use crate::comfyui::{split_target, uuid_from};
+use crate::comfyui::{MAX_CARD_TEXT_BYTES, card_values, keep_card_outputs, split_target, template, uuid_from};
 use nodecraft_comfy::{ApiWorkflow, ComfyError, InputKind, InputValue};
 use serde_json::{Map, Value};
 
@@ -36,11 +36,35 @@ pub(super) struct Prepared {
 /// Parses the job's workflow, applies its `values`, checks that every media input targets a file
 /// input, and checks the result against the cloud's catalog. Sends nothing.
 pub(super) fn prepare(job: &ProviderJob, catalog: &NodeCatalog, limits: Limits) -> Result<Prepared, ProviderError> {
-    let raw = job.params.get("workflow").ok_or_else(|| invalid("the job has no ComfyUI workflow"))?;
-    let bytes = serde_json::to_vec(raw).map_err(|e| invalid(e.to_string()))?;
-    let mut workflow = ApiWorkflow::parse(&bytes, Some(catalog)).map_err(comfy_error)?;
+    let expanded;
+    let job = if template::is_templated(job) {
+        expanded = template::expand(job, catalog).map_err(|(error, _)| error)?;
+        &expanded
+    } else {
+        job
+    };
     let empty = Map::new();
-    let values = job.params.get("values").and_then(Value::as_object).unwrap_or(&empty);
+    let carried;
+    let (mut workflow, values) = match (job.params.get("workflow"), template::card_text(job, template::CARD_WORKFLOW)) {
+        (Some(raw), None) => {
+            if template::card_text(job, template::CARD_VALUES).is_some() || template::card_text(job, template::CARD_OUTPUTS).is_some() {
+                return Err(invalid("the job mixes a workflow card's inputs into another workflow"));
+            }
+            let bytes = serde_json::to_vec(raw).map_err(|_| invalid("the Comfy Cloud workflow cannot be encoded"))?;
+            (ApiWorkflow::parse(&bytes, Some(catalog)).map_err(comfy_error)?, job.params.get("values").and_then(Value::as_object).unwrap_or(&empty))
+        }
+        (None, Some(text)) => {
+            if text.len() > MAX_CARD_TEXT_BYTES || job.params.contains_key("values") {
+                return Err(invalid("a Comfy Cloud workflow card has oversized or conflicting inputs"));
+            }
+            carried = card_values(job)?;
+            let mut workflow = ApiWorkflow::parse(text.as_bytes(), Some(catalog)).map_err(comfy_error)?;
+            keep_card_outputs(&mut workflow, job, catalog)?;
+            (workflow, &carried)
+        }
+        (Some(_), Some(_)) => return Err(invalid("the job carries two ComfyUI workflows")),
+        (None, None) => return Err(invalid("the job has no ComfyUI workflow")),
+    };
     for (target, value) in values {
         let (node, input) = split_target(target)?;
         workflow.set_input(catalog, node, input, value.clone()).map_err(comfy_error)?;

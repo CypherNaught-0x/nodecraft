@@ -4,7 +4,7 @@
 use crate::theme::Tokens;
 use egui::{Pos2, Vec2};
 
-/// Rows shown at once; typing narrows the list.
+/// Maximum visible rows; the complete list scrolls below them.
 pub const MAX_ROWS: usize = 12;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,15 +91,15 @@ impl Palette {
         if escape {
             return Outcome::Closed;
         }
-        let matches = filter(entries, &self.query);
-        let shown = matches.len().min(MAX_ROWS);
+        let mut matches = filter(entries, &self.query);
+        let last = matches.len().saturating_sub(1);
         if down {
-            self.highlighted = (self.highlighted + 1).min(shown.saturating_sub(1));
+            self.highlighted = self.highlighted.saturating_add(1).min(last);
         }
         if up {
             self.highlighted = self.highlighted.saturating_sub(1);
         }
-        self.highlighted = self.highlighted.min(shown.saturating_sub(1));
+        self.highlighted = self.highlighted.min(last);
         // The double-click that opened the palette must not count as a click elsewhere.
         let first_frame = self.focus;
         let mut chosen = None;
@@ -125,26 +125,37 @@ impl Palette {
                     }
                     if edit.changed() {
                         self.highlighted = 0;
-                        // The list below was filtered before this keystroke; show the new one.
-                        ui.ctx().request_repaint();
+                        matches = filter(entries, &self.query);
                     }
                     if matches.is_empty() {
                         ui.label(egui::RichText::new("Nothing matches").color(t.text_muted));
                     }
-                    for (row, entry) in matches.iter().take(MAX_ROWS).enumerate() {
-                        let text = match &entry.shortcut {
-                            Some(key) => format!("{}    {key}", entry.label),
-                            None => entry.label.clone(),
-                        };
-                        let response = ui.add(egui::Button::selectable(row == self.highlighted, text).min_size(Vec2::new(ui.available_width(), 0.0)));
-                        // Follow the pointer only when it moves, so resting it doesn't fight ↑/↓.
-                        if response.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
-                            self.highlighted = row;
-                        }
-                        if response.clicked() {
-                            chosen = Some(entry.target.clone());
-                        }
+                    let row_height = ui.spacing().interact_size.y;
+                    let stride = row_height + ui.spacing().item_spacing.y;
+                    let mut scroll = egui::ScrollArea::vertical()
+                        .id_salt("entries")
+                        .max_height((stride * MAX_ROWS as f32 - ui.spacing().item_spacing.y).min(ui.ctx().content_rect().height() * 0.5));
+                    if first_frame || up || down || edit.changed() {
+                        scroll = scroll.vertical_scroll_offset(self.highlighted as f32 * stride);
                     }
+                    scroll.show_rows(ui, row_height, matches.len(), |ui, range| {
+                        for row in range {
+                            let Some(entry) = matches.get(row) else { continue };
+                            let text = match &entry.shortcut {
+                                Some(key) => format!("{}    {key}", entry.label),
+                                None => entry.label.clone(),
+                            };
+                            let response = ui
+                                .add(egui::Button::selectable(row == self.highlighted, text).truncate().min_size(Vec2::new(ui.available_width(), row_height)));
+                            // Follow the pointer only when it moves, so resting it doesn't fight ↑/↓.
+                            if response.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
+                                self.highlighted = row;
+                            }
+                            if response.clicked() {
+                                chosen = Some(entry.target.clone());
+                            }
+                        }
+                    });
                 });
         });
         if let Some(target) = chosen {
@@ -154,7 +165,7 @@ impl Palette {
         // in the same frame), not the list filtered before it.
         if enter {
             let fresh = filter(entries, &self.query);
-            let row = self.highlighted.min(fresh.len().min(MAX_ROWS).saturating_sub(1));
+            let row = self.highlighted.min(fresh.len().saturating_sub(1));
             if let Some(entry) = fresh.get(row) {
                 return Outcome::Chosen(entry.target.clone());
             }

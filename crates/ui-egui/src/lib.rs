@@ -13,6 +13,7 @@ pub mod card;
 pub mod clipboard;
 pub mod comments;
 pub mod history;
+pub mod icons;
 pub mod ids;
 pub mod keys;
 pub mod mesh_view;

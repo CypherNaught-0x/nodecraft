@@ -288,3 +288,38 @@ fn instance_descriptors_are_reused_for_the_same_mapping_and_bounded() {
     assert_eq!(kind.resolve_instance(&edited).unwrap().params.params.len(), 2);
     assert_eq!(kind.resolve_instance(&node).unwrap().into_owned(), first);
 }
+
+#[test]
+fn malformed_partner_names_warn_without_hiding_their_cost() {
+    let workflow = workflow(FOX);
+    let mut exposed = exposed(&workflow);
+    exposed.partners = vec![
+        nodecraft_comfy::PartnerNode { node: "3".into(), class_type: "Bad\nPartner".into() },
+        nodecraft_comfy::PartnerNode { node: "2".into(), class_type: "GoodPartner".into() },
+    ];
+    let proposal = propose(&workflow, &exposed).unwrap();
+    assert!(proposal.warnings.iter().any(|warning| warning.contains("invalid class name was omitted")));
+    assert!(proposal.warnings.iter().all(|warning| !warning.contains("Bad\nPartner")));
+    let node = place(proposal.config).unwrap();
+    assert_eq!(mapping(&node).unwrap().partners, ["GoodPartner", "Unidentified partner node"]);
+    assert!(kind().unpriced(&node).is_some());
+    exposed.partners.truncate(1);
+    assert!(kind().unpriced(&place(propose(&workflow, &exposed).unwrap().config).unwrap()).is_some(), "a sole malformed name still costs credits");
+}
+
+#[test]
+fn cache_budget_counts_both_parsed_mapping_and_descriptor_payloads() {
+    let kind = kind();
+    let workflow = workflow(FOX);
+    for n in 0..12 {
+        let mut exposed = exposed(&workflow);
+        let prompt = exposed.inputs.iter_mut().find(|input| input.node == "2").unwrap();
+        prompt.current = Some(serde_json::Value::String(format!("{n}{}", "x".repeat(200_000))));
+        let node = place(propose(&workflow, &exposed).unwrap().config).unwrap();
+        kind.resolve_instance(&node).unwrap();
+    }
+    let cache = kind.cache.lock().unwrap();
+    assert!(cache.len() < 12, "text-only accounting would retain all twelve mappings");
+    assert!(cache.iter().map(|entry| entry.bytes).sum::<usize>() <= MAX_CACHED_BYTES);
+    assert!(cache.iter().all(|entry| entry.bytes > entry.text.len() * 2), "both copies of large default text must count");
+}

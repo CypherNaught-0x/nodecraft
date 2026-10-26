@@ -234,7 +234,7 @@ fn not_set_up(adapter: &str) -> impl FnOnce(crate::provider_setup::Readiness) ->
 
 /// The ComfyUI lists in `wanted`, read from the server's node catalog.
 async fn comfy_lists(env: &HostEnv<'_>, wanted: &[(&String, (&str, &str))]) -> Result<Vec<(String, Listed)>, Failure> {
-    let provider = crate::provider_setup::comfyui(env).map_err(not_set_up("ComfyUI"))?;
+    let provider = crate::provider_setup::comfy_profile::catalog_provider(env).map_err(not_set_up("ComfyUI"))?;
     let catalog = provider
         .catalog()
         .await

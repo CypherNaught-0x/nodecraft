@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// Writes saves on a thread of their own (#461), so a save's durability syncs never hold up
 /// a frame.
-struct ThreadSaves;
+pub(super) struct ThreadSaves;
 impl nodecraft_engine::save_runner::SaveRunner for ThreadSaves {
     fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
         // The job stays reachable here, so a thread that can't start hands it back to run inline.
