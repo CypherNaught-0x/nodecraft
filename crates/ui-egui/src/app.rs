@@ -1585,9 +1585,17 @@ impl NodeCraftApp {
             self.navigation.geometry.rects.iter().any(|(id, rect)| !collapsed.contains(id) && self.view.rect_to_screen(viewport.min, *rect).contains(pointer))
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
-        let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
+        // Menus draw later in the frame. Leave their wheel input untouched and keep their world
+        // insertion point fixed, including when the pointer is outside or a zoom modifier is held.
+        let scroll_navigation = if self.palette.is_some() || self.turn_into.is_some() {
+            canvas::ScrollNavigation::Disabled
+        } else if !over_card || self.view.zoom < card::BODY_MIN_ZOOM {
+            canvas::ScrollNavigation::PanAndZoom
+        } else {
+            canvas::ScrollNavigation::ZoomOnly
+        };
         if !canvas_blocks {
-            canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
+            canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, scroll_navigation, self.marquee.is_none());
         }
         // The palette and "Turn into" create at the world point they opened on; once the view
         // moves, close them.
@@ -3438,6 +3446,8 @@ mod video_tests;
 
 #[cfg(test)]
 mod marquee_tests;
+#[cfg(test)]
+mod palette_scroll_tests;
 #[cfg(test)]
 mod turn_into_tests;
 

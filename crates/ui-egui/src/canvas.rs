@@ -194,13 +194,20 @@ pub fn text_input_focused(ctx: &egui::Context) -> bool {
 /// `background` is the response of the canvas-filling background widget.
 ///
 /// `primary_pans` is false while a primary drag on the background is a box select instead.
+/// Whether wheel and pinch input may navigate the canvas in this frame.
+pub enum ScrollNavigation {
+    Disabled,
+    ZoomOnly,
+    PanAndZoom,
+}
+
 pub fn navigate(
     ui: &egui::Ui,
     background: &egui::Response,
     view: &mut CanvasView,
     home: Pos2,
     prefs: &CanvasSettings,
-    allow_scroll_pan: bool,
+    scroll_navigation: ScrollNavigation,
     primary_pans: bool,
 ) {
     let viewport = background.rect;
@@ -222,8 +229,8 @@ pub fn navigate(
         )
     });
     let hovered = pointer.is_some_and(|p| viewport.contains(p));
-    if hovered {
-        let (zoom, pan) = scroll_to_view_change(if allow_scroll_pan { scroll } else { Vec2::ZERO }, zoom, prefs);
+    if hovered && !matches!(scroll_navigation, ScrollNavigation::Disabled) {
+        let (zoom, pan) = scroll_to_view_change(if matches!(scroll_navigation, ScrollNavigation::PanAndZoom) { scroll } else { Vec2::ZERO }, zoom, prefs);
         view.pan_by(pan);
         if zoom != 1.0
             && let Some(p) = pointer
