@@ -550,7 +550,7 @@ impl LlmClient {
     fn auth(&self, mut http: HttpRequest) -> HttpRequest {
         match (self.endpoint.dialect, &self.endpoint.key) {
             (Dialect::OpenAi, Some(key)) => http = http.secret_header("Authorization", format!("Bearer {}", key.expose())),
-            (Dialect::Anthropic, Some(key)) => http = http.header("x-api-key", key.expose()),
+            (Dialect::Anthropic, Some(key)) => http = http.secret_header("x-api-key", key.expose()),
             (_, None) => {}
         }
         if self.endpoint.dialect == Dialect::Anthropic {

@@ -8,9 +8,6 @@ use nodecraft_types::{GenerationId, Value};
 
 /// Rows of controls the strip draws: the step controls, then the results.
 pub const ROWS: usize = 2;
-/// Card rows (`control_row_height` each) it reserves at the bottom of a card; one fits both of
-/// its rows of controls.
-pub const RESERVED_ROWS: usize = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryIntent {
@@ -41,13 +38,8 @@ pub enum HistoryIntent {
 }
 
 /// The strip's drawn height: two rows of controls.
-pub fn height(spacing: &egui::Spacing) -> f32 {
-    spacing.interact_size.y * ROWS as f32 + spacing.item_spacing.y
-}
-
-/// Rows a node's card needs for its history strip.
-pub fn rows(node: &Node) -> usize {
-    if node.history.is_empty() { 0 } else { RESERVED_ROWS }
+pub fn height(t: &Tokens) -> f32 {
+    (t.body_size + t.control_gap) * ROWS as f32 + t.control_gap
 }
 
 /// A short, single-line description of a result for its tooltip.

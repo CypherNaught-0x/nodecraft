@@ -80,6 +80,12 @@ impl NativeAssetWorkspace {
     pub fn quota(&self) -> &DiskQuota {
         &self.0.quota
     }
+    /// A managed sibling is visible to the same bounded startup orphan maintenance. It
+    /// shares quota accounting but never holds the live transfer gate during export I/O.
+    pub(crate) fn export_scratch(&self) -> Result<Self, Error> {
+        let parent = self.0.root.parent().ok_or_else(|| error("private export storage has no managed parent"))?;
+        Self::new(parent, self.0.quota.for_export())
+    }
     pub(crate) fn install_journal(&self, owner: &Arc<crate::storage::native::durability::SharedJournal>) -> Result<(), Error> {
         let mut slot = self.0.journal.lock().map_err(|_| error("recovery owner slot is unavailable"))?;
         if slot.is_some() {
@@ -711,6 +717,53 @@ fn error(message: &'static str) -> Error {
 mod tests {
     use super::*;
     use crate::asset_source::MemorySource;
+    #[test]
+    fn export_scratch_shares_lowered_limits_without_holding_the_live_transfer_gate() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut limits = crate::disk_quota::DiskUsage::HARD;
+        limits.verified = 8;
+        limits.staging = 8;
+        let quota = DiskQuota::lower(limits, 4 * 1024 * 1024).unwrap();
+        let workspace = NativeAssetWorkspace::new(dir.path(), quota.clone()).unwrap();
+        let live = quota.stage_operation().unwrap();
+        let occupied = quota.reserve(DiskPool::Verified, 4).unwrap();
+        let scratch = workspace.export_scratch().unwrap();
+        assert_eq!(scratch.0.root.parent(), workspace.0.root.parent());
+        assert_ne!(scratch.0.root, workspace.0.root);
+        assert!(scratch.0.root.starts_with(dir.path().canonicalize().unwrap()));
+        let source = AssetRange::new(Arc::new(MemorySource::new(Arc::from(&b"bytes"[..]))), 0, 5).unwrap();
+        let before = quota.usage().unwrap();
+        assert!(scratch.seal_copy(&source, DiskPool::Verified, None, &TransferCancel::default(), &StreamMetrics::default()).is_err());
+        assert_eq!(quota.usage().unwrap(), before, "a failed export cannot exceed the combined limit");
+        drop(occupied);
+        let sealed = scratch.seal_copy(&source, DiskPool::Verified, None, &TransferCancel::default(), &StreamMetrics::default()).unwrap();
+        assert_eq!(quota.usage().unwrap().verified, 5, "the export succeeds while the live transfer gate remains held");
+        let another = workspace.export_scratch().unwrap();
+        let export = scratch.quota().stage_operation().unwrap();
+        assert_eq!(another.quota().try_stage().unwrap_err().kind, ErrorKind::Busy, "export scopes share one gate");
+        assert!(export.check(workspace.quota()).is_err());
+        assert!(live.check(scratch.quota()).is_err());
+        drop((export, live, sealed));
+        assert_eq!(quota.usage().unwrap().verified, 0);
+    }
+
+    #[test]
+    fn export_scratch_left_after_failed_cleanup_is_reclaimed_by_startup_maintenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = NativeAssetWorkspace::new(dir.path(), DiskQuota::default()).unwrap();
+        let scratch = workspace.export_scratch().unwrap();
+        let root = scratch.0.root.clone();
+        let source = AssetRange::new(Arc::new(MemorySource::new(Arc::from(&b"public scratch"[..]))), 0, 14).unwrap();
+        let sealed = scratch.seal_copy(&source, DiskPool::Verified, None, &TransferCancel::default(), &StreamMetrics::default()).unwrap();
+        scratch.fail_removals(u64::MAX);
+        drop((sealed, scratch));
+        assert!(root.exists(), "failed cleanup retains the owned marker and payload");
+        let restarted = NativeAssetWorkspace::new(dir.path(), DiskQuota::default()).unwrap();
+        assert!(!root.exists(), "the ordinary startup pass finds the managed export sibling");
+        assert!(restarted.maintenance_report().removed_roots >= 1);
+        assert!(workspace.0.root.exists(), "a live workspace is never reclaimed");
+    }
+
     #[test]
     fn aggregate_capture_bounds_reservations_and_cancel_short_or_failed_cleanup() {
         let dir = tempfile::tempdir().unwrap();

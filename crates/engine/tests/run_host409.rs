@@ -200,6 +200,7 @@ fn billed_units_are_recorded_with_the_jobs_settings() {
     let units = nodecraft_types::BillableUnits::parse("2.5").unwrap();
     let mut billing = MockModel::new(MockOutput::Text);
     billing.billable_units = Some(units);
+    billing.execution_ms = Some(1250);
     let mut f = fixture(MockProvider::new("mock", [("mock-text".to_owned(), billing)]));
     start(&mut f);
     let notices = drive(&mut f);
@@ -213,6 +214,8 @@ fn billed_units_are_recorded_with_the_jobs_settings() {
     // It survives saving the project, and a result recorded without it reads back as before.
     let saved = serde_json::to_value(&history[0]).unwrap();
     assert_eq!(saved["settings"][0]["billable_units"], "2.5");
+    assert_eq!(settings[0].execution_ms, Some(1250));
+    assert_eq!(saved["settings"][0]["execution_ms"], 1250);
     assert_eq!(serde_json::from_value::<nodecraft_graph::Generation>(saved).unwrap(), history[0]);
 }
 
