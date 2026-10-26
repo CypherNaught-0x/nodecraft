@@ -39,6 +39,7 @@ fn scalar_parameters_and_generation_outputs_survive_serialized_apply_undo_redo()
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         },
     });

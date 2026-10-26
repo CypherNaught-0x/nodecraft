@@ -75,6 +75,8 @@ struct Shown {
     media_us: Option<u64>,
     /// Its video, for the player to probe and show; none for sounds and stills.
     video: Option<AssetRef>,
+    source_hash: Option<nodecraft_types::Blake3>,
+    rendered_sources: Vec<nodecraft_graph::SourceVersion>,
 }
 
 impl Shown {
@@ -85,6 +87,23 @@ impl Shown {
     /// Where the clip ends in its media, when known.
     fn end_us(&self) -> Option<u64> {
         self.clip.out_us.or(self.media_us)
+    }
+
+    fn source_changed(&self) -> bool {
+        // The current listing flattens inputs, whereas a fanned render records each item's
+        // recipe. Without the same item binding those hashes cannot be compared reliably.
+        !self.rendered_sources.iter().any(|source| source.item.is_some())
+            && self.source_hash.is_some_and(|hash| self.rendered_sources.iter().any(|source| source.hash != hash))
+    }
+
+    fn measured_length(&mut self, actual: Option<u64>) {
+        self.media_us = actual.or(self.media_us);
+    }
+
+    fn trim_warning(&self) -> Option<String> {
+        let length = self.media_us.filter(|_| self.playing() && self.clip.input != Input::Stills)?;
+        (self.clip.in_us >= length || self.clip.out_us.is_some_and(|end| end > length))
+            .then(|| format!("The current source is {} long, shorter than this clip's trim. Adjust its start or end before rendering.", duration(length)))
     }
 }
 
@@ -115,13 +134,16 @@ fn parse(listed: Json) -> Option<Listing> {
         let fields = entry.as_object_mut()?;
         let wired = fields.remove("wired").and_then(|w| w.as_bool()).unwrap_or(false);
         let media_us = fields.remove("media_us").and_then(|v| v.as_u64());
+        let source_hash = fields.remove("source_hash").and_then(|v| serde_json::from_value(v).ok());
+        let rendered_sources = fields.remove("rendered_sources").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        fields.remove("rendered_generation");
         let clip: Clip = serde_json::from_value(entry).ok()?;
         let video = usize::try_from(clip.nth)
             .ok()
             .and_then(|nth| inputs.iter().filter(|i| i.input == clip.input && i.origin == clip.origin).nth(nth))
             .and_then(|i| i.media.clone())
             .filter(|_| wired && clip.input == Input::Clips);
-        out.push(Shown { clip, wired, media_us, video });
+        out.push(Shown { clip, wired, media_us, video, source_hash, rendered_sources });
     }
     let mut origins: Vec<String> = Vec::new();
     for input in inputs {
@@ -404,7 +426,7 @@ impl NodeCraftApp {
             if let Some(asset) = &s.video {
                 let assets = self.session.assets();
                 let (length, poster) = self.videos.still(&ctx, asset, edge, || assets.preview_read(asset));
-                s.media_us = s.media_us.or(length);
+                s.measured_length(length);
                 if let Some(poster) = poster {
                     posters.insert(s.clip.id.clone(), poster);
                 }
@@ -459,6 +481,9 @@ impl NodeCraftApp {
                     }
                 });
             });
+            if shown.iter().any(|s| s.trim_warning().is_some()) {
+                ui.label(egui::RichText::new("A clip extends beyond its current source. Adjust its trim before rendering.").color(t.danger));
+            }
             let body = ui.available_rect_before_wrap();
             let side = t.layers_panel_width.min(body.width() / 4.0);
             let left = Rect::from_min_size(body.min, Vec2::new(side, body.height()));
@@ -670,6 +695,11 @@ fn clips_panel(
                 };
                 let note = if s.clip.track == 0 { note } else { format!("{note} · {}", track_name(tracks, s.clip.track)) };
                 ui.label(egui::RichText::new(note).color(t.text_muted).small());
+                if let Some(warning) = s.trim_warning() {
+                    ui.label(egui::RichText::new("Trim exceeds source").color(t.danger).small()).on_hover_text(warning);
+                } else if s.source_changed() {
+                    ui.label(egui::RichText::new("Source changed").color(t.danger).small());
+                }
             });
         }
         ui.separator();
@@ -723,6 +753,23 @@ fn properties(
     let clip = &s.clip;
     let key = |field: &str| format!("{}.{field}", clip.id);
     ui.label(egui::RichText::new(name(titles, shown, s)).strong());
+    if let Some(warning) = s.trim_warning() {
+        ui.label(egui::RichText::new(warning).color(t.danger));
+    }
+    if s.source_changed() {
+        ui.label(egui::RichText::new("Source changed since this clip was rendered.").color(t.danger));
+    }
+    match s.rendered_sources.as_slice() {
+        [] => {
+            ui.label(egui::RichText::new("No recorded source for this clip in the selected history.").color(t.text_muted).small());
+        }
+        [source] => {
+            ui.label(egui::RichText::new("Last rendered source").color(t.text_muted).small()).on_hover_text(source.hash.to_string());
+        }
+        sources => {
+            ui.label(egui::RichText::new(format!("Last rendered sources: {} batch items", sources.len())).color(t.text_muted).small());
+        }
+    }
     if !s.wired {
         ui.label(egui::RichText::new("Its media isn't wired in, so it doesn't play. Wire it in again, or delete the clip.").color(t.text_muted).small());
     }
@@ -753,7 +800,7 @@ fn properties(
             }
             ui.end_row();
         } else {
-            let top = end.map_or(limit, |e| seconds(e.saturating_sub(MIN_US)));
+            let top = end.map_or(limit, |e| seconds(e.saturating_sub(MIN_US))).min(seconds(s.media_us.unwrap_or(timeline::MAX_US).saturating_sub(MIN_US)));
             if let Some(v) = number(ui, &mut editor.draft, &key("in"), "Start (s)", seconds(clip.in_us), 0.0..=top, 0.05, 2) {
                 commands.push(update(editor, &clip.id, json!({"in_us": micros(v)})));
             }
@@ -761,7 +808,7 @@ fn properties(
             match end {
                 Some(e) => {
                     let bottom = seconds(clip.in_us.saturating_add(MIN_US));
-                    if let Some(v) = number(ui, &mut editor.draft, &key("out"), "End (s)", seconds(e), bottom..=limit, 0.05, 2) {
+                    if let Some(v) = number(ui, &mut editor.draft, &key("out"), "End (s)", seconds(e), bottom..=limit.max(bottom), 0.05, 2) {
                         let out = micros(v);
                         commands.push(update(editor, &clip.id, json!({"out_us": (Some(out) != s.media_us).then_some(out)})));
                     }
@@ -1274,7 +1321,22 @@ mod tests {
 
     fn shown(id: &str, in_us: u64, out_us: Option<u64>, video_us: Option<u64>, transition_us: u64) -> Shown {
         let clip = Clip { in_us, out_us, transition_us, ..Clip::whole(id.into(), "n".into(), 0) };
-        Shown { clip, wired: true, media_us: video_us, video: None }
+        Shown { clip, wired: true, media_us: video_us, video: None, source_hash: None, rendered_sources: Vec::new() }
+    }
+
+    #[test]
+    fn flattened_current_sources_do_not_claim_that_distinct_fanned_items_changed() {
+        let old = nodecraft_types::Blake3::from_bytes([1; 32]);
+        let current = nodecraft_types::Blake3::from_bytes([2; 32]);
+        let mut clip = shown("a", 0, None, Some(1_000_000), 0);
+        clip.source_hash = Some(current);
+        clip.rendered_sources.push(nodecraft_graph::SourceVersion { role: "a".into(), hash: old, item: None });
+        assert!(clip.source_changed(), "an ordinary changed source is still reported");
+        clip.rendered_sources[0].item = Some(0);
+        assert!(!clip.source_changed(), "one surviving batch item is still item-scoped");
+        clip.rendered_sources.push(nodecraft_graph::SourceVersion { role: "a".into(), hash: current, item: Some(1) });
+        assert!(!clip.source_changed(), "different batch recipes do not imply a source edit");
+        assert_eq!(clip.rendered_sources.len(), 2, "the per-item provenance remains visible");
     }
 
     #[test]
@@ -1439,5 +1501,34 @@ mod tests {
         assert_eq!((micros(1.25), micros(-3.0), micros(f64::NAN), micros(1e12)), (1_250_000, 0, 0, timeline::MAX_US));
         assert_eq!((duration(2_250_000), duration(62_500_000)), ("2.2 s".to_owned(), "1:02.5".to_owned()));
         assert_eq!((tick_us(100.0, 60.0), tick_us(1.0, 60.0)), (1_000_000, 60_000_000));
+    }
+
+    #[test]
+    fn source_trim_warnings_only_apply_to_playing_measured_time_media() {
+        let mut clip = shown("a", 1_500_000, Some(2_000_000), Some(1_000_000), 0);
+        assert!(clip.trim_warning().is_some(), "start and end may both exceed a regenerated source");
+        clip.media_us = None;
+        assert!(clip.trim_warning().is_none(), "unknown length is not proof of a bad trim");
+        clip.media_us = Some(1_000_000);
+        clip.clip.input = Input::Stills;
+        assert!(clip.trim_warning().is_none(), "still display length is not source duration");
+        clip.clip.input = Input::Audio;
+        assert!(clip.trim_warning().is_some());
+        clip.clip.enabled = false;
+        assert!(clip.trim_warning().is_none());
+        clip.clip.enabled = true;
+        clip.wired = false;
+        assert!(clip.trim_warning().is_none());
+    }
+
+    #[test]
+    fn an_actual_shorter_probe_warns_even_when_metadata_claims_the_trim_fits() {
+        let mut clip = shown("a", 0, Some(1_500_000), Some(2_000_000), 0);
+        assert!(clip.trim_warning().is_none(), "advertised duration alone says the trim fits");
+        clip.measured_length(Some(1_000_000));
+        assert!(clip.trim_warning().is_some(), "a ready actual probe takes precedence before run");
+        clip.measured_length(None);
+        assert!(clip.trim_warning().is_some(), "a pending probe does not discard a known measurement");
+        assert_eq!(clip.clip.out_us, Some(1_500_000), "measurement never mutates the stored trim");
     }
 }

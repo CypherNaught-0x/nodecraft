@@ -230,6 +230,7 @@ fn an_already_active_cached_result_confirms_without_promising_an_edit_or_running
         items: Vec::new(),
         settings: Vec::new(),
         incomplete: None,
+        source_versions: Vec::new(),
     };
     h.state_mut().session.dispatch("run.record", &json!({"canvas": C, "results": [{"node": N, "generation": generation}]})).unwrap();
     let revision = h.state().session.revision();

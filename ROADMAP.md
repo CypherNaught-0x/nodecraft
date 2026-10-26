@@ -65,7 +65,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
   image as one undo step (#103). 3D models (glTF, GLB, OBJ) become 3D nodes whose cards show
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
-  writes a GLB or OBJ copy (#111). A custom shader card runs WGSL with declared sliders; its editor
+  writes a GLB or OBJ copy (#111). Built-in 3D cards save their viewer angle, elevation, zoom and
+  shading in the project; a viewer gesture is one undo step and never changes generation inputs
+  or existing captures (`mesh.view_set`, #928, part of #569). A custom shader card runs WGSL with declared sliders; its editor
   checks the code as it's typed, has a text model write or fix it through an ordinary, priced
   request card, and saves it to a versioned shader library every project shares, which places it
   on other canvases and moves cards to newer versions (#90). Typing `@` in a generation prompt mentions another card,
@@ -103,7 +105,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   are a fanned step's results, as one (#611). The desktop saves held results so they survive a
   restart (#614).
   A fal result's `X-Fal-Billable-Units` header is kept, exactly, with the job's settings in the
-  project as evidence of what was billed; it is never turned into money (#437). Run quotes also
+  project as evidence of what was billed; it is never turned into money (#437).
+  Luma Ray 3.2 text/frame video and Photon text-to-image reuse fal's queue and key (#26);
+  Ray is quoted by duration/resolution and Photon keeps an unknown upfront megapixel charge. Run quotes also
   surface aggregate admission feedback before confirmation (#307). Imported video and audio
   sources probe duration (#608); ComfyUI accepts video and audio workflows (#110). Plugin cards
   keep their package identity, migrate with their package, and survive uninstall (#173). Plugin
@@ -172,7 +176,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   option lists are desktop only for now (#721), and so is video. Unsaved work is kept in the
   site's storage and offered back after a crash or a closed tab (#717); leaving with unsaved work
   still asks first. Files dropped in a browser are read asynchronously and added as nodes (#319);
-  pasting a copied image works in the desktop app only.
+  clipboard media acquisition adds browser PNG paste and native copied-file references (#633).
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
   and ffprobe discovered on `PATH`, set under `[media]` in settings, or overridden with
   `NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` (#411); it does not bundle them.
@@ -193,6 +197,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   and input paths stay short, keeping full timelines within Windows' command limit (#642).
   Export for another editor carries its captions as FCPXML titles and a SubRip companion,
   with style and placement differences listed in the report (#649).
+  Regenerated sources keep stored trims;
+  the editor warns when they no longer fit, records each rendered clip's source version and
+  reuses canvas stale badges for unrendered edits (#578).
 - **Live sharing works from the desktop app and the browser.** Sessions are shared through `nodecraft-cli relay`
   (#119), with every edit merged and images passed along. Share links let someone view, comment
   on or edit a shared project, with signed discussions and expiry and revocation (`share.link_*`,
@@ -303,6 +310,10 @@ The near-term order follows the remaining open issues, not an already-finished w
   raise a cap.
 - **2026-10-23** — the spending log records each charge's project, so the open project has its
   own cap beside the total (#847); the CSV export gains a `project` column.
+- **2026-10-24** — opening or recovering a located project with the old starter identity assigns
+  a stable identity in one undoable change (#879), separating future project spending. Save As
+  preserves identity; saved jobs under the ambiguous legacy identity remain parked with an
+  explicit explanation, and their charges stay attributed to that legacy identity.
 - **2026-10-24** — Replicate creation propagates a bounded server lifetime and successful results
   retain reported execution milliseconds through saving, held results and restart recovery
   (#339). Duration remains separate from money; restored handles do not reset the server limit.

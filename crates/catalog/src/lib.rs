@@ -25,16 +25,21 @@ pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Catalog files shipped with the app, embedded so they work offline and on the web.
 pub const BUILTIN: &[(&str, &str)] = &[
+    ("azure-openai.toml", include_str!("../../../assets/catalog/azure-openai.toml")),
     ("anthropic.toml", include_str!("../../../assets/catalog/anthropic.toml")),
+    ("deepgram.toml", include_str!("../../../assets/catalog/deepgram.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
+    ("luma.toml", include_str!("../../../assets/catalog/luma.toml")),
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
     ("huggingface.toml", include_str!("../../../assets/catalog/huggingface.toml")),
+    ("gemini-llm.toml", include_str!("../../../assets/catalog/gemini-llm.toml")),
     ("gemini-images.toml", include_str!("../../../assets/catalog/gemini-images.toml")),
     ("gemini-video.toml", include_str!("../../../assets/catalog/gemini-video.toml")),
     ("google-gemini-images.toml", include_str!("../../../assets/catalog/google-gemini-images.toml")),
     ("google-veo.toml", include_str!("../../../assets/catalog/google-veo.toml")),
     ("google-tts.toml", include_str!("../../../assets/catalog/google-tts.toml")),
     ("openai.toml", include_str!("../../../assets/catalog/openai.toml")),
+    ("openai-audio.toml", include_str!("../../../assets/catalog/openai-audio.toml")),
     ("openai-images.toml", include_str!("../../../assets/catalog/openai-images.toml")),
     ("replicate.toml", include_str!("../../../assets/catalog/replicate.toml")),
     ("runway.toml", include_str!("../../../assets/catalog/runway.toml")),

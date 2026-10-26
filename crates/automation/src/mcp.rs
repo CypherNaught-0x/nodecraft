@@ -215,6 +215,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "mask.status",
     // A 3D capture only adds and wires a card; the card runs through run.start.
     "mesh.capture",
+    "mesh.view_set",
     // A page range is an ordinary, undoable parameter edit.
     "document.use_pages",
     // Project-owned media only; bounded extractions publish one undoable changeset, no dialog.
@@ -291,6 +292,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
 /// show a reconciled charge cost (#332). `plugins.*` changes read package files and
 /// decide what extends the app (#172): a person's decision, like installing software.
 pub const HUMAN_ONLY: &[&str] = &[
+    // Moving OS focus belongs to the person; the narrow desktop owner channel uses dispatch.
+    "file.focus_owner",
     // The library is shared by every project and outside undo, so only a person changes it.
     "library.add",
     "library.remove",

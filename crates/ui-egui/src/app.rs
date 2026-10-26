@@ -374,6 +374,7 @@ mod mask_badges;
 mod mask_editor;
 mod mentions;
 mod mesh_capture;
+mod mesh_saved;
 mod metrics;
 mod models;
 mod navigation;
@@ -381,8 +382,11 @@ mod option_fetch;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
 mod ownership_panel;
+mod palette_navigation;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
+mod paste_media;
+mod paste_workflow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perf_run;
 mod plugin_cards;
@@ -403,11 +407,14 @@ mod stale_badges;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod storage;
 mod styles;
+mod tag_definitions;
 mod tags;
 mod technique_menu;
 mod timeline_editor;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod updates;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod web_clipboard;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod web_files;
 #[cfg(target_arch = "wasm32")]
@@ -425,6 +432,7 @@ pub struct NodeCraftApp {
     pub navigation: Navigation,
     pub search: crate::search::Search,
     pub tag_filter: crate::tags::TagFilter,
+    tag_definition: Option<tag_definitions::Editor>,
     tag_focus_ids: Vec<egui::Id>,
     tag_focused: bool,
     tag_session_identity: Option<Arc<()>>,
@@ -462,6 +470,8 @@ pub struct NodeCraftApp {
     /// A copied image being read off the UI thread (#319).
     #[cfg(not(target_arch = "wasm32"))]
     image_paste: paste_image::ImagePaste,
+    #[cfg(any(test, target_arch = "wasm32"))]
+    web_paste: web_clipboard::ClipboardPaste,
     /// A browser drop being read (#319); native tests drive its import too.
     #[cfg(any(test, target_arch = "wasm32"))]
     web_drop: Option<drop::web::Pending>,
@@ -484,6 +494,7 @@ pub struct NodeCraftApp {
     recovery: Option<recovery::RecoveryOffer>,
     /// Live recompute of action nodes (#88).
     live: live::Live,
+    text_previews: crate::text_preview::Cache,
     /// Recovered work's kept journal, removed once that work is saved (#408).
     #[cfg(not(target_arch = "wasm32"))]
     recovered: Option<recovery::RecoveredWork>,
@@ -721,32 +732,16 @@ impl NodeCraftApp {
                 }
             }
         }
-        // Storage that can't start (another window holds the journal, or the project won't
-        // open) still opens the window, without project files, and says why.
-        let mut problem = None;
+        // A failed journal leaves a memory-only window; a failed project open keeps storage.
         let journal = storage.as_ref().map(|setup| setup.recovery.clone());
         let runs_journal = journal.as_ref().and_then(|recovery| recovery.parent()).map(|dir| dir.join("runs.json"));
-        let stored = storage.and_then(|setup| match Self::storage_session(setup) {
-            Ok(stored) => Some(stored),
-            Err(error) => {
-                log::error!("project storage unavailable: {}", error.message);
-                problem = Some(format!("Project files are unavailable: {}", error.message));
-                None
-            }
-        });
-        let mut kept = None;
-        let owns_storage = stored.is_some();
-        let mut app = match stored {
-            Some((session, canvas, unrecovered, open_error)) => {
-                kept = unrecovered;
-                if let Some(error) = open_error {
-                    problem = Some(format!("That project couldn't be opened: {}", error.message));
-                }
-                Self::from_session(session.with_services(services), canvas)?
-            }
-            None => Self::with_services(services)?,
+        let missing_reason = if store.dir().is_none() {
+            "Project files are unavailable: no writable settings folder is available for recovery. Check access to the settings folder, then close this window and reopen NodeCraft. This window's edits cannot be saved."
+        } else {
+            "Project files are unavailable: this window was opened without local project storage. Use the original NodeCraft window's File menu to open or save a project."
         };
-        app.notice = problem.or(plugin_problem);
+        let (mut app, kept, owns_storage) = Self::from_storage_setup(services, storage, missing_reason)?;
+        app.notice = app.notice.or(plugin_problem);
         app.plugins = plugins;
         // Unsaved work from a session that didn't close cleanly: ask before anything else (#408).
         if let Some(journal) = journal {
@@ -1010,6 +1005,7 @@ impl NodeCraftApp {
         }
         self.selection.clear();
         self.editors.clear();
+        self.mesh_views.clear();
         self.centred = false;
         if let Some(runs) = &self.runs {
             runs.project_opened(&mut self.session);
@@ -1084,6 +1080,7 @@ impl NodeCraftApp {
             navigation: Navigation::default(),
             search: crate::search::Search::default(),
             tag_filter: crate::tags::TagFilter::default(),
+            tag_definition: None,
             tag_focus_ids: Vec::new(),
             tag_focused: false,
             tag_session_identity: None,
@@ -1116,6 +1113,8 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             image_paste: paste_image::ImagePaste::new(),
             #[cfg(any(test, target_arch = "wasm32"))]
+            web_paste: Default::default(),
+            #[cfg(any(test, target_arch = "wasm32"))]
             web_drop: None,
             editors: BTreeMap::new(),
             bulk: Default::default(),
@@ -1130,6 +1129,7 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             recovery: None,
             live: Default::default(),
+            text_previews: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             recovered: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1234,6 +1234,7 @@ impl NodeCraftApp {
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let started = self.frame_started(ui.ctx().current_pass_index() == 0);
         self.show_frame(ui);
+        self.commit_mesh_views(ui.ctx(), false);
         self.deliver_copy(ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         self.export_close_overlay(ui.ctx());
@@ -1246,6 +1247,8 @@ impl NodeCraftApp {
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
         self.keep_canvas();
+        #[cfg(any(test, target_arch = "wasm32"))]
+        self.browser_paste_frame(ui.ctx());
         // Dismissing or choosing from a palette must not replay another key from the same
         // input frame as a canvas shortcut. Keep ownership even after palette.show closes it.
         let palette_owned_input = self.palette.is_some();
@@ -1311,6 +1314,7 @@ impl NodeCraftApp {
             self.marquee_geometry.clear();
         }
         self.schemas.refresh_generation(&self.session);
+        self.text_previews.prepare(&mut self.session, self.canvas, &self.live.errors, self.theme.tokens());
         self.fields_sync();
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
@@ -1329,6 +1333,7 @@ impl NodeCraftApp {
             self.centred = true;
         }
         let mut model_blocks = self.model_overlay(ui);
+        model_blocks |= self.text_previews.overlay(ui.ctx(), t);
         // Before the price confirmation, which a run from the form opens on top of it.
         model_blocks |= self.app_overlay(ui);
         model_blocks |= self.run_overlay(ui);
@@ -1337,6 +1342,7 @@ impl NodeCraftApp {
         model_blocks |= self.deck_editor_overlay(ui);
         model_blocks |= self.deck_overlay(ui);
         model_blocks |= self.timeline_overlay(ui);
+        model_blocks |= self.tag_definition_overlay(ui);
         if self.on_sheet() {
             self.sheet_frame(ui, viewport, model_blocks || file_owns_input || file_menu_owns_input);
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
@@ -1398,8 +1404,7 @@ impl NodeCraftApp {
         }
         let tag_blocks = if model_blocks { true } else { self.tag_overlay(ui) };
         let drop_blocks = self.poll_drop(ui, t);
-        #[cfg(not(target_arch = "wasm32"))]
-        self.poll_image_paste(ui.ctx());
+        self.poll_paste_media(ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         self.poll_folder_import(ui.ctx(), t);
         let search_blocks = if model_blocks { true } else { self.search_overlay(ui) };
@@ -1499,8 +1504,7 @@ impl NodeCraftApp {
                 || self.browser_providers.as_ref().is_some_and(|providers| providers.open)
                 || self.drop_pointer_owned();
             // egui reports no ⌘V press when the clipboard holds no text, only its release (#319).
-            #[cfg(not(target_arch = "wasm32"))]
-            self.image_paste_keys(ui, t, !busy);
+            self.paste_media_keys(ui, t, !busy);
             let (copy, cut, pasted, duplicate) = ui.input_mut(|input| {
                 // Yield before consuming shortcuts or cloning any pasted payload.
                 if busy {
@@ -1544,7 +1548,7 @@ impl NodeCraftApp {
                     Some(centre) => match clipboard::parse(&text) {
                         clipboard::Parsed::Nodes(payload) => self.paste(payload, centre),
                         clipboard::Parsed::Unreadable(why) => self.notice = Some(format!("Can't paste these nodes: {why}.")),
-                        clipboard::Parsed::Text => self.paste_text(&text, centre),
+                        clipboard::Parsed::Text => self.paste_plain_text(ui, t, text, centre),
                     },
                     None => self.notice = Some("There is no unobscured canvas space for this paste.".into()),
                 },
@@ -1605,9 +1609,17 @@ impl NodeCraftApp {
             self.navigation.geometry.rects.iter().any(|(id, rect)| !collapsed.contains(id) && self.view.rect_to_screen(viewport.min, *rect).contains(pointer))
         });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
-        let allow_scroll_pan = !over_card || self.view.zoom < card::BODY_MIN_ZOOM;
+        // Menus draw later in the frame. Leave their wheel input untouched and keep their world
+        // insertion point fixed, including when the pointer is outside or a zoom modifier is held.
+        let scroll_navigation = if self.palette.is_some() || self.turn_into.is_some() {
+            canvas::ScrollNavigation::Disabled
+        } else if !over_card || self.view.zoom < card::BODY_MIN_ZOOM {
+            canvas::ScrollNavigation::PanAndZoom
+        } else {
+            canvas::ScrollNavigation::ZoomOnly
+        };
         if !canvas_blocks {
-            canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, allow_scroll_pan, self.marquee.is_none());
+            canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, scroll_navigation, self.marquee.is_none());
         }
         // The palette and "Turn into" create at the world point they opened on; once the view
         // moves, close them.
@@ -1771,7 +1783,9 @@ impl NodeCraftApp {
                     Some(asset) if self.view.zoom >= card::BODY_MIN_ZOOM => {
                         let assets = self.session.assets();
                         let preview = self.meshes.request(ui.ctx(), asset, || assets.preview_read(asset));
-                        Some(crate::mesh_view::CardMesh { preview, view: self.mesh_views.entry(node.id).or_default(), gpu: self.mesh_gpu })
+                        let view = self.mesh_views.entry(node.id).or_default();
+                        view.bind(self.session.document().id(), self.canvas, node);
+                        Some(crate::mesh_view::CardMesh { preview, view, gpu: self.mesh_gpu })
                     }
                     _ => None,
                 };
@@ -1814,6 +1828,7 @@ impl NodeCraftApp {
                         mentions: mention_cards,
                         mention_blocked: mention_blocked.get(&node.id).map(String::as_str),
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
+                        local_text: self.text_previews.rows(node.id),
                         video,
                         audio,
                         mesh,
@@ -1893,6 +1908,9 @@ impl NodeCraftApp {
                     }
                     if self.tag_filter.active() {
                         let matches = self.tag_filter.matches(node.id);
+                        if matches {
+                            tag_definitions::match_cue(ui, &tag_painter, &self.view, viewport, r.rect, node.id, t);
+                        }
                         tag_painter.rect_stroke(
                             r.rect.expand(t.tag_marker_width),
                             t.card_radius,
@@ -2396,6 +2414,10 @@ impl NodeCraftApp {
                     continue;
                 }
                 Intent::Title(title) => ("node.title", json!({"canvas":self.canvas,"id":id,"title":title}), Some(EditTarget::Title)),
+                Intent::InspectLocalText(row) => {
+                    self.text_previews.open(&self.session, id, row);
+                    continue;
+                }
                 Intent::Parameter { name, value } => {
                     ("node.param_set", json!({"canvas":self.canvas,"id":id,"name":name,"value":value}), Some(EditTarget::Parameter(name)))
                 }
@@ -2488,7 +2510,7 @@ impl NodeCraftApp {
             self.drop_files(ui, viewport, t);
         }
         if let Some(mut open) = self.palette.take() {
-            let entries = self.palette_entries();
+            let entries = self.live_palette_entries(ui.ctx());
             match open.show(ui.ctx(), &entries, t) {
                 palette::Outcome::Open => self.palette = Some(open),
                 palette::Outcome::Closed => {}
@@ -2506,13 +2528,13 @@ impl NodeCraftApp {
                     if matches!(id, "file.open" | "file.save" | "file.save_as") {
                         self.begin_file(id, ui.ctx());
                     } else {
-                        self.dispatch_palette_command(id);
+                        self.dispatch_live_palette_command(ui.ctx(), id);
                     }
                     #[cfg(target_arch = "wasm32")]
                     if matches!(id, "file.open" | "file.save" | "file.save_as") {
                         self.web_file(id, ui.ctx());
                     } else {
-                        self.dispatch_palette_command(id);
+                        self.dispatch_live_palette_command(ui.ctx(), id);
                     }
                 }
             }
@@ -2730,7 +2752,7 @@ impl NodeCraftApp {
                         self.share_button(ui, t);
                         self.browser_providers_button(ui, t);
                         if ui
-                            .add(egui::Button::new(egui::RichText::new("Budgets").color(t.text_muted)).frame(false))
+                            .add(crate::icons::Icon::Wallet.button(ui, egui::RichText::new("Budgets").color(t.text_muted), t).frame(false))
                             .on_hover_text("The most runs may spend per call, per session and in total")
                             .clicked()
                         {
@@ -2741,7 +2763,7 @@ impl NodeCraftApp {
                             }
                         }
                         if ui
-                            .add(egui::Button::new(egui::RichText::new("API keys").color(t.text_muted)).frame(false))
+                            .add(crate::icons::Icon::Key.button(ui, egui::RichText::new("API keys").color(t.text_muted), t).frame(false))
                             .on_hover_text("Add, check and remove provider keys")
                             .clicked()
                         {
@@ -2972,9 +2994,9 @@ impl NodeCraftApp {
         })
     }
 
-    /// Paste plain text as a Text node centred on `centre`.
+    /// Paste a recognized workflow as its card, otherwise plain text as a Text node.
     fn paste_text(&mut self, text: &str, centre: Pos2) {
-        if text.trim().is_empty() {
+        if text.trim().is_empty() || self.paste_workflow_text(text, centre) {
             return;
         }
         let t = self.theme.tokens();
@@ -3085,6 +3107,10 @@ impl NodeCraftApp {
             .registry()
             .specs()
             .filter(|spec| {
+                // Live view commands are admitted separately with fresh shell context.
+                if Self::is_navigation_command(spec.id) {
+                    return false;
+                }
                 // They pick their file when chosen.
                 if matches!(spec.id, "file.open" | "file.save" | "file.save_as") {
                     return self.session.file_status().available;
@@ -3464,10 +3490,11 @@ fn starter_id() -> [u8; 16] {
     id
 }
 
-/// Tests keep the fixed id, so two fresh windows hold the same project.
+/// Tests keep a stable nonlegacy id, so two fresh windows hold the same project without
+/// accidentally testing the old starter's identity migration (#879).
 #[cfg(test)]
 fn starter_id() -> [u8; 16] {
-    [2; 16]
+    [22; 16]
 }
 #[cfg(test)]
 mod centering_tests;
@@ -3475,6 +3502,8 @@ mod centering_tests;
 mod tests;
 #[cfg(test)]
 mod text_card_tests;
+#[cfg(test)]
+mod text_preview969_tests;
 #[cfg(test)]
 mod timeline_editor_tests;
 #[cfg(test)]
@@ -3484,6 +3513,8 @@ mod video_tests;
 
 #[cfg(test)]
 mod marquee_tests;
+#[cfg(test)]
+mod palette_scroll_tests;
 #[cfg(test)]
 mod turn_into_tests;
 

@@ -90,6 +90,21 @@ checks `duration_ms` and `timeline.list` clips' `media_us` before rendering (the
 `video_us` field was generalized to `media_us`). A fragmented MP4 additionally
 proves configured ffprobe fills an unknown header duration while missing tools leave it unknown.
 
+Clipboard regression ports also simulate failed file-reference probes, unavailable file
+acquisition and worker-start failure; plain egui text must survive each without a pixel read.
+The public-safe `render_clipboard922_probe_failure` capture uses an injected probe error and
+`NODECRAFT_CLIPBOARD922_CAPTURE` for its output path; it never reads the OS clipboard.
+
+Clipboard regressions use `app::paste_image`, `app::web_clipboard` and `app::drop::web::tests`
+filters in `nodecraft-ui-egui`. Fake completions exercise permission refusal, deadlines, late
+results and input ownership without reading the developer's clipboard. The ignored
+`the_system_clipboard_imports_copied_file_references` test reads real file references: create
+public `note.txt` and `picture.png` fixtures, copy both with Finder/Explorer, and set
+`NODECRAFT_CLIPBOARD_FIXTURE_ROOT` to their directory. It validates references before import and
+checks text/image delivery plus one undo. Preserve and restore clipboard contents around manual
+evidence. Actual browser permission and user-gesture behavior requires a served wasm build;
+native fake ports alone do not verify that browser behavior.
+
 GitHub CI runs `cargo nextest run --workspace --profile ci` and then `cargo test --doc --workspace`
 on Linux, Windows and macOS. The workflow pins nextest and verifies each release archive against
 a checked-in SHA-256 before extracting it. When updating nextest, update the version and all three
@@ -330,6 +345,20 @@ Cmd/Ctrl+Shift+S. The same three actions are in the quick-add palette. An untitl
 project uses Save As. Cancelling a picker changes nothing. Opening over unsaved work asks whether
 to Save, Discard or Cancel; a failed or cancelled Save keeps the current project open. Finish or
 discard uncommitted card-field drafts before file actions.
+
+When project storage cannot start, the startup notice and File actions retain the same reason.
+A second desktop window that cannot acquire the shared recovery journal opens in memory only;
+its File panel offers **Focus the other window**. This asks the owner to come forward so its File
+menu can be used; it never transfers the unsaved document. If the window manager refuses focus,
+use the system window switcher. Older owners without the focus endpoint must also be switched to
+manually. An unreadable startup project instead leaves a new project with working storage and an
+Open action to choose another file. A deliberately closed recovery session asks for a window
+restart before reopening the saved project.
+
+The desktop owner endpoint reuses the authenticated local control transport in an owner-only
+folder beside recovery. It accepts only the empty `file.focus_owner` command, has no general
+control or file authority, and removes its token on drop. Focus requests run on a worker with at
+most one outstanding request per window. A failed request leaves both documents untouched.
 
 Recent projects are kept in local settings (16 entries); missing files report an error and can be
 removed individually or cleared. File picks and recents still pass native storage admission; there

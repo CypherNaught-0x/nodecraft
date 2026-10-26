@@ -160,6 +160,13 @@ pub trait Provider: MaybeSendSync {
     /// Stable lowercase id (`fal`, `replicate`, `comfyui`); also the scheduler lane prefix.
     fn id(&self) -> &str;
 
+    /// A hosted implementation of the logical `comfyui` provider bills execution even when
+    /// its catalog describes a local/free workflow. The engine captures this policy with the
+    /// physical binding and requires unknown-price admission before submitting to that host.
+    fn metered_comfy_workflows(&self) -> bool {
+        false
+    }
+
     /// Whether an uncertain, no-handle submit may be retried automatically. This is a stable
     /// policy of this provider instance, not remote deduplication or proof of nonbilling.
     /// The compatibility default preserves legacy adapters; paid synchronous adapters can refuse.

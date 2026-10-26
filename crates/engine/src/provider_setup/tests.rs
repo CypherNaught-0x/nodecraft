@@ -42,6 +42,26 @@ const NODE: NodeId = NodeId::from_bytes([9; 16]);
 const SERVICE_ACCOUNT: &str = "gsa1:fixture@nodecraft-test.iam.gserviceaccount.com:nodecraft-test:0123456789abcdef0123456789abcdef01234567:7eGpEZd-MjEQRmjRJKQk23e1n4UNmiEbwk1_ndJvOvoMVMEbMoujF0rau_cbfj3_tq2ZwDvMDwLJYE535QzffIhyKiXLcL97BCr1-aO2s7ycnuu-nYGmhSH8hWfsLP3DhdTt1f_khooZFdqpYsAc-d68dmkqNyEoeUVgwUYa46c:0Ld7HsEvX0LP4wAadYUD7Qd4JGr80ZVgc_deaETVGTaWYHYuWnA2JxFws7HSvR-znh29y10sAEu1aRf7Xe0-vJiR-GsOFhqpBA96xC6T4gin-aDi48TKnHh0NrnncJVNh-r3jd94Dq5IHqpaIse2oM-Le_TtoX8yaAGQpDXaIu0";
 
 #[test]
+fn luma26_catalog_models_reuse_the_fal_key_and_shipping_factory() {
+    let catalog = Catalog::builtin().unwrap();
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    let missing = env(&keys, &http, &settings);
+    assert_eq!(build(&catalog, |adapter| make(adapter, &missing)).readiness("fal"), Some(&Readiness::NeedsKey { account: "fal".into() }));
+    keys.set(&Account::new("fal").unwrap(), &Secret::new("luma26-public-fixture-not-a-key").unwrap()).unwrap();
+    let ready = env(&keys, &http, &settings);
+    let setup = build(&catalog, |adapter| make(adapter, &ready));
+    for model in ["fal.luma-ray32", "fal.luma-ray32-i2v", "fal.luma-photon"] {
+        let descriptor = catalog.get(model).unwrap();
+        assert_eq!(descriptor.provider, "fal");
+        assert_eq!(setup.readiness(&descriptor.provider), Some(&Readiness::Ready));
+        assert!(setup.routing([(NODE, descriptor.provider.as_str())]).is_ok());
+    }
+    assert_eq!(http.0.load(Ordering::SeqCst), 0, "choosing a catalog model performs no paid request");
+}
+
+#[test]
 fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_sent() {
     let catalog = Catalog::builtin().unwrap();
     let keys = MemoryStore::default();
@@ -51,6 +71,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     let setup = build(&catalog, |adapter| make(adapter, &env));
     let all: Vec<_> = setup.adapters().map(|(a, r)| (a.to_owned(), r.clone())).collect();
     assert!(all.len() >= 5, "every adapter the catalog names: {all:?}");
+    assert_eq!(setup.readiness("openai-audio"), Some(&Readiness::NeedsKey { account: "openai".into() }));
     assert_eq!(setup.readiness("openai-images"), Some(&Readiness::NeedsKey { account: "openai".into() }));
     assert_eq!(setup.readiness("openai"), Some(&Readiness::NeedsKey { account: "openai".into() }));
     assert_eq!(setup.readiness("anthropic"), Some(&Readiness::NeedsKey { account: "anthropic".into() }));
@@ -82,6 +103,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     let keys = MemoryStore::default();
     for account in [
         "openai",
+        "azure-openai",
         "anthropic",
         "replicate",
         "runway",
@@ -95,19 +117,22 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "huggingface",
         "kling",
         "elevenlabs",
+        "deepgram",
         "comfyui:gpu-box:8188",
     ] {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
     }
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
     let http = Arc::new(Wire::default());
-    let settings = ProviderSettings::with_comfyui("http://gpu-box:8188", "salt");
+    let settings =
+        ProviderSettings { azure_openai_url: Some("https://demo.openai.azure.com".into()), ..ProviderSettings::with_comfyui("http://gpu-box:8188", "salt") };
     let env = env(&keys, &http, &settings);
     let setup = build(&catalog, |adapter| make(adapter, &env));
     for (adapter, readiness) in setup.adapters() {
         assert_eq!(readiness, &Readiness::Ready, "{adapter}");
     }
     let selections: Vec<_> = [
+        "openai-audio",
         "openai-images",
         "openai",
         "anthropic",
@@ -127,6 +152,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "huggingface",
         "kling",
         "elevenlabs",
+        "deepgram",
         "bfl",
         "comfyui",
     ]
@@ -236,6 +262,36 @@ fn litellm_uses_the_configured_server_and_keeps_its_virtual_key_out_of_urls() {
     let invalid = ProviderSettings { litellm_url: Some(format!("https://user:{KEY}@proxy.example")), ..Default::default() };
     let error = make("litellm", &env(&keys, &http, &invalid)).err().unwrap();
     assert!(!error.message("litellm").unwrap().contains(KEY));
+}
+
+#[test]
+fn azure_uses_its_own_keychain_account_and_preserves_the_catalog_deployment() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    assert_eq!(key_account("azure-openai"), Some("azure-openai"));
+    assert!(matches!(make("azure-openai", &env(&keys, &http, &ProviderSettings::default())), Err(Readiness::NotSetUp(_))));
+    let settings = ProviderSettings { azure_openai_url: Some("https://demo.openai.azure.com".into()), ..Default::default() };
+    assert_eq!(make("azure-openai", &env(&keys, &http, &settings)).err(), Some(Readiness::NeedsKey { account: "azure-openai".into() }));
+    const KEY: &str = "azure-public-fixture-45";
+    keys.set(&Account::new("azure-openai").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    let provider = make("azure-openai", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "azure-openai");
+    let job = ProviderJob {
+        model: "my-deployment".into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A lake".into() }],
+        idempotency_key: "public-fixture-45".into(),
+    };
+    let _ = futures::executor::block_on(provider.submit(&job));
+    let requests = http.1.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://demo.openai.azure.com/openai/v1/chat/completions");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "my-deployment");
+    assert!(requests[0].headers.iter().any(|(name, value)| name == "Authorization" && value == &format!("Bearer {KEY}")));
+    assert!(!format!("{:?}", requests[0]).contains(KEY));
+    let invalid = ProviderSettings { azure_openai_url: Some(format!("https://user:{KEY}@demo.openai.azure.com")), ..Default::default() };
+    assert!(!make("azure-openai", &env(&keys, &http, &invalid)).err().unwrap().message("azure-openai").unwrap().contains(KEY));
 }
 
 #[test]
@@ -376,4 +432,43 @@ fn huggingface48_host_uses_huggingface_key_and_reports_missing_setup() {
     let request = &requests[0];
     assert_eq!(request.url, "https://router.huggingface.co/v1/chat/completions");
     assert!(request.headers.iter().any(|(name, value)| name == "Authorization" && value == "Bearer public-huggingface-key"));
+}
+
+#[test]
+fn gemini44_host_uses_shared_gemini_key_and_reports_missing_setup() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    assert!(matches!(make("gemini-llm",&env(&keys,&http,&settings)),Err(Readiness::NeedsKey{account}) if account=="gemini"));
+    assert_eq!(key_account("gemini-llm"), Some("gemini"));
+    keys.set(&Account::new("gemini").unwrap(), &Secret::new("public-gemini-key").unwrap()).unwrap();
+    let provider = make("gemini-llm", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "gemini-llm");
+    assert!(!provider.retry_ambiguous_submit());
+    let job = ProviderJob {
+        model: nodecraft_providers::gemini_llm::MODEL.into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A public harbour".into() }],
+        idempotency_key: "fixture".into(),
+    };
+    assert!(futures::executor::block_on(provider.submit(&job)).is_err());
+    assert_eq!(http.0.load(Ordering::SeqCst), 1);
+    let requests = http.1.lock().unwrap();
+    let request = &requests[0];
+    assert_eq!(request.url, "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
+    assert!(request.headers.iter().any(|(name, value)| name == "Authorization" && value == "Bearer public-gemini-key"));
+}
+
+#[test]
+fn deepgram40_host_uses_its_keychain_account() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    assert!(matches!(make("deepgram",&env(&keys,&http,&settings)),Err(Readiness::NeedsKey {account}) if account=="deepgram"));
+    keys.set(&Account::new("deepgram").unwrap(), &Secret::new("public-deepgram-fixture").unwrap()).unwrap();
+    let provider = make("deepgram", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "deepgram");
+    assert_eq!(key_account("deepgram"), Some("deepgram"));
+    assert!(!provider.retry_ambiguous_submit());
+    assert_eq!(http.0.load(Ordering::SeqCst), 0);
 }

@@ -26,6 +26,8 @@ use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub(crate) mod comfy_profile;
+
 /// Why an adapter can't run, in words a person can act on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Readiness {
@@ -56,8 +58,10 @@ impl Readiness {
 /// The keychain account holding the key for an adapter that needs one.
 pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
-        "openai" | "openai-images" => Some("openai"),
+        "openai" | "openai-images" | "openai-audio" => Some("openai"),
         "anthropic" => Some("anthropic"),
+        "deepgram" => Some("deepgram"),
+        "azure-openai" => Some("azure-openai"),
         "huggingface" => Some("huggingface"),
         "litellm" => Some("litellm"),
         "replicate" => Some("replicate"),
@@ -66,7 +70,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "bfl" => Some("bfl"),
         // Seedance runs on the same BytePlus ModelArk key (#18).
         "seedance" => Some("seedream"),
-        "gemini-images" => Some("gemini"),
+        "gemini-images" | "gemini-llm" => Some("gemini"),
         "gemini-video" => Some("gemini"),
         "google-veo" | "google-tts" | "google-gemini-images" => Some(nodecraft_providers::google_cloud::ACCOUNT),
         "fal" => Some("fal"),
@@ -180,6 +184,9 @@ pub fn comfyui_named(env: &HostEnv<'_>, name: &str) -> Result<nodecraft_provider
 }
 
 fn comfyui_server(env: &HostEnv<'_>, server: &crate::settings::ComfyServer) -> Result<nodecraft_providers::comfyui::ComfyProvider, Readiness> {
+    if server.is_cloud() {
+        return Err(Readiness::NotSetUp("this profile uses the Comfy Cloud API; use its hosted workflow route".into()));
+    }
     let url = server.url.trim();
     if url.is_empty() {
         return Err(Readiness::NotSetUp("the ComfyUI server has no address".into()));
@@ -246,13 +253,31 @@ fn llm(endpoint: Endpoint, env: &HostEnv<'_>) -> LlmClient {
 /// [`comfy_slot`]), built from its key and settings.
 pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readiness> {
     if let Some(name) = comfy_slot_server(slot) {
-        return Ok(Arc::new(comfyui_named(env, name)?));
+        let server = env.settings.comfy_server(name).ok_or_else(|| Readiness::NotSetUp(format!("there's no ComfyUI server called “{name}”")))?;
+        return comfy_profile::make(server, env);
+    }
+    if slot == "comfyui"
+        && let Some(server) = env.settings.default_comfy()
+    {
+        return comfy_profile::make(server, env);
     }
     let adapter = slot;
     let provider: Arc<dyn Provider> = match adapter {
         // Chat models (#503): the LLM client, keyed by its endpoint id.
         "openai" => Arc::new(llm(Endpoint::openai(ApiKey::from(&needs_key(env.keys, "openai")?)), env)),
         "anthropic" => Arc::new(llm(Endpoint::anthropic(ApiKey::from(&needs_key(env.keys, "anthropic")?)), env)),
+        "azure-openai" => {
+            let url = env.settings.azure_openai_url.as_deref().filter(|url| !url.trim().is_empty()).ok_or_else(|| {
+                let why = if cfg!(target_arch = "wasm32") {
+                    "Azure OpenAI needs a custom browser host to supply its resource endpoint and routing; the built-in browser cannot configure it"
+                } else {
+                    "set azure_openai_url in provider settings to the Azure resource root or /openai/v1 address"
+                };
+                Readiness::NotSetUp(why.into())
+            })?;
+            let endpoint = Endpoint::azure_openai(url, ApiKey::from(&needs_key(env.keys, "azure-openai")?)).map_err(adapter_error)?;
+            Arc::new(llm(endpoint, env))
+        }
         "huggingface" => Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&needs_key(env.keys, "huggingface")?, env.http.clone())),
         "litellm" => {
             let url = crate::browser_providers::server_url(env.settings.litellm_url.as_deref())
@@ -274,11 +299,14 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             Arc::new(llm(Endpoint::litellm(&url, key.as_ref().map(ApiKey::from)), env))
         }
         "openai-images" => Arc::new(nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone())),
+        "deepgram" => Arc::new(nodecraft_providers::deepgram::Deepgram::new(needs_key(env.keys, "deepgram")?, env.http.clone())),
+        "openai-audio" => Arc::new(nodecraft_providers::openai_audio::OpenAiAudio::new(needs_key(env.keys, "openai")?, env.http.clone())),
         "replicate" => Arc::new(nodecraft_providers::replicate::Replicate::new(needs_key(env.keys, "replicate")?, env.http.clone())),
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),
         "bfl" => Arc::new(nodecraft_providers::bfl::Bfl::new(needs_key(env.keys, "bfl")?, env.http.clone())),
         "runway" => Arc::new(nodecraft_providers::runway::Runway::new(needs_key(env.keys, "runway")?, env.http.clone())),
         "seedance" => Arc::new(nodecraft_providers::seedance::Seedance::new(needs_key(env.keys, "seedream")?, env.http.clone())),
+        "gemini-llm" => Arc::new(nodecraft_providers::gemini_llm::GeminiLlm::new(&needs_key(env.keys, "gemini")?, env.http.clone())),
         "gemini-images" => Arc::new(nodecraft_providers::gemini_images::GeminiImages::new(needs_key(env.keys, "gemini")?, env.http.clone())),
         "gemini-video" => Arc::new(nodecraft_providers::gemini_video::GeminiVideo::new(needs_key(env.keys, "gemini")?, env.http.clone())),
         "google-veo" => Arc::new(google_veo(env)?),

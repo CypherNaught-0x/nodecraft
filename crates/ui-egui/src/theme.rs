@@ -73,6 +73,9 @@ pub struct Tokens {
     pub tag_panel_width: f32,
     pub tag_panel_height: f32,
     pub tag_row_height: f32,
+    /// Two-line tag definition rows and their exact identity text.
+    pub tag_definition_row_height: f32,
+    pub tag_identity_size: f32,
 
     /// Fields (#66): header band, padding round members, smallest resize, and fill alpha.
     pub field_header_height: f32,
@@ -140,6 +143,10 @@ pub struct Tokens {
     pub dialog_width: f32,
     pub control_row_height: f32,
     pub control_gap: f32,
+    /// Control icons in screen points; SVG strokes are in their 24-unit view box.
+    pub icon_size: f32,
+    pub icon_large_size: f32,
+    pub icon_stroke: &'static str,
     /// Vertical button padding on cards, keeping native controls within the logical row budget.
     pub control_vertical_padding: f32,
     pub title_min_screen_px: f32,
@@ -248,6 +255,8 @@ pub const DARK: Tokens = Tokens {
     tag_panel_width: 280.0,
     tag_panel_height: 320.0,
     tag_row_height: 24.0,
+    tag_definition_row_height: 48.0,
+    tag_identity_size: 7.875,
     field_header_height: 32.0,
     field_padding: 32.0,
     field_min_width: 160.0,
@@ -298,6 +307,9 @@ pub const DARK: Tokens = Tokens {
     dialog_width: 440.0,
     control_row_height: 64.0,
     control_gap: 6.0,
+    icon_size: 16.0,
+    icon_large_size: 24.0,
+    icon_stroke: "2",
     control_vertical_padding: 2.0,
     title_min_screen_px: 9.0,
     handle_min_screen_radius: 5.0,

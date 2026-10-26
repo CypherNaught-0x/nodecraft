@@ -38,8 +38,22 @@ pub const STORED_WHERE: &str = "Keys are kept in this browser's storage for this
     Anyone who uses this browser profile can read them, so remove them when you finish on a shared computer.";
 
 /// Common providers, offered as quick picks.
-const PRESETS: &[&str] =
-    &["openai", "anthropic", "openrouter", "litellm", "fal", "replicate", "runway", "seedream", "tripo", "meshy", "higgsfield", "kling", "elevenlabs"];
+const PRESETS: &[&str] = &[
+    "openai",
+    "azure-openai",
+    "anthropic",
+    "openrouter",
+    "litellm",
+    "fal",
+    "replicate",
+    "runway",
+    "seedream",
+    "tripo",
+    "meshy",
+    "higgsfield",
+    "kling",
+    "elevenlabs",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyStatus {

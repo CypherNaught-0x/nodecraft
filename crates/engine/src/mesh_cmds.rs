@@ -1,7 +1,7 @@
 //! 3D captures (#112). `mesh.capture` adds a 3D photo or 3D view sheet node wired to a model,
 //! its camera and style taken from the viewer's current view, as one undo step. The viewer's
-//! orbit is view state and never saved; the new node's parameters are, so the capture repeats
-//! exactly after the viewer moves on. Nothing here runs: the new node runs like any action.
+//! saved orbit is separate from the new capture's parameters, so the capture repeats exactly
+//! after the viewer moves on. Nothing here runs: the new node runs like any action.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_graph::{Change, Changeset, Edge, Endpoint, Position};
 use nodecraft_nodes::mesh::{PHOTO, TURNTABLE, VIEWS};

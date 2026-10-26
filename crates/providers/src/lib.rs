@@ -23,6 +23,8 @@ pub mod broker;
 pub mod comfy_cloud;
 #[cfg(feature = "comfyui")]
 pub mod comfyui;
+#[cfg(feature = "deepgram")]
+pub mod deepgram;
 mod delivery;
 #[cfg(feature = "elevenlabs")]
 pub mod elevenlabs;
@@ -31,6 +33,8 @@ mod error;
 pub mod fal;
 #[cfg(feature = "gemini-images")]
 pub mod gemini_images;
+#[cfg(feature = "gemini-llm")]
+pub mod gemini_llm;
 #[cfg(feature = "gemini-video")]
 pub mod gemini_video;
 #[cfg(feature = "google-cloud")]
@@ -51,6 +55,8 @@ pub mod meshy;
 pub mod mock;
 #[cfg(any(feature = "tripo", feature = "meshy", feature = "higgsfield", feature = "seedance", feature = "kling"))]
 mod model_file;
+#[cfg(feature = "openai-audio")]
+pub mod openai_audio;
 #[cfg(feature = "openai-images")]
 pub mod openai_images;
 mod provider;

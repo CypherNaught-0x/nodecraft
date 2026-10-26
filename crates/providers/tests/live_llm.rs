@@ -78,3 +78,35 @@ async fn live_huggingface48() {
     let Submission::Finished(reply) = provider.submit(&job).await.unwrap() else { panic!("sync") };
     assert!(reply.outputs.iter().any(|output| matches!(output,Output::Text(text) if text.to_lowercase().contains("pong"))));
 }
+
+#[cfg(feature = "gemini-llm")]
+#[tokio::test(flavor = "current_thread")]
+async fn live_gemini44() {
+    use nodecraft_providers::{JobInput, Output, Provider, ProviderJob, Submission};
+    if !enabled("GEMINI_LLM") {
+        return;
+    }
+    let key = nodecraft_providers::secrets::Secret::new(&std::env::var("GEMINI_API_KEY").unwrap()).unwrap();
+    let provider = nodecraft_providers::gemini_llm::GeminiLlm::new(&key, Arc::new(ReqwestHttp::new().unwrap()));
+    let job = ProviderJob {
+        model: nodecraft_providers::gemini_llm::MODEL.into(),
+        params: serde_json::Map::from_iter([("max_tokens".into(), serde_json::json!(1024))]),
+        inputs: vec![JobInput::Text { role: "prompt".into(), text: "Reply with one word: pong".into() }],
+        idempotency_key: "nodecraft-live-gemini44".into(),
+    };
+    let Submission::Finished(reply) = provider.submit(&job).await.unwrap() else { panic!("sync") };
+    assert!(reply.outputs.iter().any(|output| matches!(output,Output::Text(text) if text.to_lowercase().contains("pong"))));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_azure_openai() {
+    if !enabled("AZURE_OPENAI") {
+        return;
+    }
+    let key = ApiKey::new(std::env::var("AZURE_OPENAI_API_KEY").unwrap());
+    let endpoint = Endpoint::azure_openai(&std::env::var("AZURE_OPENAI_ENDPOINT").unwrap(), key).unwrap();
+    let deployment = std::env::var("AZURE_OPENAI_DEPLOYMENT").unwrap();
+    let client = LlmClient::new(endpoint, Arc::new(ReqwestHttp::new().unwrap()));
+    let reply = client.chat_stream(&ask(&deployment), &mut |_| {}).await.unwrap();
+    assert!(!reply.text.trim().is_empty(), "deployment returned no text");
+}
