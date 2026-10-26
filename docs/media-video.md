@@ -143,6 +143,13 @@ single last-rendered hash on hover. Older results have no recorded version. The 
 keep old source bytes in the project. Timeline edits use the existing canvas stale badge until
 the card is rendered again; undo can restore the earlier fresh state.
 
+Source bookkeeping is best effort: if a rendered recipe cannot be recorded or exceeds the
+65,536-record budget, NodeCraft keeps the completed media without that result's source records.
+It emits a generic diagnostic without private recipe values. The editor still distinguishes
+recorded source history from clips with no recorded source; media rendering does not depend on
+provenance succeeding. Imported archives and externally supplied generations retain their normal
+validation limits.
+
 The video action nodes (#108) are ordinary action kinds (`crates/nodes/src/video_edit.rs`) whose
 executor (`crates/engine/src/action_exec/video.rs`) builds one `ComposeSpec` and renders it like
 the Timeline does, on the same shared service, render slot, limits and cancellation. Each makes a

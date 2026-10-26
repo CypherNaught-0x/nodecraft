@@ -87,3 +87,28 @@ fn timeline_sources_stamp_actual_recipe_and_edits_stay_stale_until_rerendered() 
     Changeset::new(record_changes(C, node, updated).unwrap()).apply(&mut p).unwrap();
     assert!(!stale(&p).contains(&id(2)), "successful rerender clears existing badge");
 }
+
+#[test]
+fn failed_source_bookkeeping_keeps_the_completed_timeline_output() {
+    let (mut run, first) = start(&project());
+    let job = run.jobs.get_mut(&first.jobs[0].id).unwrap();
+    let JobSpec::Action { params, .. } = &mut job.work else { panic!("Timeline action") };
+    params.insert(nodecraft_nodes::timeline::SPEC_PARAM.into(), Value::Text("invalid recipe".into()));
+    let generation = finish(&mut run, first);
+    assert_eq!(generation.outputs, vec![video(3)]);
+    assert!(generation.source_versions.is_empty());
+    generation.validate().unwrap();
+}
+
+#[test]
+fn unrecordable_source_metadata_is_shed_without_losing_media() {
+    let mut generation = Generation::new(GenerationId::from_bytes([9; 16]), vec![video(3)]);
+    generation.source_versions = (0..=nodecraft_graph::MAX_SOURCE_VERSIONS)
+        .map(|n| nodecraft_graph::SourceVersion { role: format!("clip{n}"), hash: Blake3::from_bytes([1; 32]), item: None })
+        .collect();
+    assert!(generation.validate().is_err());
+    let kept = recordable(generation).unwrap();
+    assert_eq!(kept.outputs, vec![video(3)]);
+    assert!(kept.source_versions.is_empty());
+    kept.validate().unwrap();
+}
