@@ -36,6 +36,15 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Kling** | `kling` (feature `kling`) | API key (`Authorization: Bearer`), or access key and secret key stored as `ak:sk`, which sign a 30-minute HS256 token per request | Kling 2.5 Turbo, 2.1 Master and 1.6 text → video and start frame (+ end frame) → video; Kling 1.6 up to four references → video; Kling Image 2.1 text → image | Billed in prepaid Kling units, so no quote before the run. One create per job carrying an `external_task_id` from the idempotency key; never replayed automatically; no remote cancellation. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
 
+## Retired APIs
+
+**OpenAI Sora (#28):** as verified on October 24, 2026, OpenAI's Videos API and Sora 2 models
+were shut down on September 24, 2026. The official
+[deprecation notice](https://developers.openai.com/api/docs/deprecations#2026-03-24-sora-2-video-generation-models-and-videos-api)
+lists no replacement. NodeCraft has no Sora adapter or catalog entry; this retired API is not
+an available generation option. Other video adapters retain their own documented models,
+credentials and pricing. Any future Sora integration needs a newly verified supported API.
+
 ## Image facts on inputs and outputs
 
 An imported image's reference says whether it has an alpha channel, its stored bits per channel
@@ -1272,6 +1281,21 @@ NODECRAFT_LIVE_HIGGSFIELD=1 NODECRAFT_LIVE_HIGGSFIELD_ACKNOWLEDGE_COST=1 HIGGSFI
 ```
 
 ## ElevenLabs speech, sound and music
+
+The adapter tracker [#20](https://github.com/CypherNaught-0x/nodecraft/issues/20) is implemented
+across the following merged changes. Generation works in the desktop app and headless CLI.
+The desktop app and browser preview request the account voice list; streamed previews are
+desktop-only. The CLI does not request either capability. The host limits below apply.
+
+| Tracker requirement | Implementation and offline coverage |
+|---|---|
+| Speech, effects, music and voice changing | [#667](https://github.com/CypherNaught-0x/nodecraft/pull/667); [adapter contract tests](../crates/providers/src/elevenlabs/tests.rs) and [catalog](../assets/catalog/elevenlabs.toml) |
+| Voices from the account | [#857](https://github.com/CypherNaught-0x/nodecraft/pull/857); [option-list integration tests](../crates/engine/tests/option_fetch529.rs) |
+| Streaming speech previews | [#876](https://github.com/CypherNaught-0x/nodecraft/pull/876) and [#884](https://github.com/CypherNaught-0x/nodecraft/pull/884); [stream contracts](../crates/providers/src/elevenlabs/stream_tests.rs), [engine delivery tests](../crates/engine/tests/audio_previews875.rs) and [card playback tests](../crates/ui-egui/src/app/audio875_tests.rs) |
+
+The [opt-in live tests](../crates/providers/tests/live_elevenlabs.rs) cover a short speech request
+and streamed speech. Their existence is not evidence of a live run; paid validation requires
+the explicit authorization described below. The tests linked above use fixture or mock data.
 
 The optional `elevenlabs` adapter calls the [ElevenLabs API](https://elevenlabs.io/docs/api-reference)
 at the fixed origin `https://api.elevenlabs.io` with the key in the `xi-api-key` header. Every

@@ -284,7 +284,7 @@ ComfyUI is the main local engine, not just one more HTTP endpoint:
 These are worth adding once the adapter pattern has settled. Each one gets a GitHub issue
 (`area:providers`, `future`) so contributors can `/claim` it:
 
-- **Video:** Runway, Luma (Ray), MiniMax Hailuo, OpenAI Sora, Pika, Lightricks LTX, xAI Grok
+- **Video:** Runway, Luma (Ray), MiniMax Hailuo, Pika, Lightricks LTX, xAI Grok
   Imagine, Alibaba Wan (DashScope)
 - **Image:** Black Forest Labs API (FLUX direct), Ideogram, Recraft, Stability AI, Luma Photon,
   Alibaba Qwen-Image
@@ -296,6 +296,11 @@ These are worth adding once the adapter pattern has settled. Each one gets a Git
 - **LLM and gateways:** native Gemini API (beyond OpenAI-compatible mode), Azure OpenAI, AWS
   Bedrock and Google Vertex AI (also reachable through LiteLLM), Hugging Face Inference
   Providers
+
+**Retired service:** OpenAI Sora (#28) is no longer an adapter target. OpenAI removed its Videos
+API and Sora 2 models on September 24, 2026, with no replacement listed in its
+[deprecation notice](https://developers.openai.com/api/docs/deprecations#2026-03-24-sora-2-video-generation-models-and-videos-api).
+See [provider availability](providers.md#retired-apis) before reviving this work.
 
 ### 2.6 In-canvas agent
 
