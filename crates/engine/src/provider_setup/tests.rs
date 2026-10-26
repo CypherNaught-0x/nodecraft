@@ -97,6 +97,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "huggingface",
         "kling",
         "elevenlabs",
+        "deepgram",
         "comfyui:gpu-box:8188",
     ] {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
@@ -131,6 +132,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "huggingface",
         "kling",
         "elevenlabs",
+        "deepgram",
         "bfl",
         "comfyui",
     ]
@@ -435,4 +437,18 @@ fn gemini44_host_uses_shared_gemini_key_and_reports_missing_setup() {
     let request = &requests[0];
     assert_eq!(request.url, "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions");
     assert!(request.headers.iter().any(|(name, value)| name == "Authorization" && value == "Bearer public-gemini-key"));
+}
+
+#[test]
+fn deepgram40_host_uses_its_keychain_account() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    assert!(matches!(make("deepgram",&env(&keys,&http,&settings)),Err(Readiness::NeedsKey {account}) if account=="deepgram"));
+    keys.set(&Account::new("deepgram").unwrap(), &Secret::new("public-deepgram-fixture").unwrap()).unwrap();
+    let provider = make("deepgram", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "deepgram");
+    assert_eq!(key_account("deepgram"), Some("deepgram"));
+    assert!(!provider.retry_ambiguous_submit());
+    assert_eq!(http.0.load(Ordering::SeqCst), 0);
 }

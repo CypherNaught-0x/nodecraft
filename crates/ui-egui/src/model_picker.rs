@@ -344,3 +344,6 @@ mod huggingface48_tests;
 
 #[cfg(test)]
 mod gemini44_tests;
+
+#[cfg(test)]
+mod deepgram40_tests;

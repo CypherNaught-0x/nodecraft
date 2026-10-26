@@ -58,6 +58,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
         "openai" | "openai-images" | "openai-audio" => Some("openai"),
         "anthropic" => Some("anthropic"),
+        "deepgram" => Some("deepgram"),
         "azure-openai" => Some("azure-openai"),
         "huggingface" => Some("huggingface"),
         "litellm" => Some("litellm"),
@@ -287,6 +288,7 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             Arc::new(llm(Endpoint::litellm(&url, key.as_ref().map(ApiKey::from)), env))
         }
         "openai-images" => Arc::new(nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone())),
+        "deepgram" => Arc::new(nodecraft_providers::deepgram::Deepgram::new(needs_key(env.keys, "deepgram")?, env.http.clone())),
         "openai-audio" => Arc::new(nodecraft_providers::openai_audio::OpenAiAudio::new(needs_key(env.keys, "openai")?, env.http.clone())),
         "replicate" => Arc::new(nodecraft_providers::replicate::Replicate::new(needs_key(env.keys, "replicate")?, env.http.clone())),
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),

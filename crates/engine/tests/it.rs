@@ -162,6 +162,8 @@ mod trained_styles167;
 #[path = "video_generation559.rs"]
 mod video_generation559;
 
+#[path = "deepgram40.rs"]
+mod deepgram40;
 #[path = "huggingface48.rs"]
 mod huggingface48;
 

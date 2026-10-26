@@ -54,6 +54,8 @@ higgsfield = []
 kling = ["dep:base64", "dep:hmac", "dep:sha2", "dep:web-time"]
 # ElevenLabs speech, sound effects, music and voice changer: one synchronous request each.
 elevenlabs = []
+# Deepgram prerecorded Nova-3 speech-to-text.
+deepgram = []
 # Comfy Cloud: workflows on Comfy-hosted GPUs through its v2 jobs and assets API.
 comfy-cloud = ["comfyui"]
 # Google Cloud service accounts: the account's key signs the token request.

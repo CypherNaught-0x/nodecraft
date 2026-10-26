@@ -6,6 +6,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
+| **Deepgram** | `deepgram` | API key (`Authorization: Token`), keychain account `deepgram` | English audio file → text | Nova-3, smart formatting, unknown usage cost, no uncertain replay. See below. |
 | **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B text → PNG | Direct queued generation with resumable cluster polling, bounded downloads and unknown usage price; no automatic ambiguous submit replay or remote cancellation. See below. |
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
 | **OpenAI Audio** | `openai-audio` | existing `openai` API key (`Authorization: Bearer`) | text → MP3, audio file → text | Unknown upfront usage price; no automatic paid replay. Speech model shuts down January 6, 2027; Realtime is not supported. See below. |
@@ -1381,6 +1382,50 @@ NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
   cargo test -p nodecraft-providers --features http,comfy-cloud --test live_comfy_cloud -- --ignored
 ```
 
+
+## Deepgram file transcription (`deepgram` feature)
+
+Only a bounded typed error envelope with a recognized matching status/code proves a refusal
+before transcription: auth (401/403), credits (402), invalid input (400/422) or rate limit (429).
+These release the reservation; a recognized rate limit can retry through the existing scheduler.
+Status alone, unknown codes, malformed/oversized bodies, transport loss and server errors keep
+possibly-billed evidence and never authorize an ambiguous retry. Provider error text is omitted.
+See the [documented error contracts](https://developers.deepgram.com/docs/errors).
+
+
+The Deepgram Nova-3 transcription card sends one audio file directly to
+`https://api.deepgram.com/v1/listen`. Save an API key under the `deepgram` account in
+API keys. The fixed-origin request uses secret `Authorization: Token` credentials and
+never follows redirects. This provider has native host setup; the browser has no builtin
+transport/key setup for it.
+
+The current card transcribes English with smart formatting. It accepts one WAV, MP3,
+FLAC or Ogg input, up to 25 MiB, with readable headers reporting 1–2 channels,
+8–192 kHz and a positive duration of at most 30 minutes. These are local limits,
+not Deepgram service limits. Header inspection is bounded; Deepgram validates the
+encoded audio. Stereo is mixed into one transcript. No prompt, URL input, callbacks,
+diarization, live streaming or optional analysis features are sent. Empty text is a
+valid result for silence. Responses are capped at 4 MiB and transcripts at 1 MiB.
+
+Every request uses `mip_opt_out=true` to exclude the recording from Deepgram's Model
+Improvement Program. Account rates and opt-out can affect pricing. The catalog is
+explicitly usage priced: a run needs unknown-price acceptance and neither duration
+metadata nor a missing monetary receipt is converted into an invented dollar charge.
+The adapter makes one synchronous request with a ten-minute transport timeout. A lost
+reply may have been billed, is not automatically retried and has no resumable handle.
+Local cancellation cannot confirm remote cancellation or a refund.
+
+Offline fixtures exercise request bounds, transcript parsing, error mapping, actual
+host recording, unknown-price admission, no replay after a lost reply and picker selection.
+The ignored live smoke requires explicit spending authorization, `NODECRAFT_LIVE_DEEPGRAM=1`
+and `DEEPGRAM_API_KEY`; it sends the repository's public tone fixture, never a private file.
+No paid live call was made while implementing this adapter.
+
+Sources checked 2026-10-24: [file transcription](https://developers.deepgram.com/docs/pre-recorded-audio),
+[request schema](https://developers.deepgram.com/reference/speech-to-text/listen-pre-recorded),
+[audio formats](https://developers.deepgram.com/docs/supported-audio-formats),
+[model-improvement opt-out](https://developers.deepgram.com/docs/the-deepgram-model-improvement-partnership-program)
+and [pricing](https://deepgram.com/pricing).
 ## OpenAI speech and file transcription (`openai-audio`)
 
 Add an OpenAI key under **API keys → openai**. The native host binds it to the
