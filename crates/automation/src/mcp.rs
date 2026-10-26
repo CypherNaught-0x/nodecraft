@@ -48,6 +48,7 @@ pub const LIVE_ONLY: &[&str] = &[
     "canvas.fit_all",
     "canvas.fit_selection",
     "canvas.minimap_toggle",
+    "canvas.prompt_overlays_toggle",
     "canvas.pan_to",
     "canvas.search_open",
     "canvas.search_query",
@@ -132,9 +133,11 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "history.delete",
     "history.clear",
     "history.extract",
+    "export.status",
     "canvas.fit_all",
     "canvas.fit_selection",
     "canvas.minimap_toggle",
+    "canvas.prompt_overlays_toggle",
     "canvas.pan_to",
     "canvas.search_open",
     "canvas.search_query",
@@ -188,6 +191,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "node.cache_set",
     "node.variations_set",
     "canvas.set_variation_cards",
+    // Refills a Folder card with files already in the project; one undoable edit.
+    "folder.fill",
     "node.shader_set",
     "shader.write",
     "shader.apply",
@@ -273,6 +278,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "skill.edit",
     "skill.delete",
     "skill.export",
+    // A local export preview resolves names from the document and writes nothing (#98). Running an
+    // export is `HUMAN_ONLY`: writing files into a folder is a person's decision.
+    "export.local_plan",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
 /// pass through an agent's context, and `keys.remove` deletes a key with no undo. (The file
@@ -323,10 +331,14 @@ pub const HUMAN_ONLY: &[&str] = &[
     "providers.settings_set",
     // Writing files on this machine is the person's call, as saving the project is (#557).
     "history.export",
+    "export.cancel",
     "timeline.export_interchange",
     // What lands on the person's clipboard is what they paste next: theirs to put there (#831).
     "history.copy",
     "deck.export",
+    // Writing result files into a folder is a person's decision, for the same reason `file.save`
+    // is: the destination is outside the project and outside undo (#98).
+    "export.local_run",
     "run.record",
     "usage.reconcile_ownership",
     "usage.resolve_charge",

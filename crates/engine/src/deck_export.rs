@@ -116,7 +116,7 @@ fn export(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         slides.push((slide.id.clone(), drawn));
     }
     let what = SlidesExport { frame, format: p.format, slides, missing, fonts: deck_cmds::fonts::held(node) };
-    Ok(Effect::Export { what: crate::export::Exported::Slides(Box::new(what)), path: p.path, overwrite: p.overwrite })
+    Ok(Effect::Export { what: crate::export::Exported::Slides(Box::new(what)), path: p.path, overwrite: p.overwrite, background: false })
 }
 
 fn enabled(c: &Context<'_>, value: &Json) -> Result<(), Error> {

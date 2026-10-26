@@ -153,7 +153,7 @@ fn usage(raw: Option<&serde_json::value::RawValue>) -> Usage {
             return Usage::default();
         }
     }
-    Usage { input_tokens: v.total_input_tokens, output_tokens: v.total_output_tokens, cost: None, billable_units: None }
+    Usage { input_tokens: v.total_input_tokens, output_tokens: v.total_output_tokens, cost: None, billable_units: None, execution_ms: None }
 }
 fn error(reply: &HttpResponse) -> ProviderError {
     let kind = match reply.status {

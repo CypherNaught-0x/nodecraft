@@ -65,7 +65,7 @@ pub(super) struct LayerEditor {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) picking: Option<layer_fonts::Picking>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) picking_revision: Option<u64>,
+    pub(super) picking_lineage: Option<nodecraft_engine::session::DocumentLineage>,
 }
 
 impl LayerEditor {
@@ -87,7 +87,7 @@ impl LayerEditor {
             #[cfg(not(target_arch = "wasm32"))]
             picking: None,
             #[cfg(not(target_arch = "wasm32"))]
-            picking_revision: None,
+            picking_lineage: None,
         }
     }
 
@@ -696,7 +696,7 @@ impl NodeCraftApp {
         });
         close |= keys(ui, &mut editor, &listing, &mut commands);
         editor.end(&ctx);
-        self.layer_font_pick(&mut editor, &ctx, &mut commands, None);
+        self.layer_font_pick(&mut editor, &ctx, &mut commands, &listing);
         editor.listing = Some((revision, listing));
         for (command, params) in commands {
             if !self.layer_dispatch(command, &params) {
@@ -714,46 +714,58 @@ impl NodeCraftApp {
     /// Starts a font pick that was asked for and moves one along; a font read is added to the
     /// node, then set on the text layer it was picked for.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn layer_font_pick(&mut self, editor: &mut LayerEditor, ctx: &egui::Context, commands: &mut Commands, expected: Option<u64>) -> bool {
+    pub(super) fn layer_font_pick(&mut self, editor: &mut LayerEditor, ctx: &egui::Context, commands: &mut Commands, listing: &Listing) -> bool {
         use layer_fonts::{Picking, Polled};
         if let Some(layer) = editor.add_font.take()
             && editor.picking.is_none()
         {
             editor.picking = Some(Picking::start(layer));
-            editor.picking_revision = expected;
+            editor.picking_lineage = Some(self.session.document_lineage());
         }
         let Some(picking) = editor.picking.take() else {
             return false;
         };
-        let picked_revision = editor.picking_revision.take();
+        let lineage = editor.picking_lineage.take();
+        if !lineage.as_ref().is_some_and(|lineage| self.session.is_current_document(lineage)) {
+            self.notice = Some("Another project opened; choose the font file again.".into());
+            return false;
+        }
         match picking.poll(ctx) {
             Polled::Waiting(picking) => {
                 editor.picking = Some(picking);
-                editor.picking_revision = picked_revision;
+                editor.picking_lineage = lineage;
             }
             Polled::Cancelled => {}
             Polled::Failed(message) => self.notice = Some(message),
-            Polled::Read(layer, bytes) => match match &editor.target {
-                Target::Card => nodecraft_engine::layer_cmds::fonts::import(&mut self.session, editor.canvas, editor.node, &bytes),
-                Target::Slide(_) => nodecraft_engine::deck_cmds::fonts::import(&mut self.session, editor.canvas, editor.node, &bytes, picked_revision),
-            } {
-                Ok(name) => {
-                    editor.font_files.forget_missing();
-                    self.notice = None;
-                    if let Some(layer) = layer {
-                        commands.push(update(editor, &layer, json!({"content": {"font": name}})));
-                    }
-                    return true;
+            Polled::Read(layer, bytes) => {
+                if layer.as_ref().is_some_and(|id| !listing.layers.iter().any(|layer| &layer.id == id && matches!(&layer.content, Content::Text { .. }))) {
+                    self.notice = Some("The text layer changed while the font was loading; choose the font file again.".into());
+                    return false;
                 }
-                Err(error) => self.notice = Some(error.message),
-            },
+                match match &editor.target {
+                    Target::Card => nodecraft_engine::layer_cmds::fonts::import(&mut self.session, editor.canvas, editor.node, &bytes),
+                    // Merge into the current deck. A global revision also changes for unrelated
+                    // edits and completed runs; it is not the lifetime of this font pick.
+                    Target::Slide(_) => nodecraft_engine::deck_cmds::fonts::import(&mut self.session, editor.canvas, editor.node, &bytes, None),
+                } {
+                    Ok(name) => {
+                        editor.font_files.forget_missing();
+                        self.notice = None;
+                        if let Some(layer) = layer {
+                            commands.push(update(editor, &layer, json!({"content": {"font": name}})));
+                        }
+                        return true;
+                    }
+                    Err(error) => self.notice = Some(error.message),
+                }
+            }
         }
         false
     }
 
     /// The browser has no font picker yet; fonts are added through `layers.font_add`.
     #[cfg(target_arch = "wasm32")]
-    pub(super) fn layer_font_pick(&mut self, editor: &mut LayerEditor, _: &egui::Context, _: &mut Commands, _: Option<u64>) -> bool {
+    pub(super) fn layer_font_pick(&mut self, editor: &mut LayerEditor, _: &egui::Context, _: &mut Commands, _: &Listing) -> bool {
         editor.add_font = None;
         false
     }

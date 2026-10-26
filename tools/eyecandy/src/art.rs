@@ -121,7 +121,8 @@ pub fn dawn(width: u32, height: u32) -> RgbaImage {
             if ridge_shade > 0.0 {
                 // Nearest ridge gets a hashed tree line along its crest.
                 let depth = ridge_shade / 3.0;
-                let dark = [0.09 * (1.0 - depth), 0.10 * (1.0 - depth), 0.13 * (1.0 - depth * 0.8)];
+                let texture = fbm(u * 28.0, v * 18.0, 97) * 0.035;
+                let dark = [0.035 + 0.09 * (1.0 - depth) + texture, 0.065 + 0.10 * (1.0 - depth) + texture, 0.095 + 0.13 * (1.0 - depth) + texture];
                 out = dark;
                 if ridge_shade >= 3.0 {
                     let trunk = (u * 210.0).floor() as i64;
@@ -158,7 +159,7 @@ pub fn aurora(width: u32, height: u32) -> RgbaImage {
                     0.30 + band as f32 * 0.17 + (u * (2.0 + band as f32) + band as f32 * 1.7).sin() * 0.09 + fbm(u * 3.0, band as f32 * 2.0, 41 + band) * 0.10;
                 let width = 0.055 + 0.02 * (u * 5.0 + band as f32).cos().abs();
                 let glow = (-((v - centre) / width).powi(2)).exp();
-                let shimmer = 0.72 + 0.28 * (u * 40.0 + v * 6.0 + band as f32 * 2.0).sin();
+                let shimmer = 0.78 + 0.22 * (u * 58.0 + v * 8.0 + band as f32 * 2.0).sin();
                 out = [
                     clamp01(out[0] + glow * tint[0] * shimmer * 0.85),
                     clamp01(out[1] + glow * tint[1] * shimmer * 0.85),
@@ -189,14 +190,16 @@ pub fn bloom(width: u32, height: u32) -> RgbaImage {
         let v = (y as f32) / (h.max(1) as f32);
         for x in 0..w {
             let u = (x as f32) / (w.max(1) as f32);
-            let dx = (u - 0.5) * 1.0;
-            let dy = (v - 0.5) * 1.0;
+            // Off-centre, angular interference makes the mirrored local action visibly distinct.
+            let dx = u - 0.36;
+            let dy = v - 0.58;
             let r = (dx * dx + dy * dy).sqrt();
-            let rings = 0.5 + 0.5 * (r * 22.0 - 0.6).cos();
-            let falloff = (-r * 2.1).exp();
+            let angle = dy.atan2(dx);
+            let rings = 0.5 + 0.5 * (r * 38.0 + angle * 3.0 + fbm(u * 6.0, v * 6.0, 73) * 3.0).cos();
+            let falloff = (-r * 1.35).exp();
             let warp = fbm(u * 4.0, v * 4.0, 67) * 0.35;
-            let cold = [0.20f32, 0.44, 0.86];
-            let warm = [0.86, 0.36, 0.62];
+            let cold = [0.08f32, 0.70, 0.94];
+            let warm = [1.0, 0.24, 0.66];
             let t = clamp01(rings * (0.6 + warp));
             let out = [
                 clamp01(mix(cold[0], warm[0], t) * falloff + 0.04),
