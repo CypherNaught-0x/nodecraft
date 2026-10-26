@@ -58,6 +58,7 @@ struct Draft {
 }
 
 pub enum Intent {
+    InspectLocalText(usize),
     Move(Position),
     Title(String),
     Parameter {
@@ -200,6 +201,7 @@ pub struct CardView<'a> {
     pub mention_blocked: Option<&'a str>,
     /// A text card's answer still arriving, or cut short (#504).
     pub partial: Option<generate::Partial<'a>>,
+    pub(crate) local_text: Option<&'a [crate::text_preview::Row]>,
     /// The node's video and its player, when it has one (#105).
     pub video: Option<crate::video::VideoView>,
     /// The node's sound and its player, when it has one (#106).
@@ -252,6 +254,7 @@ pub fn show(
         mentions,
         mention_blocked,
         partial,
+        local_text,
         video,
         audio,
         mesh,
@@ -434,7 +437,13 @@ pub fn show(
             inner = rest;
             show_image(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &crate::preview::Preview::Unavailable("No preview yet"), None, t);
         }
-        if node.kind == nodecraft_nodes::generation::TEXT_KIND {
+        if crate::text_preview::eligible(descriptor) {
+            let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.answer);
+            inner = rest;
+            if let Some(row) = crate::text_preview::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), local_text, t) {
+                intents.push(Intent::InspectLocalText(row));
+            }
+        } else if node.kind == nodecraft_nodes::generation::TEXT_KIND {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.answer);
             inner = rest;
             generate::answer(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), generate::answer_of(node), partial, &mut intents, t);

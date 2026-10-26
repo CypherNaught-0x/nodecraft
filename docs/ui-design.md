@@ -420,3 +420,24 @@ takes the rest of the window. Its header shows the mode (Assist/Auto) and Clear,
 with the model and what auto mode has accepted of its budget; notices use `danger`. Steps waiting
 for approval show what they would do (read, change the project, run and its price) with Approve
 and Decline; Esc or Cancel stops the agent while it works.
+
+## Local text action previews
+
+Join text, Template, Split text, Replace text and other Action descriptors with only Text
+outputs show their computed output and connected inputs on the card. Each input names its port,
+ordered slot and source; routers retain the planner's feed ordering. The preview reads existing
+results, and refreshes its cached summaries only after document changes. An older result is
+labelled updating while the next live computation runs.
+
+The two sections together reserve twice `card_preview_height` (2 × 180 points), independent of
+result content. Each summary is limited to `preview_chars` (256 characters) and three displayed
+lines; a virtualized list scrolls longer input collections. Empty text/list placeholders differ
+from a missing output. Missing connections and action errors appear inline, with the input port
+and the theme's `danger` colour. Fixing a parameter or input removes its obsolete error.
+
+Each available value has an Expand action. It opens selectable full text in one modal view,
+within the text inspector's 8 MiB/16,384-value limit, without editing the project. Escape or
+Close text preview dismisses it; canvas shortcuts wait while it is open. Both themes use the
+existing prompt/text/spacing tokens, and local previews follow the ordinary small-zoom body
+threshold. Cache admission limits and rationale are in the
+[decision](decisions/2026-10-26-local-text-previews.md).

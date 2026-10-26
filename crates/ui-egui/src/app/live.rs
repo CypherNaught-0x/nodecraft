@@ -33,6 +33,7 @@ pub(super) struct Live {
     /// Nodes that failed, with the input hash they failed with: not retried (or reported
     /// again) until their inputs or settings change.
     failed: BTreeMap<NodeId, nodecraft_types::Blake3>,
+    pub(super) errors: crate::text_preview::Failures,
     /// The canvas as it was when there was nothing to recompute: moving its nodes changes the
     /// revision but not that (#549).
     settled: Option<live_actions::Settled>,
@@ -102,6 +103,8 @@ impl NodeCraftApp {
         let plugin =
             |node: &NodeId| document.canvases().values().any(|c| c.nodes().get(node).is_some_and(|n| nodecraft_engine::plugin_runtime::is_plugin(&n.kind)));
         self.live.failed.retain(|node, _| !plugin(node));
+        self.live.errors.retain(|(_, node), _| !plugin(node));
+        self.text_previews.invalidate();
     }
 
     /// Every frame: records a finished recompute, and starts the next one if the document
@@ -121,7 +124,9 @@ impl NodeCraftApp {
                 Ok(Ok(outcome)) => {
                     self.live.running = None;
                     self.live.settled = None;
-                    self.live_failures(&outcome.failed);
+                    if outcome.canvas == self.canvas && outcome.base == self.session.revision() {
+                        self.live_failures(&outcome.failed);
+                    }
                     if let Err(error) = live_actions::apply(&mut self.session, outcome) {
                         log::warn!("live result not recorded: {}", error.message);
                     }
@@ -242,8 +247,16 @@ impl NodeCraftApp {
     /// Remembers what failed, shown once as a notice, so it isn't retried until its inputs or
     /// settings change.
     fn live_failures(&mut self, failed: &[(NodeId, String, Option<nodecraft_types::Blake3>)]) {
+        if !failed.is_empty() {
+            self.text_previews.invalidate();
+        }
+        self.live.errors.retain(|(canvas, node), _| self.session.document().canvases().get(canvas).is_some_and(|c| c.nodes().contains_key(node)));
         for (node, reason, hash) in failed {
             let Some(hash) = hash else { continue };
+            if self.live.errors.len() >= 4096 {
+                self.live.errors.pop_first();
+            }
+            self.live.errors.insert((self.canvas, *node), (*hash, reason.chars().take(1024).collect()));
             if self.live.failed.insert(*node, *hash) != Some(*hash) {
                 self.notice = Some(reason.clone());
             }

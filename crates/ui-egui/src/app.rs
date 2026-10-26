@@ -482,6 +482,7 @@ pub struct NodeCraftApp {
     recovery: Option<recovery::RecoveryOffer>,
     /// Live recompute of action nodes (#88).
     live: live::Live,
+    text_previews: crate::text_preview::Cache,
     /// Recovered work's kept journal, removed once that work is saved (#408).
     #[cfg(not(target_arch = "wasm32"))]
     recovered: Option<recovery::RecoveredWork>,
@@ -1126,6 +1127,7 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             recovery: None,
             live: Default::default(),
+            text_previews: Default::default(),
             #[cfg(not(target_arch = "wasm32"))]
             recovered: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1297,6 +1299,7 @@ impl NodeCraftApp {
             self.marquee_geometry.clear();
         }
         self.schemas.refresh_generation(&self.session);
+        self.text_previews.prepare(&mut self.session, self.canvas, &self.live.errors, self.theme.tokens());
         self.fields_sync();
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
@@ -1315,6 +1318,7 @@ impl NodeCraftApp {
             self.centred = true;
         }
         let mut model_blocks = self.model_overlay(ui);
+        model_blocks |= self.text_previews.overlay(ui.ctx(), t);
         // Before the price confirmation, which a run from the form opens on top of it.
         model_blocks |= self.app_overlay(ui);
         model_blocks |= self.run_overlay(ui);
@@ -1794,6 +1798,7 @@ impl NodeCraftApp {
                         mentions: mention_cards,
                         mention_blocked: mention_blocked.get(&node.id).map(String::as_str),
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
+                        local_text: self.text_previews.rows(node.id),
                         video,
                         audio,
                         mesh,
@@ -2356,6 +2361,10 @@ impl NodeCraftApp {
                     continue;
                 }
                 Intent::Title(title) => ("node.title", json!({"canvas":self.canvas,"id":id,"title":title}), Some(EditTarget::Title)),
+                Intent::InspectLocalText(row) => {
+                    self.text_previews.open(&self.session, id, row);
+                    continue;
+                }
                 Intent::Parameter { name, value } => {
                     ("node.param_set", json!({"canvas":self.canvas,"id":id,"name":name,"value":value}), Some(EditTarget::Parameter(name)))
                 }
@@ -3429,6 +3438,8 @@ mod centering_tests;
 mod tests;
 #[cfg(test)]
 mod text_card_tests;
+#[cfg(test)]
+mod text_preview969_tests;
 #[cfg(test)]
 mod timeline_editor_tests;
 #[cfg(test)]
