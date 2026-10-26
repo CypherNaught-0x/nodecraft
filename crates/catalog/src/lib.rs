@@ -28,6 +28,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("anthropic.toml", include_str!("../../../assets/catalog/anthropic.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
+    ("huggingface.toml", include_str!("../../../assets/catalog/huggingface.toml")),
     ("gemini-images.toml", include_str!("../../../assets/catalog/gemini-images.toml")),
     ("gemini-video.toml", include_str!("../../../assets/catalog/gemini-video.toml")),
     ("google-gemini-images.toml", include_str!("../../../assets/catalog/google-gemini-images.toml")),
