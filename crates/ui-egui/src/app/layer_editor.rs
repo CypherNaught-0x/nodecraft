@@ -750,6 +750,7 @@ impl NodeCraftApp {
                 } {
                     Ok(name) => {
                         editor.font_files.forget_missing();
+                        self.deck_thumbnails.forget_missing_fonts();
                         self.notice = None;
                         if let Some(layer) = layer {
                             commands.push(update(editor, &layer, json!({"content": {"font": name}})));

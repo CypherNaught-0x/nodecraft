@@ -62,6 +62,38 @@ fn headless() -> Harness<'static, NodeCraftApp> {
     h
 }
 
+#[test]
+fn deck695_zoom_rasterizes_from_held_font_bytes_without_reading_them_again() {
+    let mut app = NodeCraftApp::headless().unwrap();
+    populate(&mut app);
+    let canvas = app.canvas;
+    let font = super::deck_fonts_tests::lito();
+    nodecraft_engine::deck_cmds::fonts::import(&mut app.session, canvas, DECK, &font, None).unwrap();
+    let mut text = nodecraft_actions::deck::source_layer("headline", "Headline", (320.0, 180.0), (500.0, 100.0));
+    text.content = nodecraft_actions::layers::Content::Text {
+        text: "A cached public font".into(),
+        font: "Lito".into(),
+        size: 48.0,
+        line_spacing: 1.0,
+        tracking: 0.0,
+        align: nodecraft_actions::layers::Align::Center,
+        color: "#18283d".into(),
+    };
+    app.session.dispatch("deck.slide_add", &json!({"canvas":canvas,"id":DECK,"index":0,"slide":{"id":"fonts","name":"Fonts","layers":[text]}})).unwrap();
+    super::layer_fonts::PAYLOAD_READS.with(|reads| reads.set(0));
+    let mut h = Harness::builder().with_size(Vec2::new(1400.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run_steps(4);
+    let reads = super::layer_fonts::PAYLOAD_READS.with(std::cell::Cell::get);
+    let renders = h.state().deck_thumbnails.renders;
+    assert!(reads > 0);
+    for zoom in [0.65, 0.95, 1.25, 0.75, 1.0] {
+        h.state_mut().view.zoom = zoom;
+        h.run_steps(3);
+    }
+    assert!(h.state().deck_thumbnails.renders > renders, "zoom must actually rerasterize the slide text");
+    assert_eq!(super::layer_fonts::PAYLOAD_READS.with(std::cell::Cell::get), reads, "a scale-only change must reuse validated font payloads");
+}
+
 fn crowded() -> NodeCraftApp {
     let mut app = NodeCraftApp::headless().unwrap();
     populate(&mut app);

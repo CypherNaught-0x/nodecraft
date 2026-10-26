@@ -1,7 +1,7 @@
 //! Bounded Deck card thumbnails, using the editor's renderer and shared async image cache.
 use super::{
     layer_editor::{Art, Rendered, Stage, draw_layer, render_key, render_scale},
-    layer_fonts::{FontFiles, HeldFont},
+    layer_fonts::HeldFont,
     live::Live,
 };
 use crate::{
@@ -25,6 +25,7 @@ use std::{
 const MAX_CARDS: usize = 16;
 const MAX_SLIDES: usize = 3;
 const CARD_TEXTURE_BYTES: u64 = 8 * 1024 * 1024;
+mod font_payloads;
 
 pub(super) struct Inputs<'a> {
     pub session: &'a Session,
@@ -40,7 +41,8 @@ pub(super) struct Inputs<'a> {
 #[derive(Default)]
 pub(super) struct Cache {
     entries: VecDeque<Entry>,
-    identity: Option<std::sync::Arc<()>>,
+    font_payloads: font_payloads::Payloads,
+    identity: Option<nodecraft_engine::session::DocumentLineage>,
     #[cfg(test)]
     pub(super) renders: usize,
     #[cfg(test)]
@@ -52,8 +54,6 @@ struct Entry {
     revision: Option<u64>,
     parsed: Option<Parsed>,
     textures: HashMap<(String, String), Rendered>,
-    font_stamp: Option<u64>,
-    fonts_key: u64,
     missing_font: bool,
     used: u64,
 }
@@ -137,11 +137,16 @@ fn render(ctx: &egui::Context, layer: &Layer, scale: f64, fonts: &Fonts<'_>, key
 }
 
 impl Cache {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn forget_missing_fonts(&mut self) {
+        self.font_payloads.forget_missing();
+    }
+
     pub(super) fn paint(&mut self, ui: &mut egui::Ui, painter: &egui::Painter, area: Rect, t: &Tokens, input: Inputs<'_>) {
-        let identity = input.session.view_identity();
-        if self.identity.as_ref().is_none_or(|old| !std::sync::Arc::ptr_eq(old, &identity)) {
+        if self.identity.as_ref().is_none_or(|old| !input.session.is_current_document(old)) {
             self.entries.clear();
-            self.identity = Some(identity);
+            self.font_payloads = Default::default();
+            self.identity = Some(input.session.document_lineage());
         }
         #[cfg(test)]
         self.ready_images.insert(input.node.id, Vec::new());
@@ -166,12 +171,9 @@ impl Cache {
             revision: None,
             parsed: None,
             textures: HashMap::new(),
-            font_stamp: None,
-            fonts_key: 0,
             missing_font: false,
             used: 0,
         });
-        let gap = entry.used.saturating_add(1) != input.clock;
         entry.used = input.clock;
         if entry.revision != Some(input.session.revision()) {
             entry.parsed = parsed(input.session, input.node);
@@ -192,15 +194,21 @@ impl Cache {
         let drawn: Vec<_> = parsed.slides.iter().map(|slide| deck::drawable(slide, parsed.frame, |origin, nth| source(&input, origin, nth))).collect();
         entry.textures.retain(|(slide, layer), _| parsed.slides.iter().zip(&drawn).any(|(s, d)| &s.id == slide && d.layers.iter().any(|l| &l.id == layer)));
         let vectors = drawn.iter().flat_map(|d| &d.layers).filter(|l| matches!(l.content, Content::Text { .. } | Content::Shape { .. })).count();
-        let held: Vec<_> = deck_cmds::fonts::held(input.node).into_iter().map(|(name, font)| HeldFont { name, font }).collect();
+        let held: Vec<_> = deck_cmds::fonts::held(input.node)
+            .into_iter()
+            .filter(|(name, _)| {
+                drawn.iter().flat_map(|drawn| &drawn.layers).any(|layer| matches!(&layer.content, Content::Text {font, ..} if layers::same_name(name, font)))
+            })
+            .map(|(name, font)| HeldFont { name, font })
+            .collect();
+        let files = self.font_payloads.files(input.session.assets(), &held, input.clock);
+        entry.missing_font =
+            drawn.iter().flat_map(|drawn| &drawn.layers).any(|layer| matches!(&layer.content, Content::Text {font, ..} if !files.readable(&held, font)));
         let mut hash = std::collections::hash_map::DefaultHasher::new();
-        super::layer_fonts::key(&held).hash(&mut hash);
-        for font in &held {
-            input.session.assets().contains(&font.font.hash).hash(&mut hash);
-        }
+        files.render_key(&held).hash(&mut hash);
         // Budget changes invalidate failed/large previews too, even if their content is unchanged.
         vectors.hash(&mut hash);
-        let stamp = hash.finish();
+        let fonts_key = hash.finish();
         let layer_keys = |fonts_key| {
             parsed
                 .slides
@@ -215,25 +223,9 @@ impl Cache {
                 })
                 .collect::<HashMap<_, _>>()
         };
-        let mut keys = layer_keys(entry.fonts_key);
-        let dirty =
-            entry.font_stamp != Some(stamp) || entry.missing_font && gap || keys.iter().any(|(id, key)| entry.textures.get(id).is_none_or(|r| r.key != *key));
-        let mut files = FontFiles::default();
-        if dirty {
-            files.load(input.session.assets(), &held);
-            entry.missing_font = held.iter().any(|font| !files.readable(&held, &font.name));
-            let mut key = std::collections::hash_map::DefaultHasher::new();
-            files.render_key(&held).hash(&mut key);
-            vectors.hash(&mut key);
-            let fonts_key = key.finish();
-            if entry.fonts_key != fonts_key {
-                keys = layer_keys(fonts_key);
-            }
-            entry.fonts_key = fonts_key;
-            entry.font_stamp = Some(stamp);
-        }
-        let fonts = files.fonts(&held);
-        // Payloads live only for this draw; cached textures never retain copies of font files.
+        let keys = layer_keys(fonts_key);
+        let dirty = keys.iter().any(|(id, key)| entry.textures.get(id).is_none_or(|r| r.key != *key));
+        let fonts = if dirty { files.fonts(&held) } else { Fonts::default() };
         for (index, (slide, drawn)) in parsed.slides.iter().zip(&drawn).enumerate() {
             let size = Vec2::new(parsed.frame.width as f32 * thumb_scale as f32, parsed.frame.height as f32 * thumb_scale as f32);
             let cell = Rect::from_min_size(room.min + Vec2::new(index as f32 * (width + t.control_gap), 0.0), Vec2::new(width, room.height()));
@@ -285,7 +277,8 @@ impl Cache {
             }
             let response = ui.interact(input.view.rect_to_screen(input.origin, rect), ui.id().with(("deck_thumbnail", id, index)), Sense::hover());
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, format!("Deck slide {}", index.saturating_add(1))));
-            response.on_hover_text(format!("{} · {}", index.saturating_add(1), slide.name));
+            let fallback = if entry.missing_font { "\nSome preview fonts use Lato." } else { "" };
+            response.on_hover_text(format!("{} · {}{fallback}", index.saturating_add(1), slide.name));
         }
         let label = match (parsed.writable, parsed.total) {
             (false, _) => "Newer deck version".to_owned(),
