@@ -370,7 +370,7 @@ fn deepgram40_real_refusals_release_charges_and_rate_limits_retry_safely() {
         let error = nodecraft_providers::HttpResponse {
             status,
             headers: vec![],
-            body: serde_json::to_vec(&json!({"err_code":code,"err_msg":"Public fixture refusal"})).unwrap(),
+            body: serde_json::to_vec(&serde_json::json!({"err_code":code,"err_msg":"Public fixture refusal"})).unwrap(),
         };
         let success = nodecraft_providers::HttpResponse {
             status: 200,
