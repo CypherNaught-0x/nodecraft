@@ -6,13 +6,17 @@ const TARGET: NodeId = NodeId::from_bytes([150; 16]);
 const DROP: Pos2 = Pos2::new(320.0, 380.0);
 
 fn harness(render: bool) -> Harness<'static, NodeCraftApp> {
+    harness_for(render, "text.replace")
+}
+
+fn harness_for(render: bool, kind: &str) -> Harness<'static, NodeCraftApp> {
     let mut app = NodeCraftApp::headless().unwrap();
     let canvas = app.canvas;
     let ids: Vec<_> = app.session.document().canvases().get(&canvas).unwrap().nodes().keys().copied().collect();
     for id in ids {
         app.session.dispatch("node.remove", &json!({"canvas":canvas,"id":id})).unwrap();
     }
-    app.session.dispatch("node.create", &json!({"canvas":canvas,"id":TARGET,"kind":"text.replace","pos":{"x":160,"y":-120}})).unwrap();
+    app.session.dispatch("node.create", &json!({"canvas":canvas,"id":TARGET,"kind":kind,"pos":{"x":160,"y":-120}})).unwrap();
     app.centred = true;
     app.view = CanvasView { pan: Vec2::new(540.0, 300.0), zoom: 0.8 };
     let builder = Harness::builder().with_size(Vec2::new(1400.0, 900.0)).with_max_steps(160);
@@ -90,6 +94,38 @@ fn a_multi_output_nodes_chosen_port_meets_the_drop_point() {
     let at = noodle::port_anchor(source, app.painted[&source.id], Side::Output, &edge.from.port).unwrap();
     let screen = app.view.to_screen(app.viewport.min, at);
     assert!(screen.distance(DROP) < 1.0, "chosen {} port is at {screen:?}, not {DROP:?}", edge.from.port);
+}
+
+#[test]
+fn a_live_input_type_change_uses_the_commands_current_output_for_placement() {
+    let mut h = harness_for(false, nodecraft_nodes::router::ID);
+    open(&mut h);
+    let canvas = h.state().canvas;
+    let old = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&TARGET).unwrap().clone();
+    let mut replacement = h
+        .state()
+        .session
+        .kinds()
+        .get(nodecraft_nodes::router::ID)
+        .unwrap()
+        .instantiate_instance(TARGET, nodecraft_nodes::router::config(nodecraft_types::Modality::Image), &Default::default())
+        .unwrap();
+    replacement.pos = old.pos;
+    // A control/MCP graph update can replace a node between opening and choosing, retaining
+    // its id and port name but changing that port's type.
+    h.state_mut().session.dispatch("node.remove", &json!({"canvas":canvas,"id":TARGET})).unwrap();
+    h.state_mut().session.dispatch("node.add", &json!({"canvas":canvas,"node":replacement})).unwrap();
+    h.run();
+    h.get_by_label("Connect from Folder").click();
+    h.run();
+    let app = h.state();
+    let canvas = app.session.document().canvases().get(&canvas).unwrap();
+    let edge = canvas.edges().values().find(|edge| edge.to.node == TARGET).unwrap();
+    let source = canvas.nodes().get(&edge.from.node).unwrap();
+    let port = source.outputs.iter().find(|port| port.name == edge.from.port).unwrap();
+    assert_eq!(port.port_type.modality, nodecraft_types::Modality::Image);
+    let at = noodle::port_anchor(source, app.painted[&source.id], Side::Output, &edge.from.port).unwrap();
+    assert!(app.view.to_screen(app.viewport.min, at).distance(DROP) < 1.0, "the live input chooses a different output than the cached text input");
 }
 
 fn add_source(h: &mut Harness<'static, NodeCraftApp>, kind: &str) -> Pos2 {

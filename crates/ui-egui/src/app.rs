@@ -3120,6 +3120,24 @@ impl NodeCraftApp {
     /// Creates `kind` where the "Turn into" menu opened, fed by its noodle, as one undo step.
     fn create_connected(&mut self, kind: &str, menu: &TurnInto) {
         let t = self.theme.tokens();
+        // The chooser can outlive an MCP edit. Size the same current input the command reads,
+        // including its pending legacy-input migration, rather than its cached opening type.
+        let port_type = if menu.side == Side::Input {
+            let current = self.session.document().canvases().get(&self.canvas).and_then(|canvas| canvas.nodes().get(&menu.anchor.node)).and_then(|node| {
+                node.inputs
+                    .iter()
+                    .find(|port| port.name == menu.anchor.port)
+                    .map(|port| port.port_type)
+                    .or_else(|| self.input_ports.get(node).iter().find(|port| port.name == menu.anchor.port).map(|port| port.port_type))
+            });
+            let Some(current) = current else {
+                self.notice = Some("That input changed or was removed. Drag a new connection to continue.".into());
+                return;
+            };
+            current
+        } else {
+            menu.port_type
+        };
         let left = if menu.side == Side::Input { menu.world.x - t.card_width } else { menu.world.x };
         let pos = nodecraft_graph::Position { x: left, y: menu.world.y - t.card_min_height * 0.5 };
         let document = self.session.document();
@@ -3128,7 +3146,7 @@ impl NodeCraftApp {
             self.notice = Some("Couldn't allocate a node id; try again.".into());
             return;
         };
-        let (size, anchor) = match self.creation_geometry(kind, id, pos, Some((menu.side, menu.port_type)), t) {
+        let (size, anchor) = match self.creation_geometry(kind, id, pos, Some((menu.side, port_type)), t) {
             Ok(geometry) => geometry,
             Err(error) => {
                 self.notice = Some(error.message);
