@@ -265,6 +265,12 @@ install the capability, dispatch, restore prior resources and apply the intent i
 headless Session has no live capability and returns Unsupported. Existing services/resources are
 preserved. The older 100% reset button and shortcut retain their existing view-only path.
 
+The quick-add palette also offers enabled navigation commands that need no parameters, including
+Fit all nodes, Fit selected nodes, Toggle minimap and Toggle prompt overlays. Its search field lends focus only to these palette
+choices; other editors, popups and active gestures still prevent navigation. Choosing a row
+releases the palette query and uses the same live command bridge, without editing the project or
+its undo history. Commands requiring coordinates, such as Pan to world point, remain absent.
+
 ## Canvas search
 
 Search opens from the top-right Search button or ⌘/Ctrl+F. It matches complete stored node titles,
