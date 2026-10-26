@@ -270,6 +270,14 @@ impl Service {
         Ok(Self(shared))
     }
     pub(super) fn start(&self, dropped: &[egui::DroppedFileHandle]) -> Result<Ticket, Failure> {
+        self.start_paths_inner(dropped.iter().map(|file| file.path()), dropped.len())
+    }
+
+    pub(super) fn start_paths(&self, paths: &[PathBuf]) -> Result<Ticket, Failure> {
+        self.start_paths_inner(paths.iter().map(PathBuf::as_path), paths.len())
+    }
+
+    fn start_paths_inner<'a>(&self, paths: impl Iterator<Item = &'a Path>, count: usize) -> Result<Ticket, Failure> {
         if !self.0.alive.load(Ordering::Acquire) {
             return Err(Failure::Unavailable);
         }
@@ -279,13 +287,12 @@ impl Service {
         let state = Arc::new(State { cancelled: AtomicBool::new(false), deadline, clock: Arc::clone(&self.0.clock) });
         state.check()?;
         let mut files = Vec::new();
-        files.try_reserve_exact(dropped.len().min(MAX_FILES)).map_err(|_| Failure::Allocation)?;
+        files.try_reserve_exact(count.min(MAX_FILES)).map_err(|_| Failure::Allocation)?;
         if files.capacity() > MAX_FILES {
             return Err(Failure::Allocation);
         }
-        for handle in dropped.iter().take(MAX_FILES) {
+        for path in paths.take(MAX_FILES) {
             state.check()?;
-            let path = handle.path();
             let len = path.as_os_str().as_encoded_bytes().len();
             let mut name = String::new();
             name.try_reserve_exact(NAME_BYTES).map_err(|_| Failure::Allocation)?;
@@ -312,7 +319,7 @@ impl Service {
             files.push(FileRequest { name, source });
         }
         let control = Arc::new(Control { state, lease, result: Mutex::new(None) });
-        let job = Job { files, extra: dropped.len().saturating_sub(MAX_FILES), control: Arc::clone(&control) };
+        let job = Job { files, extra: count.saturating_sub(MAX_FILES), control: Arc::clone(&control) };
         // Waits for the mailbox rather than refusing a batch already admitted (#483): the worker
         // holds it only to check or take the slot, and nothing that holds it does I/O, so the
         // wait is bounded. The occupied lease above is what refuses a second batch.

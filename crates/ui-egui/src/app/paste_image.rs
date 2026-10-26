@@ -5,10 +5,10 @@
 //! ⌘ is often let go a moment before V, so a V release whose press was never reported counts too
 //! when ⌘ was held just before it.
 use super::NodeCraftApp;
-use crate::{ids, theme::Tokens};
+use super::paste_media::Target;
+use crate::theme::Tokens;
 use egui::Pos2;
-use nodecraft_engine::import::{Incoming, MAX_MEDIA_BYTES};
-use nodecraft_graph::Position;
+use nodecraft_engine::import::MAX_MEDIA_BYTES;
 use std::sync::{Arc, mpsc};
 
 /// The largest side a pasted image may have, as for any image NodeCraft decodes.
@@ -26,28 +26,35 @@ pub(super) struct Picture {
     pub rgba: Vec<u8>,
 }
 
-/// Reads the clipboard's image: `Ok(None)` when it holds none. Runs on a worker thread.
-pub(super) type Reader = Arc<dyn Fn() -> Result<Option<Picture>, String> + Send + Sync>;
+pub(super) enum Contents {
+    Picture(Picture),
+    Files(Vec<std::path::PathBuf>),
+}
+/// Typed clipboard contents; file references precede pixels. Runs off the UI thread.
+pub(super) type Reader = Arc<dyn Fn() -> Result<Option<Contents>, String> + Send + Sync>;
+pub(super) type FileReferencesReader = Arc<dyn Fn() -> Result<Option<Vec<std::path::PathBuf>>, String> + Send + Sync>;
+type ReadTask = Box<dyn FnOnce() + Send>;
+type Spawn = fn(&'static str, ReadTask) -> std::io::Result<()>;
+fn spawn_read(name: &'static str, task: ReadTask) -> std::io::Result<()> {
+    // Completion and errors travel through Pending's channel; the worker is detached.
+    std::thread::Builder::new().name(name.into()).spawn(task).map(|_| ())
+}
+
+enum Payload {
+    Image(Vec<u8>),
+    Files(super::drop::ClipboardFiles),
+    Text(Arc<String>, Pos2),
+}
 
 struct Pending {
-    rx: mpsc::Receiver<Result<Option<Vec<u8>>, String>>,
-    identity: Arc<crate::navigation::SessionIdentity>,
-    project: nodecraft_types::ProjectId,
-    canvas: nodecraft_types::CanvasId,
-    revision: u64,
-    position: Position,
-}
-impl Pending {
-    fn current(&self, app: &mut NodeCraftApp) -> bool {
-        self.canvas == app.canvas
-            && self.project == app.session.document().id()
-            && self.revision == app.session.revision()
-            && Arc::ptr_eq(&self.identity, &crate::navigation::Geometry::identity(&mut app.session))
-    }
+    rx: mpsc::Receiver<Result<Option<Payload>, String>>,
+    target: Target,
 }
 
 pub(super) struct ImagePaste {
     pub(super) reader: Reader,
+    pub(super) files_reader: Option<FileReferencesReader>,
+    spawn: Spawn,
     pending: Option<Pending>,
     /// A text paste arrived since the last ⌘V release, so that release was a text paste.
     text_seen: bool,
@@ -58,7 +65,13 @@ pub(super) struct ImagePaste {
 }
 impl ImagePaste {
     pub(super) fn new() -> Self {
-        Self { reader: Arc::new(system), pending: None, text_seen: false, v_down: false, command_at: None }
+        // Ordinary kittests never inspect the developer's clipboard. File-reference tests
+        // install their own port; production arbitrates typed references off the UI thread.
+        #[cfg(test)]
+        let files_reader = None;
+        #[cfg(not(test))]
+        let files_reader = Some(Arc::new(system_files) as FileReferencesReader);
+        Self { reader: Arc::new(system), files_reader, spawn: spawn_read, pending: None, text_seen: false, v_down: false, command_at: None }
     }
 
     /// Reads this frame's events: whether a ⌘V was released (a text paste latches `text_seen`).
@@ -89,13 +102,16 @@ impl ImagePaste {
 }
 
 /// The OS clipboard, through `arboard`.
-fn system() -> Result<Option<Picture>, String> {
+fn system() -> Result<Option<Contents>, String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| {
         log::warn!("clipboard unavailable: {e}");
         "The clipboard can't be opened; nothing was pasted.".to_owned()
     })?;
+    if let Some(paths) = file_references(&mut clipboard)? {
+        return Ok(Some(Contents::Files(paths)));
+    }
     match clipboard.get_image() {
-        Ok(image) => Ok(Some(Picture { width: image.width, height: image.height, rgba: image.bytes.into_owned() })),
+        Ok(image) => Ok(Some(Contents::Picture(Picture { width: image.width, height: image.height, rgba: image.bytes.into_owned() }))),
         Err(arboard::Error::ContentNotAvailable) => Ok(None),
         Err(e) => {
             log::warn!("clipboard image unreadable: {e}");
@@ -105,6 +121,19 @@ fn system() -> Result<Option<Picture>, String> {
 }
 
 /// The picture as PNG bytes within the import caps.
+fn file_references(clipboard: &mut arboard::Clipboard) -> Result<Option<Vec<std::path::PathBuf>>, String> {
+    match clipboard.get().file_list() {
+        Ok(paths) if !paths.is_empty() => Ok(Some(paths)),
+        Ok(_) | Err(arboard::Error::ContentNotAvailable) => Ok(None),
+        Err(_) => Err("The copied files can't be read; nothing was pasted.".into()),
+    }
+}
+#[cfg(not(test))]
+fn system_files() -> Result<Option<Vec<std::path::PathBuf>>, String> {
+    let mut clipboard = arboard::Clipboard::new().map_err(|_| "The clipboard can't be opened; nothing was pasted.".to_owned())?;
+    file_references(&mut clipboard)
+}
+
 fn encode(picture: &Picture) -> Result<Vec<u8>, String> {
     let too_big = || format!("Copied images are at most {MAX_SIDE}×{MAX_SIDE} pixels; nothing was pasted.");
     let width = u32::try_from(picture.width).ok().filter(|w| *w <= MAX_SIDE).ok_or_else(too_big)?;
@@ -141,33 +170,78 @@ impl NodeCraftApp {
         }
     }
 
-    fn start_image_paste(&mut self, ctx: &egui::Context, centre: Pos2, _t: &Tokens) {
+    fn start_image_paste(&mut self, ctx: &egui::Context, centre: Pos2, t: &Tokens) {
         if self.image_paste.pending.is_some() {
             self.notice = Some("The copied image is still being read; try again in a moment.".into());
             return;
         }
         let (tx, rx) = mpsc::sync_channel(1);
         let reader = Arc::clone(&self.image_paste.reader);
+        let files = self.clipboard_file_reader();
         let repaint = ctx.clone();
-        let spawned = std::thread::Builder::new().name("clipboard-image".into()).spawn(move || {
-            let result = reader().and_then(|picture| picture.map(|p| encode(&p)).transpose());
-            let _ = tx.send(result);
-            repaint.request_repaint();
-        });
+        let spawned = (self.image_paste.spawn)(
+            "clipboard-image",
+            Box::new(move || {
+                let result = reader().and_then(|contents| {
+                    contents
+                        .map(|contents| match contents {
+                            Contents::Picture(picture) => encode(&picture).map(Payload::Image),
+                            Contents::Files(paths) => files.and_then(|reader| reader.read(&paths)).map(Payload::Files),
+                        })
+                        .transpose()
+                });
+                let _ = tx.send(result);
+                repaint.request_repaint();
+            }),
+        );
         if spawned.is_err() {
             self.notice = Some("The clipboard can't be read right now; nothing was pasted.".into());
             return;
         }
-        let identity = crate::navigation::Geometry::identity(&mut self.session);
-        self.image_paste.pending = Some(Pending {
-            rx,
-            identity,
-            project: self.session.document().id(),
-            canvas: self.canvas,
-            revision: self.session.revision(),
-            position: Position { x: centre.x, y: centre.y },
-        });
+        let target = Target::capture(self, centre, t);
+        self.image_paste.pending = Some(Pending { rx, target });
         self.notice = Some("Reading the copied image…".into());
+    }
+
+    /// Finder/Explorer may provide file names as plain text alongside typed file references.
+    /// Only admitted canvas text is deferred; text editors and serialized node payloads keep
+    /// their existing route. A text-only receipt never reads or decodes clipboard pixels.
+    pub(super) fn paste_plain_text(&mut self, ui: &egui::Ui, t: &Tokens, text: String, centre: Pos2) {
+        let Some(reader) = self.image_paste.files_reader.as_ref().map(Arc::clone) else {
+            self.paste_text(&text, centre);
+            return;
+        };
+        if self.image_paste.pending.is_some() {
+            self.notice = Some("The clipboard is still being read; try again in a moment.".into());
+            return;
+        }
+        let target = Target::capture(self, centre, t);
+        let files = self.clipboard_file_reader();
+        let (tx, rx) = mpsc::sync_channel(1);
+        let repaint = ui.ctx().clone();
+        // Keep egui's already-delivered text even when the optional file probe cannot start.
+        // Sharing the receipt avoids copying a large paste just to retain this fallback.
+        let fallback = Arc::new(text);
+        let text = Arc::clone(&fallback);
+        let spawned = (self.image_paste.spawn)(
+            "clipboard-files",
+            Box::new(move || {
+                let result = match reader() {
+                    Ok(Some(paths)) if !paths.is_empty() => files.and_then(|reader| reader.read(&paths)).map(Payload::Files),
+                    // Clipboard access/occupancy errors do not invalidate the text supplied by egui.
+                    Ok(_) | Err(_) => Ok(Payload::Text(text, centre)),
+                }
+                .map(Some);
+                let _ = tx.send(result);
+                repaint.request_repaint();
+            }),
+        );
+        if spawned.is_err() {
+            self.paste_text(&fallback, centre);
+            return;
+        }
+        self.image_paste.pending = Some(Pending { rx, target });
+        self.notice = Some("Reading the clipboard…".into());
     }
 
     #[cfg(test)]
@@ -189,8 +263,8 @@ impl NodeCraftApp {
             Err(mpsc::TryRecvError::Disconnected) => Err("Reading the clipboard failed unexpectedly; nothing was pasted.".to_owned()),
             Ok(result) => result,
         };
-        let png = match result {
-            Ok(Some(png)) => png,
+        let payload = match result {
+            Ok(Some(payload)) => payload,
             Ok(None) => {
                 self.notice = Some("The clipboard holds no image or text to paste.".into());
                 return;
@@ -200,29 +274,14 @@ impl NodeCraftApp {
                 return;
             }
         };
-        if !pending.current(self) {
-            self.notice = Some("The document changed while reading the copied image; nothing was added. Paste again.".into());
+        if !pending.target.current(self) {
+            self.notice = Some("The document changed while reading the clipboard; nothing was added. Paste again.".into());
             return;
         }
-        let at = pending.position;
-        let Some(id) = ids::node_id(self.session.document(), ("clipboard-image", self.session.revision(), at.x.to_bits(), at.y.to_bits())) else {
-            self.notice = Some("Couldn't allocate a node id; try again.".into());
-            return;
-        };
-        let incoming = [Incoming { name: "Pasted image.png", bytes: &png }];
-        let t = self.theme.tokens();
-        match nodecraft_engine::import::import_files_positioned(&mut self.session, pending.canvas, at, 0.0, &incoming, &[id], &[], &|node, kinds| {
-            Self::creation_position(node, kinds, t)
-        }) {
-            Ok(imported) => {
-                if let Some((_, why)) = imported.skipped.first() {
-                    self.notice = Some(format!("The copied image wasn't added: {why}."));
-                } else {
-                    self.selection.replace(imported.nodes.iter().copied().collect());
-                    self.notice = None;
-                }
-            }
-            Err(e) => self.notice = Some(e.message),
+        match payload {
+            Payload::Image(png) => self.import_pasted_png(pending.target, &png),
+            Payload::Files(files) => self.adopt_clipboard_files(files, pending.target),
+            Payload::Text(text, centre) => self.paste_text(&text, centre),
         }
     }
 }

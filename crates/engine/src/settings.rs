@@ -97,6 +97,8 @@ pub struct ProviderSettings {
     pub comfyui_default: Option<String>,
     /// The LiteLLM proxy root, without `/v1`; its optional virtual key uses account `litellm`.
     pub litellm_url: Option<String>,
+    /// Azure OpenAI resource root or `/openai/v1` base; the key uses account `azure-openai`.
+    pub azure_openai_url: Option<String>,
     /// A random value made once per install; it keeps prompt ids of different installs apart on
     /// a shared ComfyUI server. Empty until the host first creates it.
     pub install_salt: String,
@@ -113,19 +115,31 @@ struct ReadProviderSettings {
     install_salt: String,
     comfyui_url: Option<String>,
     litellm_url: Option<String>,
+    azure_openai_url: Option<String>,
 }
 
 impl From<ReadProviderSettings> for ProviderSettings {
     fn from(read: ReadProviderSettings) -> Self {
-        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url } = read;
+        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url, azure_openai_url } = read;
         match comfyui_url.as_deref().map(str::trim).filter(|url| !url.is_empty()) {
-            Some(url) if comfyui.is_empty() => Self { litellm_url, ..Self::with_comfyui(url, &install_salt) },
-            _ => Self { comfyui, comfyui_default, litellm_url, install_salt },
+            Some(url) if comfyui.is_empty() => Self { litellm_url, azure_openai_url, ..Self::with_comfyui(url, &install_salt) },
+            _ => Self { comfyui, comfyui_default, litellm_url, azure_openai_url, install_salt },
         }
     }
 }
 
 /// One ComfyUI server (#864).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComfyBackend {
+    #[default]
+    Local,
+    Cloud,
+    /// An unrecognized future backend is never treated as an unauthenticated local server.
+    #[serde(other)]
+    Unsupported,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ComfyServer {
@@ -133,6 +147,8 @@ pub struct ComfyServer {
     pub name: String,
     /// Such as `http://127.0.0.1:8188`.
     pub url: String,
+    /// Local ComfyUI or the fixed, account-authenticated Comfy Cloud API.
+    pub backend: ComfyBackend,
     /// How many jobs one run sends it at once; unset, the scheduler's usual 4. Read through
     /// [`Self::max_jobs`].
     #[serde(deserialize_with = "lenient_jobs")]
@@ -159,7 +175,23 @@ pub const MAX_SERVER_JOBS: u32 = 16;
 
 impl ComfyServer {
     pub fn new(name: &str, url: &str) -> Self {
-        Self { name: name.to_owned(), url: url.to_owned(), max_jobs: None }
+        Self { name: name.to_owned(), url: url.to_owned(), backend: ComfyBackend::Local, max_jobs: None }
+    }
+
+    pub fn cloud(name: &str) -> Self {
+        Self { backend: ComfyBackend::Cloud, ..Self::new(name, nodecraft_providers::comfy_cloud::ORIGIN) }
+    }
+
+    pub fn is_cloud(&self) -> bool {
+        self.backend == ComfyBackend::Cloud
+    }
+
+    fn supported(&self) -> bool {
+        match self.backend {
+            ComfyBackend::Local => !self.url.trim().is_empty(),
+            ComfyBackend::Cloud => self.url.trim() == nodecraft_providers::comfy_cloud::ORIGIN,
+            ComfyBackend::Unsupported => false,
+        }
     }
 
     /// The jobs one run may send at once, within 1..=[`MAX_SERVER_JOBS`]; `None` for the usual.
@@ -167,6 +199,10 @@ impl ComfyServer {
         self.max_jobs.map(|n| usize::try_from(n.clamp(1, MAX_SERVER_JOBS)).unwrap_or(1))
     }
 }
+
+#[cfg(test)]
+#[path = "settings/hosted_profile_tests.rs"]
+mod hosted_profile_tests;
 
 /// Why `name` can't name a ComfyUI server, or `Ok` when it can: 1 to [`MAX_SERVER_NAME`]
 /// characters, no control characters, no space at either end.
@@ -197,7 +233,7 @@ impl ProviderSettings {
     /// One ComfyUI server at `url`, named by [`server_name_for`] and the default.
     pub fn with_comfyui(url: &str, install_salt: &str) -> Self {
         let name = server_name_for(url);
-        Self { comfyui: vec![ComfyServer::new(&name, url)], comfyui_default: Some(name), install_salt: install_salt.to_owned(), litellm_url: None }
+        Self { comfyui: vec![ComfyServer::new(&name, url)], comfyui_default: Some(name), install_salt: install_salt.to_owned(), ..Self::default() }
     }
 
     /// The ComfyUI servers to use, in order: at most [`MAX_COMFY_SERVERS`], each with a good name
@@ -206,7 +242,7 @@ impl ProviderSettings {
         let mut seen = std::collections::BTreeSet::new();
         self.comfyui
             .iter()
-            .filter(|server| check_server_name(&server.name).is_ok() && !server.url.trim().is_empty())
+            .filter(|server| check_server_name(&server.name).is_ok() && server.supported())
             .filter(|server| seen.insert(server.name.as_str()))
             .take(MAX_COMFY_SERVERS)
             .collect()
@@ -782,5 +818,19 @@ mod tests {
         assert_eq!(server_name_for("https://me:pw@box.example:443/comfy"), "box.example:443", "no credentials in a name");
         assert_eq!(server_name_for("::"), "::");
         assert_eq!(server_name_for(""), "ComfyUI");
+    }
+
+    #[test]
+    fn azure_endpoint_survives_settings_roundtrip_and_legacy_comfy_migration() {
+        for legacy in ["", "comfyui_url = 'http://localhost:8188'\n"] {
+            let dir = tempfile::tempdir().unwrap();
+            write_config(dir.path(), &format!("[providers]\n{legacy}azure_openai_url = 'https://demo.openai.azure.com/openai/v1'\n"));
+            let (store, report) = open_in(dir.path());
+            assert!(report.section_errors.is_empty(), "{report:?}");
+            let settings = store.get().providers.clone();
+            assert_eq!(settings.azure_openai_url.as_deref(), Some("https://demo.openai.azure.com/openai/v1"));
+            let restored: ProviderSettings = serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+            assert_eq!(restored, settings);
+        }
     }
 }

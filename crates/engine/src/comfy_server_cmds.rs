@@ -5,7 +5,8 @@
 //! hold: a card naming a server that isn't there follows the default.
 //!
 //! Each server's last check (`comfy.nodes.refresh {server}`) is kept here for the server panel;
-//! only the default server's check installs the node list workflows import against.
+//! only the default server's check installs the node list workflows import against. Every
+//! successful check also retains bounded partner-class evidence for that server's run quotes.
 use crate::Session;
 use crate::comfy_workflow_cmds::{self, Fetched, Report};
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
@@ -22,8 +23,13 @@ use std::collections::BTreeMap;
 struct ServerReports(BTreeMap<String, Report>);
 
 /// Records what fetch `id` of `server` brought back. The default server's fetch installs its node
-/// list too (as `comfy_workflow_cmds::finish`); another server's only reports its health.
+/// list too (as `comfy_workflow_cmds::finish`); every server's partner evidence prices its runs.
 pub fn finish(session: &mut Session, id: u64, server: &str, is_default: bool, fetched: Result<Fetched, Error>) -> Report {
+    if let Ok(fetched) = &fetched
+        && let Some(instance) = crate::provider_setup::comfy_instance(server)
+    {
+        crate::comfy_partner_quotes::keep(session, Some(instance), &fetched.nodes);
+    }
     let report = if is_default {
         comfy_workflow_cmds::finish(session, id, fetched)
     } else {
@@ -48,6 +54,9 @@ pub fn report<'a>(session: &'a Session, server: &str) -> Option<&'a Report> {
 /// Forgets what was read from `server` after it changed or was removed; the node list too when it
 /// was the default's.
 pub fn forget(session: &mut Session, server: &str, was_default: bool) {
+    if let Some(instance) = crate::provider_setup::comfy_instance(server) {
+        crate::comfy_partner_quotes::forget(session, Some(instance));
+    }
     if was_default {
         comfy_workflow_cmds::forget(session);
     }

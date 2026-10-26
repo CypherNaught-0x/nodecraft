@@ -1691,7 +1691,7 @@ fn held_quick_add_keys_do_not_repeat() {
 }
 
 #[test]
-fn palette_keys_never_reach_the_canvas_and_it_closes_when_the_view_moves() {
+fn palette_keys_and_wheel_never_reach_the_canvas() {
     let mut h = harness();
     let id = node(h.state()).id;
     double_click(&mut h, Pos2::new(150.0, 600.0));
@@ -1711,7 +1711,8 @@ fn palette_keys_never_reach_the_canvas_and_it_closes_when_the_view_moves() {
     h.run();
     assert!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().contains_key(&id));
     assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
-    // Scrolling the canvas moves the view, so the palette closes rather than create elsewhere.
+    // The palette retains the wheel even outside its list, preserving its insertion point.
+    let view = h.state().view;
     h.hover_at(Pos2::new(600.0, 100.0));
     h.event(egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
@@ -1720,7 +1721,8 @@ fn palette_keys_never_reach_the_canvas_and_it_closes_when_the_view_moves() {
         modifiers: egui::Modifiers::NONE,
     });
     h.run();
-    assert!(h.state().palette.is_none());
+    assert!(h.state().palette.is_some());
+    assert_eq!(h.state().view, view);
 }
 
 #[test]

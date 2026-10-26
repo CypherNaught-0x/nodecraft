@@ -43,6 +43,7 @@ impl Impact {
             // A batch export is the same kind of host effect as `history.export`.
             Effect::Open { .. }
             | Effect::CancelFile
+            | Effect::CancelExport { .. }
             | Effect::Save { .. }
             | Effect::Service { .. }
             | Effect::Export { .. }
