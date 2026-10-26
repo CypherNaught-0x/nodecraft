@@ -13,11 +13,27 @@ use nodecraft_engine::settings::{Location, open};
 use nodecraft_providers::http::Http;
 use nodecraft_providers::{BoxFuture, HttpRequest, HttpResponse, ProviderError};
 use std::sync::{Arc, Mutex};
+mod cloud;
 
 const OBJECT_INFO: &str = r#"{"SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
 const SYSTEM_STATS: &str = r#"{"system": {"os": "posix", "comfyui_version": "0.3.40"},
   "devices": [{"name": "cuda:0 GPU", "type": "cuda", "vram_total": 24000000000, "vram_free": 18200000000}]}"#;
 const QUEUE: &str = r#"{"queue_running": [], "queue_pending": [[1, "b", {}, {}, []]]}"#;
+
+/// The actual pre-change renderer can run this same public, empty-panel fixture.
+#[test]
+#[ignore = "manual before/after panel evidence; set NODECRAFT_COMFY16_SCREENSHOT"]
+fn capture_comfy16_empty_panel() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = Harness::builder()
+        .wgpu()
+        .with_size(egui::vec2(1100.0, 760.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap());
+    serve(&mut h, dir.path(), Arc::default(), Arc::default());
+    h.state_mut().comfy_server.open = true;
+    h.run();
+    h.render().unwrap().save(std::env::var("NODECRAFT_COMFY16_SCREENSHOT").unwrap()).unwrap();
+}
 
 /// Answers by path, and records the URLs asked for. The host `down` answers 503. Each answer waits
 /// for the gate, so a test can hold a check open while it acts.

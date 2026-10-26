@@ -205,3 +205,65 @@ fn partner_evidence_has_bounded_retention_and_saturates_conservatively() {
     let context = session.context(Phase::Preview);
     assert_eq!(context.resources.get::<Known>().unwrap().servers.len(), crate::settings::MAX_COMFY_SERVERS + 1);
 }
+
+struct NoHttp;
+impl nodecraft_providers::Http for NoHttp {
+    fn send(
+        &self,
+        _: nodecraft_providers::HttpRequest,
+    ) -> nodecraft_providers::BoxFuture<'_, Result<nodecraft_providers::HttpResponse, nodecraft_providers::ProviderError>> {
+        panic!("pricing and routing must not access the network")
+    }
+}
+
+#[test]
+fn hosted_billing_follows_the_captured_adapter_not_later_settings_or_catalog_evidence() {
+    use crate::provider_setup::{self, HostEnv, ProviderSetup, Readiness};
+    use crate::secrets::{Account, MemoryStore, Secret, SecretStore};
+    use crate::settings::{ComfyServer, ProviderSettings};
+    let (mut session, started) = session(None);
+    let local = quote(&mut session);
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("comfy-cloud").unwrap(), &Secret::new("public-fixture").unwrap()).unwrap();
+    let settings = ProviderSettings { comfyui: vec![ComfyServer::cloud("Hosted")], comfyui_default: Some("Hosted".into()), ..Default::default() };
+    let env = HostEnv { keys: &keys, http: Arc::new(NoHttp), settings: &settings, now_ms: Arc::new(|| 0), progress: None };
+    for slot in ["comfyui".to_owned(), provider_setup::comfy_slot("Hosted")] {
+        let mut setup = ProviderSetup::default();
+        assert_eq!(setup.ensure(&slot, |slot| provider_setup::make(slot, &env)), &Readiness::Ready);
+        // Even stale local settings cannot relabel a captured hosted provider as free.
+        let stale = ProviderSettings::with_comfyui("http://localhost:8188", "public-salt");
+        session.set_provider_routing(setup.routing_for([(CARD, slot.as_str())], &stale).unwrap()).unwrap();
+        let hosted = quote(&mut session);
+        assert_eq!(hosted["complete"], false, "{hosted}");
+        assert!(hosted["steps"][0]["unpriced"].as_str().unwrap().contains("GPU time"));
+        hosted_prices_ignore_custom_catalog_amounts(&session);
+        assert!(session.dispatch("run.start", &start(&local, true)).is_err());
+        session.dispatch("run.start", &start(&hosted, true)).unwrap();
+        let prepared = started.lock().unwrap().pop().unwrap();
+        session.set_provider_routing(setup.routing_for([(CARD, slot.as_str())], &stale).unwrap()).unwrap();
+        let options = nodecraft_exec::run::RunOptions { id: [8; 16], first_job: 1, limits: Default::default(), retry: Default::default() };
+        assert!(session.authorize_prepared_run(prepared, options).is_err(), "changing routing invalidates prepared consent");
+    }
+}
+
+fn hosted_prices_ignore_custom_catalog_amounts(session: &Session) {
+    use nodecraft_exec::cost::StepQuote;
+    use nodecraft_types::{Currency, Money};
+    let context = session.context(Phase::Preview);
+    let canvas = session.document().canvases().get(&CANVAS).unwrap();
+    for (currency, micros, jobs) in [(Currency::USD, 3, 2), (Currency::USD, 0, 1), (Currency::EUR, 9, 0), (Currency::EUR, 4, 3)] {
+        let other = StepQuote { node: NodeId::from_bytes([9; 16]), models: vec![], per_job: Ok(Some(Money::new(Currency::USD, 5))), jobs: 1, jobs_known: true };
+        let card = StepQuote { node: CARD, models: vec!["custom.comfy-model".into()], per_job: Ok(Some(Money::new(currency, micros))), jobs, jobs_known: true };
+        let mut quote = Quote { steps: vec![card, other.clone()], totals: Default::default() };
+        for step in &quote.steps {
+            let total = step.total().unwrap().unwrap();
+            let sum = quote.totals.entry(total.currency).or_insert_with(|| Money::zero(total.currency));
+            *sum = sum.checked_add(total).unwrap();
+        }
+        apply(context.resources, &context.routing.routing, canvas, &mut quote).unwrap();
+        assert!(matches!(quote.steps[0].per_job, Err(Unpriced::Invalid(_))));
+        assert_eq!(quote.steps[1], other);
+        assert_eq!(quote.totals, [(Currency::USD, Money::new(Currency::USD, 5))].into());
+        assert_eq!(quote.is_complete(), jobs == 0, "a skipped hosted job does not make the run incomplete");
+    }
+}

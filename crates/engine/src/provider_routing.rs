@@ -16,6 +16,8 @@ struct Binding {
     serial: [u8; 32],
     /// Most of a run's jobs sent to this target at once; `None` keeps the scheduler's default.
     limit: Option<usize>,
+    /// Hosted execution is paid even when the logical ComfyUI catalog model is local/free.
+    metered_comfy: bool,
 }
 /// Captured immutable physical adapter and its typed logical identity.
 #[derive(Clone)]
@@ -30,14 +32,19 @@ impl RegisteredProvider {
     fn new(provider: Arc<dyn Provider>, instance: Option<ProviderInstanceId>) -> Result<Self, Error> {
         let target = ProviderTarget::new(provider.id(), instance)?;
         let serial = crate::execution_identity::nonce()?;
-        Ok(Self(Arc::new(Binding { target, provider, serial, limit: None })))
+        let metered_comfy = provider.metered_comfy_workflows();
+        Ok(Self(Arc::new(Binding { target, provider, serial, limit: None, metered_comfy })))
     }
     /// A named instance that runs at most `limit` of a run's jobs at once (#864), such as a
     /// ComfyUI server with one GPU.
     pub fn named_with_limit(provider: Arc<dyn Provider>, instance: ProviderInstanceId, limit: Option<usize>) -> Result<Self, Error> {
         let target = ProviderTarget::new(provider.id(), Some(instance))?;
         let serial = crate::execution_identity::nonce()?;
-        Ok(Self(Arc::new(Binding { target, provider, serial, limit: limit.map(|n| n.max(1)) })))
+        let metered_comfy = provider.metered_comfy_workflows();
+        Ok(Self(Arc::new(Binding { target, provider, serial, limit: limit.map(|n| n.max(1)), metered_comfy })))
+    }
+    pub(crate) fn metered_comfy(&self) -> bool {
+        self.0.metered_comfy
     }
     /// Most of a run's jobs sent to this target at once, when it sets its own.
     pub fn limit(&self) -> Option<usize> {

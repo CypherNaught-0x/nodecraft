@@ -91,12 +91,15 @@ struct LastFetch(Report);
 /// it off the UI thread: it may read the server's token from the keychain and calls the server.
 /// Only the list must be read; a server that doesn't report its health still has its nodes.
 pub async fn fetch(env: &HostEnv<'_>) -> Result<Fetched, Error> {
-    let provider = crate::provider_setup::comfyui(env)
+    let provider = crate::provider_setup::comfy_profile::catalog_provider(env)
         .map_err(|readiness| Error::new(ErrorKind::Unsupported, readiness.message("ComfyUI").unwrap_or_else(|| "ComfyUI isn't set up".into())))?;
     let nodes = provider
         .catalog()
         .await
         .map_err(|error| Error::new(crate::option_fetch::provider_kind(error.kind), format!("ComfyUI's node list couldn't be read: {}", error.message)))?;
+    let crate::provider_setup::comfy_profile::CatalogProvider::Local(provider) = provider else {
+        return Ok(Fetched { nodes, health: None });
+    };
     let health = match provider.system_stats().await {
         Ok(stats) => {
             let queue = provider.queue_state().await.ok();

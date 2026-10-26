@@ -3,6 +3,8 @@
 //! receives the stored workflow with the card's values and the file wired into it, and runs only
 //! the output the card keeps; its saved image lands on the card. No network.
 #![cfg(not(target_arch = "wasm32"))]
+#[path = "comfy_workflow9/cloud.rs"]
+mod cloud;
 use nodecraft_engine::{
     Session,
     commands::{Registry, Resources, Services},

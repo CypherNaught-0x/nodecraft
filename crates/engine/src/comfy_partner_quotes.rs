@@ -97,17 +97,24 @@ pub(crate) fn bind(resources: &Resources, targets: &TargetSelection, hash: &mut 
     hash.update(evidence.finalize().as_bytes());
 }
 
-/// The same adjustment runs for the displayed quote and its admitted run. It changes only a
-/// free step, so totals remain unchanged; stored partner evidence already takes the kind path.
-pub(crate) fn apply(resources: &Resources, targets: &TargetSelection, canvas: &Canvas, quote: &mut Quote) -> Result<(), Error> {
-    let Some(known) = resources.get::<Known>() else { return Ok(()) };
+/// The same adjustment runs for the displayed quote and its admitted run. Hosted GPU time is
+/// unknown even when a custom catalog prices the logical model; local partner evidence changes
+/// only free steps, since stored partner evidence already takes the kind path.
+pub(crate) fn apply(resources: &Resources, routing: &crate::provider_routing::ProviderRouting, canvas: &Canvas, quote: &mut Quote) -> Result<(), Error> {
+    let known = resources.get::<Known>();
+    let mut hosted = false;
     for step in &mut quote.steps {
-        if step.per_job != Ok(None) {
+        let Some(node) = canvas.nodes().get(&step.node) else { continue };
+        let Some(target) = routing.targets().get(node.id, comfy_workflow::PROVIDER) else { continue };
+        if routing.find_parts(target.adapter(), target.instance())?.metered_comfy() {
+            step.per_job = Err(Unpriced::Invalid("the hosted ComfyUI profile bills GPU time; the amount is unknown before execution".into()));
+            hosted = true;
             continue;
         }
-        let Some(node) = canvas.nodes().get(&step.node).filter(|node| node.kind == comfy_workflow::ID) else { continue };
-        let Some(target) = targets.get(node.id, comfy_workflow::PROVIDER) else { continue };
-        let Some(classes) = known.servers.get(&target.instance()) else { continue };
+        if step.per_job != Ok(None) || node.kind != comfy_workflow::ID {
+            continue;
+        }
+        let Some(classes) = known.and_then(|known| known.servers.get(&target.instance())) else { continue };
         if classes.hashes.is_empty() && !classes.incomplete {
             continue;
         }
@@ -120,6 +127,17 @@ pub(crate) fn apply(resources: &Resources, targets: &TargetSelection, canvas: &C
             ApiWorkflow::parse(text.as_bytes(), None).map_err(|_| Error::new(ErrorKind::InvalidInput, "a ComfyUI workflow card's workflow is malformed"))?;
         if workflow.nodes.values().any(|node| classes.contains(&node.class_type)) {
             step.per_job = Err(Unpriced::Invalid(REASON.into()));
+        }
+    }
+    if hosted {
+        // Preserve every unrelated price/currency, including known zero and zero-job steps.
+        // Rebuilding avoids leaving a custom catalog's removed hosted price in the totals.
+        quote.totals.clear();
+        for step in &quote.steps {
+            if let Ok(Some(total)) = step.total() {
+                let sum = quote.totals.entry(total.currency).or_insert_with(|| nodecraft_types::Money::zero(total.currency));
+                *sum = sum.checked_add(total)?;
+            }
         }
     }
     Ok(())

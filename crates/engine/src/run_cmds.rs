@@ -464,7 +464,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         }
     };
     // Prices providers quoted (#663) count against budgets like catalog prices.
-    crate::comfy_partner_quotes::apply(resources, c.routing.routing.targets(), canvas, &mut priced)?;
+    crate::comfy_partner_quotes::apply(resources, &c.routing.routing, canvas, &mut priced)?;
     let found = crate::provider_quotes::found(&run_plan, resources, c.routing.nonce)?;
     let quoted = crate::provider_quotes::apply(&mut priced, &found)?;
     let admission = check(&priced, &budget.budgets, &admission_spent(c, budget))?;
@@ -745,7 +745,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         c.routing.routing.targets(),
     )
     .map_err(|error| Error::new(error.kind, admission_reason(&error)))?;
-    crate::comfy_partner_quotes::apply(c.resources, c.routing.routing.targets(), admitted.canvas(), &mut quote)?;
+    crate::comfy_partner_quotes::apply(c.resources, &c.routing.routing, admitted.canvas(), &mut quote)?;
     crate::provider_quotes::apply(&mut quote, &found)?;
     // Parsed request ownership is transferred, never cloned. Reserve all extra metadata
     // before Box/PreparedRun retention; quote ownership was pre-admitted inside exec.
