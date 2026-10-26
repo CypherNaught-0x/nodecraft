@@ -382,6 +382,7 @@ mod order;
 mod ownership_panel;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
+mod paste_workflow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perf_run;
 mod plugin_cards;
@@ -2949,9 +2950,9 @@ impl NodeCraftApp {
         })
     }
 
-    /// Paste plain text as a Text node centred on `centre`.
+    /// Paste a recognized workflow as its card, otherwise plain text as a Text node.
     fn paste_text(&mut self, text: &str, centre: Pos2) {
-        if text.trim().is_empty() {
+        if text.trim().is_empty() || self.paste_workflow_text(text, centre) {
             return;
         }
         let t = self.theme.tokens();

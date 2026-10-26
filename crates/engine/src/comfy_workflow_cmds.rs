@@ -283,9 +283,9 @@ fn import(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     Ok(Effect::Edit { changes, result, gesture: None })
 }
 
-/// Whether dropped text is a ComfyUI workflow file, in either format: an editor save (`nodes` and
+/// Whether dropped or pasted text is a ComfyUI workflow file, in either format: an editor save (`nodes` and
 /// `links` lists) or an API export (an object of nodes, each with a `class_type`).
-pub(crate) fn is_workflow(text: &str) -> bool {
+pub fn is_workflow(text: &str) -> bool {
     let Ok(Value::Object(top)) = serde_json::from_str::<Value>(text) else {
         return false;
     };
