@@ -68,6 +68,32 @@ fn type_into(h: &mut Harness<'static, State>, label: &str, text: &str) {
 }
 
 #[test]
+fn runway_key_preset_is_selected_without_reading_or_sending_a_credential() {
+    let mut h = harness(sync_state(Arc::new(MemoryStore::default()), &[]));
+    h.run();
+    h.get_by_label("runway").click();
+    h.run();
+    assert_eq!(h.state().panel.account, "runway");
+    assert!(h.query_by_label("Powered by Runway").is_some());
+    assert!(h.state().panel.key.is_empty() && h.state().changes.is_empty());
+}
+
+#[test]
+#[ignore = "manual public GPU capture; requires NODECRAFT_RUNWAY_CAPTURE_DIR"]
+fn runway25_visual() {
+    let output = std::path::PathBuf::from(std::env::var("NODECRAFT_RUNWAY_CAPTURE_DIR").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let before = std::env::var("NODECRAFT_RUNWAY_BASELINE").as_deref() == Ok("1");
+    let mut h = harness(sync_state(Arc::new(MemoryStore::default()), &[]));
+    h.run();
+    type_into(&mut h, "Account", "runway");
+    h.run();
+    assert_eq!(h.query_by_label("Powered by Runway").is_some(), !before);
+    assert!(h.state().panel.key.is_empty() && h.state().changes.is_empty());
+    h.render().unwrap().save(output.join(if before { "before.png" } else { "after.png" })).unwrap();
+}
+
+#[test]
 fn saving_a_key_stores_it_clears_the_field_and_remembers_the_account() {
     let store = Arc::new(MemoryStore::default());
     let mut h = harness(sync_state(Arc::clone(&store), &[]));
