@@ -59,12 +59,27 @@ fn an_element_is_saved_from_its_menu_and_placed_from_the_panel() {
     h.run();
     assert!(h.query_by_label_contains("#element · general · 1 image").is_some());
     let before = h.state().session.document().clone();
+    let expected = h.state().view.to_world(h.state().viewport.min, h.state().navigation.usable(h.state().viewport, h.state().theme.tokens()).center());
     h.get_by_label("Place").click();
     h.run();
     let placed: Vec<Node> = elements(&h).into_iter().filter(|n| n.id != id).collect();
     assert_eq!(placed.len(), 1, "{:?}", h.state().notice);
     assert_eq!(nodecraft_nodes::element::name(&placed[0]), Some("element-2"), "under a free name");
     assert!(h.state().selection.contains(placed[0].id));
+    // Local evaluation may finish during the pointer-driven frame and append a history
+    // strip. Placement centers the fresh command payload, before that later graph edit.
+    let mut created = placed[0].clone();
+    created.history.clear();
+    created.active = None;
+    let rect = payload_rect(&h.state().session, &created, h.state().theme.tokens());
+    assert!(
+        (rect.center() - expected).length() < 0.01,
+        "resolved library card geometry must center in view: actual {:?}, expected {:?}, viewport {:?}, view {:?}",
+        rect.center(),
+        expected,
+        h.state().viewport,
+        h.state().view
+    );
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     assert_eq!(h.state().session.document(), &before, "placing is one undo step");
 

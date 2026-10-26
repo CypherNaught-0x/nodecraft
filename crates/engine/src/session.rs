@@ -823,6 +823,27 @@ impl Session {
         })
     }
 
+    /// Inspect the exact fresh node described by a creation command, without publishing or
+    /// executing services. Hosts can measure it before supplying the final position.
+    pub fn preview_created_node(&self, command: &str, params: &Value, id: nodecraft_types::NodeId) -> Result<nodecraft_graph::Node, Error> {
+        guard(|| {
+            let spec = self.registry.get(command)?;
+            let effect = Self::describe(spec, &self.context(Phase::Preview), params)?;
+            let changes = match effect {
+                Effect::Edit { changes, .. } | Effect::Place { changes, .. } => changes,
+                _ => return Err(invalid("command does not describe a node creation")),
+            };
+            changes
+                .changes
+                .into_iter()
+                .find_map(|change| match change {
+                    Change::AddNode { node, .. } if node.id == id => Some(node),
+                    _ => None,
+                })
+                .ok_or_else(|| invalid("command does not create that node"))
+        })
+    }
+
     /// What dispatching `id` with `params` would do, without doing it (#114). The handler runs
     /// as dispatch would run it, so a run is classified by the run it would really start and
     /// what it accepted; the effect is then dropped, never applied.
@@ -1071,6 +1092,24 @@ impl Session {
                     validate_json(&result)?;
                     Ok(result)
                 });
+            }
+            Effect::LocalExport { plan } => {
+                // Export changes no document, so nothing is staged and there is nothing to undo.
+                // Authority is enforced here as well as where the plan was built, because this is
+                // where the writing happens: the folder must still be one the app authorized, and
+                // without an authorized folder this session writes nothing anywhere.
+                let host = self
+                    .resources
+                    .get::<crate::local_export::ExportHost>()
+                    .ok_or_else(|| Error::new(ErrorKind::Unsupported, nodecraft_format::export::reasons::NO_HOST))?;
+                if !host.authorizes(&plan.destination) {
+                    return Err(Error::new(ErrorKind::Unsupported, nodecraft_format::export::reasons::UNSUPPORTED_TARGET));
+                }
+                // Publication retains the host's pinned root descriptor throughout the run.
+                let outcome = guard(|| crate::local_export::run(&self.assets, &plan, host))?;
+                let result = crate::local_export::outcome_json(&outcome);
+                validate_json(&result)?;
+                return Ok(result);
             }
             Effect::Save { location, background } => {
                 let next = self.execution.next()?;
@@ -1349,6 +1388,7 @@ impl Session {
             | Effect::Service { .. }
             | Effect::Export { .. }
             | Effect::Copy { .. }
+            | Effect::LocalExport { .. }
             | Effect::Open { .. }
             | Effect::Save { .. }
             | Effect::Perf { .. }
