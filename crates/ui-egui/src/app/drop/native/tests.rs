@@ -633,7 +633,8 @@ fn public_persistent_open_cancels_but_save_with_unchanged_revision_accepts_fresh
             let scene = &h.state().session.document().canvases()[&canvas];
             assert_eq!(scene.nodes().len(), original.canvases()[&canvas].nodes().len() + 1);
             let id = *h.state().selection.nodes().iter().next().unwrap();
-            assert_eq!(scene.nodes()[&id].pos, captured);
+            let rect = crate::app::payload_rect(&h.state().session, &scene.nodes()[&id], h.state().theme.tokens());
+            assert_eq!(rect.center(), egui::pos2(captured.x, captured.y), "drop stays centered at its captured world target after camera changes");
             h.state_mut().session.dispatch("edit.undo", &serde_json::json!({})).unwrap();
             assert_eq!(h.state().session.document(), &original);
         }

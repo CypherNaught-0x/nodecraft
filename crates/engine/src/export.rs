@@ -108,6 +108,26 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
     }
 }
 
+/// Copy one asset into a *held* file descriptor using the same verifying copy as history.export.
+/// Folder-granted exports provide their own descriptor-relative publication; they cannot use
+/// `write`'s path-based publication because a folder can be renamed concurrently.
+///
+/// Unix only, like its only caller: the descriptor-relative writer in `local_export::secure` is
+/// the sole user, and elsewhere folder export is refused rather than done by a weaker path.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+pub(crate) fn copy_asset_to(assets: &AssetStore, asset: &AssetRef, file: &mut std::fs::File) -> Result<u64, Error> {
+    use nodecraft_format::asset_source::{StreamMetrics, TransferCancel};
+    let cancel = TransferCancel::default();
+    drop(assets.open_verified(asset, &cancel, &StreamMetrics::default())?);
+    let mut failed = None;
+    let mut output = Recording { file, failed: &mut failed };
+    let result = assets.copy_verified_to(asset, &mut output, &cancel, &StreamMetrics::default());
+    match failed {
+        Some(kind) => Err(io_error(kind)),
+        None => result,
+    }
+}
+
 /// A file writer that remembers why a write failed, which the copy's own error doesn't carry.
 #[cfg(not(target_arch = "wasm32"))]
 struct Recording<'a> {
@@ -149,7 +169,7 @@ fn record<T>(failed: &mut Option<std::io::ErrorKind>, result: &std::io::Result<T
 
 /// What a failed write means to the person exporting, without the path.
 #[cfg(not(target_arch = "wasm32"))]
-fn io_error(kind: std::io::ErrorKind) -> Error {
+pub(crate) fn io_error(kind: std::io::ErrorKind) -> Error {
     use std::io::ErrorKind as Io;
     match kind {
         Io::AlreadyExists => Error::new(ErrorKind::Conflict, "a file with that name is already there; export with overwrite to replace it"),

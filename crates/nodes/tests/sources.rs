@@ -49,8 +49,8 @@ fn golden_source_graph_plans_existing_values_and_round_trips_through_undo() {
 #[test]
 fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
     let registry = Registry::builtins().unwrap();
-    assert_eq!(registry.descriptors().filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 6);
-    assert_eq!(registry.compatible(&[]).filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 6);
+    assert_eq!(registry.descriptors().filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 7);
+    assert_eq!(registry.compatible(&[]).filter(|d| d.category == nodecraft_nodes::Category::Source).count(), 7);
     for (id, modality, key) in [
         ("source.text", Modality::Text, "T"),
         ("source.image", Modality::Image, "I"),
@@ -112,6 +112,8 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
                 assert!(node.params.is_empty());
                 assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);
             }
+            // A folder gives nothing until a folder is imported into it.
+            nodecraft_nodes::folder::ID => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
             // A technique node (#94) needs the version it pins, and runs only once that is inlined.
             "structure.technique" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
             // A ComfyUI workflow card (#9) runs only the workflow imported into it.

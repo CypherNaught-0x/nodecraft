@@ -47,8 +47,15 @@ fn the_strip_steps_through_results_with_buttons_chips_and_arrow_keys() {
     }
     assert_eq!(card(h.state()).active, Some(g(1)), "stops at the oldest");
     // So does the focused card.
-    h.get_by_label(&format!("Node {}", card::title(card(h.state()), None))).click();
-    h.run();
+    // The compact body's center is now usable text, so focus its background padding.
+    let rect = screen_rect(h.state());
+    let at = Pos2::new(rect.center().x, rect.top() + h.state().theme.tokens().card_padding * h.state().view.zoom * 0.5);
+    h.hover_at(at);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        h.run();
+    }
+    assert!(!h.state().text_focused);
     h.key_press(egui::Key::ArrowRight);
     h.run();
     assert_eq!(card(h.state()).active, Some(g(2)));
@@ -74,7 +81,7 @@ fn the_active_chip_stays_inside_the_card_however_many_results() {
 }
 
 fn screen_rect(app: &NodeCraftApp) -> Rect {
-    app.view.rect_to_screen(app.viewport.min, card::world_rect(card(app), None, app.theme.tokens()))
+    app.view.rect_to_screen(app.viewport.min, payload_rect(&app.session, card(app), app.theme.tokens()))
 }
 
 #[test]
@@ -156,8 +163,9 @@ fn the_context_menu_deletes_and_extracts_and_clear_is_undoable() {
 fn a_card_grows_by_the_strip_only_when_it_has_results() {
     let empty = harness();
     let t = *empty.state().theme.tokens();
-    let before = card::world_rect(card(empty.state()), None, &t).height();
+    let before = payload_rect(&empty.state().session, card(empty.state()), &t).height();
     let h = with_results(1);
-    let after = card::world_rect(card(h.state()), None, &t).height();
-    assert_eq!(after - before, crate::history::RESERVED_ROWS as f32 * t.control_row_height);
+    let after = payload_rect(&h.state().session, card(h.state()), &t).height();
+    let two_native_rows = crate::history::ROWS as f32 * (t.body_size + t.control_gap);
+    assert_eq!(after - before, two_native_rows + t.control_gap * 2.0);
 }

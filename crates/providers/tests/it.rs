@@ -4,6 +4,8 @@
 
 #[path = "gemini_record_shapes.rs"]
 mod gemini_record_shapes;
+#[path = "live_bfl.rs"]
+mod live_bfl;
 #[path = "live_fal.rs"]
 mod live_fal;
 #[path = "live_gemini_images.rs"]
