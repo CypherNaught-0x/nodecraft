@@ -247,3 +247,47 @@ fn luma26_catalog_quotes_match_sent_duration_and_selected_resolution() {
     }
     assert!(catalog.get("fal.luma-photon").unwrap().quote(&ParamValues::new()).unwrap().is_none());
 }
+
+#[test]
+fn luma26_resumed_ray_downloads_above_image_cap_and_keeps_lowered_limits() {
+    let mut media = include_bytes!("fixtures/blue.mp4").to_vec();
+    let padding = 17 * 1024 * 1024;
+    media.extend_from_slice(&u32::try_from(padding + 8).unwrap().to_be_bytes());
+    media.extend_from_slice(b"free");
+    media.resize(media.len() + padding, 0);
+    assert!(media.len() > Limits::HARD.output_bytes);
+    for model in [LUMA_RAY, LUMA_RAY_I2V] {
+        for declared in [true, false] {
+            let mut file = json!({"url":"https://fal.media/ray-large","content_type":"video/mp4"});
+            if declared {
+                file["file_size"] = json!(media.len());
+            }
+            let wire = Wire::new(vec![reply(json!({"status":"COMPLETED"})), reply(json!({"video":file})), bytes(media.clone())]);
+            let restored: JobHandle = serde_json::from_str(&serde_json::to_string(&handle(model)).unwrap()).unwrap();
+            let JobProgress::Done(done) = block_on(fal(&wire).poll(&restored)).unwrap() else {
+                panic!("complete Ray result");
+            };
+            assert!(matches!(done.outputs.as_slice(), [Output::Bytes { mime, bytes }] if mime == "video/mp4" && bytes.as_ref() == media.as_slice()));
+            let requests = wire.requests.lock().unwrap();
+            assert_eq!(requests.last().unwrap().max_response_bytes, 256 * 1024 * 1024);
+            assert!(requests.last().unwrap().headers.is_empty());
+        }
+        for (limits, declared_size) in [
+            (Limits { output_bytes: 8 * 1024 * 1024, total_output_bytes: 8 * 1024 * 1024, ..Limits::default() }, media.len()),
+            (Limits::default(), Limits::VIDEO_HARD.output_bytes + 1),
+        ] {
+            let wire =
+                Wire::new(vec![reply(json!({"status":"COMPLETED"})), reply(json!({"video":{"url":"https://fal.media/ray-large","file_size":declared_size}}))]);
+            let f = Fal::with_limits(Secret::new(KEY).unwrap(), wire.clone(), limits).unwrap();
+            assert_eq!(block_on(f.poll(&handle(model))).unwrap_err().kind, ErrorKind::Malformed);
+            assert_eq!(wire.requests.lock().unwrap().len(), 2, "declared excess refuses before media download");
+        }
+    }
+    for model in [Model::Image, Model::Photon, Model::Video, Model::Frames, Model::Speech, Model::Audio, Model::Mesh] {
+        let limits = Limits::default().for_model(model);
+        assert_eq!(limits.output_bytes, Limits::HARD.output_bytes);
+        assert_eq!(limits.total_output_bytes, Limits::HARD.total_output_bytes);
+    }
+    assert!(Limits { output_bytes: Limits::VIDEO_HARD.output_bytes + 1, ..Limits::default() }.validate().is_err());
+    assert!(Limits { total_output_bytes: Limits::VIDEO_HARD.total_output_bytes + 1, ..Limits::default() }.validate().is_err());
+}

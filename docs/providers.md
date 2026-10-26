@@ -791,7 +791,8 @@ before fetch; successful wasm compilation does not imply browser fal networking 
 
 Operation limits are lower-only: one PNG/JPEG/WebP input at most 1 MiB / 1024²; aggregate text and
 parameter strings 16 KiB; serialized request 2 MiB; API body 2 MiB; metadata 256 KiB; JSON depth 32 and
-4096 items. Four output files maximum, 16 MiB each / 48 MiB total; image axes 4096 and aggregate
+4096 items. Four output files maximum, 16 MiB each / 48 MiB total, except one Luma Ray clip may use
+256 MiB for both the file and total download; image axes 4096 and aggregate
 16,777,216 pixels. Every descriptor is admitted before downloads; actual HTTP body caps shrink
 with remaining aggregate capacity. Full image codecs and actual geometry are checked; WAV,
 MP4 and GLB2 receive bounded container-envelope validation, not complete audio/video/mesh codec
@@ -807,9 +808,9 @@ Known logical-payload worksheet (MiB), with phase overlap rather than a sum acro
 | Input inspection | Inspection 2 + combined decoded/orientation rasters 128 + scratch 1 | 131 |
 | Request/receipt | URI, request, native request clone, API reply, metadata and scratch | 12 |
 | Result metadata | Bounded descriptors and parsing payload | 6 |
-| Download validation | Validation 2 + metadata 1 + API reply 2 + outputs 48 + Vec-to-Arc live-byte overlap 16 + combined rasters 128 + scratch 1 | 198 |
+| Image download validation | Validation 2 + metadata 1 + API reply 2 + outputs 48 + Vec-to-Arc live-byte overlap 16 + combined rasters 128 + scratch 1 | 198 |
 
-A separate container/admin payload allowance of 4 gives a 202 MiB logical-payload worksheet,
+A separate container/admin payload allowance of 4 gives a 202 MiB image-path logical-payload worksheet,
 not an allocation or RSS ceiling. HTTP body **length** is bounded; transport `Vec` capacity may
 exceed that length through allocator growth and is additional, including its overlap with Arc
 conversion. The adapter must not reject already-paid valid bytes merely because capacity grew.
@@ -818,6 +819,10 @@ are included in known raster owners. Existing media preflight uses decoder.total
 orientation copy against 128 MiB; most codecs ignore their private allocation limit.
 Codec-private workspace, spare transport capacity, allocator overhead, transport/TLS/kernel
 buffering, caller graph/history and concurrent jobs are outside this worksheet.
+
+Ray instead admits one MP4 body up to 256 MiB and a possible 256 MiB Vec-to-Arc live-byte
+overlap. Its container-envelope check does not allocate image codec rasters. These payloads
+replace the image download/codec owners above; the 202 MiB image worksheet is not a Ray cap.
 
 HTTP errors preserve optional integer Retry-After seconds only when checked conversion fits
 within one hour. Optional `X-Fal-Billable-Units` evidence is tracked in #437; it is not tokens or
@@ -1341,7 +1346,9 @@ these modes. Safety screening keeps the service default.
 Ray prompts are 1–6,000 characters and Photon prompts 3–5,000, after surrounding whitespace is
 trimmed. The shared aggregate text-metadata limit is still 16 KiB. Frames must be PNG/JPEG/WebP,
 at most 1 MiB and 1024 pixels per side; they are decoded before payment. Results keep fal's
-16 MiB per-file cap. Photon images are decoded under the 4096-pixel/16,777,216-total-pixel bounds,
+16 MiB per-file cap for Photon. Ray text/frame clips instead have a 256 MiB per-file and
+aggregate cap, also when resumed from a saved handle. Application limits may lower either cap.
+Photon images are decoded under the 4096-pixel/16,777,216-total-pixel bounds,
 and may be PNG, JPEG or WebP. The generic Photon file schema need not report dimensions; actual
 bytes determine them. Ray uses the existing bounded MP4 container check, not a full video decode.
 

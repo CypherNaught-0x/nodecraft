@@ -14,7 +14,11 @@ Photon charges 0.019 USD/megapixel but offers no fixed output geometry, so it ke
 upfront quote. fal's optional billable units are retained without converting them to Money.
 
 The model-specific module counts escaped JSON and encoded input sizes before decoding frames.
-Existing 1 MiB/1024-pixel input and 16 MiB output limits stay intact. Photon uses the generic
+Existing 1 MiB/1024-pixel input and 16 MiB image output limits stay intact. Ray text/frame
+clips use a separate 256 MiB per-file/aggregate ceiling, selected again from the admitted model
+when resuming. Lower application budgets still apply. Other fal models retain their existing
+output caps. MP4 checks inspect the container envelope without codec allocations; the image
+codec allocation bound stays unchanged. Photon uses the generic
 file schema, whose dimensions are optional; its actual PNG/JPEG/WebP is probed and decoded.
 Other image models keep their PNG and required-dimension contracts. Ray uses the existing
 MP4 envelope validator, which does not decode the video stream. Extra EXR output is refused.
