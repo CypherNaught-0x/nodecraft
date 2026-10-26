@@ -20,6 +20,12 @@ pub enum Exported {
 
 /// Longest export path, in bytes.
 pub const MAX_PATH_BYTES: usize = 4096;
+#[cfg(not(target_arch = "wasm32"))]
+const NAME_TAKEN: &str = "a file with that name is already there; export with overwrite to replace it";
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn name_conflict(error: &Error) -> bool {
+    error.kind == ErrorKind::Conflict && error.message == NAME_TAKEN
+}
 
 /// Refuses a path that can't name a new file: relative, a folder, or too long. Messages never
 /// repeat the path.
@@ -45,8 +51,27 @@ pub(crate) fn write(_: &AssetStore, _: &Exported, _: &Path, _: bool) -> Result<s
 /// Streams `what` to `path`; returns the command's result, with how many bytes were written.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite: bool) -> Result<serde_json::Value, Error> {
-    use nodecraft_format::asset_source::{StreamMetrics, TransferCancel};
+    write_controlled(assets, what, path, overwrite, None).map(|(_, result)| result)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn write_background(assets: &AssetStore, what: &Exported, path: &Path, overwrite: bool, control: &crate::export_job::Control) -> Result<u64, Error> {
+    write_controlled(assets, what, path, overwrite, Some(control)).map(|(bytes, _)| bytes)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_controlled(
+    assets: &AssetStore,
+    what: &Exported,
+    path: &Path,
+    overwrite: bool,
+    control: Option<&crate::export_job::Control>,
+) -> Result<(u64, serde_json::Value), Error> {
+    use nodecraft_format::asset_source::StreamMetrics;
     use std::io::Seek;
+    if let Some(control) = control {
+        control.phase(crate::export_job::ExportPhase::Checking)?;
+    }
     check(path)?;
     if path.is_dir() {
         return Err(Error::new(ErrorKind::InvalidInput, "the export path is a folder; name a file in it"));
@@ -54,16 +79,37 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
     if !path.parent().is_some_and(Path::is_dir) {
         return Err(Error::new(ErrorKind::NotFound, "the export folder doesn't exist"));
     }
-    // A name that's taken is refused before anything is read or drawn; the write below still
-    // refuses one that appears meanwhile.
+    // Numbered folder exports should skip occupied names before authenticating a large body.
+    // The atomic writer still enforces no replacement if a file appears after this check.
     if !overwrite && path.symlink_metadata().is_ok() {
         return Err(io_error(std::io::ErrorKind::AlreadyExists));
     }
-    let cancel = TransferCancel::default();
+    let cancel = control.map(|control| control.cancel.clone()).unwrap_or_default();
+    // The verifier creates managed scratch only for uncached indexed bytes. It shares the
+    // session's quota while leaving the live context and transfer gate available. The
+    // pinned reader owns its scratch through cleanup; the process slot bounds workers.
+    let lease = if control.is_some()
+        && let Exported::Asset(asset) = what
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        Some(loop {
+            cancel.check()?;
+            match assets.open_export_verified(asset, &cancel, &StreamMetrics::default()) {
+                Ok(lease) => break lease,
+                Err(error) if error.kind == ErrorKind::Busy && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => return Err(error),
+            }
+        })
+    } else {
+        None
+    };
     // Checked before the file appears. The archive checks each asset as it copies it, into a
     // staged file, so a missing or damaged asset leaves nothing behind either way.
     match what {
-        Exported::Asset(asset) => drop(assets.open_verified(asset, &cancel, &StreamMetrics::default())?),
+        Exported::Asset(asset) if lease.is_none() => drop(assets.open_verified(asset, &cancel, &StreamMetrics::default())?),
+        Exported::Asset(_) => {}
         Exported::Bundle(bundle) => bundle.check()?,
         Exported::Slides(_) => {}
     }
@@ -72,11 +118,18 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
         Exported::Slides(slides) => Some(crate::deck_export::render(assets, slides)?),
         Exported::Asset(_) | Exported::Bundle(_) => None,
     };
+    if let Some(control) = control {
+        control.phase(crate::export_job::ExportPhase::Writing)?;
+    }
     let mut copied: Result<u64, Error> = Ok(0);
     let mut failed = None;
     let fill = |file: &mut std::fs::File| {
         let mut out = Recording { file, failed: &mut failed };
         copied = match what {
+            Exported::Asset(_) if lease.is_some() => lease
+                .as_ref()
+                .ok_or_else(|| Error::new(ErrorKind::Internal, "the verified export reader is unavailable"))
+                .and_then(|lease| lease.copy_to(&mut out, &cancel, &StreamMetrics::default())),
             Exported::Asset(asset) => assets.copy_verified_to(asset, &mut out, &cancel, &StreamMetrics::default()),
             Exported::Bundle(bundle) => bundle
                 .write_to(assets, &mut out, &cancel)
@@ -88,6 +141,12 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
                     .map_err(|_| Error::new(ErrorKind::Internal, "the file couldn't be written"))
             }
         };
+        if copied.is_ok()
+            && let Some(control) = control
+            && let Err(error) = control.phase(crate::export_job::ExportPhase::Finishing)
+        {
+            copied = Err(error);
+        }
         match &copied {
             Ok(_) => Ok(()),
             Err(_) => Err(std::io::Error::other("the export couldn't be written")),
@@ -95,9 +154,12 @@ pub(crate) fn write(assets: &AssetStore, what: &Exported, path: &Path, overwrite
     };
     let written = if overwrite { craft_atomic::atomic_write_with(path, fill) } else { craft_atomic::write_new_with(path, fill) };
     match written {
-        Ok(()) => copied.map(|bytes| match (what, &drawn) {
-            (Exported::Slides(slides), Some(drawn)) => slides.result(bytes, &drawn.unreadable, &drawn.font_fallbacks),
-            _ => serde_json::json!({"bytes": bytes}),
+        Ok(()) => copied.map(|bytes| {
+            let result = match (what, &drawn) {
+                (Exported::Slides(slides), Some(drawn)) => slides.result(bytes, &drawn.unreadable, &drawn.font_fallbacks),
+                _ => serde_json::json!({"bytes": bytes}),
+            };
+            (bytes, result)
         }),
         // A write that failed inside the copy says why the file did; else the copy's own error.
         Err(error) => Err(match (failed, copied) {
@@ -172,7 +234,7 @@ fn record<T>(failed: &mut Option<std::io::ErrorKind>, result: &std::io::Result<T
 pub(crate) fn io_error(kind: std::io::ErrorKind) -> Error {
     use std::io::ErrorKind as Io;
     match kind {
-        Io::AlreadyExists => Error::new(ErrorKind::Conflict, "a file with that name is already there; export with overwrite to replace it"),
+        Io::AlreadyExists => Error::new(ErrorKind::Conflict, NAME_TAKEN),
         Io::StorageFull | Io::QuotaExceeded | Io::FileTooLarge => Error::new(ErrorKind::Internal, "the disk is full; free some space and export again"),
         Io::PermissionDenied | Io::ReadOnlyFilesystem => Error::new(ErrorKind::InvalidInput, "NodeCraft can't write there; choose another folder"),
         Io::NotFound => Error::new(ErrorKind::NotFound, "the export folder doesn't exist"),

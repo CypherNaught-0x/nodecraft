@@ -1232,6 +1232,8 @@ impl NodeCraftApp {
         let started = self.frame_started(ui.ctx().current_pass_index() == 0);
         self.show_frame(ui);
         self.deliver_copy(ui.ctx());
+        #[cfg(not(target_arch = "wasm32"))]
+        self.export_close_overlay(ui.ctx());
         self.frame_finished(started);
         self.pumped = self.frame_pump && self.session.perf().enabled();
         if self.pumped {
@@ -1283,6 +1285,13 @@ impl NodeCraftApp {
         self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
         self.poll_export(ui.ctx());
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.export_close_owns_input() {
+            // Continue the worker while the close prompt owns every UI input. The modal
+            // is painted last by show(), above any document editor or canvas gesture.
+            return;
+        }
+        let file_owns_input = self.export_overlay(ui.ctx()) || file_owns_input;
         self.videos.poll(ui.ctx());
         self.audios.poll(ui.ctx());
         self.meshes.poll();
@@ -1408,7 +1417,13 @@ impl NodeCraftApp {
         }
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
-        if !model_blocks && !self.drop_pointer_owned() && !canvas::text_input_focused(ui.ctx()) && self.palette.is_none() && self.turn_into.is_none() {
+        if !model_blocks
+            && !file_owns_input
+            && !self.drop_pointer_owned()
+            && !canvas::text_input_focused(ui.ctx())
+            && self.palette.is_none()
+            && self.turn_into.is_none()
+        {
             // Held minimap input owns mutation keys through release. Fresh presses still
             // use the post-undo/delete admission below, since those edits can change availability.
             let minimap_held = self.navigation.pointer_owned || self.navigation.drag.is_some();
@@ -3305,7 +3320,9 @@ impl eframe::App for NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_plugins(ctx);
         self.tick_sharing(ctx);
-        // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
+        #[cfg(not(target_arch = "wasm32"))]
+        self.export_close_request(ctx);
+        // Last, so the native quit respects the export's CancelClose decision.
         craft_quit::on_close_request(ctx);
     }
 
