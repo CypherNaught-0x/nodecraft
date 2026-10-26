@@ -2708,7 +2708,7 @@ impl NodeCraftApp {
                         self.share_button(ui, t);
                         self.browser_providers_button(ui, t);
                         if ui
-                            .add(egui::Button::new(egui::RichText::new("Budgets").color(t.text_muted)).frame(false))
+                            .add(crate::icons::Icon::Wallet.button(ui, egui::RichText::new("Budgets").color(t.text_muted), t).frame(false))
                             .on_hover_text("The most runs may spend per call, per session and in total")
                             .clicked()
                         {
@@ -2719,7 +2719,7 @@ impl NodeCraftApp {
                             }
                         }
                         if ui
-                            .add(egui::Button::new(egui::RichText::new("API keys").color(t.text_muted)).frame(false))
+                            .add(crate::icons::Icon::Key.button(ui, egui::RichText::new("API keys").color(t.text_muted), t).frame(false))
                             .on_hover_text("Add, check and remove provider keys")
                             .clicked()
                         {

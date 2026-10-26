@@ -449,14 +449,18 @@ impl NodeCraftApp {
             .max_height(ui.max_rect().height() * 0.8)
             .vscroll(true)
             .show(ui.ctx(), |ui| {
-                for (id, label) in [("file.open", "Open project…"), ("file.save", "Save project"), ("file.save_as", "Save project as…")] {
-                    if ui.button(label).clicked() {
+                for (id, label, icon) in [
+                    ("file.open", "Open project…", crate::icons::Icon::Open),
+                    ("file.save", "Save project", crate::icons::Icon::Save),
+                    ("file.save_as", "Save project as…", crate::icons::Icon::Save),
+                ] {
+                    if ui.add(icon.button(ui, label, t)).clicked() {
                         action = Some(id);
                     }
                 }
                 ui.separator();
                 import_folder = ui
-                    .add_enabled(!importing, egui::Button::new("Import folder…"))
+                    .add_enabled(!importing, crate::icons::Icon::Open.button(ui, "Import folder…", t))
                     .on_hover_text("Add a folder's files as one Folder card")
                     .on_disabled_hover_text("A folder is being imported")
                     .clicked();
