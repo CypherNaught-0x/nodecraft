@@ -490,7 +490,7 @@ impl NodeCraftApp {
             .movable(false)
             .fixed_pos(toolbar_rect.min)
             .constrain(false)
-            .show(&ctx, |ui| ui.add_enabled(available, egui::Button::new("Comments").min_size(toolbar_rect.size())));
+            .show(&ctx, |ui| ui.add_enabled(available, crate::icons::Icon::Comments.button(ui, "Comments", t).min_size(toolbar_rect.size())));
         // A short viewport can put this row over the minimap. Keep actionable chrome
         // above the map without raising it over an unrelated popup.
         if !egui::Popup::is_any_open(&ctx) && toolbar.response.rect.intersects(crate::navigation::layout(self.viewport, self.navigation.visible, t).overlay) {

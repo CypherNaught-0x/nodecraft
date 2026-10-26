@@ -55,7 +55,44 @@ impl Acquisition {
         Self { service: native::Service::global(), pending: None, rect: Rect::NOTHING, pointer_owned: false }
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) struct ClipboardFiles(native::Ticket);
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) struct ClipboardFileReader(native::Service);
+#[cfg(not(target_arch = "wasm32"))]
+impl ClipboardFileReader {
+    pub(super) fn read(&self, paths: &[std::path::PathBuf]) -> Result<ClipboardFiles, String> {
+        self.0.start_paths(paths).map(ClipboardFiles).map_err(|error| error.message().to_owned())
+    }
+}
 impl NodeCraftApp {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn clipboard_file_reader(&self) -> Result<ClipboardFileReader, String> {
+        self.drop_acquisition.service.as_ref().map(|service| ClipboardFileReader(service.clone())).map_err(|error| error.message().to_owned())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn adopt_clipboard_files(&mut self, files: ClipboardFiles, target: super::paste_media::Target) {
+        if !target.current(self) {
+            self.notice = Some("The document changed while reading the clipboard; nothing was added. Paste again.".into());
+            return;
+        }
+        if self.drop_acquisition.pending.is_some() || self.drop_pointer_owned() {
+            self.notice = Some("File reading is already in progress; paste again after it finishes.".into());
+            return;
+        }
+        self.drop_acquisition.pending = Some(Pending {
+            ticket: files.0,
+            probe: None,
+            identity: target.identity,
+            project: target.project,
+            canvas: target.canvas,
+            revision: target.revision,
+            position: target.position,
+            step: target.step,
+        });
+        self.notice = Some("Reading copied files…".into());
+    }
     pub(super) fn drop_pointer_owned(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -119,7 +156,7 @@ impl NodeCraftApp {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = t;
-            self.poll_web_drop();
+            self.poll_web_drop(ui.ctx());
             if self.web_drop.is_some() {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
             }
@@ -129,7 +166,7 @@ impl NodeCraftApp {
         {
             // Native tests drive the browser drop's import (#319).
             #[cfg(test)]
-            self.poll_web_drop();
+            self.poll_web_drop(ui.ctx());
             if self.drop_acquisition.pending.is_none() && !self.drop_acquisition.pointer_owned {
                 self.drop_acquisition.rect = Rect::NOTHING;
             }

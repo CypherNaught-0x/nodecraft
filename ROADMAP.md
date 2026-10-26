@@ -29,6 +29,9 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 14/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 3/29 |
 
+Runway Gen-4.5 text/first-frame video and Gen-4 Turbo first-frame video are available through
+priced catalog models and the direct task adapter (#25); paid live verification remains opt-in.
+
 ## What works today
 
 Run it: `cargo run -p nodecraft`. What the window actually does:
@@ -72,6 +75,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   list and edit them with revision checks (#122). Edit slides opens a slide sorter beside the
   Layer Editor's stage, to arrange each slide's text, shapes and sources (#694); its Export menu
   saves the slides as one PDF or as PNGs, drawn at the deck's size (`deck.export`, #692).
+  Each deck holds imported fonts shared by its editor, thumbnails, presenter and exports; unknown or
+  unreadable fonts visibly fall back to Lato, and `deck.list` resolves their references (#693).
   A generation card's `− N× +` counter makes up to 20 variations a run, each its own request
   (quoted as such) and its own result in the node's history (#81).
   The viewer's Photo and Views buttons add a 3D photo or a
@@ -96,7 +101,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   are a fanned step's results, as one (#611). The desktop saves held results so they survive a
   restart (#614).
   A fal result's `X-Fal-Billable-Units` header is kept, exactly, with the job's settings in the
-  project as evidence of what was billed; it is never turned into money (#437). Run quotes also
+  project as evidence of what was billed; it is never turned into money (#437).
+  Luma Ray 3.2 text/frame video and Photon text-to-image reuse fal's queue and key (#26);
+  Ray is quoted by duration/resolution and Photon keeps an unknown upfront megapixel charge. Run quotes also
   surface aggregate admission feedback before confirmation (#307). Imported video and audio
   sources probe duration (#608); ComfyUI accepts video and audio workflows (#110). Plugin cards
   keep their package identity, migrate with their package, and survive uninstall (#173). Plugin
@@ -118,6 +125,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   package's actions become cards that stop running when the grant is revoked (#172, #173); in
   the browser, packages last only for the session and never run (#823). Built-in image actions
   run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
+- **Black Forest Labs**: desktop Generate image and the CLI can use the direct FLUX.2 klein 4B
+  text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
+  Pixel-based credits remain an unknown monetary price and require consent. Image editing and
+  other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
@@ -161,7 +172,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   option lists are desktop only for now (#721), and so is video. Unsaved work is kept in the
   site's storage and offered back after a crash or a closed tab (#717); leaving with unsaved work
   still asks first. Files dropped in a browser are read asynchronously and added as nodes (#319);
-  pasting a copied image works in the desktop app only.
+  clipboard media acquisition adds browser PNG paste and native copied-file references (#633).
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
   and ffprobe discovered on `PATH`, set under `[media]` in settings, or overridden with
   `NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` (#411); it does not bundle them.
@@ -292,6 +303,13 @@ The near-term order follows the remaining open issues, not an already-finished w
   raise a cap.
 - **2026-10-23** — the spending log records each charge's project, so the open project has its
   own cap beside the total (#847); the CSV export gains a `project` column.
+- **2026-10-24** — opening or recovering a located project with the old starter identity assigns
+  a stable identity in one undoable change (#879), separating future project spending. Save As
+  preserves identity; saved jobs under the ambiguous legacy identity remain parked with an
+  explicit explanation, and their charges stay attributed to that legacy identity.
+- **2026-10-24** — Replicate creation propagates a bounded server lifetime and successful results
+  retain reported execution milliseconds through saving, held results and restart recovery
+  (#339). Duration remains separate from money; restored handles do not reset the server limit.
 - **2026-10-23** — rendered videos and extracted sound share a per-run staging budget (#584):
   1 GiB and 4,096 results, including read-backs in flight. Failure and cancellation return their
   reservations; chained actions retain access to earlier completed outputs.
