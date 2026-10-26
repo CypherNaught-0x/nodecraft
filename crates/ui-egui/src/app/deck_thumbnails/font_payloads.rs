@@ -114,8 +114,8 @@ mod tests {
         layer_fonts::PAYLOAD_READS.with(|reads| reads.set(0));
         for clock in 1..=12 {
             let files = cache.files(&assets, &[a.clone(), b.clone()], clock);
-            assert!(files.readable(&[a.clone()], &a.name));
-            assert!(!files.readable(&[b.clone()], &b.name));
+            assert!(files.readable(std::slice::from_ref(&a), &a.name));
+            assert!(!files.readable(std::slice::from_ref(&b), &b.name));
             assert_eq!(cache.bytes, limit);
         }
         assert_eq!(layer_fonts::PAYLOAD_READS.with(std::cell::Cell::get), 1, "overflow must not reread visible fonts on each frame");
