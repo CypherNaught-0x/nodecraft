@@ -68,6 +68,32 @@ fn type_into(h: &mut Harness<'static, State>, label: &str, text: &str) {
 }
 
 #[test]
+fn runway_key_preset_is_selected_without_reading_or_sending_a_credential() {
+    let mut h = harness(sync_state(Arc::new(MemoryStore::default()), &[]));
+    h.run();
+    h.get_by_label("runway").click();
+    h.run();
+    assert_eq!(h.state().panel.account, "runway");
+    assert!(h.query_by_label("Powered by Runway").is_some());
+    assert!(h.state().panel.key.is_empty() && h.state().changes.is_empty());
+}
+
+#[test]
+#[ignore = "manual public GPU capture; requires NODECRAFT_RUNWAY_CAPTURE_DIR"]
+fn runway25_visual() {
+    let output = std::path::PathBuf::from(std::env::var("NODECRAFT_RUNWAY_CAPTURE_DIR").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let before = std::env::var("NODECRAFT_RUNWAY_BASELINE").as_deref() == Ok("1");
+    let mut h = harness(sync_state(Arc::new(MemoryStore::default()), &[]));
+    h.run();
+    type_into(&mut h, "Account", "runway");
+    h.run();
+    assert_eq!(h.query_by_label("Powered by Runway").is_some(), !before);
+    assert!(h.state().panel.key.is_empty() && h.state().changes.is_empty());
+    h.render().unwrap().save(output.join(if before { "before.png" } else { "after.png" })).unwrap();
+}
+
+#[test]
 fn saving_a_key_stores_it_clears_the_field_and_remembers_the_account() {
     let store = Arc::new(MemoryStore::default());
     let mut h = harness(sync_state(Arc::clone(&store), &[]));
@@ -114,6 +140,22 @@ fn listed_accounts_are_checked_only_on_request_and_removal_asks_first() {
     assert!(store.get(&Account::new("openai").unwrap()).unwrap().is_none());
     assert_eq!(h.state().panel.rows().len(), 1);
     assert_eq!(h.state().changes, [AccountChange::Forget(Account::new("openai").unwrap())]);
+}
+
+#[test]
+fn azure_quick_pick_stores_the_separate_provider_account() {
+    let store = Arc::new(MemoryStore::default());
+    let mut h = harness(sync_state(Arc::clone(&store), &[]));
+    h.run();
+    h.get_by_label("azure-openai").click();
+    h.run();
+    type_into(&mut h, "Key", KEY);
+    h.get_by_label("Save").click();
+    h.run();
+    assert!(store.get(&Account::new("azure-openai").unwrap()).unwrap().is_some());
+    assert!(store.get(&Account::new("openai").unwrap()).unwrap().is_none());
+    assert!(h.state().panel.key.is_empty());
+    assert!(h.query_by_label_contains("abcdefghij").is_none());
 }
 
 #[test]
@@ -451,4 +493,22 @@ fn test_without_a_check_host_says_it_is_unsupported() {
     h.run();
     assert!(h.state().panel.notice.as_deref().is_some_and(|n| n.contains("desktop app")), "{:?}", h.state().panel.notice);
     assert!(!h.state().panel.is_waiting());
+}
+
+#[test]
+#[ignore = "manual public-safe key panel capture; NODECRAFT_AZURE_KEYS_EVIDENCE"]
+fn azure45_render_key_setup_evidence() {
+    let path = std::path::PathBuf::from(std::env::var_os("NODECRAFT_AZURE_KEYS_EVIDENCE").unwrap());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let mut h = Harness::builder().wgpu().with_size(egui::Vec2::new(1050.0, 620.0)).with_step_dt(1.0 / 60.0).with_max_steps(120).build_ui_state(
+        |ui, s: &mut State| {
+            s.panel.show(ui.ctx(), &mut s.session, &s.settings, crate::theme::ThemeKind::Dark.tokens());
+        },
+        sync_state(Arc::new(MemoryStore::default()), &[]),
+    );
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run();
+    h.render().unwrap().save(path).unwrap();
 }

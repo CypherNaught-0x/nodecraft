@@ -13,6 +13,8 @@ mod audio_generation672;
 mod audio_length608;
 #[path = "audio_previews875.rs"]
 mod audio_previews875;
+#[path = "azure45.rs"]
+mod azure45;
 #[path = "background749.rs"]
 mod background749;
 #[path = "background_open.rs"]
@@ -21,6 +23,8 @@ mod background_open;
 mod background_save;
 #[path = "batch_keys517.rs"]
 mod batch_keys517;
+#[path = "bfl33.rs"]
+mod bfl33;
 #[path = "browser_plugins866.rs"]
 mod browser_plugins866;
 #[path = "bulk_edits.rs"]
@@ -157,3 +161,14 @@ mod token_rates595;
 mod trained_styles167;
 #[path = "video_generation559.rs"]
 mod video_generation559;
+
+#[path = "deepgram40.rs"]
+mod deepgram40;
+#[path = "huggingface48.rs"]
+mod huggingface48;
+
+#[path = "gemini44.rs"]
+mod gemini44;
+
+#[path = "openai_audio39.rs"]
+mod openai_audio39;

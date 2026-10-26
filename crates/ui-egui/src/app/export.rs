@@ -1,5 +1,5 @@
 //! Exporting a result to a file (#557): the native save dialog asks where (and whether to
-//! replace a file already there), then `history.export` writes it. The dialog never blocks the
+//! replace a file already there), then `history.export` writes it on a worker. The dialog never blocks the
 //! frame; the browser build says export needs the desktop app. Saving every item of a result
 //! (#581) asks for a folder instead and never replaces a file already there. A Timeline's
 //! interchange archive (#166) is asked for the same way and written by
@@ -15,6 +15,9 @@ use std::{
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
 };
+#[cfg(not(target_arch = "wasm32"))]
+mod close;
+mod work;
 
 type Pick = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
 
@@ -58,12 +61,36 @@ pub(super) fn numbered(name: &str, n: usize) -> String {
     }
 }
 
-#[derive(Default)]
 pub(super) struct Exports {
     pending: Option<Pending>,
+    work: Option<work::Work>,
+    pub(super) runner: Option<Arc<dyn nodecraft_engine::save_runner::SaveRunner>>,
+    rect: egui::Rect,
+    pointer_owned: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    closing: close::Closing,
     /// Tests answer the dialog with this path instead of opening one.
     #[cfg(test)]
     pub(super) answer: Option<PathBuf>,
+}
+impl Default for Exports {
+    fn default() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let runner = Some(Arc::new(super::storage::ThreadSaves) as Arc<dyn nodecraft_engine::save_runner::SaveRunner>);
+        #[cfg(target_arch = "wasm32")]
+        let runner = None;
+        Self {
+            pending: None,
+            work: None,
+            runner,
+            rect: egui::Rect::NOTHING,
+            pointer_owned: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            closing: Default::default(),
+            #[cfg(test)]
+            answer: None,
+        }
+    }
 }
 
 struct Repaint(egui::Context);
@@ -77,6 +104,10 @@ impl Wake for Repaint {
 }
 
 impl NodeCraftApp {
+    #[cfg(test)]
+    pub(super) fn export_pending(&self) -> bool {
+        self.exports.pending.is_some() || self.exports.work.is_some()
+    }
     /// Asks where to save output `port` (item `item`) of result `generation` of node `id`,
     /// suggesting `name`.
     pub(super) fn start_export(&mut self, canvas: CanvasId, id: NodeId, generation: GenerationId, port: Option<String>, item: Option<usize>, name: &str) {
@@ -113,8 +144,8 @@ impl NodeCraftApp {
     }
 
     pub(super) fn pick_export(&mut self, target: Target, name: &str) {
-        if self.exports.pending.is_some() {
-            self.notice = Some("Another export is choosing where to save; finish that first.".into());
+        if self.exports.pending.is_some() || self.exports.work.is_some() {
+            self.notice = Some("Another export is in progress; finish or cancel that first.".into());
             return;
         }
         let folder = matches!(target, Target::Folder(..));
@@ -152,8 +183,9 @@ impl NodeCraftApp {
         Some(Box::pin(std::future::ready(self.exports.answer.clone())))
     }
 
-    /// Moves an open save dialog along; a chosen path is written at once.
+    /// Moves an open save dialog and any accepted background export along without waiting.
     pub(super) fn poll_export(&mut self, ctx: &egui::Context) {
+        self.poll_export_work(ctx);
         let Some(mut pending) = self.exports.pending.take() else {
             return;
         };
@@ -180,18 +212,29 @@ impl NodeCraftApp {
                 params["path"] = json!(path);
                 // The dialog already asked before replacing a file.
                 params["overwrite"] = json!(true);
+                if command == "history.export" {
+                    self.exports.work = Some(work::Work::file(self, params, path));
+                    self.poll_export_work(ctx);
+                    return;
+                }
                 match self.session.dispatch(command, &params) {
                     Ok(result) => {
                         let name: String = path.file_name().map(|n| n.to_string_lossy().chars().take(80).collect()).unwrap_or_default();
-                        self.notice = Some(format!("Exported {name}.{}", empty_boxes(missing(&result))));
+                        self.notice = Some(format!("Exported {name}.{}{}", empty_boxes(missing(&result)), font_notice(font_fallbacks(&result))));
                     }
                     Err(error) => self.notice = Some(error.message),
                 }
             }
             Target::Folder(command, files) => {
+                if command == "history.export" {
+                    self.exports.work = Some(work::Work::folder(self, files, path));
+                    self.poll_export_work(ctx);
+                    return;
+                }
                 let total = files.len();
                 let mut written = 0usize;
                 let mut boxes = 0usize;
+                let mut fonts = 0usize;
                 let mut failed = None;
                 // One counter for the whole folder: a name already taken moves on to the next
                 // number, so saving into the same folder again adds files instead of failing.
@@ -206,6 +249,7 @@ impl NodeCraftApp {
                         match self.session.dispatch(command, &params) {
                             Ok(result) => {
                                 boxes = boxes.saturating_add(missing(&result));
+                                fonts = fonts.saturating_add(font_fallbacks(&result));
                                 outcome = Ok(());
                             }
                             Err(error) if error.kind == nodecraft_types::ErrorKind::Conflict => continue,
@@ -221,8 +265,8 @@ impl NodeCraftApp {
                     }
                 }
                 self.notice = Some(match failed {
-                    None => format!("Exported {written} files.{}", empty_boxes(boxes)),
-                    Some(why) => format!("Exported {written} of {total} files; {why}"),
+                    None => format!("Exported {written} files.{}{}", empty_boxes(boxes), font_notice(fonts)),
+                    Some(why) => format!("Exported {written} of {total} files; {why}{}{}", empty_boxes(boxes), font_notice(fonts)),
                 });
             }
         }
@@ -232,6 +276,18 @@ impl NodeCraftApp {
 /// How many sources an export drew as empty boxes (`deck.export`'s `missing`).
 fn missing(result: &serde_json::Value) -> usize {
     result.get("missing").and_then(serde_json::Value::as_array).map_or(0, Vec::len)
+}
+
+fn font_fallbacks(result: &serde_json::Value) -> usize {
+    result.get("font_fallbacks").and_then(serde_json::Value::as_array).map_or(0, Vec::len)
+}
+
+fn font_notice(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => " 1 text layer used Lato because its font was unavailable.".into(),
+        n => format!(" {n} text layers used Lato because their fonts were unavailable."),
+    }
 }
 
 /// What a notice adds for sources drawn as empty boxes.
