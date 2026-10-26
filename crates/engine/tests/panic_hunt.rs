@@ -301,6 +301,9 @@ fn template(id: &str) -> (Session, Value) {
     } else {
         Session::new(document).unwrap()
     };
+    if id == "file.focus_owner" {
+        session.register_host_service(nodecraft_engine::storage_window_cmds::SERVICE, |_| Ok(json!({"requested":true}))).unwrap();
+    }
     if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" | "canvas.pan_to") {
         session.swap_resource(Some(nodecraft_engine::navigation_cmds::NavigationContext {
             canvas: canvas(),
@@ -646,7 +649,7 @@ fn template(id: &str) -> (Session, Value) {
         "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
         "file.save" => Value::Null,
         "file.save_as" => json!({"location":"new.ncraft"}),
-        "file.cancel" => json!({}),
+        "file.cancel" | "file.focus_owner" => json!({}),
         // Real memory store and private package files, never caller-selected filesystem paths.
         "plugins.list" | "plugins.prune" => json!({}),
         "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),
