@@ -65,6 +65,9 @@ impl Metrics {
             // their one region from the declared output, never from transient renderer state.
             || descriptor.is_some_and(|d| d.category == nodecraft_nodes::Category::Action
                 && d.outputs.iter().any(|port| port.port_type.modality == nodecraft_types::Modality::Image));
+        // A legacy or malformed stored result must not add a third media region to a card
+        // whose descriptor promises only text. Its text preview explains the mismatched value.
+        let shows = shows && !crate::text_preview::eligible(descriptor);
         Self {
             parameters,
             // Ordinary anchors need enough logical room for their nominal hit envelopes. Take

@@ -261,6 +261,8 @@ pub fn show(
         outdated,
         variations,
     } = card;
+    let (images, video, audio, mesh) =
+        if crate::text_preview::eligible(descriptor) { ((Vec::new(), 0), None, None, None) } else { (images, video, audio, mesh) };
     let composer = descriptor.filter(|d| generate::has_composer(node, d));
     // `H` hides the prompt overlay on media cards only (#321). The overlay is the composer frame
     // (#83): its prompt, its variation counter and its submit arrow. Hiding it is painting only —
