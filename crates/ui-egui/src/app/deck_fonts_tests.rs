@@ -74,10 +74,95 @@ fn listing(h: &mut Harness<'static, NodeCraftApp>) -> Json {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn pending(h: &mut Harness<'static, NodeCraftApp>, revision: u64) {
+fn pending(h: &mut Harness<'static, NodeCraftApp>) {
+    let lineage = h.state().session.document_lineage();
     let ed = h.state_mut().deck_editor.as_mut().unwrap().layers_mut().unwrap();
     ed.picking = Some(super::layer_fonts::Picking::ready(Some("src-heading".into()), lito()));
-    ed.picking_revision = Some(revision);
+    ed.picking_lineage = Some(lineage);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn edit_while_picking(h: &mut Harness<'static, NodeCraftApp>) -> u64 {
+    let canvas = h.state().canvas;
+    let other = NodeId::from_bytes([70; 16]);
+    h.state_mut().session.dispatch("node.create", &json!({"canvas": canvas, "id": other, "kind": "source.text", "pos": {"x": 800, "y": 0}})).unwrap();
+    pending(h);
+    // The file was selected against the previous revision. Another card and the deck's
+    // dimensions change before its bytes arrive at the editor.
+    h.state_mut().session.dispatch("node.title", &json!({"canvas": canvas, "id": other, "title": "Notes updated while loading"})).unwrap();
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas": canvas, "id": DECK, "name": "width", "value": Value::Unsigned(Unsigned(700))})).unwrap();
+    h.state().session.revision()
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn deck693_pending_font_pick_preserves_edits_to_another_card_and_the_deck() {
+    let mut h = headless(crate::theme::ThemeKind::Dark);
+    let revision = edit_while_picking(&mut h);
+    h.run_steps(3);
+    assert_eq!(chosen_font(h.state()), "Lito", "{:?}", h.state().notice);
+    assert_eq!(listing(&mut h)["width"], 700);
+    let canvas = h.state().canvas;
+    assert_eq!(
+        h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&NodeId::from_bytes([70; 16])).unwrap().title,
+        "Notes updated while loading"
+    );
+    assert_eq!(h.state().session.revision(), revision + 2);
+    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+    // Both font operations remain undoable without reverting either intervening edit.
+    for _ in 0..2 {
+        h.get_by_label("Undo").click();
+        h.run_steps(3);
+    }
+    assert_eq!(chosen_font(h.state()), "Original public font");
+    assert_eq!(listing(&mut h)["width"], 700);
+    assert_eq!(h.state().session.revision(), revision + 4);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn deck693_pending_font_pick_refuses_a_replacement_document_or_removed_target() {
+    for replace_document in [false, true] {
+        let mut h = headless(crate::theme::ThemeKind::Dark);
+        pending(&mut h);
+        let canvas = h.state().canvas;
+        if replace_document {
+            // Identical project, canvas and node ids do not give a prior pick authority
+            // over a newly opened document.
+            let project = h.state().session.document().clone();
+            h.state_mut().session = nodecraft_engine::Session::new(project).unwrap();
+        } else {
+            h.state_mut().session.dispatch("deck.slide_update", &json!({"canvas": canvas, "id": DECK, "slide": "intro", "layers": []})).unwrap();
+        }
+        let revision = h.state().session.revision();
+        let assets = h.state().session.assets().len();
+        h.run_steps(3);
+        assert!(listing(&mut h)["fonts"].as_array().unwrap().is_empty());
+        assert_eq!(h.state().session.revision(), revision);
+        assert_eq!(h.state().session.assets().len(), assets, "a superseded pick must not import its bytes");
+        assert!(h.state().notice.as_deref().is_some_and(|message| message.contains("choose the font file again")), "{:?}", h.state().notice);
+    }
+}
+
+#[test]
+#[ignore = "actual GPU capture; DECK693_PENDING_CAPTURE and optional DECK693_PENDING_BASELINE"]
+#[cfg(not(target_arch = "wasm32"))]
+fn deck693_pending_font_pick_visual() {
+    let output = std::path::PathBuf::from(std::env::var_os("DECK693_PENDING_CAPTURE").unwrap());
+    let baseline = std::env::var_os("DECK693_PENDING_BASELINE").is_some();
+    let mut app = NodeCraftApp::headless().unwrap();
+    populate(&mut app, "Original public font");
+    let mut h = Harness::builder().wgpu().with_size(Vec2::new(1400.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.run();
+    h.state_mut().open_deck_editor(DECK);
+    h.run_steps(3);
+    h.get_by_label("Headline").click();
+    h.run_steps(3);
+    edit_while_picking(&mut h);
+    h.run_steps(3);
+    h.render().unwrap().save(output).unwrap();
+    assert_eq!(chosen_font(h.state()), if baseline { "Original public font" } else { "Lito" });
 }
 
 #[test]
@@ -113,7 +198,7 @@ fn deck693_pointer_font_choices_and_presenter_fallback_work_in_both_themes() {
 fn deck693_a_completed_font_pick_imports_then_assigns_as_two_valid_undo_steps() {
     let mut h = headless(crate::theme::ThemeKind::Dark);
     let revision = h.state().session.revision();
-    pending(&mut h, revision);
+    pending(&mut h);
     h.run_steps(3);
     assert_eq!(chosen_font(h.state()), "Lito");
     assert_eq!(h.state().session.revision(), revision + 2);
@@ -147,7 +232,7 @@ fn deck693_pending_import_cannot_overtake_a_real_undo_or_a_closing_editor() {
         h.run_steps(3);
         let revision = h.state().session.revision();
         let assets = h.state().session.assets().len();
-        pending(&mut h, revision);
+        pending(&mut h);
         // Harness::key_press_modifiers runs a separate modifiers-only frame first. Put the
         // key and its modifiers directly in the same raw input as the ready read instead.
         let modifiers = if close { egui::Modifiers::NONE } else { egui::Modifiers::COMMAND };
@@ -188,7 +273,7 @@ fn deck693_ready_font_pick_is_discarded_in_the_same_frame_as_a_thumbnail_switch(
     h.run_steps(1);
     let revision = h.state().session.revision();
     let assets = h.state().session.assets().len();
-    pending(&mut h, revision);
+    pending(&mut h);
     h.drop_at(point);
     h.run_steps(3);
     assert_eq!(h.state().deck_editor.as_ref().unwrap().slide(), Some("next"));
@@ -215,7 +300,7 @@ fn deck693_reimport_reloads_a_missing_font_and_redraws_without_a_graph_revision(
     let mut h = harness_for(app, crate::theme::ThemeKind::Dark);
     let old_key = h.state().deck_editor.as_ref().unwrap().layers().unwrap().textures.get("src-heading").unwrap().key;
     let revision = h.state().session.revision();
-    pending(&mut h, revision);
+    pending(&mut h);
     h.run_steps(3);
     assert_eq!(h.state().session.revision(), revision);
     let editor = h.state().deck_editor.as_ref().unwrap().layers().unwrap();

@@ -426,14 +426,24 @@ impl NodeCraftApp {
         if current.map(|entry| entry.slide.id.as_str()) != editor.slide.as_deref() {
             layers = None;
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let cancelled_font = if commands.iter().any(|(command, _)| matches!(*command, "edit.undo" | "edit.redo"))
+            && let Some(ed) = &mut layers
+            && ed.picking.take().is_some()
+        {
+            ed.picking_lineage = None;
+            true
+        } else {
+            false
+        };
         let mut listed = deck.revision;
-        // A picked file must not overtake this frame's edit/undo or a closing editor. Its
-        // original revision also refuses changes made while its file dialog/read was pending.
+        // Do not overtake this frame's edits or a closing editor. Ordinary edits defer the
+        // pick until the next fresh listing; undo/redo above explicitly abandons it.
         if !close
             && !present
             && commands.is_empty()
-            && let Some(ed) = &mut layers
-            && self.layer_font_pick(ed, &ctx, &mut commands, Some(deck.revision))
+            && let (Some(ed), Some(layer_listing)) = (&mut layers, &slide_listing)
+            && self.layer_font_pick(ed, &ctx, &mut commands, layer_listing)
         {
             editor.font_files.forget_missing();
             listed = self.session.revision();
@@ -441,6 +451,10 @@ impl NodeCraftApp {
         editor.layers = layers;
         editor.listing = Some((revision, deck));
         self.deck_run(listed, commands);
+        #[cfg(not(target_arch = "wasm32"))]
+        if cancelled_font && self.notice.is_none() {
+            self.notice = Some("The deck changed while choosing a font; choose the font file again.".into());
+        }
         if let Some((pdf, slides)) = export {
             let stem: String = node.title.chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).take(48).collect();
             let stem = if stem.trim().is_empty() { "Deck".to_owned() } else { stem.trim().to_owned() };
