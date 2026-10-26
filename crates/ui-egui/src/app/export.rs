@@ -220,7 +220,7 @@ impl NodeCraftApp {
                 match self.session.dispatch(command, &params) {
                     Ok(result) => {
                         let name: String = path.file_name().map(|n| n.to_string_lossy().chars().take(80).collect()).unwrap_or_default();
-                        self.notice = Some(format!("Exported {name}.{}", empty_boxes(missing(&result))));
+                        self.notice = Some(format!("Exported {name}.{}{}", empty_boxes(missing(&result)), font_notice(font_fallbacks(&result))));
                     }
                     Err(error) => self.notice = Some(error.message),
                 }
@@ -234,6 +234,7 @@ impl NodeCraftApp {
                 let total = files.len();
                 let mut written = 0usize;
                 let mut boxes = 0usize;
+                let mut fonts = 0usize;
                 let mut failed = None;
                 // One counter for the whole folder: a name already taken moves on to the next
                 // number, so saving into the same folder again adds files instead of failing.
@@ -248,6 +249,7 @@ impl NodeCraftApp {
                         match self.session.dispatch(command, &params) {
                             Ok(result) => {
                                 boxes = boxes.saturating_add(missing(&result));
+                                fonts = fonts.saturating_add(font_fallbacks(&result));
                                 outcome = Ok(());
                             }
                             Err(error) if error.kind == nodecraft_types::ErrorKind::Conflict => continue,
@@ -263,8 +265,8 @@ impl NodeCraftApp {
                     }
                 }
                 self.notice = Some(match failed {
-                    None => format!("Exported {written} files.{}", empty_boxes(boxes)),
-                    Some(why) => format!("Exported {written} of {total} files; {why}"),
+                    None => format!("Exported {written} files.{}{}", empty_boxes(boxes), font_notice(fonts)),
+                    Some(why) => format!("Exported {written} of {total} files; {why}{}{}", empty_boxes(boxes), font_notice(fonts)),
                 });
             }
         }
@@ -274,6 +276,18 @@ impl NodeCraftApp {
 /// How many sources an export drew as empty boxes (`deck.export`'s `missing`).
 fn missing(result: &serde_json::Value) -> usize {
     result.get("missing").and_then(serde_json::Value::as_array).map_or(0, Vec::len)
+}
+
+fn font_fallbacks(result: &serde_json::Value) -> usize {
+    result.get("font_fallbacks").and_then(serde_json::Value::as_array).map_or(0, Vec::len)
+}
+
+fn font_notice(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => " 1 text layer used Lato because its font was unavailable.".into(),
+        n => format!(" {n} text layers used Lato because their fonts were unavailable."),
+    }
 }
 
 /// What a notice adds for sources drawn as empty boxes.

@@ -239,6 +239,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "deck.slide_remove",
     "deck.slide_move",
     "deck.layer_update",
+    "deck.font_add",
+    "deck.font_remove",
     // Clips only change the node's stored clips; the render runs (and is quoted) through run.start.
     "timeline.list",
     "timeline.interchange",

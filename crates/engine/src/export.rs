@@ -156,7 +156,7 @@ fn write_controlled(
     match written {
         Ok(()) => copied.map(|bytes| {
             let result = match (what, &drawn) {
-                (Exported::Slides(slides), Some(drawn)) => slides.result(bytes, &drawn.unreadable),
+                (Exported::Slides(slides), Some(drawn)) => slides.result(bytes, &drawn.unreadable, &drawn.font_fallbacks),
                 _ => serde_json::json!({"bytes": bytes}),
             };
             (bytes, result)
