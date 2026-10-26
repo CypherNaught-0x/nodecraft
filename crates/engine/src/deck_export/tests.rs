@@ -166,3 +166,113 @@ fn a_pdf_past_the_pixel_budget_is_refused() {
     assert_eq!(error.kind, ErrorKind::InvalidInput);
     assert!(error.message.contains("fewer slides"), "{}", error.message);
 }
+
+/// A test-only renamed bundled OFL font with a different em scale, so using its outlines is
+/// observably different from silently drawing the bundled fallback. No new font asset ships.
+fn small_lito() -> Vec<u8> {
+    let mut bytes = include_bytes!("../../../../assets/fonts/Lato-Regular.ttf").to_vec();
+    for (from, to) in [(&b"\0L\0a\0t\0o"[..], &b"\0L\0i\0t\0o"[..]), (b"Lato", b"Lito")] {
+        let mut at = 0;
+        while let Some(found) = bytes[at..].windows(from.len()).position(|window| window == from) {
+            bytes[at + found..at + found + from.len()].copy_from_slice(to);
+            at += found + from.len();
+        }
+    }
+    let tables = usize::from(u16::from_be_bytes(bytes[4..6].try_into().unwrap()));
+    let head = (0..tables).map(|n| 12 + n * 16).find(|&at| &bytes[at..at + 4] == b"head").unwrap();
+    let offset = u32::from_be_bytes(bytes[head + 8..head + 12].try_into().unwrap()) as usize;
+    bytes[offset + 18..offset + 20].copy_from_slice(&4096_u16.to_be_bytes());
+    assert_eq!(nodecraft_actions::layers::font_info(&bytes).unwrap().name, "Lito");
+    bytes
+}
+
+fn request_lito(s: &mut Session) {
+    s.dispatch("deck.layer_update", &json!({"canvas": CANVAS, "id": DECK, "slide": "one", "layer": "title", "set": {"content": {"font": "Lito"}}})).unwrap();
+}
+
+#[test]
+fn deck693_export_draws_imported_outlines_in_png_and_pdf_and_undo_restores_fallback() {
+    for format in ["png", "pdf"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = session();
+        request_lito(&mut s);
+        let before = dir.path().join(format!("before.{format}"));
+        s.dispatch("deck.export", &params(&before, json!({"format": format, "slide": "one"}))).unwrap();
+        let fallback = std::fs::read(&before).unwrap();
+        crate::deck_cmds::fonts::import(&mut s, CANVAS, DECK, &small_lito(), None).unwrap();
+        let revision = s.revision();
+        let after = dir.path().join(format!("after.{format}"));
+        s.dispatch("deck.export", &params(&after, json!({"format": format, "slide": "one"}))).unwrap();
+        assert_ne!(blake3::hash(&std::fs::read(&after).unwrap()), blake3::hash(&fallback), "{format} must draw the imported font's different outlines");
+        assert_eq!(s.revision(), revision, "drawing does not edit the deck");
+        s.dispatch("edit.undo", &json!({})).unwrap();
+        let undone = dir.path().join(format!("undone.{format}"));
+        s.dispatch("deck.export", &params(&undone, json!({"format": format, "slide": "one"}))).unwrap();
+        assert_eq!(std::fs::read(&undone).unwrap(), fallback, "removing the held font restores the same fallback");
+    }
+}
+
+#[test]
+fn deck693_export_reports_each_visible_font_fallback_separately_from_missing_images() {
+    let mut s = session();
+    request_lito(&mut s);
+    let dir = tempfile::tempdir().unwrap();
+    let out = s.dispatch("deck.export", &params(&dir.path().join("fallback.png"), json!({"format": "png", "slide": "one"}))).unwrap();
+    assert_eq!(out["font_fallbacks"], json!([{"slide": "one", "layer": "title", "font": "Lito", "resolved": "lato"}]));
+    assert_eq!(out["missing"], json!([{"slide": "one", "layer": "gone"}]), "text fallbacks are not empty image boxes");
+    s.dispatch("deck.layer_update", &json!({"canvas": CANVAS, "id": DECK, "slide": "one", "layer": "title", "set": {"visible": false}})).unwrap();
+    let hidden = s.dispatch("deck.export", &params(&dir.path().join("hidden.png"), json!({"format": "png", "slide": "one"}))).unwrap();
+    assert!(hidden.get("font_fallbacks").is_none(), "invisible text needs no fallback notice");
+    s.dispatch("deck.layer_update", &json!({"canvas": CANVAS, "id": DECK, "slide": "one", "layer": "title", "set": {"visible": true, "opacity": 0.0}}))
+        .unwrap();
+    let transparent = s.dispatch("deck.export", &params(&dir.path().join("transparent.png"), json!({"format": "png", "slide": "one"}))).unwrap();
+    assert!(transparent.get("font_fallbacks").is_none(), "fully transparent text is not drawn");
+}
+
+#[test]
+fn deck693_export_falls_back_for_missing_or_damaged_held_payloads() {
+    for bytes in [None, Some(b"not a font".to_vec())] {
+        let mut source = session();
+        request_lito(&mut source);
+        let mut project = source.document().clone();
+        let mut node = project.canvases().get(&CANVAS).unwrap().nodes().get(&DECK).unwrap().clone();
+        let hash = nodecraft_types::Blake3::from_bytes(*blake3::hash(bytes.as_deref().unwrap_or(b"missing font")).as_bytes());
+        let font = AssetRef { hash, mime: "font/ttf".parse().unwrap(), meta: Default::default() };
+        node.config.insert(nodecraft_nodes::layers::FONTS_CONFIG.into(), Value::List(vec![Value::List(vec![Value::Text("Lito".into()), Value::Media(font)])]));
+        Change::SetNode { canvas: CANVAS, node }.apply(&mut project).unwrap();
+        let mut loaded = Session::new(project).unwrap();
+        if let Some(bytes) = bytes {
+            loaded.import_asset(&bytes).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let result = loaded.dispatch("deck.export", &params(&dir.path().join("fallback.png"), json!({"format": "png", "slide": "one"}))).unwrap();
+        assert_eq!(result["font_fallbacks"], json!([{"slide": "one", "layer": "title", "font": "Lito", "resolved": "lato"}]));
+    }
+}
+
+#[test]
+fn deck693_export_falls_back_for_oversized_indexed_fonts_before_reading() {
+    use nodecraft_format::{AssetStore, NativeStorage, ProjectStorage};
+    let dir = tempfile::tempdir().unwrap();
+    let storage = NativeStorage::new(dir.path().join("recovery")).unwrap();
+    let mut assets = AssetStore::with_context(storage.asset_context().unwrap());
+    let hash = assets
+        .import_reader(&mut std::io::Cursor::new(vec![0; nodecraft_actions::layers::MAX_FONT_BYTES + 1]), &Default::default(), &Default::default())
+        .unwrap();
+    assert!(assets.get(&hash).is_none(), "large fixture uses indexed native storage");
+    let mut source = session();
+    request_lito(&mut source);
+    let node = source.document().canvases().get(&CANVAS).unwrap().nodes().get(&DECK).unwrap();
+    let deck = crate::deck_cmds::stored(node).unwrap();
+    let frame = nodecraft_actions::layers::Frame { width: 200, height: 100, background: [255; 4] };
+    let drawn = nodecraft_actions::deck::drawable(&deck.slides[0], frame, |_, _| nodecraft_actions::deck::Shown::Missing);
+    let what = super::SlidesExport {
+        frame,
+        format: super::SlideFormat::Png,
+        slides: vec![("one".into(), drawn)],
+        missing: vec![],
+        fonts: vec![("Lito".into(), AssetRef { hash, mime: "font/ttf".parse().unwrap(), meta: Default::default() })],
+    };
+    let rendered = super::render(&assets, &what).unwrap();
+    assert_eq!(rendered.font_fallbacks, vec![("one".into(), "title".into(), "Lito".into())]);
+}

@@ -75,6 +75,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   list and edit them with revision checks (#122). Edit slides opens a slide sorter beside the
   Layer Editor's stage, to arrange each slide's text, shapes and sources (#694); its Export menu
   saves the slides as one PDF or as PNGs, drawn at the deck's size (`deck.export`, #692).
+  Each deck holds imported fonts shared by its editor, thumbnails, presenter and exports; unknown or
+  unreadable fonts visibly fall back to Lato, and `deck.list` resolves their references (#693).
   A generation card's `− N× +` counter makes up to 20 variations a run, each its own request
   (quoted as such) and its own result in the node's history (#81).
   The viewer's Photo and Views buttons add a 3D photo or a

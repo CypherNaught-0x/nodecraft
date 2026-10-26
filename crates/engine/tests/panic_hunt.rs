@@ -697,6 +697,8 @@ fn template(id: &str) -> (Session, Value) {
         "layers.align" => json!({"canvas":canvas(),"id":node_id(9),"layers":["t1"],"to":"center"}),
         "layers.font_add" => json!({"canvas":canvas(),"id":node_id(9),"font":{"hash":"00".repeat(32),"mime":"font/ttf"}}),
         "layers.font_remove" => json!({"canvas":canvas(),"id":node_id(9),"name":"Lato"}),
+        "deck.font_add" => json!({"canvas":canvas(),"id":node_id(9),"font":{"hash":"00".repeat(32),"mime":"font/ttf"}}),
+        "deck.font_remove" => json!({"canvas":canvas(),"id":node_id(9),"name":"Lato"}),
         "deck.create" => json!({"canvas":canvas(),"id":node_id(9),"pos":{"x":1,"y":2},"title":"Pitch","nodes":[node_id(1),node_id(2)]}),
         "deck.list" => json!({"canvas":canvas(),"id":node_id(9)}),
         "deck.set" => json!({"canvas":canvas(),"id":node_id(9),"slides":[{"id":"s1","name":"One","layers":[]},{"name":"Two"}]}),

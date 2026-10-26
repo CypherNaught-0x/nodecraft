@@ -1,7 +1,7 @@
 //! The Layer Editor's fonts (#548): the bytes of each font the node holds, read once per font
 //! so text layers render with them as a run does, and (natively) the picker that adds a font
 //! file to the node through `layers.font_add`.
-use nodecraft_actions::layers::{Fonts, MAX_FONT_BYTES};
+use nodecraft_actions::layers::{BUILTIN_FONT, Fonts, MAX_FONT_BYTES, same_name};
 use nodecraft_types::{AssetRef, Blake3};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ pub(super) struct HeldFont {
 }
 
 /// Each held font's bytes, by asset; None for one that can't be read, which draws as Lato.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct FontFiles {
     pub(super) bytes: HashMap<Blake3, Option<Arc<[u8]>>>,
 }
@@ -32,7 +32,25 @@ impl FontFiles {
     /// Whether the held font `name` was read and draws with its own outlines; one that wasn't
     /// draws as Lato, in a run too.
     pub(super) fn readable(&self, held: &[HeldFont], name: &str) -> bool {
-        self.fonts(held).has(name)
+        // `read` validates every cached Some; listing a font must not rebuild all sixteen
+        // face directories for each text layer and each font-panel row.
+        same_name(name, BUILTIN_FONT) || held.iter().any(|font| same_name(&font.name, name) && self.bytes.get(&font.font.hash).is_some_and(Option::is_some))
+    }
+
+    /// A successful explicit re-import may make a previously missing asset available.
+    pub(super) fn forget_missing(&mut self) {
+        self.bytes.retain(|_, bytes| bytes.is_some());
+    }
+
+    /// Availability participates too: retrying a missing file must redraw its fallback texture.
+    pub(super) fn render_key(&self, held: &[HeldFont]) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key(held).hash(&mut hasher);
+        for font in held {
+            self.bytes.get(&font.font.hash).is_some_and(Option::is_some).hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     /// The fonts a render draws with.
@@ -50,8 +68,15 @@ impl FontFiles {
 
 fn read(assets: &nodecraft_format::AssetStore, font: &AssetRef) -> Option<Arc<[u8]>> {
     let bytes = match assets.get(&font.hash) {
-        Some(resident) => resident.to_vec(),
-        None => assets.preview_read(font).ok()?.read_verified(&Default::default(), &Default::default()).ok()?,
+        Some(resident) if resident.len() <= MAX_FONT_BYTES => resident.to_vec(),
+        Some(_) => return None,
+        None => {
+            let read = assets.preview_read(font).ok()?;
+            if read.byte_len() > u64::try_from(MAX_FONT_BYTES).ok()? {
+                return None;
+            }
+            read.read_verified(&Default::default(), &Default::default()).ok()?
+        }
     };
     // Read as a run reads it: a file that isn't a font draws as Lato.
     (bytes.len() <= MAX_FONT_BYTES && nodecraft_actions::layers::font_info(&bytes).is_ok()).then(|| Arc::from(bytes))
@@ -151,6 +176,13 @@ mod pick {
     }
 
     impl Picking {
+        #[cfg(test)]
+        pub(in crate::app) fn ready(layer: Option<String>, bytes: Vec<u8>) -> Self {
+            let (send, receive) = mpsc::channel();
+            let _ = send.send(Ok(bytes));
+            Self { layer, phase: Phase::Reading(receive) }
+        }
+
         pub(in crate::app) fn start(layer: Option<String>) -> Self {
             Self { layer, phase: Phase::Choosing(choose()) }
         }
