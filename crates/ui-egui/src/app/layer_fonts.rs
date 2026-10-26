@@ -7,6 +7,11 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static PAYLOAD_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// A font the node holds, as `layers.list` names it.
 #[derive(Clone, Deserialize)]
 pub(super) struct HeldFont {
@@ -66,7 +71,9 @@ impl FontFiles {
     }
 }
 
-fn read(assets: &nodecraft_format::AssetStore, font: &AssetRef) -> Option<Arc<[u8]>> {
+pub(super) fn read(assets: &nodecraft_format::AssetStore, font: &AssetRef) -> Option<Arc<[u8]>> {
+    #[cfg(test)]
+    PAYLOAD_READS.with(|reads| reads.set(reads.get().saturating_add(1)));
     let bytes = match assets.get(&font.hash) {
         Some(resident) if resident.len() <= MAX_FONT_BYTES => resident.to_vec(),
         Some(_) => return None,

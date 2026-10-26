@@ -399,7 +399,11 @@ pub fn show(
                 intents.push(Intent::History(intent));
             }
         }
-        if !images.0.is_empty() && metrics.preview > 0.0 {
+        if node.kind == nodecraft_nodes::deck::ID && metrics.preview > 0.0 {
+            // The shell paints cached live slide thumbnails in this reserved preview area.
+            let (_, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
+            inner = rest;
+        } else if !images.0.is_empty() && metrics.preview > 0.0 {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
             inner = rest;
             let area = area.shrink2(Vec2::new(0.0, t.control_gap));

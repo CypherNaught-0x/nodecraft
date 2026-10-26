@@ -38,7 +38,7 @@ fn chosen_font(app: &NodeCraftApp) -> String {
     }
 }
 
-fn lito() -> Vec<u8> {
+pub(super) fn lito() -> Vec<u8> {
     let mut bytes = include_bytes!("../../../../assets/fonts/Lato-Regular.ttf").to_vec();
     for (from, to) in [(&b"\0L\0a\0t\0o"[..], &b"\0L\0i\0t\0o"[..]), (b"Lato", b"Lito")] {
         let mut at = 0;

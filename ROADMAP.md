@@ -79,6 +79,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   saves the slides as one PDF or as PNGs, drawn at the deck's size (`deck.export`, #692).
   Each deck holds imported fonts shared by its editor, thumbnails, presenter and exports; unknown or
   unreadable fonts visibly fall back to Lato, and `deck.list` resolves their references (#693).
+  Deck cards show their first three slides as cached live thumbnails. Copying a deck together
+  with its source cards makes those slides follow the copied sources (#695).
   A generation card's `− N× +` counter makes up to 20 variations a run, each its own request
   (quoted as such) and its own result in the node's history (#81).
   The viewer's Photo and Views buttons add a 3D photo or a

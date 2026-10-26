@@ -61,6 +61,7 @@ impl Metrics {
             || crate::audio::audio_of(node).is_some()
             || crate::mesh_view::mesh_of(node).is_some()
             || node.kind == nodecraft_nodes::generation::AUDIO_KIND
+            || node.kind == nodecraft_nodes::deck::ID
             // Live image-action previews can arrive before the first recorded result. Reserve
             // their one region from the declared output, never from transient renderer state.
             || descriptor.is_some_and(|d| d.category == nodecraft_nodes::Category::Action
