@@ -368,3 +368,28 @@ fn a_workflow_card_too_large_for_the_drop_is_skipped_not_the_whole_drop() {
     import_files(&mut s, C, AT, 300.0, &small, &ids(1)).unwrap();
     assert_eq!(node(&s, ids(1)[0]).title, "Fox");
 }
+
+#[test]
+fn positioned_import_measures_complete_payloads_and_rejects_before_publication() {
+    let mut s = session();
+    let before = s.document().clone();
+    let image = png();
+    let files = [Incoming { name: "image.png", bytes: &image }];
+    let position = |node: &Node, kinds: &nodecraft_nodes::Registry| {
+        assert!(matches!(node.params.get("asset"), Some(Value::Media(_))));
+        assert_eq!(kinds.get(&node.kind).unwrap().resolve_instance(node).unwrap().outputs, node.outputs);
+        Position { x: node.pos.x - 160.0, y: node.pos.y - 143.5 }
+    };
+    import_files_positioned(&mut s, C, AT, 300.0, &files, &ids(1), &[], &position).unwrap();
+    assert_eq!(node(&s, ids(1)[0]).pos, Position { x: AT.x - 160.0, y: AT.y - 143.5 });
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document(), &before);
+    // A separate empty session proves a rejected geometry plan cannot publish its candidate assets.
+    let mut s = session();
+    let bad = |_: &Node, _: &nodecraft_nodes::Registry| Position { x: f32::NAN, y: 0.0 };
+    assert!(import_files_positioned(&mut s, C, AT, 300.0, &files, &ids(1), &[], &bad).is_err());
+    assert_eq!(s.document(), &before);
+    assert!(s.assets().is_empty());
+    assert_eq!(s.revision(), 0);
+    assert!(!s.can_undo());
+}

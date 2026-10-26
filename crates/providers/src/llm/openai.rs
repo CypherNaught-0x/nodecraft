@@ -30,7 +30,7 @@ fn content(parts: &[&Part]) -> Value {
     )
 }
 
-/// `openai` is the OpenAI API itself, which takes `max_completion_tokens` (its reasoning models
+/// `openai` is the OpenAI API or Azure v1, which take `max_completion_tokens` (reasoning models
 /// reject `max_tokens`); other servers get `max_tokens`, and only when the job sets a limit.
 pub(super) fn body(req: &ChatRequest, stream: bool, openai: bool) -> Value {
     let mut messages = Vec::new();
@@ -126,6 +126,7 @@ fn usage(u: Option<&Value>) -> Usage {
         output_tokens: u.and_then(|u| u.get("completion_tokens")).and_then(Value::as_u64),
         cost: None,
         billable_units: None,
+        execution_ms: None,
     }
 }
 

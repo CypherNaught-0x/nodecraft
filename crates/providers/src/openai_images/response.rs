@@ -357,7 +357,7 @@ fn usage(tokens: Option<Tokens<'_>>) -> Result<Usage, ProviderError> {
     {
         return Err(malformed("inconsistent image token totals"));
     }
-    Ok(Usage { input_tokens: t.input_tokens, output_tokens: t.output_tokens, cost: None, billable_units: None })
+    Ok(Usage { input_tokens: t.input_tokens, output_tokens: t.output_tokens, cost: None, billable_units: None, execution_ms: None })
 }
 pub(super) fn parse(reply: HttpResponse, n: usize, format: &str, background: &str, l: &Limits) -> Result<Completed, ProviderError> {
     if !reply.is_success() {

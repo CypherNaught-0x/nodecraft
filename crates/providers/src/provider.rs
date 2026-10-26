@@ -110,6 +110,9 @@ pub struct Usage {
     /// How many of its own units the provider says it billed (fal's `X-Fal-Billable-Units`).
     /// Evidence for the result's record, never a cost: what a unit costs is the model's price.
     pub billable_units: Option<BillableUnits>,
+    /// Provider-reported execution time, in milliseconds, excluding queue time. This is
+    /// evidence, never a token count, billable-unit count or monetary charge (#339).
+    pub execution_ms: Option<u64>,
 }
 
 /// A finished job: its outputs and what it used.

@@ -253,10 +253,11 @@ fn glb(b: &[u8], l: Limits) -> Result<(), ProviderError> {
 }
 pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Result<&'static str, ProviderError> {
     match r.model {
-        Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => {
-            png_extent(b)?;
+        Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon => {
             let m = nodecraft_media::probe_image(b, &l.image(false)).map_err(|_| bad())?;
-            if m.mime != "image/png" {
+            if m.mime == "image/png" {
+                png_extent(b)?;
+            } else if r.model != Model::Photon || !matches!(m.mime, "image/jpeg" | "image/webp") {
                 return Err(bad());
             }
             let n = u64::from(m.width).checked_mul(u64::from(m.height)).ok_or_else(bad)?;
@@ -267,9 +268,9 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             observe(2);
             let decoded = nodecraft_media::decode_image(b, &l.image(false)).map_err(|_| bad())?;
             drop(decoded);
-            Ok("image/png")
+            Ok(m.mime)
         }
-        Model::Video | Model::Frames | Model::Speech => {
+        Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames => {
             mp4(b)?;
             Ok("video/mp4")
         }

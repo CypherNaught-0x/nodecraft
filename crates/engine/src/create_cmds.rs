@@ -19,12 +19,17 @@ pub struct CreateParams {
     pub pos: Position,
 }
 
+/// Pure default instantiation shared with creation previews. Does not publish an edit.
+pub fn instance(kinds: &nodecraft_nodes::Registry, kind: &str, id: NodeId) -> Result<nodecraft_graph::Node, Error> {
+    kinds.get(kind)?.instantiate_instance(id, BTreeMap::new(), &ParamValues::new())
+}
+
 fn create(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: CreateParams = params(value)?;
     if !(p.pos.x.is_finite() && p.pos.y.is_finite() && p.pos.x.abs() <= MAX_COORDINATE && p.pos.y.abs() <= MAX_COORDINATE) {
         return Err(invalid("position is outside the canvas"));
     }
-    let mut node = c.kinds.get(&p.kind)?.instantiate_instance(p.id, BTreeMap::new(), &ParamValues::new())?;
+    let mut node = instance(c.kinds, &p.kind, p.id)?;
     node.pos = p.pos;
     let changes = Changeset::new(vec![Change::AddNode { canvas: p.canvas, node }]);
     c.preview_changes(&changes)?;
@@ -84,6 +89,24 @@ mod tests {
         assert_eq!((node.kind.as_str(), node.pos.x, node.pos.y), ("source.text", 40.0, -12.5));
         assert_eq!(node.params.get("text"), Some(&Value::Text(String::new())));
         assert_eq!(node.outputs.len(), 1);
+        s.dispatch("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.document(), &before);
+    }
+
+    #[test]
+    fn preview_uses_exact_command_payload_without_publishing() {
+        let mut s = session();
+        let before = s.document().clone();
+        let id = NodeId::from_bytes([7; 16]);
+        let params = json!({"canvas": C, "id": id, "kind": "source.text", "pos": {"x": 42.0, "y": 70.0}});
+        let preview = s.preview_created_node("node.create", &params, id).unwrap();
+        assert_eq!(s.document(), &before);
+        assert_eq!(s.revision(), 0);
+        assert!(!s.can_undo());
+        s.dispatch("node.create", &params).unwrap();
+        assert_eq!(s.document().canvases().get(&C).unwrap().nodes().get(&id), Some(&preview));
+        assert!(s.preview_created_node("edit.undo", &json!({}), id).is_err());
+        assert!(s.preview_created_node("node.create", &params, NodeId::from_bytes([8; 16])).is_err());
         s.dispatch("edit.undo", &json!({})).unwrap();
         assert_eq!(s.document(), &before);
     }

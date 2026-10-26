@@ -15,6 +15,8 @@
 mod art;
 mod scene;
 mod shots;
+#[cfg(test)]
+mod tests;
 
 use std::path::PathBuf;
 

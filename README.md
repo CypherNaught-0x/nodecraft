@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/readme/hero.png" width="100%" alt="A NodeCraft canvas: a chain of four text cards above and a chain of four image cards below, joined by gold and blue bezier noodles on a dark dot grid; two cards carry comment badges, and zoom controls sit bottom right.">
+  <img src="assets/readme/hero.png" width="100%" alt="A NodeCraft look-development canvas: twelve image cards in three coloured fields, with dawn, aurora and bloom previews branching through local treatments and recombining into a review composite.">
 </p>
 
 ---
@@ -31,6 +31,12 @@
 > generation cards through its wired host. That does **not** mean every catalog model or provider works on every
 > platform. See
 > [`ROADMAP.md`](ROADMAP.md) for current limitations and next steps.
+
+## Build a creative pipeline, not a pile of prompts
+
+Start with a brief and reference images. Branch into different looks, compare the results, then
+carry the chosen direction into a composite, a video edit or a reusable workflow. The canvas keeps
+the inputs, settings and connections beside the work instead of hiding them in a chat history.
 
 ## What it does today
 
@@ -54,6 +60,14 @@
   `node.cache_set`. Custom shader cards run WGSL with declared sliders on the GPU, and a text
   model can write or fix one through an ordinary priced card. The Plugins panel checks, installs
   and grants `.ncraft-plugin` packages; a granted text-action package adds its actions as cards.
+- **Compose and finish**: a Layer Editor combines wired images, text and shapes; Mask/Inpaint
+  paints masks and prepares inpaint/outpaint cards. Image tools add wired action cards in one
+  undo step. Elements keep named image references reusable across projects. A Timeline arranges
+  picture, sound and captions; desktop video playback and rendering need your own FFmpeg.
+- **Present and share**: turn a selection into a Deck, edit its slides and export PDF or PNG.
+  Live sessions carry edits, images, discussions, pointers and selections between desktop and
+  browser clients through a relay; internet deployment needs the transport setup described in
+  [`ROADMAP.md`](ROADMAP.md#what-does-not-work-yet).
 - **Never lose work**: every edit is an invertible changeset, so undo/redo covers everything, and
   command dispatch runs under a panic guard. No `unsafe` and no `unwrap` outside tests.
 - **Keep your keys yours**: an API keys panel over the OS keychain.
@@ -77,14 +91,31 @@
 
 ## The canvas, frame by frame
 
-Every frame below is one rendered frame of the real app — `NodeCraftApp::show`, drawn offscreen by
-the same `egui_kittest` wgpu path the snapshot tests use, committed by an opt-in tool
-([`tools/eyecandy`](tools/eyecandy/README.md)). It is the same document seen from different
-distances. The cards were placed by engine commands, the plate came in through the same import path
-a file drop takes,
-and the graded, softened and cropped thumbnails are local deterministic actions the app recomputed
-for itself. What is *not* in these captured frames: a model call. They are not evidence of a live
-provider response; supported desktop generation is described separately below.
+Every image below is a frame of the real app — `NodeCraftApp::show`, drawn offscreen through
+`egui_kittest` and wgpu by the opt-in [`gallery renderer`](tools/eyecandy/README.md). The same
+showcase document contains three original procedural plates, parallel image treatments, two
+composites, a text branch, notes and typed routers. Coloured fields organise the image pipeline.
+
+The cards and wires were created through engine commands. The plates use the file-drop import
+path; the previews are actual local-action results, not pasted-in answers. **No model was called
+for these captures**, and they do not demonstrate live provider responses.
+
+### Branch a look, then bring the branches back together
+
+![A blue field groups an aurora source and violet tint beside a noir treatment of the dawn plate; both treatments feed an overlay card with a real inset preview.](assets/readme/detail-fields.png)
+
+The dawn grade branches into a soft poster treatment and a noir alternative. Meanwhile, a second
+plate gets a violet screen tint. The noir and tinted aurora meet at a two-input overlay: the
+connections show exactly which look contributes to the result. Fields keep the stages named,
+coloured and movable as a group.
+
+### Build a review composite from several sources
+
+![A pink field contains an original cyan-and-pink bloom, its mirrored result, a look-board composite and a half-resolution delivery card.](assets/readme/detail-composite.png)
+
+Mirror the bloom, inset it into the previous composite, then resize for review. These are ordinary
+wired action cards: change an upstream setting and the dependent local results recompute. Keep
+alternate paths beside the final path instead of overwriting an earlier experiment.
 
 ### A card is generated from its node's parameter schema
 
@@ -96,22 +127,22 @@ schema are all generated from that.
 
 ### Local actions recompute while you edit
 
-![Four cards in a row — Plate 01, Colour grade, Soften, Poster 16:9 — each showing a progressively changed sunset preview, joined by blue noodles.](assets/readme/detail-chain.png)
+![Four cards in a dawn field — Dawn, Colour grade, Soften, Poster 16:9 — show the original and locally treated sunset previews joined by blue noodles, with another branch leaving the grade.](assets/readme/detail-chain.png)
 
-Grade, then soften, then crop to 16:9. Each card shows the result its upstream card produced, and
-the pass that computed them runs on the app's own worker
-([#88](../../issues/88)): move a slider and the next frame recomputes.
+Grade, then soften, then keep the output at 16:9 (the original dawn plate already has that ratio).
+Each action card shows its own computed result. The pass runs on the app's worker
+([#88](../../issues/88)): move a slider and dependent results recompute asynchronously.
 
 ### Quick-add: double-click empty canvas, type, create
 
-![The quick-add palette open over the canvas with "grade" typed in, offering Color grade.](assets/readme/palette.png)
+![The quick-add palette open over the canvas with "grade" typed in, offering Grade video and Color grade.](assets/readme/palette.png)
 
 The palette is searchable, filters as you type, and puts creation one key away. Every entry is a
 node kind, and the CLI and the MCP server create the same card with the same `node.create` command.
 
 ### Tags, and a filter that highlights what matches
 
-![The tag filter panel open with Copy and Look checked; matching cards on the canvas carry a bright ring.](assets/readme/tags.png)
+![The tag filter panel highlights the Look-tagged dawn treatment cards inside their coloured field.](assets/readme/tags.png)
 
 Named colour tags per canvas, a bounded highlight filter, and a small colour marker on every
 tagged card.
@@ -122,19 +153,18 @@ tagged card.
 
 Comments live on the canvas, anchor to a card, move with it, and thread.
 
-### Six modalities, six wire colours
+### Typed wires, tidy routing
 
-![Two wired pairs — video source into video router, audio source into audio router — carried by purple and orange noodles, with the 3D and document routers waiting beside them.](assets/readme/modality.png)
+![Real text and dawn-image sources pass through two routers each, with gold text wires and blue image wires.](assets/readme/modality.png)
 
-Text, image, video, audio, 3D and document each own a colour, so a noodle tells you what it carries
-before you hover it. Here the video pair is purple and the audio pair orange; the 3D and document
-routers carry green and grey ports with no upstream connection in this pictured project. A router
-carries one modality per instance and adds no step and no cost: the run
-planner resolves it away.
+A wire tells you what it carries before you hover it. This frame shows text in gold and images in
+blue; video, audio, 3D and documents have their own colours too. Routers keep long connections tidy,
+carry one modality per instance and add no generation step or provider cost: the planner resolves
+them away.
 
 ### One set of theme tokens, both palettes
 
-![The same document — text chain above, image chain below — rendered in the light theme.](assets/readme/light.png)
+![The three-field dawn, aurora and bloom workflow rendered in the light theme, retaining its coloured zones and computed image previews.](assets/readme/light.png)
 
 Dark and light come from one token table in `crates/ui-egui/src/theme.rs`: widgets ask for a
 role — `panel_fill`, `wire_image` — never a colour.
@@ -150,7 +180,7 @@ Order on a list input is data, not layout: drag a badge and the order in the doc
 
 Notes are cards too, so the brief travels with the work it describes.
 
-![The whole document in one window: dot grid, top bar, cards with previews, minimap and zoom badge.](assets/readme/chrome.png)
+![The dawn treatment framed with the app shell: dot grid, top bar, cards with previews, minimap and zoom badge.](assets/readme/chrome.png)
 
 The shell around the canvas: a minimap with zoom-to-fit and zoom-to-selection, a zoom badge, and a
 top bar of the same commands the shortcuts and the palette drive. Notices — what went wrong, or why
@@ -159,11 +189,12 @@ report, so an honest frame has none in it.
 
 </details>
 
-## What it will do
+## Generation, media and reuse
 
-The generation path is built and connected to the desktop for supported models: plan → quote →
-budget → schedule → execute → record → history. Before a paid run, inspect its quote and budget.
-The following are goals or partial capabilities, **not** a promise that every mode works today:
+The generation path is connected to the desktop for supported models: plan → quote → budget →
+schedule → execute → record → history. Before a paid run, inspect its quote and budget. These
+capabilities extend beyond the local-action gallery above; support still varies by model, mode
+and host, and several milestone exit criteria remain open.
 
 - **Any model, one node per modality.** The model is a parameter: search compatible models, swap
   without rewiring, or run several side by side. Each run shows its cost before it starts.

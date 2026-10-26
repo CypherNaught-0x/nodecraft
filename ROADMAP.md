@@ -6,7 +6,7 @@ actions recompute as you edit, while milestone exit criteria for generation, reu
 still have open work. Details and exit criteria: [`docs/plan.md`](docs/plan.md) §7. Work is tracked as
 GitHub issues in milestones; comment `/claim` to take one.
 
-As of 2026-10-23, **Done** counts only issues closed as *completed* (not `not planned`); the
+As of 2026-10-24, **Done** counts only issues closed as *completed* (not `not planned`); the
 denominator is all filed issues, including open and declined issues. M1 is 36 completed and one
 `not planned` (#135). M2 closed with its documentation close-out (#373). M4's feature work is
 done, including result caching (#91), custom WGSL shaders (#90) and the plugin store (#172,
@@ -21,13 +21,16 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done | 14/14 |
 | 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), variations (#81), cost and budget checks (#201) | 43/46 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done (close-out #375) | 13/14 |
-| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 17/30 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 8/11 |
-| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 26/31 |
-| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 7/12 |
+| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 18/30 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 10/13 |
+| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 28/31 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 9/13 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 5/8 |
-| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 11/17 |
-| — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 2/29 |
+| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 14/17 |
+| — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 3/29 |
+
+Runway Gen-4.5 text/first-frame video and Gen-4 Turbo first-frame video are available through
+priced catalog models and the direct task adapter (#25); paid live verification remains opt-in.
 
 ## What works today
 
@@ -38,7 +41,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   upstream/downstream/kind, minimap with zoom-to-fit and zoom-to-selection (Shift+1/Shift+2/Shift+M), incremental
   search (⌘F), double-click quick-add palette with per-key shortcuts, "Turn into" on
   drop-to-empty, input-order badges with drag-to-reorder, copy/cut/paste/duplicate through the OS
-  clipboard, OS file drop as source nodes, split-grid image previews (#337), per-node generation
+  clipboard, OS file drop as source nodes, OS folders (dropped, or Import folder…) as one Folder card whose
+  files loop through downstream nodes like a batch or go out as lists, after name filters, an order
+  and a range, split-grid image previews (#337), per-node generation
   history strip, local pinned
   discussions with Note nodes (#68), grid/dependency formatting of selected nodes (#70), named
   colour tags with a bounded highlight filter and tag navigation (#67), router nodes that carry
@@ -70,6 +75,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   list and edit them with revision checks (#122). Edit slides opens a slide sorter beside the
   Layer Editor's stage, to arrange each slide's text, shapes and sources (#694); its Export menu
   saves the slides as one PDF or as PNGs, drawn at the deck's size (`deck.export`, #692).
+  Each deck holds imported fonts shared by its editor, thumbnails, presenter and exports; unknown or
+  unreadable fonts visibly fall back to Lato, and `deck.list` resolves their references (#693).
   A generation card's `− N× +` counter makes up to 20 variations a run, each its own request
   (quoted as such) and its own result in the node's history (#81).
   The viewer's Photo and Views buttons add a 3D photo or a
@@ -94,7 +101,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   are a fanned step's results, as one (#611). The desktop saves held results so they survive a
   restart (#614).
   A fal result's `X-Fal-Billable-Units` header is kept, exactly, with the job's settings in the
-  project as evidence of what was billed; it is never turned into money (#437). Run quotes also
+  project as evidence of what was billed; it is never turned into money (#437).
+  Luma Ray 3.2 text/frame video and Photon text-to-image reuse fal's queue and key (#26);
+  Ray is quoted by duration/resolution and Photon keeps an unknown upfront megapixel charge. Run quotes also
   surface aggregate admission feedback before confirmation (#307). Imported video and audio
   sources probe duration (#608); ComfyUI accepts video and audio workflows (#110). Plugin cards
   keep their package identity, migrate with their package, and survive uninstall (#173). Plugin
@@ -116,6 +125,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   package's actions become cards that stop running when the grant is revoked (#172, #173); in
   the browser, packages last only for the session and never run (#823). Built-in image actions
   run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
+- **Black Forest Labs**: desktop Generate image and the CLI can use the direct FLUX.2 klein 4B
+  text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
+  Pixel-based credits remain an unknown monetary price and require consent. Image editing and
+  other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
@@ -282,11 +295,17 @@ The near-term order follows the remaining open issues, not an already-finished w
   work. The M2 close-out (#373) refreshed README, ROADMAP and `docs/plan.md`. M6 gained the
   Elements library (#552) and the Image tools menu (#103); providers gained Veo 3.1 on Google
   Cloud (#742) and Google TTS (#21).
+- **2026-10-24** — counts refreshed from GitHub's completed-only closures: M5 18/30, M6 10/13,
+  M7 28/31, M8 9/13, M10 14/17 and Future providers 3/29. The per-milestone close-outs (#374,
+  #376–#382) remain open: each stays open until its milestone's feature issues close.
 - **2026-10-23** — spending caps per call, session and project are settings the Budgets panel
   edits (#201); a run a cap blocks names it and its confirmation opens the panel. No command can
   raise a cap.
 - **2026-10-23** — the spending log records each charge's project, so the open project has its
   own cap beside the total (#847); the CSV export gains a `project` column.
+- **2026-10-24** — Replicate creation propagates a bounded server lifetime and successful results
+  retain reported execution milliseconds through saving, held results and restart recovery
+  (#339). Duration remains separate from money; restored handles do not reset the server limit.
 - **2026-10-23** — rendered videos and extracted sound share a per-run staging budget (#584):
   1 GiB and 4,096 results, including read-backs in flight. Failure and cancellation return their
   reservations; chained actions retain access to earlier completed outputs.

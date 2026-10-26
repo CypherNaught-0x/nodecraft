@@ -1127,6 +1127,10 @@ impl AuthorizedRun {
     pub fn job_billed(&mut self, job: nodecraft_exec::scheduler::JobId, units: nodecraft_types::BillableUnits) {
         self.run.job_billed(job, units)
     }
+    /// Provider-reported execution time, retained independently of its monetary charge (#339).
+    pub fn job_execution_ms(&mut self, job: nodecraft_exec::scheduler::JobId, milliseconds: u64) {
+        self.run.job_execution_ms(job, milliseconds)
+    }
     /// `job` may have been billed under `key` although it didn't finish (#517); call before
     /// [`Self::job_failed`].
     pub fn job_may_be_billed(&mut self, job: nodecraft_exec::scheduler::JobId, key: &str) {
