@@ -35,6 +35,7 @@ mod document_extract;
 mod imports;
 pub use imports::PreparedImports;
 mod file_lifecycle;
+pub(crate) mod project_identity;
 mod remote;
 pub use file_lifecycle::DocumentLineage;
 
@@ -186,6 +187,7 @@ pub struct Session {
     assets: AssetStore,
     persistence: Option<crate::persistence::Persistence>,
     save_runner: Option<Arc<dyn crate::save_runner::SaveRunner>>,
+    exports: crate::export_job::Exports,
     /// A background save or open still running: what to finish once it has.
     pending: Option<PendingFile>,
     /// The outcome of a background save that an edit waited for, until the host polls it.
@@ -246,6 +248,7 @@ impl Session {
             assets: AssetStore::default(),
             persistence: None,
             save_runner: None,
+            exports: Default::default(),
             pending: None,
             settled: None,
             status_revision: 0,
@@ -430,22 +433,29 @@ impl Session {
         self.swap_resource(Some(quotes));
     }
     pub fn with_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage>) -> Result<Self, Error> {
-        Self::with_store(snapshot, crate::persistence::Store::Local(storage))
+        Self::with_store(snapshot, crate::persistence::Store::Local(storage), None)
+    }
+    /// A decoded source whose location supplies stable legacy identity, without granting
+    /// save authority there. Read-only hosts must normalize filesystem aliases first.
+    pub fn with_storage_origin(snapshot: Snapshot, storage: Box<dyn ProjectStorage>, origin: StorageLocation) -> Result<Self, Error> {
+        Self::with_store(snapshot, crate::persistence::Store::Local(storage), Some(origin))
     }
     /// [`Self::with_storage`] over a storage a [`crate::save_runner::SaveRunner`] can write
     /// through on another thread, so `file.save` with `background` keeps the UI responsive.
     pub fn with_sendable_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage + Send>) -> Result<Self, Error> {
-        Self::with_store(snapshot, crate::persistence::Store::Sendable(storage))
+        Self::with_store(snapshot, crate::persistence::Store::Sendable(storage), None)
     }
-    fn with_store(snapshot: Snapshot, storage: crate::persistence::Store) -> Result<Self, Error> {
+    fn with_store(snapshot: Snapshot, storage: crate::persistence::Store, origin: Option<StorageLocation>) -> Result<Self, Error> {
         // All constructor failures, including entropy, precede durable checkpointing.
         snapshot.project.validate()?;
         let registry = Registry::builtins()?;
         let (kinds, generation) = crate::generation_catalog::default_registry()?;
         let execution = crate::execution_identity::ExecutionSource::new()?;
         let identity = Arc::new(());
-        let (persistence, snapshot) = crate::persistence::Persistence::new(storage, snapshot)?;
+        let (persistence, document) = crate::persistence::Persistence::new(storage, snapshot, origin)?;
+        let project_identity::OpenedDocument { snapshot, migration } = document;
         let mut session = Self::from_validated_identity(snapshot.project, registry, kinds, execution, identity);
+        session.undo = migration.map_or_else(History::default, |migration| migration.history);
         generation.install(&mut session);
         session.assets = snapshot.assets;
         session.persistence = Some(persistence);
@@ -458,6 +468,18 @@ impl Session {
     /// #367).
     pub fn set_save_runner(&mut self, runner: Arc<dyn crate::save_runner::SaveRunner>) {
         self.save_runner = Some(runner);
+    }
+    /// Installs a host executor for read-only exports; exports never lend project storage or
+    /// make subsequent document edits wait. A rejected job is never run inline.
+    pub fn set_export_runner(&mut self, runner: Arc<dyn crate::save_runner::SaveRunner>) {
+        self.exports.set_runner(runner);
+    }
+    pub fn export_status(&self) -> Option<crate::export_job::ExportStatus> {
+        self.exports.status()
+    }
+    /// Observe this export's cleanup even if another document replaces the Session.
+    pub fn export_watch(&self) -> Option<crate::export_job::ExportWatch> {
+        self.exports.watch()
     }
     /// The latest background save's or open's outcome once it has finished, the same value
     /// `file.save` or `file.open` returns inline; `None` while it is still running or when
@@ -486,7 +508,7 @@ impl Session {
                 }
                 Ok(serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":self.file_status().read_only}))
             }
-            (crate::persistence::Settled::Opened(snapshot), Some(PendingFile::Open(pending))) => Ok(self.install(snapshot, pending)),
+            (crate::persistence::Settled::Opened(snapshot), Some(PendingFile::Open(pending))) => Ok(self.install(*snapshot, pending)),
             (crate::persistence::Settled::Opened(_), _) => Err(Error::new(ErrorKind::Internal, "an open finished without the session waiting for it")),
         });
         if self.file_status() != before {
@@ -514,17 +536,23 @@ impl Session {
         }
     }
     /// Publishes an opened project: the new document, fresh history and the open's authority.
-    fn install(&mut self, snapshot: Snapshot, pending: PendingOpen) -> Value {
+    fn install(&mut self, document: project_identity::OpenedDocument, pending: PendingOpen) -> Value {
+        let project_identity::OpenedDocument { snapshot, migration } = document;
+        let receipt = migration.as_ref().map(|migration| serde_json::json!({"from": migration.from, "to": migration.to}));
         self.document = snapshot.project;
         self.assets = snapshot.assets;
-        self.undo = History::default();
+        self.undo = migration.map_or_else(History::default, |migration| migration.history);
         self.redo = History::default();
         self.gesture = None;
         self.state = pending.revision;
         // Adoption, not dispatch, replaces the lineage: a background open may still fail.
         self.file_lifecycle.replaced(Arc::clone(&pending.identity));
         self.publish(pending.revision, "file.open", pending.next, pending.identity);
-        serde_json::json!({"opened":true,"read_only":self.file_status().read_only})
+        let mut result = serde_json::json!({"opened":true,"read_only":self.file_status().read_only});
+        if let Some(receipt) = receipt {
+            result["identity_migrated"] = receipt;
+        }
+        result
     }
     /// A save's successful completion, inline or settled from the background (#450): only now
     /// may the host treat this document's recovery copy as superseded.
@@ -569,7 +597,13 @@ impl Session {
         self.collect_assets().map(|_| ())
     }
     pub fn file_status(&self) -> crate::file_cmds::FileStatus {
-        self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus { dirty: true, ..Default::default() })
+        self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus {
+            dirty: true,
+            unavailable_reason: Some(
+                "Project storage is not configured for this session. Reopen NodeCraft in a desktop window with a writable settings folder.",
+            ),
+            ..Default::default()
+        })
     }
     /// Host observation of this adopted document; not inferred from ids, paths or revisions.
     pub fn document_lineage(&self) -> DocumentLineage {
@@ -599,7 +633,7 @@ impl Session {
         if !self.file_status().available {
             return Err(Error::new(ErrorKind::Unsupported, "project storage is not available"));
         }
-        self.replace_untouched(snapshot, location, "file.recover")
+        self.replace_untouched(snapshot, location, "file.recover", true)
     }
     /// Host boundary for joining a shared project (#698): replaces the document with `project`,
     /// the empty start a joiner takes the shared project in from ([`crate::collab::joining`]).
@@ -610,7 +644,7 @@ impl Session {
         if self.can_undo() || self.can_redo() {
             return Err(Error::new(ErrorKind::Conflict, "joining would discard this session's changes"));
         }
-        self.replace_untouched(Snapshot { project, assets: AssetStore::default(), epoch: 0 }, None, "share.adopt")
+        self.replace_untouched(Snapshot { project, assets: AssetStore::default(), epoch: 0 }, None, "share.adopt", false)
     }
     /// Host boundary for a joiner's first catch-up (#714): replaces the empty start
     /// [`Self::adopt_joined`] opened with `project`, the shared project, in one step rather than
@@ -630,13 +664,26 @@ impl Session {
             return Err(Error::new(ErrorKind::NotFound, "a shared card names an asset that hasn't arrived"));
         }
         // Checked when it was made, away from the window.
-        self.replace_valid(Snapshot { project, assets: self.assets.clone(), epoch: 0 }, None, "share.adopt")
+        self.replace_valid(Snapshot { project, assets: self.assets.clone(), epoch: 0 }, None, "share.adopt", false)
     }
-    fn replace_untouched(&mut self, snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str) -> Result<(), Error> {
+    fn replace_untouched(&mut self, snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str, migrate: bool) -> Result<(), Error> {
         snapshot.project.validate()?;
-        self.replace_valid(snapshot, location, command)
+        self.replace_valid(snapshot, location, command, migrate)
     }
-    fn replace_valid(&mut self, mut snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str) -> Result<(), Error> {
+    fn replace_valid(&mut self, snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str, migrate: bool) -> Result<(), Error> {
+        // Live sharing must retain the room's identity. Only local recovery migrates it.
+        let document = if migrate && snapshot.project.id() == project_identity::LEGACY {
+            let scope = match (self.persistence.as_mut(), location.as_ref()) {
+                // The original drive/folder may be gone after a crash. Keep the legacy pooled
+                // identity if its scope cannot be established; this must not block recovery.
+                (Some(storage), Some(location)) => storage.project_identity_scope(location).ok(),
+                _ => None,
+            };
+            project_identity::prepare(snapshot, scope)?
+        } else {
+            project_identity::OpenedDocument { snapshot, migration: None }
+        };
+        let project_identity::OpenedDocument { mut snapshot, migration } = document;
         snapshot.assets = snapshot.assets.in_context(
             self.assets.context().clone(),
             &nodecraft_format::asset_source::TransferCancel::default(),
@@ -652,7 +699,7 @@ impl Session {
         }
         self.document = snapshot.project;
         self.assets = snapshot.assets;
-        self.undo = History::default();
+        self.undo = migration.map_or_else(History::default, |migration| migration.history);
         self.redo = History::default();
         self.gesture = None;
         self.state = revision;
@@ -777,6 +824,7 @@ impl Session {
     pub(crate) fn context(&self, phase: Phase) -> Context<'_> {
         Context {
             assets: &self.assets,
+            exports: &self.exports,
             routing: &self.routing,
             document: &self.document,
             revision: self.revision,
@@ -810,6 +858,7 @@ impl Session {
                 | Effect::Export { .. }
                 | Effect::Copy { .. }
                 | Effect::CancelFile
+                | Effect::CancelExport { .. }
                 | Effect::Elements { .. } => Ok(()),
                 // Dispatch refuses everything else until the open settles.
                 _ if matches!(self.pending, Some(PendingFile::Open(_))) => Err(opening()),
@@ -820,6 +869,27 @@ impl Session {
                 }
                 _ => Ok(()),
             }
+        })
+    }
+
+    /// Inspect the exact fresh node described by a creation command, without publishing or
+    /// executing services. Hosts can measure it before supplying the final position.
+    pub fn preview_created_node(&self, command: &str, params: &Value, id: nodecraft_types::NodeId) -> Result<nodecraft_graph::Node, Error> {
+        guard(|| {
+            let spec = self.registry.get(command)?;
+            let effect = Self::describe(spec, &self.context(Phase::Preview), params)?;
+            let changes = match effect {
+                Effect::Edit { changes, .. } | Effect::Place { changes, .. } => changes,
+                _ => return Err(invalid("command does not describe a node creation")),
+            };
+            changes
+                .changes
+                .into_iter()
+                .find_map(|change| match change {
+                    Change::AddNode { node, .. } if node.id == id => Some(node),
+                    _ => None,
+                })
+                .ok_or_else(|| invalid("command does not create that node"))
         })
     }
 
@@ -845,6 +915,7 @@ impl Session {
                     | Effect::Export { .. }
                     | Effect::Copy { .. }
                     | Effect::CancelFile
+                    | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
             )
         {
@@ -974,6 +1045,7 @@ impl Session {
                     | Effect::Export { .. }
                     | Effect::Copy { .. }
                     | Effect::CancelFile
+                    | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
             ),
         };
@@ -988,6 +1060,7 @@ impl Session {
                     | Effect::Export { .. }
                     | Effect::Copy { .. }
                     | Effect::CancelFile
+                    | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
             )
         {
@@ -1046,7 +1119,15 @@ impl Session {
                 }
                 return Ok(crate::perf_cmds::applied(action, self.perf.enabled()));
             }
-            Effect::Export { what, path, overwrite } => {
+            Effect::CancelExport { id } => {
+                self.exports.cancel(id)?;
+                return Ok(serde_json::json!({"cancelling":true}));
+            }
+            Effect::Export { what, path, overwrite, background } => {
+                if background {
+                    let id = self.exports.start(&self.assets, what, path, overwrite)?;
+                    return Ok(serde_json::json!({"pending":id}));
+                }
                 return guard(|| crate::export::write(&self.assets, &what, &path, overwrite));
             }
             Effect::Copy { what } => {
@@ -1071,6 +1152,24 @@ impl Session {
                     validate_json(&result)?;
                     Ok(result)
                 });
+            }
+            Effect::LocalExport { plan } => {
+                // Export changes no document, so nothing is staged and there is nothing to undo.
+                // Authority is enforced here as well as where the plan was built, because this is
+                // where the writing happens: the folder must still be one the app authorized, and
+                // without an authorized folder this session writes nothing anywhere.
+                let host = self
+                    .resources
+                    .get::<crate::local_export::ExportHost>()
+                    .ok_or_else(|| Error::new(ErrorKind::Unsupported, nodecraft_format::export::reasons::NO_HOST))?;
+                if !host.authorizes(&plan.destination) {
+                    return Err(Error::new(ErrorKind::Unsupported, nodecraft_format::export::reasons::UNSUPPORTED_TARGET));
+                }
+                // Publication retains the host's pinned root descriptor throughout the run.
+                let outcome = guard(|| crate::local_export::run(&self.assets, &plan, host))?;
+                let result = crate::local_export::outcome_json(&outcome);
+                validate_json(&result)?;
+                return Ok(result);
             }
             Effect::Save { location, background } => {
                 let next = self.execution.next()?;
@@ -1349,10 +1448,12 @@ impl Session {
             | Effect::Service { .. }
             | Effect::Export { .. }
             | Effect::Copy { .. }
+            | Effect::LocalExport { .. }
             | Effect::Open { .. }
             | Effect::Save { .. }
             | Effect::Perf { .. }
             | Effect::CancelFile
+            | Effect::CancelExport { .. }
             | Effect::Elements { .. }
             | Effect::Place { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));
@@ -1618,6 +1719,7 @@ mod tests {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             });
         }
@@ -1629,6 +1731,7 @@ mod tests {
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         };
         let changes = Changeset::new(vec![Change::AddGeneration { canvas, id, index: 3, generation }]);
@@ -1685,6 +1788,7 @@ mod tests {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             });
         }
@@ -1716,6 +1820,7 @@ mod tests {
                 mime: "text/plain".parse().unwrap(),
                 meta: Default::default(),
             })])],
+            source_versions: Vec::new(),
             incomplete: None,
         };
         let changes = Changeset::new(vec![

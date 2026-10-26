@@ -230,12 +230,12 @@ impl NodeCraftApp {
         }
         let id = ids::node_id(self.session.document(), ("library-place", self.session.revision()))
             .ok_or_else(|| Error::new(ErrorKind::Conflict, "Couldn't allocate a node id; try again."))?;
-        let pos = json!({"x": centre.x - t.card_width / 2.0, "y": centre.y - t.card_min_height / 2.0});
+        let pos = json!({"x": centre.x, "y": centre.y});
         let fields = params.as_object_mut().ok_or_else(|| Error::new(ErrorKind::Internal, "placing needs its parameters"))?;
         fields.insert("canvas".into(), json!(self.canvas));
         fields.insert("id".into(), json!(id));
         fields.insert("pos".into(), pos);
-        self.session.dispatch(command, &params)?;
+        self.centered_command(command, &mut params, id)?;
         self.selection.only(id);
         Ok(())
     }

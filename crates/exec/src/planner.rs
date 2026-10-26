@@ -16,7 +16,7 @@
 
 use crate::technique::{Collect, Expanded};
 use nodecraft_graph::{Canvas, ItemTag, Node, Port};
-use nodecraft_nodes::{Category, InputValue, JobSpec, ModeId, PlanCtx, Registry, batch, mention, technique};
+use nodecraft_nodes::{Category, InputValue, JobSpec, ModeId, PlanCtx, Registry, batch, folder, mention, technique};
 use nodecraft_types::{Error, ErrorKind, FieldId, Modality, NodeId, PortType, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -483,7 +483,8 @@ type Items = Result<(Vec<Value>, Vec<ItemTag>, usize), Reason>;
 #[derive(Default)]
 struct State {
     cache: Cache,
-    batches: BTreeMap<NodeId, Items>,
+    /// Items of each batch, and of each folder's looping output, by node and output.
+    batches: BTreeMap<(NodeId, String), Items>,
     /// Steps of this run that fan out, with their items.
     fanned: BTreeMap<NodeId, Vec<ItemTag>>,
     /// Known input bytes across the plan.
@@ -493,6 +494,12 @@ struct State {
 /// Whether `id` is a batch.
 pub fn is_batch(canvas: &Canvas, id: NodeId) -> bool {
     canvas.nodes().get(&id).is_some_and(|node| node.kind == batch::ID)
+}
+
+/// Whether `node`'s output `port` gives items, one per run of what it feeds: a batch's, or a
+/// folder's looping `file` and `name` outputs.
+pub fn gives_items(node: &Node, port: &str) -> bool {
+    node.kind == batch::ID || folder::loops_over(node, port)
 }
 
 /// A single or fanning-out input fed by a batch, or by a fanned result: one value per item.
@@ -555,7 +562,15 @@ impl<'a> Graph<'a> {
             .into_iter()
             .map(|(target, feeds)| (target, feeds.into_iter().map(|(port, position, from, from_port)| (port, from, from_port, position)).collect()))
             .collect();
-        let pairing = canvas.nodes().values().filter(|n| n.kind == batch::ID).filter_map(|n| Some((n.id, batch::pairing(n).ok()?))).collect();
+        let pairing = canvas
+            .nodes()
+            .values()
+            .filter_map(|n| match n.kind.as_str() {
+                batch::ID => Some((n.id, batch::pairing(n).ok()?)),
+                folder::ID => Some((n.id, folder::pairing(n).ok()?)),
+                _ => None,
+            })
+            .collect();
         Ok(Self { canvas, kinds, targets, options, into, routing, pairing, collects, inner })
     }
 
@@ -727,8 +742,8 @@ impl<'a> Graph<'a> {
             for (_, up, up_port, _) in feeds {
                 let upstream = self.canvas.nodes().get(up);
                 let before = from.len();
-                if upstream.is_some_and(|u| u.kind == batch::ID) {
-                    let items = state.batches.entry(*up).or_insert_with(|| self.batch_items(*up, run));
+                if upstream.is_some_and(|u| gives_items(u, up_port)) {
+                    let items = state.batches.entry((*up, (*up_port).to_owned())).or_insert_with(|| self.batch_items(*up, up_port, run));
                     match items {
                         Ok((values, tags, size)) => {
                             if !self.charge(&mut bytes, &mut state.plan_bytes, *size) {
@@ -817,7 +832,7 @@ impl<'a> Graph<'a> {
                 }
                 // A mention puts one text where its token is (#505): a card giving several can't.
                 let several = || {
-                    upstream.is_some_and(|u| u.kind == batch::ID)
+                    upstream.is_some_and(|u| gives_items(u, up_port))
                         || state.fanned.contains_key(up)
                         || from.len().checked_sub(before) != Some(1)
                         // A fanned feed's stand-in is an empty list.
@@ -1050,10 +1065,19 @@ impl<'a> Graph<'a> {
     }
 
     /// A batch's items (#92): what is wired into it, which must already exist, then its own.
-    fn batch_items(&self, id: NodeId, run: &BTreeSet<NodeId>) -> Items {
+    /// A folder's looping output gives its selected files or their names; both outputs share
+    /// the files' item ids, so a node fed by a file and its name runs once per file.
+    fn batch_items(&self, id: NodeId, port: &str, run: &BTreeSet<NodeId>) -> Items {
         let node = self.canvas.nodes().get(&id).ok_or(Reason::NoResult)?;
         let kind = self.kinds.get(&node.kind).map_err(|_| Reason::UnknownKind)?;
         kind.validate_instance(node, true).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
+        if node.kind == folder::ID {
+            let invalid = |error: Error| invalid_kind(self.kinds, &node.kind, error.message);
+            let values = folder::items(node, port).map_err(invalid)?;
+            let tags = crate::fanout::batch_tags(id, &folder::values(node, folder::FILE).map_err(invalid)?);
+            let size = values.iter().map(value_bytes).fold(0usize, usize::saturating_add);
+            return Ok((values, tags, size));
+        }
         if let Some(router) = self.routing.invalid.keys().find(|(target, _)| *target == id).and_then(|key| self.routing.invalid.get(key)) {
             let reason = self.routing.invalid_routers.get(router).copied().unwrap_or("invalid upstream router");
             return Err(Reason::PublicInvalid(reason.into()));
@@ -1063,6 +1087,9 @@ impl<'a> Graph<'a> {
             let upstream = self.canvas.nodes().get(up);
             if upstream.is_some_and(|u| u.kind == batch::ID) {
                 return Err(Reason::PublicInvalid("a batch can't collect another batch yet".into()));
+            }
+            if upstream.is_some_and(|u| folder::loops_over(u, up_port)) {
+                return Err(Reason::PublicInvalid("a batch collects a folder's Files or Names output, not its looping File or Name".into()));
             }
             if run.contains(up) && !upstream.is_some_and(|u| self.is_source(u)) {
                 return Err(Reason::PublicInvalid("a batch collects existing results; run the nodes feeding it first".into()));
@@ -1093,14 +1120,22 @@ impl<'a> Graph<'a> {
         if let Ok(kind) = self.kinds.get(&node.kind)
             && kind.descriptor().category == Category::Source
         {
+            // A folder's looping outputs give items, read as a batch's are; only consumers that
+            // fan out or collect can take them.
+            if folder::loops_over(node, port) {
+                return Err(Reason::PublicInvalid("a folder's looping File and Name outputs can't be used here; wire its Files or Names output".into()));
+            }
             let jobs = kind.plan(&PlanCtx { targets: self.targets, node, inputs: &[] }).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
-            return jobs
-                .into_iter()
-                .find_map(|job| match job {
-                    JobSpec::Source { output, value, .. } if output == port => Some((value, list, Vec::new())),
-                    JobSpec::Source { .. } | JobSpec::Generate { .. } | JobSpec::Action { .. } => None,
-                })
-                .ok_or(Reason::NoResult);
+            let mut values = jobs.into_iter().filter_map(|job| match job {
+                JobSpec::Source { output, value, .. } if output == port => Some(value),
+                JobSpec::Source { .. } | JobSpec::Generate { .. } | JobSpec::Action { .. } => None,
+            });
+            // A list output gives one job per item, so its value is the list of them.
+            return if list {
+                Ok((Value::List(values.collect()), list, Vec::new()))
+            } else {
+                values.next().map(|value| (value, list, Vec::new())).ok_or(Reason::NoResult)
+            };
         }
         let generation = usable_generation(node).ok_or(Reason::NoResult)?;
         let value = generation.outputs.get(index).cloned().ok_or(Reason::NoResult)?;

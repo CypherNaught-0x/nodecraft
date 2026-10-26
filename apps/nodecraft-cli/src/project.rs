@@ -42,7 +42,12 @@ pub fn open(path: &Path) -> Result<Session, Error> {
 /// [`open`] with the project's assets, for runs and exports. Its storage is in memory, so
 /// nothing the session does is written to the project file.
 pub fn open_with_assets(path: &Path) -> Result<Session, Error> {
-    Session::with_storage(read(path)?, Box::new(nodecraft_format::MemoryStorage::default()))
+    Session::with_storage_origin(read(path)?, Box::new(nodecraft_format::MemoryStorage::default()), origin(path)?)
+}
+
+pub(crate) fn origin(path: &Path) -> Result<nodecraft_format::StorageLocation, Error> {
+    let path = path.canonicalize().map_err(|_| Error::new(ErrorKind::NotFound, "cannot resolve the source project identity"))?;
+    Ok(nodecraft_format::StorageLocation::Path(path))
 }
 
 /// The project at `path`, decoded: its document and assets, read-only.
@@ -62,3 +67,7 @@ fn read(path: &Path) -> Result<nodecraft_format::Snapshot, Error> {
     let index = ArchiveIndex::read(&range, &TransferCancel::default(), &StreamMetrics::default())?;
     nodecraft_format::decode_indexed(&index, AssetContext::default())
 }
+
+#[cfg(test)]
+#[path = "project/identity879_tests.rs"]
+mod identity879_tests;

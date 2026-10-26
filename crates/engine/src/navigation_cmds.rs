@@ -100,6 +100,9 @@ fn selected(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
 fn toggle(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
     intent(c, v, "minimap_toggle")
 }
+fn prompt_overlays_toggle(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
+    intent(c, v, "prompt_overlays_toggle")
+}
 fn pan(c: &Context<'_>, v: &Value) -> Result<Effect, Error> {
     let p: Pan = params(v)?;
     available(c)?;
@@ -148,6 +151,16 @@ pub fn specs() -> Vec<CommandSpec> {
             params_doc: "{}; toggle the live canvas minimap; session-local view state.",
             enabled: |c, v| toggle(c, v).map(|_| ()),
             run: toggle,
+        },
+        CommandSpec {
+            id: "canvas.prompt_overlays_toggle",
+            label: "Toggle prompt overlays",
+            shortcut: Some("H"),
+            alternate_shortcuts: &[],
+            input_schema: empty_schema,
+            params_doc: "{}; toggle prompt overlays on media cards in the live canvas; session-local view state.",
+            enabled: |c, v| prompt_overlays_toggle(c, v).map(|_| ()),
+            run: prompt_overlays_toggle,
         },
         CommandSpec {
             id: "canvas.pan_to",

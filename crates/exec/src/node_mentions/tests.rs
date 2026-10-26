@@ -58,7 +58,15 @@ fn token(n: u8, title: &str) -> String {
 
 fn with_result(mut node: Node, n: u8, value: Value) -> Node {
     let generation = GenerationId::from_bytes([n; 16]);
-    node.history.push(Generation { id: generation, outputs: vec![value], input_hash: None, items: Vec::new(), settings: Vec::new(), incomplete: None });
+    node.history.push(Generation {
+        id: generation,
+        outputs: vec![value],
+        input_hash: None,
+        items: Vec::new(),
+        settings: Vec::new(),
+        source_versions: Vec::new(),
+        incomplete: None,
+    });
     node.active = Some(generation);
     node
 }

@@ -585,6 +585,7 @@ fn launch_authority_rejects_copied_projects_and_equal_revision_inputs_before_ser
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             };
             n.active = Some(generation.id);
@@ -722,7 +723,7 @@ impl nodecraft_format::ProjectStorage for AuthorityStorage {
     }
 }
 fn plain_snapshot() -> nodecraft_format::Snapshot {
-    let mut doc = Project::new(ProjectId::from_bytes([2; 16]), "Plain").unwrap();
+    let mut doc = Project::new(ProjectId::from_bytes([22; 16]), "Plain").unwrap();
     Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut doc).unwrap();
     let text = nodecraft_nodes::Registry::builtins().unwrap().get("source.text").unwrap().descriptor().instantiate(id(1), &Default::default()).unwrap();
     Change::AddNode { canvas: C, node: text }.apply(&mut doc).unwrap();
@@ -1498,6 +1499,7 @@ fn record_current(s: &mut Session, n: u8, generation: u8) {
         input_hash: Some(hash),
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     };
     s.dispatch("run.record", &json!({"canvas": C, "results": [{"node": id(n), "generation": generation}]})).unwrap();

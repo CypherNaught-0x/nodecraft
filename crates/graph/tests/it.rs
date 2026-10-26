@@ -10,11 +10,15 @@ mod comments;
 mod fields;
 #[path = "items.rs"]
 mod items;
+#[path = "project_identity.rs"]
+mod project_identity;
 #[path = "same_but_layout.rs"]
 mod same_but_layout;
 #[path = "scalars.rs"]
 mod scalars;
 #[path = "settings.rs"]
 mod settings;
+#[path = "source_versions.rs"]
+mod source_versions;
 #[path = "tags.rs"]
 mod tags;

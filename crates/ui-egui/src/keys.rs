@@ -38,8 +38,22 @@ pub const STORED_WHERE: &str = "Keys are kept in this browser's storage for this
     Anyone who uses this browser profile can read them, so remove them when you finish on a shared computer.";
 
 /// Common providers, offered as quick picks.
-const PRESETS: &[&str] =
-    &["openai", "anthropic", "openrouter", "litellm", "fal", "replicate", "seedream", "tripo", "meshy", "higgsfield", "kling", "elevenlabs"];
+const PRESETS: &[&str] = &[
+    "openai",
+    "azure-openai",
+    "anthropic",
+    "openrouter",
+    "litellm",
+    "fal",
+    "replicate",
+    "runway",
+    "seedream",
+    "tripo",
+    "meshy",
+    "higgsfield",
+    "kling",
+    "elevenlabs",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyStatus {
@@ -292,6 +306,9 @@ impl KeysPanel {
                     }
                 }
             });
+            if self.account == "runway" {
+                ui.hyperlink_to("Powered by Runway", "https://runwayml.com");
+            }
             egui::Grid::new("nodecraft.keys.add").num_columns(2).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
                 let label = ui.label(egui::RichText::new("Account").color(t.text_muted));
                 ui.add(egui::TextEdit::singleline(&mut self.account).hint_text("e.g. openai").desired_width(t.card_width)).labelled_by(label.id);

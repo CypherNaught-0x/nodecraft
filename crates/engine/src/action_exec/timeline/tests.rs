@@ -3,6 +3,7 @@ use crate::action_exec::LocalActions;
 use nodecraft_exec::run::ActionExecutor;
 use nodecraft_format::AssetStore;
 use nodecraft_nodes::Registry;
+use nodecraft_nodes::timeline::Input;
 use nodecraft_types::{AssetRef, Blake3, MediaMeta, NodeId, Unsigned};
 
 /// A Timeline node's planned parameters, with `clips` stored and one source per input.

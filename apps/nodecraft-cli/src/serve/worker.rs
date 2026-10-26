@@ -36,6 +36,8 @@ const MAX_ITEMS: usize = 64;
 /// The served project: its snapshot, and how to build provider adapters for a run.
 pub struct Loaded {
     pub snapshot: Snapshot,
+    /// Canonical source location for stable identity across read-only requests.
+    pub origin: Option<nodecraft_format::StorageLocation>,
     pub maker: Box<dyn FnMut() -> Result<Box<Maker<'static>>, Error>>,
 }
 
@@ -453,7 +455,12 @@ impl Worker {
     }
 
     fn session(&self, services: Services) -> Result<Session, Error> {
-        Ok(Session::with_storage(self.loaded.snapshot.clone(), Box::new(MemoryStorage::default()))?.with_services(services))
+        let storage = Box::new(MemoryStorage::default());
+        let session = match self.loaded.origin.clone() {
+            Some(origin) => Session::with_storage_origin(self.loaded.snapshot.clone(), storage, origin)?,
+            None => Session::with_storage(self.loaded.snapshot.clone(), storage)?,
+        };
+        Ok(session.with_services(services))
     }
 
     fn node_id(&mut self) -> NodeId {
@@ -626,6 +633,30 @@ fn outputs(session: &Session, canvas: CanvasId, id: NodeId, names: &[(String, St
 #[cfg(test)]
 mod book_tests {
     use super::*;
+
+    #[test]
+    fn legacy_serve_sessions_keep_the_same_source_budget_identity() {
+        let origin = nodecraft_format::StorageLocation::from_command("public-legacy.ncraft".into()).unwrap();
+        let snapshot = Snapshot {
+            project: nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([2; 16]), "Public fixture").unwrap(),
+            assets: Default::default(),
+            epoch: 0,
+        };
+        let mut identities = vec![];
+        for _ in 0..2 {
+            let loaded = Loaded {
+                snapshot: snapshot.clone(),
+                origin: Some(origin.clone()),
+                maker: Box::new(|| Ok(Box::new(|_| Err(nodecraft_engine::provider_setup::Readiness::NotSetUp("offline".into()))))),
+            };
+            let (worker, _) = Worker::new(loaded, Spend::default()).unwrap();
+            for _ in 0..2 {
+                identities.push(worker.session(Services::default()).unwrap().document().id());
+            }
+        }
+        assert!(identities.windows(2).all(|pair| pair[0] == pair[1]), "scratch canvases and repeated requests cannot reset project spending");
+        assert_ne!(identities[0], snapshot.project.id());
+    }
 
     fn done(book: &mut Book, id: &str) {
         book.finish(id, |run| run.status = Status::Succeeded);

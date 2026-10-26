@@ -115,7 +115,10 @@ fn image(id: &str, label: &str, params: Vec<ParamSpec>) -> ActionKind {
     kind(id, label, vec![port("image", Modality::Image, false)], vec![port("out", Modality::Image, false)], params)
 }
 
-pub(crate) fn kind(id: &str, label: &str, inputs: Vec<Port>, outputs: Vec<Port>, params: Vec<ParamSpec>) -> ActionKind {
+pub(crate) fn kind(id: &str, label: &str, inputs: Vec<Port>, outputs: Vec<Port>, mut params: Vec<ParamSpec>) -> ActionKind {
+    if id == crate::mesh::CONVERT {
+        params.extend(crate::mesh::view::schema());
+    }
     ActionKind {
         descriptor: NodeDescriptor {
             id: id.into(),
@@ -350,6 +353,14 @@ pub fn kinds() -> Result<Vec<ActionKind>, Error> {
 }
 
 impl NodeKind for ActionKind {
+    fn contract(&self, descriptor: &NodeDescriptor) -> crate::NodeContract {
+        let mut contract = crate::NodeContract::derive(descriptor);
+        if descriptor.id == crate::mesh::CONVERT {
+            crate::mesh::view::contract(&mut contract.params);
+        }
+        contract
+    }
+
     fn descriptor(&self) -> &NodeDescriptor {
         &self.descriptor
     }
@@ -366,7 +377,10 @@ impl NodeKind for ActionKind {
     }
 
     fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
-        let params = self.validate_instance(ctx.node, true)?.into_visible_values();
+        let mut params = self.validate_instance(ctx.node, true)?.into_visible_values();
+        if self.descriptor.id == crate::mesh::CONVERT {
+            crate::mesh::view::strip(&mut params);
+        }
         // One value per input port, in the order the kind declares them (a list port's values
         // all go in, in order); every port must be connected, but an optional last one.
         let mut inputs: Vec<Value> = Vec::new();

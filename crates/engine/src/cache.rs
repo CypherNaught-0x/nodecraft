@@ -139,13 +139,22 @@ pub fn lookup(
             if let Some(own) = node.history.iter().find(|g| g.input_hash == Some(current) && !g.is_partial()) {
                 round.push(Hit::Own { node: *id, generation: own.id });
             } else if let Some((_, other)) = index.get(&(node.kind.as_str(), current)).filter(|(owner, _)| owner != id) {
+                let source_versions = if node.kind == nodecraft_nodes::timeline::ID {
+                    // Clip ids can differ although media/configuration hash identically. Record
+                    // this recipient's recipe, never claim it rendered the donor's clip ids.
+                    let Some(sources) = timeline_sources(canvas, kinds, *id) else { continue };
+                    sources
+                } else {
+                    other.source_versions.clone()
+                };
                 let generation = Generation {
                     id: fresh()?,
                     outputs: other.outputs.clone(),
                     input_hash: Some(current),
                     items: other.items.clone(),
                     // What the other result was billed is not this copy's: nothing was (#437).
-                    settings: other.settings.iter().cloned().map(|s| JobSettings { billable_units: None, ..s }).collect(),
+                    settings: other.settings.iter().cloned().map(|s| JobSettings { billable_units: None, execution_ms: None, ..s }).collect(),
+                    source_versions,
                     incomplete: None,
                 };
                 if nodecraft_exec::run::record_changes(canvas_id, node, generation.clone()).is_ok() {
@@ -173,6 +182,34 @@ pub fn lookup(
     }
     found.truncate(MAX_HITS);
     Ok(Lookup { hits: found, current: up_to_date, project: scratch })
+}
+
+fn timeline_sources(canvas: &Canvas, kinds: &Registry, node: NodeId) -> Option<Vec<nodecraft_graph::SourceVersion>> {
+    use nodecraft_exec::planner::{Planned, RunMode, plan};
+    use nodecraft_nodes::JobSpec;
+    let Planned::Ready(plan) = plan(canvas, kinds, &RunMode::Selected, &BTreeSet::from([node]), &BTreeSet::new()).ok()? else { return None };
+    let step = plan.steps.iter().find(|step| step.node == node)?;
+    if step.fanout.as_ref().is_some_and(|f| f.resume.is_some()) {
+        return None;
+    }
+    let mut sources = Vec::new();
+    let mut job = 0usize;
+    let cells: Vec<usize> = step.fanout.as_ref().map_or_else(|| vec![step.jobs.as_ref().map_or(0, Vec::len)], |f| f.jobs.clone());
+    for (cell, count) in cells.into_iter().enumerate() {
+        let item = if step.fanout.is_some() { Some(u32::try_from(cell).ok()?) } else { None };
+        for _ in 0..count {
+            let JobSpec::Action { action, params, inputs, .. } = step.jobs.as_ref()?.get(job)? else { return None };
+            if action != nodecraft_nodes::timeline::ID {
+                return None;
+            }
+            sources.extend(nodecraft_nodes::timeline::provenance::source_versions(params, inputs, item).ok()?);
+            if sources.len() > nodecraft_graph::MAX_SOURCE_VERSIONS {
+                return None;
+            }
+            job = job.checked_add(1)?;
+        }
+    }
+    Some(sources)
 }
 
 /// The changes applying `hits` on `canvas`.

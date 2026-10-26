@@ -49,6 +49,7 @@ pub(super) struct FileDialogs {
     menu_open: bool,
     // Completed-frame number: every pass of the choice/completion frame stays owned.
     owner_frame: Option<u64>,
+    storage_problem: Option<(Arc<()>, String, bool)>,
 }
 impl Default for FileDialogs {
     fn default() -> Self {
@@ -56,7 +57,7 @@ impl Default for FileDialogs {
         let picker: Picker = Box::new(native_picker);
         #[cfg(test)]
         let picker: Picker = Box::new(|_| Ok(Box::pin(std::future::ready(Ok(None)))));
-        Self { pending: None, picker, projects: Default::default(), observed: None, menu_open: false, owner_frame: None }
+        Self { pending: None, picker, projects: Default::default(), observed: None, menu_open: false, owner_frame: None, storage_problem: None }
     }
 }
 #[cfg_attr(test, allow(dead_code))]
@@ -129,6 +130,29 @@ fn admitted(path: &Path, save: bool) -> Result<&str, String> {
     Ok(text)
 }
 impl NodeCraftApp {
+    pub(super) fn remember_storage_problem(&mut self, message: String, owner_busy: bool) -> String {
+        let message: String = message.chars().take(4096).collect();
+        self.files.storage_problem = Some((self.session.view_identity(), message.clone(), owner_busy));
+        message
+    }
+    /// Whether startup failed because another desktop window owns the recovery journal.
+    /// The desktop host may install the narrow owner-focus service for this case.
+    pub fn storage_owner_blocked(&self) -> bool {
+        !self.session.file_status().available
+            && self.files.storage_problem.as_ref().is_some_and(|(identity, _, busy)| *busy && Arc::ptr_eq(identity, &self.session.view_identity()))
+    }
+    fn file_unavailable_message(&self) -> Option<String> {
+        let status = self.session.file_status();
+        if status.available {
+            return None;
+        }
+        self.files
+            .storage_problem
+            .as_ref()
+            .filter(|(identity, _, _)| Arc::ptr_eq(identity, &self.session.view_identity()))
+            .map(|(_, message, _)| message.clone())
+            .or_else(|| status.unavailable_reason.map(str::to_owned))
+    }
     fn file_busy(&self, ctx: &egui::Context) -> bool {
         self.session.file_status().operation.is_some()
             || self.model_choice.is_some()
@@ -163,12 +187,18 @@ impl NodeCraftApp {
         if self.files.pending.is_some() || self.file_busy(ctx) {
             return;
         }
-        if !self.session.file_status().available {
-            self.notice = Some("Saving and opening are unavailable in this window.".into());
+        if let Some(message) = self.file_unavailable_message() {
+            self.notice = Some(message);
+            self.files.menu_open = true;
+            self.files.own_frame(ctx);
+            ctx.request_repaint();
             return;
         }
         if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
             self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
+            return;
+        }
+        if !self.commit_mesh_views(ctx, true) {
             return;
         }
         self.files.own_frame(ctx);
@@ -437,6 +467,11 @@ impl NodeCraftApp {
         let mut recent = None;
         let mut remove = None;
         let mut clear = false;
+        let mut import_folder = false;
+        let unavailable = self.file_unavailable_message();
+        let owner_busy = self.storage_owner_blocked();
+        let mut focus_owner = false;
+        let importing = self.folder_import_busy();
         egui::Window::new("Project files")
             .id(egui::Id::new("project_files407"))
             .open(&mut self.files.menu_open)
@@ -447,11 +482,31 @@ impl NodeCraftApp {
             .max_height(ui.max_rect().height() * 0.8)
             .vscroll(true)
             .show(ui.ctx(), |ui| {
-                for (id, label) in [("file.open", "Open project…"), ("file.save", "Save project"), ("file.save_as", "Save project as…")] {
-                    if ui.button(label).clicked() {
+                if let Some(message) = &unavailable {
+                    ui.label(egui::RichText::new(message).color(t.danger));
+                    if owner_busy {
+                        focus_owner = ui
+                            .add_enabled(self.session.enabled("file.focus_owner", &json!({})).is_ok(), egui::Button::new("Focus the other window"))
+                            .on_disabled_hover_text("Switch to the other NodeCraft window with your window switcher. Its File menu can open or save projects.")
+                            .clicked();
+                    }
+                    ui.separator();
+                }
+                for (id, label, icon) in [
+                    ("file.open", "Open project…", crate::icons::Icon::Open),
+                    ("file.save", "Save project", crate::icons::Icon::Save),
+                    ("file.save_as", "Save project as…", crate::icons::Icon::Save),
+                ] {
+                    if ui.add(icon.button(ui, label, t)).clicked() {
                         action = Some(id);
                     }
                 }
+                ui.separator();
+                import_folder = ui
+                    .add_enabled(!importing, crate::icons::Icon::Open.button(ui, "Import folder…", t))
+                    .on_hover_text("Add a folder's files as one Folder card")
+                    .on_disabled_hover_text("A folder is being imported")
+                    .clicked();
                 ui.separator();
                 ui.label("Recent projects");
                 let paths = self.files.projects.recent();
@@ -476,9 +531,22 @@ impl NodeCraftApp {
                     clear = true;
                 }
             });
-        let owns = was_open || self.files.menu_open || action.is_some() || recent.is_some();
-        if action.is_some() || recent.is_some() {
+        if focus_owner {
+            self.notice = Some(match self.session.dispatch("file.focus_owner", &json!({})) {
+                Ok(_) => "Asking the window that owns project storage to come forward…".into(),
+                Err(error) => error.message,
+            });
+        }
+        let owns = was_open || self.files.menu_open || action.is_some() || recent.is_some() || import_folder;
+        if action.is_some() || recent.is_some() || import_folder {
             self.files.menu_open = false;
+        }
+        if import_folder {
+            // The new card goes in the middle of the canvas.
+            let viewport = self.viewport;
+            let world = self.view.to_world(viewport.min, viewport.center());
+            let at = nodecraft_graph::Position { x: world.x - t.card_width * 0.5, y: world.y - t.card_min_height * 0.5 };
+            self.pick_folder(super::folder_import::Target::New(at));
         }
         if let Some(id) = action {
             self.begin_file(id, ui.ctx());

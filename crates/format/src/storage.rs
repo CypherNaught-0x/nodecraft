@@ -1,7 +1,7 @@
 //! Platform storage boundary. Errors are public-safe and never contain a path or document data.
 use crate::asset_source::{StreamMetrics, TransferCancel};
 use crate::{ArchivePlan, AssetContext, CheckpointPlan, MAX_ARCHIVE_BYTES, Snapshot, StorageCapability, invalid, journal::MAX_JOURNAL_BYTES};
-use nodecraft_types::{Error, ErrorKind};
+use nodecraft_types::{Blake3, Error, ErrorKind};
 use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -59,6 +59,11 @@ impl StorageLocation {
 /// failure). An append error may have written a partial or complete frame; stop appending and
 /// checkpoint before proceeding. Implementations must enforce the same byte limits as codecs.
 pub trait ProjectStorage {
+    /// Stable, private identity scope for a source location. Native hosts canonicalize
+    /// aliases; opaque hosts use their exact key. No location text enters the document.
+    fn project_identity_scope(&self, location: &StorageLocation) -> Result<Blake3, Error> {
+        location_identity(location)
+    }
     /// Explicit capability: absence preserves the frozen bounded byte implementation.
     fn capability(&self) -> StorageCapability {
         StorageCapability::SmallV1
@@ -113,6 +118,20 @@ pub trait ProjectStorage {
     fn discard(&mut self) -> Result<(), Error> {
         Err(Error::new(ErrorKind::Unsupported, "recovery discard is not supported by this host"))
     }
+}
+
+fn location_identity(location: &StorageLocation) -> Result<Blake3, Error> {
+    let (tag, bytes): (&[u8], &[u8]) = match location {
+        StorageLocation::Path(path) => (b"path", path.as_os_str().as_encoded_bytes()),
+        StorageLocation::Key(key) => (b"key", key.as_bytes()),
+    };
+    if bytes.is_empty() || bytes.len() > 4096 || bytes.contains(&0) {
+        return Err(invalid("project identity location must contain 1 to 4096 bytes without NUL"));
+    }
+    let mut hash = blake3::Hasher::new_derive_key("NodeCraft legacy project location v1");
+    hash.update(tag);
+    hash.update(bytes);
+    Ok(Blake3::from_bytes(*hash.finalize().as_bytes()))
 }
 
 /// Deterministic storage for tests and hosts that manage persistence outside Rust filesystem APIs.
@@ -260,6 +279,12 @@ pub(crate) mod native {
         }
     }
     impl ProjectStorage for NativeStorage {
+        fn project_identity_scope(&self, location: &StorageLocation) -> Result<Blake3, Error> {
+            let StorageLocation::Path(path) = location else {
+                return Err(Error::new(ErrorKind::Unsupported, "native storage requires a filesystem path"));
+            };
+            location_identity(&StorageLocation::Path(resolved(path)?))
+        }
         fn capability(&self) -> StorageCapability {
             StorageCapability::StreamingV2
         }

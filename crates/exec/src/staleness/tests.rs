@@ -94,6 +94,7 @@ fn stamp(project: &mut Project, kinds: &Registry, n: u8) {
         input_hash: Some(hash),
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     };
     Changeset::new(vec![
@@ -439,6 +440,7 @@ fn a_large_source_fanned_out_is_hashed_once_and_oversized_queries_are_refused() 
                 input_hash: Some(hash),
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             },
         });
@@ -907,6 +909,7 @@ fn diagnostic_results(project: &mut Project) {
             input_hash: Some(Blake3::from_bytes([0; 32])),
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         });
         node.active = Some(generation);
@@ -1028,6 +1031,7 @@ fn report_shared_rejected_source_reuses_cache_and_target_rejection_names_target(
         input_hash: Some(Blake3::from_bytes([0; 32])),
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     });
     source.active = Some(generation);
