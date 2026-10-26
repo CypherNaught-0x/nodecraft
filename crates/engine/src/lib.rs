@@ -78,6 +78,7 @@ pub mod provider_quotes;
 pub mod resolve_cmds;
 pub mod search_cmds;
 pub mod share_cmds;
+pub mod storage_window_cmds;
 pub mod style_cmds;
 
 pub mod field_cmds;

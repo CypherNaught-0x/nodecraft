@@ -569,7 +569,13 @@ impl Session {
         self.collect_assets().map(|_| ())
     }
     pub fn file_status(&self) -> crate::file_cmds::FileStatus {
-        self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus { dirty: true, ..Default::default() })
+        self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus {
+            dirty: true,
+            unavailable_reason: Some(
+                "Project storage is not configured for this session. Reopen NodeCraft in a desktop window with a writable settings folder.",
+            ),
+            ..Default::default()
+        })
     }
     /// Host observation of this adopted document; not inferred from ids, paths or revisions.
     pub fn document_lineage(&self) -> DocumentLineage {

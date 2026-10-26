@@ -250,6 +250,9 @@ impl Persistence {
     pub fn status(&self, state: u64) -> FileStatus {
         FileStatus {
             available: !self.closed,
+            unavailable_reason: self
+                .closed
+                .then_some("Recovery was closed for this session. Close this window and reopen NodeCraft, then open the project from File > Open."),
             location: self.location.clone(),
             dirty: self.saved_state != Some(state),
             recovery_required: self.recovery_required,
