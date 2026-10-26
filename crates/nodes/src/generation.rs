@@ -106,8 +106,8 @@ pub struct GenerationKind {
     snapshot: [u8; 32],
     definitions: Arc<BTreeMap<String, Definition>>,
 }
-fn local_schema(model: Option<&str>) -> ParamSchema {
-    ParamSchema {
+fn local_schema(model: Option<&str>, output: Modality) -> ParamSchema {
+    let mut schema = ParamSchema {
         params: vec![
             ParamSpec {
                 name: MODEL.into(),
@@ -128,7 +128,11 @@ fn local_schema(model: Option<&str>) -> ParamSchema {
                 visible_if: None,
             },
         ],
+    };
+    if output == Modality::Mesh {
+        schema.params.extend(crate::mesh::view::schema());
     }
+    schema
 }
 fn base(id: &'static str, output: Modality) -> NodeDescriptor {
     NodeDescriptor {
@@ -146,7 +150,7 @@ fn base(id: &'static str, output: Modality) -> NodeDescriptor {
         inputs: vec![Port { name: PROMPT.into(), port_type: PortType { modality: Modality::Text, many: true } }],
         // One answer or model per run; an image run can make several.
         outputs: vec![Port { name: "out".into(), port_type: PortType { modality: output, many: output == Modality::Image } }],
-        params: local_schema(None),
+        params: local_schema(None, output),
         quick_add: None,
     }
 }
@@ -237,7 +241,7 @@ impl GenerationKind {
             if model.parameters.schema.params.iter().any(|p| p.name == MODEL || p.name == PROMPT || p.control == ParamControl::Model) {
                 return Err(invalid("model settings collide with node-owned model or prompt controls"));
             }
-            let local = local_schema(Some(&model.id));
+            let local = local_schema(Some(&model.id), output);
             ParamSchema::validate_parts(&[&local, &model.parameters.schema])?;
             let mut descriptor = base(id, output);
             descriptor.params = local;
@@ -289,7 +293,10 @@ impl GenerationKind {
                 }
             }
             let mut contract = NodeContract::derive(&descriptor);
-            contract.params = Contract::from_schema(id, ParamOwner::Node, local_schema(Some(&model.id)));
+            contract.params = Contract::from_schema(id, ParamOwner::Node, local_schema(Some(&model.id), output));
+            if output == Modality::Mesh {
+                crate::mesh::view::contract(&mut contract.params);
+            }
             contract.owned_groups.push(model.parameters.clone());
             contract.inputs = descriptor
                 .inputs
@@ -405,6 +412,13 @@ impl GenerationKind {
         if let Some(prompt) = existing.params.get(PROMPT) {
             values.insert(PROMPT.into(), prompt.clone());
         }
+        if self.output == Modality::Mesh {
+            for name in crate::mesh::view::NAMES {
+                if let Some(value) = existing.params.get(name) {
+                    values.insert(name.into(), value.clone());
+                }
+            }
+        }
         let detached = self.instantiate_instance(existing.id, existing.config.clone(), &values)?;
         let mut candidate = existing.clone();
         candidate.params = detached.params;
@@ -416,6 +430,14 @@ impl GenerationKind {
     }
 }
 impl NodeKind for GenerationKind {
+    fn contract(&self, descriptor: &NodeDescriptor) -> NodeContract {
+        let mut contract = NodeContract::derive(descriptor);
+        if self.output == Modality::Mesh {
+            crate::mesh::view::contract(&mut contract.params);
+        }
+        contract
+    }
+
     fn descriptor(&self) -> &NodeDescriptor {
         &self.base
     }
@@ -443,7 +465,7 @@ impl NodeKind for GenerationKind {
         Self::version(node)?;
         match self.definition(node) {
             Ok(d) => Ok(d.contract.clone()),
-            Err(_) => Ok(NodeContract::derive(&self.base)),
+            Err(_) => Ok(self.contract(&self.base)),
         }
     }
     fn validate_instance(&self, node: &Node, ready: bool) -> Result<ResolvedParams, Error> {
@@ -466,7 +488,7 @@ impl NodeKind for GenerationKind {
         };
         let (descriptor, contract) = match definition {
             Some(d) => (&d.descriptor, d.contract.clone()),
-            None => (&self.base, NodeContract::derive(&self.base)),
+            None => (&self.base, self.contract(&self.base)),
         };
         let r = contract.resolve(supplied, false)?;
         if let Some(issue) = r.issues.first() {

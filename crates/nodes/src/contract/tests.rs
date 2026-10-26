@@ -65,7 +65,10 @@ fn source_contracts_declare_their_single_mode() {
         assert_eq!(contract.resolve_mode(&BTreeMap::new(), true).unwrap(), kind.mode(&[]).as_ref(), "{id}");
         assert!(contract.resolve_mode(&wires(&[("in", 1)]), true).is_err(), "{id}: sources take no wires");
         assert_eq!(contract.outputs[0].role, "value");
-        assert!(contract.params.schema.params.iter().all(|spec| contract.params.rule(&spec.name).unwrap().affects.shape));
+        for spec in &contract.params.schema.params {
+            let viewer = id == crate::mesh::SOURCE && crate::mesh::view::NAMES.contains(&spec.name.as_str());
+            assert_eq!(contract.params.rule(&spec.name).unwrap().affects.shape, !viewer, "{id}: {}", spec.name);
+        }
         // A folder keeps its files in config, so its settings all have defaults.
         let settled = id == "source.text" || id == crate::folder::ID;
         assert!(contract.params.resolve(&Default::default(), true).unwrap().issues.is_empty() == settled, "{id}: media sources need an asset");
