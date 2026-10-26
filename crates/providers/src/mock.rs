@@ -50,12 +50,13 @@ pub struct MockModel {
     pub tokens: Option<(u64, u64)>,
     /// The units it says it billed, if any (#437).
     pub billable_units: Option<BillableUnits>,
+    pub execution_ms: Option<u64>,
     pub fail: Option<MockFailure>,
 }
 
 impl MockModel {
     pub fn new(output: MockOutput) -> Self {
-        Self { output, polls: 0, cost: None, tokens: None, billable_units: None, fail: None }
+        Self { output, polls: 0, cost: None, tokens: None, billable_units: None, execution_ms: None, fail: None }
     }
 }
 
@@ -251,6 +252,7 @@ fn result(model: &MockModel, job: &ProviderJob) -> Completed {
     done.usage.input_tokens = model.tokens.map(|(input, _)| input);
     done.usage.output_tokens = model.tokens.map(|(_, output)| output);
     done.usage.billable_units = model.billable_units;
+    done.usage.execution_ms = model.execution_ms;
     done
 }
 

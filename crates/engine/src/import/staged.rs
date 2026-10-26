@@ -10,9 +10,9 @@ use std::{
     sync::Arc,
 };
 
-struct Unique<'a> {
-    hash: Blake3,
-    bytes: &'a [u8],
+pub(super) struct Unique<'a> {
+    pub(super) hash: Blake3,
+    pub(super) bytes: &'a [u8],
 }
 fn invalid(message: &'static str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
@@ -21,7 +21,7 @@ fn allocation() -> Error {
     invalid("cannot reserve import bookkeeping")
 }
 
-fn prepare(session: &Session, unique: &[Unique<'_>]) -> Result<PreparedImports, Error> {
+pub(super) fn prepare(session: &Session, unique: &[Unique<'_>]) -> Result<PreparedImports, Error> {
     let cancel = TransferCancel::default();
     let metrics = StreamMetrics::default();
     let prepared = if session.assets().context().supports_large_assets() {
@@ -54,6 +54,7 @@ fn prepare(session: &Session, unique: &[Unique<'_>]) -> Result<PreparedImports, 
     Ok(prepared)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     session: &mut Session,
     canvas: CanvasId,
@@ -62,6 +63,7 @@ pub(super) fn run(
     files: &[Incoming<'_>],
     ids: &[NodeId],
     movies: &[ProbedMovie],
+    position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
 ) -> Result<Imported, Error> {
     // A pending save changes the admission identity the prepared batch is checked against.
     session.settle_for_edit()?;
@@ -179,6 +181,9 @@ pub(super) fn run(
         node.pos = Position { x: at.x + step * nodes.len() as f32, y: at.y };
         imported.nodes.push(id);
         nodes.push(node);
+    }
+    for node in &mut nodes {
+        node.pos = position(node, session.kinds());
     }
     let params = json!({"canvas":canvas,"nodes":nodes,"edges":[]});
     match prepared {

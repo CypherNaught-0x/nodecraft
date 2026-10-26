@@ -21,6 +21,8 @@ mod background_open;
 mod background_save;
 #[path = "batch_keys517.rs"]
 mod batch_keys517;
+#[path = "bfl33.rs"]
+mod bfl33;
 #[path = "browser_plugins866.rs"]
 mod browser_plugins866;
 #[path = "bulk_edits.rs"]
@@ -157,6 +159,9 @@ mod token_rates595;
 mod trained_styles167;
 #[path = "video_generation559.rs"]
 mod video_generation559;
+
+#[path = "huggingface48.rs"]
+mod huggingface48;
 
 #[path = "gemini44.rs"]
 mod gemini44;

@@ -60,6 +60,25 @@ async fn live_ollama() {
     assert!(!reply.text.is_empty());
 }
 
+#[cfg(feature = "huggingface")]
+#[tokio::test(flavor = "current_thread")]
+async fn live_huggingface48() {
+    use nodecraft_providers::{JobInput, Output, Provider, ProviderJob, Submission};
+    if !enabled("HUGGINGFACE") {
+        return;
+    }
+    let key = nodecraft_providers::secrets::Secret::new(&std::env::var("HF_TOKEN").unwrap()).unwrap();
+    let provider = nodecraft_providers::huggingface::HuggingFace::new(&key, Arc::new(ReqwestHttp::new().unwrap()));
+    let job = ProviderJob {
+        model: nodecraft_providers::huggingface::MODEL.into(),
+        params: serde_json::Map::from_iter([("max_tokens".into(), serde_json::json!(1024))]),
+        inputs: vec![JobInput::Text { role: "prompt".into(), text: "Reply with one word: pong".into() }],
+        idempotency_key: "nodecraft-live-huggingface48".into(),
+    };
+    let Submission::Finished(reply) = provider.submit(&job).await.unwrap() else { panic!("sync") };
+    assert!(reply.outputs.iter().any(|output| matches!(output,Output::Text(text) if text.to_lowercase().contains("pong"))));
+}
+
 #[cfg(feature = "gemini-llm")]
 #[tokio::test(flavor = "current_thread")]
 async fn live_gemini44() {
