@@ -202,6 +202,10 @@ fn mesh111_visual() {
         };
         h.state_mut().session.dispatch("mesh.view_set", &json!({"canvas":canvas,"id":id,"view":view})).unwrap();
         h.run_steps(3);
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.minimap_toggle", &json!({})).unwrap();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+        h.run_steps(3);
         let area = h.get_by_role(egui::accesskit::Role::Image).rect();
         let image = h.render().unwrap();
         let background = h.state().theme.tokens().canvas_bg;
