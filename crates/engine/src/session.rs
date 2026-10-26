@@ -654,7 +654,9 @@ impl Session {
         // Live sharing must retain the room's identity. Only local recovery migrates it.
         let document = if migrate && snapshot.project.id() == project_identity::LEGACY {
             let scope = match (self.persistence.as_mut(), location.as_ref()) {
-                (Some(storage), Some(location)) => Some(storage.project_identity_scope(location)?),
+                // The original drive/folder may be gone after a crash. Keep the legacy pooled
+                // identity if its scope cannot be established; this must not block recovery.
+                (Some(storage), Some(location)) => storage.project_identity_scope(location).ok(),
                 _ => None,
             };
             project_identity::prepare(snapshot, scope)?

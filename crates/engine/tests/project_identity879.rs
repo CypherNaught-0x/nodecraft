@@ -290,3 +290,39 @@ fn native_legacy_aliases_read_only_and_distinct_files_have_stable_scopes() {
     drop(session);
     std::fs::set_permissions(&path, original).unwrap();
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn missing_original_folder_does_not_prevent_native_legacy_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let original_folder = dir.path().join("removed-drive");
+    std::fs::create_dir(&original_folder).unwrap();
+    let original = original_folder.join("legacy.ncraft");
+    std::fs::write(&original, nodecraft_format::encode(&snapshot(true)).unwrap()).unwrap();
+    std::fs::remove_dir_all(&original_folder).unwrap();
+    let journal = dir.path().join("recovery.journal");
+    let native = nodecraft_format::NativeStorage::new(journal.clone()).unwrap();
+    assert!(native.project_identity_scope(&StorageLocation::Path(original.clone())).is_err(), "the original scope is actually unavailable");
+    let mut session = Session::with_storage(snapshot(false), Box::new(native)).unwrap();
+    let recovered = snapshot(true);
+    let expected = recovered.project.clone();
+    session.recover(recovered, Some(StorageLocation::Path(original.clone()))).unwrap();
+    assert_eq!(session.document(), &expected);
+    assert_eq!(session.document().id(), LEGACY, "unknown scope keeps conservative pooled spending");
+    assert!(!session.can_undo(), "no identity change was fabricated");
+    assert_eq!(session.file_status().location, Some(StorageLocation::Path(original)));
+    drop(session);
+    let journal = nodecraft_format::NativeStorage::new(journal).unwrap();
+    assert_eq!(journal.recover().unwrap().snapshot.project, expected);
+}
+
+#[test]
+fn recovery_checkpoint_failure_still_preserves_the_live_document_and_journal() {
+    let (mut session, store) = setup();
+    let before = session.document().clone();
+    let recovery = store.0.lock().unwrap().memory.recovery.clone();
+    store.0.lock().unwrap().fail_checkpoint = true;
+    assert!(session.recover(snapshot(true), Some(StorageLocation::from_command("old.ncraft".into()).unwrap())).is_err());
+    assert_eq!(session.document(), &before);
+    assert_eq!(store.0.lock().unwrap().memory.recovery, recovery);
+}

@@ -10,6 +10,12 @@
   The digest is truncated to 16 bytes, deterministically rejecting the reserved and all-zero ids.
   Paths and keys are never stored in the document. Unlocated legacy snapshots keep their original
   conservative pooled identity: a host must supply a stable origin to separate their budget safely.
+  During crash recovery, scope lookup is best-effort: if the original folder or drive is
+  unavailable, restore the snapshot with its legacy identity and no migration undo step. Core
+  asset transfer and recovery checkpoint errors still refuse adoption without changing the live
+  document. A later successful open from an available origin can establish its stable identity.
+  `SetProjectId` is a new serialized changeset variant; older builds cannot replay journals that
+  contain it, so keep the recovery journal with a compatible NodeCraft build.
 - Prepare the id, changeset and undo bookkeeping before publishing the replacement recovery
   checkpoint. A failed preparation or checkpoint leaves the old live document and recovery
   intact. The checkpoint contains the migrated id before the document becomes visible, so a
