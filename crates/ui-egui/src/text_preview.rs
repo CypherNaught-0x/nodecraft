@@ -14,6 +14,8 @@ use std::{
 const MAX_ROWS: usize = 16_384;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const FULL_BYTES: usize = 8 * 1024 * 1024;
+// Bound per-frame label copying, hashing and text layout independently of retained/copyable text.
+const DISPLAY_BYTES: usize = 64 * 1024;
 pub(crate) type Failures = BTreeMap<(CanvasId, NodeId), (Blake3, String)>;
 
 pub(crate) fn eligible(descriptor: Option<&nodecraft_nodes::NodeDescriptor>) -> bool {
@@ -39,6 +41,21 @@ struct Full {
     reference: Reference,
     title: String,
     text: String,
+    display_end: usize,
+}
+
+impl Full {
+    fn new(reference: Reference, title: String, text: String) -> Self {
+        let display_end = text.floor_char_boundary(DISPLAY_BYTES.min(text.len()));
+        Self { reference, title, text, display_end }
+    }
+    fn update(&mut self, text: String) {
+        self.display_end = text.floor_char_boundary(DISPLAY_BYTES.min(text.len()));
+        self.text = text;
+    }
+    fn displayed(&self) -> &str {
+        self.text.get(..self.display_end).unwrap_or_default()
+    }
 }
 
 #[derive(Default)]
@@ -397,8 +414,9 @@ impl Cache {
             }
         }
         if let Some(full) = &mut self.full {
-            full.text =
-                value(canvas, &kinds, &full.reference, routing.as_ref().ok()).map_or_else(|| "This value is no longer available.".into(), |v| full_text(&v));
+            full.update(
+                value(canvas, &kinds, &full.reference, routing.as_ref().ok()).map_or_else(|| "This value is no longer available.".into(), |v| full_text(&v)),
+            );
         }
     }
 
@@ -413,7 +431,7 @@ impl Cache {
         let routing = nodecraft_exec::routing::incoming(canvas, session.kinds()).ok();
         let text = value(canvas, session.kinds(), &reference, routing.as_ref())
             .map_or_else(|| "Value unavailable: no completed result or preview limit".into(), |v| full_text(&v));
-        self.full = Some(Full { reference, title: row.label.clone(), text });
+        self.full = Some(Full::new(reference, row.label.clone(), text));
     }
 
     pub fn overlay(&mut self, ctx: &egui::Context, t: &Tokens) -> bool {
@@ -422,9 +440,18 @@ impl Cache {
         let modal = egui::Modal::new(egui::Id::new("local_text_preview_full")).show(ctx, |ui| {
             ui.set_width(t.viewer_width.min(ctx.content_rect().width() - t.card_padding * 2.0).max(t.card_width));
             ui.heading(&full.title);
+            if full.display_end < full.text.len() {
+                ui.label(
+                    RichText::new(format!("Showing the first {} of {} bytes. Copy full text to access the rest.", full.display_end, full.text.len()))
+                        .color(t.text_muted),
+                );
+            }
             egui::ScrollArea::vertical().max_height(t.comments_height).show(ui, |ui| {
-                ui.add(egui::Label::new(if full.text.is_empty() { "(empty)" } else { &full.text }).selectable(true).wrap());
+                ui.add(egui::Label::new(if full.text.is_empty() { "(empty)" } else { full.displayed() }).selectable(true).wrap());
             });
+            if ui.button("Copy full text").clicked() {
+                ctx.copy_text(full.text.clone());
+            }
             close = ui.button("Close text preview").clicked();
         });
         if close || modal.should_close() {
@@ -562,6 +589,41 @@ mod tests {
         assert_eq!(full_text(&Value::List(vec![Value::Text(String::new()), Value::Text(String::new())])), "\n");
         let huge = Value::List(vec![Value::List(vec![]); MAX_ROWS + 1]);
         assert!(excerpt(&huge, 256, 3).contains("limit"));
+    }
+
+    #[test]
+    fn expanded_modal_bounds_megabytes_of_unicode_text_and_copies_the_retained_value() {
+        use egui_kittest::{Harness, kittest::Queryable};
+        let text = format!("{}TAIL", "🦊 café\n".repeat(300_000));
+        assert!(text.len() > 3 * 1024 * 1024);
+        let full = Full::new(Reference { node: S, port: "out".into() }, "Public large output".into(), text.clone());
+        assert!(full.display_end <= DISPLAY_BYTES);
+        assert!(text.is_char_boundary(full.display_end));
+        let shown = full.displayed().to_owned();
+        let cache = Cache { full: Some(full), ..Default::default() };
+        let mut h = Harness::builder().with_size(egui::vec2(1000.0, 760.0)).build_ui_state(
+            |ui, cache: &mut Cache| {
+                cache.overlay(ui.ctx(), &crate::theme::DARK);
+            },
+            cache,
+        );
+        for _ in 0..3 {
+            h.step();
+            h.get_by_label(&shown);
+            assert!(h.query_by_label(&text).is_none(), "the full retained value must never enter a label");
+            assert!(h.query_by_label_contains("Copy full text to access the rest.").is_some());
+        }
+        if let Some(path) = std::env::var_os("NODECRAFT_TEXT969_EXPAND_CAPTURE") {
+            h.render().unwrap().save(std::path::PathBuf::from(path)).unwrap();
+        }
+        h.get_by_label("Copy full text").click();
+        h.step();
+        assert!(h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(copied) if copied == &text)));
+        assert_eq!(h.state().full.as_ref().unwrap().text, text);
+        let full = h.state_mut().full.as_mut().unwrap();
+        full.update("short\nvalue".into());
+        assert_eq!(full.displayed(), "short\nvalue");
+        assert_eq!(full.display_end, full.text.len());
     }
 
     #[test]

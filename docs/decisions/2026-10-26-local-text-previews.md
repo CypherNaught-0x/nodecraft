@@ -21,8 +21,11 @@ rows and 8 MiB including charged row overhead, plus one fixed omission notice. I
 source-summary memo also has at most one entry per admitted input row. Larger graphs show an
 explicit limit message. No preview is refreshed for an uncommitted field draft or an idle frame.
 
-Expand opens one modal, selectable full-value view, bounded to 8 MiB and 16,384 list values.
-Only this explicit request copies full text; normal frames format the cached excerpts. The modal
+Expand retains at most 8 MiB and 16,384 list values, and lays out only a Unicode-safe prefix
+of at most 64 KiB. The display boundary is cached when the value changes. A truncation notice
+reports byte counts, and Copy full text copies the retained value only on an explicit click.
+Idle modal frames never clone, hash or lay out the multi-megabyte retained value. Normal card
+frames format cached excerpts. The modal
 updates on document changes and owns canvas input through its closing frame. It creates no
 document change or undo entry. Empty text and lists are distinguished from absent results.
 

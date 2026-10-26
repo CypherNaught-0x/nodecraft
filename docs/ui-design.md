@@ -435,8 +435,10 @@ lines; a virtualized list scrolls longer input collections. Empty text/list plac
 from a missing output. Missing connections and action errors appear inline, with the input port
 and the theme's `danger` colour. Fixing a parameter or input removes its obsolete error.
 
-Each available value has an Expand action. It opens selectable full text in one modal view,
-within the text inspector's 8 MiB/16,384-value limit, without editing the project. Escape or
+Each available value has an Expand action. Its modal lays out at most the first 64 KiB of text,
+cut at a Unicode character boundary. A notice gives the displayed and retained byte counts;
+Copy full text copies the retained value on demand, within the inspector's 8 MiB/16,384-value
+limit, without editing the project. Escape or
 Close text preview dismisses it; canvas shortcuts wait while it is open. Both themes use the
 existing prompt/text/spacing tokens, and local previews follow the ordinary small-zoom body
 threshold. Cache admission limits and rationale are in the
