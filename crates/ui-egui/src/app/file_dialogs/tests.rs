@@ -1149,8 +1149,8 @@ fn render_storage968_evidence() {
     settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
     settle(&mut h);
+    h.run();
+    assert!(h.state().files.menu_open, "An unavailable save opens the File panel with its storage guidance");
+    h.get_by_label("Open project…");
     h.render().unwrap().save(output.join("closed-recovery.png")).unwrap();
-    h.get_by_label("File").click();
-    settle(&mut h);
-    h.render().unwrap().save(output.join("closed-recovery-file-panel.png")).unwrap();
 }
