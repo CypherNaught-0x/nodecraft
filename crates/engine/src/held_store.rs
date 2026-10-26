@@ -70,6 +70,8 @@ struct StoredUsage {
     cost: Option<Money>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     billable_units: Option<BillableUnits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    execution_ms: Option<u64>,
 }
 
 /// An output; inline bytes are listed by length and follow the header.
@@ -118,7 +120,13 @@ impl HeldRecord {
             reason: self.reason.clone(),
             routes: self.routes.clone(),
             recipe: self.recipe.clone(),
-            usage: StoredUsage { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens, cost: usage.cost, billable_units: usage.billable_units },
+            usage: StoredUsage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cost: usage.cost,
+                billable_units: usage.billable_units,
+                execution_ms: usage.execution_ms,
+            },
             outputs,
         };
         let header = serde_json::to_vec(&header).map_err(|e| Error::new(ErrorKind::Internal, format!("the held result can't be written: {e}")))?;
@@ -179,6 +187,7 @@ impl HeldRecord {
         usage.output_tokens = header.usage.output_tokens;
         usage.cost = header.usage.cost;
         usage.billable_units = header.usage.billable_units;
+        usage.execution_ms = header.usage.execution_ms;
         Ok(Self {
             project: header.project,
             canvas: header.canvas,
@@ -381,6 +390,7 @@ mod tests {
     fn record() -> HeldRecord {
         let mut usage = Usage::default();
         usage.input_tokens = Some(7);
+        usage.execution_ms = Some(1234);
         usage.billable_units = BillableUnits::from_millionths(1_500_000);
         HeldRecord {
             project: ProjectId::from_bytes([1; 16]),

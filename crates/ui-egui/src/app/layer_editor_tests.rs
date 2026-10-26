@@ -297,7 +297,7 @@ fn a_text_layer_picks_a_project_font_and_a_missing_one_says_it_draws_as_lato() {
     assert!(nodecraft_nodes::layers::fonts(&editor_node(&h)).is_empty(), "{:?}", h.state().notice);
     h.state_mut().layer_editor.as_mut().unwrap().selected = vec!["text-1".into()];
     h.run_steps(3);
-    assert!(h.query_by_label_contains("Lito isn't in this project, so it draws as Lato").is_some());
+    assert!(h.query_by_label_contains("Lito isn't held by this card, so it draws as Lato").is_some());
     // The picker is offered; a cancelled pick changes nothing.
     h.get_by_label("Add font file…").click();
     h.run_steps(3);

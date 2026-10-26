@@ -133,6 +133,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "history.delete",
     "history.clear",
     "history.extract",
+    "export.status",
     "canvas.fit_all",
     "canvas.fit_selection",
     "canvas.minimap_toggle",
@@ -238,6 +239,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "deck.slide_remove",
     "deck.slide_move",
     "deck.layer_update",
+    "deck.font_add",
+    "deck.font_remove",
     // Clips only change the node's stored clips; the render runs (and is quoted) through run.start.
     "timeline.list",
     "timeline.interchange",
@@ -328,6 +331,7 @@ pub const HUMAN_ONLY: &[&str] = &[
     "providers.settings_set",
     // Writing files on this machine is the person's call, as saving the project is (#557).
     "history.export",
+    "export.cancel",
     "timeline.export_interchange",
     // What lands on the person's clipboard is what they paste next: theirs to put there (#831).
     "history.copy",
