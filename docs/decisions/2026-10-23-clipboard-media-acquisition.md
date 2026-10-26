@@ -2,7 +2,10 @@
 
 Keep text editors and serialized canvas payloads on their existing path. On desktop, arbitrate
 plain canvas text off the UI thread: Finder/Explorer may also expose names as plain text, so
-typed file references win; absent references, deliver the original text without reading pixels.
+typed file references win on a positive receipt. If the optional file-reference probe is absent
+or fails, deliver the text egui already supplied without reading pixels. Failure to start the
+probe worker also falls back to that text. A confirmed file list whose bounded acquisition
+fails is reported as a file error instead of silently importing its plain-text names.
 A textless paste reads typed references before image pixels through the pinned safe arboard API. File references enter the existing
 bounded native drop service, retaining its single worker, admission lease, path limits and
 blocked-I/O policy. No clipboard path string is interpreted as a file reference.
@@ -23,6 +26,8 @@ synchronous engine work are separate owners; this is not a total-RSS bound.
 
 Capture private session identity, project, canvas, revision and placement at admission. Deliver
 only while that target is current, through the existing engine file importer, as one undo step.
-Use kittests for input ownership, failed/late completion, bounded cleanup and copied native
+The captured placement is the payload center, and both PNG paste and copied files use the
+same geometry-aware importer as current native drops. Use kittests for input ownership,
+failed/late completion, bounded cleanup and copied native
 files. Actual clipboard permission and gesture behavior still needs evidence from a served
 wasm build; native fake clipboard ports cannot establish browser support.

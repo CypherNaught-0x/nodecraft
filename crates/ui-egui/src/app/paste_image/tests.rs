@@ -164,7 +164,7 @@ fn an_edit_while_the_image_is_read_wins_and_a_second_paste_waits() {
     finish(&mut h);
     assert_eq!(reads.load(Ordering::SeqCst), 1);
     assert_eq!(nodes(&h).len(), count);
-    assert_eq!(h.state().notice.as_deref(), Some("The document changed while reading the copied image; nothing was added. Paste again."));
+    assert_eq!(h.state().notice.as_deref(), Some("The document changed while reading the clipboard; nothing was added. Paste again."));
 }
 
 /// The real OS clipboard: copy an image first, e.g. on macOS
@@ -237,4 +237,56 @@ fn text_without_typed_file_references_keeps_its_payload_and_never_reads_pixels()
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+#[ignore = "manual public-safe clipboard922 probe failure evidence"]
+fn render_clipboard922_probe_failure() {
+    let path = std::path::PathBuf::from(std::env::var_os("NODECRAFT_CLIPBOARD922_CAPTURE").unwrap());
+    let mut h = harness();
+    h.state_mut().image_paste.files_reader = Some(Arc::new(|| Err("The clipboard can't be opened; nothing was pasted.".into())));
+    h.hover_at(Pos2::new(650.0, 180.0));
+    h.run();
+    h.event(egui::Event::Paste("Public text survives a clipboard probe failure.".into()));
+    h.step();
+    finish(&mut h);
+    h.render().unwrap().save(path).unwrap();
+}
+
+#[test]
+fn failed_file_probe_or_worker_start_keeps_egui_text_and_one_undo_step() {
+    for fail_spawn in [false, true] {
+        let mut h = harness();
+        let pixels = clipboard(&mut h, || Ok(Some(grey(2, 2))));
+        let probes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&probes);
+        h.state_mut().image_paste.files_reader = Some(Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Err("The clipboard can't be opened; nothing was pasted.".into())
+        }));
+        if fail_spawn {
+            h.state_mut().image_paste.spawn = |_, _| Err(std::io::Error::other("fixture worker unavailable"));
+        }
+        let before = h.state().session.document().clone();
+        let at = Pos2::new(650.0, 180.0);
+        h.hover_at(at);
+        h.run();
+        h.event(egui::Event::Paste("Public text survives a clipboard probe failure.".into()));
+        h.event(egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::COMMAND });
+        h.step();
+        finish(&mut h);
+        let existing = before.canvases().get(&h.state().canvas).unwrap().nodes();
+        let added: Vec<_> = nodes(&h).into_iter().filter(|n| !existing.contains_key(&n.id)).collect();
+        assert_eq!(added.len(), 1, "{:?}", h.state().notice);
+        assert_eq!(added[0].params.get("text"), Some(&nodecraft_types::Value::Text("Public text survives a clipboard probe failure.".into())));
+        assert_eq!(probes.load(Ordering::SeqCst), usize::from(!fail_spawn));
+        assert_eq!(pixels.load(Ordering::SeqCst), 0);
+        assert!(h.state().notice.is_none());
+        let world = h.state().view.to_world(h.state().viewport.min, at);
+        let rect = super::super::payload_rect(&h.state().session, &added[0], h.state().theme.tokens());
+        assert!((rect.center() - world).length() < 1.0);
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        h.run();
+        assert_eq!(h.state().session.document(), &before);
+    }
 }

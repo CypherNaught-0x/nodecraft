@@ -42,6 +42,10 @@ fn a_browser_png_paste_uses_the_desktop_import_and_one_undo_step() {
     assert_eq!(selected.len(), 1);
     let id = selected.iter().next().unwrap();
     assert_eq!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(id).unwrap().kind, "source.image");
+    let node = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(id).unwrap();
+    let world = h.state().view.to_world(h.state().viewport.min, egui::pos2(600.0, 300.0));
+    let rect = super::super::payload_rect(&h.state().session, node, h.state().theme.tokens());
+    assert!((rect.center() - world).length() < 1.0, "browser PNG uses the current payload centering");
     assert!(h.state().notice.is_none());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();

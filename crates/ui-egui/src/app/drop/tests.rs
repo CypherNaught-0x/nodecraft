@@ -89,6 +89,13 @@ fn typed_clipboard_files_use_bounded_drop_acquisition_and_one_undo() {
     assert_eq!(added.len(), 2, "{:?}", h.state().notice);
     assert!(added.iter().any(|node| node.kind == "source.text"));
     assert!(added.iter().any(|node| node.kind == "source.image"));
+    let world = h.state().view.to_world(h.state().viewport.min, Pos2::new(600.0, 300.0));
+    let tokens = h.state().theme.tokens();
+    for node in &added {
+        let expected = world + egui::vec2(if node.kind == "source.image" { tokens.card_width + tokens.card_padding * 4.0 } else { 0.0 }, 0.0);
+        let rect = super::super::payload_rect(&h.state().session, node, tokens);
+        assert!((rect.center() - expected).length() < 1.0, "copied files use the same payload centering as native drops");
+    }
     assert!(h.state().notice.is_none());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
@@ -318,4 +325,33 @@ fn a_dropped_comfyui_workflow_asks_for_the_servers_nodes_then_becomes_its_card()
     assert_eq!(card.title, "fox");
     h.run();
     h.get_by_label_contains("fox");
+}
+
+#[test]
+fn a_missing_file_acquisition_service_does_not_discard_plain_clipboard_text() {
+    let mut h = harness();
+    h.state_mut().drop_acquisition.service = Err(native::Failure::Allocation);
+    h.state_mut().image_paste.files_reader = Some(Arc::new(|| Ok(None)));
+    h.state_mut().image_paste.reader = Arc::new(|| panic!("text must not read clipboard pixels"));
+    let before = h.state().session.document().clone();
+    h.hover_at(Pos2::new(650.0, 180.0));
+    h.run();
+    h.event(egui::Event::Paste("Public text with no file service".into()));
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        h.step();
+        if !h.state().image_paste_pending() {
+            break;
+        }
+        assert!(std::time::Instant::now() < end);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let old = before.canvases().get(&h.state().canvas).unwrap().nodes();
+    let added: Vec<_> = nodes(&h).into_iter().filter(|n| !old.contains_key(&n.id)).collect();
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0].params.get("text"), Some(&nodecraft_types::Value::Text("Public text with no file service".into())));
+    assert!(h.state().notice.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
 }

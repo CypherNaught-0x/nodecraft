@@ -90,6 +90,11 @@ checks `duration_ms` and `timeline.list` clips' `media_us` before rendering (the
 `video_us` field was generalized to `media_us`). A fragmented MP4 additionally
 proves configured ffprobe fills an unknown header duration while missing tools leave it unknown.
 
+Clipboard regression ports also simulate failed file-reference probes, unavailable file
+acquisition and worker-start failure; plain egui text must survive each without a pixel read.
+The public-safe `render_clipboard922_probe_failure` capture uses an injected probe error and
+`NODECRAFT_CLIPBOARD922_CAPTURE` for its output path; it never reads the OS clipboard.
+
 Clipboard regressions use `app::paste_image`, `app::web_clipboard` and `app::drop::web::tests`
 filters in `nodecraft-ui-egui`. Fake completions exercise permission refusal, deadlines, late
 results and input ownership without reading the developer's clipboard. The ignored
