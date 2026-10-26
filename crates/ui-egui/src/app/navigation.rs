@@ -10,9 +10,12 @@ impl NodeCraftApp {
     /// Whether a command uses the live canvas navigation bridge. This is routing metadata;
     /// automation must still apply its own human-only, paid and classification checks.
     pub fn is_navigation_command(id: &str) -> bool {
-        matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to")
+        matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" | "canvas.pan_to")
     }
     fn navigation_contexts(&mut self, ctx: &egui::Context) -> [NavigationContext; 4] {
+        self.navigation_contexts_for_input(ctx, false)
+    }
+    fn navigation_contexts_for_input(&mut self, ctx: &egui::Context, palette_query: bool) -> [NavigationContext; 4] {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let t = self.theme.tokens();
         let viewport = self.navigation.usable(self.viewport, t);
@@ -27,8 +30,7 @@ impl NodeCraftApp {
             || egui::Popup::is_any_open(ctx)
             || self.model_choice.is_some()
             || self.model_frame_owned
-            || self.text_focused
-            || canvas::text_input_focused(ctx)
+            || (!palette_query && (self.text_focused || canvas::text_input_focused(ctx)))
             || self.wiring.is_some()
             || self.drag.is_some()
             || self.marquee.is_some()
@@ -85,7 +87,10 @@ impl NodeCraftApp {
         visible.into_iter().chain(hidden).map(|rect| crate::navigation::decorated(rect, t)).reduce(|a, b| a.union(b))
     }
     fn navigation_context(&mut self, ctx: &egui::Context, id: &str, params: &Json) -> NavigationContext {
-        let [all, mut selected, toggle, pan] = self.navigation_contexts(ctx);
+        self.navigation_context_for_input(ctx, id, params, false)
+    }
+    fn navigation_context_for_input(&mut self, ctx: &egui::Context, id: &str, params: &Json, palette_query: bool) -> NavigationContext {
+        let [all, mut selected, toggle, pan] = self.navigation_contexts_for_input(ctx, palette_query);
         if id == "canvas.fit_selection"
             && let Some(nodes) = nodecraft_engine::navigation_cmds::requested_nodes(params)
         {
@@ -95,12 +100,12 @@ impl NodeCraftApp {
         match id {
             "canvas.fit_all" => all,
             "canvas.fit_selection" => selected,
-            "canvas.minimap_toggle" => toggle,
+            "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" => toggle,
             _ => pan,
         }
     }
 
-    fn navigation_enabled_with_context(&mut self, context: NavigationContext, id: &str, params: &Json) -> Result<(), Error> {
+    pub(super) fn navigation_enabled_with_context(&mut self, context: NavigationContext, id: &str, params: &Json) -> Result<(), Error> {
         let previous = self.session.swap_resource(Some(context));
         let result = self.session.enabled(id, params);
         self.session.swap_resource(previous);
@@ -114,6 +119,14 @@ impl NodeCraftApp {
         }
         let context = self.navigation_context(ctx, id, params);
         self.navigation_enabled_with_context(context, id, params)
+    }
+    /// Only the palette's own query can yield text ownership to its command rows.
+    pub(super) fn palette_navigation_contexts(&mut self, ctx: &egui::Context) -> [NavigationContext; 4] {
+        // Pointer press can blur the query before this frame builds the rows. Its cached
+        // ownership must yield too, but only while no other widget has acquired focus.
+        let query_focus =
+            Palette::owns_text_focus(ctx) || (ctx.memory(|memory| memory.focused()).is_none() && self.last_text_focus == Some(Palette::query_id()));
+        self.navigation_contexts_for_input(ctx, query_focus)
     }
     /// Dispatch through the same engine command/service path used by buttons and shortcuts,
     /// then apply the acknowledged intent immediately to shell view state. No dialogs/history.
@@ -135,6 +148,7 @@ impl NodeCraftApp {
         let intent = intent.ok_or_else(|| Error::new(ErrorKind::Conflict, "navigation host did not acknowledge the command"))?;
         let previous_view = self.view;
         let previous_visibility = self.navigation.visible;
+        let previous_overlays = self.prompt_overlays;
         let mut clamped = false;
         match intent.get("action").and_then(Json::as_str) {
             Some("fit_all" | "fit_selection") => {
@@ -154,6 +168,7 @@ impl NodeCraftApp {
                 clamped = self.view.fit(viewport, bounds, padding).ok_or_else(|| Error::new(ErrorKind::Conflict, "canvas is too small to fit nodes"))?.clamped;
             }
             Some("minimap_toggle") => self.navigation.visible = !self.navigation.visible,
+            Some("prompt_overlays_toggle") => self.prompt_overlays = !self.prompt_overlays,
             Some("pan_to") => {
                 let x = intent.get("x").and_then(Json::as_f64).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "pan target is unavailable"))?;
                 let y = intent.get("y").and_then(Json::as_f64).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "pan target is unavailable"))?;
@@ -166,10 +181,10 @@ impl NodeCraftApp {
         if matches!(id, "canvas.fit_all" | "canvas.fit_selection") && self.notice.as_deref().is_none_or(|notice| notice == FIT_CLAMP_NOTICE) {
             self.notice = clamped.then(|| FIT_CLAMP_NOTICE.into());
         }
-        if self.view != previous_view || self.navigation.visible != previous_visibility {
+        if self.view != previous_view || self.navigation.visible != previous_visibility || self.prompt_overlays != previous_overlays {
             ctx.request_repaint();
         }
-        Ok(json!({"zoom":self.view.zoom,"minimap_visible":self.navigation.visible,"clamped":clamped}))
+        Ok(json!({"zoom":self.view.zoom,"minimap_visible":self.navigation.visible,"prompt_overlays_visible":self.prompt_overlays,"clamped":clamped}))
     }
     pub(super) fn minimap_input_owned(&mut self, ctx: &egui::Context) -> bool {
         if self.navigation.pointer_owned || self.navigation.drag.is_some() {
@@ -178,6 +193,20 @@ impl NodeCraftApp {
         // The common case needs no geometry or capability query. A fresh press uses
         // exactly the pan admission and hit-test used by the later overlay capture.
         if !self.navigation.visible || !ctx.input(|i| i.pointer.primary_pressed()) {
+            return false;
+        }
+        // Right-side discussion chrome may cover the minimap in a short viewport. Its
+        // foreground press must not also admit a map pan before the overlays are drawn.
+        let discussion_press = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
+                _ => None,
+            })
+        });
+        // Area remembers the actual content-shrunk response bounds, not the panel's
+        // maximum scrolling budget. Before its first draw retain conservative ownership.
+        let panel = ctx.memory(|memory| memory.area_rect(egui::Id::new("discussions_panel"))).unwrap_or_else(|| self.discussion_rect());
+        if discussion_press.is_some_and(|pos| self.comments_toolbar_rect().contains(pos) || self.comments.open && panel.contains(pos)) {
             return false;
         }
         let context = self.navigation_context(ctx, "canvas.pan_to", &json!({"x":0,"y":0}));
@@ -195,6 +224,10 @@ impl NodeCraftApp {
         let pan = self.navigation_enabled_with_context(pan_context, "canvas.pan_to", &json!({"x":0,"y":0})).is_ok() && !self.navigation.geometry.error;
         let specs: Vec<_> = self.session.registry().specs().filter(|spec| Self::is_navigation_command(spec.id)).copied().collect();
         for spec in specs {
+            // H uses the shared canvas-letter admission earlier in the frame.
+            if spec.id == "canvas.prompt_overlays_toggle" {
+                continue;
+            }
             let enabled = match spec.id {
                 "canvas.fit_all" => all,
                 "canvas.fit_selection" => selected,

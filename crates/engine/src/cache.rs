@@ -153,7 +153,7 @@ pub fn lookup(
                     input_hash: Some(current),
                     items: other.items.clone(),
                     // What the other result was billed is not this copy's: nothing was (#437).
-                    settings: other.settings.iter().cloned().map(|s| JobSettings { billable_units: None, ..s }).collect(),
+                    settings: other.settings.iter().cloned().map(|s| JobSettings { billable_units: None, execution_ms: None, ..s }).collect(),
                     source_versions,
                     incomplete: None,
                 };

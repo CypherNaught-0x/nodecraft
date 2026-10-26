@@ -159,6 +159,7 @@ fn slow_mock() -> MockProvider {
     let mut slow = MockModel::new(MockOutput::Text);
     slow.polls = POLLS;
     slow.billable_units = Some(nodecraft_types::BillableUnits::parse("3").unwrap());
+    slow.execution_ms = Some(3456);
     MockProvider::new("mock", [("mock-text".to_owned(), slow)])
 }
 
@@ -229,6 +230,7 @@ fn a_job_cut_off_by_a_kill_is_followed_after_restart_charged_once_and_recorded()
     assert!(matches!(&history[0].outputs[0], Value::Text(t) if t.starts_with("mock-text: Describe the sea #")), "{history:?}");
     let billed: Vec<_> = history[0].settings.iter().map(|s| s.billable_units.map(|u| u.to_string())).collect();
     assert_eq!(billed, [Some("3".to_owned())], "a result recorded after a restart keeps its billed units (#437)");
+    assert_eq!(history[0].settings[0].execution_ms, Some(3456));
     let log = second.budget.log.lock().unwrap().clone();
     let rows: Vec<(u64, Charge)> = log.entries().map(|e| (e.cost.micros, e.status)).collect();
     assert_eq!(rows, [(10_000, Charge::Actual)], "charged once, at the estimate the mock didn't replace");
@@ -236,6 +238,46 @@ fn a_job_cut_off_by_a_kill_is_followed_after_restart_charged_once_and_recorded()
     let saved = journal.saved().unwrap();
     assert!(saved.submitted.is_empty(), "{saved:?}");
     assert_eq!(saved.usage, log);
+}
+
+#[test]
+fn a_legacy_identity_job_is_reported_and_never_assigned_to_a_migrated_project() {
+    let legacy = ProjectId::from_bytes([2; 16]);
+    let mock = slow_mock();
+    let journal = MemoryJournal::default();
+    let kinds = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap().registry().unwrap();
+    let mut old = project(&kinds);
+    Change::SetProjectId { id: legacy }.apply(&mut old).unwrap();
+    let (mut first, opened) = launch(&mock, &journal, Some(old), 50);
+    opened.unwrap();
+    start(&mut first);
+    pump_until(&mut first, "the legacy job's handle was never saved", |_| journal.saved().is_some_and(|saved| !saved.submitted.is_empty()));
+    first.runtime.kill();
+    let snapshot = nodecraft_format::Snapshot { project: first.session.document().clone(), assets: first.session.assets().clone(), epoch: 0 };
+    drop(first);
+    let migrated = Session::with_storage_origin(
+        snapshot,
+        Box::<nodecraft_format::MemoryStorage>::default(),
+        nodecraft_format::StorageLocation::from_command("legacy.ncraft".into()).unwrap(),
+    )
+    .unwrap();
+    let id = migrated.document().id();
+    assert_ne!(id, legacy);
+    let (mut second, opened) = launch(&mock, &journal, Some(migrated.document().clone()), 0);
+    opened.unwrap();
+    second.host.resume(&second.session, &second.binding);
+    let notices = second.host.pump(&mut second.session);
+    assert!(notices.iter().any(|notice| matches!(notice, RunNotice::Failed { reason, .. } if reason.contains("legacy starter identity") && reason.contains("will not be reassigned"))), "{notices:?}");
+    assert!(second.host.has_waiting());
+    assert!(!second.host.is_busy());
+    assert!(second.host.waiting_targets(id).is_empty());
+    assert!(history(&second.session).is_empty());
+    assert_eq!(mock.requests().len(), 1, "migration must never replay a paid submit");
+    let saved = journal.saved().unwrap();
+    assert_eq!(saved.submitted.len(), 1);
+    assert_eq!(saved.submitted[0].project, legacy);
+    assert!(saved.usage.spent_in("resume", Some(id)).this_project.is_empty());
+    assert_eq!(saved.usage.spent_in("resume", Some(legacy)).this_project.get(&Currency::USD).unwrap().micros, 10_000);
 }
 
 #[test]

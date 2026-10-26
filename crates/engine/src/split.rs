@@ -44,6 +44,12 @@ pub fn image_rows(node: &Node) -> (Vec<Vec<&AssetRef>>, usize) {
         let asset = node.params.get("asset").and_then(image);
         return (asset.map(|a| vec![vec![a]]).unwrap_or_default(), usize::from(asset.is_some()));
     }
+    // A folder of images shows the files it gives, after its filters and order.
+    if node.kind == nodecraft_nodes::folder::ID {
+        let images: Vec<&AssetRef> = folder_images(node).collect();
+        let rows = images.chunks(GALLERY_COLUMNS).take(GALLERY_ROWS).map(<[&AssetRef]>::to_vec).collect();
+        return (rows, images.len());
+    }
     let Some(result) = node.active.and_then(|active| node.history.iter().find(|g| g.id == active)) else {
         return (Vec::new(), 0);
     };
@@ -86,6 +92,11 @@ pub fn image_of(node: &Node) -> Option<&AssetRef> {
         }),
         single => image(single),
     })
+}
+
+/// The images a folder gives, in its order; none when its settings can't be read.
+fn folder_images(node: &Node) -> impl Iterator<Item = &AssetRef> {
+    nodecraft_nodes::folder::selected(node).unwrap_or_default().into_iter().filter_map(|entry| image(entry.value))
 }
 
 /// Where tile `index` of `count` starts along a side `length` long: edges are spread evenly, so

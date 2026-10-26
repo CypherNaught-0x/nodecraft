@@ -8,6 +8,8 @@ use serde_json::Value;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileStatus {
     pub available: bool,
+    /// Why this host cannot open/save, including how a deliberately closed session reopens.
+    pub unavailable_reason: Option<&'static str>,
     pub location: Option<StorageLocation>,
     pub dirty: bool,
     pub recovery_required: bool,
@@ -90,7 +92,11 @@ struct Save {
 }
 
 fn available(c: &Context<'_>) -> Result<(), Error> {
-    if c.file.available { Ok(()) } else { Err(Error::new(ErrorKind::Unsupported, "project storage is not configured for this session")) }
+    if c.file.available {
+        Ok(())
+    } else {
+        Err(Error::new(ErrorKind::Unsupported, c.file.unavailable_reason.unwrap_or("Project storage is not configured for this session.")))
+    }
 }
 fn open(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: Open = params(value)?;
@@ -149,7 +155,7 @@ pub fn specs() -> Vec<CommandSpec> {
             input_schema: open_schema,
             label: "Open project",
             shortcut: Some("Command+O"),
-            params_doc: "{location: string, discard_dirty?: bool, background?: bool}; UTF8 filesystem path on native, storage key on web. Returns {opened: true, read_only: bool}. Never opens a dialog. With background, a host that reads off its UI thread returns {opened: false, opening: true} at once; until it finishes, reads still run and edits are refused as busy.",
+            params_doc: "{location: string, discard_dirty?: bool, background?: bool}; UTF8 filesystem path on native, storage key on web. Returns {opened: true, read_only: bool}. A legacy starter project receives a fresh identity in one undoable change, returns identity_migrated: {from, to}, and stays dirty until saved; its recovery checkpoint already has the new identity. Never opens a dialog. With background, a host that reads off its UI thread returns {opened: false, opening: true} at once; until it finishes, reads still run and edits are refused as busy.",
             enabled: enabled_open,
             run: open,
         },
@@ -179,7 +185,7 @@ pub fn specs() -> Vec<CommandSpec> {
             input_schema: save_as_schema,
             label: "Save project as",
             shortcut: Some("Command+Shift+S"),
-            params_doc: "{location: string, background?: bool}; UTF8 filesystem path on native, storage key on web. Returns {saved: true, recovery_ready: bool, read_only: bool}; background as for file.save.",
+            params_doc: "{location: string, background?: bool}; UTF8 filesystem path on native, storage key on web. Preserves the project's identity, so Save As copies share its project spending total and saved-job association. Returns {saved: true, recovery_ready: bool, read_only: bool}; background as for file.save.",
             enabled: enabled_save_as,
             run: save_as,
         },

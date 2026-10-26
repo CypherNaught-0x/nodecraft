@@ -22,6 +22,9 @@ struct ExportParams {
     /// Replace a file already at `path`; without it the export refuses to.
     #[serde(default)]
     overwrite: bool,
+    /// The UI opts in; headless callers retain the synchronous result by default.
+    #[serde(default)]
+    background: bool,
 }
 
 fn export(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
@@ -31,8 +34,12 @@ fn export(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let Value::Media(asset) = value else {
         return Err(Error::new(ErrorKind::Unsupported, "only image, video, audio, 3D and document results export to a file; copy text instead"));
     };
-    c.validate_asset(asset)?;
-    Ok(Effect::Export { what: crate::export::Exported::Asset(asset.clone()), path: p.path, overwrite: p.overwrite })
+    // Availability/admission must not authenticate an indexed body on the UI thread. The
+    // writer verifies the exact reference before creating output.
+    if c.assets.descriptor(&asset.hash).is_none() {
+        return Err(Error::new(ErrorKind::NotFound, "the result's retained asset is unavailable"));
+    }
+    Ok(Effect::Export { what: crate::export::Exported::Asset(asset.clone()), path: p.path, overwrite: p.overwrite, background: p.background })
 }
 
 fn enabled(c: &Context<'_>, value: &Json) -> Result<(), Error> {
@@ -46,20 +53,63 @@ fn schema() -> Json {
         "properties": {"canvas": uuid, "id": uuid, "generation": uuid, "port": {"type": "string", "maxLength": 256},
             "item": {"type": "integer", "minimum": 0},
             "path": {"type": "string", "minLength": 1, "maxLength": crate::export::MAX_PATH_BYTES},
-            "overwrite": {"type": "boolean"}}})
+            "overwrite": {"type": "boolean"}, "background": {"type":"boolean"}}})
 }
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![CommandSpec {
-        id: "history.export",
-        label: "Export result…",
-        shortcut: None,
-        alternate_shortcuts: &[],
-        input_schema: schema,
-        params_doc: "{canvas, id: NodeId, generation, port?: output name (default the first), item?: list index (as history.extract), path: absolute file path, overwrite?: bool (default false)} -> {bytes}; writes a media result's bytes to `path` on this machine. Refuses a file that's already there unless `overwrite`, a missing folder, and a full disk, leaving nothing half written. Desktop only.",
-        enabled,
-        run: export,
-    }]
+    vec![
+        CommandSpec {
+            id: "history.export",
+            label: "Export result…",
+            shortcut: None,
+            alternate_shortcuts: &[],
+            input_schema: schema,
+            params_doc: "{canvas, id: NodeId, generation, port?: output name, item?: list index, path: absolute file path, overwrite?: bool, background?: bool} -> {bytes} or {pending: id}; background requires an export runner and verifies/copies off the UI thread. export.status retains the terminal result; export.cancel accepts cancellation before finishing atomic publication. Defaults are synchronous and no replacement. Desktop only.",
+            enabled,
+            run: export,
+        },
+        CommandSpec {
+            id: "export.status",
+            label: "Export status",
+            shortcut: None,
+            alternate_shortcuts: &[],
+            input_schema: || json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":[],"properties":{}}),
+            params_doc: "{} -> {export: null | {id, phase, cancellable, result}}; path-free status of the latest background export; result.state is exported (bytes), cancelled or failed (error).",
+            enabled: |_, value| {
+                let _: Empty = params(value)?;
+                Ok(())
+            },
+            run: |c, value| {
+                let _: Empty = params(value)?;
+                Ok(Effect::None { result: json!({"export":c.exports.status()}) })
+            },
+        },
+        CommandSpec {
+            id: "export.cancel",
+            label: "Cancel export",
+            shortcut: None,
+            alternate_shortcuts: &[],
+            input_schema: || json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"integer","minimum":1}}}),
+            params_doc: "{id: pending export id} -> {cancelling:true}; accepted cancellation leaves no destination file and preserves any existing target. Finishing atomic publication cannot be cancelled.",
+            enabled: |c, value| {
+                let p: Cancel = params(value)?;
+                c.exports.cancellable(p.id)
+            },
+            run: |_, value| {
+                let p: Cancel = params(value)?;
+                Ok(Effect::CancelExport { id: p.id })
+            },
+        },
+    ]
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Cancel {
+    id: u64,
 }
 
 #[cfg(test)]

@@ -461,6 +461,9 @@ impl InputHasher {
                                     for input in &mut contract.inputs {
                                         input.fans_out = false;
                                     }
+                                    if node.kind == nodecraft_nodes::generation::MESH_KIND {
+                                        nodecraft_nodes::mesh::view::strip_identity_contract(&mut contract.params);
+                                    }
                                     w.generation_contract(&contract, &mut self.meter)?;
                                 }
                                 for (name, value) in &resolved.values {
@@ -753,7 +756,9 @@ impl InputHasher {
                 self.fanned.insert(at, false);
                 continue;
             };
-            if node.kind == nodecraft_nodes::batch::ID {
+            // A folder's looping outputs fan out as a batch does; its list outputs, which don't,
+            // only add the marker to what they feed.
+            if node.kind == nodecraft_nodes::batch::ID || node.kind == nodecraft_nodes::folder::ID {
                 self.fanned.insert(at, true);
                 continue;
             }

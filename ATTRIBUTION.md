@@ -17,3 +17,39 @@ the same change that adds it (CONTRIBUTING.md, "Clean-room").
 | Linked into the app and wasm build through `nodecraft-media`'s `pdf` feature (`craft-pdf`, [storytold/craft-libs@8f5a283](https://github.com/storytold/craft-libs/tree/8f5a2831) `vendor/hayro-interpret/assets/Foxit*.pfb`) | The PDF standard-14 substitute fonts, used to draw PDFs that don't embed their fonts (unmodified) | PDFium Authors; original fonts © 2014 Foxit Software Inc. | [PDFium](https://pdfium.googlesource.com/pdfium/), via [LaurenzV/hayro](https://github.com/LaurenzV/hayro) | BSD-3-Clause |
 | Linked in the same way (`hayro-cmap` 0.1.0, `assets/cmaps.brotli`) | Adobe's predefined CJK character maps, compressed, used to read the text of CJK PDFs (unmodified) | Adobe | [adobe-type-tools/cmap-resources](https://github.com/adobe-type-tools/cmap-resources), via [LaurenzV/cmap-resources](https://github.com/LaurenzV/cmap-resources/tree/hayro) | BSD-3-Clause |
 | Linked in the same way (`vendor/hayro-interpret/assets/CGATS001Compat-v2-micro.icc`) | Compact CMYK ICC profile, used to draw CMYK PDF content (unmodified) | Clinton Ingram | [saucecontrol/Compact-ICC-Profiles](https://github.com/saucecontrol/Compact-ICC-Profiles) | CC0-1.0 |
+| `assets/icons/tabler/search.svg` | Tabler outline search icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/search.svg) | MIT |
+| `assets/icons/tabler/message-circle.svg` | Tabler outline message-circle icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/message-circle.svg) | MIT |
+| `assets/icons/tabler/key.svg` | Tabler outline key icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/key.svg) | MIT |
+| `assets/icons/tabler/wallet.svg` | Tabler outline wallet icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/wallet.svg) | MIT |
+| `assets/icons/tabler/folder-open.svg` | Tabler outline folder-open icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/folder-open.svg) | MIT |
+| `assets/icons/tabler/device-floppy.svg` | Tabler outline device-floppy icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/device-floppy.svg) | MIT |
+| `assets/icons/tabler/LICENSE` | Tabler icon license (unmodified) | Paweł Kuna | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/LICENSE) | MIT |
+
+## Tabler icon license
+
+The notice below travels with the app in this attribution file, which every desktop package
+includes. The unchanged license is also beside the source SVGs.
+
+```text
+MIT License
+
+Copyright (c) 2020-2026 Paweł Kuna
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

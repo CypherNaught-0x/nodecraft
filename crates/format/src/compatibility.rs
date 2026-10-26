@@ -342,6 +342,7 @@ mod tests {
             inputs: Vec::new(),
             item: None,
             billable_units: None,
+            execution_ms: None,
         });
         set.history.push(job);
         nodes.push(set);

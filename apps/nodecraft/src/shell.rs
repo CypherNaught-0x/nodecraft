@@ -8,6 +8,7 @@ pub struct Shell {
     pub app: NodeCraftApp,
     pub agent: AgentPanel,
     pub channel: Option<Channel>,
+    pub storage_window: Option<crate::storage_window::StorageWindow>,
 }
 
 impl Shell {
@@ -27,6 +28,9 @@ impl Shell {
 
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if let Some(window) = &mut self.storage_window {
+            window.pump(&mut self.app, ctx);
+        }
         if let Some(channel) = &mut self.channel {
             channel.pump(&mut self.app, ctx);
         }

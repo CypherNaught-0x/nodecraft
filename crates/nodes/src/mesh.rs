@@ -16,6 +16,7 @@ pub const VIEWS: &str = "mesh.views";
 /// A soundless video of a saved orbit around a model.
 pub const TURNTABLE: &str = "mesh.turntable";
 pub mod turntable;
+pub mod view;
 /// The longest side of a photo, and of one view on a sheet.
 pub const MAX_PHOTO_SIDE: u64 = 2048;
 pub const MAX_VIEW_SIDE: u64 = 1024;

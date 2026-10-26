@@ -941,3 +941,96 @@ fn a_list_per_item_into_a_fanning_input_is_still_refused() {
     );
     assert!(blocked(plan_of(&p, &[2, 4])).contains("isn't supported yet"));
 }
+
+// Folders: their looping outputs fan out like a batch's item; their list outputs give every file.
+
+fn folder(n: u8, files: &[(&str, &str)], params: &[(&str, Value)]) -> Node {
+    use nodecraft_nodes::folder;
+    let files = files.iter().map(|(name, text)| ((*name).to_owned(), Value::Text((*text).into()))).collect();
+    let config = folder::config(Modality::Text, "notes", files).unwrap();
+    let mut node = kinds().get(folder::ID).unwrap().instantiate_instance(id(n), config, &Default::default()).unwrap();
+    node.params.extend(params.iter().map(|(name, value)| ((*name).to_owned(), value.clone())));
+    node
+}
+const NOTES: [(&str, &str); 3] = [("c10.txt", "gamma"), ("c2.txt", "beta"), ("c1.txt", "alpha")];
+
+#[test]
+fn a_folder_fans_its_files_and_names_together_once_per_file() {
+    let p = wired(vec![folder(1, &NOTES, &[]), of_kind(2, "test.pair", None)], &[(1, "file", 2, "a"), (1, "name", 2, "b")]);
+    let plan = ready(plan_of(&p, &[2]));
+    assert_eq!(order(&plan), vec![id(2)], "the folder is read, not run");
+    let step = plan.steps.first().unwrap();
+    // One run per file, in natural order, each with that file's name: joined, not 3 × 3.
+    assert_eq!(fanned_values(step), vec![texts(&["alpha", "c1.txt"]), texts(&["beta", "c2.txt"]), texts(&["gamma", "c10.txt"])]);
+    assert!(step.fanout.as_ref().unwrap().items.iter().all(|tag| tag.len() == 1 && tag.first().unwrap().batch == id(1)));
+
+    // Filters and the range choose the items.
+    let p = wired(vec![folder(1, &NOTES, &[("exclude", Value::Text("c1.*".into())), ("reverse", Value::Bool(true))]), single(2)], &[(1, "name", 2, "in")]);
+    assert_eq!(fanned_values(ready(plan_of(&p, &[2])).steps.first().unwrap()), vec![texts(&["c10.txt"]), texts(&["c2.txt"])]);
+}
+
+#[test]
+fn a_folder_list_output_and_a_list_input_collect_every_file() {
+    // Its Files output into a list input, and its looping File output into one, both collect.
+    for port in ["files", "file"] {
+        let p = wired(vec![folder(1, &NOTES, &[]), relay(2, None)], &[(1, port, 2, "in")]);
+        let plan = ready(plan_of(&p, &[2]));
+        let step = plan.steps.first().unwrap();
+        assert!(step.fanout.is_none(), "{port}");
+        let input = step.inputs.first().unwrap();
+        let values: Vec<Value> = input
+            .from
+            .iter()
+            .map(|source| match source {
+                InputSource::Value(value) => value.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(values, texts(&["alpha", "beta", "gamma"]), "{port}");
+    }
+}
+
+#[test]
+fn a_folder_pairs_with_a_batch_and_blocks_with_reasons() {
+    let p = wired(vec![folder(1, &NOTES, &[]), batch(2, "x\ny", "cross"), of_kind(3, "test.pair", None)], &[(1, "file", 3, "a"), (2, "item", 3, "b")]);
+    assert_eq!(fanned_values(ready(plan_of(&p, &[3])).steps.first().unwrap()).len(), 6);
+    let zip = folder(1, &NOTES, &[("pairing", Value::Text("zip".into())), ("limit", Value::Unsigned(nodecraft_types::Unsigned(2)))]);
+    let p = wired(vec![zip, batch(2, "x\ny", "zip"), of_kind(3, "test.pair", None)], &[(1, "file", 3, "a"), (2, "item", 3, "b")]);
+    assert_eq!(fanned_values(ready(plan_of(&p, &[3])).steps.first().unwrap()), vec![texts(&["alpha", "x"]), texts(&["beta", "y"])]);
+
+    let nothing = folder(1, &NOTES, &[("include", Value::Text("*.png".into()))]);
+    let message = blocked(plan_of(&wired(vec![nothing, single(2)], &[(1, "file", 2, "in")]), &[2]));
+    assert!(message.contains("matches its filters"), "{message}");
+    let empty = kinds().get(nodecraft_nodes::folder::ID).unwrap().instantiate_instance(id(1), Default::default(), &Default::default()).unwrap();
+    let image = PortType { modality: Modality::Image, many: false };
+    let mut consumer = single(2);
+    consumer.inputs = vec![Port { name: "in".into(), port_type: image }];
+    let p = project(vec![empty, consumer], &[]);
+    let canvas = p.canvases().get(&C).unwrap();
+    let node = canvas.nodes().get(&id(1)).unwrap();
+    assert!(
+        Graph::new(canvas, &kinds(), &nodecraft_types::EMPTY_TARGET_SELECTION, &BTreeMap::new(), &BTreeMap::new(), &nodecraft_types::NoOptions)
+            .unwrap()
+            .resolve(node.id, "file")
+            .is_err()
+    );
+    let message = blocked(plan_of(&wired(vec![folder(1, &NOTES, &[]), batch(2, "", "cross"), single(3)], &[(1, "file", 2, "in"), (2, "item", 3, "in")]), &[3]));
+    assert!(message.contains("folder"), "{message}");
+}
+
+#[test]
+fn a_folder_run_on_its_own_gives_its_first_file_and_every_file() {
+    let p = wired(vec![folder(1, &NOTES, &[])], &[]);
+    let plan = ready(plan_of(&p, &[1]));
+    let jobs = plan.steps.first().unwrap().jobs.clone().unwrap();
+    let on = |port: &str| -> Vec<Value> {
+        jobs.iter()
+            .filter_map(|job| match job {
+                JobSpec::Source { output, value, .. } if output == port => Some(value.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(on("file"), texts(&["alpha"]));
+    assert_eq!(on("names"), texts(&["c1.txt", "c2.txt", "c10.txt"]));
+}
