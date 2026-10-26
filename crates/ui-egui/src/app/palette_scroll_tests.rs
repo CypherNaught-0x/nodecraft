@@ -100,6 +100,11 @@ fn scrolling_outside_or_with_zoom_modifier_keeps_palette_open_but_outside_click_
 
 fn open_turn_into() -> Harness<'static, NodeCraftApp> {
     let mut h = super::tests::harness();
+    install_turn_into(&mut h);
+    h
+}
+
+fn install_turn_into(h: &mut Harness<'static, NodeCraftApp>) {
     let node = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().values().next().unwrap().id;
     let mut menu = TurnInto::new(
         h.state().session.kinds(),
@@ -112,7 +117,32 @@ fn open_turn_into() -> Harness<'static, NodeCraftApp> {
     menu.entries = (0..30).map(|i| turn_into::Entry { kind: nodecraft_nodes::router::ID.into(), label: format!("Choice {i:02}"), key: None }).collect();
     h.state_mut().turn_into = Some(menu);
     h.run();
-    h
+}
+
+#[test]
+fn reopening_each_menu_resets_its_scroll_to_the_highlighted_first_row() {
+    for palette in [true, false] {
+        let mut h = if palette { open_palette() } else { open_turn_into() };
+        let area = if palette { "quick_add_palette" } else { "turn_into_menu" };
+        let first_label = if palette { label(h.state().palette_entries().first().unwrap()) } else { "Turn into Choice 00".into() };
+        let pos = menu_rect(&h, area).center();
+        wheel(&mut h, pos, egui::Modifiers::NONE);
+        assert!(h.query_by_label(&first_label).is_none());
+        h.hover_at(Pos2::new(900.0, 80.0));
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().palette.is_none() && h.state().turn_into.is_none());
+        if palette {
+            h.state_mut().palette = Some(Palette::new(Pos2::ZERO, Pos2::new(150.0, 600.0)));
+            h.run();
+            assert_eq!(h.state().palette.as_ref().unwrap().highlighted, 0);
+        } else {
+            install_turn_into(&mut h);
+            assert_eq!(h.state().turn_into.as_ref().unwrap().highlighted, 0);
+        }
+        assert!(menu_rect(&h, area).contains_rect(h.get_by_label(&first_label).rect()), "reopened {area} shows the initial selection");
+    }
 }
 
 #[test]

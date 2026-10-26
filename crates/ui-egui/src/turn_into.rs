@@ -123,7 +123,7 @@ impl TurnInto {
                     let mut scroll = egui::ScrollArea::vertical()
                         .id_salt("entries")
                         .max_height((stride * crate::palette::MAX_ROWS as f32 - ui.spacing().item_spacing.y).min(ui.ctx().content_rect().height() * 0.5));
-                    if up || down {
+                    if first_frame || up || down {
                         scroll = scroll.vertical_scroll_offset(self.highlighted as f32 * stride);
                     }
                     scroll.show_rows(ui, row_height, entries.len(), |ui, range| {

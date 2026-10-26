@@ -186,6 +186,13 @@ pub fn text_input_focused(ctx: &egui::Context) -> bool {
     ctx.memory(|memory| memory.focused()).is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some())
 }
 
+/// Whether wheel and pinch input may navigate the canvas in this frame.
+pub enum ScrollNavigation {
+    Disabled,
+    ZoomOnly,
+    PanAndZoom,
+}
+
 /// Background navigation for one frame: drag with the primary button on empty canvas, or with the
 /// middle or secondary button anywhere, pans; scroll (two-finger trackpad, wheel) pans, or zooms
 /// with [`ScrollAction::Zoom`]; pinch or ⌘/Ctrl-scroll zooms around the pointer; ⌘0 resets, ⌘= and
@@ -194,13 +201,6 @@ pub fn text_input_focused(ctx: &egui::Context) -> bool {
 /// `background` is the response of the canvas-filling background widget.
 ///
 /// `primary_pans` is false while a primary drag on the background is a box select instead.
-/// Whether wheel and pinch input may navigate the canvas in this frame.
-pub enum ScrollNavigation {
-    Disabled,
-    ZoomOnly,
-    PanAndZoom,
-}
-
 pub fn navigate(
     ui: &egui::Ui,
     background: &egui::Response,
