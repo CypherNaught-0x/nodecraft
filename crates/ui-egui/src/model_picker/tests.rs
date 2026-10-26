@@ -120,6 +120,15 @@ fn model_rates_distinguish_free_usage_and_unit_prices_without_a_run_quote() {
 }
 
 #[test]
+fn workflow_metadata_never_promises_that_partner_nodes_are_free() {
+    let catalog = Catalog::builtin().unwrap();
+    let workflow = catalog.get(nodecraft_nodes::comfy_workflow::MODEL_ID).unwrap();
+    assert_eq!(workflow.pricing, Pricing::Free, "local workflows keep their catalog rate");
+    assert_eq!(price_label(workflow), "Workflow dependent; partner cost unknown");
+    assert!(!catalog.card_models().any(|model| model.id == workflow.id), "the workflow is currently excluded from generic model swapping");
+}
+
+#[test]
 fn a_source_edit_says_what_it_does_to_the_source() {
     let catalog = Catalog::builtin().unwrap();
     let swap = catalog.get("higgsfield.genjutsu-object-swap").unwrap().clone();
