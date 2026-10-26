@@ -8,6 +8,8 @@ use serde_json::Value;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileStatus {
     pub available: bool,
+    /// Why this host cannot open/save, including how a deliberately closed session reopens.
+    pub unavailable_reason: Option<&'static str>,
     pub location: Option<StorageLocation>,
     pub dirty: bool,
     pub recovery_required: bool,
@@ -90,7 +92,11 @@ struct Save {
 }
 
 fn available(c: &Context<'_>) -> Result<(), Error> {
-    if c.file.available { Ok(()) } else { Err(Error::new(ErrorKind::Unsupported, "project storage is not configured for this session")) }
+    if c.file.available {
+        Ok(())
+    } else {
+        Err(Error::new(ErrorKind::Unsupported, c.file.unavailable_reason.unwrap_or("Project storage is not configured for this session.")))
+    }
 }
 fn open(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let p: Open = params(value)?;

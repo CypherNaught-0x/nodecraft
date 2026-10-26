@@ -210,7 +210,7 @@ fn costs_show_rounded_up_to_the_cent() {
 }
 
 fn shell(panel: AgentPanel) -> crate::shell::Shell {
-    crate::shell::Shell { app: NodeCraftApp::headless().unwrap(), agent: panel, channel: None }
+    crate::shell::Shell { app: NodeCraftApp::headless().unwrap(), agent: panel, channel: None, storage_window: None }
 }
 
 /// A frame of the real window: the sidebar's logic before the app's, then `Shell::show`.

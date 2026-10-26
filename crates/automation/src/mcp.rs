@@ -291,6 +291,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
 /// show a reconciled charge cost (#332). `plugins.*` changes read package files and
 /// decide what extends the app (#172): a person's decision, like installing software.
 pub const HUMAN_ONLY: &[&str] = &[
+    // Moving OS focus belongs to the person; the narrow desktop owner channel uses dispatch.
+    "file.focus_owner",
     // The library is shared by every project and outside undo, so only a person changes it.
     "library.add",
     "library.remove",

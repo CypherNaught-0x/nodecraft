@@ -346,6 +346,20 @@ project uses Save As. Cancelling a picker changes nothing. Opening over unsaved 
 to Save, Discard or Cancel; a failed or cancelled Save keeps the current project open. Finish or
 discard uncommitted card-field drafts before file actions.
 
+When project storage cannot start, the startup notice and File actions retain the same reason.
+A second desktop window that cannot acquire the shared recovery journal opens in memory only;
+its File panel offers **Focus the other window**. This asks the owner to come forward so its File
+menu can be used; it never transfers the unsaved document. If the window manager refuses focus,
+use the system window switcher. Older owners without the focus endpoint must also be switched to
+manually. An unreadable startup project instead leaves a new project with working storage and an
+Open action to choose another file. A deliberately closed recovery session asks for a window
+restart before reopening the saved project.
+
+The desktop owner endpoint reuses the authenticated local control transport in an owner-only
+folder beside recovery. It accepts only the empty `file.focus_owner` command, has no general
+control or file authority, and removes its token on drop. Focus requests run on a worker with at
+most one outstanding request per window. A failed request leaves both documents untouched.
+
 Recent projects are kept in local settings (16 entries); missing files report an error and can be
 removed individually or cleared. File picks and recents still pass native storage admission; there
 is no small-file buffering path in the UI. Programmatic file commands always require locations

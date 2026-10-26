@@ -726,32 +726,16 @@ impl NodeCraftApp {
                 }
             }
         }
-        // Storage that can't start (another window holds the journal, or the project won't
-        // open) still opens the window, without project files, and says why.
-        let mut problem = None;
+        // A failed journal leaves a memory-only window; a failed project open keeps storage.
         let journal = storage.as_ref().map(|setup| setup.recovery.clone());
         let runs_journal = journal.as_ref().and_then(|recovery| recovery.parent()).map(|dir| dir.join("runs.json"));
-        let stored = storage.and_then(|setup| match Self::storage_session(setup) {
-            Ok(stored) => Some(stored),
-            Err(error) => {
-                log::error!("project storage unavailable: {}", error.message);
-                problem = Some(format!("Project files are unavailable: {}", error.message));
-                None
-            }
-        });
-        let mut kept = None;
-        let owns_storage = stored.is_some();
-        let mut app = match stored {
-            Some((session, canvas, unrecovered, open_error)) => {
-                kept = unrecovered;
-                if let Some(error) = open_error {
-                    problem = Some(format!("That project couldn't be opened: {}", error.message));
-                }
-                Self::from_session(session.with_services(services), canvas)?
-            }
-            None => Self::with_services(services)?,
+        let missing_reason = if store.dir().is_none() {
+            "Project files are unavailable: no writable settings folder is available for recovery. Check access to the settings folder, then close this window and reopen NodeCraft. This window's edits cannot be saved."
+        } else {
+            "Project files are unavailable: this window was opened without local project storage. Use the original NodeCraft window's File menu to open or save a project."
         };
-        app.notice = problem.or(plugin_problem);
+        let (mut app, kept, owns_storage) = Self::from_storage_setup(services, storage, missing_reason)?;
+        app.notice = app.notice.or(plugin_problem);
         app.plugins = plugins;
         // Unsaved work from a session that didn't close cleanly: ask before anything else (#408).
         if let Some(journal) = journal {
