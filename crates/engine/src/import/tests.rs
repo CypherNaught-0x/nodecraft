@@ -146,7 +146,7 @@ fn a_drops_text_shares_one_budget_and_media_is_only_stored_for_added_nodes() {
         [Incoming { name: "one.txt", bytes: big.as_bytes() }, Incoming { name: "pic.png", bytes: &image }, Incoming { name: "two.txt", bytes: big.as_bytes() }];
     let imported = import_files(&mut s, C, AT, 300.0, &files, &ids(3)).unwrap();
     assert_eq!(imported.nodes, [ids(3)[0], ids(3)[1]], "the paste fits: one big text and the picture");
-    assert_eq!(imported.skipped, [("two.txt".to_owned(), "a drop adds at most 960 KiB of text".to_owned())]);
+    assert_eq!(imported.skipped, [("two.txt".to_owned(), "at most 960 KiB of text can be added at once".to_owned())]);
     assert_eq!(s.assets().len(), 1);
     // Undo, then redo: the picture's bytes are still there for it.
     s.dispatch("edit.undo", &json!({})).unwrap();

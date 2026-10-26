@@ -441,13 +441,13 @@ fn looks_textual(name: &str) -> bool {
 }
 
 /// Most bytes of a workflow card's workflow or values text: one text input's limit.
-const MAX_CARD_TEXT_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_CARD_TEXT_BYTES: usize = 1024 * 1024;
 /// Most values one workflow card sets.
 const MAX_CARD_VALUES: usize = 1024;
 
 /// A workflow card's values (#9): a JSON object of `"<node>.<input>"` to a string, number or
 /// boolean, bounded before it is parsed. No values input means none.
-fn card_values(job: &ProviderJob) -> Result<Map<String, Value>, ProviderError> {
+pub(crate) fn card_values(job: &ProviderJob) -> Result<Map<String, Value>, ProviderError> {
     let refused = |message: &str| ProviderError::new(ErrorKind::UnsupportedInput, format!("the card's ComfyUI values {message}"));
     let Some(text) = template::card_text(job, template::CARD_VALUES) else { return Ok(Map::new()) };
     if text.len() > MAX_CARD_TEXT_BYTES {
@@ -468,7 +468,7 @@ fn card_values(job: &ProviderJob) -> Result<Map<String, Value>, ProviderError> {
 /// node ids: the workflow's other output nodes are dropped before it is queued, so the server
 /// never runs them and no file comes back that the card has no port for. A node another node
 /// reads from is kept. No outputs input keeps every node.
-fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, catalog: &NodeCatalog) -> Result<(), ProviderError> {
+pub(crate) fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, catalog: &NodeCatalog) -> Result<(), ProviderError> {
     let refused = |message: String| ProviderError::new(ErrorKind::UnsupportedInput, format!("the card's ComfyUI outputs {message}"));
     let Some(text) = template::card_text(job, template::CARD_OUTPUTS) else { return Ok(()) };
     if text.len() > MAX_CARD_TEXT_BYTES {

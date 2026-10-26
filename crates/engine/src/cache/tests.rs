@@ -216,6 +216,7 @@ fn a_copied_result_was_billed_nothing() {
         inputs: Vec::new(),
         item: None,
         billable_units: Some(nodecraft_types::BillableUnits::parse("1.5").unwrap()),
+        execution_ms: Some(2345),
     };
     let generation = nodecraft_graph::Generation {
         id: nodecraft_types::GenerationId::from_bytes([40; 16]),
@@ -228,5 +229,9 @@ fn a_copied_result_was_billed_nothing() {
     nodecraft_graph::Change::AddGeneration { canvas: CANVAS, id: BLUR, index: 0, generation }.apply(&mut project).unwrap();
     let found = super::hits(&project, CANVAS, &kinds, [TWIN], || Ok(nodecraft_types::GenerationId::from_bytes([51; 16]))).unwrap();
     let [super::Hit::Copy { generation, .. }] = found.as_slice() else { panic!("{found:?}") };
-    assert_eq!(generation.settings, vec![nodecraft_graph::JobSettings { billable_units: None, ..settings }], "the rest of the settings are kept");
+    assert_eq!(
+        generation.settings,
+        vec![nodecraft_graph::JobSettings { billable_units: None, execution_ms: None, ..settings }],
+        "the rest of the settings are kept"
+    );
 }

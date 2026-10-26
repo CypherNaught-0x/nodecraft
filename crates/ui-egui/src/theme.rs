@@ -140,6 +140,10 @@ pub struct Tokens {
     pub dialog_width: f32,
     pub control_row_height: f32,
     pub control_gap: f32,
+    /// Control icons in screen points; SVG strokes are in their 24-unit view box.
+    pub icon_size: f32,
+    pub icon_large_size: f32,
+    pub icon_stroke: &'static str,
     /// Vertical button padding on cards, keeping native controls within the logical row budget.
     pub control_vertical_padding: f32,
     pub title_min_screen_px: f32,
@@ -298,6 +302,9 @@ pub const DARK: Tokens = Tokens {
     dialog_width: 440.0,
     control_row_height: 64.0,
     control_gap: 6.0,
+    icon_size: 16.0,
+    icon_large_size: 24.0,
+    icon_stroke: "2",
     control_vertical_padding: 2.0,
     title_min_screen_px: 9.0,
     handle_min_screen_radius: 5.0,

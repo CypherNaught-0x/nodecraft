@@ -110,6 +110,9 @@ pub struct Usage {
     /// How many of its own units the provider says it billed (fal's `X-Fal-Billable-Units`).
     /// Evidence for the result's record, never a cost: what a unit costs is the model's price.
     pub billable_units: Option<BillableUnits>,
+    /// Provider-reported execution time, in milliseconds, excluding queue time. This is
+    /// evidence, never a token count, billable-unit count or monetary charge (#339).
+    pub execution_ms: Option<u64>,
 }
 
 /// A finished job: its outputs and what it used.
@@ -156,6 +159,13 @@ pub enum JobProgress {
 pub trait Provider: MaybeSendSync {
     /// Stable lowercase id (`fal`, `replicate`, `comfyui`); also the scheduler lane prefix.
     fn id(&self) -> &str;
+
+    /// A hosted implementation of the logical `comfyui` provider bills execution even when
+    /// its catalog describes a local/free workflow. The engine captures this policy with the
+    /// physical binding and requires unknown-price admission before submitting to that host.
+    fn metered_comfy_workflows(&self) -> bool {
+        false
+    }
 
     /// Whether an uncertain, no-handle submit may be retried automatically. This is a stable
     /// policy of this provider instance, not remote deduplication or proof of nonbilling.

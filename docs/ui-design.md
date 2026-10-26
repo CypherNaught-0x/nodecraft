@@ -87,7 +87,7 @@ selected border more visible than the resting one, in both themes.
 | Delete or Backspace outside text fields | delete the selected nodes, noodles and field in one undo step (`canvas.delete`; a deleted field's cards stay) |
 | `T` / `I` / `V` / `A` / `R` (no modifier, outside text fields) | quick-add a Text / Image / Video / Audio / Router node centred under the pointer and select it (`node.create`, one undo step; a quick-added router carries text, since `node.create` sets no config). Keys come from each kind's `quick_add`, so new kinds bring their own |
 | Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked |
-| ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; a copied image (desktop) pastes as an Image node at the pointer, read off the UI thread, encoded as PNG and held to 16384×16384 pixels and 16 MiB, one undo step (#319) |
+| ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; recognized ComfyUI workflow JSON pastes as a workflow card after the server's nodes have been read, with the same validation as a file drop; a copied image (desktop) pastes as an Image node at the pointer, read off the UI thread, encoded as PNG and held to 16384×16384 pixels and 16 MiB, one undo step (#319) |
 | ⌘/Ctrl+D outside text fields | duplicate the selection, offset 40 points |
 | `F` (no modifier, outside text fields) | make a field: around the selected cards, which become its members, or an empty 320×240 zone at the pointer (`field.create`, one undo step). The zone takes in every selected card, including one added this frame. The new field is selected |
 | Drag a field's header / its lower-right corner | move the field and every member (`field.move`) / resize the zone alone (`field.update`); one undo step on release, Escape cancels. Double-click the header to collapse or expand it. Shift-drag from a header or corner draws a box select, as anywhere else on the canvas |
@@ -420,3 +420,32 @@ takes the rest of the window. Its header shows the mode (Assist/Auto) and Clear,
 with the model and what auto mode has accepted of its budget; notices use `danger`. Steps waiting
 for approval show what they would do (read, change the project, run and its price) with Approve
 and Decline; Esc or Cancel stops the agent while it works.
+
+## Control icons
+
+Controls use Tabler outline SVGs through `icons::Icon`, prepared by the pinned Craft SVG
+catalog and loaded by egui's SVG loader. The loader rasterizes at the requested display pixel
+size on desktop and WebAssembly. It loads only embedded bytes; no network or filesystem access
+is enabled. Source files stay unchanged under `assets/icons/tabler/`, with the MIT license beside
+them and one attribution row per file. See the [choice and comparison](decisions/2026-10-26-tabler-control-icons.md).
+
+| Icon variant | SVG | Initial use |
+| --- | --- | --- |
+| `Search` | `search.svg` | canvas Search button |
+| `Comments` | `message-circle.svg` | Comments button |
+| `Key` | `key.svg` | API keys button |
+| `Wallet` | `wallet.svg` | Budgets button |
+| `Open` | `folder-open.svg` | Open project and Import folder |
+| `Save` | `device-floppy.svg` | Save project and Save project as |
+
+Use `Icon::button` for an icon beside action text; it retains the ordinary Button label,
+keyboard behavior and disabled state. For an icon-only control use `Icon::icon_button`, which
+requires an action label and supplies both its screen-reader label and hover tooltip (an empty
+label falls back to the icon's action name). Standalone images also carry an alternative label.
+Buttons keep their existing enabled conditions, commands and action tooltips.
+
+The `icon_size` and `icon_large_size` tokens are 16 and 24 screen points. `icon_stroke` is `"2"`
+in the source SVG's 24-unit coordinates; it is textual because the shared SVG preparation API
+substitutes that exact attribute. Both themes share this stroke. The intermediate white mask
+is tinted with the theme's `text` colour at draw time, including inside disabled controls.
+Never add a coloured icon asset or bake a fixed-resolution icon bitmap into a control.
