@@ -4,9 +4,16 @@ use super::*;
 impl NodeCraftApp {
     pub(super) fn live_palette_entries(&mut self, ctx: &egui::Context) -> Vec<palette::Entry> {
         let mut entries = self.palette_entries();
-        let navigation: Vec<_> = self.session.registry().specs().filter(|spec| Self::is_navigation_command(spec.id)).copied().collect();
+        let [all, selected, toggle, _] = self.palette_navigation_contexts(ctx);
+        let navigation: Vec<_> =
+            self.session.registry().specs().filter(|spec| Self::is_navigation_command(spec.id) && spec.id != "canvas.pan_to").copied().collect();
         for spec in navigation {
-            if self.palette_navigation_enabled(ctx, spec.id, &self.palette_command_params(spec.id)).is_ok() {
+            let context = match spec.id {
+                "canvas.fit_all" => &all,
+                "canvas.fit_selection" => &selected,
+                _ => &toggle,
+            };
+            if self.navigation_enabled_with_context(context.clone(), spec.id, &self.palette_command_params(spec.id)).is_ok() {
                 entries.push(palette::Entry {
                     target: palette::Target::Command(spec.id),
                     label: spec.label.to_owned(),

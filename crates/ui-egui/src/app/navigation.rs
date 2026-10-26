@@ -105,7 +105,7 @@ impl NodeCraftApp {
         }
     }
 
-    fn navigation_enabled_with_context(&mut self, context: NavigationContext, id: &str, params: &Json) -> Result<(), Error> {
+    pub(super) fn navigation_enabled_with_context(&mut self, context: NavigationContext, id: &str, params: &Json) -> Result<(), Error> {
         let previous = self.session.swap_resource(Some(context));
         let result = self.session.enabled(id, params);
         self.session.swap_resource(previous);
@@ -121,13 +121,12 @@ impl NodeCraftApp {
         self.navigation_enabled_with_context(context, id, params)
     }
     /// Only the palette's own query can yield text ownership to its command rows.
-    pub(super) fn palette_navigation_enabled(&mut self, ctx: &egui::Context, id: &str, params: &Json) -> Result<(), Error> {
+    pub(super) fn palette_navigation_contexts(&mut self, ctx: &egui::Context) -> [NavigationContext; 4] {
         // Pointer press can blur the query before this frame builds the rows. Its cached
         // ownership must yield too, but only while no other widget has acquired focus.
         let query_focus =
             Palette::owns_text_focus(ctx) || (ctx.memory(|memory| memory.focused()).is_none() && self.last_text_focus == Some(Palette::query_id()));
-        let context = self.navigation_context_for_input(ctx, id, params, query_focus);
-        self.navigation_enabled_with_context(context, id, params)
+        self.navigation_contexts_for_input(ctx, query_focus)
     }
     /// Dispatch through the same engine command/service path used by buttons and shortcuts,
     /// then apply the acknowledged intent immediately to shell view state. No dialogs/history.
