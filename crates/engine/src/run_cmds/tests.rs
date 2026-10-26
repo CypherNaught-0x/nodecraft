@@ -722,7 +722,7 @@ impl nodecraft_format::ProjectStorage for AuthorityStorage {
     }
 }
 fn plain_snapshot() -> nodecraft_format::Snapshot {
-    let mut doc = Project::new(ProjectId::from_bytes([2; 16]), "Plain").unwrap();
+    let mut doc = Project::new(ProjectId::from_bytes([22; 16]), "Plain").unwrap();
     Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut doc).unwrap();
     let text = nodecraft_nodes::Registry::builtins().unwrap().get("source.text").unwrap().descriptor().instantiate(id(1), &Default::default()).unwrap();
     Change::AddNode { canvas: C, node: text }.apply(&mut doc).unwrap();

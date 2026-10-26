@@ -49,7 +49,7 @@ fn image(hash: Blake3) -> Wire {
 fn setup(nodes: u128) -> (Session, Storage, Blake3) {
     let mut assets = AssetStore::default();
     let hash = assets.insert(PNG).unwrap();
-    let mut project = Project::new(ProjectId::from_bytes([2; 16]), "Admission").unwrap();
+    let mut project = Project::new(ProjectId::from_bytes([22; 16]), "Admission").unwrap();
     let mut changes = vec![Change::AddCanvas { canvas: Canvas::new(canvas(), "C") }];
     for n in 1..=nodes {
         let mut node = Node::new(id(n), "source.image");

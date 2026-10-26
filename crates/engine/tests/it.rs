@@ -109,6 +109,8 @@ mod paid_image_edit421;
 mod perf152;
 #[path = "perf_clock370.rs"]
 mod perf_clock370;
+#[path = "project_identity879.rs"]
+mod project_identity879;
 #[path = "prompt_assist582.rs"]
 mod prompt_assist582;
 #[path = "provider_mock.rs"]

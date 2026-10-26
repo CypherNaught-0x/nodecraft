@@ -3464,10 +3464,11 @@ fn starter_id() -> [u8; 16] {
     id
 }
 
-/// Tests keep the fixed id, so two fresh windows hold the same project.
+/// Tests keep a stable nonlegacy id, so two fresh windows hold the same project without
+/// accidentally testing the old starter's identity migration (#879).
 #[cfg(test)]
 fn starter_id() -> [u8; 16] {
-    [2; 16]
+    [22; 16]
 }
 #[cfg(test)]
 mod centering_tests;

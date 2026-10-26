@@ -183,6 +183,7 @@ impl AssetStore {
                     touched.entry(*canvas).or_default().insert(*id);
                 }
                 Change::SetProjectTitle { .. }
+                | Change::SetProjectId { .. }
                 | Change::RemoveCanvas { .. }
                 | Change::SetCanvasTitle { .. }
                 | Change::SetCanvasPrivate { .. }
