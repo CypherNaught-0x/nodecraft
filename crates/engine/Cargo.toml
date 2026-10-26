@@ -52,6 +52,11 @@ craft-atomic.workspace = true
 # Timeline renders (#109) run the ffmpeg the settings name; browsers have no video service.
 nodecraft-media = { workspace = true, features = ["video"] }
 
+# Safe, pinned descriptor-relative filesystem calls for folder-authorized exports (#98).
+# rustix is audited and hides platform unsafe; NodeCraft code contains no unsafe.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.5", features = ["fs", "std"] }
+
 [dev-dependencies]
 # Guard against allocations proportional to input-derived nested Timeline results.
 allocation-counter = "=0.8.1"

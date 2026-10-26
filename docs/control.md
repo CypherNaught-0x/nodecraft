@@ -72,8 +72,8 @@ connecting; this is not a bound on filesystem stalls.
 
 ### Live canvas commands
 
-`command.run` routes `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and
-`canvas.pan_to` through the app's scoped navigation bridge. A drawn viewport is required; active
+`command.run` routes `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle`,
+`canvas.prompt_overlays_toggle` and `canvas.pan_to` through the app's scoped navigation bridge. A drawn viewport is required; active
 editors, popups and gestures keep ownership and refuse navigation. `commands.list` reports fresh
 live availability for parameterless commands. `canvas.fit_selection` accepts an optional `nodes`
 list (2..=MAX_CHANGES unique IDs on the shown canvas); when supplied it frames those cards,
