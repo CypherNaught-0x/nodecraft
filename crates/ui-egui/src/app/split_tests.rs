@@ -59,6 +59,15 @@ fn the_context_menu_splits_an_image_into_selected_nodes_in_one_undo_step() {
     h.run();
     assert_eq!(count(&h), nodes + 4, "{:?}", h.state().notice);
     assert_eq!(h.state().selection.nodes().len(), 4, "the tiles are selected");
+    let app = h.state();
+    let canvas = app.session.document().canvases().get(&app.canvas).unwrap();
+    let mut rectangles: Vec<_> =
+        app.selection.nodes().iter().map(|id| payload_rect(&app.session, canvas.nodes().get(id).unwrap(), app.theme.tokens())).collect();
+    rectangles.sort_by(|a, b| a.top().total_cmp(&b.top()).then(a.left().total_cmp(&b.left())));
+    assert!(
+        (rectangles[2].top() - rectangles[0].bottom() - app.theme.tokens().card_padding * 4.0).abs() < 0.01,
+        "split rows must step past actual image preview geometry"
+    );
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before);
