@@ -46,8 +46,8 @@ fn join_and_template_show_ordered_inputs_and_the_computed_output_and_follow_edit
         let mut h = harness(kind, "Hello {{1}} / {{2}}", "alpha", Some("beta"));
         wait(&mut h, has_result);
         h.get_by_label(expected);
-        h.get_by_label(&format!("Input {port} · 1 · source.text"));
-        h.get_by_label(&format!("Input {port} · 2 · source.text"));
+        h.get_by_label(&format!("Input {port} · 1 · Text"));
+        h.get_by_label(&format!("Input {port} · 2 · Text"));
         h.get_by_label("alpha");
         h.get_by_label("beta");
         let canvas = h.state().canvas;

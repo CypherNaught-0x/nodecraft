@@ -249,7 +249,9 @@ impl Cache {
                                     value(canvas, &kinds, &reference).map_or_else(|| "No completed value yet".into(), |v| excerpt(&v, t.preview_chars, 3))
                                 })
                                 .clone();
-                            let source = canvas.nodes().get(from).map_or("missing source", |n| if n.title.is_empty() { &n.kind } else { &n.title });
+                            let source = canvas.nodes().get(from).map_or("Missing source", |n| {
+                                if n.title.is_empty() { kinds.get(&n.kind).map_or("Source", |kind| kind.descriptor().label.as_str()) } else { &n.title }
+                            });
                             let source: String = source.chars().take(64).collect();
                             let label = format!("Input {} · {} · {source}", port.name, order.saturating_add(1));
                             limited = !admit(&mut rows, &mut used, &mut total, Row { label, text: summary, error: false, reference: Some(reference) });
