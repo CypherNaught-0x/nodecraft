@@ -85,20 +85,16 @@ fn write_controlled(
         return Err(io_error(std::io::ErrorKind::AlreadyExists));
     }
     let cancel = control.map(|control| control.cancel.clone()).unwrap_or_default();
-    // Background authentication must not monopolize the live asset context or its staging
-    // pool. Scratch ownership lasts through the pinned reader and is bounded by the one
-    // process-wide export slot and the 8 GiB single-asset limit.
-    let scratch = if control.is_some() && matches!(what, Exported::Asset(_)) {
-        Some(tempfile::tempdir().map_err(|_| Error::new(ErrorKind::Internal, "private export storage couldn't be created"))?)
-    } else {
-        None
-    };
-    let lease = if let (Some(scratch), Exported::Asset(asset)) = (&scratch, what) {
-        let workspace = nodecraft_format::NativeAssetWorkspace::new(scratch.path(), Default::default())?;
+    // The verifier creates managed scratch only for uncached indexed bytes. It shares the
+    // session's quota while leaving the live context and transfer gate available. The
+    // pinned reader owns its scratch through cleanup; the process slot bounds workers.
+    let lease = if control.is_some()
+        && let Exported::Asset(asset) = what
+    {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         Some(loop {
             cancel.check()?;
-            match assets.open_export_verified(asset, &workspace, &cancel, &StreamMetrics::default()) {
+            match assets.open_export_verified(asset, &cancel, &StreamMetrics::default()) {
                 Ok(lease) => break lease,
                 Err(error) if error.kind == ErrorKind::Busy && std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(20));

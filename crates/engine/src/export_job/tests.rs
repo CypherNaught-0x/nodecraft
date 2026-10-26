@@ -47,6 +47,23 @@ fn a_queued_export_pins_its_bytes_and_retains_the_terminal_receipt() {
 }
 
 #[test]
+fn an_export_watch_survives_its_owner_until_cancelled_cleanup_finishes() {
+    let _serial = SERIAL.lock().unwrap();
+    let (mut exports, runner, assets, what) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("result.txt");
+    let id = exports.start(&assets, what, path.clone(), false).unwrap();
+    let watch = exports.watch().unwrap();
+    drop(exports);
+    assert_eq!(watch.status().id, id);
+    assert!(watch.status().result.is_none(), "dropping the owner only requests cancellation");
+    runner.take().run();
+    assert_eq!(watch.status().result, Some(ExportResult::Cancelled));
+    assert!(!path.exists());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn accepted_cancellation_preserves_an_existing_target_and_releases_admission() {
     let _serial = SERIAL.lock().unwrap();
     let (mut exports, runner, assets, what) = fixture();
@@ -220,6 +237,10 @@ fn a_blocked_export_verifier_keeps_live_import_save_and_cancellation_available()
     let worker = std::thread::spawn(move || job.run());
     waiting.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert_eq!(exports.status().unwrap().phase, ExportPhase::Checking);
+    let scratch_bytes = payload.len() as u64;
+    let checking = session.assets().context().storage_usage().unwrap();
+    assert_eq!(checking.verified, scratch_bytes, "private export bytes share the session quota");
+    assert_eq!(checking.staging, scratch_bytes, "the in-progress copy is charged before reading");
     // These previously returned Busy while the export held the shared context operation
     // and staging gates. The first export source read is still blocked throughout.
     let imported = session.import_asset(b"another accepted result").unwrap();
@@ -227,14 +248,14 @@ fn a_blocked_export_verifier_keeps_live_import_save_and_cancellation_available()
     session.dispatch("file.save_as", &serde_json::json!({"location":dir.path().join("live.ncraft")})).unwrap();
     session.dispatch("file.save", &serde_json::json!({})).unwrap();
     assert!(dir.path().join("live.ncraft").is_file());
-    let retained = session.assets().context().storage_usage().unwrap().verified;
+    let retained = session.assets().context().storage_usage().unwrap().verified - scratch_bytes;
     exports.cancel(id).unwrap(); // Must return while the source read remains blocked.
     assert!(!path.exists());
     release.send(()).unwrap();
     worker.join().unwrap();
     assert_eq!(exports.status().unwrap().result, Some(ExportResult::Cancelled));
     assert!(!path.exists());
-    assert_eq!(session.assets().context().storage_usage().unwrap().verified, retained, "export scratch never publishes into live storage");
+    assert_eq!(session.assets().context().storage_usage().unwrap().verified, retained, "cancel releases scratch charges without changing live storage");
 }
 #[test]
 fn a_refused_or_panicking_runner_never_falls_back_to_inline_io() {

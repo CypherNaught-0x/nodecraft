@@ -469,6 +469,10 @@ impl Session {
     pub fn export_status(&self) -> Option<crate::export_job::ExportStatus> {
         self.exports.status()
     }
+    /// Observe this export's cleanup even if another document replaces the Session.
+    pub fn export_watch(&self) -> Option<crate::export_job::ExportWatch> {
+        self.exports.watch()
+    }
     /// The latest background save's or open's outcome once it has finished, the same value
     /// `file.save` or `file.open` returns inline; `None` while it is still running or when
     /// there was none.

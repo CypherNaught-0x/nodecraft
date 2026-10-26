@@ -1232,6 +1232,8 @@ impl NodeCraftApp {
         let started = self.frame_started(ui.ctx().current_pass_index() == 0);
         self.show_frame(ui);
         self.deliver_copy(ui.ctx());
+        #[cfg(not(target_arch = "wasm32"))]
+        self.export_close_overlay(ui.ctx());
         self.frame_finished(started);
         self.pumped = self.frame_pump && self.session.perf().enabled();
         if self.pumped {
@@ -1283,6 +1285,12 @@ impl NodeCraftApp {
         self.split_shown = self.split_seen.take();
         self.previews.poll(ui.ctx());
         self.poll_export(ui.ctx());
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.export_close_owns_input() {
+            // Continue the worker while the close prompt owns every UI input. The modal
+            // is painted last by show(), above any document editor or canvas gesture.
+            return;
+        }
         let file_owns_input = self.export_overlay(ui.ctx()) || file_owns_input;
         self.videos.poll(ui.ctx());
         self.audios.poll(ui.ctx());
@@ -3312,7 +3320,9 @@ impl eframe::App for NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_plugins(ctx);
         self.tick_sharing(ctx);
-        // Last, so it sees any `CancelClose` from an unsaved-changes check (none in M0).
+        #[cfg(not(target_arch = "wasm32"))]
+        self.export_close_request(ctx);
+        // Last, so the native quit respects the export's CancelClose decision.
         craft_quit::on_close_request(ctx);
     }
 

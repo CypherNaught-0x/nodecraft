@@ -15,6 +15,8 @@ use std::{
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
 };
+#[cfg(not(target_arch = "wasm32"))]
+mod close;
 mod work;
 
 type Pick = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
@@ -65,6 +67,8 @@ pub(super) struct Exports {
     pub(super) runner: Option<Arc<dyn nodecraft_engine::save_runner::SaveRunner>>,
     rect: egui::Rect,
     pointer_owned: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    closing: close::Closing,
     /// Tests answer the dialog with this path instead of opening one.
     #[cfg(test)]
     pub(super) answer: Option<PathBuf>,
@@ -81,6 +85,8 @@ impl Default for Exports {
             runner,
             rect: egui::Rect::NOTHING,
             pointer_owned: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            closing: Default::default(),
             #[cfg(test)]
             answer: None,
         }

@@ -40,6 +40,16 @@ pub struct ExportStatus {
     pub result: Option<ExportResult>,
 }
 
+/// A read-only receipt remains observable after its Session is replaced or dropped. It
+/// retains no project, destination path or cancellation authority.
+#[derive(Clone)]
+pub struct ExportWatch(Arc<Control>);
+impl ExportWatch {
+    pub fn status(&self) -> ExportStatus {
+        self.0.status()
+    }
+}
+
 pub(crate) struct Control {
     state: Mutex<ExportStatus>,
     pub(crate) cancel: TransferCancel,
@@ -155,6 +165,9 @@ impl Exports {
     }
     pub(crate) fn status(&self) -> Option<ExportStatus> {
         self.current.as_ref().map(|control| control.status())
+    }
+    pub(crate) fn watch(&self) -> Option<ExportWatch> {
+        self.current.as_ref().map(|control| ExportWatch(Arc::clone(control)))
     }
     pub(crate) fn cancellable(&self, id: u64) -> Result<(), Error> {
         let status = self.status().filter(|status| status.id == id).ok_or_else(|| Error::new(ErrorKind::NotFound, "that export is no longer current"))?;

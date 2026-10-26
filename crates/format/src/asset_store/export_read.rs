@@ -3,17 +3,12 @@
 use super::*;
 
 impl AssetStore {
-    /// Verify a reference for a background export using a separate, caller-owned scratch
-    /// workspace. At most one asset (8 GiB) is staged. The canonical identity and old source
+    /// Verify a reference for a background export using a managed scratch workspace beside
+    /// the session's workspace, charged to its quota. At most one asset (8 GiB) is staged.
+    /// The canonical identity and old source
     /// remain pinned, but no proof or storage is published into the live session's cache.
     /// Busy source capture is retryable by a cancellable worker; it performs no source reads.
-    pub fn open_export_verified(
-        &self,
-        asset: &AssetRef,
-        scratch: &crate::NativeAssetWorkspace,
-        cancel: &TransferCancel,
-        metrics: &StreamMetrics,
-    ) -> Result<VerifiedAsset, Error> {
+    pub fn open_export_verified(&self, asset: &AssetRef, cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<VerifiedAsset, Error> {
         cancel.check()?;
         let entry = self.assets.get(&asset.hash).ok_or_else(|| invalid("project references a missing asset"))?;
         let (cached, origin) = {
@@ -40,6 +35,13 @@ impl AssetStore {
                         crc32: entry.expected_crc.ok_or_else(|| invalid("indexed asset is missing its CRC"))?,
                         bytes: entry.identity.bytes,
                     };
+                    let workspace = self
+                        .context
+                        .0
+                        .workspace
+                        .as_ref()
+                        .ok_or_else(|| Error::new(ErrorKind::Unsupported, "this host cannot privately verify indexed assets"))?;
+                    let scratch = workspace.export_scratch()?;
                     let sealed = scratch.seal_copy(&source, crate::disk_quota::DiskPool::Verified, Some(expected), cancel, metrics)?;
                     facts(sealed.range()?, expected.crc32, metrics)?
                 }

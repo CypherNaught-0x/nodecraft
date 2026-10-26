@@ -25,7 +25,16 @@ fn with_image() -> (Harness<'static, NodeCraftApp>, Vec<u8>) {
     let app = NodeCraftApp::from_session(session, canvas).unwrap();
     let builder = Harness::builder().with_size(Vec2::new(1000.0, 700.0));
     let builder = if std::env::var_os("NODECRAFT_EXPORT587_EVIDENCE").is_some() { builder.wgpu() } else { builder };
-    let mut h = builder.build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    let mut h = builder.build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if std::env::var_os("NODECRAFT_EXPORT587_CLOSE_BASELINE").is_none() {
+                app.export_close_request(ui.ctx());
+            }
+            app.show(ui);
+        },
+        app,
+    );
     h.run();
     (h, png)
 }
@@ -122,6 +131,99 @@ impl nodecraft_engine::save_runner::SaveRunner for Held {
         Ok(())
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+fn close_commands<'a>(h: &'a Harness<'static, NodeCraftApp>) -> &'a [egui::ViewportCommand] {
+    h.output().viewport_output.get(&egui::ViewportId::ROOT).map(|output| output.commands.as_slice()).unwrap_or_default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn request_close(h: &mut Harness<'static, NodeCraftApp>) -> bool {
+    h.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+    h.step();
+    let held = close_commands(h).contains(&egui::ViewportCommand::CancelClose);
+    h.input_mut().viewports.entry(egui::ViewportId::ROOT).or_default().events.clear();
+    h.run_steps(3);
+    held
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn a_close_request_during_export_can_keep_exporting_or_wait_for_cancel_cleanup() {
+    let _serial = EXPORT_TESTS.lock().unwrap();
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let (mut h, _) = with_image();
+        h.state_mut().theme = theme;
+        h.ctx.set_visuals(crate::theme::visuals(theme));
+        let runner = std::sync::Arc::new(Held::default());
+        h.state_mut().exports.runner = Some(runner.clone());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("public-result.png");
+        std::fs::write(&path, b"existing file").unwrap();
+        begin_export(&mut h, Some(path.clone()));
+        let close_held = request_close(&mut h);
+        let baseline = std::env::var_os("NODECRAFT_EXPORT587_CLOSE_BASELINE").is_some();
+        if let Some(root) = std::env::var_os("NODECRAFT_EXPORT587_EVIDENCE") {
+            let root = std::path::PathBuf::from(root);
+            std::fs::create_dir_all(&root).unwrap();
+            let side = if baseline { "before" } else { "after" };
+            let theme = if theme == crate::theme::ThemeKind::Dark { "dark" } else { "light" };
+            h.render().unwrap().save(root.join(format!("{side}-quit-{theme}.png"))).unwrap();
+        }
+        if baseline {
+            assert!(!close_held);
+            assert!(h.query_by_label("An export is still running.").is_none());
+            drop(runner.0.lock().unwrap().take());
+            continue;
+        }
+        assert!(close_held);
+        assert!(h.query_by_label("An export is still running.").is_some());
+        h.get_by_label("Keep exporting").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("An export is still running.").is_none());
+        assert!(h.state().session.export_status().unwrap().cancellable);
+        request_close(&mut h);
+        h.get_by_label("Cancel export and quit").click();
+        h.run_steps(2);
+        assert!(!h.state().session.export_status().unwrap().cancellable);
+        assert!(h.query_by_label("Cancelling export before quitting…").is_some());
+        assert!(!close_commands(&h).contains(&egui::ViewportCommand::Close), "a blocked worker must finish cleanup first");
+        // A replacement Session must not make the old receipt appear complete.
+        let project = h.state().session.document().clone();
+        h.state_mut().session = Session::new(project).unwrap();
+        h.step();
+        assert!(!close_commands(&h).contains(&egui::ViewportCommand::Close));
+        runner.0.lock().unwrap().take().unwrap().run();
+        h.step();
+        assert!(close_commands(&h).contains(&egui::ViewportCommand::Close));
+        assert_eq!(std::fs::read(&path).unwrap(), b"existing file");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "cleanup precedes the close request");
+    }
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn a_minimized_export_close_is_cancelled_in_logic_without_a_ui_frame() {
+    let _serial = EXPORT_TESTS.lock().unwrap();
+    let (mut h, _) = with_image();
+    let runner = std::sync::Arc::new(Held::default());
+    h.state_mut().exports.runner = Some(runner.clone());
+    let dir = tempfile::tempdir().unwrap();
+    begin_export(&mut h, Some(dir.path().join("result.png")));
+    let mut input = egui::RawInput::default();
+    let viewport = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+    viewport.minimized = Some(true);
+    viewport.events.push(egui::ViewportEvent::Close);
+    let ctx = h.ctx.clone();
+    let out = ctx.run_logic(&input, |ctx| h.state_mut().export_close_request(ctx));
+    let commands = out.viewport_commands.get(&egui::ViewportId::ROOT).unwrap();
+    assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+    assert!(commands.contains(&egui::ViewportCommand::Visible(true)));
+    assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+    assert!(h.state().export_close_owns_input());
+    drop(runner.0.lock().unwrap().take());
+}
+
 #[test]
 fn a_pending_export_keeps_canvas_keys_live_and_its_real_cancel_button_preserves_the_target() {
     let _serial = EXPORT_TESTS.lock().unwrap();
