@@ -1,7 +1,6 @@
 //! Automatic replay policy is independent of diagnostic transience and billing evidence.
 use super::*;
 use nodecraft_exec::scheduler::{Event, JobSpec, JobState, Limits, RetryPolicy, Scheduler};
-use serde_json::json;
 use std::sync::atomic::AtomicBool;
 
 struct LostReply {
@@ -136,6 +135,32 @@ fn legacy_default_keeps_retrying_with_the_same_charge() {
 }
 
 #[test]
+fn azure_lost_reply_stops_actual_driver_retries_and_keeps_the_charge_unresolved() {
+    use nodecraft_providers::llm::{ApiKey, Endpoint, LlmClient};
+    struct LostHttp(AtomicU64);
+    impl nodecraft_providers::Http for LostHttp {
+        fn send(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(ProviderError::new(ErrorKind::Network, "public Azure accepted-but-lost fixture")) })
+        }
+    }
+    let http = Arc::new(LostHttp(AtomicU64::new(0)));
+    let provider = Arc::new(LlmClient::new(Endpoint::azure_openai("https://demo.openai.azure.com", ApiKey::new("public-fixture")).unwrap(), http.clone()));
+    assert!(!provider.retry_ambiguous_submit());
+    let (runner, budget) = budgeted(Some(1_000_000));
+    let mut queued = priced(provider, Some(100_000));
+    queued.job.model = "public-deployment".into();
+    queued.job.inputs = vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A harbour".into() }];
+    runner.register(JobId(1), queued);
+    let (scheduler, events) = drive(Arc::new(runner));
+    assert_eq!(http.0.load(Ordering::SeqCst), 1);
+    assert!(!events.iter().any(|event| matches!(event, Event::Retrying { .. })), "{events:?}");
+    assert!(matches!(scheduler.state(JobId(1)), Some(JobState::Failed { .. })));
+    assert_eq!(spent(&budget), 100_000);
+    assert_eq!(statuses(&budget), [Charge::Unresolved]);
+}
+
+#[test]
 fn false_policy_preserves_genuine_handle_resume_and_finished_generation_retry() {
     for finished in [false, true] {
         let inner: Arc<dyn Provider> = if finished {
@@ -243,6 +268,54 @@ fn unknown_price_terminal_failure_does_not_invent_money_and_drop_stays_conservat
     assert_eq!(pending.calls.load(Ordering::SeqCst), 1);
     assert_eq!(statuses(&budget), [Charge::Unresolved]);
     assert_eq!(spent(&budget), 100_000);
+}
+
+#[test]
+fn huggingface48_real_adapter_lost_reply_is_not_replayed_by_driver() {
+    struct LostHttp(AtomicU64);
+    impl nodecraft_providers::Http for LostHttp {
+        fn send(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(ProviderError::new(ErrorKind::Network, "public lost reply")) })
+        }
+    }
+    let http = Arc::new(LostHttp(AtomicU64::new(0)));
+    let provider =
+        Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&nodecraft_providers::secrets::Secret::new("public-fixture").unwrap(), http.clone()));
+    let (runner, budget) = budgeted(Some(1_000_000));
+    let mut queued = priced(provider, Some(100_000));
+    queued.job.model = nodecraft_providers::huggingface::MODEL.into();
+    queued.job.inputs = vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "public harbour".into() }];
+    queued.job.params = Default::default();
+    runner.register(JobId(1), queued);
+    let (_, events) = drive(Arc::new(runner));
+    assert_eq!(http.0.load(Ordering::SeqCst), 1);
+    assert!(!events.iter().any(|event| matches!(event, Event::Retrying { .. })), "{events:?}");
+    assert_eq!(statuses(&budget), [Charge::Unresolved]);
+}
+
+#[test]
+fn gemini44_real_adapter_lost_reply_is_not_replayed_by_driver() {
+    struct LostHttp(AtomicU64);
+    impl nodecraft_providers::Http for LostHttp {
+        fn send(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(ProviderError::new(ErrorKind::Network, "public lost reply")) })
+        }
+    }
+    let http = Arc::new(LostHttp(AtomicU64::new(0)));
+    let provider =
+        Arc::new(nodecraft_providers::gemini_llm::GeminiLlm::new(&nodecraft_providers::secrets::Secret::new("public-fixture").unwrap(), http.clone()));
+    let (runner, budget) = budgeted(Some(1_000_000));
+    let mut queued = priced(provider, Some(100_000));
+    queued.job.model = nodecraft_providers::gemini_llm::MODEL.into();
+    queued.job.inputs = vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "public harbour".into() }];
+    queued.job.params = Default::default();
+    runner.register(JobId(1), queued);
+    let (_, events) = drive(Arc::new(runner));
+    assert_eq!(http.0.load(Ordering::SeqCst), 1);
+    assert!(!events.iter().any(|event| matches!(event, Event::Retrying { .. })), "{events:?}");
+    assert_eq!(statuses(&budget), [Charge::Unresolved]);
 }
 
 #[test]

@@ -337,4 +337,13 @@ fn model_details(ui: &mut egui::Ui, model: &ModelDescriptor) {
 mod tests;
 
 #[cfg(test)]
+mod bfl33_tests;
+
+#[cfg(test)]
+mod huggingface48_tests;
+
+#[cfg(test)]
+mod gemini44_tests;
+
+#[cfg(test)]
 mod deepgram40_tests;
