@@ -27,6 +27,7 @@ pub mod preview;
 pub mod search;
 pub mod selection;
 pub mod tags;
+pub(crate) mod text_preview;
 pub mod theme;
 pub mod turn_into;
 pub mod video;

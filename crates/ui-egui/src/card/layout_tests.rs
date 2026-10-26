@@ -130,6 +130,7 @@ fn harness(zoom: f32, ppp: f32, control: ParamControl, enabled: bool) -> Harness
                 mentions: &[],
                 mention_blocked: None,
                 partial: None,
+                local_text: None,
                 video: None,
                 audio: None,
                 mesh: None,
