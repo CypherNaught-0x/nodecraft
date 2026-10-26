@@ -1,10 +1,12 @@
 //! Pasting a group of nodes and the edges between them as one undo step (copy, paste,
-//! duplicate). The caller supplies fresh ids, so replay stays deterministic.
+//! duplicate). The caller supplies fresh ids directly or in an explicit copy map, so replay
+//! stays deterministic.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_graph::{Change, Changeset, Edge, MAX_CHANGES, Node};
-use nodecraft_types::{CanvasId, Error};
+use nodecraft_types::{CanvasId, Error, NodeId};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -13,10 +15,15 @@ pub struct PasteParams {
     pub nodes: Vec<Node>,
     #[serde(default)]
     pub edges: Vec<Edge>,
+    /// With this map, nodes retain their original ids in the input; the command rebases
+    /// node ids, edge endpoints and supported embedded references together. Edge ids are
+    /// still supplied fresh by the caller.
+    #[serde(default)]
+    pub node_ids: BTreeMap<NodeId, NodeId>,
 }
 
 fn paste(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
-    let p: PasteParams = params(value)?;
+    let mut p: PasteParams = params(value)?;
     if p.nodes.is_empty() {
         return Err(invalid("nothing to paste"));
     }
@@ -25,6 +32,24 @@ fn paste(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     }
     if p.nodes.iter().any(|node| !node.history.is_empty() || node.active.is_some()) {
         return Err(invalid("pasted nodes cannot carry generation history"));
+    }
+    if !p.node_ids.is_empty() {
+        if p.node_ids.len() != p.nodes.len() {
+            return Err(invalid("node_ids must map every pasted node to one unique fresh id"));
+        }
+        let originals: BTreeSet<_> = p.nodes.iter().map(|node| node.id).collect();
+        let fresh: BTreeSet<_> = p.node_ids.values().copied().collect();
+        if originals.len() != p.nodes.len() || fresh.len() != p.nodes.len() || p.node_ids.keys().any(|id| !originals.contains(id)) {
+            return Err(invalid("node_ids must map every pasted node to one unique fresh id"));
+        }
+        for node in &mut p.nodes {
+            node.id = p.node_ids.get(&node.id).copied().ok_or_else(|| invalid("a pasted node has no fresh id"))?;
+        }
+        for edge in &mut p.edges {
+            edge.from.node = p.node_ids.get(&edge.from.node).copied().unwrap_or(edge.from.node);
+            edge.to.node = p.node_ids.get(&edge.to.node).copied().unwrap_or(edge.to.node);
+        }
+        crate::deck_cmds::remap_sources(&mut p.nodes, &p.node_ids)?;
     }
     // Nodes of installed kinds must match their kind: ports as the instance declares them and
     // parameters its schema accepts. Unknown kinds (e.g. from a plugin not installed here) are kept
@@ -106,7 +131,11 @@ fn paste_schema() -> Value {
         "required": ["canvas", "nodes"],
         "properties": {"canvas": {"type": "string", "format": "uuid"},
             "nodes": {"type": "array", "minItems": 1, "maxItems": MAX_CHANGES, "items": node},
-            "edges": {"type": "array", "maxItems": MAX_CHANGES, "items": edge}},
+            "edges": {"type": "array", "maxItems": MAX_CHANGES, "items": edge},
+            "node_ids": {"type":"object", "maxProperties":MAX_CHANGES,
+                "propertyNames":{"type":"string","format":"uuid"},
+                "additionalProperties":{"type":"string","format":"uuid"},
+                "description":"Optional original-to-fresh node ids. Input nodes and edge endpoints keep their original ids; edge ids must already be fresh. Rebases supported embedded references too. Omit when supplying already-rebased nodes."}},
         "$defs": add.get("$defs").cloned().unwrap_or_else(|| json!({}))})
 }
 
@@ -117,7 +146,7 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: paste_schema,
-        params_doc: "{canvas: CanvasId, nodes: [graph::Node], edges?: [graph::Edge]}; inserts the nodes, then the edges between them, as one undo step. Ids must be new; nodes carry no generation history.",
+        params_doc: "{canvas: CanvasId, nodes: [graph::Node], edges?: [graph::Edge], node_ids?: {original NodeId: fresh NodeId}}; inserts the group as one undo step, without generation history. Normally all ids are supplied fresh. With node_ids, supply original node ids and edge endpoints plus a complete one-to-one fresh-node map; the command rebases them and supported Deck source references together. Edge ids must already be fresh. Uncopied Deck sources remain unchanged.",
         enabled: enabled_paste,
         run: paste,
     }]
@@ -150,6 +179,45 @@ mod tests {
             from: Endpoint { node: NodeId::from_bytes([1; 16]), port: "out".into() },
             to: Endpoint { node: NodeId::from_bytes([2; 16]), port: "in".into() },
             order: 0,
+        }
+    }
+
+    #[test]
+    fn explicit_copy_ids_rebase_nodes_and_wire_endpoints_as_one_undo_step() {
+        let mut s = session();
+        s.dispatch("canvas.paste", &json!({"canvas":C,"nodes":[node(1),node(2)]})).unwrap();
+        let before = s.document().clone();
+        let mut wire = edge();
+        wire.id = EdgeId::from_bytes([19; 16]);
+        let ids = std::collections::BTreeMap::from([(node(1).id, node(11).id), (node(2).id, node(12).id)]);
+        let params = json!({"canvas":C,"nodes":[node(1),node(2)],"edges":[wire],"node_ids":ids});
+        s.enabled("canvas.paste", &params).unwrap();
+        s.dispatch("canvas.paste", &params).unwrap();
+        let canvas = s.document().canvases().get(&C).unwrap();
+        let copied = canvas.edges().get(&EdgeId::from_bytes([19; 16])).unwrap();
+        assert_eq!((copied.from.node, copied.to.node), (node(11).id, node(12).id));
+        assert!(canvas.nodes().contains_key(&node(11).id) && canvas.nodes().contains_key(&node(12).id));
+        s.dispatch("edit.undo", &json!({})).unwrap();
+        assert_eq!(s.document(), &before);
+    }
+
+    #[test]
+    fn explicit_copy_ids_reject_partial_extraneous_duplicate_and_taken_targets_without_edits() {
+        let mut s = session();
+        s.dispatch("canvas.paste", &json!({"canvas":C,"nodes":[node(1),node(2)]})).unwrap();
+        let before = s.document().clone();
+        let revision = s.revision();
+        for ids in [
+            std::collections::BTreeMap::from([(node(1).id, node(11).id)]),
+            std::collections::BTreeMap::from([(node(1).id, node(11).id), (node(3).id, node(12).id)]),
+            std::collections::BTreeMap::from([(node(1).id, node(11).id), (node(2).id, node(11).id)]),
+            std::collections::BTreeMap::from([(node(1).id, node(1).id), (node(2).id, node(12).id)]),
+        ] {
+            let params = json!({"canvas":C,"nodes":[node(1),node(2)],"node_ids":ids});
+            assert!(s.enabled("canvas.paste", &params).is_err());
+            assert!(s.dispatch("canvas.paste", &params).is_err());
+            assert_eq!(s.document(), &before);
+            assert_eq!(s.revision(), revision);
         }
     }
 

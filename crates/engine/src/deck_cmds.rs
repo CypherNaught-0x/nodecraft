@@ -5,6 +5,8 @@
 //! agent never overwrites a change it hasn't seen. A deck from a newer NodeCraft is listed but
 //! never changed. Nothing here runs.
 pub mod fonts;
+mod remap;
+pub use remap::remap_sources;
 
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_actions::deck::{self, Deck, Item, Shown, Slide};

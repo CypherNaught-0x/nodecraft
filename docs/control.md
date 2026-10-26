@@ -44,6 +44,12 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 
 ## Limits
 
+`canvas.paste` accepts original node payloads with an optional `node_ids` object mapping every
+original node ID to a unique fresh ID. It rebases node IDs, wire endpoints and supported Deck
+source references together, as one undo step. Wire IDs must already be fresh. Omit `node_ids`
+when supplying nodes and endpoints that already use their final IDs. Deck sources outside the
+copied group stay unchanged; unknown, malformed and newer Deck data is preserved.
+
 The native client gives initial authentication and each replacement connection one five-second
 network-admission deadline. TCP connect, every partial hello write/read, and all six replacement
 attempts with backoff share that deadline. Hello replies are capped at 4 KiB separately from

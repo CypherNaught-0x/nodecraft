@@ -103,7 +103,6 @@ fn build(project: ProjectId, canvas: &Canvas, selection: &Selection) -> Option<P
     let edges = canvas.edges().values().filter(|e| selection.contains(e.from.node) && selection.contains(e.to.node)).cloned().collect();
     Some(Payload { format: FORMAT.into(), version: VERSION, project: Some(project), nodes, edges })
 }
-mod deck_sources;
 mod projection;
 
 pub fn to_text(payload: &Payload) -> Option<String> {
@@ -201,7 +200,7 @@ pub fn place(
         }
         nodes.push(node);
     }
-    deck_sources::remap(&mut nodes, &map)?;
+    nodecraft_engine::deck_cmds::remap_sources(&mut nodes, &map).ok()?;
     let mut chosen_edges = BTreeSet::new();
     let mut edges = Vec::new();
     for mut edge in payload.edges {

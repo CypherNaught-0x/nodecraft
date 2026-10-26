@@ -1,13 +1,15 @@
-//! Copy-time Deck references follow only nodes included in the same fresh-ID map (#695).
+//! Copy-time references follow only nodes included in the same explicit fresh-ID map.
 use nodecraft_actions::{deck::Item, layers::Content};
 use nodecraft_graph::Node;
-use nodecraft_types::{NodeId, Value};
+use nodecraft_types::{Error, NodeId, Value};
 use std::collections::BTreeMap;
 
-pub(super) fn remap(nodes: &mut [Node], ids: &BTreeMap<NodeId, NodeId>) -> Option<()> {
+/// Rebase supported Deck source layers in copied nodes. Unselected origins, unknown layers,
+/// newer versions and malformed stored data remain untouched. The caller owns these copies;
+/// document publication still happens through its ordinary changeset.
+pub fn remap_sources(nodes: &mut [Node], ids: &BTreeMap<NodeId, NodeId>) -> Result<(), Error> {
     for node in nodes.iter_mut().filter(|node| node.kind == nodecraft_nodes::deck::ID) {
-        // Unknown versions and unreadable stored data travel untouched with their card.
-        let Ok(mut deck) = nodecraft_engine::deck_cmds::stored(node) else { continue };
+        let Ok(mut deck) = super::stored(node) else { continue };
         if !deck.writable() {
             continue;
         }
@@ -22,11 +24,10 @@ pub(super) fn remap(nodes: &mut [Node], ids: &BTreeMap<NodeId, NodeId>) -> Optio
             }
         }
         if changed {
-            // Refuse a whole paste if encoding would exceed the existing stored-deck limit.
-            node.config.insert(nodecraft_nodes::deck::CONFIG.into(), Value::Text(deck.encode().ok()?));
+            node.config.insert(nodecraft_nodes::deck::CONFIG.into(), Value::Text(deck.encode().map_err(super::unusable)?));
         }
     }
-    Some(())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -42,7 +43,7 @@ mod tests {
         let mut node = Node::new(NodeId::from_bytes([4; 16]), nodecraft_nodes::deck::ID);
         node.config.insert(nodecraft_nodes::deck::CONFIG.into(), Value::Text(raw.to_string()));
         let mut nodes = vec![node];
-        remap(&mut nodes, &BTreeMap::from([(old, fresh)])).unwrap();
+        remap_sources(&mut nodes, &BTreeMap::from([(old, fresh)])).unwrap();
         let changed: serde_json::Value = serde_json::from_str(nodecraft_nodes::deck::stored(&nodes[0]).unwrap()).unwrap();
         assert_eq!(changed["slides"][0]["layers"][0]["content"]["origin"], fresh.to_string());
         assert_eq!(changed["slides"][0]["layers"][1]["content"]["origin"], external.to_string());
@@ -57,7 +58,7 @@ mod tests {
             let mut node = Node::new(NodeId::from_bytes([4; 16]), nodecraft_nodes::deck::ID);
             node.config.insert(nodecraft_nodes::deck::CONFIG.into(), Value::Text(raw.into()));
             let mut nodes = vec![node.clone()];
-            remap(&mut nodes, &BTreeMap::from([(node.id, NodeId::from_bytes([5; 16]))])).unwrap();
+            remap_sources(&mut nodes, &BTreeMap::from([(node.id, NodeId::from_bytes([5; 16]))])).unwrap();
             assert_eq!(nodes[0], node);
         }
     }
