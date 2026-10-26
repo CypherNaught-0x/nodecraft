@@ -67,6 +67,12 @@ fn a_browser_drop_waits_for_every_read_then_imports_as_one_undo_step() {
     let added: Vec<_> = nodes(&h).into_iter().filter(|n| !existing.contains_key(&n.id)).collect();
     assert_eq!(added.len(), 2, "{:?}", h.state().notice);
     assert!(added.iter().any(|n| n.kind == "source.image") && added.iter().any(|n| n.kind == "source.text"));
+    for (index, kind) in ["source.text", "source.image"].into_iter().enumerate() {
+        let node = added.iter().find(|node| node.kind == kind).unwrap();
+        let rect = crate::app::payload_rect(&h.state().session, node, h.state().theme.tokens());
+        assert!((rect.center() - egui::pos2(100.0 + 300.0 * index as f32, 100.0)).length() < 0.01, "browser import must center actual {kind} geometry");
+    }
+
     assert_eq!(h.state().selection.nodes(), &added.iter().map(|n| n.id).collect());
     assert!(h.state().notice.is_none());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);

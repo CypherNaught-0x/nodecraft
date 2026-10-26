@@ -508,12 +508,11 @@ impl NodeCraftApp {
             .map(|n| if n == 1 { name.to_owned() } else { format!("{name}-{n}") })
             .find(|candidate| candidate.len() <= nodecraft_nodes::element::MAX_NAME && !taken.contains(&candidate.to_ascii_lowercase()))
             .ok_or_else(|| Error::new(ErrorKind::Conflict, "Every name for it is taken here; rename an Element first."))?;
-        let mut params =
-            json!({"canvas": self.canvas, "name": name, "id": id, "pos": {"x": centre.x - t.card_width / 2.0, "y": centre.y - t.card_min_height / 2.0}});
+        let mut params = json!({"canvas": self.canvas, "name": name, "id": id, "pos": {"x": centre.x, "y": centre.y}});
         if free != name {
             params["as"] = json!(free);
         }
-        self.session.dispatch("element.place", &params)?;
+        self.centered_command("element.place", &mut params, id)?;
         self.selection.only(id);
         Ok(())
     }
