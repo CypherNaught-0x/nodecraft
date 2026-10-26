@@ -382,6 +382,7 @@ mod order;
 mod ownership_panel;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
+mod paste_media;
 mod paste_workflow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod perf_run;
@@ -408,6 +409,8 @@ mod technique_menu;
 mod timeline_editor;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod updates;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod web_clipboard;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod web_files;
 #[cfg(target_arch = "wasm32")]
@@ -462,6 +465,8 @@ pub struct NodeCraftApp {
     /// A copied image being read off the UI thread (#319).
     #[cfg(not(target_arch = "wasm32"))]
     image_paste: paste_image::ImagePaste,
+    #[cfg(any(test, target_arch = "wasm32"))]
+    web_paste: web_clipboard::ClipboardPaste,
     /// A browser drop being read (#319); native tests drive its import too.
     #[cfg(any(test, target_arch = "wasm32"))]
     web_drop: Option<drop::web::Pending>,
@@ -1116,6 +1121,8 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             image_paste: paste_image::ImagePaste::new(),
             #[cfg(any(test, target_arch = "wasm32"))]
+            web_paste: Default::default(),
+            #[cfg(any(test, target_arch = "wasm32"))]
             web_drop: None,
             editors: BTreeMap::new(),
             bulk: Default::default(),
@@ -1246,6 +1253,8 @@ impl NodeCraftApp {
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
         self.keep_canvas();
+        #[cfg(any(test, target_arch = "wasm32"))]
+        self.browser_paste_frame(ui.ctx());
         // Dismissing or choosing from a palette must not replay another key from the same
         // input frame as a canvas shortcut. Keep ownership even after palette.show closes it.
         let palette_owned_input = self.palette.is_some();
@@ -1400,8 +1409,7 @@ impl NodeCraftApp {
         }
         let tag_blocks = if model_blocks { true } else { self.tag_overlay(ui) };
         let drop_blocks = self.poll_drop(ui, t);
-        #[cfg(not(target_arch = "wasm32"))]
-        self.poll_image_paste(ui.ctx());
+        self.poll_paste_media(ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         self.poll_folder_import(ui.ctx(), t);
         let search_blocks = if model_blocks { true } else { self.search_overlay(ui) };
@@ -1501,8 +1509,7 @@ impl NodeCraftApp {
                 || self.browser_providers.as_ref().is_some_and(|providers| providers.open)
                 || self.drop_pointer_owned();
             // egui reports no ⌘V press when the clipboard holds no text, only its release (#319).
-            #[cfg(not(target_arch = "wasm32"))]
-            self.image_paste_keys(ui, t, !busy);
+            self.paste_media_keys(ui, t, !busy);
             let (copy, cut, pasted, duplicate) = ui.input_mut(|input| {
                 // Yield before consuming shortcuts or cloning any pasted payload.
                 if busy {
@@ -1546,7 +1553,7 @@ impl NodeCraftApp {
                     Some(centre) => match clipboard::parse(&text) {
                         clipboard::Parsed::Nodes(payload) => self.paste(payload, centre),
                         clipboard::Parsed::Unreadable(why) => self.notice = Some(format!("Can't paste these nodes: {why}.")),
-                        clipboard::Parsed::Text => self.paste_text(&text, centre),
+                        clipboard::Parsed::Text => self.paste_plain_text(ui, t, text, centre),
                     },
                     None => self.notice = Some("There is no unobscured canvas space for this paste.".into()),
                 },

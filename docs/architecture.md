@@ -258,7 +258,10 @@ The pending view polls a bounded result and offers Cancel; only a current Sessio
 project/canvas and revision can accept it through the existing synchronous `import_files` route.
 A blocked filesystem call cannot be interrupted portably: abandonment ends the pending view, but
 keeps the process slot busy until that call returns or the process restarts. No replacement worker
-is spawned. Browser file drops remain unsupported. See the
+is spawned. Browser drops use owned, abortable FileReaders with the same 16 MiB/file and
+48 MiB aggregate body limits, a ten-second deadline and Escape cancellation. Browser PNG paste
+starts Clipboard.read only after a user paste is admitted to the canvas; native copied file
+references reuse the native drop worker. Late results cannot mutate a replaced or edited document. See the
 [native drop decision](decisions/2026-10-18-bounded-native-drop-acquisition.md) for resource bounds
 and the distinction between acquisition and synchronous engine import.
 
