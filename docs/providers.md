@@ -1322,6 +1322,14 @@ NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
 
 ## Deepgram file transcription (`deepgram` feature)
 
+Only a bounded typed error envelope with a recognized matching status/code proves a refusal
+before transcription: auth (401/403), credits (402), invalid input (400/422) or rate limit (429).
+These release the reservation; a recognized rate limit can retry through the existing scheduler.
+Status alone, unknown codes, malformed/oversized bodies, transport loss and server errors keep
+possibly-billed evidence and never authorize an ambiguous retry. Provider error text is omitted.
+See the [documented error contracts](https://developers.deepgram.com/docs/errors).
+
+
 The Deepgram Nova-3 transcription card sends one audio file directly to
 `https://api.deepgram.com/v1/listen`. Save an API key under the `deepgram` account in
 API keys. The fixed-origin request uses secret `Authorization: Token` credentials and

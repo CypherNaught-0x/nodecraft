@@ -75,6 +75,11 @@ impl Deepgram {
             message: "Deepgram transport failed; transcription may still run and be billed".into(),
             retry_after_ms: error.retry_after_ms.filter(|n| *n <= 3_600_000),
         })?;
+        if response::refusal_kind(&reply).is_some()
+            && let Some(context) = context
+        {
+            context.refused();
+        }
         response::parse(reply, &self.key)
     }
 }

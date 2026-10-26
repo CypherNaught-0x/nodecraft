@@ -178,3 +178,40 @@ fn deepgram40_catalog_requires_audio_and_unknown_price_acceptance() {
     assert!(Wiring::new(Modality::Text).with_inline_prompt().fit(model).is_err());
     assert!(Wiring::new(Modality::Text).with(Modality::Audio, 2).fit(model).is_err());
 }
+
+#[test]
+fn deepgram40_documented_refusals_prove_no_charge_but_unknown_replies_do_not() {
+    for (status, code, kind) in [
+        (401, "INVALID_AUTH", ErrorKind::Auth),
+        (403, "INSUFFICIENT_PERMISSIONS", ErrorKind::Auth),
+        (402, "ASR_PAYMENT_REQUIRED", ErrorKind::Budget),
+        (400, "Bad Request", ErrorKind::UnsupportedInput),
+        (400, "INVALID_AUDIO", ErrorKind::UnsupportedInput),
+        (422, "ASR_UNPROCESSABLE_ENTITY", ErrorKind::UnsupportedInput),
+        (429, "TOO_MANY_REQUESTS", ErrorKind::RateLimited),
+    ] {
+        let scope = SubmitContext::new();
+        let body = serde_json::to_vec(&json!({"err_code":code,"err_msg":format!("Private error {KEY}\n"),"request_id":"public-request"})).unwrap();
+        let http = Wire::new(Ok(HttpResponse { status, headers: vec![("Retry-After".into(), "2".into())], body }));
+        let error = block_on(provider(http).submit_with_delivery(&job(), &scope)).unwrap_err();
+        assert_eq!(error.kind, kind);
+        assert_eq!(error.retry_after_ms, Some(2000));
+        assert!(!error.message.contains(KEY));
+        assert!(scope.finish_error().is_some(), "{status}/{code} proves refusal before processing");
+    }
+    for (status, body) in [
+        (429, b"not JSON".to_vec()),
+        (429, br#"{"err_code":"TOO_MANY_REQUESTS"}"#.to_vec()),
+        (429, br#"{"err_code":"TOO_MANY_REQUESTS","err_msg":"rate limit","results":{}}"#.to_vec()),
+        (429, br#"{"err_code":"TOO_MANY_REQUESTS","err_code":"TOO_MANY_REQUESTS","err_msg":"rate limit"}"#.to_vec()),
+        (429, br#"{"err_code":"UNKNOWN_CODE","err_msg":"unknown"}"#.to_vec()),
+        (401, br#"{"err_code":"TOO_MANY_REQUESTS","err_msg":"wrong status"}"#.to_vec()),
+        (500, br#"{"err_code":"TOO_MANY_REQUESTS","err_msg":"server failure"}"#.to_vec()),
+        (429, vec![b' '; MAX_RESPONSE_BYTES + 1]),
+    ] {
+        let scope = SubmitContext::new();
+        let http = Wire::new(Ok(HttpResponse { status, headers: vec![], body }));
+        assert!(block_on(provider(http).submit_with_delivery(&job(), &scope)).is_err());
+        assert!(scope.finish_error().is_none(), "unknown/oversized replies stay possibly billed");
+    }
+}

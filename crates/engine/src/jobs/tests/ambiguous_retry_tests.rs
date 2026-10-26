@@ -1,6 +1,7 @@
 //! Automatic replay policy is independent of diagnostic transience and billing evidence.
 use super::*;
 use nodecraft_exec::scheduler::{Event, JobSpec, JobState, Limits, RetryPolicy, Scheduler};
+use serde_json::json;
 use std::sync::atomic::AtomicBool;
 
 struct LostReply {
@@ -272,4 +273,62 @@ fn deepgram40_real_lost_reply_is_not_replayed_by_driver() {
     assert_eq!(http.0.load(Ordering::SeqCst), 1);
     assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
     assert_eq!(statuses(&budget), [Charge::Unresolved]);
+}
+
+#[test]
+fn deepgram40_real_refusals_release_charges_and_rate_limits_retry_safely() {
+    struct Responses {
+        replies: Mutex<std::collections::VecDeque<nodecraft_providers::HttpResponse>>,
+        calls: AtomicU64,
+    }
+    impl nodecraft_providers::Http for Responses {
+        fn send(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            panic!("no redirects")
+        }
+        fn send_no_redirect(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let reply = self.replies.lock().unwrap().pop_front().expect("fixture response");
+            Box::pin(async { Ok(reply) })
+        }
+    }
+    for (status, code) in
+        [(401, "INVALID_AUTH"), (402, "ASR_PAYMENT_REQUIRED"), (400, "Bad Request"), (422, "ASR_UNPROCESSABLE_ENTITY"), (429, "TOO_MANY_REQUESTS")]
+    {
+        let error = nodecraft_providers::HttpResponse {
+            status,
+            headers: vec![],
+            body: serde_json::to_vec(&json!({"err_code":code,"err_msg":"Public fixture refusal"})).unwrap(),
+        };
+        let success = nodecraft_providers::HttpResponse {
+            status: 200,
+            headers: vec![],
+            body: br#"{"results":{"channels":[{"alternatives":[{"transcript":"Recovered after rate limit"}]}]}}"#.to_vec(),
+        };
+        let http = Arc::new(Responses { replies: Mutex::new([error, success].into()), calls: AtomicU64::new(0) });
+        let provider =
+            Arc::new(nodecraft_providers::deepgram::Deepgram::new(nodecraft_providers::secrets::Secret::new("public-fixture").unwrap(), http.clone()));
+        let (runner, budget) = budgeted(Some(1_000_000));
+        let mut queued = priced(provider, Some(100_000));
+        queued.job.model = nodecraft_providers::deepgram::MODEL.into();
+        queued.job.params = Default::default();
+        queued.job.inputs = vec![nodecraft_providers::JobInput::Media {
+            role: "audio".into(),
+            mime: "audio/wav".into(),
+            bytes: Arc::from(include_bytes!("../../../../providers/src/fal/fixtures/tone.wav").as_slice()),
+        }];
+        runner.register(JobId(1), queued);
+        let (scheduler, events) = drive(Arc::new(runner));
+        if status == 429 {
+            assert_eq!(http.calls.load(Ordering::SeqCst), 2);
+            assert_eq!(events.iter().filter(|e| matches!(e, Event::Retrying { .. })).count(), 1);
+            assert!(matches!(scheduler.state(JobId(1)), Some(JobState::Done)));
+            assert_eq!(spent(&budget), 100_000);
+            assert_eq!(statuses(&budget), [Charge::Actual]);
+        } else {
+            assert_eq!(http.calls.load(Ordering::SeqCst), 1);
+            assert!(!events.iter().any(|e| matches!(e, Event::Retrying { .. })));
+            assert_eq!(spent(&budget), 0);
+            assert!(statuses(&budget).is_empty());
+        }
+    }
 }

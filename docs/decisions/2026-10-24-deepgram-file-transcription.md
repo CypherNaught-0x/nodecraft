@@ -14,11 +14,17 @@
 - **Do not invent billing evidence.** Usage pricing requires explicit unknown-price consent.
   Neither audio duration nor absent cost metadata is a dollar receipt. No ambiguous paid
   submit is retried, no handle is fabricated and cancellation cannot promise a remote stop.
-  The transport timeout is ten minutes, independent of the runner's local deadline.
+  A bounded, strictly typed error envelope with a documented matching status/code proves
+  a pre-processing refusal for auth, credits, invalid input and rate limits. Such refusals
+  release the reservation; a recognized 429 may retry through the existing backoff scheduler.
+  Unknown codes, malformed/oversized bodies, 5xx and lost replies remain possibly billed.
+  Provider error text is never published. The transport timeout is ten minutes, independent
+  of the runner's local deadline.
 - **Verify without spending.** Contract fixtures, the real host/driver, catalog admission
   and pointer selection exercise the shipping path. An ignored live smoke requires two
   explicit opt-ins and uses the existing public tone fixture.
 
 Sources: [Deepgram prerecorded contract](https://developers.deepgram.com/reference/speech-to-text/listen-pre-recorded),
 [getting started](https://developers.deepgram.com/docs/pre-recorded-audio),
+[error contracts](https://developers.deepgram.com/docs/errors) (checked 2026-10-26),
 [opt-out](https://developers.deepgram.com/docs/the-deepgram-model-improvement-partnership-program).
