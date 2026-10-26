@@ -118,22 +118,34 @@ impl TurnInto {
                     if entries.is_empty() {
                         ui.label(egui::RichText::new("No node takes this connection yet").color(t.text_muted));
                     }
-                    for (row, entry) in entries.iter().enumerate() {
-                        let text = match entry.key {
-                            Some(key) => format!("{}    {}", entry.label, key.to_ascii_uppercase()),
-                            None => entry.label.clone(),
-                        };
-                        let response = ui.add(egui::Button::selectable(row == self.highlighted, text).min_size(Vec2::new(ui.available_width(), 0.0)));
-                        response.widget_info(|| {
-                            egui::WidgetInfo::selected(egui::WidgetType::Button, true, row == self.highlighted, format!("Turn into {}", entry.label))
-                        });
-                        if response.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
-                            self.highlighted = row;
-                        }
-                        if response.clicked() {
-                            chosen = Some(entry.kind.clone());
-                        }
+                    let row_height = ui.spacing().interact_size.y;
+                    let stride = row_height + ui.spacing().item_spacing.y;
+                    let mut scroll = egui::ScrollArea::vertical()
+                        .id_salt("entries")
+                        .max_height((stride * crate::palette::MAX_ROWS as f32 - ui.spacing().item_spacing.y).min(ui.ctx().content_rect().height() * 0.5));
+                    if first_frame || up || down {
+                        scroll = scroll.vertical_scroll_offset(self.highlighted as f32 * stride);
                     }
+                    scroll.show_rows(ui, row_height, entries.len(), |ui, range| {
+                        for row in range {
+                            let Some(entry) = entries.get(row) else { continue };
+                            let text = match entry.key {
+                                Some(key) => format!("{}    {}", entry.label, key.to_ascii_uppercase()),
+                                None => entry.label.clone(),
+                            };
+                            let response = ui
+                                .add(egui::Button::selectable(row == self.highlighted, text).truncate().min_size(Vec2::new(ui.available_width(), row_height)));
+                            response.widget_info(|| {
+                                egui::WidgetInfo::selected(egui::WidgetType::Button, true, row == self.highlighted, format!("Turn into {}", entry.label))
+                            });
+                            if response.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
+                                self.highlighted = row;
+                            }
+                            if response.clicked() {
+                                chosen = Some(entry.kind.clone());
+                            }
+                        }
+                    });
                 });
         });
         if let Some(kind) = chosen {

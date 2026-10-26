@@ -186,6 +186,13 @@ pub fn text_input_focused(ctx: &egui::Context) -> bool {
     ctx.memory(|memory| memory.focused()).is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some())
 }
 
+/// Whether wheel and pinch input may navigate the canvas in this frame.
+pub enum ScrollNavigation {
+    Disabled,
+    ZoomOnly,
+    PanAndZoom,
+}
+
 /// Background navigation for one frame: drag with the primary button on empty canvas, or with the
 /// middle or secondary button anywhere, pans; scroll (two-finger trackpad, wheel) pans, or zooms
 /// with [`ScrollAction::Zoom`]; pinch or ⌘/Ctrl-scroll zooms around the pointer; ⌘0 resets, ⌘= and
@@ -200,7 +207,7 @@ pub fn navigate(
     view: &mut CanvasView,
     home: Pos2,
     prefs: &CanvasSettings,
-    allow_scroll_pan: bool,
+    scroll_navigation: ScrollNavigation,
     primary_pans: bool,
 ) {
     let viewport = background.rect;
@@ -222,8 +229,8 @@ pub fn navigate(
         )
     });
     let hovered = pointer.is_some_and(|p| viewport.contains(p));
-    if hovered {
-        let (zoom, pan) = scroll_to_view_change(if allow_scroll_pan { scroll } else { Vec2::ZERO }, zoom, prefs);
+    if hovered && !matches!(scroll_navigation, ScrollNavigation::Disabled) {
+        let (zoom, pan) = scroll_to_view_change(if matches!(scroll_navigation, ScrollNavigation::PanAndZoom) { scroll } else { Vec2::ZERO }, zoom, prefs);
         view.pan_by(pan);
         if zoom != 1.0
             && let Some(p) = pointer
