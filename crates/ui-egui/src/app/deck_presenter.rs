@@ -6,10 +6,11 @@
 //! was presented can be kept, reordered and shown again.
 use super::NodeCraftApp;
 use super::layer_editor::{Art, Rendered, Stage, draw_layer, render, render_key, render_scale};
+use super::layer_fonts::{FontFiles, HeldFont};
 use crate::ids;
 use egui::{Pos2, Rect, Sense, Vec2};
 use nodecraft_actions::deck::{self, Shown, Slide};
-use nodecraft_actions::layers::{self, Content, Fonts, Frame};
+use nodecraft_actions::layers::{self, Content, Frame};
 use nodecraft_types::{AssetRef, CanvasId, FieldId, NodeId};
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
@@ -26,11 +27,12 @@ pub(super) struct Presenter {
     listing: Option<(u64, Listing)>,
     /// The current slide's rendered text and shape layers, by layer id.
     textures: HashMap<String, Rendered>,
+    pub(super) font_files: FontFiles,
 }
 
 impl Presenter {
     pub(super) fn new(canvas: CanvasId, node: NodeId) -> Self {
-        Self { canvas, node, index: 0, listing: None, textures: HashMap::new() }
+        Self { canvas, node, index: 0, listing: None, textures: HashMap::new(), font_files: FontFiles::default() }
     }
 }
 
@@ -40,6 +42,7 @@ struct Listing {
     writable: bool,
     frame: Frame,
     slides: Vec<(Slide, Vec<Source>)>,
+    fonts: Vec<HeldFont>,
 }
 
 #[derive(Deserialize)]
@@ -49,6 +52,8 @@ struct Listed {
     height: u32,
     background: String,
     slides: Vec<Json>,
+    #[serde(default)]
+    fonts: Vec<HeldFont>,
 }
 
 #[derive(Deserialize)]
@@ -78,7 +83,7 @@ fn listing(value: Json) -> Option<Listing> {
             Some((serde_json::from_value::<Slide>(raw).ok()?, sources))
         })
         .collect();
-    Some(Listing { writable: listed.writable, frame: Frame { width: listed.width, height: listed.height, background }, slides })
+    Some(Listing { writable: listed.writable, frame: Frame { width: listed.width, height: listed.height, background }, slides, fonts: listed.fonts })
 }
 
 /// Where a key moves the presenter: to a slide, or out.
@@ -185,10 +190,26 @@ impl NodeCraftApp {
             _ => {}
         }
 
+        presenter.font_files.load(self.session.assets(), &listing.fonts);
+        let mut missing_fonts: Vec<&str> = Vec::new();
+        for layer in listing.slides.get(presenter.index).into_iter().flat_map(|(slide, _)| slide.layers.iter().filter_map(|item| item.layer())) {
+            if layer.visible
+                && let Content::Text { font, .. } = &layer.content
+                && !presenter.font_files.readable(&listing.fonts, font)
+                && !missing_fonts.iter().any(|name| layers::same_name(name, font))
+            {
+                missing_fonts.push(font);
+            }
+        }
+        let font_notice = match missing_fonts.as_slice() {
+            [] => None,
+            [name] => Some(format!("Using Lato for {name}")),
+            names => Some(format!("Using Lato for {} unavailable fonts", names.len())),
+        };
         let t = *self.theme.tokens();
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
-        let footer = t.control_gap * 6.0;
+        let footer = t.control_gap * if font_notice.is_some() { 10.0 } else { 6.0 };
         let frame = listing.frame;
         let (fw, fh) = (f64::from(frame.width), f64::from(frame.height));
         let room = (content.size() - Vec2::new(gap * 2.0, gap * 2.0 + footer)).max(Vec2::splat(1.0));
@@ -208,7 +229,8 @@ impl NodeCraftApp {
         });
         let edge = (content.size().max_elem() * ctx.pixels_per_point()).min(2048.0);
         let render_at = render_scale(scale * f64::from(ctx.pixels_per_point()));
-        let fonts = Fonts::default();
+        let fonts = presenter.font_files.fonts(&listing.fonts);
+        let fonts_key = presenter.font_files.render_key(&listing.fonts);
         let mut art = HashMap::new();
         for layer in drawn.iter().flat_map(|d| &d.layers) {
             let shown = match &layer.content {
@@ -225,9 +247,9 @@ impl NodeCraftApp {
                 }
                 Content::Source { fit, .. } => Art::Image { texture: None, fit: *fit },
                 Content::Text { .. } | Content::Shape { .. } => {
-                    let key = render_key(layer, render_at, 0);
+                    let key = render_key(layer, render_at, fonts_key);
                     if presenter.textures.get(&layer.id).is_none_or(|r| r.key != key) {
-                        presenter.textures.insert(layer.id.clone(), render(&ctx, layer, render_at, &fonts, 0));
+                        presenter.textures.insert(layer.id.clone(), render(&ctx, layer, render_at, &fonts, fonts_key));
                     }
                     let rendered = presenter.textures.get(&layer.id);
                     Art::Vector { texture: rendered.and_then(|r| r.texture.as_ref().map(|t| t.id())), pad: rendered.map_or(0.0, |r| r.pad) }
@@ -236,6 +258,7 @@ impl NodeCraftApp {
             art.insert(layer.id.clone(), shown);
         }
         presenter.textures.retain(|id, _| art.contains_key(id));
+        drop(fonts);
 
         let [r, g, b, a] = frame.background;
         let background = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
@@ -264,6 +287,9 @@ impl NodeCraftApp {
             }
             let bar = Rect::from_min_max(Pos2::new(content.min.x + gap, slide_rect.max.y + gap), Pos2::new(content.max.x - gap, content.max.y - gap));
             ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
+                if let Some(message) = &font_notice {
+                    ui.add(egui::Label::new(egui::RichText::new(message).color(t.stale)).truncate()).on_hover_text(missing_fonts.join("\n"));
+                }
                 ui.horizontal(|ui| {
                     let name = slide.map_or("", |(s, _)| s.name.as_str());
                     let place = if count == 0 { "0 / 0".to_owned() } else { format!("{} / {count}", presenter.index.saturating_add(1)) };

@@ -1,7 +1,9 @@
-//! Bounded fal queue adapter for ten explicitly selected live model aliases.
+//! Bounded fal queue adapter for explicitly selected live model aliases.
 //! No remote deduplication guarantee; accepted handles resume, ambiguous creates never replay.
 mod json;
 mod limits;
+#[cfg(test)]
+mod luma_tests;
 mod media;
 #[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
 mod native_tests;
@@ -21,6 +23,10 @@ use limits::reserve;
 use nodecraft_types::BillableUnits;
 use std::sync::Arc;
 pub const FLUX: &str = "fal-ai/flux/schnell";
+/// Luma Ray 3.2 and Photon through fal's existing queue (#26).
+pub const LUMA_RAY: &str = "luma/agent/ray/v3.2/text-to-video";
+pub const LUMA_RAY_I2V: &str = "luma/agent/ray/v3.2/image-to-video";
+pub const LUMA_PHOTON: &str = "fal-ai/luma-photon";
 pub const WAN: &str = "fal-ai/wan/v2.2-a14b/text-to-video";
 /// Wan 2.2 from a first frame, with an optional last frame (#607).
 pub const WAN_I2V: &str = "fal-ai/wan/v2.2-a14b/image-to-video";
@@ -95,6 +101,9 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Model {
+    RayText,
+    RayFrames,
+    Photon,
     Image,
     Video,
     /// Image to video: a first frame and an optional last frame.
@@ -113,6 +122,9 @@ enum Model {
 impl Model {
     fn read(s: &str) -> Result<Self, ProviderError> {
         match s {
+            LUMA_RAY => Ok(Self::RayText),
+            LUMA_RAY_I2V => Ok(Self::RayFrames),
+            LUMA_PHOTON => Ok(Self::Photon),
             FLUX => Ok(Self::Image),
             WAN => Ok(Self::Video),
             WAN_I2V => Ok(Self::Frames),
@@ -123,11 +135,14 @@ impl Model {
             BRIA_REMOVE => Ok(Self::RemoveBackground),
             FLUX_LORA_TRAINER => Ok(Self::Train),
             FLUX_LORA => Ok(Self::Styled),
-            _ => Err(invalid("choose one of the ten supported fal models")),
+            _ => Err(invalid("choose a supported fal model")),
         }
     }
     fn wire(self) -> &'static str {
         match self {
+            Self::RayText => LUMA_RAY,
+            Self::RayFrames => LUMA_RAY_I2V,
+            Self::Photon => LUMA_PHOTON,
             Self::Image => FLUX,
             Self::Video => WAN,
             Self::Frames => WAN_I2V,
@@ -142,10 +157,12 @@ impl Model {
     }
     /// Whether the model makes one MP4 clip.
     fn video(self) -> bool {
-        matches!(self, Self::Video | Self::Frames | Self::Speech)
+        matches!(self, Self::Video | Self::Frames | Self::Speech | Self::RayText | Self::RayFrames)
     }
     fn root(self) -> &'static str {
         match self {
+            Self::RayText | Self::RayFrames => "luma/agent",
+            Self::Photon => LUMA_PHOTON,
             Self::Image => "fal-ai/flux",
             Self::Video | Self::Frames | Self::Speech => "fal-ai/wan",
             Self::Audio => "fal-ai/kokoro",
@@ -156,9 +173,9 @@ impl Model {
             Self::Styled => FLUX_LORA,
         }
     }
-    /// Whether the model makes FLUX images, which fal lists under `images`.
+    /// Whether fal lists this model's images under `images`.
     fn images(self) -> bool {
-        matches!(self, Self::Image | Self::Styled)
+        matches!(self, Self::Image | Self::Styled | Self::Photon)
     }
 }
 #[derive(Clone, Copy)]
@@ -228,7 +245,7 @@ impl Record {
             width: num("width")?,
             height: num("height")?,
         };
-        if !(1..=if model.images() { 4 } else { 1 }).contains(&record.requested)
+        if !(1..=if matches!(model, Model::Image | Model::Styled) { 4 } else { 1 }).contains(&record.requested)
             || (model == Model::Upscale
                 && (record.width == 0
                     || record.height == 0
@@ -273,7 +290,7 @@ pub struct Fal {
 }
 impl Fal {
     pub fn new(key: Secret, http: Arc<dyn Http>) -> Self {
-        Self { key, http, limits: Limits::HARD }
+        Self { key, http, limits: Limits::default() }
     }
     pub fn with_limits(key: Secret, http: Arc<dyn Http>, limits: Limits) -> Result<Self, ProviderError> {
         Ok(Self { key, http, limits: limits.validate()? })
@@ -406,9 +423,11 @@ impl Fal {
         }
     }
     async fn download(&self, record: Record, url: &str, trigger: &str) -> Result<Completed, ProviderError> {
+        // Derive from the admitted handle too, so resuming a paid Ray task has the same cap.
+        let limits = self.limits.for_model(record.model);
         let r = self.http.send_no_redirect(self.auth(HttpRequest::get(url).max_response_bytes(self.limits.response_bytes))).await.map_err(transport)?;
         status(&r, self.limits.response_bytes)?;
-        let files = response::outputs(&r.body, record, self.limits, &self.key)?;
+        let files = response::outputs(&r.body, record, limits, &self.key)?;
         let billable_units = response::billable_units(&r);
         drop(r);
         if record.model == Model::Train {
@@ -428,10 +447,10 @@ impl Fal {
         }
         let mut outputs = Vec::new();
         reserve(&mut outputs, files.len())?;
-        let mut remaining = self.limits.total_output_bytes;
+        let mut remaining = limits.total_output_bytes;
         let mut pixels = 0u64;
         for f in files {
-            let cap = remaining.min(self.limits.output_bytes);
+            let cap = remaining.min(limits.output_bytes);
             if cap == 0 {
                 return Err(malformed("fal aggregate output capacity exhausted"));
             }
@@ -439,20 +458,21 @@ impl Fal {
             if reply.body.len() > cap {
                 return Err(malformed("fal output exceeds remaining byte capacity"));
             }
-            status(&reply, self.limits.output_bytes).map_err(|mut error| {
+            status(&reply, limits.output_bytes).map_err(|mut error| {
                 error.message = "fal output download failed; the accepted request may have been billed".into();
                 error
             })?;
             if reply.body.is_empty() || f.size.is_some_and(|n| usize::try_from(n).ok() != Some(reply.body.len())) {
                 return Err(malformed("fal output size disagrees with body"));
             }
-            let mime = media::validate(&reply.body, record, self.limits, &mut pixels)?;
+            let mime = media::validate(&reply.body, record, limits, &mut pixels)?;
             if f.mime.as_deref().is_some_and(|m| m != mime) {
                 return Err(malformed("fal output MIME disagrees with actual bytes"));
             }
-            if matches!(record.model, Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground) && (f.width.is_some() || f.height.is_some()) {
-                let meta =
-                    nodecraft_media::probe_image(&reply.body, &self.limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
+            if matches!(record.model, Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon)
+                && (f.width.is_some() || f.height.is_some())
+            {
+                let meta = nodecraft_media::probe_image(&reply.body, &limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
                 if f.width.is_some_and(|w| w != u64::from(meta.width)) || f.height.is_some_and(|h| h != u64::from(meta.height)) {
                     return Err(malformed("fal declared geometry disagrees with actual image"));
                 }

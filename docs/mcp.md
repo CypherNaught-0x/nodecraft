@@ -152,6 +152,14 @@ with `share.stop` (#698). A new
 command stays hidden until it is added to one of the
 lists, and a test fails until then.
 
+`export.local_plan` previews a batch without writing files and is agent-visible; `export.local_run`
+would publish files outside the project and undo, so it is human-only (#98). Both require an
+app-injected authorized folder, which the desktop app does not yet provide (#746). On Windows and
+other non-Unix platforms an authorized host can preview with `export.local_plan`, but
+`export.local_run` returns Unsupported before creating or replacing any file: secure folder writes
+need an equivalent descriptor-relative no-follow implementation. The browser cannot authorize a
+local folder.
+
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
 server waits until the prompt is answered.
@@ -213,7 +221,7 @@ JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.
 
 **Live-only commands** act on the running window, so they need MCP bridged to the app
 (`nodecraft --control`). They are navigation (`canvas.fit_all`, `canvas.fit_selection`,
-`canvas.minimap_toggle`, `canvas.pan_to`), search (`canvas.search_*`), the tag filter
+`canvas.minimap_toggle`, `canvas.prompt_overlays_toggle`, `canvas.pan_to`), search (`canvas.search_*`), the tag filter
 (`canvas.tag_filter_*`), the discussions panel (`canvas.comments_toggle`, `comment.open`) and
 Format selection (`canvas.auto_format`). `canvas.fit_selection` also accepts an optional `nodes`
 list (2..=MAX_CHANGES unique IDs on the shown canvas); it frames those cards, using collapsed
