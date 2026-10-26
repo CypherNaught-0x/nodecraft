@@ -97,3 +97,16 @@ async fn live_gemini44() {
     let Submission::Finished(reply) = provider.submit(&job).await.unwrap() else { panic!("sync") };
     assert!(reply.outputs.iter().any(|output| matches!(output,Output::Text(text) if text.to_lowercase().contains("pong"))));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_azure_openai() {
+    if !enabled("AZURE_OPENAI") {
+        return;
+    }
+    let key = ApiKey::new(std::env::var("AZURE_OPENAI_API_KEY").unwrap());
+    let endpoint = Endpoint::azure_openai(&std::env::var("AZURE_OPENAI_ENDPOINT").unwrap(), key).unwrap();
+    let deployment = std::env::var("AZURE_OPENAI_DEPLOYMENT").unwrap();
+    let client = LlmClient::new(endpoint, Arc::new(ReqwestHttp::new().unwrap()));
+    let reply = client.chat_stream(&ask(&deployment), &mut |_| {}).await.unwrap();
+    assert!(!reply.text.trim().is_empty(), "deployment returned no text");
+}

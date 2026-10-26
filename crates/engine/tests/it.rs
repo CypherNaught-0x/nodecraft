@@ -13,6 +13,8 @@ mod audio_generation672;
 mod audio_length608;
 #[path = "audio_previews875.rs"]
 mod audio_previews875;
+#[path = "azure45.rs"]
+mod azure45;
 #[path = "background749.rs"]
 mod background749;
 #[path = "background_open.rs"]

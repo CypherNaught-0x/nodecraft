@@ -22,6 +22,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **vLLM / other gateways** | `llm` | optional bearer key | text, streaming | Any OpenAI-compatible base URL (`Endpoint::openai_compatible`). |
 | **OpenRouter** | `llm` | API key | text, vision, streaming | Model ids like `anthropic/claude-opus-5-5`. |
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
+| **Azure OpenAI** (v1 Chat Completions) | `llm` | resource API key (`Authorization: Bearer`) | text chat and streaming | Reuses `LlmClient` through `Endpoint::azure_openai`; the **Azure OpenAI deployment** card sends the configured deployment name as `model`. Unknown usage price requires explicit acceptance. No dated `api-version` or Azure SDK. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file on the canvas does the same. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Wan text/image/speech to video, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Ten explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Trellis, style training and image-only Bria; other quotes are by usage. |
@@ -55,6 +56,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 |---|---|---|
 | `openai` (chat) | `openai` | — |
 | `anthropic` (chat) | `anthropic` | — |
+| `azure-openai` (chat) | `azure-openai` | `[providers] azure_openai_url` with an HTTPS Azure resource root or its `/openai/v1` base |
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
@@ -75,6 +77,53 @@ catalog has no LiteLLM entries: no card can select or call the proxy yet. The ad
 proxy root (`[providers] litellm_url = "https://proxy.example"`, without `/v1`) for future catalog
 integration. Saving this address alone does not add models.
 The model-catalog integration decision is tracked in [#489](https://github.com/CypherNaught-0x/nodecraft/issues/489).
+
+Select **Azure OpenAI deployment** on a text generation card and enter your exact Azure
+deployment name in **Azure deployment name**. NodeCraft accepts 1–64 ASCII letters, digits,
+hyphens, underscores or dots and sends that value unchanged as `model`; the name need not
+match the underlying model. Blank or malformed names refuse before any request. The card
+offers text input/output and an output-token cap; the selected deployment must support v1
+Chat Completions. Its generic quality/latency values are discovery hints only.
+
+No universal Azure price is assumed. The catalog uses `ByUsage`, so the picker says
+**Usage based (USD)** and run confirmation requires explicit unknown-price acceptance.
+Azure returns token usage, not a monetary charge: this card cannot settle an exact dollar
+cost. An unknown-price acceptance is not a monetary ceiling. Custom hosts with a validated
+catalog can instead use actual rates and a literal deployment name as `provider_model`.
+NodeCraft does not load arbitrary catalog files at runtime. The browser has no Azure endpoint
+settings panel; native desktop/CLI configuration is supported below.
+
+For native desktop/CLI use, save the resource key through `keys.set` with account
+`azure-openai` (or the API keys panel), and set the non-secret endpoint in settings:
+
+```toml
+[providers]
+azure_openai_url = "https://YOUR-RESOURCE.openai.azure.com"
+```
+
+The preset also accepts `https://YOUR-RESOURCE.services.ai.azure.com/openai/v1/`. It refuses
+HTTP, embedded credentials, queries, fragments and legacy `/openai/deployments/...` paths.
+It sends the shared Chat Completions request to `/openai/v1/chat/completions`, with the
+output cap as `max_completion_tokens` (including reasoning tokens); omit `temperature` for
+deployments that reject it. API-key authentication is supported; Entra login/token refresh,
+Responses API, model discovery as deployment discovery and dated preview endpoints are not.
+This follows Microsoft's [v1 migration guide](https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle?tabs=key)
+and [Chat Completions reference](https://learn.microsoft.com/en-us/rest/api/microsoft-foundry/azureopenai/chat),
+checked 2026-10-24.
+
+Chat completes at submit; polling has no remote job and cancellation cannot undo an accepted
+request. Streaming text, token usage, bounded replies and error mapping reuse the shared
+adapter. No idempotency guarantee is advertised: Azure disables automatic retries of an
+uncertain submission, since manually retrying can cost again. Offline contract tests cover endpoint construction, deployment names,
+auth secrecy, usage, streaming, content filtering, errors and the synchronous lifecycle.
+The opt-in smoke test costs tokens and was not run for this addition:
+
+```sh
+NODECRAFT_LIVE_AZURE_OPENAI=1 AZURE_OPENAI_API_KEY=… \
+  AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com \
+  AZURE_OPENAI_DEPLOYMENT=YOUR-DEPLOYMENT \
+  cargo test -p nodecraft-providers --test live_llm live_azure_openai
+```
 
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
 adapters off the UI thread and only for the providers a run uses; each run gets a fresh routing

@@ -25,6 +25,7 @@ pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Catalog files shipped with the app, embedded so they work offline and on the web.
 pub const BUILTIN: &[(&str, &str)] = &[
+    ("azure-openai.toml", include_str!("../../../assets/catalog/azure-openai.toml")),
     ("anthropic.toml", include_str!("../../../assets/catalog/anthropic.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),

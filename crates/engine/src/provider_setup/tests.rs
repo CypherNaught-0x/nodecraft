@@ -83,6 +83,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     let keys = MemoryStore::default();
     for account in [
         "openai",
+        "azure-openai",
         "anthropic",
         "replicate",
         "runway",
@@ -102,7 +103,8 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     }
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
     let http = Arc::new(Wire::default());
-    let settings = ProviderSettings::with_comfyui("http://gpu-box:8188", "salt");
+    let settings =
+        ProviderSettings { azure_openai_url: Some("https://demo.openai.azure.com".into()), ..ProviderSettings::with_comfyui("http://gpu-box:8188", "salt") };
     let env = env(&keys, &http, &settings);
     let setup = build(&catalog, |adapter| make(adapter, &env));
     for (adapter, readiness) in setup.adapters() {
@@ -238,6 +240,36 @@ fn litellm_uses_the_configured_server_and_keeps_its_virtual_key_out_of_urls() {
     let invalid = ProviderSettings { litellm_url: Some(format!("https://user:{KEY}@proxy.example")), ..Default::default() };
     let error = make("litellm", &env(&keys, &http, &invalid)).err().unwrap();
     assert!(!error.message("litellm").unwrap().contains(KEY));
+}
+
+#[test]
+fn azure_uses_its_own_keychain_account_and_preserves_the_catalog_deployment() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    assert_eq!(key_account("azure-openai"), Some("azure-openai"));
+    assert!(matches!(make("azure-openai", &env(&keys, &http, &ProviderSettings::default())), Err(Readiness::NotSetUp(_))));
+    let settings = ProviderSettings { azure_openai_url: Some("https://demo.openai.azure.com".into()), ..Default::default() };
+    assert_eq!(make("azure-openai", &env(&keys, &http, &settings)).err(), Some(Readiness::NeedsKey { account: "azure-openai".into() }));
+    const KEY: &str = "azure-public-fixture-45";
+    keys.set(&Account::new("azure-openai").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    let provider = make("azure-openai", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "azure-openai");
+    let job = ProviderJob {
+        model: "my-deployment".into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A lake".into() }],
+        idempotency_key: "public-fixture-45".into(),
+    };
+    let _ = futures::executor::block_on(provider.submit(&job));
+    let requests = http.1.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://demo.openai.azure.com/openai/v1/chat/completions");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "my-deployment");
+    assert!(requests[0].headers.iter().any(|(name, value)| name == "Authorization" && value == &format!("Bearer {KEY}")));
+    assert!(!format!("{:?}", requests[0]).contains(KEY));
+    let invalid = ProviderSettings { azure_openai_url: Some(format!("https://user:{KEY}@demo.openai.azure.com")), ..Default::default() };
+    assert!(!make("azure-openai", &env(&keys, &http, &invalid)).err().unwrap().message("azure-openai").unwrap().contains(KEY));
 }
 
 #[test]

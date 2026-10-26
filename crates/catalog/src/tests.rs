@@ -241,6 +241,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("anthropic.claude-opus-5-5", false),
             ("anthropic.claude-sonnet-5-5", false),
             ("anthropic.claude-haiku-5-5", false),
+            ("azure-openai.deployment", false),
             ("elevenlabs.v3", false),
             ("elevenlabs.multilingual-v2", false),
             ("elevenlabs.music", false),
