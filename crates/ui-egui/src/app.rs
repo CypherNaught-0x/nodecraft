@@ -3524,6 +3524,8 @@ mod audio875_tests;
 #[cfg(test)]
 mod audio_tests;
 #[cfg(test)]
+mod comfy3d24_tests;
+#[cfg(test)]
 mod comfy_workflow9_tests;
 #[cfg(test)]
 mod copy_result_tests;

@@ -214,7 +214,7 @@ impl ComfyCloud {
             response::State::Failed(error) => Ok(JobProgress::Failed(error)),
             response::State::Succeeded(mut outputs) => {
                 crate::comfyui::output_selection::arrange(&mut outputs, order.as_deref(), |o| o.node_id.as_str());
-                Ok(JobProgress::Done(Completed::new(self.download(&outputs).await?)))
+                Ok(JobProgress::Done(Completed::new(crate::comfyui::template::mesh::outputs(&handle.data, self.download(&outputs).await?)?)))
             }
         }
     }

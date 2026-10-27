@@ -279,6 +279,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("anthropic.claude-sonnet-5-5", false),
             ("anthropic.claude-haiku-5-5", false),
             ("azure-openai.deployment", false),
+            ("comfyui.hunyuan3d-2", false),
+            ("comfyui.hunyuan3d-2.1", false),
             ("deepgram.nova-3", false),
             ("elevenlabs.v3", false),
             ("elevenlabs.multilingual-v2", false),
@@ -370,7 +372,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     assert!(edit.fit(bria).is_err(), "a wired prompt cannot select the differently priced guided operation");
     let groups = catalog.by_provider(&edit);
     let comfy: Vec<(&str, bool)> = groups.get("comfyui").unwrap().iter().map(|c| (c.model.id.as_str(), c.fit.is_ok())).collect();
-    assert_eq!(comfy, vec![("comfyui.flux-dev", true), ("comfyui.sdxl", false)]);
+    assert_eq!(comfy, vec![("comfyui.flux-dev", true), ("comfyui.hunyuan3d-2", false), ("comfyui.hunyuan3d-2.1", false), ("comfyui.sdxl", false)]);
     // A wired 3D model picks the Meshy models that take one; the prompt picks retexture.
     let retexture = catalog.get("meshy.retexture").unwrap();
     let remesh = catalog.get("meshy.remesh").unwrap();

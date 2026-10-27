@@ -21,6 +21,7 @@ fn checked(value: &Value) -> Result<Vec<&str>, ProviderError> {
     Ok(out)
 }
 pub(crate) fn save(mut data: Value, job: &ProviderJob) -> Result<Value, ProviderError> {
+    data = super::template::mesh::save_policy(data, job)?;
     let Some(text) = super::template::card_text(job, super::template::CARD_OUTPUTS) else { return Ok(data) };
     if text.len() > 64 * 1024 {
         return Err(invalid());
@@ -35,6 +36,7 @@ pub(crate) fn save(mut data: Value, job: &ProviderJob) -> Result<Value, Provider
     Ok(data)
 }
 pub(crate) fn read(data: &Value) -> Result<Option<Vec<&str>>, ProviderError> {
+    super::template::mesh::policy(data)?;
     data.get(KEY).map(checked).transpose()
 }
 /// Unknown legacy/cloud outputs without node ids stay at the end, rather than losing a paid

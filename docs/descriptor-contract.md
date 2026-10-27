@@ -320,7 +320,7 @@ it, in the server's order, without blank, oversized (over 4 KiB) or repeated val
 unavailable: [{owner, source, reason}], error}`; `unavailable` holds the lists of a provider that
 isn't set up (no server or key), which aren't counted as refused.
 A failed fetch and every refused list keep what was installed before. The source ids a ComfyUI
-server answers are `comfyui.checkpoints`, `comfyui.loras`, `comfyui.vaes`,
+server answers are `comfyui.checkpoints`, `comfyui.image_checkpoints`, `comfyui.loras`, `comfyui.vaes`,
 `comfyui.upscale_models`, `comfyui.samplers` and `comfyui.schedulers`. Higgsfield answers
 `higgsfield.restyle_presets` (#179), whose values are preset ids and whose labels are the preset
 names, and `higgsfield.soul_ids` (#180), the account's ready SOUL 2 Soul IDs labelled by name. ElevenLabs answers
@@ -330,6 +330,8 @@ only its own lists.
 Scoped sources are refused
 with a reason until a fetch can narrow them. The built-in SDXL row's `checkpoint` names
 `comfyui.checkpoints`.
+The Hunyuan3D presets use `comfyui.image_checkpoints`, the choice list of
+`ImageOnlyCheckpointLoader.ckpt_name`, independently of `CheckpointLoaderSimple`.
 
 ## Surfaces
 

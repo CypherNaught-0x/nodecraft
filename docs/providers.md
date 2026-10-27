@@ -1442,6 +1442,10 @@ NODECRAFT_LIVE_ELEVENLABS=1 ELEVENLABS_API_KEY=… \
 
 ## Editing ComfyUI workflow cards
 
+The local Hunyuan3D 2.0/2.1 image-to-mesh presets and imported Mesh outputs are described in
+[ComfyUI 3D workflows](comfyui-3d.md), including required checkpoints, offline fixture scope
+and outstanding live validation.
+
 The card menu's **Edit workflow fields…** (#947) opens media inputs, parameters and results.
 Show or hide fields, edit their names and use Up/Down to reorder them, then Apply fields.
 Cancel leaves the card untouched. Filter fields searches their names and workflow targets.
