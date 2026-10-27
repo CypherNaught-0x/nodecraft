@@ -136,7 +136,7 @@ fn prepare(c: &Context<'_>, json: &Json) -> Result<Effect, Error> {
         kind.validate_instance(&proposed_node, false)?;
         if let Some(generation) = generation {
             generation.validate_instance_binding(kind, &proposed_node)?;
-            generation.validate_wiring(canvas, &proposed_node, false)?;
+            generation.validate_wiring(canvas, c.kinds, &proposed_node, false)?;
         }
         let final_contract = kind.instance_contract(&proposed_node)?;
         let final_resolution = final_contract.resolve_with(&proposed_node.params, false, crate::option_cmds::lookup(c.resources))?;

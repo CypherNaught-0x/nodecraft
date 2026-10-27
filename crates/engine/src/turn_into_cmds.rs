@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 mod feeding;
 pub use feeding::{instance_feeding, kinds_feeding};
+pub use nodecraft_exec::routing::output_type;
 
 /// The canvas extent positions may use (as `node.move`).
 const MAX_COORDINATE: f32 = 10_000_000.0;
@@ -91,9 +92,10 @@ fn create_connected(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let from = p.from.ok_or_else(|| invalid("an existing output is required"))?;
     let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
     let source = canvas.nodes().get(&from.node).ok_or_else(|| Error::new(ErrorKind::NotFound, "the source node does not exist"))?;
-    let output: &Port =
+    let _output: &Port =
         source.outputs.iter().find(|port| port.name == from.port).ok_or_else(|| Error::new(ErrorKind::NotFound, "the source node has no such output"))?;
-    let (mut node, input) = instance_for(c.kinds, &p.kind, p.id, output.port_type)?;
+    let output_type = output_type(canvas, c.kinds, &from)?;
+    let (mut node, input) = instance_for(c.kinds, &p.kind, p.id, output_type)?;
     node.pos = p.pos;
     let edge = Edge { id: p.edge, from, to: Endpoint { node: p.id, port: input.clone() }, order: 0 };
     let changes = Changeset::new(vec![Change::AddNode { canvas: p.canvas, node }, Change::Connect { canvas: p.canvas, edge }]);

@@ -123,6 +123,12 @@ width stays fixed and long rows truncate. Use default clears the stored override
 same undoable parameter edit, including when the old value is no longer listed. Unknown lists
 keep the editable text control and Refresh guidance. Reset is disabled without a stored override.
 
+Router connection menus keep their upstream output shape: a list stays a list through a chain
+of Routers, and several incoming values offer only consumers that accept a collection. A Router
+without a resolved source explains what to connect before offering downstream node kinds. Model
+choices and wired-mode controls follow the resolved sources too; inserting a Router does not
+make an incompatible model available. These menus do not fetch additional parameter options.
+
 ## Level of detail and performance
 
 - **Frame budget (#65).** `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`

@@ -91,6 +91,9 @@ impl Runtime for Threads {
 }
 
 fn run(id: &str, references: u8, failure: u8) {
+    run_routed(id, references, failure, 0);
+}
+fn run_routed(id: &str, references: u8, failure: u8, route_mode: u8) {
     let snapshot = GenerationCatalog::builtin().unwrap();
     let kinds = snapshot.registry().unwrap();
     let video = id.contains("video");
@@ -126,6 +129,28 @@ fn run(id: &str, references: u8, failure: u8) {
     session.set_provider_routing(routing).unwrap();
     host.install(&mut session);
     let image = image();
+    let router = NodeId::from_bytes([40; 16]);
+    let tail = NodeId::from_bytes([41; 16]);
+    if route_mode > 0 {
+        for id in [router, tail] {
+            let node = session
+                .kinds()
+                .get(nodecraft_nodes::router::ID)
+                .unwrap()
+                .instantiate_instance(id, nodecraft_nodes::router::config(nodecraft_types::Modality::Image), &Default::default())
+                .unwrap();
+            session.dispatch("node.add", &json!({"canvas":C,"node":node})).unwrap();
+        }
+        for (n, a, b, port) in [(40, router, tail, "in"), (41, tail, CARD, "images")] {
+            session
+                .dispatch(
+                    "edge.connect",
+                    &json!({"canvas":C,"edge":{"id":EdgeId::from_bytes([n;16]),"from":{"node":a,"port":"out"},"to":{"node":b,"port":port},"order":0}}),
+                )
+                .unwrap();
+        }
+    }
+    let mut folder_files = Vec::new();
     for index in 0..references {
         let source = NodeId::from_bytes([index + 2; 16]);
         import_files(
@@ -137,8 +162,32 @@ fn run(id: &str, references: u8, failure: u8) {
             &[source],
         )
         .unwrap();
-        let role = if video { "first_frame" } else { "images" };
-        session.dispatch("edge.connect",&json!({"canvas":C,"edge":{"id":EdgeId::from_bytes([index+2;16]),"from":{"node":source,"port":"out"},"to":{"node":CARD,"port":role},"order":index}})).unwrap();
+        if route_mode == 2 {
+            let node = session.document().canvases().get(&C).unwrap().nodes().get(&source).unwrap();
+            folder_files.push((format!("reference-{index}.png"), node.params.get("asset").unwrap().clone()));
+        } else {
+            let role = if route_mode > 0 {
+                "in"
+            } else if video {
+                "first_frame"
+            } else {
+                "images"
+            };
+            let target = if route_mode > 0 { router } else { CARD };
+            session.dispatch("edge.connect",&json!({"canvas":C,"edge":{"id":EdgeId::from_bytes([index+2;16]),"from":{"node":source,"port":"out"},"to":{"node":target,"port":role},"order":index}})).unwrap();
+        }
+    }
+    if route_mode == 2 {
+        let folder = NodeId::from_bytes([42; 16]);
+        let config = nodecraft_nodes::folder::config(nodecraft_types::Modality::Image, "Public references", folder_files).unwrap();
+        let node = session.kinds().get(nodecraft_nodes::folder::ID).unwrap().instantiate_instance(folder, config, &Default::default()).unwrap();
+        session.dispatch("node.add", &json!({"canvas":C,"node":node})).unwrap();
+        session
+            .dispatch(
+                "edge.connect",
+                &json!({"canvas":C,"edge":{"id":EdgeId::from_bytes([42;16]),"from":{"node":folder,"port":"files"},"to":{"node":router,"port":"in"},"order":0}}),
+            )
+            .unwrap();
     }
     let price = if video { 840_000 } else { 120_000 } + u64::from(references) * 10_000;
     let mut request = json!({"canvas":C,"mode":"selected","nodes":[CARD]});
@@ -214,4 +263,10 @@ fn grok31_actual_host_keeps_possible_moderation_fees_and_does_not_retry_lost_cre
     run("fal.grok-image2", 0, 1);
     run("fal.grok-image2-edit", 1, 2);
     run("fal.grok-video15-i2v", 1, 2);
+}
+
+#[test]
+fn router949_paid_reference_fees_and_actual_submit_keep_all_five_images() {
+    run_routed("fal.grok-image2-edit", 5, 0, 1);
+    run_routed("fal.grok-image2-edit", 5, 0, 2);
 }
