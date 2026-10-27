@@ -193,6 +193,8 @@ mod hunyuan42;
 #[path = "alibaba32.rs"]
 mod alibaba32;
 
+#[path = "recraft35.rs"]
+mod recraft35;
 #[path = "rodin41.rs"]
 mod rodin41;
 
@@ -204,3 +206,6 @@ mod templates952;
 
 #[path = "magnific38.rs"]
 mod magnific38;
+
+#[path = "svg_template35.rs"]
+mod svg_template35;

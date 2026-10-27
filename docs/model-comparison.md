@@ -74,6 +74,8 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `fal.luma-ray32-i2v` | [Documentation](https://fal.ai/models/luma/agent/ray/v3.2/image-to-video/api) | 2026-10-27 |
 | `fal.qwen-image3` | [Documentation](https://fal.ai/models/alibaba/qwen-image-3/text-to-image/api) | 2026-10-27 |
 | `fal.qwen-image3-edit` | [Documentation](https://fal.ai/models/alibaba/qwen-image-3/edit/api) | 2026-10-27 |
+| `fal.recraft41` | [Documentation](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image/api) | 2026-10-27 |
+| `fal.recraft41-vector` | [Documentation](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector/api) | 2026-10-27 |
 | `fal.rodin25` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/api) | 2026-10-27 |
 | `fal.rodin25-images` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/api) | 2026-10-27 |
 | `fal.rodin25-fast` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/fast/api) | 2026-10-27 |

@@ -98,6 +98,12 @@ fn inline_input(input: Input, edge: u32, page: u32) -> Result<DecodedPreview, &'
         if bytes.len() > MAX_INLINE_BYTES {
             return Err("Preview not available here");
         }
+        // Byte size does not bound SVG raster work. Native SVG uses the worker; browsers
+        // retain/export the original until a bounded off-frame renderer is available.
+        #[cfg(target_arch = "wasm32")]
+        if nodecraft_media::svg::recognizes(bytes) {
+            return Err("SVG preview needs a native worker; the original can still be exported");
+        }
         if let Input::Asset(source) = &input {
             source.validate_image(bytes).map_err(read_message)?;
         }
@@ -148,6 +154,11 @@ fn decode_unguarded(bytes: &[u8], edge: u32, page: u32) -> Result<DecodedPreview
     }
     if page != 0 {
         return Err("Can't preview this image");
+    }
+    if nodecraft_media::svg::recognizes(bytes) {
+        let raster = nodecraft_media::svg::render(bytes, edge, &limits()).map_err(|_| "SVG original retained; this preview is unavailable")?;
+        let size = [raster.width as usize, raster.height as usize];
+        return Ok(DecodedPreview { image: ColorImage::from_rgba_unmultiplied(size, &raster.rgba), source_size: [raster.source_width, raster.source_height] });
     }
     let (meta, image) = decode_image(bytes, &limits()).map_err(|_| "Can't preview this image")?;
     let thumb = thumbnail(&image, edge).map_err(|_| "Can't preview this image")?;

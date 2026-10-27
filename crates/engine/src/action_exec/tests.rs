@@ -36,6 +36,8 @@ fn every_action_kind_runs_with_its_defaults() {
     let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
     let model = Value::Media(AssetRef { hash: assets.insert(OBJ).unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
     let document = pdf_value(&mut assets, &[PAGE]);
+    let svg_bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"><rect width="8" height="6" fill="#aa44cc"/></svg>"##;
+    let svg = Value::Media(AssetRef { hash: assets.insert(svg_bytes).unwrap(), mime: "image/svg+xml".parse().unwrap(), meta: MediaMeta::default() });
     let actions = LocalActions::new(assets);
     let mut ran = 0;
     // The custom shader and 3D captures need a GPU, and the timeline and video actions ffmpeg:
@@ -56,7 +58,9 @@ fn every_action_kind_runs_with_its_defaults() {
             && !nodecraft_nodes::video_split::IDS.contains(&id)
     };
     for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && runs(&d.id)) {
-        let input = if descriptor.id.starts_with("image.") {
+        let input = if descriptor.id == nodecraft_nodes::svg::RASTERIZE {
+            svg.clone()
+        } else if descriptor.id.starts_with("image.") {
             image.clone()
         } else if descriptor.id.starts_with("mesh.") {
             model.clone()
@@ -81,7 +85,7 @@ fn every_action_kind_runs_with_its_defaults() {
         ran += 1;
     }
     // Duplicate only repeats its input, so it runs here too.
-    assert_eq!(ran, 24);
+    assert_eq!(ran, 25);
     // Every new image and model is staged for the host to import, and nothing else.
     let staged = actions.take_staged();
     assert!(!staged.is_empty());

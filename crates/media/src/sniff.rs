@@ -84,6 +84,8 @@ pub fn sniff(bytes: &[u8]) -> Option<Sniffed> {
         Sniffed::new("model/gltf-binary", Model3d)
     } else if at(0, crate::style::MAGIC) {
         Sniffed::new(crate::style::MIME, Style)
+    } else if crate::svg::recognizes(bytes) {
+        Sniffed::new(crate::svg::MIME, Image)
     } else if looks_like_text(head, bytes.len() > head.len()) {
         if looks_like_gltf_json(head) {
             Sniffed::new("model/gltf+json", Model3d)
