@@ -2,8 +2,8 @@
 //! bounded cache.
 //!
 //! Thumbnails are keyed by asset hash and a size bucket, so zooming in asks for a sharper one
-//! while the smaller one keeps showing. Natively, one worker thread decodes (within tighter
-//! limits than `media`'s defaults) and the card shows a placeholder until it's ready. Browsers
+//! while the smaller one keeps showing. Natively, one worker thread decodes (within `media`'s
+//! default limits) and the card shows a placeholder until it's ready. Browsers
 //! have no worker here yet, so small images decode inline and larger ones say so.
 //!
 //! # What the cache bounds (#396)
@@ -11,17 +11,19 @@
 //! - **Texture bytes.** The RGBA bytes of every texture the cache holds, plus a worst-case
 //!   reservation (`edge × edge × 4`) for every decode in flight, never exceed
 //!   [`MAX_TEXTURE_BYTES`]. A decode is admitted against that budget *before* its asset is read
-//!   or decoded; when least-recently-used textures not drawn this frame can't make room, the card
-//!   shows "Preview cache full" (or a smaller ready size of the same image) instead. Textures
-//!   handed out this frame are never dropped, and a smaller ready fallback is pinned before a
-//!   sharper size is admitted. A stable visible set larger than the budget stays partly uncached
-//!   rather than churning.
+//!   or decoded. Room is made only from least-recently-used textures drawn neither this frame nor
+//!   the last, so a card drawn early in a frame can't push out one still on screen that is drawn
+//!   later. When that can't make room, the card shows "Preview cache full" (or a smaller ready
+//!   size of the same image, pinned before the sharper size is admitted) and asks for one more
+//!   frame, in which cards that left the view have become evictable. A stable visible set larger
+//!   than the budget stays partly uncached rather than churning.
 //! - **Metadata.** At most [`MAX_ENTRIES`] entries of any kind, of which at most [`MAX_FAILED`]
 //!   are remembered failures (in flight decodes hold a failure slot, so a completion always
-//!   fits). A failure is remembered while it is still asked for, so a visible broken image is
-//!   decoded once; one nobody asked for in the last frame is forgotten after
-//!   [`FAILED_IDLE_SECS`], and the cache schedules the repaints that make that happen without
-//!   further input, a finite number of them per input frame.
+//!   fits; while every slot belongs to failures drawn in the last two frames, no new preview,
+//!   good or broken, is admitted). A failure is remembered while it is still asked for, so a
+//!   visible broken image is decoded once; one nobody asked for in the last frame is forgotten
+//!   after [`FAILED_IDLE_SECS`], and the cache schedules the repaints that make that happen
+//!   without further input, a finite number of them per input frame.
 //! - **Reservations** belong to one request ticket: a completion releases its reservation only
 //!   when its ticket matches the pending entry, so a stale result can't free another request's
 //!   budget. A worker that dies releases them all.
@@ -142,7 +144,10 @@ fn inline_input(input: Input, edge: u32, page: u32) -> Result<DecodedPreview, &'
 }
 enum Entry {
     /// A decode in flight for request `ticket`, holding `reserved` bytes of the texture budget.
+    /// Browsers have no worker, so they never have one in flight.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Pending {
+        #[cfg(not(target_arch = "wasm32"))]
         ticket: u64,
         reserved: usize,
     },
@@ -296,6 +301,16 @@ mod worker {
     }
 }
 
+/// Asks for a frame about `due` seconds (at most [`FAILED_IDLE_SECS`]) from now. egui brings a
+/// delayed repaint forward by a frame, so this asks a frame later; that also keeps a request due
+/// now a delayed one, which egui runs once rather than twice.
+fn wake_after(ctx: &egui::Context, due: f64) {
+    let frame = f64::from(ctx.input(|i| i.predicted_dt));
+    let frame = if frame.is_finite() { frame.clamp(0.001, FAILED_IDLE_SECS) } else { 0.001 };
+    let due = if due.is_finite() { due.clamp(0.0, FAILED_IDLE_SECS) } else { 0.0 };
+    ctx.request_repaint_after(std::time::Duration::from_secs_f64(due + frame));
+}
+
 /// How a request's attempt to start a decode went.
 enum Start {
     /// Started, queued, recorded as failed, or waiting for a free decode slot.
@@ -327,12 +342,17 @@ pub struct Previews {
     clock: u64,
     /// The frame's `egui` time, in seconds.
     now: f64,
+    #[cfg(not(target_arch = "wasm32"))]
     next_ticket: u64,
     in_flight: usize,
     busy_this_frame: [Option<Key>; MAX_IN_FLIGHT],
     /// The smallest reservation refused this frame: nothing frees capacity until the next poll,
     /// so anything as large is refused without scanning again. `Some(0)`: metadata is full.
     refused: Option<usize>,
+    /// A capacity refusal asked for another frame, which this poll may be.
+    retry_asked: bool,
+    /// This frame may be the one a refusal asked for.
+    retrying: bool,
     /// When the repaint scheduled to look for failures that stopped being asked for is due.
     check_at: Option<f64>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -355,6 +375,7 @@ impl Previews {
         self.clock = self.clock.wrapping_add(1);
         self.busy_this_frame.fill(None);
         self.refused = None;
+        self.retrying = std::mem::take(&mut self.retry_asked);
         let now = ctx.input(|i| i.time);
         if now.is_finite() {
             self.now = now;
@@ -450,12 +471,9 @@ impl Previews {
             wake = Some(wake.map_or(due, |w| w.min(due)));
         }
         if let Some(due) = wake.filter(|due| due.is_finite()) {
-            // egui brings a delayed repaint forward by a frame, and one due within a frame
-            // becomes immediate, which a test harness (or a pointer held down) would then run
-            // through frame after frame. Ask for a frame later, so it stays a delayed one.
-            let frame = f64::from(ctx.input(|i| i.predicted_dt));
-            let frame = if frame.is_finite() { frame.clamp(0.0, FAILED_IDLE_SECS) } else { 0.0 };
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(due.clamp(0.0, FAILED_IDLE_SECS) + frame));
+            // A wake due within a frame would become immediate, which a test harness (or a
+            // pointer held down) would then run through frame after frame.
+            wake_after(ctx, due);
         }
     }
 
@@ -526,8 +544,13 @@ impl Previews {
     }
 
     /// Makes room for one more entry that may hold `need` texture bytes, and a failure slot, by
-    /// dropping least recently used entries not asked for this frame; `false` when it can't.
-    fn admit(&mut self, need: usize) -> bool {
+    /// dropping least recently used entries drawn neither this frame nor the last; `false` when
+    /// it can't.
+    ///
+    /// A refusal asks for one more frame: entries drawn last frame but not this one (cards that
+    /// left the view) are evictable then. A frame that was itself that retry, without input, asks
+    /// for no more, so a stable view larger than the budget doesn't repaint forever.
+    fn admit(&mut self, ctx: &egui::Context, need: usize) -> bool {
         if self.refused.is_some_and(|refused| need >= refused) {
             return false;
         }
@@ -543,20 +566,27 @@ impl Previews {
             };
             if !self.evict_lru(victims) {
                 self.refused = Some(self.refused.map_or(refused, |r| r.min(refused)));
+                let input = ctx.input(|i| !i.events.is_empty());
+                if !self.retry_asked && (!self.retrying || input) {
+                    self.retry_asked = true;
+                    // Exactly one more frame: an immediate request would make egui run two.
+                    wake_after(ctx, 0.0);
+                }
                 return false;
             }
         }
     }
 
-    /// Drops the least recently used of `victims` not asked for this frame; `false` if none.
+    /// Drops the least recently used of `victims` drawn neither this frame nor the last; `false`
+    /// if none.
     fn evict_lru(&mut self, victims: Victims) -> bool {
-        let clock = self.clock;
+        let recent = self.clock.saturating_sub(1);
         let oldest = self
             .entries
             .iter()
             .filter_map(|(key, entry)| match (entry, victims) {
                 (Entry::Ready { used, .. }, Victims::Textures | Victims::Either) | (Entry::Failed { used, .. }, Victims::Failures | Victims::Either)
-                    if *used != clock =>
+                    if *used < recent =>
                 {
                     Some((*used, *key))
                 }
@@ -663,7 +693,7 @@ impl Previews {
             return Start::Tried;
         }
         let need = reservation(key.1);
-        if !self.admit(need) {
+        if !self.admit(ctx, need) {
             return Start::Full;
         }
         let input = match source() {

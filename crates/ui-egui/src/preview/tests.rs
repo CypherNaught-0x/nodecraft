@@ -460,6 +460,8 @@ fn a_ready_fallback_is_pinned_before_a_sharper_size_is_admitted() {
         }
     });
     assert_eq!(previews.bytes(), 95 * 1024 * 1024 + 128 * 128 * 4);
+    // A frame later, the 95 are no longer on screen (nor the 128 one, until it's asked for).
+    frame(&ctx, &mut previews, 0.15, |_, _| {});
     frame(&ctx, &mut previews, 0.2, |ctx, previews| {
         assert!(matches!(previews.request(ctx, hash, 512.0, || Some(body.clone())), Preview::Ready { size: [512, 512], .. }));
     });
@@ -576,4 +578,59 @@ fn expiry_repaints_stay_delayed_even_when_due_within_a_frame() {
         let delay = output.viewport_output.get(&egui::ViewportId::ROOT).map_or(std::time::Duration::MAX, |v| v.repaint_delay);
         assert!(step < 2 || delay > std::time::Duration::ZERO, "frame {step} asked for an immediate repaint");
     }
+}
+
+#[test]
+fn a_newly_visible_card_drawn_first_does_not_evict_textures_still_on_screen() {
+    let ctx = egui::Context::default();
+    let body = png(512, 512);
+    let mut previews = inline_cache();
+    let visible: Vec<_> = (0..96u32)
+        .map(|n| Blake3::from_bytes([210, 0, 0, 0].into_iter().chain(n.to_le_bytes()).cycle().take(32).collect::<Vec<_>>().try_into().unwrap()))
+        .collect();
+    let newcomer = Blake3::from_bytes([211; 32]);
+    let draw = |previews: &mut Previews, ctx: &egui::Context, reads: &mut usize| {
+        for hash in &visible {
+            let _ = previews.request(ctx, *hash, 512.0, || {
+                *reads += 1;
+                Some(body.clone())
+            });
+        }
+    };
+    let mut reads = 0;
+    frame(&ctx, &mut previews, 0.0, |ctx, previews| draw(previews, ctx, &mut reads));
+    assert_eq!((reads, previews.bytes()), (96, MAX_TEXTURE_BYTES));
+    // The new card is drawn before the 96 still on screen: it must not push one of them out.
+    for step in 1..4u32 {
+        reads = 0;
+        let mut shown = None;
+        frame(&ctx, &mut previews, f64::from(step), |ctx, previews| {
+            shown = Some(previews.request(ctx, newcomer, 512.0, || Some(body.clone())));
+            draw(previews, ctx, &mut reads);
+        });
+        assert!(matches!(shown, Some(Preview::Unavailable(CACHE_FULL))));
+        assert_eq!(reads, 0, "frame {step}: a texture still on screen was evicted and decoded again");
+    }
+    // Frames 1 and 3 asked for a retry; frame 2 was frame 1's retry and, with nothing changed and
+    // no input, asked for nothing. Frame 4 is frame 3's retry: a stable view stops there.
+    let stable = |previews: &mut Previews, ctx: &egui::Context, reads: &mut usize| {
+        let _ = previews.request(ctx, newcomer, 512.0, || Some(body.clone()));
+        draw(previews, ctx, reads);
+    };
+    assert_eq!(frame(&ctx, &mut previews, 4.0, |ctx, previews| stable(previews, ctx, &mut reads)), std::time::Duration::MAX, "finite retries");
+    let next_frame = std::time::Duration::from_millis(5);
+    assert!(frame(&ctx, &mut previews, 5.0, |ctx, previews| stable(previews, ctx, &mut reads)) < next_frame);
+    // Frame 6 is frame 5's retry, but input moved the view: the old cards were drawn last frame,
+    // so it refuses and asks for one more frame, in which they are evictable.
+    let mut output =
+        ctx.run_ui(egui::RawInput { time: Some(6.0), events: vec![egui::Event::PointerMoved(egui::pos2(1.0, 1.0))], ..Default::default() }, |ui| {
+            previews.poll(ui.ctx());
+            assert!(matches!(previews.request(ui.ctx(), newcomer, 512.0, || Some(body.clone())), Preview::Unavailable(CACHE_FULL)));
+        });
+    output.textures_delta.clear();
+    assert!(output.viewport_output.get(&egui::ViewportId::ROOT).is_some_and(|v| v.repaint_delay < next_frame));
+    frame(&ctx, &mut previews, 6.1, |ctx, previews| {
+        assert!(matches!(previews.request(ctx, newcomer, 512.0, || Some(body.clone())), Preview::Ready { size: [512, 512], .. }));
+    });
+    assert_eq!(reads, 0);
 }
