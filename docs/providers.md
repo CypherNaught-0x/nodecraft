@@ -1044,6 +1044,56 @@ NODECRAFT_LIVE_SEEDANCE=1 NODECRAFT_LIVE_SEEDANCE_ACKNOWLEDGE_COST=1 ARK_API_KEY
   cargo test -p nodecraft-providers --features http,seedance --test live_seedance -- --ignored
 ```
 
+## Hunyuan3D through fal
+
+Issue #42 reuses the `fal` runtime and stored fal key for Tencent Hunyuan3D V3 cloud models.
+Pick a **Hunyuan3D V3** model on a **Generate 3D** card. Tencent SecretId/SecretKey credentials
+do not authenticate to fal. Native HTTP supports these requests; the builtin browser transport
+refuses the required no-redirect operation before fetch. The library and catalog build for
+WebAssembly and can use an audited host transport that supplies that guarantee.
+
+Public contracts and prices checked **2026-10-27**:
+
+| Model | Contract | Required inputs |
+| --- | --- | --- |
+| `fal.hunyuan3d-v3` | [Text to 3D](https://fal.ai/models/fal-ai/hunyuan3d-v3/text-to-3d/api) | One `prompt`, up to 1024 characters |
+| `fal.hunyuan3d-v3-image` | [Photo to 3D](https://fal.ai/models/fal-ai/hunyuan3d-v3/image-to-3d/api) | One `image`; no prompt |
+| `fal.hunyuan3d-v3-sketch` | [Sketch to 3D](https://fal.ai/models/fal-ai/hunyuan3d-v3/sketch-to-3d/api) | One `image` interpreted as a sketch, and a `prompt` up to 1024 characters |
+
+All three return one GLB. Photo and sketch inputs are verified PNG/JPEG/WebP, at most 1 MiB
+and 1024 pixels per axis, sent inline only after the complete escaped/base64 request fits the
+4 MiB cap. Sketches require at least 128 pixels on each axis, checked before any paid request.
+Empty/duplicate roles, unsupported fields and malformed images refuse before a paid
+request. Safety stays on, and the provider's standard **500K face target** is retained without
+requesting a custom count.
+
+The mesh preset includes every offered price-changing setting. Current fal rates for
+[text](https://fal.ai/models/fal-ai/hunyuan3d-v3/text-to-3d),
+[photo](https://fal.ai/models/fal-ai/hunyuan3d-v3/image-to-3d), and
+[sketch](https://fal.ai/models/fal-ai/hunyuan3d-v3/sketch-to-3d) generation are **$0.375 Normal**,
+**$0.45 LowPoly**, **$0.225 Geometry**, plus **$0.15 for PBR**. Text/photo models offer textured,
+PBR, low-poly triangles/quads with or without PBR, and geometry-only presets. Sketch offers
+textured/PBR only: its API has no generation-type or polygon-type inputs. These are per-call
+estimates, not provider-reported invoices. Custom face counts and multi-view images, which
+add further fees, are outside this integration and are never silently sent or ignored.
+
+Saved handles resume the same fal task without paying for another create. Ambiguous creates
+never replay; terminal failures retain possibly billed reservations. Cancellation does not
+promise a refund. Result downloads use fal storage without the key and never follow redirects.
+Only `model_glb` is consumed; unrequested thumbnails and alternate-format links are not fetched.
+
+Each GLB has a **256 MiB per-file/aggregate cap**, also on resume, so the documented 60+ MiB
+examples fit. Existing packed-GLB checks refuse external resource URIs. Mesh decoding keeps its
+256 MiB input, four-million vertex/triangle, depth and texture limits. Other fal aliases retain
+their earlier quotas. A returned model using an unsupported decoder extension can remain in
+history while its viewer reports that it cannot be read.
+
+Offline contract, RunHost and GPU picker tests cover prices, typed/viewable GLB outputs,
+failure accounting, saved tasks and a valid result larger than the old cap. Live provider
+output has not been verified. The ignored `hunyuan42_live_smoke` needs
+`NODECRAFT_LIVE_HUNYUAN=1`, `NODECRAFT_LIVE_HUNYUAN_ACKNOWLEDGE_COST=1` and `FAL_KEY`, plus explicit
+spending authorization; it requests one Geometry model for about **$0.225** and never runs in CI.
+
 ## Tripo 3D tasks
 
 The optional `tripo` adapter drives the [Tripo v2 API](https://docs.tripo3d.ai) at the fixed base

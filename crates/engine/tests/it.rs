@@ -181,3 +181,6 @@ mod openai_audio39;
 
 #[path = "grok31.rs"]
 mod grok31;
+
+#[path = "hunyuan42.rs"]
+mod hunyuan42;

@@ -64,6 +64,9 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `fal.grok-image2-edit` | [Documentation](https://fal.ai/models/xai/grok-imagine-image/v2.0/edit/api) | 2026-10-27 |
 | `fal.grok-video15` | [Documentation](https://fal.ai/models/xai/grok-imagine-video/v1.5/text-to-video/api) | 2026-10-27 |
 | `fal.grok-video15-i2v` | [Documentation](https://fal.ai/models/xai/grok-imagine-video/v1.5/image-to-video/api) | 2026-10-27 |
+| `fal.hunyuan3d-v3` | [Documentation](https://fal.ai/models/fal-ai/hunyuan3d-v3/text-to-3d/api) | 2026-10-27 |
+| `fal.hunyuan3d-v3-image` | [Documentation](https://fal.ai/models/fal-ai/hunyuan3d-v3/image-to-3d/api) | 2026-10-27 |
+| `fal.hunyuan3d-v3-sketch` | [Documentation](https://fal.ai/models/fal-ai/hunyuan3d-v3/sketch-to-3d/api) | 2026-10-27 |
 | `fal.ltx23` | [Documentation](https://fal.ai/models/fal-ai/ltx-2.3/text-to-video/api) | 2026-10-27 |
 | `fal.ltx23-i2v` | [Documentation](https://fal.ai/models/fal-ai/ltx-2.3/image-to-video/api) | 2026-10-27 |
 | `fal.luma-photon` | [Documentation](https://fal.ai/models/fal-ai/luma-photon) | 2026-10-27 |
