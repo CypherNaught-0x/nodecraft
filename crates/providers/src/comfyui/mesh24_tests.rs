@@ -14,11 +14,11 @@ struct Wire {
 
 impl Wire {
     fn new() -> Self {
-        let mesh = nodecraft_media::mesh::decode_mesh(OBJ, &Default::default()).unwrap();
+        let mesh = nodecraft_media::decode_mesh(OBJ, &Default::default()).unwrap();
         Self {
             info: serde_json::from_str(INFO).unwrap(),
             files: vec![
-                ("mesh.glb".into(), nodecraft_media::mesh::encode_glb(&mesh).unwrap()),
+                ("mesh.glb".into(), nodecraft_media::encode_glb(&mesh).unwrap()),
                 ("mesh.obj".into(), OBJ.to_vec()),
                 ("mesh.gltf".into(), include_bytes!("fixtures/triangle.gltf").to_vec()),
                 ("poster.png".into(), nodecraft_media::encode_png(2, 2, &[200; 16], &Default::default()).unwrap()),
@@ -64,8 +64,14 @@ impl Http for Wire {
             }
             path => panic!("unexpected authored fixture request: {path}"),
         };
+        let cap = r.max_response_bytes;
         self.requests.lock().unwrap().push(r);
-        Box::pin(async move { Ok(HttpResponse { status: 200, headers: vec![], body }) })
+        Box::pin(async move {
+            if body.len() > cap {
+                return Err(ProviderError::new(ErrorKind::Malformed, "the authored fixture response exceeds the requested cap"));
+            }
+            Ok(HttpResponse { status: 200, headers: vec![], body })
+        })
     }
 }
 

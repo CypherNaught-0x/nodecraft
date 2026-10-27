@@ -418,3 +418,6 @@ mod alibaba_tests;
 
 #[cfg(test)]
 mod rodin_tests;
+
+#[cfg(test)]
+mod comfy3d24_tests;

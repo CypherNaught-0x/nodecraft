@@ -102,13 +102,17 @@ pub(crate) fn outputs(data: &Value, mut outputs: Vec<Output>) -> Result<Vec<Outp
     if !policy(data)? {
         return Ok(outputs);
     }
-    outputs.retain(|output| matches!(output, Output::Bytes {mime,..} if nodecraft_media::mesh::MeshFormat::from_mime(mime).is_some()));
+    outputs.retain(|output| matches!(output, Output::Bytes {mime,..} if nodecraft_media::MeshFormat::from_mime(mime).is_some()));
     if outputs.is_empty() {
         return Err(ProviderError::new(ErrorKind::JobFailed, "the 3D workflow saved no supported mesh; previews and texture images are not meshes"));
     }
+    // Native runs are driven off the frame thread. A browser future is polled on its UI
+    // thread: retain the original there and use the existing small-model preview boundary,
+    // rather than adding a full 256-MiB geometry decode to a browser frame (#569).
+    #[cfg(not(target_arch = "wasm32"))]
     for output in &outputs {
         if let Output::Bytes { bytes, .. } = output {
-            nodecraft_media::mesh::probe_mesh(bytes, &Default::default())
+            nodecraft_media::probe_mesh(bytes, &Default::default())
                 .map_err(|_| ProviderError::new(ErrorKind::Malformed, "a saved 3D result is damaged or exceeds NodeCraft's mesh limits"))?;
         }
     }

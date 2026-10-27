@@ -44,6 +44,8 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `azure-openai.deployment` | [Documentation](https://learn.microsoft.com/en-us/azure/ai-studio/ai-services/concepts/endpoints) | 2026-10-27 |
 | `bfl.flux-2-klein-4b` | [Documentation](https://docs.bfl.ai/quick_start/generating_images) | 2026-10-27 |
 | `comfyui.flux-dev` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
+| `comfyui.hunyuan3d-2` | [Documentation](https://docs.comfy.org/tutorials/3d/hunyuan3D-2) | 2026-10-27 |
+| `comfyui.hunyuan3d-2.1` | [Documentation](https://docs.comfy.org/tutorials/3d/hunyuan3D-2) | 2026-10-27 |
 | `comfyui.sdxl` | [Documentation](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | 2026-10-27 |
 | `comfyui.workflow` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
 | `deepgram.nova-3` | [Documentation](https://developers.deepgram.com/docs/pre-recorded-audio) | 2026-10-27 |
