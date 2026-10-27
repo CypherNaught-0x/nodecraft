@@ -223,7 +223,7 @@ inset, 6-point corner radius and 12-point gap from node decorations. Open bubble
 as fill with canvas-colour count text; resolved bubbles use panel fill, a primary-text outline and
 checkmark. The active bubble adds a second outline. The local Show resolved checkbox explicitly
 uses the primary-text stroke for both its unchecked boundary and checked glyph in both themes.
-The Comments button sits on the viewport's right below search, with its discussion panel beneath it; opening search moves both down. The panel stays clear of bottom navigation when there is room; in cramped viewports it may overlap, with foreground discussion clicks explicitly excluded from minimap-pan admission. Tags stay on the left; with both panels open their widths share the viewport. Node-attached markers overlapping a card or its output handle are displayed to the card's right with the bubble's ring and gap outside the actual bounds. At viewport edges, projected markers try the left, above or below the card while keeping their full ring reachable and clear of both port-hit strips. A viewport-filling card can use a safe interior position; if no safe position fits, protecting wire interaction takes priority over pin visibility. New node-attached anchors use zoom-independent world offsets, and markers follow live field-drag previews. Existing safe off-card offsets and free-canvas pins stay where placed. These display adjustments never rewrite stored anchors. Minimap admission uses the discussion panel's actual painted bounds, so unused space below a short panel remains interactive. A selected marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed. Pin dragging retains that display offset through the gesture, so release publishes only the actual world-space drag delta.
+The Comments entry shares the application row with Search; both move into More when the row does not fit. Its discussion panel opens below the row, or below the search panel when search is open. The panel stays clear of bottom navigation when there is room; in cramped viewports it may overlap, with foreground discussion clicks explicitly excluded from minimap-pan admission. Tags stay on the left; with both panels open their widths share the viewport. Node-attached markers overlapping a card or its output handle are displayed to the card's right with the bubble's ring and gap outside the actual bounds. At viewport edges, projected markers try the left, above or below the card while keeping their full ring reachable and clear of both port-hit strips. A viewport-filling card can use a safe interior position; if no safe position fits, protecting wire interaction takes priority over pin visibility. New node-attached anchors use zoom-independent world offsets, and markers follow live field-drag previews. Existing safe off-card offsets and free-canvas pins stay where placed. These display adjustments never rewrite stored anchors. Minimap admission uses the discussion panel's actual painted bounds, so unused space below a short panel remains interactive. A selected marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed. Pin dragging retains that display offset through the gesture, so release publishes only the actual world-space drag delta.
 
 ## Minimap and fit navigation
 
@@ -460,6 +460,23 @@ existing prompt/text/spacing tokens, and local previews follow the ordinary smal
 threshold. Cache admission limits and rationale are in the
 [decision](decisions/2026-10-26-local-text-previews.md).
 
+## Application menu
+
+The application row (#956) uses one icon-and-label control style for Sheets, Techniques,
+Elements, Queue, Share, Budgets, API keys, ComfyUI, Plugins, Search and Comments. Navigation,
+activity and settings/services are separated by dividers, with Search and Comments on the right.
+Browser server settings add Providers, and a selected Technique adds Open as app. Every entry
+uses the same token-based height, padding, hover, active and disabled styling. Queue counts
+appear beside its label and remain in its accessible name; unavailable services stay disabled.
+
+If the measured row does not fit, one More menu contains the same entries, icons, states and
+order. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
+entries. More yields to active text editors and canvas gestures. The existing Tag filter has a
+reserved left slot; Format selection reserves the next slot when present, with the Tags panel
+below both controls. Sharing status is
+available on Share's tooltip and collaborator avatars are in its panel. See the
+[layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
+
 ## Control icons
 
 Controls use Tabler outline SVGs through `icons::Icon`, prepared by the pinned Craft SVG
@@ -476,6 +493,16 @@ them and one attribution row per file. See the [choice and comparison](decisions
 | `Wallet` | `wallet.svg` | Budgets button |
 | `Open` | `folder-open.svg` | Open project and Import folder |
 | `Save` | `device-floppy.svg` | Save project and Save project as |
+| `Table` | `table.svg` | Sheets |
+| `Technique` | `affiliate.svg` | Techniques |
+| `Elements` | `components.svg` | Elements |
+| `Queue` | `list-details.svg` | Queue |
+| `Share` | `share.svg` | Share |
+| `Server` | `server.svg` | ComfyUI |
+| `Plugin` | `puzzle.svg` | Plugins |
+| `More` | `dots.svg` | application menu overflow |
+| `Apps` | `apps.svg` | Open as app |
+| `Cloud` | `cloud.svg` | browser Providers |
 
 Use `Icon::button` for an icon beside action text; it retains the ordinary Button label,
 keyboard behavior and disabled state. For an icon-only control use `Icon::icon_button`, which

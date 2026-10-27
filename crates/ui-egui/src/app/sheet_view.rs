@@ -174,11 +174,24 @@ impl NodeCraftApp {
             ui.ctx().request_repaint();
             return;
         }
+        // More must admit and preserve the editor before a row's lost_focus commit runs.
+        // Capture its owner before constructing even the disabled chrome widget.
+        let editor = (self.text_focused || canvas::text_input_focused(ui.ctx())).then(|| ui.ctx().memory(|m| m.focused()).or(self.last_text_focus)).flatten();
+        let chrome = self.topbar(ui);
+        if self.topbar.search.is_none()
+            && chrome
+            && !egui::Popup::is_any_open(ui.ctx())
+            && ui.input(|i| i.pointer.any_pressed() || i.pointer.any_released())
+            && let Some(owner) = editor
+            && ui.ctx().memory(|m| m.focused()).is_none_or(|id| id == owner)
+        {
+            ui.ctx().memory_mut(|m| m.request_focus(owner));
+            ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
+        }
         self.sheet_table(ui, viewport, t, blocked);
         self.show_notices(ui, viewport, t);
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
-        self.keys_button(ui, viewport);
         #[cfg(not(target_arch = "wasm32"))]
         self.file_button(ui, t);
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
@@ -187,6 +200,14 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.ownership_panel(ui.ctx(), t);
         self.sheets_panel(ui.ctx(), t);
+        self.techniques_panel(ui.ctx(), t);
+        self.elements_panel(ui.ctx(), t);
+        self.budgets_panel(ui.ctx(), t);
+        self.plugin_panel.show(ui.ctx(), &mut self.session, t);
+        self.browser_providers_panel(ui.ctx(), t);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.comfy_server_panel(ui.ctx(), t);
+        self.share_panel(ui.ctx(), t);
     }
 
     /// The document keys a sheet keeps: save and open, and undo and redo outside a text field.
@@ -206,17 +227,6 @@ impl NodeCraftApp {
         });
         if let Some(command) = command {
             self.notice = self.session.dispatch(command, &json!({})).err().map(|error| error.message);
-        }
-    }
-
-    /// The toggle in the top-right row: "Sheets", which lists the canvases too.
-    pub(super) fn sheets_button(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        if ui
-            .add(egui::Button::new(egui::RichText::new("Sheets").color(t.text_muted)).frame(false))
-            .on_hover_text("Switch canvas, or make a batch Generate sheet")
-            .clicked()
-        {
-            self.sheet.open = !self.sheet.open;
         }
     }
 

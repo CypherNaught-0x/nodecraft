@@ -16,11 +16,19 @@ impl NodeCraftApp {
     }
     pub(super) fn search_rect(&self) -> Rect {
         let t = self.theme.tokens();
-        let width = if self.search.open { t.search_width } else { t.search_button_width }.min((self.viewport.width() - 2.0 * t.navigation_margin).max(1.0));
-        let height = if self.search.open { t.search_height } else { t.navigation_toolbar_height };
-        Rect::from_min_size(Pos2::new(self.viewport.max.x - width - t.navigation_margin, self.viewport.min.y + t.navigation_margin), Vec2::new(width, height))
+        if !self.search.open {
+            return self.topbar.search.unwrap_or_else(|| self.topbar_rect());
+        }
+        let width = t.search_width.min((self.viewport.width() - 2.0 * t.navigation_margin).max(1.0));
+        Rect::from_min_size(
+            Pos2::new(self.viewport.max.x - width - t.navigation_margin, self.topbar_rect().bottom() + t.navigation_gap),
+            Vec2::new(width, t.search_height),
+        )
     }
     fn search_context(&mut self, ctx: &egui::Context) -> SearchContext {
+        self.search_context_scoped(ctx, None)
+    }
+    pub(super) fn search_context_scoped(&mut self, ctx: &egui::Context, owner: Option<egui::Id>) -> SearchContext {
         self.search.bind_session(&mut self.session);
         self.search.sync(self.session.document(), self.canvas, self.session.revision());
         let own_focus = ctx.memory(|m| m.focused()) == Some(self.search_input_id());
@@ -32,7 +40,7 @@ impl NodeCraftApp {
                 || self.model_choice.is_some()
                 || self.model_frame_owned
                 || self.turn_into.is_some()
-                || egui::Popup::is_any_open(ctx)
+                || (egui::Popup::is_any_open(ctx) && !owner.is_some_and(|id| egui::Popup::is_id_open(ctx, id)))
                 || (focused && !own_focus)
                 || (self.text_focused && !own_focus && !self.search_focused)
                 || self.drag.is_some()
@@ -77,12 +85,10 @@ impl NodeCraftApp {
         match intent.get("action").and_then(Json::as_str) {
             Some("open") => {
                 self.search.open = true;
-                // A click opens search after the overlay has already drawn, so the input is not in
-                // this frame's accessibility tree yet. Focusing it then panics accesskit: the overlay
-                // requests focus when it draws the input instead.
-                if !self.search_focus_pending {
-                    ctx.memory_mut(|m| m.request_focus(self.search_input_id()));
-                }
+                self.tag_focus_pending = false;
+                // The closed toolbar no longer paints a search Area. Its first open pass can
+                // be a sizing pass: request focus when the input is actually visible.
+                self.search_focus_pending = true;
             }
             Some("close") => {
                 self.search_focus_pending = false;
@@ -250,8 +256,10 @@ impl NodeCraftApp {
                 self.notice = Some(error.message);
             }
         }
+        if !self.search.open {
+            return false;
+        }
         let rect = self.search_rect();
-        let open_enabled = self.search_enabled(&ctx, "canvas.search_open", &json!({})).is_ok();
         let step_enabled = self.search_enabled(&ctx, "canvas.search_next", &json!({})).is_ok();
         let close_enabled = self.search_enabled(&ctx, "canvas.search_close", &json!({})).is_ok();
         let t = self.theme.tokens();
@@ -263,20 +271,6 @@ impl NodeCraftApp {
             &ctx,
             |ui| {
                 ui.set_min_size(rect.size());
-                if !self.search.open {
-                    if ui
-                        .add_enabled_ui(open_enabled, |ui| {
-                            ui.put(rect, crate::icons::Icon::Search.button(ui, if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" }, t))
-                        })
-                        .inner
-                        .on_hover_text("Finish any active node editor or gesture before opening canvas search.")
-                        .clicked()
-                    {
-                        self.search_focus_pending = true;
-                        action = Some("canvas.search_open");
-                    }
-                    return;
-                }
                 ui.painter().rect(rect, t.panel_radius, t.panel_fill, egui::Stroke::new(t.handle_stroke, t.panel_stroke), egui::StrokeKind::Inside);
                 let inner = rect.shrink(t.navigation_gap);
                 let label = ui.put(Rect::from_min_size(inner.min, Vec2::new(inner.width(), t.body_size + t.control_gap)), egui::Label::new("Search canvas"));
@@ -291,8 +285,9 @@ impl NodeCraftApp {
                             .hint_text("Title, prompt, stored model or tag"),
                     )
                     .labelled_by(label.id);
-                if std::mem::take(&mut self.search_focus_pending) {
+                if self.search_focus_pending && ui.is_visible() {
                     response.request_focus();
+                    self.search_focus_pending = false;
                 }
                 changed = response.changed();
                 if response.has_focus() || response.lost_focus() {
@@ -448,6 +443,7 @@ mod tests {
     fn click_toolbar_button_opens_search_and_focuses_input() {
         let mut h = harness();
         let label = if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" };
+        crate::app::topbar_tests::reveal(&mut h, label);
         h.get_by_role_and_label(Role::Button, label).click();
         h.run();
         assert!(h.state().search.open);

@@ -314,6 +314,7 @@ fn the_share_chip_opens_the_panel() {
         .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app(&opened));
     h.run();
     use egui_kittest::kittest::Queryable;
+    crate::app::topbar_tests::reveal(&mut h, "Share");
     h.get_by_label("Share").click();
     h.run();
     assert!(h.state().sharing.as_ref().unwrap().panel.open);

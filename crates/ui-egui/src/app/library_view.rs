@@ -54,15 +54,9 @@ enum Action {
 }
 
 impl NodeCraftApp {
-    pub(super) fn techniques_button(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        if ui
-            .add(egui::Button::new(egui::RichText::new("Techniques").color(t.text_muted)).frame(false))
-            .on_hover_text("Place a published technique, or keep one in the library every project shares")
-            .clicked()
-        {
-            self.library.open = !self.library.open;
-            self.library.listed = None;
-        }
+    pub(super) fn toggle_techniques(&mut self) {
+        self.library.open = !self.library.open;
+        self.library.listed = None;
     }
 
     /// Whether this window keeps a technique library.

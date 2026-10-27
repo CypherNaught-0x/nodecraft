@@ -517,7 +517,7 @@ fn file_chrome_is_separate_from_comments_at_narrow_and_regular_widths() {
             .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), dir.app("journal"));
         settle(&mut h);
         let file = h.get_by_label("File").rect();
-        assert!(!file.intersects(h.get_by_label("Comments").rect()));
+        assert!(!file.intersects(h.state().comments_toolbar_rect()));
         h.get_by_label("File").click();
         settle(&mut h);
         assert!(!file.intersects(h.get_by_label("Open project…").rect()));

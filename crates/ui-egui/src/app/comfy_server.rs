@@ -54,18 +54,6 @@ enum Asked {
 }
 
 impl NodeCraftApp {
-    /// The toolbar button that opens the panel, where the servers' nodes can be read.
-    pub(super) fn comfy_server_button(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        if self.comfy_nodes.is_some()
-            && ui
-                .add(egui::Button::new(egui::RichText::new("ComfyUI").color(t.text_muted)).frame(false))
-                .on_hover_text("Set up ComfyUI servers, check them and read their nodes")
-                .clicked()
-        {
-            self.comfy_server.open = !self.comfy_server.open;
-        }
-    }
-
     pub(super) fn comfy_server_panel(&mut self, ctx: &egui::Context, t: &Tokens) {
         if !self.comfy_server.open {
             self.comfy_server.loaded = false;

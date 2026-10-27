@@ -121,6 +121,7 @@ fn the_panel_adds_a_server_and_shows_its_health() {
     for _ in 0..3 {
         h.step();
     }
+    crate::app::topbar_tests::reveal(&mut h, "ComfyUI");
     h.get_by_label("ComfyUI").click();
     h.run();
     assert!(h.state().comfy_server.open);

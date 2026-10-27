@@ -78,14 +78,6 @@ impl BrowserProviders {
 }
 
 impl NodeCraftApp {
-    pub(super) fn browser_providers_button(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        if let Some(providers) = &mut self.browser_providers
-            && ui.add(egui::Button::new(egui::RichText::new("Providers").color(t.text_muted)).frame(false)).clicked()
-        {
-            providers.open = !providers.open;
-        }
-    }
-
     pub(super) fn browser_providers_panel(&mut self, ctx: &egui::Context, t: &Tokens) {
         if let Some(providers) = &mut self.browser_providers {
             providers.show(ctx, &mut self.session, t);

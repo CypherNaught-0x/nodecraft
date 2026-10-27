@@ -647,7 +647,7 @@ mod tests {
     fn active_box_gesture_cannot_be_stolen_by_the_minimap() {
         let mut h = harness();
         let original = h.state().view;
-        let from = Pos2::new(50.0, 50.0);
+        let from = Pos2::new(50.0, 180.0); // Clear canvas below the reserved Tag control.
         h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
         h.hover_at(from);
         h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::SHIFT });

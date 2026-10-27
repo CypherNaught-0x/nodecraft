@@ -47,11 +47,11 @@ fn background_pan_and_right_drag_preserve_document() {
     let mut h = harness();
     let before = h.state().session.document().clone();
     let pan = h.state().view.pan;
-    h.drag_at(Pos2::new(50.0, 50.0));
+    h.drag_at(Pos2::new(50.0, 180.0));
     h.run();
-    h.hover_at(Pos2::new(150.0, 90.0));
+    h.hover_at(Pos2::new(150.0, 220.0));
     h.run();
-    h.drop_at(Pos2::new(150.0, 90.0));
+    h.drop_at(Pos2::new(150.0, 220.0));
     h.run();
     assert!((h.state().view.pan - pan - Vec2::new(100.0, 40.0)).length() < 1.0);
     let pan = h.state().view.pan;
@@ -1323,7 +1323,9 @@ fn box_select_ignores_the_static_shape_of_an_undrawn_short_card() {
 fn the_keys_button_opens_the_keys_panel() {
     let mut h = harness();
     assert!(!h.state().keys.open);
+    crate::app::topbar_tests::reveal(&mut h, "API keys");
     assert!(h.query_by_label("API keys").is_some());
+    crate::app::topbar_tests::reveal(&mut h, "API keys");
     h.get_by_role_and_label(Role::Button, "API keys").click();
     h.run();
     assert!(h.state().keys.open);
@@ -1439,6 +1441,7 @@ fn secret_editor_owns_shifted_navigation_events_and_key_service_survives_navigat
     let ctx = h.ctx.clone();
     h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
     h.run();
+    crate::app::topbar_tests::reveal(&mut h, "API keys");
     h.get_by_role_and_label(Role::Button, "API keys").click();
     h.run();
     h.get_by_label("openai").click();
@@ -1969,6 +1972,7 @@ fn oversized_and_missing_media_pastes_are_refused() {
 #[test]
 fn a_paste_while_the_keys_panel_is_open_never_reaches_the_document() {
     let mut h = harness();
+    crate::app::topbar_tests::reveal(&mut h, "API keys");
     h.get_by_role_and_label(Role::Button, "API keys").click();
     h.run();
     assert!(h.state().keys.open);
@@ -3845,6 +3849,7 @@ fn minimap_real_double_click_never_opens_palette() {
 #[test]
 fn quick_add_yields_over_actual_keys_window_without_text_focus() {
     let mut h = harness();
+    crate::app::topbar_tests::reveal(&mut h, "API keys");
     h.get_by_role_and_label(Role::Button, "API keys").click();
     h.run();
     let key_label = h.get_by_label("Account").rect();
