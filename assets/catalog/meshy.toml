@@ -11,7 +11,7 @@ id="meshy.text-to-3d"
 provider="meshy"
 provider_model="text-to-3d"
 label="Meshy text to 3D"
-description="Generate one untextured GLB model (Meshy's preview stage) from a prompt. Dated 0.40 USD estimate (20 credits)."
+description = "Create untextured 3D geometry from text with Meshy preview generation. Per-call estimate."
 latency_s=60
 quality=4
 pricing={type="per_call",price="0.40 USD"}
@@ -38,7 +38,7 @@ id="meshy.image-to-3d"
 provider="meshy"
 provider_model="image-to-3d"
 label="Meshy image to 3D"
-description="Generate one textured PBR GLB model from one image. Dated 0.60 USD estimate (30 credits)."
+description = "Create a textured 3D model from one image with Meshy. Per-call estimate."
 latency_s=90
 quality=4
 pricing={type="per_call",price="0.60 USD"}
@@ -65,7 +65,7 @@ id="meshy.multi-image-to-3d"
 provider="meshy"
 provider_model="multi-image-to-3d"
 label="Meshy multi-image to 3D"
-description="Generate one textured PBR GLB model from a front view plus up to three of left, back and right. Dated 0.60 USD estimate (30 credits)."
+description = "Create a textured 3D model from several views of a subject with Meshy. Per-call estimate."
 latency_s=90
 quality=4
 pricing={type="per_call",price="0.60 USD"}
@@ -92,7 +92,7 @@ id="meshy.retexture"
 provider="meshy"
 provider_model="retexture"
 label="Meshy retexture"
-description="Paint new 2K PBR textures onto a wired GLB model from a prompt. Dated 0.20 USD estimate (10 credits)."
+description = "Create PBR textures for a 3D model from a prompt with Meshy. Per-call estimate."
 latency_s=60
 quality=4
 pricing={type="per_call",price="0.20 USD"}
@@ -119,7 +119,7 @@ id="meshy.retexture-image"
 provider="meshy"
 provider_model="retexture"
 label="Meshy retexture from image"
-description="Paint new 2K PBR textures onto a wired GLB model in the style of a wired image. Dated 0.20 USD estimate (10 credits)."
+description = "Create PBR textures for a 3D model using an image as the style reference with Meshy. Per-call estimate."
 latency_s=60
 quality=4
 pricing={type="per_call",price="0.20 USD"}
@@ -146,7 +146,7 @@ id="meshy.remesh"
 provider="meshy"
 provider_model="remesh"
 label="Meshy remesh"
-description="Rebuild a wired GLB model's topology as triangles or quads at a target face count. Dated 0.10 USD estimate (5 credits)."
+description = "Rebuild a 3D model as triangles or quads at a chosen face count with Meshy. Per-call estimate."
 latency_s=30
 quality=4
 pricing={type="per_call",price="0.10 USD"}

@@ -5,7 +5,7 @@ id = "deepgram.nova-3"
 provider = "deepgram"
 provider_model = "nova-3"
 label = "Deepgram Nova-3 transcription"
-description = "English file transcription with smart formatting. One WAV, MP3, FLAC or Ogg recording, at most 25 MiB / 30 minutes. Unknown usage cost; model-improvement sharing opted out."
+description = "Transcribe an English recording with readable smart formatting. Usage pricing; processing time follows the recording."
 latency_s = 15
 quality = 4
 pricing = { type = "by_usage", currency = "USD" }

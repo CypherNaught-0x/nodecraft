@@ -137,7 +137,7 @@ impl Catalog {
         self.models.is_empty()
     }
 
-    /// Every model for the picker (but those cards don't offer): compatible ones first, then by provider, quality (best
+    /// Every model for the picker (but those cards don't offer): compatible ones first, then by provider, selection tier (highest
     /// first) and label. Incompatible models carry the reason they're disabled.
     pub fn candidates<'a>(&'a self, wiring: &Wiring) -> Vec<Candidate<'a>> {
         let mut all: Vec<Candidate<'a>> = self.card_models().map(|model| Candidate { model, fit: wiring.fit(model) }).collect();
@@ -396,3 +396,6 @@ pub fn migrate(params: &ParamValues, to: &ModelDescriptor) -> Result<Migration, 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod comparison_tests;

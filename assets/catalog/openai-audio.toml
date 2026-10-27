@@ -10,7 +10,7 @@ id = "openai-audio.mini-tts"
 provider = "openai-audio"
 provider_model = "gpt-4o-mini-tts-2025-12-15"
 label = "OpenAI speech (ends Jan 6, 2027)"
-description = "AI-generated speech, up to 4096 characters, as MP3. Deprecated; shuts down January 6, 2027. Realtime replacement is not supported here. Unknown token cost."
+description = "Generate speech with controllable delivery. Usage pricing; deprecated and shutting down January 6, 2027."
 latency_s = 10
 quality = 3
 pricing = { type = "by_usage", currency = "USD" }
@@ -39,7 +39,7 @@ id = "openai-audio.transcribe"
 provider = "openai-audio"
 provider_model = "gpt-transcribe"
 label = "OpenAI file transcription"
-description = "Transcribe one recording to text, optionally guided by the prompt. MP3, WAV, FLAC, Ogg or M4A; at most 25 MB. USD 0.0045/minute when duration usage is reported; unknown upfront cost."
+description = "Transcribe a recording with optional context for the words to recognize. Usage pricing by reported duration."
 latency_s = 15
 quality = 4
 pricing = { type = "by_usage", currency = "USD" }

@@ -21,7 +21,7 @@ id = "openai.gpt-6.1-sol"
 provider = "openai"
 provider_model = "gpt-6.1-sol"
 label = "GPT-6.1 Sol"
-description = "OpenAI reasoning model. Quoted up to max output tokens at 15 USD per million output tokens (the rate for prompts over 272K tokens); input billed on top."
+description = "Text reasoning for complex coding and professional work. Token pricing; reasoning effort affects the wait."
 # Rough latency hint for a short reply, not measured locally.
 latency_s = 20
 quality = 4
@@ -85,7 +85,7 @@ id = "openai.gpt-6-luna"
 provider = "openai"
 provider_model = "gpt-6-luna"
 label = "GPT-6 Luna"
-description = "Small, inexpensive OpenAI reasoning model. Quoted up to max output tokens at 0.75 USD per million output tokens (the rate for prompts over 272K tokens); input billed on top."
+description = "Efficient text reasoning for focused, high-volume tasks. Token pricing."
 # Rough latency hint for a short reply, not measured locally.
 latency_s = 8
 quality = 3
@@ -148,7 +148,7 @@ id = "openai.gpt-4.1-mini"
 provider = "openai"
 provider_model = "gpt-4.1-mini-2025-04-14"
 label = "GPT-4.1 mini"
-description = "Quick non-reasoning OpenAI model with a temperature control. Quoted up to max output tokens at 1.60 USD per million output tokens; input billed on top."
+description = "Fast instruction-following text generation without a reasoning step. Token pricing; shuts down January 14, 2027."
 # Rough latency hint for a short reply, not measured locally.
 latency_s = 5
 quality = 2

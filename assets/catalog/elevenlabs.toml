@@ -14,7 +14,7 @@ id="elevenlabs.v3"
 provider="elevenlabs"
 provider_model="eleven_v3"
 label="Eleven v3"
-description="Expressive speech in 70+ languages, up to 5000 characters. Priced per 1000 characters."
+description = "Expressive speech for dramatic delivery, in 70+ languages. Character pricing."
 latency_s=10
 quality=5
 pricing={type="per_unit",unit="thousand_characters",price="0.08 USD"}
@@ -133,7 +133,7 @@ id="elevenlabs.multilingual-v2"
 provider="elevenlabs"
 provider_model="eleven_multilingual_v2"
 label="Eleven Multilingual v2"
-description="Natural, consistent speech in 29 languages, up to 10000 characters. Priced per 1000 characters."
+description = "Consistent multilingual speech suited to longer narration. Character pricing."
 latency_s=10
 quality=4
 pricing={type="per_unit",unit="thousand_characters",price="0.08 USD"}
@@ -240,7 +240,7 @@ id="elevenlabs.flash-v2-5"
 provider="elevenlabs"
 provider_model="eleven_flash_v2_5"
 label="Eleven Flash v2.5"
-description="Fast, low-cost speech in 32 languages, up to 40000 characters. Priced per 1000 characters."
+description = "Fast speech for latency-sensitive applications, in 32 languages. Character pricing."
 latency_s=5
 quality=3
 pricing={type="per_unit",unit="thousand_characters",price="0.04 USD"}
@@ -357,7 +357,7 @@ id="elevenlabs.sound-effects"
 provider="elevenlabs"
 provider_model="eleven_text_to_sound_v2"
 label="Eleven Sound Effects"
-description="A sound effect from a description, 0.5 to 30 seconds, optionally looping."
+description = "Create a sound effect from a description, with optional looping. Pricing follows the requested duration."
 latency_s=10
 quality=4
 pricing={type="per_unit",unit="second",price="0.002 USD",count="duration_seconds"}
@@ -390,7 +390,7 @@ id="elevenlabs.music"
 provider="elevenlabs"
 provider_model="music_v1"
 label="Eleven Music"
-description="A song or instrumental from a description, 3 seconds to 10 minutes."
+description = "Create a song or instrumental from a description. Pricing and waiting time depend on the requested length."
 latency_s=60
 quality=4
 pricing={type="per_unit",unit="second",price="0.0025 USD",count="duration"}
@@ -417,7 +417,7 @@ id="elevenlabs.voice-changer"
 provider="elevenlabs"
 provider_model="eleven_multilingual_sts_v2"
 label="Eleven Voice Changer"
-description="Speech re-voiced in another voice, keeping its timing and delivery. Priced per minute of input; unknown before execution."
+description = "Change the voice in a recording while retaining its delivery. Priced by input duration."
 latency_s=15
 quality=4
 pricing={type="by_usage",currency="USD"}

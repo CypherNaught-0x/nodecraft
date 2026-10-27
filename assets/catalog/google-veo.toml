@@ -14,7 +14,7 @@ id = "google-veo.veo-3.1"
 provider = "google-veo"
 provider_model = "veo-3.1-generate-001"
 label = "Veo 3.1"
-description = "Google's best video model on Vertex AI: a 4 to 8 second clip with sound from a prompt, a first frame (and optionally a last one) or up to three subject references. 0.40 USD a second (0.60 at 4K)."
+description = "Create video with sound from text, frames or references with Veo 3.1. Per-second estimate by resolution."
 latency_s = 120
 quality = 5
 pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "720p" = "0.40 USD", "1080p" = "0.40 USD", "4k" = "0.60 USD" } }
@@ -55,7 +55,7 @@ id = "google-veo.veo-3.1-fast"
 provider = "google-veo"
 provider_model = "veo-3.1-fast-generate-001"
 label = "Veo 3.1 Fast"
-description = "A faster, cheaper Veo 3.1: a 4 to 8 second clip with sound from a prompt, frames or up to three subject references. 0.10 USD a second at 720p, 0.12 at 1080p."
+description = "Faster Veo video with sound from text, frames or references. Per-second estimate by resolution."
 latency_s = 60
 quality = 4
 pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "720p" = "0.10 USD", "1080p" = "0.12 USD" } }
@@ -96,7 +96,7 @@ id = "google-veo.veo-3.1-lite"
 provider = "google-veo"
 provider_model = "veo-3.1-lite-generate-001"
 label = "Veo 3.1 Lite"
-description = "The cheapest Veo 3.1: a 4 to 8 second clip with sound from a prompt. 0.05 USD a second at 720p, 0.08 at 1080p."
+description = "Veo video with sound from a text prompt at the lower-priced Lite tier. Per-second estimate by resolution."
 latency_s = 60
 quality = 3
 pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "720p" = "0.05 USD", "1080p" = "0.08 USD" } }

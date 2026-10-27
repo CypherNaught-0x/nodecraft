@@ -7,7 +7,7 @@ id = "gemini-llm.3.8-flash"
 provider = "gemini-llm"
 provider_model = "gemini-3.8-flash"
 label = "Gemini 3.8 Flash"
-description = "Google text generation with the Gemini API key. Charged by usage; dollar cost is unknown before and after the run."
+description = "Fast text reasoning for coding and complex instructions with Gemini Flash. Usage pricing."
 latency_s = 15
 quality = 4
 pricing = { type = "by_usage", currency = "USD" }

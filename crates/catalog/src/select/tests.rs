@@ -129,7 +129,7 @@ fn choices_explain_themselves() {
     let selection = catalog.select(&Request { wiring: prompt_only().with(Modality::Image, 1), effort: Effort::Fast, ..Request::default() });
     assert_eq!(
         selection.explain(Effort::Fast),
-        "Picked the quickest of 3 fitting models. b.solid (beta): quality 4/5, about 20 s, USD 0.040000 per job. 4 other models don't fit."
+        "Picked the shortest time hint of 3 fitting models. b.solid (beta): selection tier 4/5, time hint 20 s, USD 0.040000 per job. 4 other models don't fit."
     );
     let local = selection.ranked.iter().find(|c| c.model.id == "c.local").unwrap();
     assert!(local.summary().ends_with("free."));

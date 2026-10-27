@@ -7,7 +7,7 @@ id="seedream.4_5"
 provider="seedream"
 provider_model="seedream-4-5-251128"
 label="Seedream 4.5"
-description="Generate or edit one image with ordered references (subject to input limits)."
+description = "Generate or edit an image using ordered references with Seedream 4.5. Per-call estimate."
 latency_s=30
 quality=3
 pricing={type="per_call",price="0.04 USD"}

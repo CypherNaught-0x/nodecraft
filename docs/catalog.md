@@ -11,8 +11,8 @@ provider = "fal"                 # the adapter that runs it
 provider_model = "fal-ai/flux/dev"  # the provider's own model id (or ComfyUI workflow template)
 label = "FLUX.1 [dev]"
 description = "One line for the picker."
-latency_s = 8                    # typical seconds to a result
-quality = 4                      # 1 (draft) to 5 (best)
+latency_s = 8                    # configured time hint in seconds
+quality = 4                      # editorial selection tier: 1 lowest, 5 highest
 # Illustrative price only: always take real prices from the provider's pricing page.
 pricing = { type = "per_unit", unit = "image", price = "0.01 USD", count = "num_images" }
 
@@ -125,9 +125,9 @@ default = { type = "unsigned", value = "1" }
   model (`Rejected::Invalid`), and parameters the model doesn't know are ignored. A map of more
   than 256 parameters (more than any schema allows) refuses every model. Survivors are ranked
   by effort:
-  - *fast*: quickest, then best quality;
-  - *best*: best quality, then quickest;
-  - *balanced*: quality minus a waiting penalty of 0 up to 30 s, 1 up to 2 min, and 2 beyond.
+  - *fast*: shortest time hint, then highest selection tier;
+  - *best*: highest selection tier, then shortest time hint;
+  - *balanced*: selection tier minus a waiting penalty of 0 up to 30 s, 1 up to 2 min, and 2 beyond.
 
   Ties go to free models, then known prices grouped by currency code (alphabetically; amounts
   in different currencies are never compared) and cheaper first within a currency, then
@@ -211,3 +211,7 @@ same-revision resource replacement invalidates them. The constructor has a check
 metadata ledger (including mode-by-union-port rows), and the existing card cache remains16 MiB.
 These are logical retained-owner scopes, excluding caller-owned catalog, spare capacity,
 allocator/RSS and arbitrary native callback peaks. Existing execution/output limits remain separate.
+
+The picker’s Selection tier is an editorial priority, with 1 lowest and 5 highest.
+See [Comparing catalog models](model-comparison.md) for its meaning, time and price caveats,
+and the dated primary sources behind every shipped model description.

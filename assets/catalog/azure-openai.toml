@@ -8,7 +8,7 @@ id = "azure-openai.deployment"
 provider = "azure-openai"
 provider_model = "nodecraft-deployment"
 label = "Azure OpenAI deployment"
-description = "Your Azure chat deployment. Set its deployment name and resource endpoint. Cost depends on the deployment; no price estimate or final monetary charge is available."
+description = "A text assistant using your Azure deployment. Its model determines speed and cost; the price is unknown here."
 # Generic discovery hints, not a benchmark or a claim about a specific deployment.
 latency_s = 20
 quality = 2

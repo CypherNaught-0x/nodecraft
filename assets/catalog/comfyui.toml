@@ -8,7 +8,7 @@ id = "comfyui.flux-dev"
 provider = "comfyui"
 provider_model = "flux-dev"
 label = "FLUX.1 [dev] (local)"
-description = "High-quality text-to-image and image-to-image on your own ComfyUI server."
+description = "Generate or edit images with FLUX.1 dev on your ComfyUI server. Speed and hosting costs depend on your server."
 latency_s = 40
 quality = 4
 pricing = { type = "free" }
@@ -101,7 +101,7 @@ id = "comfyui.sdxl"
 provider = "comfyui"
 provider_model = "sdxl-base"
 label = "SDXL (local)"
-description = "Fast general-purpose text-to-image on your own ComfyUI server."
+description = "Generate images with SDXL on your ComfyUI server. Speed and hosting costs depend on your server."
 latency_s = 12
 quality = 3
 pricing = { type = "free" }
@@ -178,7 +178,7 @@ id = "comfyui.workflow"
 provider = "comfyui"
 provider_model = "workflow"
 label = "ComfyUI workflow"
-description = "Runs an imported ComfyUI workflow on your own ComfyUI server."
+description = "Run your imported ComfyUI workflow. Its nodes, server and any paid partner models determine speed and cost."
 latency_s = 60
 quality = 3
 pricing = { type = "free" }

@@ -26,7 +26,7 @@ id = "google-gemini-images.3.1-flash"
 provider = "google-gemini-images"
 provider_model = "gemini-3.1-flash-image"
 label = "Gemini 3.1 Flash Image (Vertex AI)"
-description = "Nano Banana 2 on Google Cloud: images from a prompt and up to 14 reference images. 0.0672 USD an image at 1K, 0.1008 at 2K, 0.1512 at 4K."
+description = "Fast image generation and reference-guided editing with Nano Banana 2 on Google Cloud. Per-image estimate."
 latency_s = 60
 quality = 4
 pricing = { type = "per_unit_by_choice", unit = "image", default_count = 1, param = "image_size", prices = { "1K" = "0.0672 USD", "2K" = "0.1008 USD", "4K" = "0.1512 USD" } }
@@ -55,7 +55,7 @@ id = "google-gemini-images.3-pro"
 provider = "google-gemini-images"
 provider_model = "gemini-3-pro-image"
 label = "Gemini 3 Pro Image (Vertex AI)"
-description = "Nano Banana Pro on Google Cloud: Google's best image model, from a prompt and up to 14 reference images. 0.1344 USD an image at 1K or 2K, 0.24 at 4K."
+description = "Create detailed image assets with Nano Banana Pro on Google Cloud. Per-image estimate by size."
 latency_s = 60
 quality = 5
 pricing = { type = "per_unit_by_choice", unit = "image", default_count = 1, param = "image_size", prices = { "1K" = "0.1344 USD", "2K" = "0.1344 USD", "4K" = "0.24 USD" } }
@@ -84,7 +84,7 @@ id = "google-gemini-images.nano-banana-2.1"
 provider = "google-gemini-images"
 provider_model = "gemini-nano-banana-2.1"
 label = "Gemini Nano Banana 2.1 (Vertex AI)"
-description = "Nano Banana 2.1 on Google Cloud: images from a prompt and up to 14 reference images. 0.0336 USD an image at 1K, 0.0504 at 2K, 0.1134 at 4K."
+description = "Fast image generation and reference-guided editing with Nano Banana 2.1 on Google Cloud. Per-image estimate by size."
 latency_s = 60
 quality = 4
 pricing = { type = "per_unit_by_choice", unit = "image", default_count = 1, param = "image_size", prices = { "1K" = "0.0336 USD", "2K" = "0.0504 USD", "4K" = "0.1134 USD" } }
@@ -113,7 +113,7 @@ id = "google-gemini-images.3.1-flash-lite"
 provider = "google-gemini-images"
 provider_model = "gemini-3.1-flash-lite-image"
 label = "Gemini 3.1 Flash-Lite Image (Vertex AI)"
-description = "The fastest, cheapest Gemini image model on Google Cloud: 1K images from a prompt and up to 14 reference images. 0.0336 USD an image."
+description = "Generate and edit 1K images with Flash Lite on Google Cloud. Per-image estimate."
 latency_s = 60
 quality = 3
 pricing = { type = "per_unit", unit = "image", price = "0.0336 USD", default_count = 1 }
@@ -137,7 +137,7 @@ id = "google-gemini-images.2.5-flash"
 provider = "google-gemini-images"
 provider_model = "gemini-2.5-flash-image"
 label = "Gemini 2.5 Flash Image (Vertex AI)"
-description = "The first Nano Banana on Google Cloud, deprecated by Google and retiring 2027-03-15: images from a prompt and up to 3 reference images. 0.0387 USD an image."
+description = "Legacy Nano Banana image generation and editing. Per-image estimate; Google Cloud retirement is March 15, 2027."
 latency_s = 60
 quality = 3
 pricing = { type = "per_unit", unit = "image", price = "0.0387 USD", default_count = 1 }
