@@ -1,6 +1,8 @@
 //! Pricing rules and quotes. Prices are written as decimal strings (`"0.04 USD"`) and held as
 //! exact micros, so a quote never rounds through floating point.
-use nodecraft_types::{Currency, Error, ErrorKind, Money, ParamValues, Rounding, Value};
+#[cfg(test)]
+use nodecraft_types::ParamValues;
+use nodecraft_types::{Currency, Error, ErrorKind, Money, Rounding, Value};
 use serde::{Deserialize, Deserializer};
 use std::collections::BTreeMap;
 
@@ -70,6 +72,14 @@ impl Unit {
     }
 }
 
+/// An additional charge per image supplied to a named input role (#31).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputFee {
+    pub role: String,
+    pub price: Price,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Pricing {
@@ -105,6 +115,9 @@ pub enum Pricing {
         default_count: Option<u64>,
         param: String,
         prices: BTreeMap<String, Price>,
+        /// Paid reference images are counted from the planned inputs, never a user setting.
+        #[serde(default)]
+        input_fee: Option<InputFee>,
     },
 }
 
@@ -121,6 +134,7 @@ impl Pricing {
     /// The price of one job given its **resolved** parameters (schema defaults applied; use
     /// [`crate::ModelDescriptor::quote`]), rounded up, or `None` when it depends on usage the
     /// run hasn't measured yet. Free models quote zero in `fallback`.
+    #[cfg(test)]
     pub(crate) fn quote(&self, params: &ParamValues, fallback: Currency) -> Result<Option<Money>, Error> {
         self.quote_lookup(|name| params.get(name), fallback)
     }
@@ -135,6 +149,18 @@ impl Pricing {
     /// has cut it (#179). A price per source second without that length is `None`: it isn't
     /// known until the source is.
     pub fn quote_source<'a>(&self, get: impl Fn(&str) -> Option<&'a Value>, source_ms: Option<u64>, fallback: Currency) -> Result<Option<Money>, Error> {
+        self.quote_source_inputs(get, source_ms, None, fallback)
+    }
+
+    /// As [`Self::quote_source`], including the number of images supplied to `input_fee.role`.
+    /// Unknown reference counts leave the whole quote unknown, rather than omit a paid input.
+    pub fn quote_source_inputs<'a>(
+        &self,
+        get: impl Fn(&str) -> Option<&'a Value>,
+        source_ms: Option<u64>,
+        input_count: Option<u64>,
+        fallback: Currency,
+    ) -> Result<Option<Money>, Error> {
         match self {
             Self::PerSourceSecond { param, prices } => {
                 let Some(ms) = source_ms else { return Ok(None) };
@@ -142,9 +168,14 @@ impl Pricing {
                 // Started seconds, and never less than one.
                 price.0.checked_mul_ratio(ms.div_ceil(1000).max(1), 1, Rounding::Up).map(Some)
             }
-            Self::PerUnitByChoice { unit, count, default_count, param, prices } => {
+            Self::PerUnitByChoice { unit, count, default_count, param, prices, input_fee } => {
                 let price = *chosen(&get, param, prices)?;
-                Self::PerUnit { unit: *unit, price, count: count.clone(), default_count: *default_count }.quote_source(get, None, fallback)
+                let base = Self::PerUnit { unit: *unit, price, count: count.clone(), default_count: *default_count }.quote_source(get, None, fallback)?;
+                match (base, input_fee, input_count) {
+                    (Some(base), Some(fee), Some(count)) => base.checked_add(fee.price.0.checked_mul_ratio(count, 1, Rounding::Up)?).map(Some),
+                    (_, Some(_), None) => Ok(None),
+                    _ => Ok(base),
+                }
             }
             Self::Free => Ok(Some(Money::zero(fallback))),
             Self::ByUsage { .. } => Ok(None),
@@ -316,7 +347,14 @@ mod tests {
     #[test]
     fn a_count_is_priced_by_the_chosen_setting() {
         let prices = [("720p", "0.10 USD"), ("1080p", "0.12 USD")].map(|(k, v)| (k.to_owned(), v.parse::<Price>().unwrap())).into();
-        let pricing = Pricing::PerUnitByChoice { unit: Unit::Second, count: Some("duration".into()), default_count: None, param: "resolution".into(), prices };
+        let pricing = Pricing::PerUnitByChoice {
+            unit: Unit::Second,
+            count: Some("duration".into()),
+            default_count: None,
+            param: "resolution".into(),
+            prices,
+            input_fee: None,
+        };
         let mut params = ParamValues::new();
         params.insert("duration".into(), Value::Unsigned(Unsigned(8)));
         assert!(pricing.quote(&params, Currency::USD).is_err(), "no resolution chosen");
@@ -336,7 +374,7 @@ mod tests {
     fn a_fixed_count_is_priced_by_the_chosen_setting() {
         // #47: one image a request, priced by its size.
         let prices = [("1K", "0.0672 USD"), ("4K", "0.1512 USD")].map(|(k, v)| (k.to_owned(), v.parse::<Price>().unwrap())).into();
-        let pricing = Pricing::PerUnitByChoice { unit: Unit::Image, count: None, default_count: Some(1), param: "image_size".into(), prices };
+        let pricing = Pricing::PerUnitByChoice { unit: Unit::Image, count: None, default_count: Some(1), param: "image_size".into(), prices, input_fee: None };
         let mut params = ParamValues::new();
         assert!(pricing.quote(&params, Currency::USD).is_err(), "no size chosen");
         params.insert("image_size".into(), Value::Text("4K".into()));

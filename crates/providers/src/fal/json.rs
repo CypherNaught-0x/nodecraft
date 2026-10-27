@@ -222,13 +222,13 @@ pub(super) fn files(raw: &RawValue) -> Result<Vec<&RawValue>, ProviderError> {
             impl<'de> Visitor<'de> for V {
                 type Value = List<'de>;
                 fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                    f.write_str("one to four files")
+                    f.write_str("one to ten files")
                 }
                 fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut a: A) -> Result<Self::Value, A::Error> {
                     let mut v = Vec::new();
-                    v.try_reserve_exact(4).map_err(serde::de::Error::custom)?;
+                    v.try_reserve_exact(10).map_err(serde::de::Error::custom)?;
                     while let Some(x) = a.next_element::<&RawValue>()? {
-                        if v.len() == 4 {
+                        if v.len() == 10 {
                             return Err(serde::de::Error::custom("excess files"));
                         }
                         v.push(x);
@@ -242,5 +242,5 @@ pub(super) fn files(raw: &RawValue) -> Result<Vec<&RawValue>, ProviderError> {
             d.deserialize_seq(V)
         }
     }
-    serde_json::from_str::<List<'_>>(raw.get()).map(|x| x.0).map_err(|_| malformed("fal output array must contain one to four records"))
+    serde_json::from_str::<List<'_>>(raw.get()).map(|x| x.0).map_err(|_| malformed("fal output array must contain one to ten records"))
 }

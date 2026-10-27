@@ -57,6 +57,15 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
         } else if matches!(model.id.as_str(), "fal.luma-ray32" | "fal.luma-ray32-i2v") {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 500_000)));
+        } else if model.id.starts_with("fal.grok-") {
+            let micros = match model.id.as_str() {
+                "fal.grok-image2" => Some(60_000),
+                "fal.grok-image2-edit" => None,
+                "fal.grok-video15" => Some(840_000),
+                "fal.grok-video15-i2v" => Some(850_000),
+                other => panic!("{other}: no verified Grok price"),
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
         } else if model.id == "fal.bria-rmbg" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 18_000)));
@@ -230,6 +239,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("comfyui.flux-dev", true),
             ("comfyui.sdxl", true),
             ("fal.flux-schnell", true),
+            ("fal.grok-image2", true),
             ("fal.ideogram-v3", true),
             ("fal.luma-photon", true),
             ("gemini-images.pro", true),
@@ -263,6 +273,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.bria-rmbg", false),
             ("fal.esrgan", false),
             ("fal.flux-lora-trainer", false),
+            ("fal.grok-image2-edit", false),
+            ("fal.grok-video15", false),
+            ("fal.grok-video15-i2v", false),
             ("fal.kokoro", false),
             ("fal.luma-ray32", false),
             ("fal.luma-ray32-i2v", false),

@@ -1740,6 +1740,51 @@ Contract checked 2026-10-24: [compatibility API](https://ai.google.dev/gemini-ap
 not a new native `generateContent` or Interactions dialect; #489 remains a separate discussion.
 
 
+## Grok Imagine through fal
+
+Issue #31 uses the existing `fal` provider and its stored fal key. Enable the existing fal
+runtime; pick **Grok Imagine Image 2.0**, **Image 2.0 edit**, **Video 1.5**, or **Video 1.5
+frame**. A direct xAI key is not a fal credential. The catalog and adapter build for WebAssembly,
+but the builtin browser HTTP transport refuses no-redirect requests before fetch. These models
+need the native fal runtime or an audited host transport that provides that guarantee.
+
+Contracts and prices checked **2026-10-27** against the official
+[image schema](https://fal.ai/models/xai/grok-imagine-image/v2.0/text-to-image/api),
+[edit schema](https://fal.ai/models/xai/grok-imagine-image/v2.0/edit/api),
+[video schema](https://fal.ai/models/xai/grok-imagine-video/v1.5/text-to-video/api),
+[first-frame schema](https://fal.ai/models/xai/grok-imagine-video/v1.5/image-to-video/api),
+[image rates](https://fal.ai/grok-imagine-image-2.0), and
+[video rates](https://fal.ai/grok-imagine-video-1.5).
+
+- Image 2.0 makes 1–10 outputs, with JPEG, PNG or WebP and the schema's aspect ratios. Choose
+  low/medium at 1K/2K: **$0.04/$0.06** per low-quality output and **$0.06/$0.08** per medium
+  output. Image editing takes 1–5 `images` and adds **$0.01 per reference image per request**.
+  The API schema supersedes older overview counts. The four presets avoid automatic quality
+  and 1.5K, whose fal price is not listed in the checked table.
+- Video 1.5 makes one 1–15 second MP4 with included native audio: **$0.08/$0.14/$0.25 per
+  second** at 480p/720p/1080p. Frame mode requires one `first_frame`, adds **$0.01**, and follows
+  its framing; it sends no aspect-ratio setting. Text mode offers seven explicit ratios.
+- References are verified PNG/JPEG/WebP, at most 1 MiB and 1024 pixels per axis each. Five
+  base64 edit references fit the model's 8 MiB request cap. Image results have a 16 MiB per-file,
+  160 MiB aggregate and 4096-pixel per-axis cap; ten results share 167,772,160 pixels. Video
+  results use the 256 MiB per-file/aggregate video cap, also when resuming saved tasks. Hosts
+  may lower all these bounds.
+- Quotes include reference fees from the wired values. A fixed first-frame count is known
+  even before the frame finishes. An unknown upstream reference list stays unpriced and needs
+  the existing explicit unpriced-job consent; finite budget caps refuse it. Fanout quotes are
+  conservative per-item upper bounds.
+
+Safety stays enabled. Native passthrough, synchronous data URLs, video reference/edit/extend
+modes and Lite/legacy aliases are outside this integration. Unknown fields and roles refuse
+before sending. Saved queue handles poll/cancel only canonical fal routes; output fetches use
+fal storage without the API key, and redirects remain refused.
+
+fal's [xAI model warning](https://fal.ai/models/xai/grok-imagine-image) says policy violations
+can still be charged. Generation/moderation failures therefore retain possibly billed
+reservations. A lost submit reply never triggers a new paid create; accepted handles resume.
+Cancellation does not promise a refund. Fixtures and RunHost tests are offline; the opt-in
+`grok31_live_smoke` needs `NODECRAFT_LIVE_GROK=1` and `FAL_KEY` and spends $0.04 for one image.
+
 ## LTX video through fal
 
 Issue #30 uses the existing **fal** adapter and keychain account. Select **LTX 2.3 Pro (fal)**

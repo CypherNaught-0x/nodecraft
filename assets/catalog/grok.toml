@@ -1,0 +1,146 @@
+# Grok Imagine through the existing fal provider; verified 2026-10-27.
+# API schemas: https://fal.ai/models/xai/grok-imagine-image/v2.0/text-to-image/api
+# https://fal.ai/models/xai/grok-imagine-image/v2.0/edit/api
+# https://fal.ai/models/xai/grok-imagine-video/v1.5/text-to-video/api
+# https://fal.ai/models/xai/grok-imagine-video/v1.5/image-to-video/api
+# Rates: https://fal.ai/grok-imagine-image-2.0 and https://fal.ai/grok-imagine-video-1.5
+# Only explicit, published 1K/2K quality presets: no unpriced 1.5K or floating auto quality.
+# Safety remains on. Moderation failures may be billed; ambiguous creates never replay.
+
+[[model]]
+id="fal.grok-image2"
+provider="fal"
+provider_model="xai/grok-imagine-image/v2.0/text-to-image"
+label="Grok Imagine Image 2.0 (fal)"
+description="Moderation failures may be billed. Create up to ten images at an explicit quality and 1K or 2K size."
+latency_s=30
+quality=3
+pricing={type="per_unit_by_choice",unit="image",count="num_images",param="image_preset",prices={"low-1k"="0.04 USD","low-2k"="0.06 USD","medium-1k"="0.06 USD","medium-2k"="0.08 USD"}}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="image_preset"
+label="Quality and size"
+control={type="choice",options=[{value="low-1k",label="Low · 1K"},{value="low-2k",label="Low · 2K"},{value="medium-1k",label="Medium · 1K"},{value="medium-2k",label="Medium · 2K"}]}
+default={type="text",value="medium-1k"}
+
+[[model.params.params]]
+name="num_images"
+label="Images"
+control={type="unsigned",min="1",max="10",step="1"}
+default={type="unsigned",value="1"}
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="2:1",label="2:1"},{value="20:9",label="20:9"},{value="19.5:9",label="19.5:9"},{value="16:9",label="16:9"},{value="4:3",label="4:3"},{value="3:2",label="3:2"},{value="1:1",label="1:1"},{value="2:3",label="2:3"},{value="3:4",label="3:4"},{value="9:16",label="9:16"},{value="9:19.5",label="9:19.5"},{value="9:20",label="9:20"},{value="1:2",label="1:2"},{value="auto",label="auto"},{value="21:9",label="21:9"},{value="5:2",label="5:2"}]}
+default={type="text",value="1:1"}
+
+[[model.params.params]]
+name="output_format"
+label="Output format"
+control={type="choice",options=[{value="jpeg",label="JPEG"},{value="png",label="PNG"},{value="webp",label="WEBP"}]}
+default={type="text",value="jpeg"}
+
+[[model]]
+id="fal.grok-image2-edit"
+provider="fal"
+provider_model="xai/grok-imagine-image/v2.0/edit"
+label="Grok Imagine Image 2.0 edit (fal)"
+description="Moderation failures may be billed. Edit one to five references into up to ten 1K/2K images. Output rate plus $0.01 per reference."
+latency_s=30
+quality=3
+pricing={type="per_unit_by_choice",unit="image",count="num_images",param="image_preset",prices={"low-1k"="0.04 USD","low-2k"="0.06 USD","medium-1k"="0.06 USD","medium-2k"="0.08 USD"},input_fee={role="images",price="0.01 USD"}}
+
+[[model.modes]]
+id="image-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="images",modality="image",min=1,max=5}]
+
+[[model.params.params]]
+name="image_preset"
+label="Quality and size"
+control={type="choice",options=[{value="low-1k",label="Low · 1K"},{value="low-2k",label="Low · 2K"},{value="medium-1k",label="Medium · 1K"},{value="medium-2k",label="Medium · 2K"}]}
+default={type="text",value="medium-1k"}
+
+[[model.params.params]]
+name="num_images"
+label="Images"
+control={type="unsigned",min="1",max="10",step="1"}
+default={type="unsigned",value="1"}
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="2:1",label="2:1"},{value="20:9",label="20:9"},{value="19.5:9",label="19.5:9"},{value="16:9",label="16:9"},{value="4:3",label="4:3"},{value="3:2",label="3:2"},{value="1:1",label="1:1"},{value="2:3",label="2:3"},{value="3:4",label="3:4"},{value="9:16",label="9:16"},{value="9:19.5",label="9:19.5"},{value="9:20",label="9:20"},{value="1:2",label="1:2"},{value="auto",label="auto"},{value="21:9",label="21:9"},{value="5:2",label="5:2"}]}
+default={type="text",value="auto"}
+
+[[model.params.params]]
+name="output_format"
+label="Output format"
+control={type="choice",options=[{value="jpeg",label="JPEG"},{value="png",label="PNG"},{value="webp",label="WEBP"}]}
+default={type="text",value="jpeg"}
+
+[[model]]
+id="fal.grok-video15"
+provider="fal"
+provider_model="xai/grok-imagine-video/v1.5/text-to-video"
+label="Grok Imagine Video 1.5 (fal)"
+description="Moderation failures may be billed. Create a 1–15 second MP4 with native audio. Up to 256 MiB per clip."
+latency_s=120
+quality=3
+pricing={type="per_unit_by_choice",unit="second",count="duration_seconds",param="resolution",prices={"480p"="0.08 USD","720p"="0.14 USD","1080p"="0.25 USD"}}
+
+[[model.modes]]
+id="text-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="duration_seconds"
+label="Seconds"
+control={type="unsigned",min="1",max="15",step="1"}
+default={type="unsigned",value="6"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="16:9",label="16:9"},{value="4:3",label="4:3"},{value="3:2",label="3:2"},{value="1:1",label="1:1"},{value="2:3",label="2:3"},{value="3:4",label="3:4"},{value="9:16",label="9:16"}]}
+default={type="text",value="16:9"}
+
+[[model]]
+id="fal.grok-video15-i2v"
+provider="fal"
+provider_model="xai/grok-imagine-video/v1.5/image-to-video"
+label="Grok Imagine Video 1.5 frame (fal)"
+description="Moderation failures may be billed. Create a 1–15 second MP4 with native audio. Up to 256 MiB per clip. One first frame adds $0.01."
+latency_s=120
+quality=3
+pricing={type="per_unit_by_choice",unit="second",count="duration_seconds",param="resolution",prices={"480p"="0.08 USD","720p"="0.14 USD","1080p"="0.25 USD"},input_fee={role="first_frame",price="0.01 USD"}}
+
+[[model.modes]]
+id="image-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="first_frame",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="duration_seconds"
+label="Seconds"
+control={type="unsigned",min="1",max="15",step="1"}
+default={type="unsigned",value="6"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}

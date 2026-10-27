@@ -178,3 +178,6 @@ mod gemini44;
 
 #[path = "openai_audio39.rs"]
 mod openai_audio39;
+
+#[path = "grok31.rs"]
+mod grok31;
