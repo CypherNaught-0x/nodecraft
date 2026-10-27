@@ -2,11 +2,20 @@
 
 /// A PDF of `pages`, each a content stream drawing with Helvetica (a standard font, not embedded).
 pub fn pdf(pages: &[&str]) -> Vec<u8> {
+    pdf_with_cmap(pages, None)
+}
+
+/// A PDF with an optional custom ToUnicode CMap for its Helvetica font.
+pub fn pdf_with_cmap(pages: &[&str], cmap: Option<&str>) -> Vec<u8> {
+    let unicode = if cmap.is_some() { " /ToUnicode 4 0 R" } else { "" };
     let mut objects = vec![
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         String::new(),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_owned(),
+        format!("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding{unicode} >>"),
     ];
+    if let Some(cmap) = cmap {
+        objects.push(format!("<< /Length {} >>\nstream\n{cmap}\nendstream", cmap.len()));
+    }
     let mut kids = Vec::new();
     for content in pages {
         let page = objects.len() + 1;

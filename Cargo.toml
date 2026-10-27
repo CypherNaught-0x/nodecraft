@@ -38,7 +38,7 @@ craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614
 craft-settings = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
 craft-atomic = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
 craft-quit = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", features = ["menu"] }
-craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", features = ["raster"] }
+craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9", features = ["raster"] }
 
 # external
 blake3 = { version = "1.8", default-features = false, features = ["std"] }
@@ -89,12 +89,15 @@ sha2 = { version = "0.11", default-features = false }
 # dependency's own [patch] section, so its consumers repeat it at the same rev (crates/pdf/README.md,
 # "Backend provenance and consumer pins"). Bump together with the craft-pdf pin.
 [patch.crates-io]
-hayro = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
-hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
-hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
-hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+hayro = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
+hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
+hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
+# Keep the CMap/PostScript scanner on the same reviewed, stack-safe backend graph.
+hayro-cmap = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
+hayro-postscript = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
+hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
 # craft-pdf's writer (page extraction, #590) requires its unwind-safe Krilla patch.
-krilla = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", version = "=0.8.2" }
+krilla = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9", version = "=0.8.2" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

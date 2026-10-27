@@ -118,3 +118,11 @@ fn images_become_one_page_each() {
     assert!(images_to_pdf(vec![PageImage { width: 2, height: 2, rgba: vec![0; 15] }]).is_err(), "pixels must match the size");
     assert!(images_to_pdf(vec![PageImage { width: 0, height: 2, rgba: Vec::new() }]).is_err());
 }
+
+#[test]
+fn long_cmap_dictionary_delimiter_runs_do_not_overflow_the_parser_stack() {
+    let cmap = format!("begincmap\n{}\n1 beginbfchar <41> <0042> endbfchar\nendcmap", "<< >> ".repeat(50_000));
+    let bytes = fixture::pdf_with_cmap(&["BT /F1 12 Tf 20 100 Td (A) Tj ET"], Some(&cmap));
+    let document = Document::open(&bytes, &DocumentLimits::default()).unwrap();
+    assert_eq!(document.text(0).unwrap(), "B", "the CMap is interpreted, not silently replaced by a fallback");
+}
