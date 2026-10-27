@@ -5,6 +5,8 @@ mod ideogram_tests;
 mod json;
 mod limits;
 #[cfg(test)]
+mod ltx_tests;
+#[cfg(test)]
 mod luma_tests;
 mod media;
 #[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
@@ -31,6 +33,9 @@ pub const LUMA_RAY_I2V: &str = "luma/agent/ray/v3.2/image-to-video";
 pub const LUMA_PHOTON: &str = "fal-ai/luma-photon";
 /// Ideogram V3 text-to-image, one Balanced image through fal's queue (#34).
 pub const IDEOGRAM: &str = "fal-ai/ideogram/v3";
+/// LTX 2.3 Pro through fal's saved queue (#30).
+pub const LTX: &str = "fal-ai/ltx-2.3/text-to-video";
+pub const LTX_I2V: &str = "fal-ai/ltx-2.3/image-to-video";
 pub const WAN: &str = "fal-ai/wan/v2.2-a14b/text-to-video";
 /// Wan 2.2 from a first frame, with an optional last frame (#607).
 pub const WAN_I2V: &str = "fal-ai/wan/v2.2-a14b/image-to-video";
@@ -105,6 +110,8 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Model {
+    LtxText,
+    LtxFrames,
     RayText,
     RayFrames,
     Photon,
@@ -127,6 +134,8 @@ enum Model {
 impl Model {
     fn read(s: &str) -> Result<Self, ProviderError> {
         match s {
+            LTX => Ok(Self::LtxText),
+            LTX_I2V => Ok(Self::LtxFrames),
             LUMA_RAY => Ok(Self::RayText),
             LUMA_RAY_I2V => Ok(Self::RayFrames),
             LUMA_PHOTON => Ok(Self::Photon),
@@ -146,6 +155,8 @@ impl Model {
     }
     fn wire(self) -> &'static str {
         match self {
+            Self::LtxText => LTX,
+            Self::LtxFrames => LTX_I2V,
             Self::RayText => LUMA_RAY,
             Self::RayFrames => LUMA_RAY_I2V,
             Self::Photon => LUMA_PHOTON,
@@ -164,10 +175,11 @@ impl Model {
     }
     /// Whether the model makes one MP4 clip.
     fn video(self) -> bool {
-        matches!(self, Self::Video | Self::Frames | Self::Speech | Self::RayText | Self::RayFrames)
+        matches!(self, Self::Video | Self::Frames | Self::Speech | Self::RayText | Self::RayFrames | Self::LtxText | Self::LtxFrames)
     }
     fn root(self) -> &'static str {
         match self {
+            Self::LtxText | Self::LtxFrames => "fal-ai/ltx-2.3",
             Self::RayText | Self::RayFrames => "luma/agent",
             Self::Photon => LUMA_PHOTON,
             Self::Ideogram => "fal-ai/ideogram",

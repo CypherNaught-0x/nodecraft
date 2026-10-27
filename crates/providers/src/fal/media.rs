@@ -270,7 +270,7 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             drop(decoded);
             Ok(m.mime)
         }
-        Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames => {
+        Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames => {
             mp4(b)?;
             Ok("video/mp4")
         }

@@ -25,7 +25,7 @@ impl Default for Limits {
     }
 }
 impl Limits {
-    /// Baseline output bounds for images, audio, meshes and the existing non-Ray models.
+    /// Baseline output bounds for images, audio, meshes and the existing non-Ray/non-LTX models.
     pub const HARD: Self = Self {
         input_bytes: MIB,
         text_bytes: 16 * 1024,
@@ -44,8 +44,8 @@ impl Limits {
         total_pixels: 16_777_216,
         codec_bytes: 128 * MIB as u64,
     };
-    /// One Ray result may be a 1080p/10-second clip. Keep its download and aggregate bounds
-    /// aligned; non-Ray models are clamped back to HARD in `for_model`.
+    /// Ray and LTX results are video clips. Keep their download and aggregate bounds aligned;
+    /// other models are clamped back to HARD in `for_model`.
     pub const VIDEO_HARD: Self = Self { output_bytes: 256 * MIB, total_output_bytes: 256 * MIB, ..Self::HARD };
     pub(super) fn validate(self) -> Result<Self, ProviderError> {
         let h = Self::VIDEO_HARD;
@@ -68,7 +68,7 @@ impl Limits {
         Ok(self)
     }
     pub(super) fn for_model(self, model: Model) -> Self {
-        if matches!(model, Model::RayText | Model::RayFrames) {
+        if matches!(model, Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames) {
             self
         } else {
             Self {
