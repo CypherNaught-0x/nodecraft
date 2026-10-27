@@ -1992,6 +1992,54 @@ uncertain billing without API credit. Live generation has not been run. The igno
 `alibaba32_live_smoke` requires explicit test opt-ins plus `FAL_KEY` and spends $0.04 on one
 1K Qwen image; it never runs in CI.
 
+## Recraft through fal
+
+Choose **Recraft V4.1 raster (fal)** or **Recraft V4.1 SVG (fal)** on an Image card.
+Both use the existing **fal** connection and key, queue, saved task handles, cancellation
+and cost consent. The standard rates checked on 2026-10-27 are **$0.035 per raster image**
+and **$0.08 per SVG**, one image per job. They are dated estimates, not an invoice.
+
+Primary contracts: [raster API](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image/api)
+and [SVG API](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector/api); rates:
+[raster model](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image) and
+[vector model](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector).
+The [native Recraft API](https://www.recraft.ai/docs/api-reference/models/recraft-v4-1)
+offers additional variants/operations; this integration covers the two standard fal aliases.
+Native image-count and seed controls are not fields in these fal contracts and are not sent.
+
+Each job takes a prompt of 1–10,000 characters and one of the six fixed fal size presets.
+An optional palette is a comma-separated list of up to six `#RRGGBB` colours; optional
+background colour is one `#RRGGBB`. Safety stays enabled. Unknown fields, invalid colours,
+oversized prompts and unsupported inputs refuse before paid HTTP. The adapter never
+replays a lost or ambiguous paid POST. Downloads are bounded to 16 MiB per image and use
+no credential or redirects. Recraft additionally allows the exact documented falserverless
+Google Storage bucket; this does not widen other fal model or style-weight delivery hosts.
+
+SVG results retain their original **image/svg+xml** bytes through history, extraction,
+project save/reopen and original `.svg` export. SVG files can also be imported onto Image
+cards. Native card/history previews render cached rasters off the UI thread. Safe static
+content beyond the current preview renderer—text/fonts, stylesheets, filters, patterns or
+embedded images—keeps the original and shows an unavailable-preview explanation. This
+does not claim complete SVG 2 rendering or font substitution. Browser builds retain and
+export SVG but do not rasterize SVG on the frame thread.
+
+SVG originals have separate structural limits: 16 MiB encoded, 65,536 XML nodes, depth 64,
+250,000 path/point/dash entries, cycle-checked bounded references, intrinsic axes up to
+16,384 and 16,777,216 pixels. Lower provider/host limits also apply. Logical document work,
+preview nodes/paths, raster pixel passes and scratch are independently bounded. Scripts,
+event handlers, animation, DTD/entities, foreign content, external/network/file/font
+resources and unsafe CSS refuse. No system fonts/files are loaded.
+
+For raster-only image tools or provider references, add **Rasterize SVG**, connect the SVG
+Image output and choose the longest edge (1–2048 pixels). This deterministic local action
+runs through ordinary node/run commands, produces PNG, and leaves the original SVG intact.
+Unsupported preview features also refuse rasterization instead of silently disappearing.
+Raster consumers do not automatically convert SVGs before a paid request.
+
+Offline authored fixtures cover SVG admission, limits, actual previews, exact-byte export,
+round trips and billing uncertainty. No paid generation was used. The ignored
+`recraft35_live_smoke` requires `NODECRAFT_LIVE_RECRAFT=1`, explicit cost acknowledgement
+and `FAL_KEY`; it spends $0.035 on one raster image and never runs in CI.
 
 ## Rodin through fal
 

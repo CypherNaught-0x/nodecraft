@@ -41,7 +41,7 @@ craft-quit = { git = "https://github.com/storytold/craft-libs", rev = "8f5a28316
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9", features = ["raster"] }
 
 # Original offline workflow data; refresh deliberately through a fully gated pin update.
-nodecraft-template-data = { git = "https://github.com/CypherNaught-0x/nodecraft-templates", rev = "c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9" }
+nodecraft-template-data = { git = "https://github.com/CypherNaught-0x/nodecraft-templates", rev = "5e7ed638fa75d4615701832184e5141cfe7cc293" }
 
 # external
 blake3 = { version = "1.8", default-features = false, features = ["std"] }

@@ -1314,6 +1314,20 @@ mod tests {
         assert!(!format!("{p:?}").contains("secret"));
         assert!(ComfyProvider::new("http://h:8188", None, " ", FakeServer::new(), Arc::new(|| 0)).is_err(), "a salt is required");
     }
+    #[test]
+    fn recraft35_svg_reference_is_refused_before_local_upload_and_prompt() {
+        let server = FakeServer::new();
+        let mut j = job();
+        j.inputs = vec![JobInput::Media {
+            role: "1.image".into(),
+            mime: nodecraft_media::svg::MIME.into(),
+            bytes: Arc::from(br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"/>"#.as_slice()),
+        }];
+        let error = block_on(provider(server.clone()).submit(&j)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+        assert!(error.message.contains("Rasterize SVG"));
+        assert!(server.seen.lock().unwrap().iter().all(|r| r.method == HttpMethod::Get), "no upload or prompt POST");
+    }
 }
 
 #[cfg(test)]

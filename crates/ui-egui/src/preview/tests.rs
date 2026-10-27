@@ -1,5 +1,38 @@
 use super::*;
 
+#[test]
+fn recraft35_svg_preview_caches_buckets_and_retains_static_preview_failure() {
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><rect width="200" height="100" fill="#8844cc"/></svg>"##;
+    let ctx = egui::Context::default();
+    let hash = Blake3::from_bytes([35; 32]);
+    let mut previews = Previews::inline(&ctx, hash, 128, svg);
+    let mut reads = 0;
+    for _ in 0..10 {
+        assert!(matches!(
+            previews.request(&ctx, hash, 128.0, || {
+                reads += 1;
+                Some(svg.to_vec())
+            }),
+            Preview::Ready { size: [128, 64], source_size: [200, 100], .. }
+        ));
+    }
+    assert_eq!(reads, 0, "same bucket must not reload/reparse per frame");
+    assert!(matches!(previews.request(&ctx, hash, 256.0, || Some(svg.to_vec())), Preview::Ready { size: [256, 128], .. }));
+    let text = br#"<svg xmlns="http://www.w3.org/2000/svg"><text>Hello</text></svg>"#;
+    let hash = Blake3::from_bytes([36; 32]);
+    let mut reads = 0;
+    for _ in 0..5 {
+        assert!(matches!(
+            previews.request(&ctx, hash, 128.0, || {
+                reads += 1;
+                Some(text.to_vec())
+            }),
+            Preview::Unavailable("SVG original retained; this preview is unavailable")
+        ));
+    }
+    assert_eq!(reads, 1, "unsupported static preview is remembered while original stays useful");
+}
+
 fn png(w: u32, h: u32) -> Vec<u8> {
     nodecraft_media::encode_png(w, h, &vec![200; (w * h * 4) as usize], &Limits::default()).unwrap()
 }

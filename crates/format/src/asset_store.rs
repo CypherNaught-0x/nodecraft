@@ -429,6 +429,19 @@ impl AssetStore {
         Ok(VerifiedAsset { identity: entry.identity.clone(), data })
     }
     fn check_reference(&self, asset: &AssetRef, data: &mut VerifiedData, metrics: &StreamMetrics) -> Result<(), Error> {
+        if asset.mime.essence() == nodecraft_media::svg::MIME {
+            let info = match data.svg {
+                Some(info) => info,
+                None => {
+                    let maximum = usize::try_from(nodecraft_media::svg::MAX_BYTES).map_err(|_| invalid("SVG byte limit is unavailable on this platform"))?;
+                    let bytes = data.range.read_small(maximum, metrics)?;
+                    nodecraft_media::svg::probe(&bytes, &Default::default()).map_err(|_| invalid("SVG asset is unsafe or exceeds its limits"))?
+                }
+            };
+            crate::assets::check_svg_header(&asset.meta, info)?;
+            data.svg = Some(info);
+            return Ok(());
+        }
         if let Some(sniffed) = data.sniffed {
             let actual = sniffed.mime.split(';').next().unwrap_or_default();
             let expected = asset.mime.essence();
@@ -683,7 +696,7 @@ fn facts(range: AssetRange, crc32: u32, metrics: &StreamMetrics) -> Result<Verif
     let prefix = range.slice(0, range.byte_len().min(64 * 1024))?.read_small(64 * 1024, metrics)?;
     #[cfg(any(test, feature = "validation-metrics"))]
     crate::validation_metrics::record(|m| m.sniffs = m.sniffs.saturating_add(1));
-    Ok(VerifiedData { range, crc32, sniffed: nodecraft_media::sniff(&prefix), image: None })
+    Ok(VerifiedData { range, crc32, sniffed: nodecraft_media::sniff(&prefix), image: None, svg: None })
 }
 
 #[cfg(test)]
