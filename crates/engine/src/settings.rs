@@ -414,14 +414,36 @@ impl KeySettings {
         out
     }
 
-    /// Adds `account` to the list (no-op if listed or the list is full). Like [`Self::forget`],
-    /// it rewrites the list from [`Self::accounts`], so invalid, duplicate and surplus names from a
-    /// hand-edited file are dropped.
-    pub fn remember(&mut self, account: &crate::secrets::Account) {
+    /// Adds `account` to the list and says whether it is listed now: `false` when the list was
+    /// already full, so the caller can say so (check [`Self::admits`] before writing a key). Like
+    /// [`Self::forget`], adding rewrites the list from [`Self::accounts`], so invalid, duplicate
+    /// and surplus names from a hand-edited file are dropped.
+    pub fn remember(&mut self, account: &crate::secrets::Account) -> bool {
         let known = self.accounts();
-        if !known.contains(account) && known.len() < Self::MAX_ACCOUNTS {
-            self.accounts = known.iter().map(|a| a.as_str().to_owned()).chain([account.as_str().to_owned()]).collect();
+        if known.contains(account) {
+            return true;
         }
+        if known.len() >= Self::MAX_ACCOUNTS {
+            return false;
+        }
+        self.accounts = known.iter().map(|a| a.as_str().to_owned()).chain([account.as_str().to_owned()]).collect();
+        true
+    }
+
+    /// Whether `account` would fit in the list, counting `reserved` (new accounts whose key is
+    /// still being written) as listed already, so every write admitted this way can be remembered
+    /// when it succeeds. A listed or reserved account always fits: replacing its key adds nothing.
+    pub fn admits(&self, account: &crate::secrets::Account, reserved: &[crate::secrets::Account]) -> bool {
+        let mut taken = self.accounts();
+        if taken.contains(account) || reserved.contains(account) {
+            return true;
+        }
+        for other in reserved {
+            if !taken.contains(other) {
+                taken.push(other.clone());
+            }
+        }
+        taken.len() < Self::MAX_ACCOUNTS
     }
 
     /// Removes `account` from the list.
@@ -715,12 +737,38 @@ mod tests {
         assert_eq!(keys.accounts().len(), 2);
         let mut many = KeySettings { accounts: (0..100).map(|i| format!("p{i}")).collect() };
         assert_eq!(many.accounts().len(), KeySettings::MAX_ACCOUNTS);
-        many.remember(&anthropic);
+        assert!(!many.remember(&anthropic));
         assert!(!many.accounts().contains(&anthropic), "the list is full");
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path(), "schema_version = 1\n[keys]\naccounts = [\"openai\"]\n");
         let (store, _) = open_in(dir.path());
         assert_eq!(store.get().keys.accounts().len(), 1);
+    }
+
+    #[test]
+    fn key_capacity_counts_writes_in_flight_and_allows_replacements() {
+        let account = |name: &str| crate::secrets::Account::new(name).unwrap();
+        let names = |n: usize| KeySettings { accounts: (0..n).map(|i| format!("p{i}")).collect() };
+        let max = KeySettings::MAX_ACCOUNTS;
+        // One short of full: exactly one new account fits, and is then remembered.
+        let mut keys = names(max - 1);
+        assert!(keys.admits(&account("openai"), &[]));
+        assert!(!keys.admits(&account("openai"), &[account("fal")]), "a save in flight holds the last place");
+        assert!(keys.admits(&account("fal"), &[account("fal")]), "the reserved account itself still fits");
+        assert!(keys.admits(&account("p0"), &[account("fal")]), "replacing a listed key adds nothing");
+        assert!(keys.admits(&account("openai"), &[account("p3")]), "a listed account reserves nothing extra");
+        assert!(keys.remember(&account("openai")));
+        assert_eq!(keys.accounts().len(), max);
+        // Full: only replacements.
+        assert!(!keys.admits(&account("fal"), &[]));
+        assert!(keys.admits(&account("p1"), &[]));
+        assert!(keys.remember(&account("openai")), "already listed");
+        assert!(!keys.remember(&account("fal")));
+        // One over (a hand-edited file): the surplus is not listed and nothing new fits.
+        let over = names(max + 1);
+        assert!(!over.admits(&account("fal"), &[]));
+        assert!(!over.admits(&account(&format!("p{max}")), &[]), "the surplus name isn't listed");
+        assert!(over.admits(&account("p0"), &[]));
     }
 
     #[test]

@@ -366,6 +366,8 @@ mod generate;
 mod host;
 mod image_tools;
 mod input_ports;
+#[cfg(test)]
+mod key_account_tests;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod key_changes;
 mod layer_editor;
@@ -662,7 +664,7 @@ impl NodeCraftApp {
         // No settings file remembers the accounts in the browser: list the ones with a stored key.
         #[cfg(target_arch = "wasm32")]
         for account in &accounts {
-            app.key_accounts.remember(account);
+            let _ = app.key_accounts.remember(account);
         }
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         Ok(app)
@@ -2796,6 +2798,10 @@ impl NodeCraftApp {
             }
             if self.keys.is_waiting() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            } else if self.keys.is_following() {
+                // A request past its timeout may still be answered (an unlock prompt accepted
+                // late); keep looking for that answer, without drawing at full rate.
+                ctx.request_repaint_after(std::time::Duration::from_secs(1));
             }
         }
         #[cfg(any(test, target_arch = "wasm32"))]
@@ -2807,23 +2813,49 @@ impl NodeCraftApp {
     /// Keeps the remembered account names in settings in step with the keychain.
     /// Records keys saved or deleted, from the keychain's answers or the browser's at once (from
     /// any view's panel); adapters read their keys again.
+    /// A key found by a check changes no key, so adapters keep theirs. The panel reserves room
+    /// before writing a new account's key, so the list is full here only if settings changed
+    /// underneath it; the notice then says the account won't be listed after a restart.
     fn save_accounts(&mut self, changes: Vec<crate::keys::AccountChange>) {
+        use crate::keys::AccountChange;
         if changes.is_empty() {
             return;
         }
-        self.forget_key_adapters();
+        if changes.iter().any(|change| !matches!(change, AccountChange::Found(_))) {
+            self.forget_key_adapters();
+        }
         let apply = |keys: &mut nodecraft_engine::settings::KeySettings| {
+            let mut refused = None;
             for change in &changes {
                 match change {
-                    crate::keys::AccountChange::Remember(account) => keys.remember(account),
-                    crate::keys::AccountChange::Forget(account) => keys.forget(account),
+                    AccountChange::Remember(account) | AccountChange::Found(account) => {
+                        if !keys.remember(account) {
+                            refused = Some(account.clone());
+                        }
+                    }
+                    AccountChange::Forget(account) => keys.forget(account),
                 }
             }
+            refused
         };
-        apply(&mut self.key_accounts);
+        let before = self.key_accounts.clone();
+        let refused = apply(&mut self.key_accounts);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(store) = &mut self.store {
-            store.update(|settings| apply(&mut settings.keys));
+        if self.key_accounts != before
+            && let Some(store) = &mut self.store
+        {
+            store.update(|settings| {
+                apply(&mut settings.keys);
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = before;
+        if let Some(account) = refused {
+            self.keys.notice = Some(format!(
+                "The key for {} is stored, but NodeCraft can list at most {} accounts, so it won't be listed after a restart. Remove an account you no longer use.",
+                account.as_str(),
+                nodecraft_engine::settings::KeySettings::MAX_ACCOUNTS
+            ));
         }
     }
     /// Delete the selection (nodes, noodles and the selected field) in one undo step, skipping
