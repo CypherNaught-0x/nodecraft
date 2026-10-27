@@ -13,6 +13,8 @@ pub(super) struct LibraryView {
     pub(super) open: bool,
     /// The last `library.list` answer; `None` reads it again on the next frame it shows.
     listed: Option<Result<Vec<Kept>, String>>,
+    pub(super) templates: Option<Result<Vec<nodecraft_engine::templates::Entry>, String>>,
+    pub(super) template_query: String,
     /// The shader library's names and latest versions, read with the techniques.
     shaders: super::shader_editor::ShaderListing,
 }
@@ -30,6 +32,8 @@ struct Kept {
     technique: TechniqueId,
     version: u32,
     name: String,
+    #[serde(default)]
+    description: String,
 }
 
 #[derive(Deserialize)]
@@ -42,6 +46,7 @@ struct Listing {
 enum Action {
     /// Place the project's own version, by its canvas.
     Place(CanvasId),
+    AddTemplate(String),
     /// Keep the project's version in the library.
     Add(CanvasId),
     /// Place a version from the library.
@@ -69,17 +74,27 @@ impl NodeCraftApp {
         if !self.library.open {
             return;
         }
+        if self.library.templates.is_none() {
+            self.library.templates = Some(self.session.dispatch("template.list", &json!({})).map_err(|e| e.message).and_then(|v| {
+                serde_json::from_value(v.get("templates").cloned().unwrap_or(Json::Null)).map_err(|_| "Starter templates could not be listed".into())
+            }));
+        }
         let library = self.has_library();
         if library && self.library.listed.is_none() {
             self.library.listed = Some(self.list_library());
             self.library.shaders = self.library_shaders();
         }
-        let mut own: Vec<(CanvasId, TechniqueId, u32, String)> = self
+        let mut own: Vec<(CanvasId, TechniqueId, u32, String, String)> = self
             .session
             .document()
             .canvases()
             .values()
-            .filter_map(|canvas| canvas.technique_info().filter(|info| !info.retired).map(|info| (canvas.id(), info.id, info.version, info.name.clone())))
+            .filter_map(|canvas| {
+                canvas
+                    .technique_info()
+                    .filter(|info| !info.retired)
+                    .map(|info| (canvas.id(), info.id, info.version, info.name.clone(), info.description.clone()))
+            })
             .collect();
         own.sort_by(|a, b| (&a.3, a.2).cmp(&(&b.3, b.2)));
         let kept: &[Kept] = match &self.library.listed {
@@ -102,11 +117,12 @@ impl NodeCraftApp {
             .frame(frame)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().max_height(t.sheet_list_height).show(ui, |ui| {
+                    ui.set_max_width(t.dialog_width);
                     ui.label(egui::RichText::new("This project").strong().color(t.text));
                     if own.is_empty() {
                         ui.label(egui::RichText::new("Nothing published yet. Select nodes and publish them as a technique.").color(t.text_muted));
                     }
-                    for (canvas, technique, version, name) in &own {
+                    for (canvas, technique, version, name, description) in &own {
                         ui.horizontal(|ui| {
                             ui.label(format!("{} · v{version}", sheet_view::line(name)));
                             if ui.button("Place").on_hover_text("A node running this version, in the middle of the view").clicked() {
@@ -120,6 +136,9 @@ impl NodeCraftApp {
                                 }
                             }
                         });
+                        if !description.is_empty() {
+                            ui.label(egui::RichText::new(sheet_view::line(description)).small().color(t.text_muted));
+                        }
                     }
                     ui.separator();
                     ui.label(egui::RichText::new("Library").strong().color(t.text));
@@ -150,6 +169,9 @@ impl NodeCraftApp {
                                 action = Some(Action::Remove(k.technique, k.version));
                             }
                         });
+                        if !k.description.is_empty() {
+                            ui.label(egui::RichText::new(sheet_view::line(&k.description)).small().color(t.text_muted));
+                        }
                     }
                     if let Some(listing) = &self.library.shaders {
                         ui.separator();
@@ -180,6 +202,38 @@ impl NodeCraftApp {
                             });
                         }
                     }
+                    match &self.library.templates {
+                        Some(Ok(templates)) if !templates.is_empty() => {
+                            ui.separator();
+                            ui.label(egui::RichText::new("Starter templates").strong().color(t.text));
+                            ui.add(egui::TextEdit::singleline(&mut self.library.template_query).hint_text("Find a template"));
+                            let query = self.library.template_query.to_lowercase();
+                            for entry in templates.iter().filter(|entry| {
+                                query.is_empty() || entry.title.to_lowercase().contains(&query) || entry.features.iter().any(|feature| feature.contains(&query))
+                            }) {
+                                let added = self.session.document().canvases().contains_key(&entry.canvas);
+                                ui.horizontal(|ui| {
+                                    ui.label(&entry.title);
+                                    if ui
+                                        .add_enabled(!added, egui::Button::new(if added { "In project" } else { "Add template" }))
+                                        .on_hover_text(if added {
+                                            "Open this canvas from Canvases; duplicate its nodes for another copy"
+                                        } else {
+                                            "Add a new canvas with its bundled examples; current work is preserved and the addition can be undone"
+                                        })
+                                        .clicked()
+                                    {
+                                        action = Some(Action::AddTemplate(entry.id.clone()));
+                                    }
+                                });
+                                ui.add(egui::Label::new(egui::RichText::new(&entry.description).small().color(t.text_muted)).wrap());
+                            }
+                        }
+                        Some(Err(error)) => {
+                            ui.colored_label(t.danger, error);
+                        }
+                        _ => {}
+                    }
                 });
             });
         self.library.open = open;
@@ -195,6 +249,12 @@ impl NodeCraftApp {
 
     fn library_action(&mut self, action: Action, t: &Tokens) {
         let result = match action {
+            Action::AddTemplate(ref id) => self.session.dispatch("template.add", &json!({"id":id})).and_then(|value| {
+                let canvas = serde_json::from_value(value.get("canvas").cloned().unwrap_or(Json::Null))
+                    .map_err(|_| Error::new(ErrorKind::Internal, "The template canvas could not be opened"))?;
+                self.open_canvas(canvas);
+                Ok(())
+            }),
             Action::Place(version) => self.place_technique(t, "technique.place", json!({"version": version})),
             Action::PlaceKept(technique, version) => ids::random_id(|bytes| self.session.document().canvases().contains_key(&CanvasId::from_bytes(*bytes)))
                 .map(CanvasId::from_bytes)
