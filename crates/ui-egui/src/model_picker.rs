@@ -288,11 +288,17 @@ fn price_label(model: &ModelDescriptor) -> String {
         Pricing::ByUsage { currency } => format!("Usage based ({})", String::from(*currency)),
         Pricing::PerCall { price } => format!("{} / call", amount(price.0)),
         Pricing::PerUnit { unit, price, .. } => format!("{} / {}", amount(price.0), unit_label(*unit)),
-        Pricing::PerUnitByChoice { unit, prices, .. } => match prices.values().map(|price| price.0).min_by_key(|money| money.micros) {
-            Some(cheapest) if prices.len() > 1 => format!("From {} / {}", amount(cheapest), unit_label(*unit)),
-            Some(price) => format!("{} / {}", amount(price), unit_label(*unit)),
-            None => format!("Priced per {}", unit_label(*unit)),
-        },
+        Pricing::PerUnitByChoice { unit, prices, input_fee, .. } => {
+            let mut label = match prices.values().map(|price| price.0).min_by_key(|money| money.micros) {
+                Some(cheapest) if prices.len() > 1 => format!("From {} / {}", amount(cheapest), unit_label(*unit)),
+                Some(price) => format!("{} / {}", amount(price), unit_label(*unit)),
+                None => format!("Priced per {}", unit_label(*unit)),
+            };
+            if let Some(fee) = input_fee {
+                label.push_str(&format!(" + {} / input image", amount(fee.price.0)));
+            }
+            label
+        }
         Pricing::PerSourceSecond { prices, .. } => match prices.values().map(|price| price.0).min_by_key(|money| money.micros) {
             Some(cheapest) if prices.len() > 1 => format!("From {} / second of source", amount(cheapest)),
             Some(price) => format!("{} / second of source", amount(price)),
@@ -370,3 +376,6 @@ mod gemini44_tests;
 
 #[cfg(test)]
 mod deepgram40_tests;
+
+#[cfg(test)]
+mod grok31_tests;

@@ -114,8 +114,14 @@ fn model_rates_distinguish_free_usage_and_unit_prices_without_a_run_quote() {
     assert_eq!(price_label(&model), "From 0.318 USD / second of source");
     // Priced per second of output by its resolution (#742).
     let prices = [("720p", "0.10 USD"), ("1080p", "0.12 USD")].map(|(k, v)| (k.to_owned(), v.parse().unwrap())).into();
-    model.pricing =
-        Pricing::PerUnitByChoice { unit: Unit::Second, count: Some("duration_seconds".into()), default_count: None, param: "resolution".into(), prices };
+    model.pricing = Pricing::PerUnitByChoice {
+        unit: Unit::Second,
+        count: Some("duration_seconds".into()),
+        default_count: None,
+        param: "resolution".into(),
+        prices,
+        input_fee: None,
+    };
     assert_eq!(price_label(&model), "From 0.1 USD / second");
 }
 

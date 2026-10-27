@@ -448,6 +448,34 @@ fn document_pages(step: &crate::planner::Step, document: &nodecraft_types::Docum
     }
     most
 }
+/// Count paid reference images from resolved values. Unknown upstream lists leave the quote
+/// unknown; each fanout item is bounded by the largest known count, as for source durations.
+fn reference_count(step: &crate::planner::Step, role: &str) -> Option<u64> {
+    let count = |inputs: &[crate::planner::PlannedInput]| {
+        let mut count = 0u64;
+        for input in inputs.iter().filter(|input| input.port == role) {
+            for source in &input.from {
+                let crate::planner::InputSource::Value(value) = source else { return None };
+                let items = match value {
+                    Value::List(items) => items.as_slice(),
+                    value => std::slice::from_ref(value),
+                };
+                for item in items {
+                    if !matches!(item, Value::Media(asset) if asset.mime.as_str().starts_with("image/")) {
+                        return None;
+                    }
+                    count = count.checked_add(1)?;
+                }
+            }
+        }
+        (count > 0).then_some(count)
+    };
+    match &step.fanout {
+        Some(fanout) => fanout.cells.iter().try_fold(0, |most, inputs| count(inputs).map(|n| most.max(n))),
+        None => count(&step.inputs),
+    }
+}
+
 fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, Error> {
     quote_bound(plan, selected)?;
     let mut result = Quote::default();
@@ -482,7 +510,8 @@ fn quote_selected(plan: &RunPlan, selected: &[Selection<'_>]) -> Result<Quote, E
             // The PDFs' prompt tokens, read by the mode this step runs.
             let document = model.mode(step.mode.as_str()).and_then(|mode| mode.document.as_ref());
             let input_tokens = document.map_or(0, |document| document.tokens(document_pages(step, document)));
-            let price = model.quote_inputs(&s.source.params, source_ms, input_tokens).and_then(|price| match price {
+            let input_count = model.input_fee_role().and_then(|role| reference_count(step, role));
+            let price = model.quote_inputs_count(&s.source.params, source_ms, input_tokens, input_count).and_then(|price| match price {
                 Some(_) => Ok(price),
                 None => characters::quote(model, step, &mut text_bytes),
             });

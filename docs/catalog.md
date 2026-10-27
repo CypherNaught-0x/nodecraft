@@ -98,7 +98,12 @@ default = { type = "unsigned", value = "1" }
   `default_count` as for `per_unit`) is `per_unit` at the price `prices` lists for the chosen
   option of `param`, with the same rules for `param` as `per_source_second`: a Veo clip is priced
   per second by its resolution (`count = "duration_seconds"`), a Gemini image per image by its
-  size (`default_count = 1`).
+  size (`default_count = 1`). An optional `input_fee = { role = "images", price = "0.01 USD" }`
+  adds that price once per image supplied to the named required image role. Counts come from
+  planned input values, including lists and fanout, never an editable count setting. A role
+  fixed to one frame is known before that frame is made; an unresolved variable reference list
+  leaves the quote unknown. A fanout reserves the largest per-item reference count. Input fees
+  must be positive and in the same currency as the output rates.
   `by_usage` describes composite measured usage without a reliable pre-submit amount. It always
   returns an unknown quote, never zero: finite caps refuse it; an uncapped authorized host must
   make the incomplete price explicit. Token counters are not an exact monetary invoice.
