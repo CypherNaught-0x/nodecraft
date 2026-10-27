@@ -7,7 +7,7 @@ id = "huggingface.gpt-oss-120b-groq"
 provider = "huggingface"
 provider_model = "openai/gpt-oss-120b:groq"
 label = "GPT OSS 120B (Groq)"
-description = "Hugging Face text generation through Groq using an HF token. Charged by usage; dollar cost is unknown before and after the run."
+description = "Open-weight text reasoning with gpt-oss-120b through Groq. Usage pricing through Hugging Face."
 latency_s = 15
 quality = 4
 pricing = { type = "by_usage", currency = "USD" }

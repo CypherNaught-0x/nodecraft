@@ -16,7 +16,7 @@ id="google-tts.chirp3-hd"
 provider="google-tts"
 provider_model="chirp3-hd"
 label="Google TTS Chirp 3: HD"
-description="Google's most natural classic voices, in 30 personas across many languages. Takes text or SSML. Priced per 1000 characters."
+description = "Conversational speech with varied voice styles and natural intonation. Character pricing."
 latency_s=3
 quality=5
 pricing={type="per_unit",unit="thousand_characters",price="0.03 USD"}
@@ -54,7 +54,7 @@ id="google-tts.neural2"
 provider="google-tts"
 provider_model="neural2"
 label="Google TTS Neural2"
-description="Natural voices with pitch and speed control. Takes text or SSML. Priced per 1000 characters."
+description = "General-purpose speech voices with pitch and speed controls. Character pricing."
 latency_s=3
 quality=4
 pricing={type="per_unit",unit="thousand_characters",price="0.016 USD"}
@@ -98,7 +98,7 @@ id="google-tts.wavenet"
 provider="google-tts"
 provider_model="wavenet"
 label="Google TTS WaveNet"
-description="WaveNet voices with pitch and speed control. Takes text or SSML. Priced per 1000 characters."
+description = "WaveNet speech voices with pitch and speed controls. Character pricing."
 latency_s=3
 quality=3
 pricing={type="per_unit",unit="thousand_characters",price="0.004 USD"}
@@ -142,7 +142,7 @@ id="google-tts.standard"
 provider="google-tts"
 provider_model="standard"
 label="Google TTS Standard"
-description="The lowest-cost voices, with pitch and speed control. Takes text or SSML. Priced per 1000 characters."
+description = "Cost-efficient general-purpose speech voices with pitch and speed controls. Character pricing."
 latency_s=3
 quality=2
 pricing={type="per_unit",unit="thousand_characters",price="0.004 USD"}
@@ -186,7 +186,7 @@ id="google-tts.studio"
 provider="google-tts"
 provider_model="studio"
 label="Google TTS Studio"
-description="Studio voices for narration and news reading. Takes text or SSML. Priced per 1000 characters."
+description = "Speech voices for narration. Character pricing; suited to prepared media rather than live conversation."
 latency_s=3
 quality=4
 pricing={type="per_unit",unit="thousand_characters",price="0.16 USD"}
@@ -224,7 +224,7 @@ id="google-tts.gemini-2.5-pro"
 provider="google-tts"
 provider_model="gemini-2.5-pro-tts"
 label="Gemini 2.5 Pro TTS"
-description="Expressive speech steered by a style prompt, with one voice or a dialogue of two. Billed by tokens."
+description = "Expressive speech directed by a style prompt, with one voice or a two-voice dialogue. Token pricing."
 latency_s=8
 quality=5
 pricing={type="by_usage",currency="USD"}
@@ -278,7 +278,7 @@ id="google-tts.gemini-2.5-flash"
 provider="google-tts"
 provider_model="gemini-2.5-flash-tts"
 label="Gemini 2.5 Flash TTS"
-description="Fast speech steered by a style prompt, with one voice or a dialogue of two. Billed by tokens."
+description = "Fast speech directed by a style prompt, with one voice or a two-voice dialogue. Token pricing."
 latency_s=5
 quality=4
 pricing={type="by_usage",currency="USD"}
@@ -332,7 +332,7 @@ id="google-tts.gemini-3.1-flash"
 provider="google-tts"
 provider_model="gemini-3.1-flash-tts-preview"
 label="Gemini 3.1 Flash TTS (Preview)"
-description="Low-latency speech steered by a style prompt, with one voice or a dialogue of two. Billed by tokens."
+description = "Low-latency preview speech directed by a style prompt, with one voice or a dialogue. Token pricing."
 latency_s=5
 quality=4
 pricing={type="by_usage",currency="USD"}
@@ -386,7 +386,7 @@ id="google-tts.gemini-2.5-flash-lite"
 provider="google-tts"
 provider_model="gemini-2.5-flash-lite-preview-tts"
 label="Gemini 2.5 Flash-Lite TTS (Preview)"
-description="The cheapest Gemini speech, one voice, steered by a style prompt. Billed by tokens."
+description = "Lightweight speech directed by a style prompt, using one voice. Token pricing."
 latency_s=4
 quality=3
 pricing={type="by_usage",currency="USD"}

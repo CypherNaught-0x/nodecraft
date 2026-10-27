@@ -7,7 +7,7 @@ id="fal.luma-ray32"
 provider="fal"
 provider_model="luma/agent/ray/v3.2/text-to-video"
 label="Luma Ray 3.2 (fal)"
-description="Text to standard MP4, 5 or 10 seconds. Dated per-second estimate by resolution; 16 MiB local result limit. No HDR or EXR."
+description = "Create an MP4 from text with Luma Ray 3.2. Per-second estimate by resolution; up to 256 MiB per result."
 latency_s=90
 quality=3
 pricing={type="per_unit_by_choice",unit="second",count="duration_seconds",param="resolution",prices={"540p"="0.10 USD","720p"="0.20 USD","1080p"="0.40 USD"}}
@@ -46,7 +46,7 @@ id="fal.luma-ray32-i2v"
 provider="fal"
 provider_model="luma/agent/ray/v3.2/image-to-video"
 label="Luma Ray 3.2 frames (fal)"
-description="First frame and optional last frame to a 5-second MP4. Frames up to 1 MiB and 1024 px; result up to 16 MiB. Dated estimate; no multi-keyframe, HDR or EXR."
+description = "Animate a first frame toward an optional last frame with Luma Ray 3.2. Per-second estimate; up to 256 MiB per result."
 latency_s=90
 quality=3
 pricing={type="per_unit_by_choice",unit="second",default_count=5,param="resolution",prices={"540p"="0.10 USD","720p"="0.20 USD","1080p"="0.40 USD"}}
@@ -79,7 +79,7 @@ id="fal.luma-photon"
 provider="fal"
 provider_model="fal-ai/luma-photon"
 label="Luma Photon (fal)"
-description="One image from text. 0.019 USD per megapixel, but output dimensions are chosen by the service: no price before the run. No reference-image controls."
+description = "Create one image from a text prompt with Luma Photon. Usage pricing; output size is chosen by the service."
 latency_s=30
 quality=3
 pricing={type="by_usage",currency="USD"}

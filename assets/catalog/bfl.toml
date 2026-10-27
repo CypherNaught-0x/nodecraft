@@ -6,7 +6,7 @@ id="bfl.flux-2-klein-4b"
 provider="bfl"
 provider_model="flux-2-klein-4b"
 label="FLUX.2 klein 4B (BFL)"
-description="Generate one PNG directly with Black Forest Labs. A BFL API key is required."
+description = "Compact FLUX.2 image generation from a prompt. Usage pricing; requires a BFL account."
 latency_s=10
 quality=3
 pricing={type="by_usage",currency="USD"}

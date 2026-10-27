@@ -9,7 +9,7 @@ id="tripo.text-to-3d"
 provider="tripo"
 provider_model="text_to_model"
 label="Tripo text to 3D"
-description="Generate one textured GLB model from a prompt. Dated 0.20 USD estimate (20 credits)."
+description = "Create a textured 3D model from a prompt with Tripo. Per-call estimate."
 latency_s=90
 quality=4
 pricing={type="per_call",price="0.20 USD"}
@@ -51,7 +51,7 @@ id="tripo.image-to-3d"
 provider="tripo"
 provider_model="image_to_model"
 label="Tripo image to 3D"
-description="Generate one textured GLB model from one image. Dated 0.30 USD estimate (30 credits)."
+description = "Create a textured 3D model from one image with Tripo. Per-call estimate."
 latency_s=90
 quality=4
 pricing={type="per_call",price="0.30 USD"}
@@ -87,7 +87,7 @@ id="tripo.multiview-to-3d"
 provider="tripo"
 provider_model="multiview_to_model"
 label="Tripo multiview to 3D"
-description="Generate one textured GLB model from a front view plus one to three of left, back and right. Dated 0.30 USD estimate (30 credits)."
+description = "Create a textured 3D model from several views of a subject with Tripo. Per-call estimate."
 latency_s=90
 quality=4
 pricing={type="per_call",price="0.30 USD"}

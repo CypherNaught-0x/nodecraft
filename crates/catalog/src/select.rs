@@ -19,10 +19,10 @@ pub const MAX_MULTIPLE: usize = 8;
 pub enum Effort {
     /// The quickest result.
     Fast,
-    /// Good quality without long waits.
+    /// Balance selection tier against the configured wait hint.
     #[default]
     Balanced,
-    /// The best quality, however long it takes.
+    /// Highest editorial selection tier, regardless of wait hint.
     Best,
 }
 
@@ -89,7 +89,7 @@ impl Choice<'_> {
             Some(p) => format!("{p} per job"),
             None => "priced by usage".to_owned(),
         };
-        format!("{} ({}): quality {}/5, about {} s, {price}.", self.model.label, self.model.provider, self.model.quality, self.model.latency_s)
+        format!("{} ({}): selection tier {}/5, time hint {} s, {price}.", self.model.label, self.model.provider, self.model.quality, self.model.latency_s)
     }
 }
 
@@ -115,9 +115,9 @@ impl<'a> Selection<'a> {
             };
         };
         let goal = match effort {
-            Effort::Fast => "the quickest",
-            Effort::Balanced => "the best balance of quality and speed",
-            Effort::Best => "the highest quality",
+            Effort::Fast => "the shortest time hint",
+            Effort::Balanced => "the best balance of selection tier and wait",
+            Effort::Best => "the highest selection tier",
         };
         let left_out = match self.rejected.len() {
             0 => String::new(),
@@ -167,7 +167,7 @@ impl<'a> Selection<'a> {
     }
 }
 
-/// Waiting-time bands for [`Effort::Balanced`]: under 30 s costs nothing, under 2 min one quality
+/// Waiting-time bands for [`Effort::Balanced`]: under 30 s costs nothing, under 2 min one selection-tier
 /// point, longer two.
 fn wait_penalty(latency_s: u32) -> i32 {
     match latency_s {

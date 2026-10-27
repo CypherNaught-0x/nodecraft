@@ -9,7 +9,7 @@ id = "runway.gen4-5"
 provider = "runway"
 provider_model = "gen4.5"
 label = "Runway Gen-4.5"
-description = "A 2 to 10 second MP4 from a prompt or a first frame and prompt. 0.12 USD per second before tax."
+description = "Generate video from text or a first frame with Gen-4.5. Per-second estimate."
 latency_s = 120
 quality = 5
 pricing = { type = "per_unit", unit = "second", count = "duration_seconds", price = "0.12 USD" }
@@ -41,7 +41,7 @@ id = "runway.gen4-turbo"
 provider = "runway"
 provider_model = "gen4_turbo"
 label = "Runway Gen-4 Turbo"
-description = "A 2 to 10 second MP4 from a first frame and prompt. 0.05 USD per second before tax."
+description = "Fast image-to-video generation with Gen-4 Turbo. Per-second estimate."
 latency_s = 120
 quality = 4
 pricing = { type = "per_unit", unit = "second", count = "duration_seconds", price = "0.05 USD" }

@@ -8,7 +8,7 @@ id = "kling.v2_5_turbo"
 provider = "kling"
 provider_model = "kling-v2-5-turbo"
 label = "Kling 2.5 Turbo"
-description = "Generate a 5 or 10 second video from a prompt, or from a start frame (and, in Professional mode, an end frame). Billed in Kling resource units by mode and length after the run."
+description = "Generate video from text or a first frame with Kling 2.5 Turbo. Billing follows mode and clip length."
 latency_s = 120
 quality = 4
 pricing = { type = "by_usage", currency = "USD" }
@@ -42,7 +42,7 @@ id = "kling.v2_1_master"
 provider = "kling"
 provider_model = "kling-v2-1-master"
 label = "Kling 2.1 Master"
-description = "Generate a 5 or 10 second high-fidelity video from a prompt or a start frame. Billed in Kling resource units by length after the run."
+description = "Generate video from text or a first frame with Kling 2.1 Master. Billing follows clip length."
 latency_s = 240
 quality = 5
 pricing = { type = "by_usage", currency = "USD" }
@@ -71,7 +71,7 @@ id = "kling.v1_6"
 provider = "kling"
 provider_model = "kling-v1-6"
 label = "Kling 1.6"
-description = "Generate a 5 or 10 second video from a prompt, a start frame (and, in Professional mode, an end frame) or up to four reference images. Billed in Kling resource units by mode and length after the run."
+description = "Generate video from text, frames or image references with Kling 1.6. Billing follows mode and clip length."
 latency_s = 180
 quality = 3
 pricing = { type = "by_usage", currency = "USD" }
@@ -115,7 +115,7 @@ id = "kling.image_v2_1"
 provider = "kling"
 provider_model = "kling-v2-1"
 label = "Kling Image 2.1"
-description = "Generate one image from a prompt. Billed in Kling resource units after the run."
+description = "Generate one image from a prompt with Kling Image 2.1. Usage pricing."
 latency_s = 30
 quality = 3
 pricing = { type = "by_usage", currency = "USD" }

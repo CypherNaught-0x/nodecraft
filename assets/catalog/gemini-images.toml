@@ -7,7 +7,7 @@ id = "gemini-images.nano-banana-2.1"
 provider = "gemini-images"
 provider_model = "gemini-nano-banana-2.1"
 label = "Gemini Nano Banana 2.1"
-description = "Generate images with Gemini Nano Banana 2.1. Cost depends on usage."
+description = "Fast image generation and reference-guided editing with Nano Banana 2.1. Usage pricing."
 latency_s = 120
 quality = 4
 pricing = { type = "by_usage", currency = "USD" }
@@ -35,7 +35,7 @@ id = "gemini-images.flash-lite"
 provider = "gemini-images"
 provider_model = "gemini-3.1-flash-lite-image"
 label = "Gemini Flash Lite Image"
-description = "Generate images with Gemini Flash Lite Image. Cost depends on usage."
+description = "Image generation and reference-guided editing at 1K with Flash Lite. Usage pricing."
 latency_s = 120
 quality = 3
 pricing = { type = "by_usage", currency = "USD" }
@@ -63,7 +63,7 @@ id = "gemini-images.pro"
 provider = "gemini-images"
 provider_model = "gemini-3-pro-image"
 label = "Gemini Pro Image"
-description = "Generate images with Gemini Pro Image. Cost depends on usage."
+description = "Image generation and editing for detailed professional assets with Nano Banana Pro. Usage pricing."
 latency_s = 120
 quality = 5
 pricing = { type = "by_usage", currency = "USD" }

@@ -10,7 +10,7 @@ id = "gemini-video.omni-flash"
 provider = "gemini-video"
 provider_model = "gemini-omni-1.1-flash"
 label = "Gemini Omni Flash"
-description = "Generate a video with sound from a prompt, a first frame (and optionally a last one) or up to three subject references. Paid Gemini tier only; about 0.10 USD a second at 720p, charged by measured tokens after the run."
+description = "Generate video with sound from text, frames or subject references. Usage pricing; requires the paid Gemini tier."
 latency_s = 120
 quality = 4
 pricing = { type = "by_usage", currency = "USD" }

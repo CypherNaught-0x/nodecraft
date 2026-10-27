@@ -9,6 +9,9 @@ use serde::Deserialize;
 pub const MAX_MODES: usize = 32;
 pub const MAX_ROLES: usize = 16;
 pub const MAX_TEXT: usize = 4096;
+/// What the legacy `quality` field means in model comparison and automatic selection.
+pub const SELECTION_TIER_HELP: &str =
+    "Selection tier is NodeCraft's editorial priority for automatic selection: 1 lowest, 5 highest. Compare descriptions for each model's strengths.";
 
 fn invalid(model: &str, message: &str) -> Error {
     Error::new(ErrorKind::InvalidInput, format!("model `{model}`: {message}"))
@@ -86,9 +89,10 @@ pub struct ModelDescriptor {
     /// it a run is charged its quote, or what the provider says it cost.
     #[serde(default)]
     pub usage: Option<TokenRates>,
-    /// Typical seconds from submit to result.
+    /// Configured time hint in seconds, not a measured latency or service guarantee.
     pub latency_s: u32,
-    /// 1 (draft) to 5 (best available).
+    /// Editorial selection priority, 1 (lowest) to 5 (highest). Kept under the original
+    /// catalog field name; it is not a cross-provider output-quality benchmark.
     pub quality: u8,
     /// The base-model family whose trained styles it uses or trains (#167): a trainer (a mode
     /// that outputs a style) trains for it, a model with a style input takes styles of it. Set

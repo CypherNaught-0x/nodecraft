@@ -4,7 +4,11 @@
 //! catalog snapshot, supplies role-specific compatibility, and previews/commits a choice through
 //! the engine's shared model-swap transaction. Catalog rates are metadata, not launch consent.
 use crate::theme::Tokens;
-use nodecraft_catalog::{Catalog, ModelDescriptor, Wiring, model::MAX_TEXT, pricing::Unit};
+use nodecraft_catalog::{
+    Catalog, ModelDescriptor, Wiring,
+    model::{MAX_TEXT, SELECTION_TIER_HELP},
+    pricing::Unit,
+};
 use nodecraft_types::{Error, ErrorKind, Modality, Money};
 
 const QUERY_CHARS: usize = 128;
@@ -191,10 +195,13 @@ impl ModelPicker {
                     self.move_highlight(true);
                 }
                 ui.label(egui::RichText::new("Model rates only. Run quotes and budgets are checked separately.").color(t.text_muted));
+                ui.label(egui::RichText::new(SELECTION_TIER_HELP).color(t.text_muted));
                 if self.filtered.is_empty() {
                     ui.label("No matching models");
                 }
-                let row_height = t.control_row_height * 2.0;
+                // One choice control and three bounded text lines, also at larger text sizes.
+                let row_height =
+                    t.control_row_height.max(ui.spacing().interact_size.y) + 3.0 * (ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y);
                 let mut scroll = egui::ScrollArea::vertical().max_height(t.comments_height);
                 if (up || down)
                     && let Some(row) = self.rows.iter().position(|row| matches!(row, Row::Model(index) if Some(*index) == self.highlighted))
@@ -218,10 +225,15 @@ impl ModelPicker {
                             }
                             let response = ui
                                 .add_enabled(choice.unavailable.is_none(), egui::Button::selectable(self.highlighted == Some(index), &model.label).truncate());
-                            ui.label(
-                                egui::RichText::new(format!("Quality {}/5 · typically {} s · {}", model.quality, model.latency_s, price_label(model)))
-                                    .color(t.text_muted),
-                            );
+                            ui.add(egui::Label::new(&model.description).truncate()).on_hover_text(&model.description);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("Selection tier {}/5 · Time hint {} s", model.quality, model.latency_s)).color(t.text_muted),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text("The time hint is configured catalog metadata. Actual waiting time depends on the request and provider load.");
+                            ui.add(egui::Label::new(egui::RichText::new(price_label(model)).color(t.text_muted)).truncate());
                             if let Some(reason) = &choice.unavailable {
                                 response.on_disabled_hover_ui(|ui| {
                                     ui.label(reason);
@@ -343,6 +355,8 @@ mod tests;
 
 #[cfg(test)]
 mod bfl33_tests;
+#[cfg(test)]
+mod catalog963_tests;
 #[cfg(test)]
 mod ideogram34_tests;
 
