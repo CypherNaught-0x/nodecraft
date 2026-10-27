@@ -74,7 +74,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: || json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":[],"properties":{}}),
-            params_doc: "{} -> {export: null | {id, phase, cancellable, result}}; path-free status of the latest background export; result.state is exported (bytes), cancelled or failed (error).",
+            params_doc: "{} -> {export: null | {id, phase, cancellable, result}}; path-free status of the latest background export; optional progress has completed/total/written/failed counts. result.state is exported (bytes), results (per-file report and manifest name), cancelled or failed (error).",
             enabled: |_, value| {
                 let _: Empty = params(value)?;
                 Ok(())
@@ -90,7 +90,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: || json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["id"],"properties":{"id":{"type":"integer","minimum":1}}}),
-            params_doc: "{id: pending export id} -> {cancelling:true}; accepted cancellation leaves no destination file and preserves any existing target. Finishing atomic publication cannot be cancelled.",
+            params_doc: "{id: pending export id} -> {cancelling:true}; single-file cancellation leaves no destination file and preserves any existing target; a workflow batch keeps completed files and records them in its manifest. Finishing atomic publication cannot be cancelled.",
             enabled: |c, value| {
                 let p: Cancel = params(value)?;
                 c.exports.cancellable(p.id)
