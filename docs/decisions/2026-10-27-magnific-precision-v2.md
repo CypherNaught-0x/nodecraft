@@ -8,10 +8,10 @@ submission return an explicit unsupported reason.
 
 Offer one Precision V2 photo-flavor model, one upright static PNG/JPEG/WebP input <=1 MiB
 and 1024 pixels per axis. Scale is an explicit choice of 2 or 4; normalize its schema text
-to an integer in the wire request. Sharpen, smart grain and ultra detail are integer0–100,
-default7/7/30. Fix NSFW filtering on. Do not send prompt/seed/count/output-format fields
+to an integer in the wire request. Sharpen, smart grain and ultra detail are integers 0–100,
+with defaults 7/7/30. Fix NSFW filtering on. Do not send prompt/seed/count/output-format fields
 absent from this API. Keep expected geometry and lower-only payload/codec limits in saved
-handles; the single output must be a fully verified original raster within4096²/256 MiB.
+handles; the single output must be a fully verified original raster within 4096²/256 MiB.
 
 Current pricing consumes organizational credits without a verified per-job currency rate.
 Use unknown/by-usage USD pricing and the shared unpriced-job consent/budget path, never an
@@ -24,14 +24,14 @@ cancellation cannot promise the remote task stopped. Only complete documented re
 evidence proves nonacceptance. Results are delivered from the documented exact
 `ai-statics.freepik.com` host, without credentials or redirects.
 
-Output URLs expire30minutes after generation and cannot be recovered. Download immediately;
+Output URLs expire 30 minutes after generation and cannot be recovered. Download immediately;
 durable task identity does not promise long-offline recovery of an expired file. Preserve
 any successfully imported original through history and project save/reopen rather than keep
 only its temporary URL. Require native streamed storage before a paid job; use the existing
 shared result-sealing worker and lightweight adoption path for large originals. Do not add
 a second synchronous large-file import path on the UI thread.
 
-Primary sources checked2026-10-27: [request schema](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/post-image-upscaler-precision-v2),
+Primary sources checked 2026-10-27: [request schema](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/post-image-upscaler-precision-v2),
 [task status](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/get-%7Btask-id%7D-by-id),
 [pricing](https://docs.magnific.com/pricing), [authentication](https://docs.magnific.com/authentication)
 and [expiry](https://docs.magnific.com/quickstart). Validation uses authored offline media;
