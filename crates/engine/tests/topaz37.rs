@@ -90,7 +90,7 @@ impl Runtime for Threads {
 fn original_png(width: u32, height: u32, noise: bool) -> Vec<u8> {
     let mut rgba = vec![0; width as usize * height as usize * 4];
     let mut state = 0x37cafe12u32;
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         for channel in pixel.iter_mut().take(3) {
             state ^= state << 13;
             state ^= state >> 17;
