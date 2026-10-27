@@ -287,3 +287,112 @@ fn stability36_fixed_multipart_boundary_cannot_be_injected_through_prompt_text()
     }];
     assert!(request::prepare(&j).is_err());
 }
+
+#[test]
+fn stability36_wav_unknown_sample_formats_and_inconsistent_frame_headers_are_refused() {
+    let mut invalid_tag = wav();
+    invalid_tag[20..22].copy_from_slice(&65535u16.to_le_bytes());
+    let mut invalid_align = wav();
+    invalid_align[32..34].copy_from_slice(&2u16.to_le_bytes());
+    let mut invalid_rate = wav();
+    invalid_rate[28..32].copy_from_slice(&176401u32.to_le_bytes());
+    let mut invalid_bits = wav();
+    invalid_bits[34..36].copy_from_slice(&12u16.to_le_bytes());
+    for bytes in [invalid_tag, invalid_align, invalid_rate, invalid_bits] {
+        assert!(
+            response::media(reply(200, bytes, "audio/wav"), Model::Audio, Some(30)).is_err(),
+            "an unsupported or inconsistent WAV must not become a successful paid result"
+        );
+    }
+}
+
+fn float_wav(frames: u32, extensible: bool) -> Vec<u8> {
+    let mut fmt = Vec::new();
+    fmt.extend(if extensible { 0xfffeu16 } else { 3u16 }.to_le_bytes());
+    fmt.extend(2u16.to_le_bytes());
+    fmt.extend(44_100u32.to_le_bytes());
+    fmt.extend(352_800u32.to_le_bytes());
+    fmt.extend(8u16.to_le_bytes());
+    fmt.extend(32u16.to_le_bytes());
+    fmt.extend(if extensible { 22u16 } else { 0u16 }.to_le_bytes());
+    if extensible {
+        fmt.extend(32u16.to_le_bytes());
+        fmt.extend(3u32.to_le_bytes());
+        fmt.extend([3, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71]);
+    }
+    let data = frames.checked_mul(8).unwrap();
+    let mut bytes = b"RIFF".to_vec();
+    bytes.extend(0u32.to_le_bytes());
+    bytes.extend(b"WAVEfmt ");
+    bytes.extend(u32::try_from(fmt.len()).unwrap().to_le_bytes());
+    bytes.extend(fmt);
+    bytes.extend(b"fact");
+    bytes.extend(4u32.to_le_bytes());
+    bytes.extend(frames.to_le_bytes());
+    bytes.extend(b"data");
+    bytes.extend(data.to_le_bytes());
+    bytes.resize(bytes.len() + usize::try_from(data).unwrap(), 0);
+    let size = u32::try_from(bytes.len() - 8).unwrap();
+    bytes[4..8].copy_from_slice(&size.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn stability36_full_380_second_float32_wav_and_standard_extensible_float_remain_supported() {
+    let long = float_wav(380 * 44_100, false);
+    assert!(long.len() > 127 * MIB && long.len() < AUDIO_BYTES);
+    wav::validate(&long, Some(380)).unwrap();
+    assert!(wav::validate(&long, Some(30)).is_err(), "a short request cannot receive a long recording");
+    drop(long);
+    let short = float_wav(441, true);
+    let done = response::media(reply(200, short, "audio/wav"), Model::Audio, Some(1)).unwrap();
+    assert!(matches!(done.outputs.as_slice(), [Output::Bytes { mime, .. }] if mime == "audio/wav"));
+}
+
+#[test]
+fn stability36_wav_chunk_sizes_padding_extensions_and_sample_alignment_are_validated() {
+    let mut bad = Vec::new();
+    let mut extension = float_wav(441, true);
+    extension[36..38].copy_from_slice(&21u16.to_le_bytes());
+    bad.push(extension);
+    let mut guid = float_wav(441, true);
+    guid[48] = 99;
+    bad.push(guid);
+    let mut fact = float_wav(441, false);
+    fact[46..50].copy_from_slice(&u32::MAX.to_le_bytes());
+    bad.push(fact);
+    let mut misaligned = wav();
+    misaligned.pop();
+    misaligned.pop();
+    let size = u32::try_from(misaligned.len() - 8).unwrap();
+    let data = u32::try_from(misaligned.len() - 44).unwrap();
+    misaligned[4..8].copy_from_slice(&size.to_le_bytes());
+    misaligned[40..44].copy_from_slice(&data.to_le_bytes());
+    bad.push(misaligned);
+    let mut short_fmt = wav();
+    short_fmt[16..20].copy_from_slice(&14u32.to_le_bytes());
+    bad.push(short_fmt);
+    let mut trailing_chunk = wav();
+    trailing_chunk.extend(b"JUNK");
+    trailing_chunk.extend(100u32.to_le_bytes());
+    let size = u32::try_from(trailing_chunk.len() - 8).unwrap();
+    trailing_chunk[4..8].copy_from_slice(&size.to_le_bytes());
+    bad.push(trailing_chunk);
+    let mut missing_padding = wav();
+    missing_padding.extend(b"JUNK");
+    missing_padding.extend(1u32.to_le_bytes());
+    missing_padding.push(0);
+    let size = u32::try_from(missing_padding.len() - 8).unwrap();
+    missing_padding[4..8].copy_from_slice(&size.to_le_bytes());
+    bad.push(missing_padding);
+    let mut too_many_chunks = wav();
+    for _ in 0..4097 {
+        too_many_chunks.extend(b"JUNK\0\0\0\0");
+    }
+    let size = u32::try_from(too_many_chunks.len() - 8).unwrap();
+    too_many_chunks[4..8].copy_from_slice(&size.to_le_bytes());
+    bad.push(too_many_chunks);
+    for bytes in bad {
+        assert!(wav::validate(&bytes, Some(30)).is_err());
+    }
+}

@@ -94,22 +94,7 @@ pub(super) fn media(reply: HttpResponse, model: Model, duration: Option<u16>) ->
             if sniffed.mime != "audio/wav" {
                 return Err(malformed());
             }
-            let extent = reply
-                .body
-                .get(4..8)
-                .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-                .map(u32::from_le_bytes)
-                .and_then(|len| usize::try_from(len).ok())
-                .and_then(|len| len.checked_add(8));
-            let sound = nodecraft_media::probe_sound(&reply.body);
-            let limit = duration.map_or(385_000, |seconds| u64::from(seconds).saturating_mul(1000).saturating_add(5000));
-            if extent != Some(reply.body.len())
-                || !sound.duration_ms.is_some_and(|n| (1..=limit).contains(&n))
-                || sound.sample_rate != Some(44_100)
-                || sound.channels != Some(2)
-            {
-                return Err(malformed());
-            }
+            wav::validate(&reply.body, duration)?;
             "audio/wav"
         }
         Model::Mesh => {

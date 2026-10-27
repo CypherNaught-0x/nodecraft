@@ -1914,7 +1914,8 @@ Audio 3 sends an explicit 1–380-second duration, 4–8 steps, prompt guidance 
 requesting stereo 44.1 kHz WAV. Its 128 MiB result allowance covers long WAVs without the image
 adapter's smaller quota. A versioned handle persists the accepted generation id and duration.
 Polling resumes that id on the same authenticated API; pending responses must identify the same
-job, and WAV structure, type and duration are checked before history is written. Results are
+job, and WAV chunks, PCM/IEEE-float sample formats (including standard extensible headers),
+frame alignment, byte rate and actual data duration are checked before history is written. Results are
 available from Stability for 24 hours, according to its reference.
 
 No redirect or remote-supplied URL is followed. All three modes use normal cost consent and

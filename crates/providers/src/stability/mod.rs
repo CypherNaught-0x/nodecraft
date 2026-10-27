@@ -3,6 +3,7 @@ mod request;
 mod response;
 #[cfg(test)]
 mod tests;
+mod wav;
 
 use crate::secrets::Secret;
 use crate::{BoxFuture, Completed, ErrorKind, Http, HttpRequest, JobHandle, JobProgress, Provider, ProviderError, ProviderJob, Submission, SubmitContext};

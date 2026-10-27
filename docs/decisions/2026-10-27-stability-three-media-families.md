@@ -28,6 +28,7 @@ the shared retry policy to reconsider a create.
 
 Host quotas are explicit: a 4 MiB image input with 64–2048-pixel sides for 3D; output caps of
 16 MiB image, 128 MiB WAV and 64 MiB GLB. Audio uses WAV so its structure and duration can be
-checked before publication. Images and self-contained meshes pass the existing bounded decoders.
+checked before publication, including bounded RIFF chunks, PCM/IEEE-float sample formats,
+frame alignment and byte rates. Images and self-contained meshes pass the existing bounded decoders.
 All authenticated requests use no-redirect transport. The built-in browser transport cannot
 provide that guarantee, so host setup refuses this adapter there before key retrieval or billing.

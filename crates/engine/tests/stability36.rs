@@ -101,11 +101,14 @@ impl Http for Transport {
                     return Ok(HttpResponse { status: 202, headers: vec![], body: serde_json::to_vec(&json!({"id":ID,"status":"in-progress"})).unwrap() });
                 }
             }
-            let (mime, body) = match self.model {
+            let (mime, mut body) = match self.model {
                 CORE => ("image/png", png(4)),
                 AUDIO => ("audio/wav", wav()),
                 _ => ("model/gltf-binary", GLB.to_vec()),
             };
+            if self.failure == 5 && self.model == AUDIO {
+                body[20..22].copy_from_slice(&65535u16.to_le_bytes());
+            }
             Ok(HttpResponse { status: 200, headers: vec![("Content-Type".into(), mime.into())], body })
         })
     }
@@ -193,7 +196,7 @@ fn run(id: &str, duration: u64, failure: u8) {
         std::thread::sleep(Duration::from_millis(1));
     }
     let node = session.document().canvases().get(&C).unwrap().nodes().get(&CARD).unwrap();
-    if matches!(failure, 1 | 2) {
+    if matches!(failure, 1 | 2 | 5) {
         assert!(node.history.is_empty());
         assert!(notices.iter().any(|notice| matches!(notice, RunNotice::Failed { .. })), "{notices:?}");
     } else {
@@ -239,7 +242,7 @@ fn run(id: &str, duration: u64, failure: u8) {
     } else {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].cost.micros, price);
-        assert_eq!(entries[0].status, if failure == 1 { Charge::Unresolved } else { Charge::Actual });
+        assert_eq!(entries[0].status, if matches!(failure, 1 | 5) { Charge::Unresolved } else { Charge::Actual });
     }
     let requests = http.requests.lock().unwrap();
     assert_eq!(
@@ -278,4 +281,9 @@ fn stability36_actual_host_releases_definite_refusals_and_retries_only_unbilled_
 #[test]
 fn stability36_actual_host_audio_poll_failure_resumes_the_accepted_id_without_a_second_post() {
     run("stability.audio3", 30, 4);
+}
+
+#[test]
+fn stability36_actual_host_unplayable_wav_format_is_unresolved_without_recording_success_or_replaying() {
+    run("stability.audio3", 30, 5);
 }
