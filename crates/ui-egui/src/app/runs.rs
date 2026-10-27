@@ -537,7 +537,7 @@ impl Runs {
         let (adapters, inner) = adapters_of(session, canvas, settings);
         let mut reached: BTreeSet<NodeId> = match kind {
             RunKind::Generate => ids.iter().copied().collect(),
-            RunKind::Refresh => with_upstream(session, canvas, ids, stale),
+            RunKind::Refresh | RunKind::Changed | RunKind::Workflow => with_upstream(session, canvas, ids, stale),
         };
         // A technique node runs the nodes inlined for it.
         reached.extend(inner.iter().filter(|(_, owner)| reached.contains(owner)).map(|(id, _)| *id).collect::<Vec<_>>());
@@ -856,6 +856,27 @@ fn wall_clock_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
 fn wall_clock_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
     // `SystemTime::now` isn't there in the browser.
     Arc::new(|| browser::millis(js_sys::Date::now()))
+}
+
+/// The cards a run of the whole canvas starts from (#965), as the engine's `pending` mode picks
+/// them: generation, action and technique cards (and ones of a kind not installed) whose result
+/// is stale or missing; with `workflow`, every generation and technique card as well. Its
+/// providers are set up for these and what they need upstream.
+pub(super) fn whole_roots(session: &Session, canvas: CanvasId, workflow: bool, stale: &BTreeSet<NodeId>) -> Vec<NodeId> {
+    use nodecraft_nodes::Category;
+    let Some(canvas) = session.document().canvases().get(&canvas) else {
+        return Vec::new();
+    };
+    canvas
+        .nodes()
+        .values()
+        .filter(|node| {
+            let category = session.kinds().get(&node.kind).map(|kind| kind.descriptor().category);
+            let makes = node.kind == nodecraft_nodes::technique::ID || matches!(category, Ok(Category::Generation) | Err(_));
+            (makes || matches!(category, Ok(Category::Action))) && ((workflow && makes) || stale.contains(&node.id) || !has_result(node))
+        })
+        .map(|node| node.id)
+        .collect()
 }
 
 /// `ids` and every node upstream of them on `canvas` that a `with_upstream` run would run too.

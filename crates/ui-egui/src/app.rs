@@ -1491,6 +1491,25 @@ impl NodeCraftApp {
                     // Invalid drafts remain view state across unrelated undo/redo.
                 }
             }
+            // ⌘/Ctrl+Enter quotes a run of everything that changed or hasn't run (#965); nothing
+            // starts until the person confirms the price. A focused text field keeps its own
+            // ⌘/Ctrl+Enter (a prompt quotes its card, a multiline value commits), and so do a
+            // gesture in flight and an open menu.
+            let gesture = minimap_held || self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || self.reordering.is_some();
+            if !gesture && !bulk_blocks && !egui::Popup::is_any_open(ui.ctx()) {
+                let whole = ui.input_mut(|input| {
+                    self.session.registry().specs().filter(|spec| matches!(spec.id, "run.changed" | "run.workflow")).find_map(|spec| {
+                        spec.shortcut
+                            .into_iter()
+                            .chain(spec.alternate_shortcuts.iter().copied())
+                            .any(|shortcut| consume_shortcut(input, shortcut))
+                            .then_some(spec.id)
+                    })
+                });
+                if let Some(id) = whole {
+                    self.run_whole_command(id);
+                }
+            }
             // `H` hides prompt overlays on media cards (#321). It is a plan §2.1 canvas letter, so
             // it yields to exactly what the quick-add letters yield to — a focused text field, the
             // palette, the "Turn into" menu, an open popup, a panel that owns canvas input and a
