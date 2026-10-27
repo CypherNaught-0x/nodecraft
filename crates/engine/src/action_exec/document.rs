@@ -35,6 +35,7 @@ fn append(out: &mut String, s: &str) -> bool {
 
 impl LocalActions {
     fn document(&self, inputs: &[Value]) -> Result<Document, String> {
+        self.check_work()?;
         let bytes = self.media_bytes(inputs.first(), "PDF")?;
         Document::open(&bytes, &DocumentLimits::default()).map_err(|e| format!("the PDF can't be read: {e}"))
     }
@@ -53,14 +54,14 @@ impl LocalActions {
             other => return Err(format!("{other} isn't a choice of pages")),
         };
         let document = self.document(inputs)?;
-        let reader = document.reader();
+        let reader = document.reader().with_cancel_check(self.pdf_check());
         // Picking scans reads every page's text first and counts them before drawing any, so the drawing
         // cap applies to the pages drawn and a range with too many scans fails before it costs anything.
         let range = self.pages(params, &document, if scans_only { MAX_TEXT_PAGES } else { MAX_IMAGE_PAGES })?;
         let mut drawn = Vec::new();
         for index in range {
             if scans_only {
-                let text = reader.text(index).map_err(|e| format!("page {} can't be read: {e}", index.saturating_add(1)))?;
+                let text = reader.text(index).map_err(|e| self.control_error(format!("page {} can't be read: {e}", index.saturating_add(1))))?;
                 if !text.trim().is_empty() {
                     continue;
                 }
@@ -73,7 +74,8 @@ impl LocalActions {
         let mut images = Vec::with_capacity(drawn.len());
         for index in drawn {
             let number = index.saturating_add(1);
-            let page = reader.render(index, size, background).map_err(|e| format!("page {number} can't be drawn: {e}"))?;
+            self.charge_work(u64::from(size).saturating_mul(u64::from(size)))?;
+            let page = reader.render(index, size, background).map_err(|e| self.control_error(format!("page {number} can't be drawn: {e}")))?;
             let raster = Raster::new(page.width, page.height, page.rgba, ImageLimits::default()).map_err(|e| format!("page {number} can't be used: {e}"))?;
             // Staging fails once the run's pages outgrow what a project holds; say what to change.
             let staged = self.stage(&raster).map_err(|e| format!("page {number} can't be kept ({e}); narrow the page range or lower the size"))?;
@@ -90,10 +92,10 @@ impl LocalActions {
             other => return Err(format!("{other} isn't a way to separate pages")),
         };
         let document = self.document(inputs)?;
-        let reader = document.reader();
+        let reader = document.reader().with_cancel_check(self.pdf_check());
         let mut out = String::new();
         for index in self.pages(params, &document, MAX_TEXT_PAGES)? {
-            let text = reader.text(index).map_err(|e| format!("page {} can't be read: {e}", index.saturating_add(1)))?;
+            let text = reader.text(index).map_err(|e| self.control_error(format!("page {} can't be read: {e}", index.saturating_add(1))))?;
             let empty = text.trim().is_empty();
             // Without headings a page with no text (a scan, a blank page) adds nothing, not a gap.
             if !headings && empty {

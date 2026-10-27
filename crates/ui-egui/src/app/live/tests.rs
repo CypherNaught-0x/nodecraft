@@ -278,7 +278,7 @@ fn blurred(app: &NodeCraftApp) -> Option<nodecraft_types::Blake3> {
 
 /// The image the preview shows for the blur, and its width.
 fn previewed(app: &NodeCraftApp) -> Option<(nodecraft_types::Blake3, Option<u32>)> {
-    match app.live.preview(app.canvas, BLUR)?.0.outputs.first()? {
+    match app.live.preview(&app.session, app.canvas, BLUR)?.0.outputs.first()? {
         Value::Media(asset) => Some((asset.hash, asset.meta.width)),
         _ => None,
     }
@@ -499,4 +499,129 @@ fn update_card_brings_an_older_card_to_its_plugins_version() {
     assert_eq!(PluginLock::of(&node).unwrap().version, "1.1.0");
     assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Updated the card.") && n.contains("words")), "{:?}", h.state().notice);
     assert!(h.query_by_label("Update card").is_none(), "a current card offers no update");
+}
+
+#[test]
+fn a_superseded_live_round_is_cancelled_before_waiting_for_its_worker() {
+    let mut app = app();
+    let canvas = app.canvas;
+    let ctx = egui::Context::default();
+    let job = live_actions::pending(&app.session, canvas, &BTreeMap::new()).unwrap().unwrap();
+    let old = job.cancel_handle();
+    app.live_spawn(&ctx, job);
+    app.session.dispatch("node.param_set", &json!({"canvas": canvas, "id": REPLACE, "name": "replacement", "value": Value::Text("lake".into())})).unwrap();
+    app.live_recompute(&ctx);
+    assert!(old.is_cancelled(), "superseding an action must signal the old owner before waiting for its worker");
+}
+
+#[test]
+fn disconnecting_an_action_cancels_its_previous_live_round() {
+    let mut app = app();
+    let ctx = egui::Context::default();
+    let job = live_actions::pending(&app.session, app.canvas, &BTreeMap::new()).unwrap().unwrap();
+    let old = job.cancel_handle();
+    app.live_spawn(&ctx, job);
+    app.session.dispatch("edit.undo", &json!({})).unwrap(); // The last edit connected the action.
+    app.live_recompute(&ctx);
+    assert!(old.is_cancelled());
+    assert!(app.session.document().canvases().get(&app.canvas).unwrap().edges().is_empty());
+}
+
+#[test]
+fn an_equal_revision_replacement_project_cancels_the_old_owner() {
+    let mut app = app();
+    let project = app.session.document().clone();
+    app.session = nodecraft_engine::Session::new(project.clone()).unwrap();
+    let revision = app.session.revision();
+    let ctx = egui::Context::default();
+    let job = live_actions::pending(&app.session, app.canvas, &BTreeMap::new()).unwrap().unwrap();
+    let old = job.cancel_handle();
+    app.live_spawn(&ctx, job);
+    app.session = nodecraft_engine::Session::new(project.clone()).unwrap();
+    assert_eq!(app.session.revision(), revision);
+    app.live_recompute(&ctx);
+    assert!(old.is_cancelled(), "equal ids and revision do not authorize a previous session's output");
+    assert_eq!(app.session.document(), &project);
+}
+
+#[test]
+fn an_explicit_cancel_discards_an_already_queued_result() {
+    let mut app = app();
+    let project = app.session.document().clone();
+    let ctx = egui::Context::default();
+    let job = live_actions::pending(&app.session, app.canvas, &BTreeMap::new()).unwrap().unwrap();
+    let old = job.cancel_handle();
+    app.live_spawn(&ctx, job);
+    app.live.worker.take().unwrap().join().unwrap(); // The outcome is queued; don't poll it yet.
+    old.cancel();
+    app.live_recompute(&ctx);
+    assert_eq!(app.session.document(), &project, "a completed but cancelled owner cannot publish later");
+}
+
+const PDF_WORK_SOURCE: NodeId = NodeId::from_bytes([116; 16]);
+const PDF_WORK_TEXT: NodeId = NodeId::from_bytes([117; 16]);
+
+fn pdf_work_scene(builder: egui_kittest::HarnessBuilder<NodeCraftApp>, palette: crate::theme::ThemeKind) -> Harness<'static, NodeCraftApp> {
+    use nodecraft_graph::{Canvas, Change, Project};
+    use nodecraft_types::{AssetRef, CanvasId, EdgeId, ProjectId};
+    let canvas = CanvasId::from_bytes([119; 16]);
+    let mut project = Project::new(ProjectId::from_bytes([118; 16]), "Public PDF work limit").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+    let mut session = nodecraft_engine::Session::new(project).unwrap();
+    let content = "q Q ".repeat(512);
+    let bytes = nodecraft_media::pdf_fixture::pdf(&vec![content.as_str(); 2_000]);
+    let hash = session.import_asset(&bytes).unwrap();
+    let asset = Value::Media(AssetRef { hash, mime: "application/pdf".parse().unwrap(), meta: Default::default() });
+    session.dispatch("node.create", &json!({"canvas":canvas,"id":PDF_WORK_SOURCE,"kind":nodecraft_nodes::document::SOURCE,"pos":{"x":-380,"y":-180}})).unwrap();
+    session.dispatch("node.param_set", &json!({"canvas":canvas,"id":PDF_WORK_SOURCE,"name":"asset","value":asset})).unwrap();
+    session.dispatch("node.create", &json!({"canvas":canvas,"id":PDF_WORK_TEXT,"kind":nodecraft_nodes::document::TEXT,"pos":{"x":20,"y":-180}})).unwrap();
+    session.dispatch("edge.connect", &json!({"canvas":canvas,"edge":{"id":EdgeId::from_bytes([120;16]),"from":{"node":PDF_WORK_SOURCE,"port":"out"},"to":{"node":PDF_WORK_TEXT,"port":"document"},"order":0}})).unwrap();
+    let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+    app.theme = palette;
+    let mut h = builder.with_size(egui::Vec2::new(1400.0, 1000.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    crate::theme::apply(&h.ctx, palette);
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+    h.state_mut().view.zoom = 1.0;
+    settle(&mut h, |app| app.live.errors.values().any(|(_, reason)| reason.contains("work budget")));
+    h.run();
+    assert!(h.query_all_by_label_contains("Live action work budget reached").next().is_some());
+    h
+}
+
+fn narrow_pdf_work_range(h: &mut Harness<'static, NodeCraftApp>) {
+    let canvas = h.state().canvas;
+    h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Last page (0 = the end)").click();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("1".into()));
+    h.key_press(egui::Key::Enter);
+    settle(h, |app| app.session.document().canvases().get(&canvas).unwrap().nodes().get(&PDF_WORK_TEXT).unwrap().active.is_some());
+    h.run();
+    let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&PDF_WORK_TEXT).unwrap();
+    assert_eq!(node.params.get("last"), Some(&Value::Unsigned(nodecraft_types::Unsigned(1))), "the real field commits through node.param_set");
+    assert!(h.query_all_by_label("(empty)").next().is_some(), "the smaller range now shows its successful empty text result");
+}
+
+#[test]
+fn a_work_limit_is_visible_and_editing_the_page_range_recovers() {
+    let mut h = pdf_work_scene(Harness::builder(), crate::theme::ThemeKind::Dark);
+    narrow_pdf_work_range(&mut h);
+}
+
+#[test]
+#[ignore = "manual native GPU evidence; requires NODECRAFT_LIVE596_RENDER_ROOT"]
+fn render_live_work_limit_and_recovery() {
+    let root = std::path::PathBuf::from(std::env::var_os("NODECRAFT_LIVE596_RENDER_ROOT").unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    for palette in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let mut h = pdf_work_scene(Harness::builder().wgpu(), palette);
+        h.hover_at(egui::pos2(40.0, 140.0));
+        h.run();
+        h.render().unwrap().save(root.join(format!("{palette:?}-limited.png"))).unwrap();
+        narrow_pdf_work_range(&mut h);
+        h.hover_at(egui::pos2(40.0, 140.0));
+        h.run();
+        h.render().unwrap().save(root.join(format!("{palette:?}-recovered.png"))).unwrap();
+    }
 }

@@ -220,11 +220,28 @@ pub fn work(strokes: &Strokes, width: u32, height: u32) -> u64 {
 
 /// The mask of `strokes` over `source`, at its size.
 pub fn render(strokes: &Strokes, options: MaskOptions, source: &Raster, limits: ImageLimits) -> Result<Raster, ImageError> {
+    render_controlled(strokes, options, source, limits, &|_| false)
+}
+
+/// Admit the estimated pixel work before allocating, then poll with zero units between
+/// rows/chunks. A true response cancels without returning a partial mask.
+pub fn render_controlled(
+    strokes: &Strokes,
+    options: MaskOptions,
+    source: &Raster,
+    limits: ImageLimits,
+    check: &dyn Fn(u64) -> bool,
+) -> Result<Raster, ImageError> {
+    limits.validate()?;
     strokes.check()?;
     let (width, height) = (source.width(), source.height());
     let bytes = limits.image_bytes(width, height)?;
-    if work(strokes, width, height) > limits.work {
+    let units = work(strokes, width, height);
+    if units > limits.work {
         return Err(ImageError::WorkLimit);
+    }
+    if check(units) {
+        return Err(ImageError::Cancelled);
     }
     // The value plane, then the RGBA output, held together with the source.
     let pixels = usize::try_from(bytes / 4).map_err(|_| ImageError::Dimensions)?;
@@ -242,9 +259,15 @@ pub fn render(strokes: &Strokes, options: MaskOptions, source: &Raster, limits: 
     for segment in segments(strokes, width, height) {
         let (x0, x1, y0, y1) = segment.bounds(width, height);
         for y in y0..y1 {
+            if check(0) {
+                return Err(ImageError::Cancelled);
+            }
             let start = (y as usize).saturating_mul(row);
             let Some(line) = values.get_mut(start + x0 as usize..start + x1 as usize) else { continue };
             for (x, value) in (x0..x1).zip(line.iter_mut()) {
+                if x % 256 == 0 && check(0) {
+                    return Err(ImageError::Cancelled);
+                }
                 let s = segment.strength((f64::from(x) + 0.5, f64::from(y) + 0.5));
                 *value = if segment.erase { (*value).min(255 - s) } else { (*value).max(s) };
             }
@@ -252,9 +275,15 @@ pub fn render(strokes: &Strokes, options: MaskOptions, source: &Raster, limits: 
     }
     let mut out: Vec<u8> = Vec::new();
     out.try_reserve_exact(usize::try_from(bytes).map_err(|_| ImageError::Dimensions)?).map_err(|_| ImageError::Allocation)?;
-    for v in values {
+    for (index, v) in values.into_iter().enumerate() {
+        if index % 256 == 0 && check(0) {
+            return Err(ImageError::Cancelled);
+        }
         let v = if options.invert { 255 - v } else { v };
         out.extend_from_slice(&[v, v, v, 255 - v]);
+    }
+    if check(0) {
+        return Err(ImageError::Cancelled);
     }
     Raster::new(width, height, out, limits)
 }
@@ -288,8 +317,21 @@ impl Margins {
 
 /// `source` placed on a larger transparent canvas, `margins` from each edge.
 pub fn expand(source: &Raster, margins: Margins, limits: ImageLimits) -> Result<Raster, ImageError> {
+    expand_controlled(source, margins, limits, &|_| false)
+}
+
+/// The same owner work/cancellation protocol as [`render_controlled`].
+pub fn expand_controlled(source: &Raster, margins: Margins, limits: ImageLimits, check: &dyn Fn(u64) -> bool) -> Result<Raster, ImageError> {
+    limits.validate()?;
     let (w, h) = margins.size(source.width(), source.height(), limits)?;
     let bytes = limits.image_bytes(w, h)?;
+    let units = u64::from(w).saturating_mul(u64::from(h));
+    if units > limits.work {
+        return Err(ImageError::WorkLimit);
+    }
+    if check(units) {
+        return Err(ImageError::Cancelled);
+    }
     if (source.capacity() as u64).saturating_add(bytes) > limits.working_bytes {
         return Err(ImageError::ScratchLimit);
     }
@@ -299,10 +341,16 @@ pub fn expand(source: &Raster, margins: Margins, limits: ImageLimits) -> Result<
     out.resize(len, 0);
     let (row, source_row) = (w as usize * 4, source.width() as usize * 4);
     for (y, line) in source.pixels().chunks_exact(source_row.max(1)).enumerate() {
+        if check(0) {
+            return Err(ImageError::Cancelled);
+        }
         let start = (y + margins.top as usize) * row + margins.left as usize * 4;
         if let Some(target) = out.get_mut(start..start + source_row) {
             target.copy_from_slice(line);
         }
+    }
+    if check(0) {
+        return Err(ImageError::Cancelled);
     }
     Raster::new(w, h, out, limits)
 }

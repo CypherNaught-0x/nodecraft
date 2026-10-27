@@ -1742,7 +1742,7 @@ impl NodeCraftApp {
                 // Only cards on screen at a readable zoom ask for their image (#386).
                 let images = if self.view.zoom >= card::BODY_MIN_ZOOM {
                     // A slider dragging shows its preview's images, from the preview's own store (#88).
-                    let preview = self.live.preview(self.canvas, node.id);
+                    let preview = self.live.preview(&self.session, self.canvas, node.id);
                     let (rows, count) = match (node.params.get("asset"), preview) {
                         (_, Some((result, _))) => nodecraft_engine::split::result_rows(result),
                         // A PDF source shows its first page (#113).

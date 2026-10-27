@@ -10,6 +10,7 @@
 //! that follows replaces the preview.
 use super::NodeCraftApp;
 use nodecraft_engine::live_actions::{self, Draft, LiveJob, LiveOutcome, LivePreview};
+use nodecraft_engine::session::DocumentLineage;
 use nodecraft_types::{CanvasId, Error, NodeId};
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
@@ -20,13 +21,31 @@ use std::time::{Duration, Instant};
 #[cfg(not(target_arch = "wasm32"))]
 const CLOSE_WAIT: Duration = nodecraft_engine::action_exec::CAPTURE_CLOSE_WAIT;
 
+/// The exact owner and input snapshot whose worker may still publish an outcome.
+struct LiveScope {
+    owner: DocumentLineage,
+    canvas: CanvasId,
+    base: u64,
+    preview: bool,
+    draft: Option<Draft>,
+}
+impl LiveScope {
+    fn matches(&self, app: &NodeCraftApp, ctx: &egui::Context) -> bool {
+        app.session.is_current_document(&self.owner)
+            && self.canvas == app.canvas
+            && self.base == app.session.revision()
+            && (!self.preview || self.draft.as_ref().is_some_and(|draft| app.dragging(ctx).as_ref() == Some(draft)))
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Live {
     running: Option<Receiver<Result<LiveOutcome, Error>>>,
+    scope: Option<LiveScope>,
+    owner: Option<DocumentLineage>,
     /// The worker computing `running`, waited for when the app closes (#594).
     #[cfg(not(target_arch = "wasm32"))]
     worker: Option<std::thread::JoinHandle<()>>,
-    #[cfg(not(target_arch = "wasm32"))]
     cancel: Option<live_actions::LiveCancel>,
     /// The canvas and revision last looked at.
     checked: Option<(CanvasId, u64)>,
@@ -49,9 +68,23 @@ pub(super) struct Live {
 }
 
 impl Live {
+    pub(super) fn cancel(&self) {
+        if let Some(cancel) = &self.cancel {
+            cancel.cancel();
+        }
+    }
+
     /// The preview result shown for `node` on `canvas` instead of its own, while a slider drags
     /// (#88), with the store holding its images.
-    pub(super) fn preview(&self, canvas: CanvasId, node: NodeId) -> Option<(&nodecraft_graph::Generation, &nodecraft_format::AssetStore)> {
+    pub(super) fn preview(
+        &self,
+        session: &nodecraft_engine::Session,
+        canvas: CanvasId,
+        node: NodeId,
+    ) -> Option<(&nodecraft_graph::Generation, &nodecraft_format::AssetStore)> {
+        if self.owner.as_ref().is_none_or(|owner| !session.is_current_document(owner)) {
+            return None;
+        }
         let preview = self.preview.as_ref().filter(|preview| preview.canvas == canvas)?;
         Some((preview.results.get(&node)?, &preview.staged))
     }
@@ -97,6 +130,7 @@ impl NodeCraftApp {
     /// failed are retried, since their input hash doesn't cover the package that ran them.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn plugins_changed(&mut self) {
+        self.live.cancel();
         self.live.checked = None;
         self.live.settled = None;
         let document = self.session.document();
@@ -110,6 +144,22 @@ impl NodeCraftApp {
     /// Every frame: records a finished recompute, and starts the next one if the document
     /// changed. Repaints while work is running so its result shows as soon as it lands.
     pub(super) fn live_recompute(&mut self, ctx: &egui::Context) {
+        let owner = self.session.document_lineage();
+        if self.live.owner.as_ref().is_some_and(|old| !self.session.is_current_document(old)) {
+            self.live.cancel();
+            self.live.checked = None;
+            self.live.settled = None;
+            self.live.failed.clear();
+            self.live.errors.clear();
+            self.live.drop_preview();
+        }
+        self.live.owner = Some(owner);
+        let obsolete = self.live.scope.as_ref().is_some_and(|scope| !scope.matches(self, ctx))
+            || self.live.cancel.as_ref().is_some_and(live_actions::LiveCancel::is_cancelled);
+        if obsolete {
+            // Signal before polling: an empty channel must not leave superseded work running.
+            self.live.cancel();
+        }
         if let Some(receiver) = &self.live.running {
             match receiver.try_recv() {
                 Ok(Ok(outcome)) if outcome.is_preview() => {
@@ -117,28 +167,38 @@ impl NodeCraftApp {
                     // One made for a document since changed, or a drag since ended, is dropped:
                     // the round that follows shows the truth.
                     let dragging = self.dragging(ctx).is_some();
-                    if let Some(preview) = outcome.into_preview().filter(|p| dragging && p.base == self.session.revision()) {
+                    if let Some(preview) =
+                        outcome.into_preview().filter(|p| !obsolete && dragging && p.canvas == self.canvas && p.base == self.session.revision())
+                    {
                         self.live.preview = Some(preview);
                     }
                 }
                 Ok(Ok(outcome)) => {
                     self.live.running = None;
                     self.live.settled = None;
-                    if outcome.canvas == self.canvas && outcome.base == self.session.revision() {
-                        self.live_failures(&outcome.failed);
-                    }
-                    if let Err(error) = live_actions::apply(&mut self.session, outcome) {
-                        log::warn!("live result not recorded: {}", error.message);
+                    if !obsolete {
+                        if outcome.canvas == self.canvas && outcome.base == self.session.revision() {
+                            self.live_failures(&outcome.failed);
+                        }
+                        if let Err(error) = live_actions::apply(&mut self.session, outcome) {
+                            log::warn!("live result not recorded: {}", error.message);
+                        }
                     }
                 }
                 Ok(Err(error)) => {
                     self.live.running = None;
-                    log::warn!("live recompute failed: {}", error.message);
+                    if !obsolete && error.kind != nodecraft_types::ErrorKind::Conflict {
+                        log::warn!("live recompute failed: {}", error.message);
+                    }
                 }
                 // The worker asks for a repaint when it is done.
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => self.live.running = None,
             }
+        }
+        if self.live.running.is_none() {
+            self.live.scope = None;
+            self.live.cancel = None;
         }
         self.live_round(ctx);
         let dragging = self.dragging(ctx);
@@ -212,6 +272,16 @@ impl NodeCraftApp {
 
     /// Computes `job` on a worker thread (in this frame in the browser, which has none).
     fn live_spawn(&mut self, ctx: &egui::Context, job: LiveJob) {
+        let owner = self.session.document_lineage();
+        self.live.owner = Some(owner.clone());
+        self.live.scope = Some(LiveScope {
+            owner,
+            canvas: job.canvas,
+            base: job.base,
+            preview: job.is_preview(),
+            draft: if job.is_preview() { self.dragging(ctx) } else { None },
+        });
+        self.live.cancel = Some(job.cancel_handle());
         let (send, receive) = channel();
         // The browser has no worker threads: there the round runs in this frame. A drag's
         // previews are small; a full-size render holds the frame once, as a click's work would.
@@ -223,7 +293,6 @@ impl NodeCraftApp {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.live.cancel = Some(job.cancel_handle());
             let repaint = ctx.clone();
             let started = std::thread::Builder::new().name("nodecraft-live".into()).spawn(move || {
                 // Report a panic even if this finished worker's handle is replaced next frame.
@@ -239,7 +308,11 @@ impl NodeCraftApp {
                     self.live.running = Some(receive);
                     self.live.worker = Some(worker);
                 }
-                Err(_) => log::warn!("live recompute: no worker thread"),
+                Err(_) => {
+                    self.live.scope = None;
+                    self.live.cancel = None;
+                    log::warn!("live recompute: no worker thread");
+                }
             }
         }
     }
@@ -269,12 +342,6 @@ impl NodeCraftApp {
 /// for at most [`CLOSE_WAIT`]. (The browser has no worker threads.)
 #[cfg(not(target_arch = "wasm32"))]
 impl Live {
-    pub(super) fn cancel(&self) {
-        if let Some(cancel) = &self.cancel {
-            cancel.cancel();
-        }
-    }
-
     pub(super) fn stop(&mut self, deadline: Instant) {
         self.cancel();
         let Some(worker) = self.worker.take() else { return };

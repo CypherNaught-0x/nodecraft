@@ -15,11 +15,14 @@ impl LocalActions {
     /// The bytes of the media `value` names (a `noun`, for messages): one of the project's, or
     /// one an earlier action in this run made.
     pub(super) fn media_bytes(&self, value: Option<&Value>, noun: &str) -> Result<Vec<u8>, String> {
+        self.check_work()?;
         let Some(Value::Media(source)) = value else { return Err(format!("connect a {noun} first")) };
         if let Some(staged) = self.staged.lock().unwrap_or_else(PoisonError::into_inner).get(&source.hash) {
+            self.charge_work(u64::try_from(staged.len()).unwrap_or(u64::MAX))?;
             return Ok(staged.to_vec());
         }
         if let Some(resident) = self.assets.get(&source.hash) {
+            self.charge_work(u64::try_from(resident.len()).unwrap_or(u64::MAX))?;
             return Ok(resident.to_vec());
         }
         let input = self.assets.preview_read(source).map_err(|error| match error {
@@ -27,6 +30,7 @@ impl LocalActions {
             nodecraft_format::PreviewReadError::TooLarge => format!("the input {noun} is too large to read"),
             _ => format!("the input {noun} can't be read"),
         })?;
+        self.charge_work(input.byte_len())?;
         input.read_verified(&Default::default(), &Default::default()).map_err(|_| format!("the input {noun} can't be read"))
     }
 

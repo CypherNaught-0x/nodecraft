@@ -601,3 +601,80 @@ fn closing_a_round_before_its_worker_starts_cancels_only_that_round() {
     assert!(compute(cancelled).err().unwrap().message.contains("cancelled"));
     assert!(compute(other).is_ok());
 }
+
+#[test]
+fn repeated_pdf_page_work_is_bounded_and_waits_for_changed_inputs_before_retrying() {
+    let content = "q Q ".repeat(512);
+    let bytes = nodecraft_media::pdf_fixture::pdf(&vec![content.as_str(); 2_000]);
+    let mut project = Project::new(nodecraft_types::ProjectId::from_bytes([109; 16]), "Public PDF work limit").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(CANVAS, "Canvas") }.apply(&mut project).unwrap();
+    let mut session = Session::new(project).unwrap();
+    let hash = session.import_asset(&bytes).unwrap();
+    let asset = Value::Media(AssetRef { hash, mime: "application/pdf".parse().unwrap(), meta: Default::default() });
+    session.dispatch("node.create", &json!({"canvas": CANVAS, "id": SOURCE, "kind": nodecraft_nodes::document::SOURCE, "pos": {"x":0,"y":0}})).unwrap();
+    session.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": SOURCE, "name":"asset", "value":asset})).unwrap();
+    session.dispatch("node.create", &json!({"canvas": CANVAS, "id": BLUR, "kind": nodecraft_nodes::document::TEXT, "pos": {"x":400,"y":0}})).unwrap();
+    session.dispatch("edge.connect", &json!({"canvas": CANVAS,"edge":{"id":nodecraft_types::EdgeId::from_bytes([110;16]),"from":{"node":SOURCE,"port":"out"},"to":{"node":BLUR,"port":"document"},"order":0}})).unwrap();
+    let before = session.document().clone();
+    let job = pending(&session, CANVAS, &BTreeMap::new()).unwrap().unwrap();
+    let outcome = compute(job).unwrap();
+    assert!(outcome.results.is_empty());
+    assert_eq!(outcome.failed.len(), 1);
+    let (_, reason, hash) = outcome.failed.first().unwrap();
+    assert!(reason.contains("work budget") && reason.contains("PDF page range"), "{reason}");
+    let failed = BTreeMap::from([(BLUR, hash.unwrap())]);
+    assert!(!apply(&mut session, outcome).unwrap());
+    assert_eq!(session.document(), &before);
+    assert!(pending(&session, CANVAS, &failed).unwrap().is_none(), "the same expensive input is not retried automatically");
+    session.dispatch("node.param_set", &json!({"canvas":CANVAS,"id":BLUR,"name":"last","value":Value::Unsigned(nodecraft_types::Unsigned(1))})).unwrap();
+    let retry = compute(pending(&session, CANVAS, &failed).unwrap().unwrap()).unwrap();
+    assert!(retry.failed.is_empty());
+    assert!(apply(&mut session, retry).unwrap(), "a smaller range recovers normally");
+}
+
+#[test]
+fn late_cancellation_refuses_both_computed_and_cached_results() {
+    let mut session = session();
+    connect(&mut session);
+    let before = session.document().clone();
+    let job = pending(&session, CANVAS, &BTreeMap::new()).unwrap().unwrap();
+    let owner = job.cancel_handle();
+    let outcome = compute(job).unwrap();
+    assert!(!outcome.is_cancelled());
+    owner.cancel();
+    assert!(outcome.is_cancelled());
+    assert!(!apply(&mut session, outcome).unwrap());
+    assert_eq!(session.document(), &before);
+    assert!(settle(&mut session));
+    let original = sigma(&session);
+    let six = Value::Number(nodecraft_types::Number::new(6.0).unwrap());
+    let different = if original == six { Value::Number(nodecraft_types::Number::new(7.0).unwrap()) } else { six };
+    session.dispatch("node.param_set", &json!({"canvas":CANVAS,"id":BLUR,"name":"sigma","value":different})).unwrap();
+    assert!(settle(&mut session));
+    session.dispatch("node.param_set", &json!({"canvas":CANVAS,"id":BLUR,"name":"sigma","value":original})).unwrap();
+    let before = session.document().clone();
+    let cached = pending(&session, CANVAS, &BTreeMap::new()).unwrap().unwrap();
+    assert!(cached.plan.is_none(), "this half exercises the cache-only return path");
+    let owner = cached.cancel_handle();
+    let outcome = compute(cached).unwrap();
+    owner.cancel();
+    assert!(!apply(&mut session, outcome).unwrap());
+    assert_eq!(session.document(), &before);
+}
+
+#[test]
+fn an_equal_document_and_revision_do_not_authorize_another_sessions_outcome() {
+    let mut seed = session();
+    connect(&mut seed);
+    let document = seed.document().clone();
+    let mut original = Session::new(document.clone()).unwrap();
+    original.import_asset(&png(16, 12)).unwrap();
+    let job = pending(&original, CANVAS, &BTreeMap::new()).unwrap().unwrap();
+    let outcome = compute(job).unwrap();
+    assert!(outcome.failed.is_empty());
+    let mut replacement = Session::new(document.clone()).unwrap();
+    replacement.import_asset(&png(16, 12)).unwrap();
+    assert_eq!(replacement.revision(), original.revision());
+    assert!(!apply(&mut replacement, outcome).unwrap());
+    assert_eq!(replacement.document(), &document);
+}

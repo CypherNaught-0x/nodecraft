@@ -419,3 +419,17 @@ proptest::proptest! {
         }
     }
 }
+
+#[test]
+fn a_controlled_composite_admits_work_and_cancels_before_returning_pixels() {
+    let layers = Layers { layers: vec![layer("one", 0.0, 0.0, 100.0, 100.0, rect("#ff0000"))] };
+    let units = std::cell::Cell::new(0u64);
+    let checks = std::cell::Cell::new(0usize);
+    let result = composite_controlled(frame(100, 100, WHITE), &layers, &[], &Fonts::default(), 1.0, ImageLimits::default(), &|work| {
+        units.set(units.get().saturating_add(work));
+        checks.set(checks.get() + 1);
+        checks.get() >= 3
+    });
+    assert!(matches!(result, Err(ImageError::Cancelled)));
+    assert!(units.get() >= 100 * 100);
+}

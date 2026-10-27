@@ -283,7 +283,7 @@ pub(super) fn aspect(src: &Raster, a: Aspect, p: &Plan, exec: &mut CpuExecutor, 
         let mut data = super::raster::buffer(p.bytes as usize)?;
         exec.pixels(&mut data, p.width, |x, y| {
             resized(src, rect, x.into(), y.into(), p.width.into(), p.height.into(), Resampling::Bilinear).straight().bytes()
-        });
+        })?;
         let scaled = Raster::output(p.width, p.height, data, l)?;
         let reduced = ImageLimits { working_bytes: l.working_bytes.checked_sub(src.capacity() as u64).ok_or(E::ScratchLimit)?, ..l };
         background = Some(super::blur::apply(&scaled, &Blur::Gaussian { sigma }, exec, reduced)?);
@@ -310,7 +310,7 @@ pub(super) fn aspect(src: &Raster, a: Aspect, p: &Plan, exec: &mut CpuExecutor, 
         }
         .straight()
         .bytes()
-    });
+    })?;
     Raster::output(p.width, p.height, data, l)
 }
 

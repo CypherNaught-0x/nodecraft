@@ -35,17 +35,21 @@ pub struct LocalActions {
     preview_edge: Option<u32>,
     /// Closing the owning live round or run stops later GPU views and queued captures.
     capture_cancel: Arc<AtomicBool>,
+    work: Option<Arc<control::Work>>,
 }
 
 impl LocalActions {
     /// Actions reading `assets` (a cheap clone of the session's store: buffers are shared).
     pub fn new(assets: AssetStore) -> Self {
-        Self { assets, staged: Mutex::new(AssetStore::default()), videos: Mutex::default(), video: None, preview_edge: None, capture_cancel: Arc::default() }
-    }
-
-    pub(crate) fn with_capture_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
-        self.capture_cancel = cancel;
-        self
+        Self {
+            assets,
+            staged: Mutex::new(AssetStore::default()),
+            videos: Mutex::default(),
+            video: None,
+            preview_edge: None,
+            capture_cancel: Arc::default(),
+            work: None,
+        }
     }
 
     /// Stops this owner's queued 3D captures and its current capture between views.
@@ -242,8 +246,18 @@ impl LocalActions {
     /// The image `value` names, decoded within the actions' limits: one of the project's, or one
     /// an earlier action in this run made (chains).
     fn raster(&self, value: Option<&Value>) -> Result<Raster, String> {
+        self.check_work()?;
         let Some(Value::Media(source)) = value else { return Err("connect an image first".into()) };
-        let staged = self.staged.lock().unwrap_or_else(PoisonError::into_inner).get(&source.hash).map(<[u8]>::to_vec);
+        let staged = self
+            .staged
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&source.hash)
+            .map(|bytes| {
+                self.charge_work(u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
+                Ok::<_, String>(bytes.to_vec())
+            })
+            .transpose()?;
         // This executes on the action worker. The same bounded image capability as card
         // previews pins native sources and authenticates encoded bytes before decoding.
         let native = if staged.is_none() && self.assets.get(&source.hash).is_none() {
@@ -251,11 +265,15 @@ impl LocalActions {
                 nodecraft_format::PreviewReadError::Missing => "the input image isn't in this project",
                 _ => "the input image can't be read",
             })?;
+            self.charge_work(input.byte_len())?;
             Some(input.read_verified(&Default::default(), &Default::default()).map_err(|_| "the input image can't be read")?)
         } else {
             None
         };
         let bytes = staged.as_deref().or(native.as_deref()).or_else(|| self.assets.get(&source.hash)).ok_or("the input image isn't in this project")?;
+        if staged.is_none() && native.is_none() {
+            self.charge_work(u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
+        }
         let actions = ImageLimits::default();
         let limits = decode_limits();
         let meta = nodecraft_media::probe_image(bytes, &limits).map_err(|e| format!("the input image can't be read: {e}"))?;
@@ -273,11 +291,13 @@ impl LocalActions {
 
     /// Encodes `out` as PNG into staging; its reference.
     fn stage(&self, out: &Raster) -> Result<Value, String> {
+        self.charge_work(u64::from(out.width()).saturating_mul(u64::from(out.height())))?;
         let png =
             nodecraft_media::encode_png(out.width(), out.height(), out.pixels(), &decode_limits()).map_err(|e| format!("the result can't be encoded: {e}"))?;
         if png.len() > nodecraft_format::MAX_ASSET_BYTES {
             return Err(format!("the result is larger than {} MiB; make it smaller first (Resize)", nodecraft_format::MAX_ASSET_BYTES / (1024 * 1024)));
         }
+        self.check_work()?;
         let hash = self.staged.lock().unwrap_or_else(PoisonError::into_inner).insert(&png).map_err(|e| e.message)?;
         let mime = "image/png".parse().map_err(|_| "image/png isn't a media type".to_owned())?;
         Ok(Value::Media(AssetRef { hash, mime, meta: MediaMeta { width: Some(out.width()), height: Some(out.height()), ..MediaMeta::default() } }))
@@ -287,9 +307,9 @@ impl LocalActions {
         let request = image_request(action, params)?;
         let source = self.raster(inputs.first())?;
         let overlay = if action == "image.overlay" { Some(self.raster(inputs.get(1))?) } else { None };
-        let result = request
-            .execute(nodecraft_actions::image::ImageInputs { source: &source, overlay: overlay.as_ref() }, &mut CpuExecutor::serial(), ImageLimits::default())
-            .map_err(|e| format!("{action} failed: {e}"))?;
+        let inputs = nodecraft_actions::image::ImageInputs { source: &source, overlay: overlay.as_ref() };
+        let mut executor = CpuExecutor::serial().with_work_check(self.work_check());
+        let result = request.execute(inputs, &mut executor, ImageLimits::default()).map_err(|e| self.control_error(format!("{action} failed: {e}")))?;
         match result {
             ImageResult::Image(out) => self.stage(&out),
             // Duplicate's copies are the same image: encode once, refer to it as often as asked.
@@ -324,14 +344,14 @@ impl LocalActions {
         let out = if action == "image.expand" {
             let side = |name| whole(params, name).and_then(|v| u32::try_from(v).map_err(|_| format!("the {name} margin is too large")));
             let margins = Margins { left: side("left")?, top: side("top")?, right: side("right")?, bottom: side("bottom")? };
-            mask::expand(&source, margins, ImageLimits::default())
+            mask::expand_controlled(&source, margins, ImageLimits::default(), self.work_check().as_ref())
         } else {
             let Some(Value::Text(json)) = params.get(nodecraft_nodes::mask::SPEC_PARAM) else { return Err("the mask is missing".into()) };
             let strokes = Strokes::parse(json).map_err(|e| format!("the mask can't be read: {e}"))?;
             let options = MaskOptions { transparent: flag(params, "transparent")?, invert: flag(params, "invert")? };
-            mask::render(&strokes, options, &source, ImageLimits::default())
+            mask::render_controlled(&strokes, options, &source, ImageLimits::default(), self.work_check().as_ref())
         }
-        .map_err(|e| format!("{action} failed: {e}"))?;
+        .map_err(|e| self.control_error(format!("{action} failed: {e}")))?;
         self.stage(&out)
     }
 }
@@ -339,6 +359,7 @@ impl LocalActions {
 mod capture_state;
 #[cfg(not(target_arch = "wasm32"))]
 pub use capture_state::{CLOSE_WAIT as CAPTURE_CLOSE_WAIT, Shutdown as CaptureShutdown, shutdown as shutdown_captures};
+pub(crate) mod control;
 mod document;
 pub(crate) mod layers;
 mod mesh;
@@ -409,6 +430,10 @@ impl ActionExecutor for LocalActions {
     }
 
     fn execute_cancellable(&self, action: &str, params: &ParamValues, inputs: &[Value], cancelled: &dyn Fn() -> bool) -> Result<Value, String> {
+        self.check_work()?;
+        if cancelled() {
+            return Err(self.control_error("action was cancelled".into()));
+        }
         if action == nodecraft_nodes::mesh::TURNTABLE {
             return self.turntable(params, inputs, &|| cancelled() || self.capture_cancel.load(Ordering::Acquire));
         }
@@ -434,6 +459,7 @@ impl ActionExecutor for LocalActions {
     }
 
     fn execute(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
+        self.check_work()?;
         if action == nodecraft_nodes::timeline::ID {
             return self.timeline(params, inputs, &|| false);
         }

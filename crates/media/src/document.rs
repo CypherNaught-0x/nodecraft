@@ -9,7 +9,8 @@
 use crate::MediaError;
 use craft_pdf::interpret::hayro_cmap::BfString;
 use craft_pdf::interpret::{
-    BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask, TransformExt, font::Glyph,
+    BlendMode, CancellationCheck, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode, SoftMask,
+    TransformExt, font::Glyph,
 };
 use craft_pdf::raster::{self, RenderCache};
 use craft_pdf::syntax::{DecryptionError, LoadPdfError, Pdf};
@@ -157,7 +158,7 @@ impl Document {
     /// A reader for several pages: fonts, images and objects the pages share are decoded once
     /// for all of them rather than once a page.
     pub fn reader(&self) -> Reader<'_> {
-        Reader { document: self, render: RenderCache::new(), text: InterpreterCache::new() }
+        Reader { document: self, render: RenderCache::new(), text: InterpreterCache::new(), cancellation: None }
     }
 }
 
@@ -166,12 +167,32 @@ pub struct Reader<'d> {
     document: &'d Document,
     render: RenderCache<'d>,
     text: InterpreterCache<'d>,
+    cancellation: Option<CancellationCheck>,
 }
 
 impl Reader<'_> {
+    /// A synchronous cancellation or work-budget check, shared across pages. Returning true
+    /// discards incomplete output. The callback must return quickly; no worker or clock is
+    /// required, so this also bounds interpretation on single-threaded WebAssembly.
+    pub fn with_cancel_check(mut self, check: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.cancellation = Some(CancellationCheck::new(move || check()));
+        self
+    }
+
+    fn check_cancelled(&self) -> Result<(), MediaError> {
+        let Some(check) = &self.cancellation else { return Ok(()) };
+        #[cfg(not(target_arch = "wasm32"))]
+        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check.is_cancelled()))
+            .map_err(|_| MediaError::Decode("the PDF cancellation check failed".into()))?;
+        #[cfg(target_arch = "wasm32")]
+        let stopped = check.is_cancelled();
+        if stopped { Err(MediaError::Decode("reading the PDF was cancelled".into())) } else { Ok(()) }
+    }
+
     /// Page `index` (from 0) drawn so its longer side is `edge` pixels (at most the limit's
     /// `max_side`), over `background` (straight sRGB RGBA).
     pub fn render(&self, index: u32, edge: u32, background: [u8; 4]) -> Result<PageImage, MediaError> {
+        self.check_cancelled()?;
         let page = self.document.page(index)?;
         let (width, height) = page.render_dimensions();
         let longest = width.max(height);
@@ -183,7 +204,9 @@ impl Reader<'_> {
         // The longer side is exactly `edge`; flooring the scaled size could leave it a pixel short.
         let side = |s: f32| if s >= longest { edge } else { ((s * scale).round() as u32).clamp(1, edge) };
         let options = raster::Options { scale: [scale, scale], size: Some([side(width), side(height)]), background, ..Default::default() };
-        let drawn = raster::render(page, &self.render, &InterpreterSettings::default(), &options).map_err(raster_error)?;
+        let settings = InterpreterSettings { cancellation_check: self.cancellation.clone(), ..Default::default() };
+        let drawn = raster::render(page, &self.render, &settings, &options).map_err(raster_error)?;
+        self.check_cancelled()?;
         let (width, height) = (drawn.width, drawn.height);
         let mut rgba = drawn.bytes().to_vec();
         // The renderer premultiplies; an opaque background leaves nothing to undo.
@@ -211,11 +234,12 @@ impl Reader<'_> {
         if region.is_some_and(|r| r.iter().any(|v| !v.is_finite())) {
             return Err(MediaError::InvalidParameter("region"));
         }
+        self.check_cancelled()?;
         let page = self.document.page(index)?;
         let (width, height) = page.render_dimensions();
         let bbox = Rect::new(0.0, 0.0, f64::from(width.max(1.0)), f64::from(height.max(1.0)));
         let full = Arc::new(AtomicBool::new(false));
-        let settings = InterpreterSettings { cancelled: Some(full.clone()), ..InterpreterSettings::default() };
+        let settings = InterpreterSettings { cancelled: Some(full.clone()), cancellation_check: self.cancellation.clone(), ..Default::default() };
         let mut context = Context::new(page.initial_transform(true).to_kurbo(), bbox, &self.text, page.xref(), settings);
         let mut device = TextDevice::new(self.document.limits.max_page_text_bytes, full);
         device.region = region.map(|[left, top, right, bottom]| {
@@ -223,6 +247,7 @@ impl Reader<'_> {
             Rect::new(left.clamp(0.0, 1.0) * w, top.clamp(0.0, 1.0) * h, right.clamp(0.0, 1.0) * w, bottom.clamp(0.0, 1.0) * h).abs()
         });
         craft_pdf::interpret_page(page, &mut context, &mut device).map_err(|_| MediaError::Decode("the PDF reader failed on this page".into()))?;
+        self.check_cancelled()?;
         Ok(device.finish())
     }
 }

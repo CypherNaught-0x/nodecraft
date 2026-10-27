@@ -496,6 +496,20 @@ impl Frame {
 /// whose image is missing is an error, since resolving drops unbound ones.
 /// Text draws with its font from `fonts`, or Lato.
 pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], fonts: &Fonts<'_>, scale: f64, limits: ImageLimits) -> Result<Raster, ImageError> {
+    composite_controlled(frame, layers, images, fonts, scale, limits, &|_| false)
+}
+
+/// Admit the reference work before allocating the scene, then poll with zero units between
+/// image/layer/graphics passes. A stopped composite never returns partial pixels.
+pub fn composite_controlled(
+    frame: Frame,
+    layers: &Layers,
+    images: &[Option<Raster>],
+    fonts: &Fonts<'_>,
+    scale: f64,
+    limits: ImageLimits,
+    check: &dyn Fn(u64) -> bool,
+) -> Result<Raster, ImageError> {
     limits.validate()?;
     layers.check()?;
     let (w, h) = frame.output_size(scale, limits)?;
@@ -534,10 +548,16 @@ pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], fonts
     if work > limits.work {
         return Err(ImageError::WorkLimit);
     }
+    if check(work) {
+        return Err(ImageError::Cancelled);
+    }
 
     let mut pixmaps = Vec::new();
     pixmaps.try_reserve_exact(images.len()).map_err(|_| ImageError::Allocation)?;
     for (image, used) in images.iter().zip(&used) {
+        if check(0) {
+            return Err(ImageError::Cancelled);
+        }
         pixmaps.push(match image {
             Some(image) if *used => Some(std::sync::Arc::new(premultiplied(image)?)),
             _ => None,
@@ -553,6 +573,9 @@ pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], fonts
         ctx.fill_rect(&Rect::new(0.0, 0.0, f64::from(w), f64::from(h)));
     }
     for layer in visible {
+        if check(0) {
+            return Err(ImageError::Cancelled);
+        }
         let at = view * layer.transform();
         match &layer.content {
             Content::Image { input, fit } => {
@@ -575,9 +598,15 @@ pub fn composite(frame: Frame, layers: &Layers, images: &[Option<Raster>], fonts
             Content::Source { .. } => return Err(bad("unresolved source layer")),
         }
     }
+    if check(0) {
+        return Err(ImageError::Cancelled);
+    }
     ctx.flush();
     let mut target = Pixmap::new(w, h);
     ctx.render(&mut target, &mut Resources::new());
+    if check(0) {
+        return Err(ImageError::Cancelled);
+    }
     let mut pixels = crate::image::buffer(out_bytes as usize)?;
     for (out, px) in pixels.as_chunks_mut::<4>().0.iter_mut().zip(target.take_unpremultiplied()) {
         out.copy_from_slice(&[px.r, px.g, px.b, px.a]);
