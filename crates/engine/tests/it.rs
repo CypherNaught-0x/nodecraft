@@ -146,6 +146,8 @@ mod shader_write90;
 mod share;
 #[path = "soul_training680.rs"]
 mod soul_training680;
+#[path = "space_preflight367.rs"]
+mod space_preflight367;
 #[path = "split_ownership342.rs"]
 mod split_ownership342;
 #[path = "stability36.rs"]
