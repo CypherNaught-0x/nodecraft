@@ -1,0 +1,4416 @@
+{
+  "BasicGuider": {
+    "input_order": {
+      "required": [
+        "model",
+        "conditioning"
+      ]
+    },
+    "output": [
+      "GUIDER"
+    ],
+    "output_name": [
+      "GUIDER"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "conditioning": [
+          "CONDITIONING",
+          {}
+        ]
+      }
+    }
+  },
+  "BasicScheduler": {
+    "input_order": {
+      "required": [
+        "model",
+        "scheduler",
+        "steps",
+        "denoise"
+      ]
+    },
+    "output": [
+      "SIGMAS"
+    ],
+    "output_name": [
+      "SIGMAS"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "scheduler": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "simple",
+              "sgm_uniform",
+              "karras",
+              "exponential",
+              "ddim_uniform",
+              "beta",
+              "normal",
+              "linear_quadratic",
+              "kl_optimal"
+            ]
+          }
+        ],
+        "steps": [
+          "INT",
+          {
+            "default": 20,
+            "min": 1,
+            "max": 10000
+          }
+        ],
+        "denoise": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ]
+      }
+    }
+  },
+  "BatchImagesNode": {
+    "input_order": {
+      "required": [
+        "images"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "images": [
+          "COMFY_AUTOGROW_V3",
+          {
+            "template": {
+              "min": 1,
+              "max": 50,
+              "input": {
+                "required": {
+                  "image": [
+                    "IMAGE",
+                    {}
+                  ]
+                }
+              },
+              "prefix": "image"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "BlockSparseAttention": {
+    "input_order": {
+      "required": [
+        "model",
+        "selection",
+        "start_percent",
+        "end_percent",
+        "dense_blocks",
+        "min_tokens",
+        "extra_tokens",
+        "sink_conditioning",
+        "verbose"
+      ]
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_name": [
+      "model"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "selection": [
+          "COMFY_DYNAMICCOMBO_V3",
+          {
+            "options": [
+              {
+                "key": "sol-attn",
+                "inputs": {
+                  "required": {
+                    "tau": [
+                      "FLOAT",
+                      {
+                        "default": 1.3,
+                        "min": 0.0,
+                        "max": 4.0,
+                        "step": 0.05
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "sla",
+                "inputs": {
+                  "required": {
+                    "keep_percent": [
+                      "FLOAT",
+                      {
+                        "default": 10.0,
+                        "min": 0.5,
+                        "max": 95.0,
+                        "step": 0.5
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "vsa",
+                "inputs": {
+                  "required": {
+                    "keep_percent": [
+                      "FLOAT",
+                      {
+                        "default": 10.0,
+                        "min": 0.5,
+                        "max": 95.0,
+                        "step": 0.5
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "start_percent": [
+          "FLOAT",
+          {
+            "default": 0.2,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ],
+        "end_percent": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ],
+        "dense_blocks": [
+          "STRING",
+          {
+            "multiline": false
+          }
+        ],
+        "min_tokens": [
+          "INT",
+          {
+            "default": 12288,
+            "min": 0,
+            "max": 1048576,
+            "step": 512
+          }
+        ],
+        "extra_tokens": [
+          "INT",
+          {
+            "default": 256,
+            "min": 0,
+            "max": 256,
+            "step": 64
+          }
+        ],
+        "sink_conditioning": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "exact_kv",
+              "exact_kv_and_rows",
+              "off"
+            ]
+          }
+        ],
+        "verbose": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ]
+      }
+    }
+  },
+  "ByteDance2ReferenceNodeV2": {
+    "input_order": {
+      "required": [
+        "model",
+        "seed",
+        "watermark"
+      ]
+    },
+    "output": [
+      "VIDEO",
+      "STRING"
+    ],
+    "output_name": [
+      "VIDEO",
+      "draft_task_id"
+    ],
+    "output_is_list": [
+      false,
+      false
+    ],
+    "output_node": false,
+    "api_node": true,
+    "input": {
+      "required": {
+        "model": [
+          "COMFY_DYNAMICCOMBO_V3",
+          {
+            "options": [
+              {
+                "key": "Seedance 2.5",
+                "inputs": {
+                  "required": {
+                    "prompt": [
+                      "STRING",
+                      {
+                        "multiline": true
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "480p",
+                          "720p",
+                          "1080p"
+                        ]
+                      }
+                    ],
+                    "ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "16:9",
+                          "4:3",
+                          "1:1",
+                          "3:4",
+                          "9:16",
+                          "21:9",
+                          "adaptive"
+                        ]
+                      }
+                    ],
+                    "duration": [
+                      "INT",
+                      {
+                        "default": 5,
+                        "min": 4,
+                        "max": 30,
+                        "step": 1,
+                        "display": "slider"
+                      }
+                    ],
+                    "generate_audio": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ],
+                    "task_type": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "auto",
+                          "reference",
+                          "edit",
+                          "extend"
+                        ]
+                      }
+                    ],
+                    "output_format": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "mp4"
+                        ]
+                      }
+                    ],
+                    "reference_images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9",
+                            "image_10",
+                            "image_11",
+                            "image_12",
+                            "image_13",
+                            "image_14",
+                            "image_15",
+                            "image_16",
+                            "image_17",
+                            "image_18",
+                            "image_19",
+                            "image_20",
+                            "image_21",
+                            "image_22",
+                            "image_23",
+                            "image_24",
+                            "image_25",
+                            "image_26",
+                            "image_27",
+                            "image_28",
+                            "image_29",
+                            "image_30"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_videos": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "video_1",
+                            "video_2",
+                            "video_3",
+                            "video_4",
+                            "video_5",
+                            "video_6",
+                            "video_7",
+                            "video_8",
+                            "video_9",
+                            "video_10"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_video": [
+                                "VIDEO",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_audios": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "audio_1",
+                            "audio_2",
+                            "audio_3",
+                            "audio_4",
+                            "audio_5",
+                            "audio_6",
+                            "audio_7",
+                            "audio_8",
+                            "audio_9",
+                            "audio_10"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_audio": [
+                                "AUDIO",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_assets": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "asset_1",
+                            "asset_2",
+                            "asset_3",
+                            "asset_4",
+                            "asset_5",
+                            "asset_6",
+                            "asset_7",
+                            "asset_8",
+                            "asset_9",
+                            "asset_10",
+                            "asset_11",
+                            "asset_12",
+                            "asset_13",
+                            "asset_14",
+                            "asset_15",
+                            "asset_16",
+                            "asset_17",
+                            "asset_18",
+                            "asset_19",
+                            "asset_20",
+                            "asset_21",
+                            "asset_22",
+                            "asset_23",
+                            "asset_24",
+                            "asset_25",
+                            "asset_26",
+                            "asset_27",
+                            "asset_28",
+                            "asset_29",
+                            "asset_30"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_asset": [
+                                "STRING",
+                                {
+                                  "forceInput": true,
+                                  "multiline": false
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "optional": {
+                    "auto_downscale": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ],
+                    "auto_upscale": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "Seedance 2.5 Draft",
+                "inputs": {
+                  "required": {
+                    "prompt": [
+                      "STRING",
+                      {
+                        "multiline": true
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "480p"
+                        ]
+                      }
+                    ],
+                    "ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "16:9",
+                          "4:3",
+                          "1:1",
+                          "3:4",
+                          "9:16",
+                          "21:9",
+                          "adaptive"
+                        ]
+                      }
+                    ],
+                    "duration": [
+                      "INT",
+                      {
+                        "default": 5,
+                        "min": 4,
+                        "max": 30,
+                        "step": 1,
+                        "display": "slider"
+                      }
+                    ],
+                    "generate_audio": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ],
+                    "task_type": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "auto",
+                          "reference",
+                          "edit",
+                          "extend"
+                        ]
+                      }
+                    ],
+                    "output_format": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "mp4"
+                        ]
+                      }
+                    ],
+                    "reference_images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9",
+                            "image_10",
+                            "image_11",
+                            "image_12",
+                            "image_13",
+                            "image_14",
+                            "image_15",
+                            "image_16",
+                            "image_17",
+                            "image_18",
+                            "image_19",
+                            "image_20",
+                            "image_21",
+                            "image_22",
+                            "image_23",
+                            "image_24",
+                            "image_25",
+                            "image_26",
+                            "image_27",
+                            "image_28",
+                            "image_29",
+                            "image_30"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_videos": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "video_1",
+                            "video_2",
+                            "video_3",
+                            "video_4",
+                            "video_5",
+                            "video_6",
+                            "video_7",
+                            "video_8",
+                            "video_9",
+                            "video_10"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_video": [
+                                "VIDEO",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_audios": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "audio_1",
+                            "audio_2",
+                            "audio_3",
+                            "audio_4",
+                            "audio_5",
+                            "audio_6",
+                            "audio_7",
+                            "audio_8",
+                            "audio_9",
+                            "audio_10"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_audio": [
+                                "AUDIO",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_assets": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "asset_1",
+                            "asset_2",
+                            "asset_3",
+                            "asset_4",
+                            "asset_5",
+                            "asset_6",
+                            "asset_7",
+                            "asset_8",
+                            "asset_9",
+                            "asset_10",
+                            "asset_11",
+                            "asset_12",
+                            "asset_13",
+                            "asset_14",
+                            "asset_15",
+                            "asset_16",
+                            "asset_17",
+                            "asset_18",
+                            "asset_19",
+                            "asset_20",
+                            "asset_21",
+                            "asset_22",
+                            "asset_23",
+                            "asset_24",
+                            "asset_25",
+                            "asset_26",
+                            "asset_27",
+                            "asset_28",
+                            "asset_29",
+                            "asset_30"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_asset": [
+                                "STRING",
+                                {
+                                  "forceInput": true,
+                                  "multiline": false
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "optional": {
+                    "auto_downscale": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ],
+                    "auto_upscale": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "Seedance 2.0",
+                "inputs": {
+                  "required": {
+                    "prompt": [
+                      "STRING",
+                      {
+                        "multiline": true
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "480p",
+                          "720p",
+                          "1080p",
+                          "4k"
+                        ]
+                      }
+                    ],
+                    "ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "16:9",
+                          "4:3",
+                          "1:1",
+                          "3:4",
+                          "9:16",
+                          "21:9",
+                          "adaptive"
+                        ]
+                      }
+                    ],
+                    "duration": [
+                      "INT",
+                      {
+                        "default": 7,
+                        "min": 4,
+                        "max": 15,
+                        "step": 1,
+                        "display": "slider"
+                      }
+                    ],
+                    "generate_audio": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ],
+                    "reference_images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_videos": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "video_1",
+                            "video_2",
+                            "video_3"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_video": [
+                                "VIDEO",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_audios": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "audio_1",
+                            "audio_2",
+                            "audio_3"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_audio": [
+                                "AUDIO",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_assets": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "asset_1",
+                            "asset_2",
+                            "asset_3",
+                            "asset_4",
+                            "asset_5",
+                            "asset_6",
+                            "asset_7",
+                            "asset_8",
+                            "asset_9"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_asset": [
+                                "STRING",
+                                {
+                                  "forceInput": true,
+                                  "multiline": false
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "optional": {
+                    "auto_downscale": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ],
+                    "auto_upscale": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "Seedance 2.0 Fast",
+                "inputs": {
+                  "required": {
+                    "prompt": [
+                      "STRING",
+                      {
+                        "multiline": true
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "480p",
+                          "720p"
+                        ]
+                      }
+                    ],
+                    "ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "16:9",
+                          "4:3",
+                          "1:1",
+                          "3:4",
+                          "9:16",
+                          "21:9",
+                          "adaptive"
+                        ]
+                      }
+                    ],
+                    "duration": [
+                      "INT",
+                      {
+                        "default": 7,
+                        "min": 4,
+                        "max": 15,
+                        "step": 1,
+                        "display": "slider"
+                      }
+                    ],
+                    "generate_audio": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ],
+                    "reference_images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_videos": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "video_1",
+                            "video_2",
+                            "video_3"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_video": [
+                                "VIDEO",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_audios": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "audio_1",
+                            "audio_2",
+                            "audio_3"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_audio": [
+                                "AUDIO",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_assets": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "asset_1",
+                            "asset_2",
+                            "asset_3",
+                            "asset_4",
+                            "asset_5",
+                            "asset_6",
+                            "asset_7",
+                            "asset_8",
+                            "asset_9"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_asset": [
+                                "STRING",
+                                {
+                                  "forceInput": true,
+                                  "multiline": false
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "optional": {
+                    "auto_downscale": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ],
+                    "auto_upscale": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "Seedance 2.0 Mini",
+                "inputs": {
+                  "required": {
+                    "prompt": [
+                      "STRING",
+                      {
+                        "multiline": true
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "480p",
+                          "720p"
+                        ]
+                      }
+                    ],
+                    "ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "16:9",
+                          "4:3",
+                          "1:1",
+                          "3:4",
+                          "9:16",
+                          "21:9",
+                          "adaptive"
+                        ]
+                      }
+                    ],
+                    "duration": [
+                      "INT",
+                      {
+                        "default": 7,
+                        "min": 4,
+                        "max": 15,
+                        "step": 1,
+                        "display": "slider"
+                      }
+                    ],
+                    "generate_audio": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ],
+                    "reference_images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_videos": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "video_1",
+                            "video_2",
+                            "video_3"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_video": [
+                                "VIDEO",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_audios": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "audio_1",
+                            "audio_2",
+                            "audio_3"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_audio": [
+                                "AUDIO",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "reference_assets": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "asset_1",
+                            "asset_2",
+                            "asset_3",
+                            "asset_4",
+                            "asset_5",
+                            "asset_6",
+                            "asset_7",
+                            "asset_8",
+                            "asset_9"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "reference_asset": [
+                                "STRING",
+                                {
+                                  "forceInput": true,
+                                  "multiline": false
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "optional": {
+                    "auto_downscale": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ],
+                    "auto_upscale": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "seed": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 2147483647,
+            "step": 1,
+            "control_after_generate": true,
+            "display": "number"
+          }
+        ],
+        "watermark": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ]
+      }
+    }
+  },
+  "ByteDanceSeedreamNodeV3": {
+    "input_order": {
+      "required": [
+        "prompt",
+        "model"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": true,
+    "input": {
+      "required": {
+        "prompt": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ],
+        "model": [
+          "COMFY_DYNAMICCOMBO_V3",
+          {
+            "options": [
+              {
+                "key": "seedream 5.0 pro",
+                "inputs": {
+                  "required": {
+                    "size_preset": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "(1K) 1024x1024 (1:1)",
+                          "(1K) 864x1152 (3:4)",
+                          "(1K) 1152x864 (4:3)",
+                          "(1K) 1312x736 (16:9)",
+                          "(1K) 736x1312 (9:16)",
+                          "(1K) 832x1248 (2:3)",
+                          "(1K) 1248x832 (3:2)",
+                          "(1K) 1568x672 (21:9)",
+                          "(2K) 2048x2048 (1:1)",
+                          "(2K) 1728x2304 (3:4)",
+                          "(2K) 2304x1728 (4:3)",
+                          "(2K) 2848x1600 (16:9)",
+                          "(2K) 1600x2848 (9:16)",
+                          "(2K) 1664x2496 (2:3)",
+                          "(2K) 2496x1664 (3:2)",
+                          "(2K) 3136x1344 (21:9)",
+                          "Custom"
+                        ]
+                      }
+                    ],
+                    "width": [
+                      "INT",
+                      {
+                        "default": 2048,
+                        "min": 1024,
+                        "max": 4514,
+                        "step": 2
+                      }
+                    ],
+                    "height": [
+                      "INT",
+                      {
+                        "default": 2048,
+                        "min": 1024,
+                        "max": 4514,
+                        "step": 2
+                      }
+                    ],
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9",
+                            "image_10"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "prompt_optimization": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "standard",
+                          "fast"
+                        ]
+                      }
+                    ],
+                    "seed": [
+                      "INT",
+                      {
+                        "default": 42,
+                        "min": 0,
+                        "max": 2147483647,
+                        "step": 1,
+                        "control_after_generate": true,
+                        "display": "number"
+                      }
+                    ],
+                    "watermark": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ],
+                    "thinking": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "seedream 5.0 flash",
+                "inputs": {
+                  "required": {
+                    "size_preset": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "(1K) 1024x1024 (1:1)",
+                          "(1K) 864x1152 (3:4)",
+                          "(1K) 1152x864 (4:3)",
+                          "(1K) 1424x800 (16:9)",
+                          "(1K) 800x1424 (9:16)",
+                          "(1K) 832x1248 (2:3)",
+                          "(1K) 1248x832 (3:2)",
+                          "(1K) 1568x672 (21:9)",
+                          "(1.5K) 1536x1536 (1:1)",
+                          "(1.5K) 1344x1792 (3:4)",
+                          "(1.5K) 1792x1344 (4:3)",
+                          "(1.5K) 2048x1152 (16:9)",
+                          "(1.5K) 1152x2048 (9:16)",
+                          "(1.5K) 1248x1872 (2:3)",
+                          "(1.5K) 1872x1248 (3:2)",
+                          "(1.5K) 2352x1008 (21:9)",
+                          "(2K) 2048x2048 (1:1)",
+                          "(2K) 1776x2368 (3:4)",
+                          "(2K) 2368x1776 (4:3)",
+                          "(2K) 2816x1584 (16:9)",
+                          "(2K) 1584x2816 (9:16)",
+                          "(2K) 1664x2496 (2:3)",
+                          "(2K) 2496x1664 (3:2)",
+                          "(2K) 3136x1344 (21:9)",
+                          "Custom"
+                        ]
+                      }
+                    ],
+                    "width": [
+                      "INT",
+                      {
+                        "default": 2048,
+                        "min": 1024,
+                        "max": 4514,
+                        "step": 2
+                      }
+                    ],
+                    "height": [
+                      "INT",
+                      {
+                        "default": 2048,
+                        "min": 1024,
+                        "max": 4514,
+                        "step": 2
+                      }
+                    ],
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9",
+                            "image_10"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "seed": [
+                      "INT",
+                      {
+                        "default": 42,
+                        "min": 0,
+                        "max": 2147483647,
+                        "step": 1,
+                        "control_after_generate": true,
+                        "display": "number"
+                      }
+                    ],
+                    "watermark": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "seedream 5.0 lite",
+                "inputs": {
+                  "required": {
+                    "size_preset": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "(2K) 2048x2048 (1:1)",
+                          "(2K) 1728x2304 (3:4)",
+                          "(2K) 2304x1728 (4:3)",
+                          "(2K) 2848x1600 (16:9)",
+                          "(2K) 1600x2848 (9:16)",
+                          "(2K) 1664x2496 (2:3)",
+                          "(2K) 2496x1664 (3:2)",
+                          "(2K) 3136x1344 (21:9)",
+                          "(3K) 3072x3072 (1:1)",
+                          "(3K) 2592x3456 (3:4)",
+                          "(3K) 3456x2592 (4:3)",
+                          "(3K) 4096x2304 (16:9)",
+                          "(3K) 2304x4096 (9:16)",
+                          "(3K) 2496x3744 (2:3)",
+                          "(3K) 3744x2496 (3:2)",
+                          "(3K) 4704x2016 (21:9)",
+                          "(4K) 4096x4096 (1:1)",
+                          "(4K) 3520x4704 (3:4)",
+                          "(4K) 4704x3520 (4:3)",
+                          "(4K) 5504x3040 (16:9)",
+                          "(4K) 3040x5504 (9:16)",
+                          "(4K) 3328x4992 (2:3)",
+                          "(4K) 4992x3328 (3:2)",
+                          "(4K) 6240x2656 (21:9)",
+                          "Custom"
+                        ]
+                      }
+                    ],
+                    "width": [
+                      "INT",
+                      {
+                        "default": 2048,
+                        "min": 1024,
+                        "max": 6240,
+                        "step": 2
+                      }
+                    ],
+                    "height": [
+                      "INT",
+                      {
+                        "default": 2048,
+                        "min": 1024,
+                        "max": 4992,
+                        "step": 2
+                      }
+                    ],
+                    "max_images": [
+                      "INT",
+                      {
+                        "default": 1,
+                        "min": 1,
+                        "max": 14,
+                        "step": 1,
+                        "display": "number"
+                      }
+                    ],
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9",
+                            "image_10",
+                            "image_11",
+                            "image_12",
+                            "image_13",
+                            "image_14"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "fail_on_partial": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ],
+                    "seed": [
+                      "INT",
+                      {
+                        "default": 42,
+                        "min": 0,
+                        "max": 2147483647,
+                        "step": 1,
+                        "control_after_generate": true,
+                        "display": "number"
+                      }
+                    ],
+                    "watermark": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ],
+                    "thinking": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "seedream-4-5-251128",
+                "inputs": {
+                  "required": {
+                    "size_preset": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "(2K) 2048x2048 (1:1)",
+                          "(2K) 1728x2304 (3:4)",
+                          "(2K) 2304x1728 (4:3)",
+                          "(2K) 2848x1600 (16:9)",
+                          "(2K) 1600x2848 (9:16)",
+                          "(2K) 1664x2496 (2:3)",
+                          "(2K) 2496x1664 (3:2)",
+                          "(2K) 3136x1344 (21:9)",
+                          "(4K) 4096x4096 (1:1)",
+                          "(4K) 3520x4704 (3:4)",
+                          "(4K) 4704x3520 (4:3)",
+                          "(4K) 5504x3040 (16:9)",
+                          "(4K) 3040x5504 (9:16)",
+                          "(4K) 3328x4992 (2:3)",
+                          "(4K) 4992x3328 (3:2)",
+                          "(4K) 6240x2656 (21:9)",
+                          "Custom"
+                        ]
+                      }
+                    ],
+                    "width": [
+                      "INT",
+                      {
+                        "default": 2048,
+                        "min": 1024,
+                        "max": 6240,
+                        "step": 2
+                      }
+                    ],
+                    "height": [
+                      "INT",
+                      {
+                        "default": 2048,
+                        "min": 1024,
+                        "max": 4992,
+                        "step": 2
+                      }
+                    ],
+                    "max_images": [
+                      "INT",
+                      {
+                        "default": 1,
+                        "min": 1,
+                        "max": 10,
+                        "step": 1,
+                        "display": "number"
+                      }
+                    ],
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9",
+                            "image_10"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "fail_on_partial": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ],
+                    "seed": [
+                      "INT",
+                      {
+                        "default": 42,
+                        "min": 0,
+                        "max": 2147483647,
+                        "step": 1,
+                        "control_after_generate": true,
+                        "display": "number"
+                      }
+                    ],
+                    "watermark": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ],
+                    "thinking": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "seedream-4-0-250828",
+                "inputs": {
+                  "required": {
+                    "size_preset": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "(1K) 1024x1024 (1:1)",
+                          "(1K) 864x1152 (3:4)",
+                          "(1K) 1152x864 (4:3)",
+                          "(1K) 1312x736 (16:9)",
+                          "(1K) 736x1312 (9:16)",
+                          "(1K) 832x1248 (2:3)",
+                          "(1K) 1248x832 (3:2)",
+                          "(1K) 1568x672 (21:9)",
+                          "(2K) 2048x2048 (1:1)",
+                          "(2K) 1728x2304 (3:4)",
+                          "(2K) 2304x1728 (4:3)",
+                          "(2K) 2848x1600 (16:9)",
+                          "(2K) 1600x2848 (9:16)",
+                          "(2K) 1664x2496 (2:3)",
+                          "(2K) 2496x1664 (3:2)",
+                          "(2K) 3136x1344 (21:9)",
+                          "(4K) 4096x4096 (1:1)",
+                          "(4K) 3520x4704 (3:4)",
+                          "(4K) 4704x3520 (4:3)",
+                          "(4K) 5504x3040 (16:9)",
+                          "(4K) 3040x5504 (9:16)",
+                          "(4K) 3328x4992 (2:3)",
+                          "(4K) 4992x3328 (3:2)",
+                          "(4K) 6240x2656 (21:9)",
+                          "Custom"
+                        ]
+                      }
+                    ],
+                    "width": [
+                      "INT",
+                      {
+                        "default": 2048,
+                        "min": 1024,
+                        "max": 6240,
+                        "step": 2
+                      }
+                    ],
+                    "height": [
+                      "INT",
+                      {
+                        "default": 2048,
+                        "min": 1024,
+                        "max": 4992,
+                        "step": 2
+                      }
+                    ],
+                    "max_images": [
+                      "INT",
+                      {
+                        "default": 1,
+                        "min": 1,
+                        "max": 10,
+                        "step": 1,
+                        "display": "number"
+                      }
+                    ],
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9",
+                            "image_10"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "fail_on_partial": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ],
+                    "seed": [
+                      "INT",
+                      {
+                        "default": 42,
+                        "min": 0,
+                        "max": 2147483647,
+                        "step": 1,
+                        "control_after_generate": true,
+                        "display": "number"
+                      }
+                    ],
+                    "watermark": [
+                      "BOOLEAN",
+                      {
+                        "default": false
+                      }
+                    ],
+                    "thinking": [
+                      "BOOLEAN",
+                      {
+                        "default": true
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "CFGGuider": {
+    "input_order": {
+      "required": [
+        "model",
+        "positive",
+        "negative",
+        "cfg"
+      ]
+    },
+    "output": [
+      "GUIDER"
+    ],
+    "output_name": [
+      "GUIDER"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "positive": [
+          "CONDITIONING",
+          {}
+        ],
+        "negative": [
+          "CONDITIONING",
+          {}
+        ],
+        "cfg": [
+          "FLOAT",
+          {
+            "default": 8.0,
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.1,
+            "round": 0.01
+          }
+        ]
+      }
+    }
+  },
+  "CFGNorm": {
+    "input_order": {
+      "required": [
+        "model",
+        "strength"
+      ],
+      "optional": [
+        "pre_cfg"
+      ]
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_name": [
+      "patched_model"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "strength": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.01
+          }
+        ]
+      },
+      "optional": {
+        "pre_cfg": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ]
+      }
+    }
+  },
+  "CLIPLoader": {
+    "input_order": {
+      "required": [
+        "clip_name",
+        "type"
+      ],
+      "optional": [
+        "device"
+      ]
+    },
+    "output": [
+      "CLIP"
+    ],
+    "output_name": [
+      "CLIP"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "input": {
+      "required": {
+        "clip_name": [
+          [],
+          {}
+        ],
+        "type": [
+          [
+            "stable_diffusion",
+            "stable_cascade",
+            "sd3",
+            "stable_audio",
+            "mochi",
+            "ltxv",
+            "pixart",
+            "cosmos",
+            "lumina2",
+            "wan",
+            "hidream",
+            "chroma",
+            "ace",
+            "omnigen2",
+            "qwen_image",
+            "hunyuan_image",
+            "flux2",
+            "ovis",
+            "longcat_image",
+            "cogvideox",
+            "lens",
+            "pixeldit",
+            "ideogram4",
+            "boogu",
+            "krea2",
+            "joyimage",
+            "mage",
+            "minimax",
+            "yue2",
+            "flux3",
+            "moss_image"
+          ],
+          {}
+        ]
+      },
+      "optional": {
+        "device": [
+          [
+            "default",
+            "cpu"
+          ],
+          {}
+        ]
+      }
+    }
+  },
+  "CLIPTextEncode": {
+    "input_order": {
+      "required": [
+        "text",
+        "clip"
+      ]
+    },
+    "output": [
+      "CONDITIONING"
+    ],
+    "output_name": [
+      "CONDITIONING"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "input": {
+      "required": {
+        "text": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ],
+        "clip": [
+          "CLIP",
+          {}
+        ]
+      }
+    }
+  },
+  "CheckpointLoaderSimple": {
+    "input_order": {
+      "required": [
+        "ckpt_name"
+      ]
+    },
+    "output": [
+      "MODEL",
+      "CLIP",
+      "VAE"
+    ],
+    "output_name": [
+      "MODEL",
+      "CLIP",
+      "VAE"
+    ],
+    "output_is_list": [
+      false,
+      false,
+      false
+    ],
+    "output_node": false,
+    "input": {
+      "required": {
+        "ckpt_name": [
+          [],
+          {}
+        ]
+      }
+    }
+  },
+  "ComfyMathExpression": {
+    "input_order": {
+      "required": [
+        "expression",
+        "values"
+      ]
+    },
+    "output": [
+      "FLOAT",
+      "INT",
+      "BOOLEAN"
+    ],
+    "output_name": [
+      "FLOAT",
+      "INT",
+      "BOOL"
+    ],
+    "output_is_list": [
+      false,
+      false,
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "expression": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ],
+        "values": [
+          "COMFY_AUTOGROW_V3",
+          {
+            "template": {
+              "names": [
+                "a",
+                "b",
+                "c",
+                "d",
+                "e",
+                "f",
+                "g",
+                "h",
+                "i",
+                "j",
+                "k",
+                "l",
+                "m",
+                "n",
+                "o",
+                "p",
+                "q",
+                "r",
+                "s",
+                "t",
+                "u",
+                "v",
+                "w",
+                "x",
+                "y",
+                "z"
+              ],
+              "min": 1,
+              "input": {
+                "required": {
+                  "value": [
+                    "FLOAT,INT,BOOLEAN",
+                    {}
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "ComfySwitchNode": {
+    "input_order": {
+      "required": [
+        "switch"
+      ],
+      "optional": [
+        "on_false",
+        "on_true"
+      ]
+    },
+    "output": [
+      "COMFY_MATCHTYPE_V3"
+    ],
+    "output_name": [
+      "output"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "switch": [
+          "BOOLEAN",
+          {}
+        ]
+      },
+      "optional": {
+        "on_false": [
+          "COMFY_MATCHTYPE_V3",
+          {
+            "lazy": true,
+            "template": {}
+          }
+        ],
+        "on_true": [
+          "COMFY_MATCHTYPE_V3",
+          {
+            "lazy": true,
+            "template": {}
+          }
+        ]
+      }
+    }
+  },
+  "ConditioningZeroOut": {
+    "input_order": {
+      "required": [
+        "conditioning"
+      ]
+    },
+    "output": [
+      "CONDITIONING"
+    ],
+    "output_name": [
+      "CONDITIONING"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "input": {
+      "required": {
+        "conditioning": [
+          "CONDITIONING",
+          {}
+        ]
+      }
+    }
+  },
+  "CreateVideo": {
+    "input_order": {
+      "required": [
+        "images",
+        "fps"
+      ],
+      "optional": [
+        "audio",
+        "bit_depth",
+        "color_space",
+        "codec"
+      ]
+    },
+    "output": [
+      "VIDEO"
+    ],
+    "output_name": [
+      "VIDEO"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "images": [
+          "IMAGE",
+          {}
+        ],
+        "fps": [
+          "FLOAT",
+          {
+            "default": 30.0,
+            "min": 1.0,
+            "max": 120.0,
+            "step": 1.0
+          }
+        ]
+      },
+      "optional": {
+        "audio": [
+          "AUDIO",
+          {}
+        ],
+        "bit_depth": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "auto",
+              8,
+              10
+            ]
+          }
+        ],
+        "color_space": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "sRGB",
+              "HDR",
+              "HDR PQ"
+            ]
+          }
+        ],
+        "codec": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "none",
+              "auto",
+              "h264",
+              "av1"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "EmptyLTXVLatentVideo": {
+    "input_order": {
+      "required": [
+        "width",
+        "height",
+        "length",
+        "batch_size"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_name": [
+      "LATENT"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "width": [
+          "INT",
+          {
+            "default": 768,
+            "min": 64,
+            "max": 16384,
+            "step": 32
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "default": 512,
+            "min": 64,
+            "max": 16384,
+            "step": 32
+          }
+        ],
+        "length": [
+          "INT",
+          {
+            "default": 97,
+            "min": 1,
+            "max": 16384,
+            "step": 8
+          }
+        ],
+        "batch_size": [
+          "INT",
+          {
+            "default": 1,
+            "min": 1,
+            "max": 4096
+          }
+        ]
+      }
+    }
+  },
+  "EmptyLatentImage": {
+    "input_order": {
+      "required": [
+        "width",
+        "height",
+        "batch_size"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_name": [
+      "LATENT"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "input": {
+      "required": {
+        "width": [
+          "INT",
+          {
+            "default": 1024,
+            "min": 16,
+            "max": 16384,
+            "step": 8
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "default": 1024,
+            "min": 16,
+            "max": 16384,
+            "step": 8
+          }
+        ],
+        "batch_size": [
+          "INT",
+          {
+            "default": 1,
+            "min": 1,
+            "max": 4096
+          }
+        ]
+      }
+    }
+  },
+  "EmptySD3LatentImage": {
+    "input_order": {
+      "required": [
+        "width",
+        "height",
+        "batch_size"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_name": [
+      "LATENT"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "width": [
+          "INT",
+          {
+            "default": 1024,
+            "min": 16,
+            "max": 16384,
+            "step": 16
+          }
+        ],
+        "height": [
+          "INT",
+          {
+            "default": 1024,
+            "min": 16,
+            "max": 16384,
+            "step": 16
+          }
+        ],
+        "batch_size": [
+          "INT",
+          {
+            "default": 1,
+            "min": 1,
+            "max": 4096
+          }
+        ]
+      }
+    }
+  },
+  "Flux3ImageNode": {
+    "input_order": {
+      "required": [
+        "prompt",
+        "images",
+        "aspect_ratio",
+        "resolution",
+        "grounding",
+        "safety_tolerance",
+        "seed"
+      ],
+      "optional": [
+        "bounding_boxes"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": true,
+    "input": {
+      "required": {
+        "prompt": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ],
+        "images": [
+          "COMFY_AUTOGROW_V3",
+          {
+            "template": {
+              "names": [
+                "image_1",
+                "image_2",
+                "image_3",
+                "image_4",
+                "image_5",
+                "image_6",
+                "image_7",
+                "image_8",
+                "image_9",
+                "image_10"
+              ],
+              "min": 0,
+              "input": {
+                "required": {
+                  "image": [
+                    "IMAGE",
+                    {}
+                  ]
+                }
+              }
+            }
+          }
+        ],
+        "aspect_ratio": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "auto",
+              "21:9",
+              "2:1",
+              "16:9",
+              "3:2",
+              "7:5",
+              "4:3",
+              "5:4",
+              "1:1",
+              "4:5",
+              "3:4",
+              "5:7",
+              "2:3",
+              "9:16",
+              "1:2",
+              "9:21"
+            ]
+          }
+        ],
+        "resolution": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "0.75K",
+              "1K",
+              "1.5K",
+              "2K",
+              "4K"
+            ]
+          }
+        ],
+        "grounding": [
+          "BOOLEAN",
+          {
+            "default": true
+          }
+        ],
+        "safety_tolerance": [
+          "INT",
+          {
+            "default": 4,
+            "min": 0,
+            "max": 4
+          }
+        ],
+        "seed": [
+          "INT",
+          {
+            "default": 42,
+            "min": 0,
+            "max": 4294967295,
+            "control_after_generate": true
+          }
+        ]
+      },
+      "optional": {
+        "bounding_boxes": [
+          "ARRAY",
+          {}
+        ]
+      }
+    }
+  },
+  "FluxKontextImageScale": {
+    "input_order": {
+      "required": [
+        "image"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE",
+          {}
+        ]
+      }
+    }
+  },
+  "GeminiImage2Node": {
+    "input_order": {
+      "required": [
+        "prompt",
+        "model",
+        "seed",
+        "aspect_ratio",
+        "resolution",
+        "response_modalities"
+      ],
+      "optional": [
+        "images",
+        "files",
+        "system_prompt"
+      ]
+    },
+    "output": [
+      "IMAGE",
+      "STRING"
+    ],
+    "output_name": [
+      "IMAGE",
+      "STRING"
+    ],
+    "output_is_list": [
+      false,
+      false
+    ],
+    "output_node": false,
+    "api_node": true,
+    "input": {
+      "required": {
+        "prompt": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ],
+        "model": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "gemini-3-pro-image-preview",
+              "Nano Banana 2 (Gemini 3.1 Flash Image)"
+            ]
+          }
+        ],
+        "seed": [
+          "INT",
+          {
+            "default": 42,
+            "min": 0,
+            "max": 18446744073709551615,
+            "control_after_generate": true
+          }
+        ],
+        "aspect_ratio": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "auto",
+              "1:1",
+              "2:3",
+              "3:2",
+              "3:4",
+              "4:3",
+              "4:5",
+              "5:4",
+              "9:16",
+              "16:9",
+              "21:9"
+            ]
+          }
+        ],
+        "resolution": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "1K",
+              "2K",
+              "4K"
+            ]
+          }
+        ],
+        "response_modalities": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "IMAGE+TEXT",
+              "IMAGE"
+            ]
+          }
+        ]
+      },
+      "optional": {
+        "images": [
+          "IMAGE",
+          {}
+        ],
+        "files": [
+          "GEMINI_INPUT_FILES",
+          {}
+        ],
+        "system_prompt": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ]
+      }
+    }
+  },
+  "GeminiNanoBanana2V2": {
+    "input_order": {
+      "required": [
+        "prompt",
+        "model",
+        "seed",
+        "response_modalities"
+      ],
+      "optional": [
+        "system_prompt",
+        "temperature",
+        "top_p"
+      ]
+    },
+    "output": [
+      "IMAGE",
+      "STRING",
+      "IMAGE"
+    ],
+    "output_name": [
+      "IMAGE",
+      "STRING",
+      "thought_image"
+    ],
+    "output_is_list": [
+      false,
+      false,
+      false
+    ],
+    "output_node": false,
+    "api_node": true,
+    "input": {
+      "required": {
+        "prompt": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ],
+        "model": [
+          "COMFY_DYNAMICCOMBO_V3",
+          {
+            "options": [
+              {
+                "key": "Gemini Nano Banana 2.1",
+                "inputs": {
+                  "required": {
+                    "aspect_ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "auto",
+                          "1:1",
+                          "2:3",
+                          "3:2",
+                          "3:4",
+                          "4:3",
+                          "4:5",
+                          "5:4",
+                          "9:16",
+                          "16:9",
+                          "21:9",
+                          "1:4",
+                          "4:1",
+                          "8:1",
+                          "1:8"
+                        ]
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "1K",
+                          "2K",
+                          "4K"
+                        ]
+                      }
+                    ],
+                    "thinking_level": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "MINIMAL",
+                          "MEDIUM",
+                          "HIGH"
+                        ]
+                      }
+                    ],
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9",
+                            "image_10",
+                            "image_11",
+                            "image_12",
+                            "image_13",
+                            "image_14"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "optional": {
+                    "files": [
+                      "GEMINI_INPUT_FILES",
+                      {}
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "Nano Banana 2 (Gemini 3.1 Flash Image)",
+                "inputs": {
+                  "required": {
+                    "aspect_ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "auto",
+                          "1:1",
+                          "2:3",
+                          "3:2",
+                          "3:4",
+                          "4:3",
+                          "4:5",
+                          "5:4",
+                          "9:16",
+                          "16:9",
+                          "21:9",
+                          "1:4",
+                          "4:1",
+                          "8:1",
+                          "1:8"
+                        ]
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "1K",
+                          "2K",
+                          "4K"
+                        ]
+                      }
+                    ],
+                    "thinking_level": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "MINIMAL",
+                          "HIGH"
+                        ]
+                      }
+                    ],
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9",
+                            "image_10",
+                            "image_11",
+                            "image_12",
+                            "image_13",
+                            "image_14"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "optional": {
+                    "files": [
+                      "GEMINI_INPUT_FILES",
+                      {}
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "Nano Banana 2 Lite",
+                "inputs": {
+                  "required": {
+                    "aspect_ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "auto",
+                          "1:1",
+                          "2:3",
+                          "3:2",
+                          "3:4",
+                          "4:3",
+                          "4:5",
+                          "5:4",
+                          "9:16",
+                          "16:9",
+                          "21:9",
+                          "1:4",
+                          "4:1",
+                          "8:1",
+                          "1:8"
+                        ]
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "1K"
+                        ]
+                      }
+                    ],
+                    "thinking_level": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "MINIMAL",
+                          "HIGH"
+                        ]
+                      }
+                    ],
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3",
+                            "image_4",
+                            "image_5",
+                            "image_6",
+                            "image_7",
+                            "image_8",
+                            "image_9",
+                            "image_10",
+                            "image_11",
+                            "image_12",
+                            "image_13",
+                            "image_14"
+                          ],
+                          "min": 0,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  "optional": {
+                    "files": [
+                      "GEMINI_INPUT_FILES",
+                      {}
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "seed": [
+          "INT",
+          {
+            "default": 42,
+            "min": 0,
+            "max": 18446744073709551615,
+            "control_after_generate": true
+          }
+        ],
+        "response_modalities": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "IMAGE",
+              "IMAGE+TEXT"
+            ]
+          }
+        ]
+      },
+      "optional": {
+        "system_prompt": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ],
+        "temperature": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 2.0,
+            "step": 0.01
+          }
+        ],
+        "top_p": [
+          "FLOAT",
+          {
+            "default": 0.95,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ]
+      }
+    }
+  },
+  "GetImageSize": {
+    "input_order": {
+      "required": [
+        "image"
+      ]
+    },
+    "output": [
+      "INT",
+      "INT",
+      "INT"
+    ],
+    "output_name": [
+      "width",
+      "height",
+      "batch_size"
+    ],
+    "output_is_list": [
+      false,
+      false,
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE",
+          {}
+        ]
+      }
+    }
+  },
+  "GrokImageEditNodeV2": {
+    "input_order": {
+      "required": [
+        "prompt",
+        "model",
+        "seed"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": true,
+    "input": {
+      "required": {
+        "prompt": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ],
+        "model": [
+          "COMFY_DYNAMICCOMBO_V3",
+          {
+            "options": [
+              {
+                "key": "grok-imagine-image-2.0",
+                "inputs": {
+                  "required": {
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3"
+                          ],
+                          "min": 1,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "1K",
+                          "2K"
+                        ]
+                      }
+                    ],
+                    "number_of_images": [
+                      "INT",
+                      {
+                        "default": 1,
+                        "min": 1,
+                        "max": 10,
+                        "step": 1,
+                        "display": "number"
+                      }
+                    ],
+                    "quality": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "medium",
+                          "low"
+                        ]
+                      }
+                    ],
+                    "aspect_ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "auto",
+                          "1:1",
+                          "2:3",
+                          "3:2",
+                          "3:4",
+                          "4:3",
+                          "9:16",
+                          "16:9",
+                          "9:19.5",
+                          "19.5:9",
+                          "9:20",
+                          "20:9",
+                          "1:2",
+                          "2:1"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "grok-imagine-image-quality",
+                "inputs": {
+                  "required": {
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3"
+                          ],
+                          "min": 1,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "1K",
+                          "2K"
+                        ]
+                      }
+                    ],
+                    "number_of_images": [
+                      "INT",
+                      {
+                        "default": 1,
+                        "min": 1,
+                        "max": 10,
+                        "step": 1,
+                        "display": "number"
+                      }
+                    ],
+                    "aspect_ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "auto",
+                          "1:1",
+                          "2:3",
+                          "3:2",
+                          "3:4",
+                          "4:3",
+                          "9:16",
+                          "16:9",
+                          "9:19.5",
+                          "19.5:9",
+                          "9:20",
+                          "20:9",
+                          "1:2",
+                          "2:1"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "grok-imagine-image-pro",
+                "inputs": {
+                  "required": {
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1"
+                          ],
+                          "min": 1,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "1K",
+                          "2K"
+                        ]
+                      }
+                    ],
+                    "number_of_images": [
+                      "INT",
+                      {
+                        "default": 1,
+                        "min": 1,
+                        "max": 10,
+                        "step": 1,
+                        "display": "number"
+                      }
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "grok-imagine-image",
+                "inputs": {
+                  "required": {
+                    "images": [
+                      "COMFY_AUTOGROW_V3",
+                      {
+                        "template": {
+                          "names": [
+                            "image_1",
+                            "image_2",
+                            "image_3"
+                          ],
+                          "min": 1,
+                          "input": {
+                            "required": {
+                              "image": [
+                                "IMAGE",
+                                {}
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    ],
+                    "resolution": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "1K",
+                          "2K"
+                        ]
+                      }
+                    ],
+                    "number_of_images": [
+                      "INT",
+                      {
+                        "default": 1,
+                        "min": 1,
+                        "max": 10,
+                        "step": 1,
+                        "display": "number"
+                      }
+                    ],
+                    "aspect_ratio": [
+                      "COMBO",
+                      {
+                        "multiselect": false,
+                        "options": [
+                          "auto",
+                          "1:1",
+                          "2:3",
+                          "3:2",
+                          "3:4",
+                          "4:3",
+                          "9:16",
+                          "16:9",
+                          "9:19.5",
+                          "19.5:9",
+                          "9:20",
+                          "20:9",
+                          "1:2",
+                          "2:1"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "seed": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 2147483647,
+            "step": 1,
+            "control_after_generate": true,
+            "display": "number"
+          }
+        ]
+      }
+    }
+  },
+  "ImageCompare": {
+    "input_order": {
+      "required": [
+        "compare_view"
+      ],
+      "optional": [
+        "image_a",
+        "image_b"
+      ]
+    },
+    "output": [],
+    "output_name": [],
+    "output_is_list": [],
+    "output_node": true,
+    "api_node": false,
+    "input": {
+      "required": {
+        "compare_view": [
+          "IMAGECOMPARE",
+          {}
+        ]
+      },
+      "optional": {
+        "image_a": [
+          "IMAGE",
+          {}
+        ],
+        "image_b": [
+          "IMAGE",
+          {}
+        ]
+      }
+    }
+  },
+  "ImageScaleToTotalPixels": {
+    "input_order": {
+      "required": [
+        "image",
+        "upscale_method",
+        "megapixels",
+        "resolution_steps"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_name": [
+      "IMAGE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE",
+          {}
+        ],
+        "upscale_method": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "nearest-exact",
+              "bilinear",
+              "area",
+              "bicubic",
+              "lanczos"
+            ]
+          }
+        ],
+        "megapixels": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.01,
+            "max": 16.0,
+            "step": 0.01
+          }
+        ],
+        "resolution_steps": [
+          "INT",
+          {
+            "default": 1,
+            "min": 1,
+            "max": 256
+          }
+        ]
+      }
+    }
+  },
+  "KSampler": {
+    "input_order": {
+      "required": [
+        "model",
+        "seed",
+        "steps",
+        "cfg",
+        "sampler_name",
+        "scheduler",
+        "positive",
+        "negative",
+        "latent_image",
+        "denoise"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_name": [
+      "LATENT"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "seed": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 18446744073709551615,
+            "control_after_generate": true
+          }
+        ],
+        "steps": [
+          "INT",
+          {
+            "default": 20,
+            "min": 1,
+            "max": 10000
+          }
+        ],
+        "cfg": [
+          "FLOAT",
+          {
+            "default": 8.0,
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.1,
+            "round": 0.01
+          }
+        ],
+        "sampler_name": [
+          [],
+          {}
+        ],
+        "scheduler": [
+          [
+            "simple",
+            "sgm_uniform",
+            "karras",
+            "exponential",
+            "ddim_uniform",
+            "beta",
+            "normal",
+            "linear_quadratic",
+            "kl_optimal"
+          ],
+          {}
+        ],
+        "positive": [
+          "CONDITIONING",
+          {}
+        ],
+        "negative": [
+          "CONDITIONING",
+          {}
+        ],
+        "latent_image": [
+          "LATENT",
+          {}
+        ],
+        "denoise": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.01
+          }
+        ]
+      }
+    }
+  },
+  "KSamplerAdvanced": {
+    "input_order": {
+      "required": [
+        "model",
+        "add_noise",
+        "noise_seed",
+        "steps",
+        "cfg",
+        "sampler_name",
+        "scheduler",
+        "positive",
+        "negative",
+        "latent_image",
+        "start_at_step",
+        "end_at_step",
+        "return_with_leftover_noise"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_name": [
+      "LATENT"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "add_noise": [
+          [
+            "enable",
+            "disable"
+          ],
+          {}
+        ],
+        "noise_seed": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 18446744073709551615,
+            "control_after_generate": true
+          }
+        ],
+        "steps": [
+          "INT",
+          {
+            "default": 20,
+            "min": 1,
+            "max": 10000
+          }
+        ],
+        "cfg": [
+          "FLOAT",
+          {
+            "default": 8.0,
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.1,
+            "round": 0.01
+          }
+        ],
+        "sampler_name": [
+          [],
+          {}
+        ],
+        "scheduler": [
+          [
+            "simple",
+            "sgm_uniform",
+            "karras",
+            "exponential",
+            "ddim_uniform",
+            "beta",
+            "normal",
+            "linear_quadratic",
+            "kl_optimal"
+          ],
+          {}
+        ],
+        "positive": [
+          "CONDITIONING",
+          {}
+        ],
+        "negative": [
+          "CONDITIONING",
+          {}
+        ],
+        "latent_image": [
+          "LATENT",
+          {}
+        ],
+        "start_at_step": [
+          "INT",
+          {
+            "default": 0,
+            "min": 0,
+            "max": 10000
+          }
+        ],
+        "end_at_step": [
+          "INT",
+          {
+            "default": 10000,
+            "min": 0,
+            "max": 10000
+          }
+        ],
+        "return_with_leftover_noise": [
+          [
+            "disable",
+            "enable"
+          ],
+          {}
+        ]
+      }
+    }
+  },
+  "KSamplerSelect": {
+    "input_order": {
+      "required": [
+        "sampler_name"
+      ]
+    },
+    "output": [
+      "SAMPLER"
+    ],
+    "output_name": [
+      "SAMPLER"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "sampler_name": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": []
+          }
+        ]
+      }
+    }
+  },
+  "LTXAVTextEncoderLoader": {
+    "input_order": {
+      "required": [
+        "text_encoder",
+        "ckpt_name",
+        "device"
+      ]
+    },
+    "output": [
+      "CLIP"
+    ],
+    "output_name": [
+      "CLIP"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "text_encoder": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": []
+          }
+        ],
+        "ckpt_name": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": []
+          }
+        ],
+        "device": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": [
+              "default",
+              "cpu"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "LTXVAudioVAEDecode": {
+    "input_order": {
+      "required": [
+        "samples",
+        "audio_vae"
+      ]
+    },
+    "output": [
+      "AUDIO"
+    ],
+    "output_name": [
+      "Audio"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "samples": [
+          "LATENT",
+          {}
+        ],
+        "audio_vae": [
+          "VAE",
+          {}
+        ]
+      }
+    }
+  },
+  "LTXVAudioVAELoader": {
+    "input_order": {
+      "required": [
+        "ckpt_name"
+      ]
+    },
+    "output": [
+      "VAE"
+    ],
+    "output_name": [
+      "Audio VAE"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "ckpt_name": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": []
+          }
+        ]
+      }
+    }
+  },
+  "LTXVConcatAVLatent": {
+    "input_order": {
+      "required": [
+        "video_latent",
+        "audio_latent"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_name": [
+      "latent"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "video_latent": [
+          "LATENT",
+          {}
+        ],
+        "audio_latent": [
+          "LATENT",
+          {}
+        ]
+      }
+    }
+  },
+  "LTXVConditioning": {
+    "input_order": {
+      "required": [
+        "positive",
+        "negative",
+        "frame_rate"
+      ]
+    },
+    "output": [
+      "CONDITIONING",
+      "CONDITIONING"
+    ],
+    "output_name": [
+      "positive",
+      "negative"
+    ],
+    "output_is_list": [
+      false,
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "positive": [
+          "CONDITIONING",
+          {}
+        ],
+        "negative": [
+          "CONDITIONING",
+          {}
+        ],
+        "frame_rate": [
+          "FLOAT",
+          {
+            "default": 25.0,
+            "min": 0.0,
+            "max": 1000.0,
+            "step": 0.01
+          }
+        ]
+      }
+    }
+  },
+  "LTXVCropGuides": {
+    "input_order": {
+      "required": [
+        "positive",
+        "negative",
+        "latent"
+      ]
+    },
+    "output": [
+      "CONDITIONING",
+      "CONDITIONING",
+      "LATENT"
+    ],
+    "output_name": [
+      "positive",
+      "negative",
+      "latent"
+    ],
+    "output_is_list": [
+      false,
+      false,
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "positive": [
+          "CONDITIONING",
+          {}
+        ],
+        "negative": [
+          "CONDITIONING",
+          {}
+        ],
+        "latent": [
+          "LATENT",
+          {}
+        ]
+      }
+    }
+  },
+  "LTXVDualCFGGuider": {
+    "input_order": {
+      "required": [
+        "model",
+        "positive",
+        "negative",
+        "video_cfg",
+        "audio_cfg"
+      ]
+    },
+    "output": [
+      "GUIDER"
+    ],
+    "output_name": [
+      "GUIDER"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "positive": [
+          "CONDITIONING",
+          {}
+        ],
+        "negative": [
+          "CONDITIONING",
+          {}
+        ],
+        "video_cfg": [
+          "FLOAT",
+          {
+            "default": 3.0,
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.1,
+            "round": 0.01
+          }
+        ],
+        "audio_cfg": [
+          "FLOAT",
+          {
+            "default": 7.0,
+            "min": 0.0,
+            "max": 100.0,
+            "step": 0.1,
+            "round": 0.01
+          }
+        ]
+      }
+    }
+  },
+  "LTXVEmptyLatentAudio": {
+    "input_order": {
+      "required": [
+        "frames_number",
+        "frame_rate",
+        "batch_size",
+        "audio_vae"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_name": [
+      "Latent"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "frames_number": [
+          "INT",
+          {
+            "default": 97,
+            "min": 1,
+            "max": 1000,
+            "step": 1,
+            "display": "number"
+          }
+        ],
+        "frame_rate": [
+          "FLOAT,INT",
+          {
+            "default": 25.0,
+            "min": 1.0,
+            "max": 1000.0,
+            "step": 0.01,
+            "display": "number"
+          }
+        ],
+        "batch_size": [
+          "INT",
+          {
+            "default": 1,
+            "min": 1,
+            "max": 4096,
+            "display": "number"
+          }
+        ],
+        "audio_vae": [
+          "VAE",
+          {}
+        ]
+      }
+    }
+  },
+  "LTXVImgToVideoInplace": {
+    "input_order": {
+      "required": [
+        "vae",
+        "image",
+        "latent",
+        "strength",
+        "bypass"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_name": [
+      "latent"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "vae": [
+          "VAE",
+          {}
+        ],
+        "image": [
+          "IMAGE",
+          {}
+        ],
+        "latent": [
+          "LATENT",
+          {}
+        ],
+        "strength": [
+          "FLOAT",
+          {
+            "default": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          }
+        ],
+        "bypass": [
+          "BOOLEAN",
+          {
+            "default": false
+          }
+        ]
+      }
+    }
+  },
+  "LTXVLatentUpsampler": {
+    "input_order": {
+      "required": [
+        "samples",
+        "upscale_model",
+        "vae"
+      ]
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_name": [
+      "LATENT"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "samples": [
+          "LATENT",
+          {}
+        ],
+        "upscale_model": [
+          "LATENT_UPSCALE_MODEL",
+          {}
+        ],
+        "vae": [
+          "VAE",
+          {}
+        ]
+      }
+    }
+  },
+  "LTXVPreprocess": {
+    "input_order": {
+      "required": [
+        "image",
+        "img_compression"
+      ]
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_name": [
+      "output_image"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "image": [
+          "IMAGE",
+          {}
+        ],
+        "img_compression": [
+          "INT",
+          {
+            "default": 35,
+            "min": 0,
+            "max": 100
+          }
+        ]
+      }
+    }
+  },
+  "LTXVSeparateAVLatent": {
+    "input_order": {
+      "required": [
+        "av_latent"
+      ]
+    },
+    "output": [
+      "LATENT",
+      "LATENT"
+    ],
+    "output_name": [
+      "video_latent",
+      "audio_latent"
+    ],
+    "output_is_list": [
+      false,
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "av_latent": [
+          "LATENT",
+          {}
+        ]
+      }
+    }
+  },
+  "LatentUpscaleModelLoader": {
+    "input_order": {
+      "required": [
+        "model_name"
+      ]
+    },
+    "output": [
+      "LATENT_UPSCALE_MODEL"
+    ],
+    "output_name": [
+      "LATENT_UPSCALE_MODEL"
+    ],
+    "output_is_list": [
+      false
+    ],
+    "output_node": false,
+    "api_node": false,
+    "input": {
+      "required": {
+        "model_name": [
+          "COMBO",
+          {
+            "multiselect": false,
+            "options": []
+          }
+        ]
+      }
+    }
+  }
+}

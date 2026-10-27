@@ -11,7 +11,11 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde_json::{Map, Value};
 
 use crate::ComfyError;
-use crate::object_info::{InputKind, NodeCatalog};
+use crate::object_info::{InputKind, InputSpec, NodeCatalog, NodeInfo};
+mod named_suffix;
+mod primitive;
+mod selection;
+mod subgraphs;
 
 /// Cap on a workflow file.
 pub const MAX_WORKFLOW_BYTES: usize = 32 * 1024 * 1024;
@@ -90,6 +94,37 @@ pub(crate) fn id_order(a: &str, b: &str) -> std::cmp::Ordering {
         (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
         (Err(_), Err(_)) => a.cmp(b),
     }
+}
+
+fn checked_inputs<'a>(info: &'a NodeInfo, node: &'a ApiNode) -> impl Iterator<Item = (&'a str, Result<&'a InputSpec, &'static str>)> {
+    let ordinary = info.effective_inputs(node);
+    let has_dynamic = !info.dynamic_inputs.is_empty() || !info.dynamic_combos.is_empty();
+    let names: HashSet<&str> = if has_dynamic { ordinary.iter().map(|i| i.name.as_str()).collect() } else { HashSet::new() };
+    let dynamic = has_dynamic.then_some(node.inputs.keys()).into_iter().flatten().filter(move |name| !names.contains(name.as_str())).filter_map(move |name| {
+        match info.dynamic_input_for(name, node) {
+            Ok(None) => None,
+            Ok(Some(spec)) => Some((name.as_str(), Ok(spec))),
+            Err(message) => Some((name.as_str(), Err(message))),
+        }
+    });
+    ordinary
+        .into_iter()
+        .map(move |spec| {
+            let literal = !info.is_dynamic_selector(&spec.name, node)
+                || !node.inputs.contains_key(&spec.name)
+                || matches!(node.inputs.get(&spec.name), Some(InputValue::Value(Value::String(_))));
+            (spec.name.as_str(), if literal { Ok(spec) } else { Err("a dynamic selector must be a literal string option") })
+        })
+        .chain(dynamic)
+}
+
+/// Report context comes from files and server schemas; bound it before cloning or formatting.
+fn report_name(text: &str) -> &str {
+    let mut end = text.len().min(128);
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    text.get(..end).unwrap_or_default()
 }
 
 impl ApiWorkflow {
@@ -220,7 +255,7 @@ impl ApiWorkflow {
         let err = |message: String| ComfyError::InvalidInput { node: node.into(), input: input.into(), message };
         let n = self.nodes.get_mut(node).ok_or_else(|| err("no such node in the workflow".into()))?;
         let info = catalog.get(&n.class_type).ok_or_else(|| ComfyError::MissingNodes(vec![n.class_type.clone()]))?;
-        let spec = info.input(input).ok_or_else(|| err(format!("{} has no input named {input}", n.class_type)))?;
+        let spec = info.effective_input(input, n).ok_or_else(|| err(format!("{} has no active input named {input}", n.class_type)))?;
         spec.check(&value).map_err(err)?;
         n.inputs.insert(input.into(), InputValue::Value(value));
         Ok(())
@@ -237,13 +272,14 @@ impl ApiWorkflow {
             self.validate_budget(&mut budget, 0)?;
             for (id, node) in &self.nodes {
                 let Some(info) = catalog.get(&node.class_type) else { continue };
-                budget.container(info.inputs.len(), 0)?;
-                for spec in &info.inputs {
+                budget.container(info.inputs.len().saturating_add(node.inputs.len()), 0)?;
+                for (name, spec) in checked_inputs(info, node) {
                     // Every input can produce a report row with copied context.
                     budget.text(id, 1)?;
-                    budget.text(&spec.name, 1)?;
+                    budget.text(name, 1)?;
                     budget.bytes(256)?;
-                    if let Some(InputValue::Link { node: from, output }) = node.inputs.get(&spec.name) {
+                    let Ok(spec) = spec else { continue };
+                    if let Some(InputValue::Link { node: from, output }) = node.inputs.get(name) {
                         if let Some(kind) = self.nodes.get(from).and_then(|src| catalog.get(&src.class_type)).and_then(|src| src.outputs.get(*output as usize))
                         {
                             budget.text(&kind.kind, 1)?;
@@ -269,24 +305,32 @@ impl ApiWorkflow {
                 }
                 continue;
             };
-            let mut problem = |input: &str, message: String| report.problems.push(InputProblem { node: id.into(), input: input.into(), message });
-            for spec in &info.inputs {
-                match node.inputs.get(&spec.name) {
-                    None if spec.required => problem(&spec.name, "required input is not set".into()),
+            let mut problem =
+                |input: &str, message: String| report.problems.push(InputProblem { node: report_name(id).into(), input: report_name(input).into(), message });
+            for (name, spec) in checked_inputs(info, node) {
+                let spec = match spec {
+                    Ok(spec) => spec,
+                    Err(message) => {
+                        problem(name, message.into());
+                        continue;
+                    }
+                };
+                match node.inputs.get(name) {
+                    None if spec.required => problem(name, "required input is not set".into()),
                     None => {}
                     Some(InputValue::Value(v)) => {
                         if let Err(m) = spec.check(v) {
-                            problem(&spec.name, m);
+                            problem(name, m);
                         }
                     }
                     Some(InputValue::Link { node: from, output }) => match self.nodes.get(from) {
-                        None => problem(&spec.name, format!("connected to node {from}, which is not in the workflow")),
+                        None => problem(name, format!("connected to node {}, which is not in the workflow", report_name(from))),
                         Some(src) => {
                             let out = catalog.get(&src.class_type).map(|i| i.outputs.get(*output as usize).map(|o| o.kind.clone()));
                             match (out, &spec.kind) {
-                                (Some(None), _) => problem(&spec.name, format!("node {from} has no output {output}")),
+                                (Some(None), _) => problem(name, format!("node {} has no output {output}", report_name(from))),
                                 (Some(Some(kind)), InputKind::Link(want)) if !types_match(&kind, want) => {
-                                    problem(&spec.name, format!("expects {want} but is connected to {kind}"));
+                                    problem(name, format!("expects {} but is connected to {}", report_name(want), report_name(&kind)));
                                 }
                                 _ => {}
                             }
@@ -343,12 +387,27 @@ pub struct InputProblem {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Conversion {
     pub workflow: ApiWorkflow,
+    /// A bundled official-template structural match; current values remain the file's values.
+    pub template: Option<&'static str>,
+    /// Public inputs promoted by saved UI subgraphs, mapped onto the expanded API graph.
+    pub promoted: Vec<PromotedInput>,
     /// "Control after generate" modes (`fixed`, `randomize`, …) by (node, input), so the Workflow
     /// node can keep randomising seeds per run.
     pub controls: BTreeMap<(String, String), String>,
     /// Things worth a look after import: widget values that didn't line up with the server's
     /// inputs, unknown unconnected nodes that were ignored.
     pub warnings: Vec<String>,
+}
+
+/// One logical subgraph input and the API widgets that implement it. Shared compatible scalar
+/// inputs use one free server primitive, so changing their card control updates every consumer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromotedInput {
+    pub instance: String,
+    pub name: String,
+    pub label: String,
+    pub kind: String,
+    pub targets: Vec<(String, String)>,
 }
 
 struct UiNode {
@@ -360,6 +419,7 @@ struct UiNode {
     output_types: Vec<String>,
     has_output_links: bool,
     widgets: Value,
+    named_widgets: Option<Map<String, Value>>,
 }
 
 struct UiInput {
@@ -374,7 +434,7 @@ enum Source<'a> {
         output: u32,
     },
     /// A value from a PrimitiveNode, with its own "control after generate" mode.
-    Value(&'a Value, Option<String>),
+    Value(&'a str, &'a Value, Option<String>),
 }
 
 /// ComfyUI writes ids as numbers; newer files may use strings.
@@ -407,6 +467,7 @@ fn parse_ui_node(v: &Value) -> Option<UiNode> {
         output_types,
         has_output_links,
         widgets: v.get("widgets_values").cloned().unwrap_or(Value::Null),
+        named_widgets: v.get("widgets_values_named").and_then(Value::as_object).cloned(),
     })
 }
 
@@ -429,36 +490,53 @@ impl ApiWorkflow {
             let catalog = catalog.ok_or_else(|| {
                 ComfyError::InvalidWorkflow("this is a ComfyUI editor (UI) workflow; connect to a server to convert it, or export it in API format".into())
             })?;
-            return from_ui(&v, catalog);
+            let mut conversion = from_ui(&v, catalog)?;
+            conversion.template = crate::templates::matching(&v)?;
+            return Ok(conversion);
         }
         Ok(Conversion { workflow: Self::from_api_json(v)?, ..Conversion::default() })
     }
 }
 
 fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
+    subgraphs::expand(v, catalog)
+}
+
+fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Value>, boundary: Option<&str>) -> Result<subgraphs::Flat, ComfyError> {
     let raw_nodes = v.get("nodes").and_then(Value::as_array).cloned().unwrap_or_default();
     if raw_nodes.len() > MAX_NODES {
         return Err(ComfyError::InvalidWorkflow(format!("{} nodes is more than the {MAX_NODES}-node limit", raw_nodes.len())));
     }
-    let subgraphs: HashSet<String> = v
-        .get("definitions")
-        .and_then(|d| d.get("subgraphs"))
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|s| s.get("id").and_then(Value::as_str)).map(str::to_owned).collect())
-        .unwrap_or_default();
     let group_nodes = v.get("extra").and_then(|e| e.get("groupNodes")).and_then(Value::as_object);
     let mut nodes: HashMap<String, UiNode> = HashMap::new();
     for raw in &raw_nodes {
         let node = parse_ui_node(raw).ok_or_else(|| ComfyError::InvalidWorkflow("a node has no id or type".into()))?;
-        if subgraphs.contains(&node.class) {
-            return Err(ComfyError::InvalidWorkflow("subgraphs aren't supported yet; unpack them in ComfyUI and export again".into()));
-        }
         let group_name = node.class.strip_prefix("workflow>").or_else(|| node.class.strip_prefix("workflow/"));
         if group_name.is_some_and(|g| group_nodes.is_none_or(|gn| gn.contains_key(g))) {
             return Err(ComfyError::InvalidWorkflow("group nodes aren't supported yet; convert them back to nodes in ComfyUI and export again".into()));
         }
         nodes.insert(node.id.clone(), node);
     }
+    if let Some(boundary) = boundary {
+        if nodes.contains_key(boundary) {
+            return Err(ComfyError::InvalidWorkflow("a subgraph input boundary reuses a node id".into()));
+        }
+        nodes.insert(
+            boundary.into(),
+            UiNode {
+                id: boundary.into(),
+                class: "NodeCraft input boundary".into(),
+                mode: 0,
+                title: None,
+                inputs: Vec::new(),
+                output_types: Vec::new(),
+                has_output_links: false,
+                widgets: Value::Null,
+                named_widgets: None,
+            },
+        );
+    }
+    let placeholder = |id: &str| boundary == Some(id) || nodes.get(id).is_some_and(|n| definitions.contains_key(&n.class));
     // link id -> (origin node, origin slot); both the array and the object link forms.
     let mut links: HashMap<i64, (String, u32)> = HashMap::new();
     for l in v.get("links").and_then(Value::as_array).into_iter().flatten() {
@@ -492,7 +570,7 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
             } else if origin.class == "PrimitiveNode" {
                 let widgets = origin.widgets.as_array()?;
                 let mode = widgets.get(1).and_then(Value::as_str).filter(|s| SEED_CONTROLS.contains(s)).map(str::to_owned);
-                return widgets.first().map(|v| Source::Value(v, mode));
+                return widgets.first().map(|v| Source::Value(origin.id.as_str(), v, mode));
             } else if origin.mode == MODE_MUTED {
                 return None;
             } else if origin.mode == MODE_BYPASS {
@@ -512,12 +590,16 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
     // copied into many consumers. Charge the retained output before each clone.
     let mut output_budget = crate::json_bounds::Budget::default();
     let mut conversion = Conversion::default();
+    let mut fallbacks = BTreeMap::new();
     let mut missing: Vec<String> = Vec::new();
     let mut ids: Vec<&String> = nodes.keys().collect();
     ids.sort_by(|a, b| id_order(a, b));
     for id in ids {
         let Some(node) = nodes.get(id) else { continue };
-        if node.mode == MODE_MUTED || node.mode == MODE_BYPASS || matches!(node.class.as_str(), "SetNode" | "GetNode") {
+        if node.mode == MODE_MUTED || node.mode == MODE_BYPASS || FRONTEND_ONLY.contains(&node.class.as_str()) {
+            continue;
+        }
+        if placeholder(id) {
             continue;
         }
         let Some(info) = catalog.get(&node.class) else {
@@ -554,7 +636,9 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
                 *consumed += 1;
             }
         };
-        for spec in &info.inputs {
+        let mut pending = info.inputs.iter().collect::<std::collections::VecDeque<_>>();
+        let mut choices = BTreeMap::new();
+        while let Some(spec) = pending.pop_front() {
             if !spec.required
                 && !upload_marker_checked
                 && let Some(values) = &mut positional
@@ -563,6 +647,9 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
                 skip_upload_marker(values, &mut consumed);
             }
             let linked = node.inputs.iter().find(|i| i.name == spec.name).and_then(|i| i.link).and_then(resolve);
+            if matches!(&spec.kind, InputKind::Link(kind) if matches!(kind.as_str(), "COMFY_DYNAMICCOMBO_V3" | "COMFY_AUTOGROW_V3")) {
+                return Err(ComfyError::InvalidWorkflow("dynamic widgets are not supported in UI workflow imports".into()));
+            }
             let mut widget_value = None;
             let mut own_mode = None;
             if spec.is_widget() {
@@ -586,14 +673,52 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
                     _ => {}
                 }
             }
+            // A dynamic selector is serialized as one ordinary combo value, followed by the
+            // selected branch's widgets. Resolve only literal frontend values or the saved
+            // boundary fallback here; finish/check validates the final expanded selection.
+            if info.combo_children(&spec.name, &choices).is_err() {
+                let selection = match &linked {
+                    Some(Source::Value(_, value, _)) => value.as_str(),
+                    Some(Source::Link { node, .. }) if !placeholder(node) => None,
+                    _ => widget_value.and_then(Value::as_str),
+                }
+                .filter(|s| s.len() <= 256)
+                .ok_or_else(|| {
+                    ComfyError::InvalidWorkflow("a dynamic selector needs a bounded literal saved option; export this workflow in API format".into())
+                })?;
+                output_budget.text(&spec.name, 0)?;
+                output_budget.text(selection, 0)?;
+                choices.insert(spec.name.clone(), selection.to_owned());
+                if let Some(children) = info.combo_children(&spec.name, &choices).map_err(|m| ComfyError::InvalidWorkflow(m.into()))? {
+                    output_budget.container(children.len(), 0)?;
+                    for child in children.iter().rev() {
+                        pending.push_front(child);
+                    }
+                }
+            }
             // The editor's seed mode belongs to whatever supplies the value: a primitive's own mode,
             // none for a live connection, else the node's saved one.
+            if matches!(&linked, Some(Source::Link { node, .. }) if placeholder(node))
+                && let Some(value) = widget_value
+            {
+                output_budget.value(value, 3)?;
+                output_budget.text(id, 0)?;
+                output_budget.text(&spec.name, 0)?;
+                fallbacks
+                    .insert((id.clone(), spec.name.clone()), subgraphs::Signal::Literal { value: value.clone(), mode: own_mode.clone(), inherit_mode: true });
+            }
             let (value, mode) = match linked {
                 Some(Source::Link { node, output }) => {
                     output_budget.text(node, 4)?;
                     (Some(InputValue::Link { node: node.into(), output }), None)
                 }
-                Some(Source::Value(v, mode)) => {
+                Some(Source::Value(source, _, mode)) if !spec.is_widget() => {
+                    let source = nodes.get(source).ok_or_else(|| ComfyError::InvalidWorkflow("a frontend primitive source is missing".into()))?;
+                    let InputKind::Link(wanted) = &spec.kind else { return Err(ComfyError::InvalidWorkflow("a connection has no server type".into())) };
+                    let id = primitive::materialize(catalog, &mut conversion, &mut output_budget, source, wanted, mode.as_deref())?;
+                    (Some(InputValue::Link { node: id, output: 0 }), None)
+                }
+                Some(Source::Value(_, v, mode)) => {
                     output_budget.value(v, 3)?;
                     (Some(InputValue::Value(v.clone())), mode)
                 }
@@ -621,36 +746,78 @@ fn from_ui(v: &Value, catalog: &NodeCatalog) -> Result<Conversion, ComfyError> {
         if !upload_marker_checked && let Some(values) = &mut positional {
             skip_upload_marker(values, &mut consumed);
         }
+        // Dynamic inputs some custom nodes add at runtime aren't in /object_info; keep their links.
+        for input in &node.inputs {
+            if !inputs.contains_key(&input.name) && info.input(&input.name).is_none() {
+                let Some(source) = input.link.and_then(resolve) else { continue };
+                output_budget.key(&input.name, 3)?;
+                let (source, output) = match source {
+                    Source::Link { node, output } => {
+                        output_budget.text(node, 4)?;
+                        (node.to_owned(), output)
+                    }
+                    Source::Value(source, _, mode) => {
+                        let wanted = info
+                            .dynamic_input_for_values(&input.name, &inputs)
+                            .ok()
+                            .flatten()
+                            .and_then(|s| match &s.kind {
+                                InputKind::Link(kind) => Some(kind.as_str()),
+                                _ => None,
+                            })
+                            .ok_or_else(|| ComfyError::InvalidWorkflow("an untyped dynamic input cannot import a frontend primitive".into()))?;
+                        let source = nodes.get(source).ok_or_else(|| ComfyError::InvalidWorkflow("a frontend primitive source is missing".into()))?;
+                        (primitive::materialize(catalog, &mut conversion, &mut output_budget, source, wanted, mode.as_deref())?, 0)
+                    }
+                };
+                inputs.insert(input.name.clone(), InputValue::Link { node: source, output });
+            }
+        }
+        let api = ApiNode { class_type: node.class.clone(), inputs, title: node.title.clone() };
         if let Some(saved) = saved
             && saved.len() != consumed
         {
-            conversion.warnings.push(format!(
-                "node {id} ({}): {} saved widget values but {consumed} matched the server's inputs; check its settings",
-                node.class,
-                saved.len()
-            ));
-        }
-        // Dynamic inputs some custom nodes add at runtime aren't in /object_info; keep their links.
-        for input in &node.inputs {
-            if !inputs.contains_key(&input.name)
-                && info.input(&input.name).is_none()
-                && let Some(Source::Link { node, output }) = input.link.and_then(resolve)
-            {
-                output_budget.key(&input.name, 3)?;
-                output_budget.text(node, 4)?;
-                inputs.insert(input.name.clone(), InputValue::Link { node: node.into(), output });
+            if !info.dynamic_combos.is_empty() {
+                if !named_suffix::matches(info, &api, node.named_widgets.as_ref(), saved, consumed) {
+                    return Err(ComfyError::InvalidWorkflow(
+                        "saved dynamic widget values do not match the selected options; export this workflow in API format".into(),
+                    ));
+                }
+                conversion.warnings.push(format!("node {id}: omitted one obsolete named UI widget after matching every active widget value"));
+            } else {
+                conversion.warnings.push(format!(
+                    "node {id} ({}): {} saved widget values but {consumed} matched the server's inputs; check its settings",
+                    node.class,
+                    saved.len()
+                ));
             }
         }
-        conversion.workflow.nodes.insert(node.id.clone(), ApiNode { class_type: node.class.clone(), inputs, title: node.title.clone() });
+        conversion.workflow.nodes.insert(node.id.clone(), api);
     }
     if !missing.is_empty() {
         return Err(ComfyError::MissingNodes(missing));
     }
-    if conversion.workflow.nodes.is_empty() {
+    if conversion.workflow.nodes.is_empty() && !nodes.values().any(|node| definitions.contains_key(&node.class)) {
         return Err(ComfyError::InvalidWorkflow("the workflow has no nodes the server can run".into()));
     }
     conversion.workflow.validate_budget(&mut crate::json_bounds::Budget::default(), 0)?;
-    Ok(conversion)
+    let mut bindings = BTreeMap::new();
+    for (id, node) in &nodes {
+        let Some(definition) = definitions.get(&node.class) else { continue };
+        let mut values = Vec::new();
+        for input in definition.get("inputs").and_then(Value::as_array).into_iter().flatten() {
+            let name = input.get("name").and_then(Value::as_str).unwrap_or_default();
+            let source = node.inputs.iter().find(|i| i.name == name).and_then(|i| i.link).and_then(resolve);
+            values.push(source.map(|source| subgraphs::copy_source(source, &mut output_budget, boundary)).transpose()?);
+        }
+        bindings.insert(id.clone(), values);
+    }
+    let mut outputs = Vec::new();
+    for output in v.get("outputs").and_then(Value::as_array).into_iter().flatten() {
+        let source = output.get("linkIds").and_then(Value::as_array).and_then(|ids| ids.first()).and_then(Value::as_i64).and_then(resolve);
+        outputs.push(source.map(|source| subgraphs::copy_source(source, &mut output_budget, boundary)).transpose()?);
+    }
+    Ok(subgraphs::Flat { conversion, bindings, outputs, fallbacks })
 }
 
 #[cfg(test)]
@@ -768,7 +935,7 @@ mod tests {
         let wf = ApiWorkflow::parse(looped.as_bytes(), Some(&c)).unwrap();
         assert!(wf.nodes["3"].inputs.is_empty());
         let subgraph = r#"{"nodes":[{"id":1,"type":"5d1f-uuid"}],"links":[],"definitions":{"subgraphs":[{"id":"5d1f-uuid"}]}}"#;
-        assert!(ApiWorkflow::parse(subgraph.as_bytes(), Some(&c)).unwrap_err().to_string().contains("subgraphs"));
+        assert!(ApiWorkflow::parse(subgraph.as_bytes(), Some(&c)).unwrap_err().to_string().contains("subgraph"));
     }
 
     /// Replaces random leaves of the fixtures with hostile values; conversion, checking and

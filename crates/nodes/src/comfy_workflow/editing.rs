@@ -15,8 +15,10 @@ pub fn bake_values(node: &Node, catalog: &NodeCatalog) -> Result<ApiWorkflow, Er
         if matches!(target.inputs.get(&parameter.input), Some(InputValue::Link { .. })) {
             return Err(invalid("a mapped widget is an internal connection"));
         }
-        let spec =
-            catalog.get(&target.class_type).and_then(|n| n.input(&parameter.input)).ok_or_else(|| invalid("the server no longer describes a mapped widget"))?;
+        let spec = catalog
+            .get(&target.class_type)
+            .and_then(|n| n.effective_input(&parameter.input, target))
+            .ok_or_else(|| invalid("the server no longer describes a mapped widget"))?;
         spec.check(&value).map_err(|_| invalid("a current widget value does not match the server; correct it before editing the mapping"))?;
         target.inputs.insert(parameter.input.clone(), InputValue::Value(value));
     }

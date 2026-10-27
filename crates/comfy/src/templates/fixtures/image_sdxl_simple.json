@@ -1,0 +1,285 @@
+{
+  "id": "0fe56559-1cb1-4fe8-955a-15de80e086e9",
+  "links": [
+    [
+      33,
+      10,
+      0,
+      12,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      34,
+      11,
+      0,
+      12,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      35,
+      13,
+      0,
+      12,
+      3,
+      "LATENT"
+    ],
+    [
+      36,
+      12,
+      0,
+      14,
+      0,
+      "LATENT"
+    ],
+    [
+      37,
+      14,
+      0,
+      7,
+      0,
+      "IMAGE"
+    ],
+    [
+      38,
+      15,
+      0,
+      12,
+      0,
+      "MODEL"
+    ],
+    [
+      39,
+      15,
+      1,
+      10,
+      0,
+      "CLIP"
+    ],
+    [
+      40,
+      15,
+      1,
+      11,
+      0,
+      "CLIP"
+    ],
+    [
+      41,
+      15,
+      2,
+      14,
+      1,
+      "VAE"
+    ]
+  ],
+  "nodes": [
+    {
+      "id": 7,
+      "type": "SaveImage",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 37
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "widgets_values": [
+        "NodeCraft"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "CLIPTextEncode",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 39
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            33
+          ]
+        }
+      ],
+      "widgets_values": [
+        "Original NodeCraft test prompt."
+      ]
+    },
+    {
+      "id": 11,
+      "type": "CLIPTextEncode",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 40
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            34
+          ]
+        }
+      ],
+      "widgets_values": [
+        "Original NodeCraft test prompt."
+      ]
+    },
+    {
+      "id": 12,
+      "type": "KSampler",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 38
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 33
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 34
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 35
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            36
+          ]
+        }
+      ],
+      "widgets_values": [
+        812045847300606,
+        "randomize",
+        25,
+        7,
+        "dpmpp_2m",
+        "karras",
+        1
+      ]
+    },
+    {
+      "id": 13,
+      "type": "EmptyLatentImage",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            35
+          ]
+        }
+      ],
+      "widgets_values": [
+        1024,
+        1024,
+        1
+      ]
+    },
+    {
+      "id": 14,
+      "type": "VAEDecode",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 36
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 41
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            37
+          ]
+        }
+      ],
+      "widgets_values": []
+    },
+    {
+      "id": 15,
+      "type": "CheckpointLoaderSimple",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            38
+          ]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            39,
+            40
+          ]
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            41
+          ]
+        }
+      ],
+      "widgets_values": [
+        "fixture-model.safetensors"
+      ]
+    },
+    {
+      "id": 16,
+      "type": "MarkdownNote",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "widgets_values": [
+        ""
+      ]
+    }
+  ],
+  "version": 0.4
+}

@@ -179,3 +179,69 @@ fn mapping947_noop_is_read_only_and_known_partner_evidence_cannot_be_hidden() {
     assert!(card::mapping(node(&s)).unwrap().partners.contains(&"FourViewModel".into()));
     assert!(s.kinds().get(card::ID).unwrap().unpriced(node(&s)).is_some());
 }
+
+#[test]
+fn templates948_hidden_nested_media_can_be_shown_again_with_a_valid_default_port_name() {
+    let mut s = ready();
+    let id = NodeId::from_bytes([42; 16]);
+    let workflow = json!({"nodes":[{"id":42,"type":"bundle"}],"links":[],"definitions":{"subgraphs":[{
+        "id":"bundle","inputNode":{"id":-10},"outputNode":{"id":-20},"inputs":[],"outputs":[],
+        "nodes":[{"id":1,"type":"LoadImage","outputs":[{"type":"IMAGE","links":[1]}],"widgets_values":["front.png","image"]},
+        {"id":2,"type":"SaveImage","inputs":[{"name":"images","type":"IMAGE","link":1}],"widgets_values":["NodeCraft"]}],
+        "links":[[1,1,0,2,0,"IMAGE"]]
+    }]}});
+    s.dispatch("comfy.workflow.import", &json!({"canvas":C,"id":id,"pos":{"x":500,"y":0},"workflow":workflow.to_string()})).unwrap();
+    let mut listed = s.dispatch("comfy.workflow.mapping", &json!({"canvas":C,"id":id})).unwrap();
+    let outputs = listed["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["selected"] == true)
+        .map(|o| json!({"node":o["node"],"label":o["label"]}))
+        .collect::<Vec<_>>();
+    s.dispatch("comfy.workflow.mapping_set", &json!({"canvas":C,"id":id,"binding":listed["binding"],"inputs":[],"outputs":outputs})).unwrap();
+    listed = s.dispatch("comfy.workflow.mapping", &json!({"canvas":C,"id":id})).unwrap();
+    let input = &listed["inputs"][0];
+    let name = input["name"].as_str().unwrap();
+    assert!(name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'));
+    s.dispatch(
+        "comfy.workflow.mapping_set",
+        &json!({"canvas":C,"id":id,"binding":listed["binding"],"inputs":[{"node":input["node"],"input":input["input"],"name":name}],"outputs":outputs}),
+    )
+    .unwrap();
+    assert_eq!(card::mapping(&s.document().canvases()[&C].nodes()[&id]).unwrap().inputs.len(), 1);
+}
+
+#[test]
+fn templates948_dynamic_dotted_parameters_survive_import_save_hide_and_restore() {
+    let mut s = ready();
+    let info=br#"{
+      "Dynamic":{"input":{"required":{"model":["COMFY_DYNAMICCOMBO_V3",{"options":[{"key":"small","inputs":{"required":{"resolution":[["64","128"],{}]}}}]}]}},"output":["IMAGE"]},
+      "SaveImage":{"input":{"required":{"images":["IMAGE",{}],"filename_prefix":["STRING",{}]}},"output":[],"output_node":true}
+    }"#;
+    let catalog = Arc::new(NodeCatalog::parse(info).unwrap().0);
+    super::super::finish(&mut s, 3, Ok(catalog.clone().into()));
+    let id = NodeId::from_bytes([48; 16]);
+    let flow = r#"{"1":{"class_type":"Dynamic","inputs":{"model":"small","model.resolution":"64"}},"2":{"class_type":"SaveImage","inputs":{"images":["1",0],"filename_prefix":"NodeCraft"}}}"#;
+    s.dispatch("comfy.workflow.import", &json!({"canvas":C,"id":id,"pos":{"x":500,"y":0},"workflow":flow})).unwrap();
+    let mapping = card::mapping(&s.document().canvases()[&C].nodes()[&id]).unwrap();
+    let param = mapping.params.iter().find(|p| p.input == "model.resolution").unwrap();
+    s.dispatch("node.param_set", &json!({"canvas":C,"id":id,"name":param.spec.name,"value":Typed::Text("128".into())})).unwrap();
+    let listed = s.dispatch("comfy.workflow.mapping", &json!({"canvas":C,"id":id})).unwrap();
+    s.dispatch("comfy.workflow.mapping_set", &json!({"canvas":C,"id":id,"binding":listed["binding"],"inputs":[],"outputs":[{"node":"2","label":"Image"}]}))
+        .unwrap();
+    let hidden = &s.document().canvases()[&C].nodes()[&id];
+    let workflow = card::bake_values(hidden, &catalog).unwrap();
+    assert_eq!(workflow.nodes["1"].inputs["model.resolution"], nodecraft_comfy::InputValue::Value(json!("128")));
+    workflow.check(&catalog).into_result().unwrap();
+    let snapshot = nodecraft_format::Snapshot { project: s.document().clone(), assets: s.assets().clone(), epoch: 0 };
+    let snapshot = nodecraft_format::decode(&nodecraft_format::encode(&snapshot).unwrap()).unwrap();
+    let mut s = Session::with_storage(snapshot, Box::new(nodecraft_format::MemoryStorage::default())).unwrap();
+    super::super::finish(&mut s, 4, Ok(catalog.into()));
+    let listed = s.dispatch("comfy.workflow.mapping", &json!({"canvas":C,"id":id})).unwrap();
+    s.dispatch("comfy.workflow.mapping_set",&json!({"canvas":C,"id":id,"binding":listed["binding"],"inputs":[{"node":"1","input":"model.resolution","name":"Size"}],"outputs":[{"node":"2","label":"Image"}]})).unwrap();
+    let restored = &s.document().canvases()[&C].nodes()[&id];
+    let mapping = card::mapping(restored).unwrap();
+    assert_eq!(restored.params[&mapping.params[0].spec.name], Typed::Text("128".into()));
+    assert_eq!(restored.config[card::VERSION], Typed::Unsigned(nodecraft_types::Unsigned(2)));
+}

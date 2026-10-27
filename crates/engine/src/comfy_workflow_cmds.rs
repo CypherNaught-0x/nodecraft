@@ -240,7 +240,7 @@ struct ImportParams {
     /// The card's title; the workflow's when absent.
     #[serde(default)]
     title: Option<String>,
-    /// The inputs to make parameters, as `node.input`; prompts, seeds, steps, CFG and image dimensions when absent. File
+    /// The inputs to make parameters, as `node.input`; curated template fields or common generation settings when absent. File
     /// inputs are always ports.
     #[serde(default)]
     params: Option<Vec<String>>,
@@ -319,7 +319,7 @@ pub(crate) fn dropped_card(session: &Session, id: NodeId, workflow: &str, name: 
 }
 
 /// A `comfy_workflow` card for `workflow` read with the server's `catalog`, exposing its media
-/// inputs and the named `params` (prompts, seeds, steps, CFG and image dimensions when `None`), and the import's warnings.
+/// inputs and the named `params` (curated fields or common generation settings when `None`), and the import's warnings.
 fn card(
     catalog: &NodeCatalog,
     kinds: &nodecraft_nodes::Registry,
@@ -347,9 +347,16 @@ fn card(
     }
     let mut exposed =
         nodecraft_comfy::discover(&workflow, catalog).map_err(|e| Error::new(ErrorKind::InvalidInput, format!("this ComfyUI workflow can't be read: {e}")))?;
+    nodecraft_comfy::annotate_promoted(&mut exposed, &conversion.promoted);
     let media = |input: &nodecraft_comfy::ExposedInput| matches!(input.kind, nodecraft_comfy::ExposedKind::Media(_));
     match params {
-        None => exposed.inputs.retain(|input| media(input) || input.role.exposed_by_default()),
+        None => {
+            let curated = nodecraft_comfy::curate_template(conversion.template, &conversion.promoted, &mut exposed)
+                .map_err(|e| Error::new(ErrorKind::InvalidInput, e.to_string()))?;
+            if !curated {
+                exposed.inputs.retain(|input| media(input) || input.role.exposed_by_default());
+            }
+        }
         Some(names) => {
             let wanted: BTreeSet<&str> = names.iter().map(String::as_str).collect();
             let offered: BTreeSet<String> = exposed.inputs.iter().filter(|input| !media(input)).map(full_name).collect();

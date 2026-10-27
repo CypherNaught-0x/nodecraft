@@ -28,7 +28,7 @@ pub const MODEL_ID: &str = "comfyui.workflow";
 pub const REMOTE_MODEL: &str = "workflow";
 /// The card's model parameter; the run picker and admission read it like a generation card's.
 pub const MODEL: &str = "model";
-/// Config: version 1, or version 2 when media list ports have custom names (#947).
+/// Config: version 1, or version 2 for custom media list names or dotted V3 input paths.
 pub const VERSION: &str = "comfy.workflow.version";
 /// Config: the [`Mapping`], as JSON text.
 pub const MAPPING: &str = "comfy.workflow.v1.mapping";
@@ -152,6 +152,12 @@ fn target(text: &str) -> bool {
     !text.is_empty() && text.len() <= MAX_TARGET_BYTES && !text.chars().any(char::is_control) && !text.contains('.')
 }
 
+// API node ids stay dot-free because jobs use `<node>.<input>` roles. Dynamic input
+// paths are dotted by the public V3 protocol and split_once preserves the remaining path.
+fn input_target(text: &str) -> bool {
+    !text.is_empty() && text.len() <= MAX_TARGET_BYTES && !text.chars().any(char::is_control) && text.split('.').all(|part| !part.is_empty())
+}
+
 /// `text` cut to at most `max` bytes, at a character boundary.
 fn bounded(text: &str, max: usize) -> String {
     let mut end = text.len().min(max);
@@ -190,7 +196,7 @@ impl Mapping {
         let mut targets = BTreeSet::new();
         let mut ports = BTreeSet::new();
         for input in &self.inputs {
-            if !target(&input.node) || !target(&input.input) || !is_media(input.modality) {
+            if !target(&input.node) || !input_target(&input.input) || !is_media(input.modality) {
                 return Err(invalid("a ComfyUI workflow card's file input is malformed"));
             }
             if !targets.insert((input.node.as_str(), input.input.as_str())) || !ports.insert(input.port.as_str()) {
@@ -199,7 +205,7 @@ impl Mapping {
         }
         let mut names = BTreeSet::from([MODEL]);
         for param in &self.params {
-            if !target(&param.node) || !target(&param.input) {
+            if !target(&param.node) || !input_target(&param.input) {
                 return Err(invalid("a ComfyUI workflow card's parameter is malformed"));
             }
             if !targets.insert((param.node.as_str(), param.input.as_str())) || !names.insert(param.spec.name.as_str()) {
@@ -263,8 +269,11 @@ impl Card {
         if mapping.len() > MAX_MAPPING_BYTES {
             return Err(Error::new(ErrorKind::Overflow, "this ComfyUI workflow exposes too much to place as a card"));
         }
+        let extended = !self.mapping.output_names.is_empty()
+            || self.mapping.inputs.iter().any(|i| i.input.contains('.'))
+            || self.mapping.params.iter().any(|p| p.input.contains('.'));
         Ok([
-            (VERSION.to_owned(), Value::Unsigned(Unsigned(if self.mapping.output_names.is_empty() { VERSION_1 } else { VERSION_2 }))),
+            (VERSION.to_owned(), Value::Unsigned(Unsigned(if extended { VERSION_2 } else { VERSION_1 }))),
             (MAPPING.to_owned(), Value::Text(mapping)),
             (WORKFLOW.to_owned(), Value::Text(self.workflow.clone())),
         ]

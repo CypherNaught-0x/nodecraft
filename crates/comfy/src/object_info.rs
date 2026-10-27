@@ -9,6 +9,8 @@ use serde_json::Value;
 
 use crate::ComfyError;
 use crate::ordered::OValue;
+mod combo;
+mod dynamic;
 
 /// Cap on an `/object_info` reply. Large installs with many custom nodes send tens of MB.
 pub const MAX_OBJECT_INFO_BYTES: usize = 128 * 1024 * 1024;
@@ -151,6 +153,8 @@ pub struct NodeInfo {
     pub display_name: String,
     pub category: String,
     pub inputs: Vec<InputSpec>,
+    pub(crate) dynamic_inputs: Vec<dynamic::Autogrow>,
+    pub(crate) dynamic_combos: Vec<combo::Combo>,
     pub outputs: Vec<OutputSpec>,
     /// Output nodes (savers, previews) are what a prompt executes towards.
     pub output_node: bool,
@@ -161,6 +165,50 @@ pub struct NodeInfo {
 impl NodeInfo {
     pub fn input(&self, name: &str) -> Option<&InputSpec> {
         self.inputs.iter().find(|i| i.name == name)
+    }
+
+    pub(crate) fn dynamic_input(&self, name: &str) -> Result<Option<&InputSpec>, &'static str> {
+        dynamic::input(&self.dynamic_inputs, name)
+    }
+    /// Ordinary fields and the active DynamicCombo branches, preserving their widget order.
+    /// Selection is taken from literal API inputs; links never guess an active branch.
+    pub fn effective_inputs(&self, node: &crate::ApiNode) -> Vec<&InputSpec> {
+        let mut out = Vec::new();
+        for spec in &self.inputs {
+            out.push(spec);
+            if let Some(combo) = self.dynamic_combos.iter().find(|c| c.selector.name == spec.name) {
+                combo.append(&node.inputs, &mut out);
+            }
+        }
+        out
+    }
+    pub fn effective_input(&self, name: &str, node: &crate::ApiNode) -> Option<&InputSpec> {
+        self.input(name).or_else(|| self.dynamic_input_for(name, node).ok().flatten())
+    }
+    pub(crate) fn dynamic_input_for(&self, name: &str, node: &crate::ApiNode) -> Result<Option<&InputSpec>, &'static str> {
+        self.dynamic_input_for_values(name, &node.inputs)
+    }
+    pub(crate) fn dynamic_input_for_values(&self, name: &str, values: &BTreeMap<String, crate::InputValue>) -> Result<Option<&InputSpec>, &'static str> {
+        if let Some(spec) = self.dynamic_input(name)? {
+            return Ok(Some(spec));
+        }
+        for combo in &self.dynamic_combos {
+            if let Some(spec) = combo.dynamic_input(name, values)? {
+                return Ok(Some(spec));
+            }
+        }
+        Ok(None)
+    }
+    pub(crate) fn is_dynamic_selector(&self, name: &str, node: &crate::ApiNode) -> bool {
+        self.dynamic_combos.iter().any(|combo| combo.is_selector(name, &node.inputs))
+    }
+    pub(crate) fn combo_children(&self, name: &str, choices: &BTreeMap<String, String>) -> Result<Option<&[InputSpec]>, &'static str> {
+        for combo in &self.dynamic_combos {
+            if let Some(fields) = combo.children(name, choices)? {
+                return Ok(Some(fields));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -233,6 +281,9 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
     let input = obj.get("input").and_then(Value::as_object);
     let order = obj.get("input_order").and_then(Value::as_object);
     let mut inputs = Vec::new();
+    let mut dynamic_inputs = Vec::new();
+    let mut dynamic_combos = Vec::new();
+    let mut dynamic_count = 0usize;
     for (section, required) in [("required", true), ("optional", false)] {
         let Some(specs) = input.and_then(|i| i.get(section)).and_then(Value::as_object) else { continue };
         // `input_order` (newer servers) is authoritative; otherwise the document order.
@@ -244,6 +295,22 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
         // the first occurrence before copying defaults/options, preserving tolerant parsing.
         let mut seen = HashSet::new();
         for name in names.iter().filter(|name| seen.insert(name.as_str())) {
+            if specs.get(name).and_then(|s| s.get(0)).and_then(Value::as_str) == Some("COMFY_DYNAMICCOMBO_V3") {
+                let compiled = ordered
+                    .get("input")
+                    .and_then(|i| i.get(section))
+                    .and_then(|i| i.get(name))
+                    .and_then(|raw| combo::Combo::parse(name, raw, specs.get(name)?, required, &mut dynamic_count, 0));
+                if let Some(combo) = compiled {
+                    inputs.push(combo.selector.clone());
+                    dynamic_combos.push(combo);
+                    continue;
+                }
+            }
+            if let Some(group) = specs.get(name).and_then(|s| dynamic::Autogrow::parse(name, s)) {
+                dynamic_inputs.push(group);
+                continue;
+            }
             if let Some(mut spec) = specs.get(name).and_then(|s| parse_input(name, s, required)) {
                 if let InputKind::Combo { upload: upload @ None, .. } = &mut spec.kind {
                     *upload = unflagged_upload(class, name);
@@ -251,6 +318,9 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
                 inputs.push(spec);
             }
         }
+    }
+    if dynamic_combos.iter().any(|combo| inputs.iter().any(|spec| spec.name.strip_prefix(&combo.selector.name).is_some_and(|suffix| suffix.starts_with('.')))) {
+        return None;
     }
     let types = obj.get("output").and_then(Value::as_array).cloned().unwrap_or_default();
     let names = obj.get("output_name").and_then(Value::as_array);
@@ -260,6 +330,7 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
         .enumerate()
         .map(|(i, t)| {
             let kind = match t {
+                Value::String(s) if s == "COMFY_MATCHTYPE_V3" => "*".into(),
                 Value::String(s) => s.clone(),
                 Value::Array(_) => "COMBO".into(),
                 other => other.to_string(),
@@ -275,6 +346,8 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
         display_name,
         category: text("category"),
         inputs,
+        dynamic_inputs,
+        dynamic_combos,
         outputs,
         output_node: obj.get("output_node").and_then(Value::as_bool).unwrap_or(false),
         api_node: obj.get("api_node").and_then(Value::as_bool).unwrap_or(false),
@@ -292,6 +365,7 @@ fn parse_input(name: &str, spec: &Value, required: bool) -> Option<InputSpec> {
     let force_input = opts.get("forceInput").and_then(Value::as_bool).unwrap_or(false);
     let kind = match ty {
         Value::Array(options) => combo(strings(&Value::Array(options.clone())).unwrap_or_default(), opts),
+        Value::String(t) if t == "COMFY_MATCHTYPE_V3" => InputKind::Link("*".into()),
         Value::String(t) if force_input => InputKind::Link(t.clone()),
         Value::String(t) => match t.as_str() {
             "INT" => InputKind::Int { default: i("default"), min: i("min"), max: i("max"), step: i("step") },

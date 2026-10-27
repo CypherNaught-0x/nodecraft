@@ -1,0 +1,87 @@
+{
+  "ResizeImageMaskNode": {
+    "input": {
+      "required": {
+        "input": [
+          "COMFY_MATCHTYPE_V3",
+          {
+            "forceInput": true
+          }
+        ],
+        "resize_type": [
+          "COMFY_DYNAMICCOMBO_V3",
+          {
+            "options": [
+              {
+                "key": "scale dimensions",
+                "inputs": {
+                  "required": {
+                    "width": [
+                      "INT",
+                      {
+                        "min": 0,
+                        "max": 8192
+                      }
+                    ],
+                    "height": [
+                      "INT",
+                      {
+                        "min": 0,
+                        "max": 8192
+                      }
+                    ],
+                    "crop": [
+                      [
+                        "disabled",
+                        "center"
+                      ],
+                      {}
+                    ]
+                  }
+                }
+              },
+              {
+                "key": "scale longer dimension",
+                "inputs": {
+                  "required": {
+                    "longer_size": [
+                      "INT",
+                      {
+                        "min": 0,
+                        "max": 8192
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "scale_method": [
+          [
+            "nearest-exact",
+            "bilinear",
+            "area",
+            "bicubic",
+            "lanczos"
+          ],
+          {}
+        ]
+      },
+      "optional": {}
+    },
+    "input_order": {
+      "required": [
+        "input",
+        "resize_type",
+        "scale_method"
+      ],
+      "optional": []
+    },
+    "output": [
+      "COMFY_MATCHTYPE_V3"
+    ],
+    "output_node": false,
+    "api_node": false
+  }
+}

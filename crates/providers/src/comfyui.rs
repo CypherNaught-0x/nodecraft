@@ -247,14 +247,19 @@ impl ComfyProvider {
         };
         let empty = Map::new();
         let carried: Map<String, Value>;
-        let (mut workflow, values) = match (job.params.get("workflow"), template::card_text(job, template::CARD_WORKFLOW)) {
+        let (mut workflow, values, pruned_values, pruned_uploads) = match (job.params.get("workflow"), template::card_text(job, template::CARD_WORKFLOW)) {
             (Some(raw), None) => {
                 if template::card_text(job, template::CARD_VALUES).is_some() || template::card_text(job, template::CARD_OUTPUTS).is_some() {
                     return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job mixes a workflow card's inputs into another workflow")));
                 }
                 let bytes = serde_json::to_vec(raw).map_err(|e| plain(ProviderError::new(ErrorKind::UnsupportedInput, e.to_string())))?;
                 let workflow = ApiWorkflow::parse(&bytes, Some(catalog)).map_err(from_catalog)?;
-                (workflow, job.params.get("values").and_then(Value::as_object).unwrap_or(&empty))
+                (
+                    workflow,
+                    job.params.get("values").and_then(Value::as_object).unwrap_or(&empty),
+                    std::collections::BTreeSet::new(),
+                    std::collections::BTreeSet::new(),
+                )
             }
             // A workflow card (#9) carries its workflow and values as text inputs.
             (None, Some(text)) => {
@@ -266,14 +271,43 @@ impl ComfyProvider {
                     return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the card's ComfyUI workflow is too large")));
                 }
                 let mut workflow = ApiWorkflow::parse(text.as_bytes(), Some(catalog)).map_err(from_catalog)?;
+                // Remember only supplied, valid original targets. Their role strings are
+                // already bounded by the card/job budgets; no values, nodes or media clone.
+                let mut pruned_values = carried
+                    .iter()
+                    .filter_map(|(target, value)| {
+                        let (id, name) = split_target(target).ok()?;
+                        let node = workflow.nodes.get(id)?;
+                        let spec = catalog.get(&node.class_type)?.effective_input(name, node)?;
+                        spec.check(value).is_ok().then(|| target.clone())
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
+                let mut pruned_uploads = job
+                    .inputs
+                    .iter()
+                    .filter_map(|input| {
+                        let JobInput::Media { role, .. } = input else {
+                            return None;
+                        };
+                        let (id, name) = split_target(role).ok()?;
+                        let node = workflow.nodes.get(id)?;
+                        let spec = catalog.get(&node.class_type)?.input(name)?;
+                        matches!(spec.kind, InputKind::Combo { upload: Some(_), .. }).then(|| role.clone())
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
                 keep_card_outputs(&mut workflow, job, catalog).map_err(plain)?;
-                (workflow, &carried)
+                pruned_values.retain(|target| split_target(target).is_ok_and(|(id, _)| !workflow.nodes.contains_key(id)));
+                pruned_uploads.retain(|target| split_target(target).is_ok_and(|(id, _)| !workflow.nodes.contains_key(id)));
+                (workflow, &carried, pruned_values, pruned_uploads)
             }
             (Some(_), Some(_)) => return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job carries two ComfyUI workflows"))),
             (None, None) => return Err(plain(ProviderError::new(ErrorKind::UnsupportedInput, "the job has no ComfyUI workflow"))),
         };
         for (target, value) in values {
             let (node, input) = split_target(target).map_err(plain)?;
+            if pruned_values.contains(target) {
+                continue;
+            }
             workflow.set_input(catalog, node, input, value.clone()).map_err(from_catalog)?;
         }
         // Every media input must target an upload input of a node in the workflow.
@@ -281,6 +315,9 @@ impl ComfyProvider {
         for input in &job.inputs {
             let JobInput::Media { role, bytes, .. } = input else { continue };
             let (node, name) = split_target(role).map_err(plain)?;
+            if pruned_uploads.contains(role) {
+                continue;
+            }
             let class = workflow
                 .nodes
                 .get(node)
@@ -465,11 +502,10 @@ pub(crate) fn card_values(job: &ProviderJob) -> Result<Map<String, Value>, Provi
     Ok(values)
 }
 
-/// Keeps only a workflow card's output nodes (#9), named by its outputs input as a JSON list of
-/// node ids: the workflow's other output nodes are dropped before it is queued, so the server
-/// never runs them and no file comes back that the card has no port for. A node another node
-/// reads from is kept. No outputs input keeps every node.
-pub(crate) fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, catalog: &NodeCatalog) -> Result<(), ProviderError> {
+/// Keeps a card's explicitly selected outputs and their complete dependency closure. Unrelated
+/// helpers and unselected paid/saver branches cannot block validation or run accidentally.
+/// Every required ancestor remains checked. No outputs input keeps every node.
+pub(crate) fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, _: &NodeCatalog) -> Result<(), ProviderError> {
     let refused = |message: String| ProviderError::new(ErrorKind::UnsupportedInput, format!("the card's ComfyUI outputs {message}"));
     let Some(text) = template::card_text(job, template::CARD_OUTPUTS) else { return Ok(()) };
     if text.len() > MAX_CARD_TEXT_BYTES {
@@ -485,25 +521,7 @@ pub(crate) fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, c
         let shown: String = missing.chars().take(64).collect();
         return Err(refused(format!("name node {shown}, which the workflow doesn't have")));
     }
-    let read: std::collections::BTreeSet<&str> = workflow
-        .nodes
-        .values()
-        .flat_map(|node| node.inputs.values())
-        .filter_map(|value| match value {
-            comfy::InputValue::Link { node, .. } => Some(node.as_str()),
-            comfy::InputValue::Value(_) => None,
-        })
-        .collect();
-    let dropped: Vec<String> = workflow
-        .nodes
-        .iter()
-        .filter(|(id, node)| !kept.contains(*id) && !read.contains(id.as_str()) && catalog.get(&node.class_type).is_some_and(|info| info.output_node))
-        .map(|(id, _)| id.clone())
-        .collect();
-    for id in dropped {
-        workflow.nodes.remove(&id);
-    }
-    Ok(())
+    workflow.retain_upstream(&kept.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|_| refused("have invalid or oversized dependencies".into()))
 }
 
 pub(crate) fn split_target(target: &str) -> Result<(&str, &str), ProviderError> {
