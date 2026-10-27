@@ -89,6 +89,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     assert_eq!(setup.readiness("meshy"), Some(&Readiness::NeedsKey { account: "meshy".into() }));
     assert_eq!(setup.readiness("higgsfield"), Some(&Readiness::NeedsKey { account: "higgsfield".into() }));
     assert_eq!(setup.readiness("kling"), Some(&Readiness::NeedsKey { account: "kling".into() }));
+    assert_eq!(setup.readiness("magnific"), Some(&Readiness::NeedsKey { account: "magnific".into() }));
     assert!(matches!(setup.readiness("comfyui"), Some(Readiness::NotSetUp(why)) if why.contains("[[providers.comfyui]]")));
     let error = setup.routing([(NODE, "openai-images")]).err().unwrap();
     assert_eq!(error.kind, ErrorKind::Unsupported);
@@ -119,6 +120,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "elevenlabs",
         "deepgram",
         "stability",
+        "magnific",
         "comfyui:gpu-box:8188",
     ] {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
@@ -155,6 +157,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "elevenlabs",
         "deepgram",
         "stability",
+        "magnific",
         "bfl",
         "comfyui",
     ]
