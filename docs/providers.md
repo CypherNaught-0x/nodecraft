@@ -27,6 +27,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file or pasting its JSON on the canvas does the same. Pasted workflow text is titled Pasted workflow because the text clipboard supplies no filename; a file drop keeps its filename. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
+| **Magnific** | `magnific` | separate `magnific` key (`x-magnific-api-key`) | one image → Precision V2 photo enhancement, 2× or 4× | Native streamed project storage required. Credit-based monetary cost stays unknown and requires consent. Saved task polling, no ambiguous submit replay or remote cancellation; delivery links expire after 30 minutes. See below. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
@@ -1992,6 +1993,48 @@ uncertain billing without API credit. Live generation has not been run. The igno
 `alibaba32_live_smoke` requires explicit test opt-ins plus `FAL_KEY` and spends $0.04 on one
 1K Qwen image; it never runs in CI.
 
+
+## Magnific Precision V2
+
+Add your current Magnific API key under **magnific** in API keys, then connect one Image
+source to a Generate image card and choose **Magnific Precision V2**
+(`magnific.precision-v2`). The API uses `https://api.magnific.com` and
+`x-magnific-api-key`; a fal key is a different account. The key's **Test** action reports
+that no free verification request is known and sends nothing. It never buys an upscale to
+test a key. This integration needs the desktop or native CLI host and streamed project
+storage; browser and Classic in-memory projects refuse before submission.
+
+The supported client subset is one upright, static PNG, JPEG or WebP, at most **1 MiB** and
+**1024 pixels per axis**. Choose **2×** or **4×**, with **Sharpen**, **Smart grain** and
+**Ultra detail** integer controls from 0 to 100 (defaults 7, 7 and 30). Flavor stays `photo`
+and NSFW filtering stays enabled. Apply EXIF rotation/reflection locally before submitting.
+Text retained on the card does not guide this model. No prompt, seed, image-count,
+output-format, webhook or deduplication field is invented. Other Magnific models and larger
+scales are outside this initial integration.
+
+The current [Precision V2 API](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/post-image-upscaler-precision-v2)
+and [overview](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/overview)
+were checked on **2026-10-27**. [API pricing](https://docs.magnific.com/pricing) consumes
+organizational credits even when a plan includes unlimited use in the web app. No verified
+current credit-to-currency rate is available, so the quote is **unknown**, never free or a
+fixed EUR amount. Running requires explicit acceptance of one unpriced job; finite monetary
+budgets cannot establish that an unknown price fits. The adapter does not invent an invoice.
+
+Submission stores a task UUID for polling after restart. Lost or ambiguous paid replies are
+never automatically replayed, and the API has no documented remote cancellation contract.
+Cancelling locally does not promise to stop the provider or avoid credit consumption. The
+[quickstart](https://docs.magnific.com/quickstart) says output links expire **30 minutes after
+generation** and cannot be recovered. NodeCraft downloads a completed result promptly;
+resuming a task after that interval cannot guarantee recovering its file and never silently
+pays for a replacement.
+
+One actual PNG, JPEG or WebP result must match the input dimensions times the selected
+factor, within 4096 pixels per axis and 16,777,216 pixels. Per-result and aggregate byte
+limits are 256 MiB, with separate decoder limits. These are NodeCraft limits, not a claimed
+vendor ceiling. Downloads use the exact documented `ai-statics.freepik.com` delivery host,
+carry no API key and follow no redirects. Original bytes are retained in history and saved
+projects. No paid live generation was used as validation; ordinary tests use authored media
+and mock HTTP, and a paid smoke test is explicitly opt-in.
 
 ## Rodin through fal
 

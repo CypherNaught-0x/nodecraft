@@ -142,6 +142,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
   Pixel-based credits remain an unknown monetary price and require consent. Image editing and
   other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
+- **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
+  photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
+  spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
+  in-memory storage refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a

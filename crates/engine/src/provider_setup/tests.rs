@@ -474,3 +474,19 @@ fn deepgram40_host_uses_its_keychain_account() {
     assert!(!provider.retry_ambiguous_submit());
     assert_eq!(http.0.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn magnific38_host_uses_a_separate_key_account_and_construction_sends_nothing() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings::default();
+    assert_eq!(key_account("magnific"), Some("magnific"));
+    assert!(matches!(make("magnific", &env(&keys, &http, &settings)), Err(Readiness::NeedsKey { account }) if account == "magnific"));
+    keys.set(&Account::new("fal").unwrap(), &Secret::new("public-other-account-fixture").unwrap()).unwrap();
+    assert!(matches!(make("magnific", &env(&keys, &http, &settings)), Err(Readiness::NeedsKey { .. })));
+    keys.set(&Account::new("magnific").unwrap(), &Secret::new("public-magnific-fixture-38").unwrap()).unwrap();
+    let provider = make("magnific", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "magnific");
+    assert!(!provider.retry_ambiguous_submit());
+    assert_eq!(http.0.load(Ordering::SeqCst), 0, "creating an adapter never validates a key with a paid request");
+}

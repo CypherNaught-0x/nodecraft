@@ -201,3 +201,6 @@ mod templates952_author;
 
 #[path = "templates952.rs"]
 mod templates952;
+
+#[path = "magnific38.rs"]
+mod magnific38;
