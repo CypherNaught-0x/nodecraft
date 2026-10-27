@@ -20,6 +20,8 @@ mod live_openai_images;
 mod live_replicate;
 #[path = "live_seedream.rs"]
 mod live_seedream;
+#[path = "live_stability.rs"]
+mod live_stability;
 #[path = "llm_catalog.rs"]
 mod llm_catalog;
 #[path = "llm_stream.rs"]

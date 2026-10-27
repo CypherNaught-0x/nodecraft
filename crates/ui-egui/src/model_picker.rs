@@ -383,6 +383,8 @@ mod grok31_tests;
 
 #[cfg(test)]
 mod hunyuan42_tests;
+#[cfg(test)]
+mod stability36_tests;
 
 #[cfg(test)]
 mod alibaba32_tests;

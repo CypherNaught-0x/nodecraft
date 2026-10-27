@@ -56,6 +56,8 @@ kling = ["dep:base64", "dep:hmac", "dep:sha2", "dep:web-time"]
 elevenlabs = []
 # Deepgram prerecorded Nova-3 speech-to-text.
 deepgram = []
+# First-party Stable Image, Audio and Fast 3D over the common task host.
+stability = []
 # Comfy Cloud: workflows on Comfy-hosted GPUs through its v2 jobs and assets API.
 comfy-cloud = ["comfyui"]
 # Google Cloud service accounts: the account's key signs the token request.

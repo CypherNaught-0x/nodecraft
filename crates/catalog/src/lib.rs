@@ -28,6 +28,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("azure-openai.toml", include_str!("../../../assets/catalog/azure-openai.toml")),
     ("anthropic.toml", include_str!("../../../assets/catalog/anthropic.toml")),
     ("deepgram.toml", include_str!("../../../assets/catalog/deepgram.toml")),
+    ("stability.toml", include_str!("../../../assets/catalog/stability.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("luma.toml", include_str!("../../../assets/catalog/luma.toml")),
     ("hunyuan.toml", include_str!("../../../assets/catalog/hunyuan.toml")),

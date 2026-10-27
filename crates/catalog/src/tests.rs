@@ -146,6 +146,14 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 "elevenlabs.voice-changer" => assert_eq!(model.quote(&ParamValues::new()).unwrap(), None),
                 other => panic!("{other}: no verified price in this test"),
             }
+        } else if model.provider == "stability" {
+            let micros = match model.id.as_str() {
+                "stability.image-core" => 30_000,
+                "stability.audio3" => 80_000,
+                "stability.fast-3d" => 100_000,
+                other => panic!("{other}: no verified Stability price"),
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)));
         } else if model.provider == "seedream" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
@@ -266,6 +274,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("openai-images.sunburst", true),
             ("replicate.sdxl", true),
             ("seedream.4_5", true),
+            ("stability.image-core", true),
             ("anthropic.claude-opus-5-5", false),
             ("anthropic.claude-sonnet-5-5", false),
             ("anthropic.claude-haiku-5-5", false),
@@ -344,6 +353,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("seedance.2-5", false),
             ("seedance.2-0-fast", false),
             ("seedance.2-0-mini", false),
+            ("stability.audio3", false),
+            ("stability.fast-3d", false),
             ("test.video", false),
             ("tripo.image-to-3d", false),
             ("tripo.multiview-to-3d", false),

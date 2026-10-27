@@ -1,0 +1,120 @@
+# Direct first-party Stability APIs, checked 2026-10-27 against current migrated reference.
+# https://docs.stability.ai/pricing and /openapi.json (1 credit = 0.01 USD).
+# The old platform.stability.ai/pricing audio table disagrees; current Audio3 operation,
+# current pricing and current OpenAPI agree on 8 credits. See docs/providers.md.
+
+[[model]]
+id="stability.image-core"
+provider="stability"
+provider_model="stable-image-core"
+label="Stable Image Core"
+description="Generate one 1.5 MP raster image through the direct Stability API. Up to 16 MiB; PNG, JPEG or WebP."
+latency_s=15
+quality=3
+pricing={type="per_call",price="0.03 USD"}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="1:1",label="1:1"},{value="21:9",label="21:9"},{value="16:9",label="16:9"},{value="3:2",label="3:2"},{value="5:4",label="5:4"},{value="4:5",label="4:5"},{value="2:3",label="2:3"},{value="9:16",label="9:16"},{value="9:21",label="9:21"}]}
+default={type="text",value="1:1"}
+
+[[model.params.params]]
+name="negative_prompt"
+label="Negative prompt (up to 10,000 characters)"
+control={type="text",multiline=true,max_bytes=40000}
+default={type="text",value=""}
+
+[[model.params.params]]
+name="output_format"
+label="Output format"
+control={type="choice",options=[{value="png",label="PNG"},{value="jpeg",label="JPEG"},{value="webp",label="WebP"}]}
+default={type="text",value="png"}
+
+[[model.params.params]]
+name="seed"
+label="Seed (0 is random)"
+control={type="unsigned",min="0",max="4294967294",step="1"}
+default={type="unsigned",value="0"}
+
+[[model]]
+id="stability.audio3"
+provider="stability"
+provider_model="stable-audio-3"
+label="Stable Audio 3 Large"
+description="Generate 1–380 seconds of stereo 44.1 kHz WAV through Stability's direct async API. Up to 128 MiB; resumes an accepted generation."
+latency_s=60
+quality=3
+pricing={type="per_call",price="0.08 USD"}
+
+[[model.modes]]
+id="text-to-audio"
+output="audio"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="duration_seconds"
+label="Seconds"
+control={type="unsigned",min="1",max="380",step="1"}
+default={type="unsigned",value="30"}
+
+[[model.params.params]]
+name="steps"
+label="Steps"
+control={type="unsigned",min="4",max="8",step="1"}
+default={type="unsigned",value="8"}
+
+[[model.params.params]]
+name="cfg_scale"
+label="Prompt guidance"
+control={type="slider",min=1.0,max=25.0,step=0.1}
+default={type="number",value=1.0}
+
+[[model.params.params]]
+name="seed"
+label="Seed (0 is random)"
+control={type="unsigned",min="0",max="4294967294",step="1"}
+default={type="unsigned",value="0"}
+
+[[model]]
+id="stability.fast-3d"
+provider="stability"
+provider_model="stable-fast-3d"
+label="Stable Fast 3D"
+description="Turn one JPEG, PNG or WebP into a self-contained GLB. Host inputs: 64–2048 px per side, 4 MiB; result up to 64 MiB."
+latency_s=15
+quality=3
+pricing={type="per_call",price="0.10 USD"}
+
+[[model.modes]]
+id="image-to-mesh"
+output="mesh"
+inputs=[{role="image",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="texture_resolution"
+label="Texture resolution"
+control={type="choice",options=[{value="512",label="512 px"},{value="1024",label="1024 px"},{value="2048",label="2048 px"}]}
+default={type="text",value="1024"}
+
+[[model.params.params]]
+name="foreground_ratio"
+label="Foreground ratio"
+control={type="slider",min=0.1,max=1.0,step=0.01}
+default={type="number",value=0.85}
+
+[[model.params.params]]
+name="remesh"
+label="Remesh"
+control={type="choice",options=[{value="none",label="None"},{value="triangle",label="Triangles"},{value="quad",label="Quads"}]}
+default={type="text",value="none"}
+
+[[model.params.params]]
+name="vertex_count"
+label="Vertex limit (optional)"
+control={type="unsigned",min="1",max="20000",step="1"}

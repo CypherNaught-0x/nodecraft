@@ -35,6 +35,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Runway** | `runway` (feature `runway`) | API key (`Authorization: Bearer`, keychain account `runway`) | Gen-4.5 text or first frame → video; Gen-4 Turbo first frame → video | Standard MP4, 2–10 seconds. 0.12/0.05 USD per second before tax. No submission deduplication; uncertain creates are never replayed. See below. |
 | **Kling** | `kling` (feature `kling`) | API key (`Authorization: Bearer`), or access key and secret key stored as `ak:sk`, which sign a 30-minute HS256 token per request | Kling 2.5 Turbo, 2.1 Master and 1.6 text → video and start frame (+ end frame) → video; Kling 1.6 up to four references → video; Kling Image 2.1 text → image | Billed in prepaid Kling units, so no quote before the run. One create per job carrying an `external_task_id` from the idempotency key; never replayed automatically; no remote cancellation. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
+| **Stability AI** | `stability` (feature `stability`) | Bearer API key, keychain account `stability` | Core text → image, Audio 3 Large text → audio, Fast 3D image → GLB | Direct first-party APIs; dated fixed-call estimates. Audio polls/resumes one accepted id; no submission deduplication or confirmed cancellation. Desktop/CLI only. See [details](#stability-ai-direct). |
 
 ## Retired APIs
 
@@ -1870,6 +1871,69 @@ unknown-price consent, imported first/last frames, verified output bytes and a l
 with retries enabled. The ignored `ltx30_live_smoke` requires `NODECRAFT_LIVE_LTX=1` and `FAL_KEY`
 and may charge for one six-second 1080p clip; it is never run by CI.
 
+
+## Stability AI direct
+
+The optional `stability` feature adds three first-party models on the existing cards:
+**Stable Image Core** (`stability.image-core`), **Stable Audio 3 Large** (`stability.audio3`)
+and **Stable Fast 3D** (`stability.fast-3d`). Add a Stability API key under the `stability`
+account in API keys. **Test** uses the free authenticated balance endpoint, never a generation.
+The adapter is available in the desktop app and CLI; the browser host refuses setup because its
+built-in transport cannot guarantee authenticated no-redirect requests. No live API or browser
+CORS behavior was tested for this change.
+
+These are distinct from the SD3.5 Large and Audio 3 Small models offered through
+[fal](https://fal.ai/models/fal-ai/stable-diffusion-v35-large) and
+[fal Audio 3 Small](https://fal.ai/models/fal-ai/stable-audio-3/small/music/text-to-audio).
+The aggregator inventory did not establish current official 3D coverage for the chosen model.
+Using the direct APIs gives all three chosen families one key and one origin; it does not add
+all Stability editors, older models or every available variant.
+
+Rates were checked on 2026-10-27 against the
+[current pricing reference](https://docs.stability.ai/pricing),
+[Core operation](https://docs.stability.ai/api-reference/generate/stable-image-core),
+[Audio 3 operation](https://docs.stability.ai/api-reference/stable-audio/text-to-audio),
+[Fast 3D operation](https://docs.stability.ai/api-reference/3d/stable-fast-3d) and
+[current OpenAPI](https://docs.stability.ai/openapi.json): one credit is 0.01 USD, with
+Core 3 credits, Audio 3 8 credits and Fast 3D 10 credits per successful generation. The
+[legacy pricing page](https://platform.stability.ai/pricing) still lists Audio 3 at 26 credits;
+the catalog follows the migrated reference, whose pricing, operation and OpenAPI agree on 8.
+These dated estimates are separate from an observed invoice and should be checked again when
+updating the adapter. No claim is made that the two pricing pages agree.
+
+Core sends one prompt (up to 10,000 characters), optional negative prompt, one of nine aspect
+ratios and PNG/JPEG/WebP output, with a seed from 0 to 4,294,967,294 (0 means random).
+The API returns a 1.5 MP image. The host admits up to 16 MiB and 4096 pixels per side, probes
+and decodes its actual format, and refuses a filtered finish reason. Fast 3D takes one wired
+JPEG/PNG/WebP image. Its host limits are 4 MiB and 64–2048 pixels per side, stricter than the
+API's total-pixel limit. Texture resolution, foreground ratio, remeshing and an optional positive
+vertex limit are exposed. It validates and keeps the original self-contained GLB up to 64 MiB;
+embedded texture colors are sampled by the existing viewer, and export retains original bytes.
+
+Audio 3 sends an explicit 1–380-second duration, 4–8 steps, prompt guidance and optional seed,
+requesting stereo 44.1 kHz WAV. Its 128 MiB result allowance covers long WAVs without the image
+adapter's smaller quota. A versioned handle persists the accepted generation id and duration.
+Polling resumes that id on the same authenticated API; pending responses must identify the same
+job, and WAV chunks, PCM/IEEE-float sample formats (including standard extensible headers),
+frame alignment, byte rate and actual data duration are checked before history is written. Results are
+available from Stability for 24 hours, according to its reference.
+
+No redirect or remote-supplied URL is followed. All three modes use normal cost consent and
+budgets. Parsed documented validation, auth, credit, moderation and rate-limit refusals release
+the reservation; unparsed replies, lost creates and server errors remain possibly billed and
+are not automatically submitted again. Transient audio poll failures retry the original id.
+Stability documents no cancellation endpoint or create idempotency guarantee, so cancellation
+cannot promise that a generation stops or is refunded. Keys and provider error bodies never
+enter the project or user-facing diagnostics.
+
+Offline contract and RunHost tests cover all three media families, cost consent, exact dated
+prices, refusal billing, lost replies and audio resume. The ignored `live_stability_one_chosen_family`
+smoke requires explicit spending authorization, `NODECRAFT_LIVE_STABILITY=1` and
+`STABILITY_API_KEY`. `NODECRAFT_LIVE_STABILITY_MODEL` selects `stable-image-core` (default,
+0.03 USD), `stable-audio-3` (0.08 USD, one second) or `stable-fast-3d` (0.10 USD, a public-safe
+fixture image). The adapter itself never reads these environment variables. Live tests are not
+run by CI. The API key check is documented in the official
+[v1 user reference](https://prod-nlb.stability.ai/docs).
 
 ## Alibaba through fal
 
