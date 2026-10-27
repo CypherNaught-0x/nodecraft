@@ -263,6 +263,10 @@ pub fn scroll(ui: &egui::Ui, viewport: Rect, view: &mut CanvasView, prefs: &Canv
     if zoom != 1.0 {
         view.zoom_at(viewport.min, p, zoom);
     }
+    // The cards were drawn before this moved the view: show where it put them.
+    if pan != Vec2::ZERO || zoom != 1.0 {
+        ui.ctx().request_repaint();
+    }
 }
 
 #[cfg(test)]

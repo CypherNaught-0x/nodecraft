@@ -37,27 +37,36 @@ fn axis(offset: f32, delta: f32, max: f32) -> Option<(f32, f32)> {
 /// remainder for the regions around it and the canvas. `hovered` is whether the pointer is over
 /// the area (from the card layer's hit test); `axes` are the directions the area scrolls in.
 /// Returns whether it took anything.
+///
+/// The delta is in screen points but a card's layer is scaled by the canvas zoom, so the area
+/// scrolls by the delta in its own units and hands back the remainder in screen points: the
+/// content under the finger moves exactly as far as the finger, at any zoom.
 pub fn take<R>(ui: &egui::Ui, hovered: bool, out: &ScrollAreaOutput<R>, axes: [bool; 2]) -> bool {
     if !hovered || !ui.is_enabled() || ui.ctx().dragged_id().is_some() {
         return false;
     }
+    let scale = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(1.0, |to_global| to_global.scaling);
+    if !scale.is_finite() || scale <= 0.0 {
+        return false;
+    }
     let delta = ui.input(|i| i.smooth_scroll_delta);
+    let local = delta / scale;
     let max = out.content_size - out.inner_rect.size();
     let mut state = out.state;
     let mut left = delta;
     let mut took = false;
     if axes[0]
-        && let Some((next, rest)) = axis(state.offset.x, delta.x, max.x)
+        && let Some((next, rest)) = axis(state.offset.x, local.x, max.x)
     {
         state.offset.x = next;
-        left.x = rest;
+        left.x = rest * scale;
         took = true;
     }
     if axes[1]
-        && let Some((next, rest)) = axis(state.offset.y, delta.y, max.y)
+        && let Some((next, rest)) = axis(state.offset.y, local.y, max.y)
     {
         state.offset.y = next;
-        left.y = rest;
+        left.y = rest * scale;
         took = true;
     }
     if took {
@@ -89,8 +98,13 @@ impl Gesture {
     /// Call before drawing what is on the canvas. `live` is false while something else owns
     /// canvas input this frame; the delta is then left alone and nothing reaches the canvas.
     pub fn begin(&mut self, ctx: &egui::Context, live: bool) {
-        let (scrolling, delta) = ctx.input(|i| (i.is_scrolling(), i.smooth_scroll_delta));
-        if !scrolling {
+        let (scrolling, started, delta) = ctx.input(|i| {
+            let started = i.events.iter().any(|event| matches!(event, egui::Event::MouseWheel { phase: egui::TouchPhase::Start, .. }));
+            (i.is_scrolling(), started, i.smooth_scroll_delta)
+        });
+        // egui goes straight from smoothing (or momentum) to a new touch on the trackpad's start
+        // phase without a frame that isn't scrolling, so a start is a new gesture too.
+        if !scrolling || started {
             self.owner = None;
         }
         if !live || !delta.is_finite() {
