@@ -730,7 +730,10 @@ fn mode_of(session: &Session, canvas: &Canvas, node: &Node) -> Option<Mode> {
     if contract.modes.len() < 2 {
         return None;
     }
-    let counts = admission::wire_counts(canvas, &contract, node);
+    let counts = match admission::wire_counts(canvas, session.kinds(), &contract, node) {
+        Ok(counts) => counts,
+        Err(error) => return Some(Mode::NoFit(error.message)),
+    };
     let media = |port: &str| node.inputs.iter().any(|input| input.name == port && input.port_type.modality != nodecraft_types::Modality::Text);
     let references = contract.modes.iter().any(|mode| mode.inputs.iter().any(|input| media(&input.port)));
     match contract.resolve_mode(&counts, false) {

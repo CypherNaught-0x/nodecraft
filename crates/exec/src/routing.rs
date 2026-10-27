@@ -7,6 +7,9 @@ use nodecraft_nodes::{Registry, element, mention, router};
 use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod output;
+pub use output::{OutputResolver, OutputSource, output_sources, output_type};
+
 /// Most feeds one input port resolves to. Just past the planner's list limit, so an oversized
 /// fan-in is still reported (not silently cut), while chains of routers fanning into each other
 /// can't multiply into millions of feeds.
@@ -54,7 +57,20 @@ fn too_large() -> Error {
 ///
 /// Each router's sources are resolved once, routers before the routers they feed (Kahn's order),
 /// so the cost is linear in the entries built, not in the number of paths through routers.
-pub fn incoming<'a>(canvas: &'a Canvas, kinds: &Registry) -> Result<Incoming<'a>, Error> {
+struct Routes<'a> {
+    wired: BTreeSet<(NodeId, &'a str)>,
+    raw: BTreeMap<NodeId, Vec<Feed<'a>>>,
+    routers: BTreeSet<NodeId>,
+    invalid_routers: BTreeMap<NodeId, &'static str>,
+    failures: BTreeMap<NodeId, NodeId>,
+    memo: BTreeMap<NodeId, Vec<(NodeId, &'a str)>>,
+    steps: usize,
+}
+
+fn routes<'a>(canvas: &'a Canvas, kinds: &Registry) -> Result<Routes<'a>, Error> {
+    if canvas.nodes().len() > nodecraft_graph::MAX_NODES || canvas.edges().len() > nodecraft_graph::MAX_EDGES {
+        return Err(too_large());
+    }
     let mut wired = BTreeSet::new();
     let mut raw: BTreeMap<NodeId, Vec<Feed<'_>>> = BTreeMap::new();
     for edge in canvas.edges().values() {
@@ -130,6 +146,12 @@ pub fn incoming<'a>(canvas: &'a Canvas, kinds: &Registry) -> Result<Incoming<'a>
             }
         }
     }
+    Ok(Routes { wired, raw, routers, invalid_routers, failures, memo, steps })
+}
+
+/// Resolves explicit wires and implicit mentions for planning and staleness.
+pub fn incoming<'a>(canvas: &'a Canvas, kinds: &Registry) -> Result<Incoming<'a>, Error> {
+    let Routes { mut wired, raw, routers, invalid_routers, failures, memo, mut steps } = routes(canvas, kinds)?;
     let mut resolved = BTreeMap::new();
     let mut invalid = BTreeMap::new();
     for (target, feeds) in &raw {

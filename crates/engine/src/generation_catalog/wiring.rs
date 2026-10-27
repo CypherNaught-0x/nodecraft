@@ -1,5 +1,6 @@
 //! One bounded port-count capture reused for model picker candidates. No payload owners.
 use nodecraft_graph::{Canvas, Port};
+use nodecraft_nodes::Registry;
 use nodecraft_nodes::{NodeContract, NodeDescriptor};
 use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::BTreeMap;
@@ -11,20 +12,25 @@ pub struct GenerationWiring<'a> {
     outputs: &'a [Port],
 }
 impl<'a> GenerationWiring<'a> {
-    pub(super) fn capture(canvas: &'a Canvas, id: NodeId) -> Result<Self, Error> {
+    pub(super) fn capture(canvas: &'a Canvas, kinds: &Registry, id: NodeId) -> Result<Self, Error> {
         let node = canvas.nodes().get(&id).ok_or_else(|| invalid("model node is missing"))?;
         if node.inputs.len() > 256 || node.outputs.len() > 256 {
             return Err(invalid("model node has too many ports"));
         }
         let mut inputs: Vec<_> = node.inputs.iter().map(|port| (port, 0usize)).collect();
+        let mut routing = nodecraft_exec::routing::OutputResolver::new(canvas, kinds);
         for edge in canvas.edges().values().filter(|edge| edge.to.node == id) {
             let (input, count) = inputs.iter_mut().find(|(p, _)| p.name == edge.to.port).ok_or_else(|| invalid("connected input role is missing"))?;
-            let source = canvas.nodes().get(&edge.from.node).ok_or_else(|| invalid("connected source is missing"))?;
-            let output = source.outputs.iter().find(|p| p.name == edge.from.port).ok_or_else(|| invalid("connected output role is missing"))?;
-            if output.port_type.modality != input.port_type.modality || (!input.port_type.many && output.port_type.many) {
-                return Err(invalid("connected input has incompatible modality or collection"));
+            let sources = routing.sources(&edge.from)?;
+            if !input.port_type.many && sources.len() != 1 {
+                return Err(invalid("connected input has incompatible collection"));
             }
-            *count = count.checked_add(1).ok_or_else(|| invalid("too many model input wires"))?;
+            for source in sources {
+                if source.port.port_type.modality != input.port_type.modality || (!input.port_type.many && source.port.port_type.many) {
+                    return Err(invalid("connected input has incompatible modality or collection"));
+                }
+                *count = count.checked_add(1).ok_or_else(|| invalid("too many model input wires"))?;
+            }
         }
         Ok(Self { inputs, outputs: &node.outputs })
     }
