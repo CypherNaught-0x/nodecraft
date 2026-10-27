@@ -17,11 +17,14 @@ impl NodeCraftApp {
         let end = noodle::anchor(rect, Side::Input, index, inputs.len());
         let downstream = selection::downstream(canvas, &[target.id].into_iter().collect());
         let fed: BTreeSet<_> = canvas.edges().values().filter(|edge| edge.to == wiring.anchor).map(|edge| (edge.from.node, edge.from.port.as_str())).collect();
-        let accepts = |node: &Node, output: &nodecraft_graph::Port| -> Result<(), String> {
+        let mut routing = nodecraft_exec::routing::OutputResolver::new(canvas, self.session.kinds());
+        let mut accepts = |node: &Node, output: &nodecraft_graph::Port| -> Result<(), String> {
+            let from = Endpoint { node: node.id, port: output.name.clone() };
+            let output_type = routing.output_type(&from).map_err(|error| error.message)?;
             if node.id == target.id {
                 Err("A node can't connect to itself.".into())
-            } else if !noodle::compatible(output.port_type, input.port_type) {
-                Err(if output.port_type.modality == input.port_type.modality {
+            } else if !noodle::compatible(output_type, input.port_type) {
+                Err(if output_type.modality == input.port_type.modality {
                     "A list output needs a list input.".into()
                 } else {
                     "That output has the wrong media type for this input.".into()

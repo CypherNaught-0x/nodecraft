@@ -353,9 +353,9 @@ fn production_shared_wiring_and_candidate_preserve_existing_node_owners() {
     assert_eq!(candidate.title, existing.title);
     assert_eq!(candidate.pos, existing.pos);
     assert_eq!(candidate.history, existing.history);
-    let wiring = f.snapshot.capture_wiring(canvas, N).unwrap();
+    let wiring = f.snapshot.capture_wiring(canvas, f.session.kinds(), N).unwrap();
     f.snapshot.validate_destination_wiring(KIND, &wiring, MODEL, false).unwrap();
-    f.snapshot.validate_wiring(canvas, &candidate, false).unwrap();
+    f.snapshot.validate_wiring(canvas, f.session.kinds(), &candidate, false).unwrap();
     assert_eq!(f.session.generation_catalog_stamp().unwrap(), f.snapshot.stamp());
     let mut a = blake3::Hasher::new();
     f.snapshot.stamp().bind(&mut a);
