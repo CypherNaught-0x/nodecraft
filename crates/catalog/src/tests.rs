@@ -59,6 +59,10 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 500_000)));
         } else if model.id.starts_with("fal.hunyuan3d-v3") {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 375_000)));
+        } else if model.id.starts_with("fal.qwen-image3") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
+        } else if model.id.starts_with("fal.wan3") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 500_000)));
         } else if model.id.starts_with("fal.grok-") {
             let micros = match model.id.as_str() {
                 "fal.grok-image2" => Some(60_000),
@@ -244,6 +248,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.grok-image2", true),
             ("fal.ideogram-v3", true),
             ("fal.luma-photon", true),
+            ("fal.qwen-image3", true),
             ("gemini-images.pro", true),
             ("gemini-images.nano-banana-2.1", true),
             ("gemini-images.flash-lite", true),
@@ -284,10 +289,13 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.kokoro", false),
             ("fal.luma-ray32", false),
             ("fal.luma-ray32-i2v", false),
+            ("fal.qwen-image3-edit", false),
             ("fal.trellis2", false),
             ("fal.wan22", false),
             ("fal.wan22-i2v", false),
             ("fal.wan22-s2v", false),
+            ("fal.wan3", false),
+            ("fal.wan3-i2v", false),
             ("gemini-llm.3.8-flash", false),
             ("gemini-video.omni-flash", false),
             ("google-tts.gemini-2.5-pro", false),
