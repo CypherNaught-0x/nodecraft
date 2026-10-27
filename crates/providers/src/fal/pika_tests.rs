@@ -345,3 +345,64 @@ fn pika29_animated_webp_flags_and_oversized_png_chunks_refuse_without_codecs() {
         assert_eq!(super::tests::stages(), [0, 0, 0]);
     }
 }
+
+#[test]
+fn pika29_lowered_output_envelopes_refuse_before_http_or_delivery_uncertainty() {
+    let h = Limits::VIDEO_HARD;
+    // This small frame fits every input budget below. Refusal must be about the paid output.
+    let j = job();
+    for limits in [
+        Limits { output_width: h.output_width - 1, ..Limits::default() },
+        Limits { output_height: h.output_height - 1, ..Limits::default() },
+        Limits { total_pixels: h.total_pixels - 1, ..Limits::default() },
+        Limits { output_bytes: h.output_bytes - 1, ..Limits::default() },
+        Limits { total_output_bytes: h.total_output_bytes - 1, ..Limits::default() },
+        Limits { metadata_bytes: h.metadata_bytes - 1, ..Limits::default() },
+        Limits { output_width: 1, ..Limits::default() },
+        Limits { output_height: 1, ..Limits::default() },
+        Limits { total_pixels: 1, ..Limits::default() },
+        Limits { output_bytes: 0, ..Limits::default() },
+        Limits { total_output_bytes: 0, ..Limits::default() },
+        Limits { metadata_bytes: 0, ..Limits::default() },
+    ] {
+        let crate::JobInput::Media { bytes, .. } = &j.inputs[1] else { panic!() };
+        assert!(nodecraft_media::probe_image(bytes, &limits.image(true)).is_ok());
+        let wire = Arc::new(Wire::default());
+        let context = crate::SubmitContext::new();
+        super::tests::reset();
+        let provider = Fal::with_limits(key(), wire.clone(), limits).unwrap();
+        let error = block_on(provider.submit_with_delivery(&j, &context)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+        assert!(context.finish_error().is_some(), "a local output refusal must prove no submission");
+        assert!(wire.requests.lock().unwrap().is_empty());
+        assert_eq!(super::tests::stages(), [0, 0, 0], "output feasibility precedes codec work");
+    }
+}
+#[test]
+fn pika29_full_output_envelope_still_allows_lowered_input_and_request_budgets() {
+    let j = job();
+    let (_, body) = request::prepare(&j, Limits::default()).unwrap();
+    let crate::JobInput::Media { bytes, .. } = &j.inputs[1] else { panic!() };
+    let limits = Limits { input_bytes: bytes.len(), request_bytes: body.len(), text_bytes: 1024, ..Limits::default() };
+    let wire = Wire::new(vec![reply(receipt(PIKA_I2V))]);
+    let context = crate::SubmitContext::new();
+    let provider = Fal::with_limits(key(), wire.clone(), limits).unwrap();
+    assert!(matches!(block_on(provider.submit_with_delivery(&j, &context)).unwrap(), Submission::Queued(_)));
+    assert!(context.finish_error().is_none(), "a submitted job cannot report unsubmitted proof");
+    assert_eq!(wire.requests.lock().unwrap().len(), 1);
+}
+#[test]
+fn pika29_saved_handle_resume_keeps_current_lowered_output_caps() {
+    let original = Wire::new(vec![reply(receipt(PIKA_I2V))]);
+    let Submission::Queued(h) = block_on(fal(&original).submit(&job())).unwrap() else { panic!() };
+    let h: JobHandle = serde_json::from_slice(&serde_json::to_vec(&h).unwrap()).unwrap();
+    let wire =
+        Wire::new(vec![reply(json!({"status":"COMPLETED"})), reply(json!({"video":{"url":"https://v3.fal.media/original.mp4","file_size":CLIP.len()}}))]);
+    let limited = Fal::with_limits(key(), wire.clone(), Limits { output_bytes: 1, ..Limits::default() }).unwrap();
+    assert!(block_on(limited.poll(&h)).is_err());
+    assert!(Record::read(&h, &key()).is_ok());
+    let requests = wire.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.method == HttpMethod::Get));
+    assert_eq!(original.requests.lock().unwrap().iter().filter(|request| request.method == HttpMethod::Post).count(), 1);
+}

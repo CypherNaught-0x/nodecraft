@@ -2175,6 +2175,15 @@ the longest offered request), positive display geometry within **4096 pixels per
 Declared MIME, byte size and dimensions must agree with the downloaded bytes. These are bounded
 container checks, not proof of full decoding or generated content quality.
 
+For a **new paid submission**, NodeCraft's lower-only `Limits` API must retain that complete
+output envelope: 4096×4096 axis budgets, 16,777,216 pixels, 256 MiB individual/aggregate and
+256 KiB metadata. Any reduction in those six output fields refuses locally, before codecs,
+HTTP or delivery uncertainty, even when the first frame fits. This conservative client policy
+avoids inventing an exact 720p aspect tuple or minimum encoded size the schema does not publish;
+it does not mean a video will use the whole budget. Input, request and text budgets may still
+be lowered. Existing saved handles continue to use the intersection with current limits while
+polling/downloading; this admission rule never widens a resumed result's budget.
+
 Downloads carry no API key and refuse redirects. They use the existing HTTPS fal.media
 allowlist, plus the exact public `https://storage.googleapis.com/falserverless/` bucket shown in
 the formal Pika schema. The latter exception is scoped to Pika and the existing Recraft models:

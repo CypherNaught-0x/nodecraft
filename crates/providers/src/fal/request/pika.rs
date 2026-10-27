@@ -45,6 +45,19 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     if !matches!(duration, 5 | 10) {
         return Err(invalid("Pika duration must be 5 or 10 seconds"));
     }
+    // The schema does not define an exact aspect/encoded-size envelope for 720p. A smaller
+    // caller budget cannot promise to retain the offered output, so new paid work requires
+    // the complete local output envelope. This is admission policy, not a vendor minimum.
+    let output = Limits::VIDEO_HARD;
+    if l.output_width < output.output_width
+        || l.output_height < output.output_height
+        || l.total_pixels < output.total_pixels
+        || l.output_bytes < output.output_bytes
+        || l.total_output_bytes < output.total_output_bytes
+        || l.metadata_bytes < output.metadata_bytes
+    {
+        return Err(invalid("Pika 720p submissions require the full local video output envelope"));
+    }
     let mut body = Body { prompt, image_url: "", resolution: "720p", duration };
     // Complete escaped JSON and base64 extent precedes codecs and owned image encodings.
     let mut counter = Count { n: 0, cap: l.request_bytes };
