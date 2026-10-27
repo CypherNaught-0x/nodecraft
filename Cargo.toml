@@ -40,6 +40,9 @@ craft-atomic = { git = "https://github.com/storytold/craft-libs", rev = "8f5a283
 craft-quit = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", features = ["menu"] }
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9", features = ["raster"] }
 
+# Original offline workflow data; refresh deliberately through a fully gated pin update.
+nodecraft-template-data = { git = "https://github.com/CypherNaught-0x/nodecraft-templates", rev = "c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9" }
+
 # external
 blake3 = { version = "1.8", default-features = false, features = ["std"] }
 egui = { version = "0.36", default-features = false }   # the version craft-ui builds against

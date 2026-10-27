@@ -272,3 +272,13 @@ Persistent tag commands (`tag.put`, `tag.remove`, `node.tag_set`) are available 
 
 Field commands (`field.create`, `field.update`, `field.move`, `field.remove`,
 `node.field_set`) are available to agents.
+
+### Official workflow starters (#953)
+
+`template.list {}` returns indexed/bundled/cached metadata, available `{id,version,blake3}` identities
+and a catalog stamp. `template.add {id,version?,blake3?}` pins an available selection into one undoable
+project import; without a version it chooses the latest available version. On desktop/browser hosts,
+`template.refresh {}` queues only the official index and `template.retrieve {id,version,blake3}` queues
+one exact listed archive. Hosts without that fetch service return Unsupported and keep the bundled
+set. Retrieving never adds or runs a graph. See [workflow starters](workflow-templates.md) for cache,
+offline, schema, authoring and update behavior and the authoritative external repository.

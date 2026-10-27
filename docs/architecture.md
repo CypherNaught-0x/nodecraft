@@ -728,6 +728,18 @@ open keys act, and when a dialog takes the input; a project opens on its first p
 (`home_canvas`), and the view goes back to it if an undo removes the open sheet. The table lays
 out only the rows in view, so a full 1000-row sheet draws in about the time a screenful does.
 
+## Official workflow templates (#953)
+
+The authoritative catalog is external `CypherNaught-0x/nodecraft-templates`. A dependency-free data
+package at an immutable Git revision embeds the offline native/wasm snapshot; no network runs during
+builds. `engine::templates` shares one bounded schema/digest/archive/kind validator with external
+repository CI. A Session resource retains remote metadata and a bounded archive cache; the UI host
+queues at most one index or selected-content request. Catalog stamps and Session identities invalidate
+UI metadata, and late results cannot import into another Session. An opaque PreparedTemplate carries
+the admitted entry and graph into the existing PreparedImports/changeset boundary without resolving
+mutable latest metadata again. See [workflow starters](workflow-templates.md) and the
+[decision](decisions/2026-10-27-external-workflow-templates.md).
+
 ## Techniques (#93)
 
 A published Technique version is a canvas whose `kind` is `technique`; its metadata
