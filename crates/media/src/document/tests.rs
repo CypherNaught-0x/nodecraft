@@ -126,3 +126,51 @@ fn long_cmap_dictionary_delimiter_runs_do_not_overflow_the_parser_stack() {
     let document = Document::open(&bytes, &DocumentLimits::default()).unwrap();
     assert_eq!(document.text(0).unwrap(), "B", "the CMap is interpreted, not silently replaced by a fallback");
 }
+
+#[test]
+fn synchronous_checks_stop_inside_one_text_operator_and_stay_stopped_on_later_pages() {
+    use std::sync::atomic::AtomicUsize;
+    let content = format!("BT /F1 12 Tf 20 100 Td ({}) Tj ET", "A".repeat(20_000));
+    let bytes = pdf(&[&content, TWO_LINES]);
+    let document = Document::open(&bytes, &DocumentLimits::default()).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let reader = document.reader().with_cancel_check(Arc::new(move || observed.fetch_add(1, Ordering::Relaxed) >= 64));
+    assert!(reader.text(0).is_err(), "incomplete text must never be returned as a successful result");
+    let stopped = calls.load(Ordering::Relaxed);
+    assert_eq!(stopped, 65);
+    assert!(reader.text(1).is_err());
+    assert_eq!(calls.load(Ordering::Relaxed), stopped, "another page cannot reset the shared stop latch");
+}
+
+#[test]
+fn synchronous_render_cancellation_refuses_partial_pixels() {
+    use std::sync::atomic::AtomicUsize;
+    let content = "0 0 1 rg 0 0 150 200 re f\n".repeat(10_000);
+    let bytes = pdf(&[&content]);
+    let document = Document::open(&bytes, &DocumentLimits::default()).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let reader = document.reader().with_cancel_check(Arc::new(move || observed.fetch_add(1, Ordering::Relaxed) >= 64));
+    assert!(reader.render(0, 128, [255; 4]).is_err());
+    assert_eq!(calls.load(Ordering::Relaxed), 65);
+}
+
+#[test]
+fn a_full_text_buffer_does_not_cancel_the_callers_control() {
+    let bytes = pdf(&["BT /F1 12 Tf 20 150 Td (\\351\\351\\351\\351) Tj ET", TWO_LINES]);
+    let document = Document::open(&bytes, &DocumentLimits { max_page_text_bytes: 5, ..Default::default() }).unwrap();
+    let reader = document.reader().with_cancel_check(Arc::new(|| false));
+    assert_eq!(reader.text(0).unwrap(), "éé");
+    assert!(!reader.text(1).unwrap().is_empty(), "text truncation is per-page, not owner cancellation");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_panicking_native_control_is_reported_as_a_pdf_error() {
+    let bytes = pdf(&[TWO_LINES]);
+    let document = Document::open(&bytes, &DocumentLimits::default()).unwrap();
+    let reader = document.reader().with_cancel_check(Arc::new(|| panic!("authored test control failure")));
+    assert!(reader.text(0).is_err());
+    assert!(reader.render(0, 64, [255; 4]).is_err());
+}

@@ -133,3 +133,18 @@ fn only_a_different_aspect_ratio_is_a_reshape() {
     assert!(over.reshaped(1024, 1536));
     assert!(!Painted { width: u32::MAX, height: u32::MAX, ..over }.reshaped(1, 1));
 }
+
+#[test]
+fn a_controlled_mask_admits_work_and_stops_between_rows() {
+    let strokes = Strokes { strokes: vec![stroke(1.0, 1.0, false, &[[0.0, 0.0], [1.0, 1.0]])], over: None };
+    let total = std::cell::Cell::new(0u64);
+    let checks = std::cell::Cell::new(0usize);
+    let result = render_controlled(&strokes, MaskOptions::default(), &image(256, 256, 255), ImageLimits::default(), &|units| {
+        total.set(total.get().saturating_add(units));
+        checks.set(checks.get() + 1);
+        checks.get() >= 4
+    });
+    assert!(matches!(result, Err(ImageError::Cancelled)));
+    assert!(total.get() > 256 * 256 && checks.get() >= 4);
+    assert!(matches!(expand_controlled(&image(8, 8, 255), Margins::default(), ImageLimits::default(), &|units| units > 0), Err(ImageError::Cancelled)));
+}

@@ -100,7 +100,7 @@ fn preview_image(result: &Generation, node: NodeId, nth: u32) -> Shown<Image> {
 
 fn source(input: &Inputs<'_>, origin: &str, nth: u32) -> Shown<Image> {
     if let Ok(id) = origin.parse::<NodeId>()
-        && let Some((result, _)) = input.live.preview(input.canvas.id(), id)
+        && let Some((result, _)) = input.live.preview(input.session, input.canvas.id(), id)
     {
         return preview_image(result, id, nth);
     }
@@ -239,7 +239,7 @@ impl Cache {
                         let texture = drawn.images.get(*at as usize).and_then(|image| {
                             let assets = image
                                 .staged
-                                .and_then(|id| input.live.preview(input.canvas.id(), id).map(|(_, assets)| assets))
+                                .and_then(|id| input.live.preview(input.session, input.canvas.id(), id).map(|(_, assets)| assets))
                                 .unwrap_or(input.session.assets());
                             match input.previews.request_asset(
                                 ui.ctx(),

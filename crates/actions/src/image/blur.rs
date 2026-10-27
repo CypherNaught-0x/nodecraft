@@ -51,6 +51,7 @@ fn float_buffer(count: usize) -> Result<Vec<[f32; 4]>, E> {
     Ok(v)
 }
 pub(super) fn apply(src: &Raster, b: &Blur, exec: &mut CpuExecutor, l: ImageLimits) -> Result<Raster, E> {
+    exec.check_cancelled()?;
     super::validate::plan(&ImageRequest::Blur { options: b.clone() }, ImageInputs::single(src), l)?;
     if identity(b) {
         return Ok(src.clone());
@@ -130,7 +131,7 @@ pub(super) fn apply(src: &Raster, b: &Blur, exec: &mut CpuExecutor, l: ImageLimi
             _ => {}
         }
         if total > 0. { sum.scale(1. / total).straight().bytes() } else { pixel(src, x, y).straight().bytes() }
-    });
+    })?;
     Raster::output(src.width(), src.height(), out, l)
 }
 fn post(src: &Raster, b: &Blur, x: u32, y: u32, blurred: Pixel) -> Pixel {
@@ -172,11 +173,15 @@ fn separable(src: &Raster, b: &Blur, r: u32, s: Option<f64>, exec: &mut CpuExecu
     for v in &mut weights {
         *v /= norm;
     }
-    let fill = |row: usize, ring: &mut [[f32; 4]]| {
+    let fill = |row: usize, ring: &mut [[f32; 4]]| -> Result<(), E> {
+        exec.check_cancelled()?;
         let start = (row % rows) * w;
-        let Some(dest) = ring.get_mut(start..start + w) else { return };
+        let Some(dest) = ring.get_mut(start..start + w) else { return Err(E::BufferShape) };
         if s.is_some() {
             for (x, dst) in dest.iter_mut().enumerate() {
+                if x % 256 == 0 {
+                    exec.check_cancelled()?;
+                }
                 let mut sum = Pixel::default();
                 for (i, weight) in weights.iter().copied().enumerate() {
                     sum = sum.plus(sample(src, x as f64 + i as f64 - f64::from(r), row as f64, Resampling::Nearest, true).scale(weight))
@@ -189,16 +194,20 @@ fn separable(src: &Raster, b: &Blur, r: u32, s: Option<f64>, exec: &mut CpuExecu
                 sum = sum.plus(sample(src, dx as f64, row as f64, Resampling::Nearest, true))
             }
             for (x, dst) in dest.iter_mut().enumerate() {
+                if x % 256 == 0 {
+                    exec.check_cancelled()?;
+                }
                 *dst = sum.scale(1. / taps as f64).stored();
                 sum = sum
                     .plus(sample(src, x as f64 + f64::from(r) + 1., row as f64, Resampling::Nearest, true))
                     .plus(sample(src, x as f64 - f64::from(r), row as f64, Resampling::Nearest, true).scale(-1.));
             }
         }
+        exec.check_cancelled()
     };
     let initial = (r as usize).min(h - 1);
     for row in 0..=initial {
-        fill(row, &mut ring)
+        fill(row, &mut ring)?
     }
     let mut loaded = initial;
     let mut columns = Vec::new();
@@ -209,6 +218,7 @@ fn separable(src: &Raster, b: &Blur, r: u32, s: Option<f64>, exec: &mut CpuExecu
         }
         columns.resize(w, Pixel::default());
         for dy in -(i64::from(r))..=i64::from(r) {
+            exec.check_cancelled()?;
             let row = dy.clamp(0, h as i64 - 1) as usize;
             for (x, c) in columns.iter_mut().enumerate() {
                 if let Some(px) = ring.get((row % rows) * w + x) {
@@ -218,10 +228,11 @@ fn separable(src: &Raster, b: &Blur, r: u32, s: Option<f64>, exec: &mut CpuExecu
         }
     }
     for y in 0..h {
+        exec.check_cancelled()?;
         let need = (y + r as usize).min(h - 1);
         while loaded < need {
             loaded += 1;
-            fill(loaded, &mut ring)
+            fill(loaded, &mut ring)?
         }
         let Some(dst) = out.get_mut(y * w * 4..(y + 1) * w * 4) else { return Err(E::BufferShape) };
         exec.pixels(dst, src.width(), |x, _| {
@@ -237,7 +248,7 @@ fn separable(src: &Raster, b: &Blur, r: u32, s: Option<f64>, exec: &mut CpuExecu
                 sum = columns.get(x as usize).copied().unwrap_or_default().scale(1. / taps as f64)
             }
             post(src, b, x, y as u32, sum).straight().bytes()
-        });
+        })?;
         if s.is_none() && y + 1 < h {
             let old = (y as i64 - i64::from(r)).clamp(0, h as i64 - 1) as usize;
             let new = (y + 1 + r as usize).min(h - 1);
@@ -249,7 +260,7 @@ fn separable(src: &Raster, b: &Blur, r: u32, s: Option<f64>, exec: &mut CpuExecu
             }
             if new > loaded {
                 loaded = new;
-                fill(new, &mut ring)
+                fill(new, &mut ring)?
             }
             for (x, c) in columns.iter_mut().enumerate() {
                 if let Some(px) = ring.get((new % rows) * w + x) {

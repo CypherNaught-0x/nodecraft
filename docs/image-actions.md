@@ -227,6 +227,22 @@ request syntax and adapters. Native serial/rayon tests compare exact bytes. The 
 into the repository; fixture creation needs no downloaded assets or attribution from another app.
 
 
+## Cooperative CPU work (#596)
+
+`CpuExecutor::with_cancel_check` adds a caller-owned synchronous stop signal.
+`with_work_check` also admits the reference work estimate once before execution; later calls
+with zero units poll without spending it again. Serial and rayon kernels check between bounded
+256-pixel chunks, and separable blurs check their manual fill rows/chunks. A refusal returns
+`Cancelled` and never exposes a successful partial raster. Identity and duplication still
+honor cancellation and the existing parameter/resource admission.
+
+Masks expose `render_controlled`/`expand_controlled`, and layers `composite_controlled`, with
+the same nonzero-admission/zero-poll protocol. Their existing entry points retain ordinary
+behavior without a caller control. Codec and graphics calls already in progress remain
+cooperative boundaries. The engine's live-round quota and failure/retry policy are described
+in [the live-work decision](decisions/2026-10-27-live-action-work.md); the CPU algorithms do not
+choose a host's quota or require a clock.
+
 ## GPU library backend (#89)
 
 `nodecraft_gpu::image::GpuExecutor` executes the same 13 typed request families, including all

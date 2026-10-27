@@ -87,7 +87,8 @@ impl LocalActions {
             // A font that can't be read draws as Lato, as a missing one does.
             let _ = fonts.add(name, bytes);
         }
-        let out = layers::composite(frame, &resolved, &images, &fonts, 1.0, limits).map_err(|e| format!("image.layers failed: {e}"))?;
+        let out = layers::composite_controlled(frame, &resolved, &images, &fonts, 1.0, limits, self.work_check().as_ref())
+            .map_err(|e| self.control_error(format!("image.layers failed: {e}")))?;
         self.stage(&out)
     }
 }

@@ -34,6 +34,7 @@ pub enum ImageError {
     DecodeLimit,
     Decode,
     Executor,
+    Cancelled,
 }
 impl std::fmt::Display for ImageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -56,6 +57,7 @@ impl std::fmt::Display for ImageError {
                 Self::DecodeLimit => "image decoder resource budget exceeded; reduce input dimensions",
                 Self::Decode => "image could not be decoded",
                 Self::Executor => "image worker pool could not be created",
+                Self::Cancelled => "image operation was cancelled",
                 Self::Parameter(_) => "invalid image parameter",
             }),
         }
@@ -130,7 +132,9 @@ pub enum ImageResult {
 }
 impl ImageRequest {
     pub fn execute(&self, inputs: ImageInputs<'_>, executor: &mut CpuExecutor, limits: ImageLimits) -> Result<ImageResult, ImageError> {
+        executor.check_cancelled()?;
         let plan = validate::plan(self, inputs, limits)?;
+        executor.admit_work(validate::cost(self, &plan, plan.bytes)?.0)?;
         if geometry::identity(self, inputs.source, &plan) {
             return Ok(ImageResult::Image(inputs.source.clone()));
         }
@@ -138,6 +142,7 @@ impl ImageRequest {
             let mut copies = Vec::new();
             copies.try_reserve_exact(*count as usize).map_err(|_| ImageError::Allocation)?;
             for _ in 0..*count {
+                executor.check_cancelled()?;
                 copies.push(inputs.source.clone())
             }
             return Ok(ImageResult::Images(copies));
@@ -177,7 +182,7 @@ impl ImageRequest {
                         }
                     };
                     v.bytes()
-                });
+                })?;
                 Raster::output(plan.width, plan.height, out, limits)?
             }
         };

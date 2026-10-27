@@ -368,6 +368,17 @@ through verification, index comparison/publication and cleanup. See the
 [worker, locking and placement decision](decisions/2026-10-19-plugin-store-worker.md).
 Future integration must preserve the existing layers, engine mutation path and wasm support.
 
+## Live action work
+
+`engine::live_actions` owns one cancel signal and cumulative work quota per live round.
+`action_exec::control` meters action/input costs, media reads, CPU reference work and PDF
+checkpoints using checked atomics, including WebAssembly. Action/media libraries accept
+synchronous callbacks and return errors on interruption; default callers retain their existing
+operation limits. The shell cancels obsolete session/revision/canvas/draft owners before waiting
+for a worker, and derived-result publication also refuses late cancellation. Quota failures
+carry input hashes so the same expensive input waits for an edit or an explicit run.
+See [the live-work policy](decisions/2026-10-27-live-action-work.md).
+
 ## CPU text actions
 
 `actions::text` provides bounded split, replace, concat and named-template algorithms with typed
