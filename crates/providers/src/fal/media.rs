@@ -256,6 +256,7 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
         Model::Image
         | Model::Styled
         | Model::Upscale
+        | Model::Topaz
         | Model::RemoveBackground
         | Model::QwenImage
         | Model::QwenEdit
@@ -273,7 +274,7 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             }
             let n = u64::from(m.width).checked_mul(u64::from(m.height)).ok_or_else(bad)?;
             *pixels = pixels.checked_add(n).filter(|n| *n <= l.total_pixels).ok_or_else(bad)?;
-            if matches!(r.model, Model::Upscale | Model::RemoveBackground) && (m.width != r.width || m.height != r.height) {
+            if matches!(r.model, Model::Upscale | Model::RemoveBackground | Model::Topaz) && (m.width != r.width || m.height != r.height) {
                 return Err(bad());
             }
             observe(2);

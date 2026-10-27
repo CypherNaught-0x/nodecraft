@@ -58,7 +58,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         | Model::LtxFrames => "video",
         Model::Audio => "audio",
         Model::HunyuanText | Model::HunyuanImage | Model::HunyuanSketch | Model::Mesh => "model_glb",
-        Model::Upscale | Model::RemoveBackground => "image",
+        Model::Upscale | Model::RemoveBackground | Model::Topaz => "image",
     };
     // Multiple model envelopes or unexpected top-level media cannot be filtered away.
     if matches!(r.model, Model::RayText | Model::RayFrames) && root.get("exr_file").is_some_and(|v| v.get() != "null") {
@@ -128,7 +128,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
                 .ok_or_else(|| malformed("fal declared aggregate geometry exceeds quota"))?;
         }
         let allowed: &[&str] = match r.model {
-            Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => &["image/png"],
+            Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Topaz => &["image/png"],
             Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => {
                 &["image/png", "image/jpeg", "image/webp"]
             }
