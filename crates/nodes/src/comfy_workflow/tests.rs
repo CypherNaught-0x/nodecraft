@@ -82,7 +82,7 @@ fn a_proposed_card_takes_its_ports_and_parameters_from_the_workflow() {
     );
 
     let targets: Vec<_> = mapping.params.iter().map(|p| (p.node.as_str(), p.input.as_str())).collect();
-    assert_eq!(targets, vec![("2", "text"), ("3", "seed")]);
+    assert_eq!(targets, vec![("2", "text"), ("3", "seed"), ("3", "steps"), ("3", "cfg")]);
     let prompt = &mapping.params.first().unwrap().spec;
     assert!(matches!(prompt.control, ParamControl::Text { multiline: true, .. }));
     assert_eq!(node.params.get(&prompt.name), Some(&Value::Text("a red fox".into())), "defaults to the workflow's value");
@@ -131,7 +131,7 @@ fn its_plan_sends_the_workflow_values_and_files_to_comfyui() {
     assert_eq!(ApiWorkflow::parse(text.as_bytes(), None).unwrap().nodes.len(), 4);
     let Some(Value::Text(values)) = inputs.get(1).map(|i| &i.value) else { panic!("values text") };
     let values: serde_json::Value = serde_json::from_str(values).unwrap();
-    assert_eq!(values, serde_json::json!({"2.text": "a blue whale", "3.seed": 7}));
+    assert_eq!(values, serde_json::json!({"2.text": "a blue whale", "3.seed": 7, "3.steps":20, "3.cfg":3.5}));
     assert_eq!(inputs.get(2).map(|i| &i.value), Some(&image("image/png")));
 }
 
@@ -156,7 +156,7 @@ fn its_plan_refuses_wrong_files_models_and_routes() {
 fn a_missing_or_malformed_workflow_is_an_error() {
     assert!(place(BTreeMap::new()).is_err());
     let mut newer = config();
-    newer.insert(VERSION.into(), Value::Unsigned(Unsigned(2)));
+    newer.insert(VERSION.into(), Value::Unsigned(Unsigned(3)));
     assert_eq!(place(newer).unwrap_err().kind, ErrorKind::Unsupported);
     let mut extra = config();
     extra.insert(MAPPING.into(), Value::Text(r#"{"inputs":[],"params":[],"outputs":[],"extra":1}"#.into()));

@@ -80,13 +80,14 @@ fn an_api_workflow_becomes_one_card_with_its_file_ports_prompts_and_seeds() {
     assert_eq!(result["ports"], json!(["loadimage_image"]));
     assert_eq!(result["outputs"], json!(["image"]));
     let params: Vec<&str> = result["params"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
-    assert_eq!(params.len(), 2, "the prompt and the seed: {params:?}");
+    assert_eq!(params.len(), 4, "prompt, seed, steps and CFG: {params:?}");
     let node = card(&s);
     assert_eq!(node.kind, comfy_workflow::ID);
     assert_eq!((node.pos.x, node.pos.y), (10.0, 20.0));
     let card = comfy_workflow::card(node).unwrap();
     assert_eq!(card.mapping.outputs.len(), 1);
-    assert!(card.mapping.params.iter().all(|p| p.node != "3" || p.input == "seed"), "steps and cfg stay in the workflow");
+    assert!(card.mapping.params.iter().any(|p| p.node == "3" && p.input == "steps"));
+    assert!(card.mapping.params.iter().any(|p| p.node == "3" && p.input == "cfg"));
     s.dispatch("edit.undo", &Value::Null).unwrap();
     assert!(!s.document().canvases().get(&C).unwrap().nodes().contains_key(&CARD), "the import is one undo step");
 }

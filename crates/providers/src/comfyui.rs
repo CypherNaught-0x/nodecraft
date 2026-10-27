@@ -29,6 +29,7 @@
 use std::hash::BuildHasher;
 use std::sync::{Arc, Mutex, PoisonError};
 
+pub(crate) mod output_selection;
 pub mod progress;
 pub(crate) mod template;
 pub(crate) mod upload;
@@ -550,9 +551,10 @@ impl Provider for ComfyProvider {
 
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         Box::pin(async move {
+            let data = output_selection::save(Value::Null, job)?;
             let (prompt_id, already) = self.choose_prompt_id(&job.idempotency_key).await?;
             if already {
-                return Ok(Submission::Queued(handle_for(&prompt_id)));
+                return Ok(Submission::Queued(JobHandle { data, ..handle_for(&prompt_id) }));
             }
             let mut catalog = self.catalog().await?;
             let workflow = match self.prepare(job, &catalog).await {
@@ -576,12 +578,13 @@ impl Provider for ComfyProvider {
                 live.track(&queued.prompt_id, &request.workflow);
             }
             // Older servers ignore a client-chosen id: follow the one they assigned.
-            Ok(Submission::Queued(handle_for(&queued.prompt_id)))
+            Ok(Submission::Queued(JobHandle { data, ..handle_for(&queued.prompt_id) }))
         })
     }
 
     fn poll<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
         Box::pin(async move {
+            let order = output_selection::read(&handle.data)?;
             let id = &handle.remote_id;
             let known = self.locate(id).await?;
             let live = self.live.as_ref();
@@ -602,10 +605,13 @@ impl Provider for ComfyProvider {
                     let (fraction, message) = now.map_or((None, None), |(fraction, node)| (Some(fraction), node));
                     Ok(JobProgress::Running { fraction, message, partial: None })
                 }
-                Known::Finished(entry) => match finished(&entry) {
-                    Ok(files) => Ok(JobProgress::Done(Completed::new(self.download(&files).await?))),
-                    Err(e) => Ok(JobProgress::Failed(e)),
-                },
+                Known::Finished(mut entry) => {
+                    output_selection::arrange(&mut entry.outputs, order.as_deref(), |(id, _)| id.as_str());
+                    match finished(&entry) {
+                        Ok(files) => Ok(JobProgress::Done(Completed::new(self.download(&files).await?))),
+                        Err(e) => Ok(JobProgress::Failed(e)),
+                    }
+                }
                 // Not queued, running or in history: the server restarted (history is in memory).
                 Known::Unknown => Err(ProviderError::new(ErrorKind::NotFound, "the server no longer knows this prompt (was it restarted?)")),
             }
@@ -1309,3 +1315,7 @@ mod tests {
         assert!(ComfyProvider::new("http://h:8188", None, " ", FakeServer::new(), Arc::new(|| 0)).is_err(), "a salt is required");
     }
 }
+
+#[cfg(test)]
+#[path = "comfyui/mapping947_tests.rs"]
+mod mapping947_tests;

@@ -1389,6 +1389,32 @@ NODECRAFT_LIVE_ELEVENLABS=1 ELEVENLABS_API_KEY=… \
   cargo test -p nodecraft-providers --features http,elevenlabs --test live_elevenlabs -- --ignored
 ```
 
+## Editing ComfyUI workflow cards
+
+The card menu's **Edit workflow fields…** (#947) opens media inputs, parameters and results.
+Show or hide fields, edit their names and use Up/Down to reorder them, then Apply fields.
+Cancel leaves the card untouched. Filter fields searches their names and workflow targets.
+Read server nodes, then Reload fields, when the editor has no catalog for the card's server.
+The saved mapping travels with the project and Techniques. Applying it is one Undo step;
+current values survive hiding, and renamed ports keep their wires. The editor asks explicitly
+before disconnecting wires or clearing history after a change of result media types. Finish or
+cancel a card's run before editing its fields.
+
+New imports expose image/video/audio upload inputs, prompts (including single-line prompt
+widgets), seeds, steps, CFG and dimensions. Other scalar widgets, such as reference data,
+model choices and custom settings, can be exposed in the editor. Internally linked inputs stay
+inside the workflow. Compatible core `PreviewImage` nodes become `SaveImage` nodes in the
+imported copy so PBR previews are retained as results; the source workflow file is untouched.
+This conversion requires the server to describe both core nodes with the expected image
+connection and filename widget. Custom or incompatible previews are left unchanged.
+
+Results remain one list port per media type. Selected saver order is saved in the job handle,
+so a resumed local ComfyUI job keeps the same image order. Comfy Cloud also honors that order
+when its response supplies node ids; results without node ids retain the server's order after
+identified results. Older saved handles retain their previous ordering. Renaming a media list
+port writes workflow config version 2, which older NodeCraft builds refuse as unsupported.
+For programmatic editing and explicit disconnection/history flags, see [MCP](mcp.md).
+
 ## Comfy Cloud workflows
 
 The optional `comfy-cloud` adapter (#16, #865) runs ComfyUI workflows on Comfy's hosted GPUs through

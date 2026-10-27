@@ -29,6 +29,10 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 14/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 3/29 |
 
+ComfyUI workflow cards expose prompts and common generation settings on import. Their
+**Edit workflow fields…** dialog saves custom field visibility, names and order without
+reimporting, including retained image previews for compatible core workflows (#947).
+
 Runway Gen-4.5 text/first-frame video and Gen-4 Turbo first-frame video are available through
 priced catalog models and the direct task adapter (#25); paid live verification remains opt-in.
 

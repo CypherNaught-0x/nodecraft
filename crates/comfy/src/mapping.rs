@@ -62,7 +62,7 @@ pub enum InputRole {
 impl InputRole {
     /// Pre-selected in the mapping editor.
     pub fn exposed_by_default(self) -> bool {
-        matches!(self, Self::MediaInput | Self::Prompt | Self::NegativePrompt | Self::Seed)
+        matches!(self, Self::MediaInput | Self::Prompt | Self::NegativePrompt | Self::Seed | Self::Steps | Self::Cfg | Self::Width | Self::Height)
     }
 }
 
@@ -254,6 +254,9 @@ fn role_of(name: &str, kind: &ExposedKind, negative: bool) -> InputRole {
     use InputRole::*;
     match (name, kind) {
         (_, ExposedKind::Media(_)) => MediaInput,
+        ("negative_prompt", ExposedKind::Text { .. }) => NegativePrompt,
+        ("prompt" | "positive_prompt" | "text" | "caption" | "instruction" | "instructions", ExposedKind::Text { .. }) if negative => NegativePrompt,
+        ("prompt" | "positive_prompt" | "text" | "caption" | "instruction" | "instructions", ExposedKind::Text { .. }) => Prompt,
         (_, ExposedKind::Text { multiline: true }) if negative => NegativePrompt,
         (_, ExposedKind::Text { multiline: true }) => Prompt,
         ("seed" | "noise_seed", _) => Seed,
@@ -322,7 +325,18 @@ mod tests {
         assert_eq!(find("5", "width").label, "Empty Latent Image · width");
         assert!(ex.inputs.iter().all(|i| i.input != "model"), "connected inputs are internal");
         let defaults: Vec<&str> = ex.inputs.iter().filter(|i| i.role.exposed_by_default()).map(|i| i.label.as_str()).collect();
-        assert_eq!(defaults, ["KSampler · seed", "Positive", "Negative prompt"]);
+        assert_eq!(
+            defaults,
+            [
+                "KSampler · seed",
+                "KSampler · steps",
+                "KSampler · cfg",
+                "Empty Latent Image · width",
+                "Empty Latent Image · height",
+                "Positive",
+                "Negative prompt"
+            ]
+        );
         assert_eq!(ex.outputs, vec![ExposedOutput { node: "9".into(), label: "Save Image".into(), media: Some(Media::Image), preview: false }]);
     }
 
