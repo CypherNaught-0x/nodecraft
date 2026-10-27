@@ -121,3 +121,6 @@ pub use session::{DocChanged, PreparedImports, Session};
 pub mod provider_routing;
 pub mod provider_setup;
 pub mod variation_cmds;
+
+/// Shipped versioned starter projects and commands (#952).
+pub mod templates;
