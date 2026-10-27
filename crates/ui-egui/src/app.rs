@@ -577,6 +577,8 @@ pub struct NodeCraftApp {
     /// The cards prompts can `@mention`, and blocked mentions (#505).
     mention_cache: mentions::Cache,
     marquee_geometry: admission::GeometryCache,
+    /// The two-finger scroll or wheel gesture in progress, and who it belongs to (#413).
+    scroll_gesture: crate::scroll_chain::Gesture,
     cache_clock: u64,
     next_gesture: u64,
     centred: bool,
@@ -1203,6 +1205,7 @@ impl NodeCraftApp {
             schemas: SchemaCache::default(),
             mention_cache: mentions::Cache::default(),
             marquee_geometry: admission::GeometryCache::default(),
+            scroll_gesture: crate::scroll_chain::Gesture::default(),
             cache_clock: 0,
             next_gesture: 0,
             centred: false,
@@ -1633,27 +1636,18 @@ impl NodeCraftApp {
         {
             self.marquee = Some(Marquee { start: self.view.to_world(viewport.min, origin), base: self.selection.clone(), cancelled: false });
         }
-        let membership = self.membership();
-        let collapsed = &membership.hidden;
-        let over_card = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pointer| {
-            // navigation_overlay refreshed actual-instance geometry for this revision above.
-            // The visible-card schema cache is refreshed later and may still describe an old size.
-            // Cards hidden in a collapsed field aren't there to scroll.
-            self.navigation.geometry.rects.iter().any(|(id, rect)| !collapsed.contains(id) && self.view.rect_to_screen(viewport.min, *rect).contains(pointer))
-        });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         // Menus draw later in the frame. Leave their wheel input untouched and keep their world
         // insertion point fixed, including when the pointer is outside or a zoom modifier is held.
-        let scroll_navigation = if self.palette.is_some() || self.turn_into.is_some() {
-            canvas::ScrollNavigation::Disabled
-        } else if !over_card || self.view.zoom < card::BODY_MIN_ZOOM {
-            canvas::ScrollNavigation::PanAndZoom
-        } else {
-            canvas::ScrollNavigation::ZoomOnly
-        };
+        let scroll_navigation =
+            if self.palette.is_some() || self.turn_into.is_some() { canvas::ScrollNavigation::Disabled } else { canvas::ScrollNavigation::Enabled };
         if !canvas_blocks {
             canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, scroll_navigation, self.marquee.is_none());
         }
+        // Scroll is chained (#413): what the cards drawn below can use, they take; the canvas pans
+        // by the rest once they are drawn. Being over a card is no reason to drop the gesture.
+        let scroll_live = !canvas_blocks && scroll_navigation == canvas::ScrollNavigation::Enabled;
+        self.scroll_gesture.begin(ui.ctx(), scroll_live);
         // The palette and "Turn into" create at the world point they opened on; once the view
         // moves, close them.
         if self.view != view_before {
@@ -2394,6 +2388,10 @@ impl NodeCraftApp {
         } else {
             self.selection.clear();
         }
+        // Applied after the cards, like their own drag pan below; `view_before` closes the
+        // palette for it there.
+        let scroll = self.scroll_gesture.finish(ui.ctx());
+        canvas::scroll(ui, viewport, &mut self.view, &self.canvas_prefs, scroll);
         // Drawn while a popup is open too, so its own aspect menu stays alive; it acts only
         // when nothing else owns the frame.
         let toolbar_live = !overlay_blocks && !file_owns_input && !file_menu_owns_input && !recovery_owns_input;
@@ -3633,6 +3631,8 @@ mod marquee_tests;
 mod palette_scroll_tests;
 #[cfg(test)]
 mod reverse_wiring_tests;
+#[cfg(test)]
+mod scroll413_tests;
 #[cfg(test)]
 mod turn_into_tests;
 

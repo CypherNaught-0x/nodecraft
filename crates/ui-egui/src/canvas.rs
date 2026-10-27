@@ -187,16 +187,17 @@ pub fn text_input_focused(ctx: &egui::Context) -> bool {
 }
 
 /// Whether wheel and pinch input may navigate the canvas in this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollNavigation {
     Disabled,
-    ZoomOnly,
-    PanAndZoom,
+    Enabled,
 }
 
 /// Background navigation for one frame: drag with the primary button on empty canvas, or with the
-/// middle or secondary button anywhere, pans; scroll (two-finger trackpad, wheel) pans, or zooms
-/// with [`ScrollAction::Zoom`]; pinch or ⌘/Ctrl-scroll zooms around the pointer; ⌘0 resets, ⌘= and
-/// ⌘- zoom around the centre.
+/// middle or secondary button anywhere, pans; pinch or ⌘/Ctrl-scroll zooms around the pointer; ⌘0
+/// resets, ⌘= and ⌘- zoom around the centre.
+///
+/// Plain scroll is applied by [`scroll`] once the cards have taken their share of it (#413).
 ///
 /// `background` is the response of the canvas-filling background widget.
 ///
@@ -217,10 +218,9 @@ pub fn navigate(
     if panning {
         view.pan_by(background.drag_delta());
     }
-    let (scroll, zoom, pointer, reset, zoom_in, zoom_out) = ui.input(|i| {
+    let (zoom, pointer, reset, zoom_in, zoom_out) = ui.input(|i| {
         let cmd = egui::Modifiers::COMMAND;
         (
-            i.smooth_scroll_delta,
             i.zoom_delta(),
             i.pointer.hover_pos(),
             i.modifiers.matches_logically(cmd) && i.key_pressed(egui::Key::Num0),
@@ -228,13 +228,11 @@ pub fn navigate(
             i.modifiers.matches_logically(cmd) && i.key_pressed(egui::Key::Minus),
         )
     });
-    let hovered = pointer.is_some_and(|p| viewport.contains(p));
-    if hovered && !matches!(scroll_navigation, ScrollNavigation::Disabled) {
-        let (zoom, pan) = scroll_to_view_change(if matches!(scroll_navigation, ScrollNavigation::PanAndZoom) { scroll } else { Vec2::ZERO }, zoom, prefs);
-        view.pan_by(pan);
-        if zoom != 1.0
-            && let Some(p) = pointer
-        {
+    if scroll_navigation == ScrollNavigation::Enabled
+        && let Some(p) = pointer.filter(|p| viewport.contains(*p))
+    {
+        let (zoom, _) = scroll_to_view_change(Vec2::ZERO, zoom, prefs);
+        if zoom != 1.0 {
             view.zoom_at(origin, p, zoom);
         }
     }
@@ -247,6 +245,23 @@ pub fn navigate(
     }
     if zoom_out && keyboard_free {
         view.zoom_at(origin, viewport.center(), 1.0 / KEY_ZOOM_STEP);
+    }
+}
+
+/// Two-finger scroll or wheel for one frame: pans, or zooms about the pointer under
+/// [`ScrollAction::Zoom`]. `scroll` is what is left of the frame's delta after the regions on the
+/// cards under the pointer took what they could ([`crate::scroll_chain`]).
+pub fn scroll(ui: &egui::Ui, viewport: Rect, view: &mut CanvasView, prefs: &CanvasSettings, scroll: Vec2) {
+    if scroll == Vec2::ZERO {
+        return;
+    }
+    let Some(p) = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)) else {
+        return;
+    };
+    let (zoom, pan) = scroll_to_view_change(scroll, 1.0, prefs);
+    view.pan_by(pan);
+    if zoom != 1.0 {
+        view.zoom_at(viewport.min, p, zoom);
     }
 }
 
