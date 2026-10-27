@@ -511,9 +511,13 @@ pub fn show(
         let own = |name: &str| generate::owns_parameter(composer.is_some(), roles, name);
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
-        egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height().min(metrics.parameters)).auto_shrink([false, false]).show(
-            &mut body,
-            |ui| {
+        // Under the controls, so the card layer's hit test says when the pointer is over the body.
+        let wheel = body.interact(inner, body.id().with("wheel"), Sense::hover());
+        let parameters = egui::ScrollArea::vertical()
+            .id_salt("parameters")
+            .max_height(inner.height().min(metrics.parameters))
+            .auto_shrink([false, false])
+            .show(&mut body, |ui| {
                 ui.set_width(inner.width());
                 // Another version's ports or settings may not fit this one's schema at all.
                 if outdated {
@@ -598,8 +602,10 @@ pub fn show(
                 if let Some((_, error)) = &editor.error {
                     ui.label(error);
                 }
-            },
-        );
+            });
+        // Inner regions (a long text field) have taken their share already; this body takes what
+        // it can of the rest and the canvas pans by whatever remains (#413).
+        crate::scroll_chain::take(&body, wheel.contains_pointer(), &parameters, [false, true]);
     }
     if view.zoom < BODY_MIN_ZOOM {
         editor.mark_hidden();
@@ -1116,12 +1122,13 @@ pub(crate) fn control_with_mode(
             let id = ui.make_persistent_id(egui::IdSalt::new("value"));
             let widget = widget.id(id).desired_width(f32::INFINITY).char_limit(char_limit);
             let r = if multiline {
-                egui::ScrollArea::vertical()
+                let out = egui::ScrollArea::vertical()
                     .id_salt("text_scroll")
                     .max_height(t.body_size * t.text_rows as f32)
                     .auto_shrink([false, false])
-                    .show(ui, |ui| ui.add(widget))
-                    .inner
+                    .show(ui, |ui| ui.add(widget));
+                crate::scroll_chain::take(ui, out.inner.contains_pointer(), &out, [false, true]);
+                out.inner
             } else {
                 ui.add_sized(Vec2::new(ui.available_width(), t.control_row_height / 2.0), widget)
             }

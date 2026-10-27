@@ -402,10 +402,11 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
             }
             let hovered = response.hovered() || response.dragged();
             if hovered {
-                // ⌘-scroll and pinch zoom the canvas everywhere; Alt-scroll zooms the model (over a
-                // card the canvas doesn't scroll).
+                // ⌘-scroll and pinch zoom the canvas everywhere; Alt-scroll zooms the model and
+                // takes the scroll, so the canvas doesn't pan by it too (#413).
                 let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-                if scroll != 0.0 && ui.input(|i| i.modifiers.alt) {
+                if scroll.is_finite() && scroll != 0.0 && ui.input(|i| i.modifiers.alt) {
+                    ui.input_mut(|i| i.smooth_scroll_delta.y = 0.0);
                     view.orbit = view.orbit.zoomed((scroll / 200.0).exp());
                     view.scrolling(ui.input(|i| i.time));
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
