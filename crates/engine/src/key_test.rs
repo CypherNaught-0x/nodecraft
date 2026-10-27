@@ -84,6 +84,7 @@ fn plan(account: &Account) -> Result<Probe, &'static str> {
         }
         "gemini" => probe("Google AI", "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", "x-goog-api-key", ""),
         "replicate" => probe("Replicate", "https://api.replicate.com/v1/account", "Authorization", "Bearer "),
+        "stability" => probe("Stability AI", "https://api.stability.ai/v1/user/balance", "Authorization", "Bearer "),
         // The voice list the app already reads (#670).
         "elevenlabs" => probe("ElevenLabs", "https://api.elevenlabs.io/v2/voices?page_size=1&include_total_count=false", "xi-api-key", ""),
         "tripo" => probe("Tripo", "https://api.tripo3d.ai/v2/openapi/user/balance", "Authorization", "Bearer "),
@@ -191,6 +192,7 @@ mod tests {
             ("anthropic", "https://api.anthropic.com/v1/models?limit=1", "x-api-key", KEY.to_owned()),
             ("gemini", "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", "x-goog-api-key", KEY.to_owned()),
             ("replicate", "https://api.replicate.com/v1/account", "authorization", format!("Bearer {KEY}")),
+            ("stability", "https://api.stability.ai/v1/user/balance", "authorization", format!("Bearer {KEY}")),
             ("elevenlabs", "https://api.elevenlabs.io/v2/voices?page_size=1&include_total_count=false", "xi-api-key", KEY.to_owned()),
             ("tripo", "https://api.tripo3d.ai/v2/openapi/user/balance", "authorization", format!("Bearer {KEY}")),
             ("meshy", "https://api.meshy.ai/openapi/v1/balance", "authorization", format!("Bearer {KEY}")),

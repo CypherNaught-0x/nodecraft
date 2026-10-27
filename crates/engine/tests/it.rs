@@ -145,6 +145,8 @@ mod share;
 mod soul_training680;
 #[path = "split_ownership342.rs"]
 mod split_ownership342;
+#[path = "stability36.rs"]
+mod stability36;
 #[path = "staged_replay664.rs"]
 mod staged_replay664;
 #[path = "staleness_budget.rs"]
