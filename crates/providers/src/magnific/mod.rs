@@ -113,10 +113,9 @@ impl Magnific {
             context.refused();
         }
         response::status(&reply, self.limits.response_bytes)?;
-        let task = response::task(&reply.body, &self.key)?;
-        // Retain accepted task authority even if it has already completed or failed. The shared
-        // driver follows this identity; it must never turn a later failure into a fresh create.
-        Ok(Submission::Queued(contract.handle(&task.id)))
+        let id = response::receipt(&reply.body, &self.key)?;
+        // Result metadata is validated on a canonical poll, never discarded with a paid UUID.
+        Ok(Submission::Queued(contract.handle(&id)))
     }
     async fn progress(&self, handle: &JobHandle) -> Result<JobProgress, ProviderError> {
         if handle.remote_id.contains(self.key.expose()) {

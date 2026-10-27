@@ -36,13 +36,15 @@ impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for Bounded<T, N
     }
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Envelope<'a> {
     #[serde(borrow)]
     data: RawTask<'a>,
+    #[serde(borrow, default)]
+    error: Option<&'a serde_json::value::RawValue>,
+    #[serde(borrow, default)]
+    problem: Option<&'a serde_json::value::RawValue>,
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RawTask<'a> {
     #[serde(borrow)]
     task_id: Cow<'a, str>,
@@ -50,6 +52,10 @@ struct RawTask<'a> {
     status: Cow<'a, str>,
     #[serde(borrow)]
     generated: Bounded<Cow<'a, str>, 1>,
+    #[serde(borrow, default)]
+    error: Option<&'a serde_json::value::RawValue>,
+    #[serde(borrow, default)]
+    problem: Option<&'a serde_json::value::RawValue>,
 }
 pub(super) enum State {
     Created,
@@ -84,11 +90,39 @@ fn delivery(url: &str, key: &Secret) -> Result<(), ProviderError> {
     }
     Ok(())
 }
+// Creation needs only unambiguous task authority. Cosmetic/status/output metadata may be
+// malformed after the service accepted payment; retain the UUID and validate a fresh canonical
+// poll rather than throw away the only way to retrieve that paid result.
+#[derive(Deserialize)]
+struct Receipt<'a> {
+    #[serde(borrow)]
+    data: ReceiptIdentity<'a>,
+}
+#[derive(Deserialize)]
+struct ReceiptIdentity<'a> {
+    #[serde(borrow)]
+    task_id: Cow<'a, str>,
+}
+pub(super) fn receipt<'a>(bytes: &'a [u8], key: &Secret) -> Result<Cow<'a, str>, ProviderError> {
+    let receipt: Receipt<'a> = serde_json::from_slice(bytes).map_err(|_| malformed("Magnific acceptance receipt has no unambiguous task identity"))?;
+    identity(&receipt.data.task_id)?;
+    if receipt.data.task_id.contains(key.expose()) {
+        return Err(malformed("Magnific task identity refused or redacted"));
+    }
+    Ok(receipt.data.task_id)
+}
+fn reports_error(value: Option<&serde_json::value::RawValue>) -> bool {
+    value.is_some_and(|value| !matches!(value.get(), "null" | "false" | "\"\""))
+}
 pub(super) fn task<'a>(bytes: &'a [u8], key: &Secret) -> Result<Task<'a>, ProviderError> {
-    // Body and HTTP metadata are bounded before this typed parse. Derived visitors refuse
-    // duplicate/unknown envelope fields; the output array refuses a second entry before owning it.
-    let raw: Envelope<'a> = serde_json::from_slice(bytes).map_err(|_| malformed("Magnific task response is not the documented envelope"))?;
-    let raw = raw.data;
+    // Body and HTTP metadata are bounded before this typed parse. Additive metadata is
+    // ignored without ownership; duplicate authority and contradictory error fields refuse.
+    // The output array refuses a second entry before owning it.
+    let envelope: Envelope<'a> = serde_json::from_slice(bytes).map_err(|_| malformed("Magnific task response is not the documented envelope"))?;
+    if reports_error(envelope.error) || reports_error(envelope.problem) || reports_error(envelope.data.error) || reports_error(envelope.data.problem) {
+        return Err(malformed("Magnific task response contains a contradictory error"));
+    }
+    let raw = envelope.data;
     identity(&raw.task_id)?;
     if raw.task_id.contains(key.expose()) {
         return Err(malformed("Magnific task identity refused or redacted"));

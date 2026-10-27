@@ -179,3 +179,7 @@ path = "tests/live_tripo.rs"
 [[test]]
 name = "live_runway"
 path = "tests/live_runway.rs"
+
+[[test]]
+name = "live_magnific"
+path = "tests/live_magnific.rs"

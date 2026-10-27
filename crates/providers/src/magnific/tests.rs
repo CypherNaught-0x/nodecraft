@@ -343,3 +343,51 @@ fn magnific38_uuid_shaped_secret_echo_never_enters_a_handle_or_poll_url() {
     assert!(block_on(f.poll(&handle())).is_err());
     assert_eq!(w.requests.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn magnific38_malformed_accepted_metadata_retains_canonical_recovery_authority() {
+    for initial in [
+        json!({"data":{"task_id":ID}}),
+        json!({"data":{"task_id":ID,"status":"NEW_STATE","generated":{"bad":"shape"}}}),
+        json!({"data":{"task_id":ID,"status":"COMPLETED","generated":["https://evil.test/not-authority"]}}),
+    ] {
+        let output = png(4, 6);
+        let w = Arc::new(Wire {
+            replies: Mutex::new(VecDeque::from([
+                reply(200, initial),
+                reply(200, task("COMPLETED")),
+                Ok(crate::HttpResponse { status: 200, headers: vec![], body: output }),
+            ])),
+            ..Default::default()
+        });
+        let f = provider(&w);
+        let Submission::Queued(h) = block_on(f.submit(&job())).unwrap() else { panic!() };
+        assert_eq!(h.remote_id, ID);
+        assert!(matches!(block_on(f.poll(&h)).unwrap(), JobProgress::Done(_)));
+        let requests = w.requests.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[1].url, format!("{ROOT}/{ID}"));
+        assert_eq!(requests[2].url, URL);
+        assert_eq!(requests.iter().filter(|request| request.method == HttpMethod::Post).count(), 1);
+    }
+}
+
+#[test]
+fn magnific38_additive_task_metadata_is_safe_but_error_and_duplicate_authority_refuse() {
+    let mut body = task("COMPLETED");
+    body["request_metadata"] = json!({"version":2});
+    body["data"]["created_at"] = json!("2026-10-27T00:00:00Z");
+    body["data"]["error"] = json!(null);
+    assert!(response::task(&serde_json::to_vec(&body).unwrap(), &key()).is_ok());
+    for field in ["error", "problem"] {
+        let mut body = task("COMPLETED");
+        body[field] = json!({"message":"failed"});
+        assert!(response::task(&serde_json::to_vec(&body).unwrap(), &key()).is_err());
+        let mut body = task("COMPLETED");
+        body["data"][field] = json!("failed");
+        assert!(response::task(&serde_json::to_vec(&body).unwrap(), &key()).is_err());
+    }
+    let duplicated = format!("{{\"data\":{{\"task_id\":\"{ID}\",\"task_id\":\"{ID}\",\"status\":\"CREATED\",\"generated\":[]}}}}");
+    assert!(response::receipt(duplicated.as_bytes(), &key()).is_err());
+    assert!(response::task(duplicated.as_bytes(), &key()).is_err());
+}
