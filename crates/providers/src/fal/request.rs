@@ -1,6 +1,7 @@
 use super::*;
 use base64::Engine;
 use serde::Serialize;
+mod ideogram;
 mod luma;
 #[derive(Serialize)]
 struct Size {
@@ -185,6 +186,9 @@ fn choice<'a>(j: &'a ProviderJob, k: &str, d: &'a str, allowed: &[&str]) -> Resu
 }
 pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), ProviderError> {
     let model = Model::read(&j.model)?;
+    if model == Model::Ideogram {
+        return ideogram::prepare(j, l);
+    }
     if matches!(model, Model::RayText | Model::RayFrames | Model::Photon) {
         return luma::prepare(j, l, model);
     }
@@ -245,7 +249,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             return Err(invalid("fal unsupported parameter value"));
         }
         let ok = match model {
-            Model::RayText | Model::RayFrames | Model::Photon => false,
+            Model::RayText | Model::RayFrames | Model::Photon | Model::Ideogram => false,
             Model::Image => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "seed"),
             Model::Styled => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "guidance_scale" | "lora_scale" | "seed"),
             Model::Train => matches!(k.as_str(), "steps" | "trigger_word"),
@@ -306,7 +310,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         body.seed = Some(v.as_u64().filter(|n| *n <= u32::MAX as u64).ok_or_else(|| invalid("fal seed must fit u32"))?);
     }
     match model {
-        Model::RayText | Model::RayFrames | Model::Photon => return Err(invalid("fal Luma requests require their own schema")),
+        Model::RayText | Model::RayFrames | Model::Photon | Model::Ideogram => return Err(invalid("fal model requests require their own schema")),
         Model::Image | Model::Styled => {
             let width = integer(j, "width", 1024, 512, 1024)?;
             let height = integer(j, "height", 1024, 512, 1024)?;

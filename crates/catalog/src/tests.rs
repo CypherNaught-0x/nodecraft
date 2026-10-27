@@ -175,6 +175,10 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             // Per second by resolution (#742); quoted in veo_on_google_cloud_is_quoted_by_length_and_resolution.
             assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
             assert!(model.quote(&ParamValues::new()).unwrap().is_some(), "{}", model.id);
+        } else if model.id == "fal.ideogram-v3" {
+            // Fixed Balanced rendering and one output (#34), checked 2026-10-27.
+            assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 60_000)));
         } else if model.id == "higgsfield.soul-id-trainer" {
             // Soul ID training's list price per request (#680), checked 2026-10-22.
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
@@ -226,6 +230,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("comfyui.flux-dev", true),
             ("comfyui.sdxl", true),
             ("fal.flux-schnell", true),
+            ("fal.ideogram-v3", true),
             ("fal.luma-photon", true),
             ("gemini-images.pro", true),
             ("gemini-images.nano-banana-2.1", true),

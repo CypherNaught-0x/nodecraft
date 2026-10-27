@@ -42,7 +42,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         return Err(malformed("fal result contains an error instead of a complete output"));
     }
     let name = match r.model {
-        Model::Image | Model::Styled | Model::Photon => "images",
+        Model::Image | Model::Styled | Model::Photon | Model::Ideogram => "images",
         Model::Train => "diffusers_lora_file",
         Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames => "video",
         Model::Audio => "audio",
@@ -118,7 +118,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         }
         let allowed: &[&str] = match r.model {
             Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => &["image/png"],
-            Model::Photon => &["image/png", "image/jpeg", "image/webp"],
+            Model::Photon | Model::Ideogram => &["image/png", "image/jpeg", "image/webp"],
             Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames => &["video/mp4"],
             Model::Audio => &["audio/wav"],
             Model::Mesh => &["model/gltf-binary"],

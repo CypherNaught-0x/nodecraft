@@ -253,11 +253,11 @@ fn glb(b: &[u8], l: Limits) -> Result<(), ProviderError> {
 }
 pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Result<&'static str, ProviderError> {
     match r.model {
-        Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon => {
+        Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon | Model::Ideogram => {
             let m = nodecraft_media::probe_image(b, &l.image(false)).map_err(|_| bad())?;
             if m.mime == "image/png" {
                 png_extent(b)?;
-            } else if r.model != Model::Photon || !matches!(m.mime, "image/jpeg" | "image/webp") {
+            } else if !matches!(r.model, Model::Photon | Model::Ideogram) || !matches!(m.mime, "image/jpeg" | "image/webp") {
                 return Err(bad());
             }
             let n = u64::from(m.width).checked_mul(u64::from(m.height)).ok_or_else(bad)?;
