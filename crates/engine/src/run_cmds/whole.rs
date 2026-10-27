@@ -64,7 +64,7 @@ pub(super) fn specs() -> [CommandSpec; 2] {
             shortcut: Some("Command+Enter"),
             alternate_shortcuts: &[],
             input_schema: schema,
-            params_doc: "{canvas} -> run.quote's result for mode `pending`, plus {mode: \"pending\"}. Quotes every generation, action and technique node on the canvas whose result is stale, part-made or missing, with the upstream it needs, in dependency order; notes, decks, routers, batches and sources have nothing to run. Starts nothing: start it with run.start {canvas, mode: \"pending\", accept}. A quote with no steps and nothing reused means everything is up to date. Read-only.",
+            params_doc: "{canvas} -> run.quote's result for mode `pending`, plus {mode: \"pending\"}. Quotes every generation, action and technique node on the canvas whose result is stale, part-made or missing, with the upstream it needs, in dependency order; notes, decks, routers, batches and sources have nothing to run. A node with work between two nodes of the run runs too, in order; nodes after a batch the run feeds are listed in `waiting` for the next run. Starts nothing: start it with run.start {canvas, mode: \"pending\", accept}. A quote with no steps and nothing reused means everything is up to date. Read-only.",
             enabled: enabled_changed,
             run: run_changed,
         },
