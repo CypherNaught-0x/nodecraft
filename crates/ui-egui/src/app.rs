@@ -3548,6 +3548,8 @@ mod mentions_tests;
 #[cfg(test)]
 mod mesh_tests;
 #[cfg(test)]
+mod comfy3d24_tests;
+#[cfg(test)]
 mod order_tests;
 #[cfg(test)]
 mod perf;
