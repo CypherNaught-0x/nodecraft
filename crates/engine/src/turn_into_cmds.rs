@@ -5,9 +5,12 @@ use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_graph::{Change, Changeset, Edge, Endpoint, Node, Port, Position};
 use nodecraft_nodes::{Category, NodeDescriptor, Registry, batch, router};
 use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, NodeId, ParamValues, PortType, Value};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value as Json, json};
 use std::collections::BTreeMap;
+
+mod feeding;
+pub use feeding::{instance_feeding, kinds_feeding};
 
 /// The canvas extent positions may use (as `node.move`).
 const MAX_COORDINATE: f32 = 10_000_000.0;
@@ -61,10 +64,17 @@ struct CreateConnectedParams {
     id: NodeId,
     kind: String,
     pos: Position,
-    /// The output the noodle comes from.
-    from: Endpoint,
+    /// Exactly one existing end: an output to consume, or an input to feed.
+    #[serde(default, deserialize_with = "endpoint")]
+    from: Option<Endpoint>,
+    #[serde(default, deserialize_with = "endpoint")]
+    to: Option<Endpoint>,
     /// The new connection's id.
     edge: EdgeId,
+}
+
+fn endpoint<'de, D: Deserializer<'de>>(value: D) -> Result<Option<Endpoint>, D::Error> {
+    Endpoint::deserialize(value).map(Some)
 }
 
 fn create_connected(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
@@ -72,13 +82,20 @@ fn create_connected(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     if !(p.pos.x.is_finite() && p.pos.y.is_finite() && p.pos.x.abs() <= MAX_COORDINATE && p.pos.y.abs() <= MAX_COORDINATE) {
         return Err(invalid("position is outside the canvas"));
     }
+    if p.from.is_some() == p.to.is_some() {
+        return Err(invalid("provide exactly one existing output `from` or input `to`"));
+    }
+    if p.to.is_some() {
+        return feeding::create_connected(c, p);
+    }
+    let from = p.from.ok_or_else(|| invalid("an existing output is required"))?;
     let canvas = c.document.canvases().get(&p.canvas).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
-    let source = canvas.nodes().get(&p.from.node).ok_or_else(|| Error::new(ErrorKind::NotFound, "the source node does not exist"))?;
+    let source = canvas.nodes().get(&from.node).ok_or_else(|| Error::new(ErrorKind::NotFound, "the source node does not exist"))?;
     let output: &Port =
-        source.outputs.iter().find(|port| port.name == p.from.port).ok_or_else(|| Error::new(ErrorKind::NotFound, "the source node has no such output"))?;
+        source.outputs.iter().find(|port| port.name == from.port).ok_or_else(|| Error::new(ErrorKind::NotFound, "the source node has no such output"))?;
     let (mut node, input) = instance_for(c.kinds, &p.kind, p.id, output.port_type)?;
     node.pos = p.pos;
-    let edge = Edge { id: p.edge, from: p.from, to: Endpoint { node: p.id, port: input.clone() }, order: 0 };
+    let edge = Edge { id: p.edge, from, to: Endpoint { node: p.id, port: input.clone() }, order: 0 };
     let changes = Changeset::new(vec![Change::AddNode { canvas: p.canvas, node }, Change::Connect { canvas: p.canvas, edge }]);
     c.preview_changes(&changes)?;
     Ok(Effect::Edit { changes, result: json!({"id": p.id, "input": input}), gesture: None })
@@ -91,12 +108,14 @@ fn enabled_create_connected(c: &Context<'_>, value: &Json) -> Result<(), Error> 
 fn create_connected_schema() -> Json {
     let uuid = json!({"type": "string", "format": "uuid"});
     let coordinate = json!({"type": "number", "minimum": -MAX_COORDINATE, "maximum": MAX_COORDINATE});
+    let endpoint = json!({"type": "object", "required": ["node", "port"], "additionalProperties": false,
+        "properties": {"node": uuid, "port": {"type": "string", "maxLength": 256}}});
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
-        "required": ["canvas", "id", "kind", "pos", "from", "edge"],
+        "required": ["canvas", "id", "kind", "pos", "edge"],
+        "oneOf": [{"required": ["from"]}, {"required": ["to"]}],
         "properties": {"canvas": uuid, "id": uuid, "kind": {"type": "string", "maxLength": 128}, "edge": uuid,
             "pos": {"type": "object", "required": ["x", "y"], "additionalProperties": false, "properties": {"x": coordinate, "y": coordinate}},
-            "from": {"type": "object", "required": ["node", "port"], "additionalProperties": false,
-                "properties": {"node": uuid, "port": {"type": "string", "maxLength": 256}}}}})
+            "from": endpoint, "to": endpoint}})
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -106,11 +125,13 @@ pub fn specs() -> Vec<CommandSpec> {
         shortcut: None,
         alternate_shortcuts: &[],
         input_schema: create_connected_schema,
-        params_doc: "{canvas, id: new NodeId, kind, pos: {x, y}, from: {node, port}, edge: new EdgeId} -> {id, input}; adds a node of `kind` and connects the output `from` to its first input that accepts it, as one undo step. A router or batch takes the output's modality. The caller supplies the new ids.",
+        params_doc: "{canvas, id: new NodeId, kind, pos: {x, y}, edge: new EdgeId, from?: {node, port}, to?: {node, port}}; exactly one of from/to. `from` creates a node consuming an existing output and returns {id, input}; `to` creates a node feeding an existing input and returns {id, output}. Uses the first compatible port, as one undo step. A router or batch carries the connection's modality. A fed single input is refused; a list input appends. The caller supplies fresh ids.",
         enabled: enabled_create_connected,
         run: create_connected,
     }]
 }
 
+#[cfg(test)]
+mod feeding_tests;
 #[cfg(test)]
 mod tests;

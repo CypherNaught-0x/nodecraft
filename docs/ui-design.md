@@ -82,6 +82,7 @@ selected border more visible than the resting one, in both themes.
 | ⌘/Ctrl+A outside text fields | select every node on the canvas |
 | Drag from a card's `+` output | draw a noodle; inputs that accept it get a ring. Drop on an input to connect (`edge.connect`); a single input that is already fed swaps its noodle in the same undo step (`edge.rewire`). One output fans out to any number of inputs |
 | Drag from a connected input | pick up its (last) noodle: drop it on another input to reroute (`edge.rewire`), or on empty canvas to disconnect |
+| Drag from an unconnected input | compatible outputs get a ring. Drop on an output to connect, or on empty canvas to choose a compatible upstream node. Its output side lands at the drop point; creation and connection are one `node.create_connected` undo step. Escape cancels without editing |
 | Escape while dragging a noodle | drop it without changing anything |
 | Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses |
 | Delete or Backspace outside text fields | delete the selected nodes, noodles and field in one undo step (`canvas.delete`; a deleted field's cards stay) |

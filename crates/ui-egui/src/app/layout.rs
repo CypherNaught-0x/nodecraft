@@ -917,7 +917,8 @@ mod tests {
             let mut app = app();
             let ctx = egui::Context::default();
             app.wiring = Some(Wiring {
-                from: nodecraft_graph::Endpoint { node: id(3), port: "out".into() },
+                side: crate::noodle::Side::Output,
+                anchor: nodecraft_graph::Endpoint { node: id(3), port: "out".into() },
                 port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: false },
                 moving: None,
             });
