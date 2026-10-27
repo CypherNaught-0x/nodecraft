@@ -7,6 +7,7 @@ mod hunyuan;
 mod ideogram;
 mod ltx;
 mod luma;
+mod rodin;
 #[derive(Serialize)]
 struct Size {
     width: u64,
@@ -191,6 +192,9 @@ fn choice<'a>(j: &'a ProviderJob, k: &str, d: &'a str, allowed: &[&str]) -> Resu
 pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), ProviderError> {
     let model = Model::read(&j.model)?;
     let l = l.for_model(model);
+    if model.rodin() {
+        return rodin::prepare(j, l, model);
+    }
     if model.alibaba() {
         return alibaba::prepare(j, l, model);
     }
@@ -266,7 +270,11 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             return Err(invalid("fal unsupported parameter value"));
         }
         let ok = match model {
-            Model::QwenImage
+            Model::RodinText
+            | Model::RodinImages
+            | Model::RodinFastText
+            | Model::RodinFastImages
+            | Model::QwenImage
             | Model::QwenEdit
             | Model::Wan3Text
             | Model::Wan3Frames
@@ -343,7 +351,11 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         body.seed = Some(v.as_u64().filter(|n| *n <= u32::MAX as u64).ok_or_else(|| invalid("fal seed must fit u32"))?);
     }
     match model {
-        Model::QwenImage
+        Model::RodinText
+        | Model::RodinImages
+        | Model::RodinFastText
+        | Model::RodinFastImages
+        | Model::QwenImage
         | Model::QwenEdit
         | Model::Wan3Text
         | Model::Wan3Frames

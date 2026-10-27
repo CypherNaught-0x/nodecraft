@@ -59,6 +59,9 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 500_000)));
         } else if model.id.starts_with("fal.hunyuan3d-v3") {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 375_000)));
+        } else if model.id.starts_with("fal.rodin25") {
+            let micros = if model.id.contains("-fast") { 100_000 } else { 400_000 };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)));
         } else if model.id.starts_with("fal.qwen-image3") {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
         } else if model.id.starts_with("fal.wan3") {
@@ -290,6 +293,10 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.luma-ray32", false),
             ("fal.luma-ray32-i2v", false),
             ("fal.qwen-image3-edit", false),
+            ("fal.rodin25-fast-images", false),
+            ("fal.rodin25-fast", false),
+            ("fal.rodin25-images", false),
+            ("fal.rodin25", false),
             ("fal.trellis2", false),
             ("fal.wan22", false),
             ("fal.wan22-i2v", false),
