@@ -37,6 +37,7 @@ mod execution_identity;
 pub mod export;
 pub mod export_cmds;
 pub mod export_job;
+pub mod export_leaves;
 pub mod file_cmds;
 pub mod generate;
 pub mod graph_cmds;

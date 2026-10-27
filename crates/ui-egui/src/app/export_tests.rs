@@ -96,9 +96,59 @@ fn only_media_results_offer_export() {
     assert_eq!(crate::history::suggested_name("image/png"), "result.png");
     assert_eq!(crate::history::suggested_name("model/gltf-binary"), "result.glb");
     assert_eq!(crate::history::suggested_name("application/x-unknown"), "result.bin");
-    let node = nodecraft_graph::Node::new(NODE, "generation.text");
+    let mut node = nodecraft_graph::Node::new(NODE, "generation.text");
+    node.outputs =
+        vec![nodecraft_graph::Port { name: "out".into(), port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: false } }];
     let text = nodecraft_graph::Generation::new(IMAGE, vec![Value::Text("words".into())]);
-    assert!(crate::history::export_targets(&node, &text).is_empty());
+    assert!(crate::history::export_targets(&node, &text).unwrap().is_empty());
+}
+
+#[test]
+fn results966_nested_export_choices_count_text_and_refuse_excess_work() {
+    let (h, _) = with_image();
+    let node = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&NODE).unwrap();
+    let mut generation = node.history[0].clone();
+    let image = generation.outputs[0].clone();
+    generation.outputs = vec![Value::List(vec![Value::List(vec![Value::Text("padding".into()); 13]), Value::List(vec![image.clone(), image])])];
+    assert!(generation.items.is_empty());
+    let targets = crate::history::export_targets(node, &generation).unwrap();
+    assert_eq!(targets.iter().map(|target| target.2).collect::<Vec<_>>(), vec![Some(13), Some(14)]);
+    assert_eq!(targets[0].0, "out: item 14 of 15");
+    // Limits are checked even after an offerable media leaf: no truncated/ambiguous menu.
+    let mut deep = Value::Bool(false);
+    for _ in 0..33 {
+        deep = Value::List(vec![deep]);
+    }
+    generation.outputs.push(deep.clone());
+    assert!(crate::history::export_targets(node, &generation).is_err(), "output layout mismatch refuses");
+    generation.outputs = vec![Value::List(vec![generation.outputs[0].clone(), deep])];
+    assert!(crate::history::export_targets(node, &generation).is_err());
+}
+
+#[test]
+fn results966_the_chip_menu_exports_a_nested_nonfanned_media_leaf_in_both_themes() {
+    let _serial = EXPORT_TESTS.lock().unwrap();
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let (mut h, png) = with_image();
+        h.state_mut().theme = theme;
+        h.ctx.set_visuals(crate::theme::visuals(theme));
+        let canvas = h.state().canvas;
+        let mut node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&NODE).unwrap().clone();
+        let image = node.history[0].outputs[0].clone();
+        node.history[0].outputs = vec![Value::List(vec![Value::Text("not a media offset".into()), Value::List(vec![image])])];
+        assert!(node.history[0].items.is_empty());
+        let mut project = Project::new(ProjectId::from_bytes([65; 16]), "Nested export").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+        let mut session = Session::new(project).unwrap();
+        session.import_asset(&png).unwrap();
+        h.state_mut().session = session;
+        h.run_steps(3);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested.png");
+        export(&mut h, Some(path.clone()));
+        assert_eq!(std::fs::read(path).unwrap(), png);
+    }
 }
 
 #[test]
