@@ -348,7 +348,7 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
-    if id.starts_with("export.local_") {
+    if id.starts_with("export.local_") || id.starts_with("export.results_") {
         // A real destination, so the hunt reaches name rendering and the write path rather than
         // stopping at the host check. It is in the system temporary folder, never the repository.
         session.swap_resource(Some(nodecraft_engine::local_export::ExportHost::authorize(&export_destination()).unwrap()));
@@ -616,6 +616,10 @@ fn template(id: &str) -> (Session, Value) {
             "template":"{title}-{index}",
             "on_collision":"numbered",
             "format":{"mode":"original"}
+        }),
+        "export.results_plan" | "export.results_start" => json!({
+            "canvas":canvas(),"nodes":[node_id(1)],"history":"all",
+            "destination":export_destination().display().to_string(),"template":"{title}-{generation}-{index}"
         }),
         "perf.start" | "perf.clear" | "perf.report" => json!({}),
         // Stop needs a running capture; the hunt checks the refusal never panics.

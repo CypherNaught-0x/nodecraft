@@ -24,7 +24,11 @@ fn with_image() -> (Harness<'static, NodeCraftApp>, Vec<u8>) {
     session.import_asset(&png).unwrap();
     let app = NodeCraftApp::from_session(session, canvas).unwrap();
     let builder = Harness::builder().with_size(Vec2::new(1000.0, 700.0));
-    let builder = if std::env::var_os("NODECRAFT_EXPORT587_EVIDENCE").is_some() { builder.wgpu() } else { builder };
+    let builder = if std::env::var_os("NODECRAFT_EXPORT587_EVIDENCE").is_some() || std::env::var_os("NODECRAFT_RESULTS966_EVIDENCE").is_some() {
+        builder.wgpu()
+    } else {
+        builder
+    };
     let mut h = builder.build_ui_state(
         |ui, app: &mut NodeCraftApp| {
             #[cfg(not(target_arch = "wasm32"))]
@@ -92,9 +96,59 @@ fn only_media_results_offer_export() {
     assert_eq!(crate::history::suggested_name("image/png"), "result.png");
     assert_eq!(crate::history::suggested_name("model/gltf-binary"), "result.glb");
     assert_eq!(crate::history::suggested_name("application/x-unknown"), "result.bin");
-    let node = nodecraft_graph::Node::new(NODE, "generation.text");
+    let mut node = nodecraft_graph::Node::new(NODE, "generation.text");
+    node.outputs =
+        vec![nodecraft_graph::Port { name: "out".into(), port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: false } }];
     let text = nodecraft_graph::Generation::new(IMAGE, vec![Value::Text("words".into())]);
-    assert!(crate::history::export_targets(&node, &text).is_empty());
+    assert!(crate::history::export_targets(&node, &text).unwrap().is_empty());
+}
+
+#[test]
+fn results966_nested_export_choices_count_text_and_refuse_excess_work() {
+    let (h, _) = with_image();
+    let node = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&NODE).unwrap();
+    let mut generation = node.history[0].clone();
+    let image = generation.outputs[0].clone();
+    generation.outputs = vec![Value::List(vec![Value::List(vec![Value::Text("padding".into()); 13]), Value::List(vec![image.clone(), image])])];
+    assert!(generation.items.is_empty());
+    let targets = crate::history::export_targets(node, &generation).unwrap();
+    assert_eq!(targets.iter().map(|target| target.2).collect::<Vec<_>>(), vec![Some(13), Some(14)]);
+    assert_eq!(targets[0].0, "out: item 14 of 15");
+    // Limits are checked even after an offerable media leaf: no truncated/ambiguous menu.
+    let mut deep = Value::Bool(false);
+    for _ in 0..33 {
+        deep = Value::List(vec![deep]);
+    }
+    generation.outputs.push(deep.clone());
+    assert!(crate::history::export_targets(node, &generation).is_err(), "output layout mismatch refuses");
+    generation.outputs = vec![Value::List(vec![generation.outputs[0].clone(), deep])];
+    assert!(crate::history::export_targets(node, &generation).is_err());
+}
+
+#[test]
+fn results966_the_chip_menu_exports_a_nested_nonfanned_media_leaf_in_both_themes() {
+    let _serial = EXPORT_TESTS.lock().unwrap();
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let (mut h, png) = with_image();
+        h.state_mut().theme = theme;
+        h.ctx.set_visuals(crate::theme::visuals(theme));
+        let canvas = h.state().canvas;
+        let mut node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&NODE).unwrap().clone();
+        let image = node.history[0].outputs[0].clone();
+        node.history[0].outputs = vec![Value::List(vec![Value::Text("not a media offset".into()), Value::List(vec![image])])];
+        assert!(node.history[0].items.is_empty());
+        let mut project = Project::new(ProjectId::from_bytes([65; 16]), "Nested export").unwrap();
+        Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
+        Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+        let mut session = Session::new(project).unwrap();
+        session.import_asset(&png).unwrap();
+        h.state_mut().session = session;
+        h.run_steps(3);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested.png");
+        export(&mut h, Some(path.clone()));
+        assert_eq!(std::fs::read(path).unwrap(), png);
+    }
 }
 
 #[test]
@@ -282,4 +336,103 @@ fn a_pending_export_keeps_canvas_keys_live_and_its_real_cancel_button_preserves_
         assert_eq!(h.state().notice.as_deref(), Some("Export cancelled; no file was written."));
         assert_eq!(h.state().session.revision(), revision + 1, "Cancel never leaks a canvas edit");
     }
+}
+
+#[test]
+#[cfg(unix)]
+fn results966_folder_preview_progress_cancel_and_quit_share_the_engine_receipt() {
+    let _serial = EXPORT_TESTS.lock().unwrap();
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let (mut h, png) = with_image();
+        h.state_mut().theme = theme;
+        h.ctx.set_visuals(crate::theme::visuals(theme));
+        h.run_steps(3);
+        let evidence = std::env::var_os("NODECRAFT_RESULTS966_EVIDENCE").map(std::path::PathBuf::from);
+        let shade = if theme == crate::theme::ThemeKind::Dark { "dark" } else { "light" };
+        if let Some(root) = &evidence {
+            std::fs::create_dir_all(root).unwrap();
+            h.render().unwrap().save(root.join(format!("before-results-{shade}.png"))).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        h.state_mut().exports.answer = Some(dir.path().to_path_buf());
+        h.get_by_label("File").click();
+        h.run_steps(2);
+        h.get_by_label("Save workflow results…").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Save workflow results").is_some());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "folder choice is only authority, never implicit execution");
+        if let Some(root) = &evidence {
+            h.render().unwrap().save(root.join(format!("after-results-preview-{shade}.png"))).unwrap();
+        }
+        h.get_by_label("Cancel").click();
+        h.run_steps(2);
+        assert!(!h.state().export_pending());
+        let runner = std::sync::Arc::new(Held::default());
+        h.state_mut().exports.runner = Some(runner.clone());
+        h.state_mut().start_results_save(None);
+        h.run_steps(3);
+        let revision = h.state().session.revision();
+        h.get_by_label("Save files").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("Saving workflow results…").is_some());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(request_close(&mut h));
+        assert!(h.query_by_label("An export is still running.").is_some());
+        h.get_by_label("Keep exporting").click();
+        h.run_steps(2);
+        h.get_by_label("Cancel save").click();
+        h.run_steps(2);
+        assert!(!h.state().session.export_status().unwrap().cancellable);
+        runner.0.lock().unwrap().take().unwrap().run();
+        h.run_steps(3);
+        assert!(h.query_by_label("Workflow result save finished").is_some());
+        h.get_by_label("Done").click();
+        h.run_steps(2);
+        assert_eq!(h.state().session.revision(), revision);
+        let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.path().join("workflow-results.json")).unwrap()).unwrap();
+        assert_eq!(manifest["cancelled"], true);
+        h.state_mut().start_results_save(None);
+        h.run_steps(3);
+        h.get_by_label("Save files").click();
+        h.run_steps(2);
+        runner.0.lock().unwrap().take().unwrap().run();
+        h.run_steps(3);
+        let node = NODE.to_string();
+        let generation = IMAGE.to_string();
+        let filename = format!("generation.image-{generation}-1.png");
+        assert_eq!(std::fs::read(dir.path().join(&filename)).unwrap(), png, "{node}");
+        assert!(dir.path().join("workflow-results (2).json").exists());
+        h.get_by_label("Done").click();
+        h.run_steps(2);
+        assert!(!h.state().export_pending());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn results966_replaced_session_cannot_abandon_the_old_export_on_quit() {
+    let _serial = EXPORT_TESTS.lock().unwrap();
+    let (mut h, _) = with_image();
+    let runner = std::sync::Arc::new(Held::default());
+    h.state_mut().exports.runner = Some(runner.clone());
+    let dir = tempfile::tempdir().unwrap();
+    h.state_mut().exports.answer = Some(dir.path().to_path_buf());
+    h.state_mut().start_results_save(None);
+    h.run_steps(3);
+    h.get_by_label("Save files").click();
+    h.run_steps(2);
+    let old = h.state().session.export_watch().unwrap();
+    let project = h.state().session.document().clone();
+    h.state_mut().session = Session::new(project).unwrap();
+    h.step();
+    assert!(old.status().result.is_none());
+    assert!(request_close(&mut h), "the retained batch receipt still owns quit after Session replacement");
+    h.get_by_label("Cancel export and quit").click();
+    h.run_steps(2);
+    assert!(!close_commands(&h).contains(&egui::ViewportCommand::Close));
+    runner.0.lock().unwrap().take().unwrap().run();
+    h.step();
+    assert!(old.status().result.is_some());
+    assert!(close_commands(&h).contains(&egui::ViewportCommand::Close));
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "only the cancelled batch manifest is retained");
 }

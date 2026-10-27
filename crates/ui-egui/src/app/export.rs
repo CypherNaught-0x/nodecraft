@@ -17,6 +17,8 @@ use std::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 mod close;
+#[path = "results_save.rs"]
+mod results_save;
 mod work;
 
 type Pick = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;
@@ -33,6 +35,7 @@ struct Pending {
 pub(super) enum Target {
     /// The command that writes the file and its params, without the path.
     File(&'static str, serde_json::Value),
+    Results(serde_json::Value),
     /// The command that writes each file, its params without the path, and the suggested file
     /// name each is numbered from.
     Folder(&'static str, Vec<(serde_json::Value, String)>),
@@ -63,6 +66,7 @@ pub(super) fn numbered(name: &str, n: usize) -> String {
 
 pub(super) struct Exports {
     pending: Option<Pending>,
+    results: Option<results_save::State>,
     work: Option<work::Work>,
     pub(super) runner: Option<Arc<dyn nodecraft_engine::save_runner::SaveRunner>>,
     rect: egui::Rect,
@@ -81,6 +85,7 @@ impl Default for Exports {
         let runner = None;
         Self {
             pending: None,
+            results: None,
             work: None,
             runner,
             rect: egui::Rect::NOTHING,
@@ -106,7 +111,7 @@ impl Wake for Repaint {
 impl NodeCraftApp {
     #[cfg(test)]
     pub(super) fn export_pending(&self) -> bool {
-        self.exports.pending.is_some() || self.exports.work.is_some()
+        self.exports.pending.is_some() || self.exports.work.is_some() || self.exports.results.is_some()
     }
     /// Asks where to save output `port` (item `item`) of result `generation` of node `id`,
     /// suggesting `name`.
@@ -144,11 +149,11 @@ impl NodeCraftApp {
     }
 
     pub(super) fn pick_export(&mut self, target: Target, name: &str) {
-        if self.exports.pending.is_some() || self.exports.work.is_some() {
+        if self.exports.pending.is_some() || self.exports.work.is_some() || self.exports.results.is_some() {
             self.notice = Some("Another export is in progress; finish or cancel that first.".into());
             return;
         }
-        let folder = matches!(target, Target::Folder(..));
+        let folder = matches!(target, Target::Folder(..) | Target::Results(..));
         let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.export_pick(name, folder))) {
             Ok(Some(future)) => future,
             Ok(None) => {
@@ -208,6 +213,7 @@ impl NodeCraftApp {
             return;
         }
         match pending.target {
+            Target::Results(params) => self.results_folder(params, path),
             Target::File(command, mut params) => {
                 params["path"] = json!(path);
                 // The dialog already asked before replacing a file.

@@ -496,7 +496,8 @@ impl NodeCraftApp {
         let mut improve = false;
         // The shown result's media, for Download (#581).
         let shown_result = node.history.iter().find(|generation| Some(generation.id) == node.active);
-        let downloads = shown_result.map(|generation| crate::history::export_targets(node, generation)).unwrap_or_default();
+        let result = shown_result.map(|generation| crate::history::export_targets(node, generation)).transpose();
+        let downloads = result.as_ref().ok().and_then(Option::as_deref).unwrap_or_default();
         let mut download = None;
         egui::Area::new(egui::Id::new(("generation_toolbar", id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
             ui.add_enabled_ui(interactive, |ui| {
@@ -588,8 +589,12 @@ impl NodeCraftApp {
                             if nodecraft_engine::split::image_of(node).is_some() {
                                 expand = ui.button("Expand").on_hover_text("Show this image larger").clicked();
                             }
-                            match downloads.as_slice() {
-                                [] => {}
+                            match downloads {
+                                [] => {
+                                    if let Err(error) = &result {
+                                        ui.add_enabled(false, egui::Button::new("Download")).on_disabled_hover_text(&error.message);
+                                    }
+                                }
                                 [(_, port, item, name)] => {
                                     if ui.button("Download").on_hover_text("Save this result to a file").clicked() {
                                         download = Some(Download::One(port.clone(), *item, name.clone()));
@@ -622,7 +627,7 @@ impl NodeCraftApp {
             match download {
                 Download::One(port, item, name) => self.start_export(self.canvas, id, generation, port, item, &name),
                 Download::All => {
-                    let targets = downloads.into_iter().map(|(_, port, item, name)| (port, item, name)).collect();
+                    let targets = downloads.iter().map(|(_, port, item, name)| (port.clone(), *item, name.clone())).collect();
                     self.start_export_all(self.canvas, id, generation, targets);
                 }
             }

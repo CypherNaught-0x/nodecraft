@@ -287,6 +287,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     // A local export preview resolves names from the document and writes nothing (#98). Running an
     // export is `HUMAN_ONLY`: writing files into a folder is a person's decision.
     "export.local_plan",
+    "export.results_plan",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
 /// pass through an agent's context, and `keys.remove` deletes a key with no undo. (The file
@@ -347,6 +348,7 @@ pub const HUMAN_ONLY: &[&str] = &[
     // Writing result files into a folder is a person's decision, for the same reason `file.save`
     // is: the destination is outside the project and outside undo (#98).
     "export.local_run",
+    "export.results_start",
     "run.record",
     "usage.reconcile_ownership",
     "usage.resolve_charge",

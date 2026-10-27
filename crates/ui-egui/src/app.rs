@@ -1312,7 +1312,7 @@ impl NodeCraftApp {
             // is painted last by show(), above any document editor or canvas gesture.
             return;
         }
-        let file_owns_input = self.export_overlay(ui.ctx()) || file_owns_input;
+        let file_owns_input = self.results_overlay(ui.ctx()) || self.export_overlay(ui.ctx()) || file_owns_input;
         self.videos.poll(ui.ctx());
         self.audios.poll(ui.ctx());
         self.meshes.poll();

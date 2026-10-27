@@ -1155,6 +1155,10 @@ impl Session {
                     Ok(result)
                 });
             }
+            Effect::ResultsExport { plan } => {
+                let id = self.exports.start_results(&self.assets, *plan)?;
+                return Ok(serde_json::json!({"pending": id}));
+            }
             Effect::LocalExport { plan } => {
                 // Export changes no document, so nothing is staged and there is nothing to undo.
                 // Authority is enforced here as well as where the plan was built, because this is
@@ -1451,6 +1455,7 @@ impl Session {
             | Effect::Export { .. }
             | Effect::Copy { .. }
             | Effect::LocalExport { .. }
+            | Effect::ResultsExport { .. }
             | Effect::Open { .. }
             | Effect::Save { .. }
             | Effect::Perf { .. }

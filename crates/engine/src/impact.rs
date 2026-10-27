@@ -51,6 +51,7 @@ impl Impact {
             | Effect::Export { .. }
             | Effect::Copy { .. }
             | Effect::LocalExport { .. }
+            | Effect::ResultsExport { .. }
             | Effect::Perf { .. }
             | Effect::Elements { .. } => Self::Host,
         })
