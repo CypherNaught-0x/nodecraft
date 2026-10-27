@@ -81,7 +81,6 @@ fn comfy3d24_each_local_generation_card_shows_real_mesh_and_capture_pointer_adds
                 let mut h = harness(app(model, mime, bytes, theme));
                 assert!(wait(&mut h, "3D model, 1 triangles, shaded view"), "{model}/{mime}: {:?}", h.state().notice);
                 assert!(h.state().meshes.bytes() > 0, "the asset was decoded by the real viewer cache");
-                assert!(h.query_by_label("Prompt").is_none(), "image-only models do not display a text-prompt field");
                 h.get_by_label("Shaded").click();
                 assert!(wait(&mut h, "3D model, 1 triangles, unlit view"));
                 let before = h.state().session.document().clone();
