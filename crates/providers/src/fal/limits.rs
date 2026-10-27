@@ -21,7 +21,7 @@ pub struct Limits {
 }
 impl Default for Limits {
     fn default() -> Self {
-        Self::GROK_HARD
+        Self::ALIBABA_HARD
     }
 }
 impl Limits {
@@ -49,8 +49,10 @@ impl Limits {
     pub const VIDEO_HARD: Self = Self { output_bytes: 256 * MIB, total_output_bytes: 256 * MIB, ..Self::HARD };
     /// Five 1 MiB edit references encoded into one request, and ten bounded image results.
     pub const GROK_HARD: Self = Self { request_bytes: 8 * MIB, total_pixels: 10 * Self::HARD.total_pixels, ..Self::VIDEO_HARD };
+    /// Wan prompts allow 20,000 UTF-8 characters; legacy aliases retain their text cap.
+    pub const ALIBABA_HARD: Self = Self { text_bytes: 96 * 1024, ..Self::GROK_HARD };
     pub(super) fn validate(self) -> Result<Self, ProviderError> {
-        let h = Self::GROK_HARD;
+        let h = Self::ALIBABA_HARD;
         if self.input_bytes > h.input_bytes
             || self.text_bytes > h.text_bytes
             || self.request_bytes > h.request_bytes
@@ -71,19 +73,36 @@ impl Limits {
     }
     pub(super) fn for_model(self, model: Model) -> Self {
         let grok_images = matches!(model, Model::GrokImage | Model::GrokEdit);
-        let large_video = matches!(model, Model::GrokText | Model::GrokFrames | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames);
-        let large_result = large_video || model.hunyuan();
+        let qwen_images = matches!(model, Model::QwenImage | Model::QwenEdit);
+        let large_video = matches!(
+            model,
+            Model::Wan3Text | Model::Wan3Frames | Model::GrokText | Model::GrokFrames | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames
+        );
+        let large_result = large_video || model.hunyuan() || model.rodin();
         Self {
-            request_bytes: self.request_bytes.min(if model == Model::GrokEdit { Self::GROK_HARD.request_bytes } else { Self::HARD.request_bytes }),
+            text_bytes: self.text_bytes.min(if model.alibaba() { Self::ALIBABA_HARD.text_bytes } else { Self::HARD.text_bytes }),
+            request_bytes: self.request_bytes.min(if matches!(model, Model::GrokEdit | Model::QwenEdit | Model::RodinImages | Model::RodinFastImages) {
+                Self::GROK_HARD.request_bytes
+            } else {
+                Self::HARD.request_bytes
+            }),
             output_bytes: self.output_bytes.min(if large_result { Self::VIDEO_HARD.output_bytes } else { Self::HARD.output_bytes }),
             total_output_bytes: self.total_output_bytes.min(if grok_images {
                 10 * Self::HARD.output_bytes
+            } else if qwen_images {
+                6 * Self::HARD.output_bytes
             } else if large_result {
                 Self::VIDEO_HARD.total_output_bytes
             } else {
                 Self::HARD.total_output_bytes
             }),
-            total_pixels: self.total_pixels.min(if grok_images { Self::GROK_HARD.total_pixels } else { Self::HARD.total_pixels }),
+            total_pixels: self.total_pixels.min(if grok_images {
+                Self::GROK_HARD.total_pixels
+            } else if qwen_images {
+                6 * Self::HARD.total_pixels
+            } else {
+                Self::HARD.total_pixels
+            }),
             ..self
         }
     }

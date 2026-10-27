@@ -61,6 +61,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "openai" | "openai-images" | "openai-audio" => Some("openai"),
         "anthropic" => Some("anthropic"),
         "deepgram" => Some("deepgram"),
+        "stability" => Some("stability"),
         "azure-openai" => Some("azure-openai"),
         "huggingface" => Some("huggingface"),
         "litellm" => Some("litellm"),
@@ -300,6 +301,12 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         }
         "openai-images" => Arc::new(nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone())),
         "deepgram" => Arc::new(nodecraft_providers::deepgram::Deepgram::new(needs_key(env.keys, "deepgram")?, env.http.clone())),
+        "stability" => {
+            if cfg!(target_arch = "wasm32") {
+                return Err(Readiness::NotSetUp("Stability AI requires the desktop or CLI host's no-redirect HTTP transport".into()));
+            }
+            Arc::new(nodecraft_providers::stability::Stability::new(needs_key(env.keys, "stability")?, env.http.clone()))
+        }
         "openai-audio" => Arc::new(nodecraft_providers::openai_audio::OpenAiAudio::new(needs_key(env.keys, "openai")?, env.http.clone())),
         "replicate" => Arc::new(nodecraft_providers::replicate::Replicate::new(needs_key(env.keys, "replicate")?, env.http.clone())),
         "seedream" => Arc::new(nodecraft_providers::seedream::Seedream::new(needs_key(env.keys, "seedream")?, env.http.clone())),

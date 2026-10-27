@@ -167,6 +167,10 @@ impl Context<'_> {
 }
 
 pub enum Effect {
+    /// Add a verified shipped starter graph and its assets as one ordinary undoable edit.
+    TemplateAdd {
+        id: String,
+    },
     /// Read project PDF media only at dispatch, then stage one ordinary document edit.
     DocumentExtract {
         request: Box<crate::document_cmds::ExtractionRequest>,
@@ -197,6 +201,9 @@ pub enum Effect {
     /// Unlike `Export`, this one is not in the pending-open bypass lists: a batch writes many
     /// files, so it settles a pending save first and refuses to run while a project open is in
     /// flight rather than reading a store that is being replaced.
+    ResultsExport {
+        plan: Box<crate::results_export::Plan>,
+    },
     LocalExport {
         plan: nodecraft_format::export::ExportPlan,
     },
@@ -267,7 +274,7 @@ impl Registry {
         let mut registry = Self::default();
         // A flat list rather than a chain of iterators: one `Chain` per module nests the
         // iterator type deeper than the compiler's recursion limit.
-        let groups: [fn() -> Vec<CommandSpec>; 70] = [
+        let groups: [fn() -> Vec<CommandSpec>; 72] = [
             crate::graph_cmds::specs,
             crate::node_cmds::specs,
             crate::assist_cmds::specs,
@@ -282,6 +289,7 @@ impl Registry {
             crate::technique_node_cmds::specs,
             crate::app_cmds::specs,
             crate::library_cmds::specs,
+            crate::templates::specs,
             crate::describe_cmds::specs,
             crate::option_cmds::specs,
             crate::option_fetch::specs,
@@ -296,6 +304,7 @@ impl Registry {
             crate::file_cmds::specs,
             crate::storage_window_cmds::specs,
             crate::local_export::specs,
+            crate::results_export::specs,
             crate::layout_cmds::specs,
             crate::comment_cmds::specs,
             crate::run_cmds::specs,

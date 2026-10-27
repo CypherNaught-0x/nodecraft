@@ -1,0 +1,219 @@
+# Alibaba models through the existing fal queue, checked 2026-10-27.
+# Schemas/rates: https://fal.ai/models/alibaba/qwen-image-3/text-to-image/api
+# https://fal.ai/models/alibaba/qwen-image-3/edit/api
+# https://fal.ai/models/alibaba/wan-3.0/text-to-video/api
+# https://fal.ai/models/alibaba/wan-3.0/image-to-video/api
+# Exact square 1K/2K sizes bind Qwen's output tier to its published rate.
+# Wan uses explicit durations; smart duration and reference-to-video are not offered.
+
+[[model]]
+id="fal.qwen-image3"
+provider="fal"
+provider_model="alibaba/qwen-image-3/text-to-image"
+label="Qwen-Image 3 (fal)"
+description="Create one to six square images at an explicit 1K or 2K size. Prompt expansion and fixed seed are optional."
+latency_s=30
+quality=3
+pricing={type="per_unit_by_choice",unit="image",count="num_images",param="image_preset",prices={"1k-square"="0.04 USD","2k-square"="0.075 USD"}}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="image_preset"
+label="Output size"
+control={type="choice",options=[{value="1k-square",label="1K square · 1024 × 1024"},{value="2k-square",label="2K square · 2048 × 2048"}]}
+default={type="text",value="1k-square"}
+
+[[model.params.params]]
+name="num_images"
+label="Images"
+control={type="unsigned",min="1",max="6",step="1"}
+default={type="unsigned",value="1"}
+
+[[model.params.params]]
+name="output_format"
+label="Output format"
+control={type="choice",options=[{value="png",label="PNG"},{value="jpeg",label="JPEG"},{value="webp",label="WEBP"}]}
+default={type="text",value="png"}
+
+[[model.params.params]]
+name="enable_prompt_expansion"
+label="Expand prompt"
+control={type="toggle"}
+default={type="bool",value=true}
+
+[[model.params.params]]
+name="negative_prompt"
+label="Negative prompt (up to 500 characters)"
+control={type="text",multiline=true,max_bytes=2000}
+default={type="text",value=""}
+
+[[model.params.params]]
+name="seed"
+label="Fixed seed (optional)"
+control={type="unsigned",min="0",max="2147483647",step="1"}
+
+[[model]]
+id="fal.qwen-image3-edit"
+provider="fal"
+provider_model="alibaba/qwen-image-3/edit"
+label="Qwen-Image 3 edit (fal)"
+description="Edit one to three ordered references into up to six square 1K/2K images. References: 384–1024 px, 1 MiB each; PNG must have no alpha channel."
+latency_s=30
+quality=3
+pricing={type="per_unit_by_choice",unit="image",count="num_images",param="image_preset",prices={"1k-square"="0.04 USD","2k-square"="0.075 USD"}}
+
+[[model.modes]]
+id="image-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="images",modality="image",min=1,max=3}]
+
+[[model.params.params]]
+name="image_preset"
+label="Output size"
+control={type="choice",options=[{value="1k-square",label="1K square · 1024 × 1024"},{value="2k-square",label="2K square · 2048 × 2048"}]}
+default={type="text",value="1k-square"}
+
+[[model.params.params]]
+name="num_images"
+label="Images"
+control={type="unsigned",min="1",max="6",step="1"}
+default={type="unsigned",value="1"}
+
+[[model.params.params]]
+name="output_format"
+label="Output format"
+control={type="choice",options=[{value="png",label="PNG"},{value="jpeg",label="JPEG"},{value="webp",label="WEBP"}]}
+default={type="text",value="png"}
+
+[[model.params.params]]
+name="enable_prompt_expansion"
+label="Expand prompt"
+control={type="toggle"}
+default={type="bool",value=true}
+
+[[model.params.params]]
+name="negative_prompt"
+label="Negative prompt (up to 500 characters)"
+control={type="text",multiline=true,max_bytes=2000}
+default={type="text",value=""}
+
+[[model.params.params]]
+name="seed"
+label="Fixed seed (optional)"
+control={type="unsigned",min="0",max="2147483647",step="1"}
+
+[[model]]
+id="fal.wan3"
+provider="fal"
+provider_model="alibaba/wan-3.0/text-to-video"
+label="Wan 3.0 (fal)"
+description="Create a 2–30 second MP4 at 480p, 720p or 1080p, with optional native audio. Explicit duration; up to 256 MiB per clip."
+latency_s=180
+quality=3
+pricing={type="per_unit_by_choice",unit="second",count="duration_seconds",param="resolution",prices={"480p"="0.05 USD","720p"="0.10 USD","1080p"="0.20 USD"}}
+
+[[model.modes]]
+id="text-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="duration_seconds"
+label="Seconds"
+control={type="unsigned",min="2",max="30",step="1"}
+default={type="unsigned",value="5"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="adaptive",label="adaptive"},{value="16:9",label="16:9"},{value="4:3",label="4:3"},{value="1:1",label="1:1"},{value="3:4",label="3:4"},{value="9:16",label="9:16"}]}
+default={type="text",value="16:9"}
+
+[[model.params.params]]
+name="audio"
+label="Generate sound"
+control={type="toggle"}
+default={type="bool",value=true}
+
+[[model.params.params]]
+name="enable_prompt_expansion"
+label="Expand prompt"
+control={type="toggle"}
+default={type="bool",value=true}
+
+[[model.params.params]]
+name="enable_thinking"
+label="Enable thinking"
+control={type="toggle"}
+default={type="bool",value=false}
+
+[[model.params.params]]
+name="seed"
+label="Fixed seed (optional)"
+control={type="unsigned",min="0",max="2147483647",step="1"}
+
+[[model]]
+id="fal.wan3-i2v"
+provider="fal"
+provider_model="alibaba/wan-3.0/image-to-video"
+label="Wan 3.0 frames (fal)"
+description="Animate a first frame and optional last frame into a 2–30 second MP4. Prompt and native audio are optional; up to 256 MiB per clip."
+latency_s=180
+quality=3
+pricing={type="per_unit_by_choice",unit="second",count="duration_seconds",param="resolution",prices={"480p"="0.05 USD","720p"="0.10 USD","1080p"="0.20 USD"}}
+
+[[model.modes]]
+id="image-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=0,max=1,inline=true},{role="first_frame",modality="image",min=1,max=1},{role="last_frame",modality="image",min=0,max=1}]
+
+[[model.params.params]]
+name="duration_seconds"
+label="Seconds"
+control={type="unsigned",min="2",max="30",step="1"}
+default={type="unsigned",value="5"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="480p",label="480p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="720p"}
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="adaptive",label="adaptive"},{value="16:9",label="16:9"},{value="4:3",label="4:3"},{value="1:1",label="1:1"},{value="3:4",label="3:4"},{value="9:16",label="9:16"}]}
+default={type="text",value="16:9"}
+
+[[model.params.params]]
+name="audio"
+label="Generate sound"
+control={type="toggle"}
+default={type="bool",value=true}
+
+[[model.params.params]]
+name="enable_prompt_expansion"
+label="Expand prompt"
+control={type="toggle"}
+default={type="bool",value=true}
+
+[[model.params.params]]
+name="enable_thinking"
+label="Enable thinking"
+control={type="toggle"}
+default={type="bool",value=false}
+
+[[model.params.params]]
+name="seed"
+label="Fixed seed (optional)"
+control={type="unsigned",min="0",max="2147483647",step="1"}
