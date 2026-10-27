@@ -198,7 +198,8 @@ impl Quote {
         let capped = value.get("blocks").and_then(Json::as_array).is_some_and(|blocks| !blocks.is_empty());
         let steps_total = value.get("steps_total").and_then(Json::as_u64).and_then(|n| usize::try_from(n).ok()).unwrap_or(steps.len());
         let steps = steps.iter().filter_map(|step| serde_json::from_value(step.get("node")?.clone()).ok()).collect();
-        let waiting = value.get("waiting").and_then(Json::as_array).map_or(0, Vec::len);
+        let listed_waiting = value.get("waiting").and_then(Json::as_array).map_or(0, Vec::len);
+        let waiting = value.get("waiting_total").and_then(Json::as_u64).and_then(|n| usize::try_from(n).ok()).unwrap_or(listed_waiting);
         Some(Self {
             token,
             amounts,
@@ -440,7 +441,8 @@ impl NodeCraftApp {
         // A run of the whole canvas names the cards it runs (#965); a card's own run is that card.
         let runs = (confirm.kind.whole() && !stale).then(|| self.steps_line(&confirm.quote)).flatten();
         // A card still running from an earlier run would be generated, and charged, twice: a
-        // whole-canvas run waits until it finishes (#965).
+        // whole-canvas run waits until it finishes (#965). Only listed steps are checked; a quote
+        // with more steps than are listed can't be started from here at all.
         let busy = match &self.runs {
             Some(host) if confirm.kind.whole() => {
                 let mut cards: Vec<NodeId> = confirm.quote.steps.iter().copied().filter(|id| host.is_running(confirm.canvas, *id)).collect();

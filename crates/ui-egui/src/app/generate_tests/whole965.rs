@@ -147,8 +147,10 @@ fn the_dialog_counts_every_step_past_the_listed_ones_and_says_what_waits_for_a_b
     let mut quote = h.state_mut().session.dispatch("run.changed", &json!({"canvas": C})).unwrap();
     quote["steps_total"] = json!(612);
     quote["waiting"] = json!([M]);
+    // Past the first 500 listed, the total says how many wait.
+    quote["waiting_total"] = json!(700);
     h.state_mut().run_confirm.as_mut().unwrap().set_quote(&quote);
     h.run();
     assert!(h.query_by_label_contains("Runs 612 steps:").is_some(), "the count is the run's, not the listed page's");
-    assert!(h.query_by_label_contains("1 card(s) after a batch wait for this run's results").is_some());
+    assert!(h.query_by_label_contains("700 card(s) after a batch wait for this run's results").is_some());
 }

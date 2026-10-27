@@ -420,6 +420,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         None => (expanded, planned, waiting),
     };
     // Nodes a whole-canvas run leaves for the next one, after a batch it feeds (#965).
+    let waiting_total = waiting.len();
     let waiting: Vec<NodeId> = waiting.into_iter().take(MAX_LISTED).collect();
     let reused = reuse.as_ref().map(reuse::Reuse::reused).unwrap_or_default();
     let run_plan = match planned {
@@ -428,7 +429,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
             // Native hook messages stay private. Built-in/planner validation text is bounded
             // separately; at most one hundred UUID/code records share the report byte cap.
             let reasons = blocked_reasons(&blockers);
-            let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": [], "reused": reused, "waiting": waiting, "requests": [], "requests_complete": false});
+            let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": [], "reused": reused, "waiting": waiting, "waiting_total": waiting_total, "requests": [], "requests_complete": false});
             return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
         }
     };
@@ -454,7 +455,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
             .chain(refused)
             .take(MAX_RUN_BLOCKS_LISTED)
             .collect();
-        let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": [], "reused": reused, "waiting": waiting, "requests": requests_json, "requests_complete": requests_complete});
+        let response = json!({"token": token, "blocked": reasons, "steps": [], "totals": {}, "complete": false, "allowed": false, "blocks": [], "provisional": [], "estimated": [], "resumable": [], "quoted": [], "reused": reused, "waiting": waiting, "waiting_total": waiting_total, "requests": requests_json, "requests_complete": requests_complete});
         return Ok(Priced { response, totals: BTreeMap::new(), complete: false, allowed: false, token });
     }
     let scratch_headroom = request_scratch(p)?;
@@ -469,7 +470,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         Err(error) => {
             let reason = admission_reason(&error);
             return Ok(Priced {
-                response: json!({"token":token,"blocked":[reason],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[],"resumable":[],"quoted":[],"reused":reused,"waiting":waiting,"requests":requests_json,"requests_complete":requests_complete}),
+                response: json!({"token":token,"blocked":[reason],"steps":[],"totals":{},"complete":false,"allowed":false,"blocks":[],"provisional":[],"estimated":[],"resumable":[],"quoted":[],"reused":reused,"waiting":waiting,"waiting_total":waiting_total,"requests":requests_json,"requests_complete":requests_complete}),
                 totals: BTreeMap::new(),
                 complete: false,
                 allowed: false,
@@ -507,6 +508,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
         "quoted": quoted,
         "reused": reused,
         "waiting": waiting,
+        "waiting_total": waiting_total,
         "alike": alike(catalog, canvas, &priced.steps),
         "requests": requests_json,
         "requests_complete": requests_complete,
@@ -978,7 +980,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: quote_schema,
-            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale|pending|workflow, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, reused, waiting, alike, requests, requests_complete, blocked?, token}. `nodes` is used by selected and with_upstream. `pending` covers every generation, action and technique node that is stale, part-made or has no result, with the upstream it needs (run.changed); `workflow` adds every other generation and technique node (run.workflow). Both also run any node with work between two of their nodes, so nothing runs from an outdated input, and list in `waiting` (first 500) the nodes left for a later run because they follow a batch fed by this one (a batch collects existing results). `reused` lists nodes with caching on (node.cache_set) whose identical result is already in the project: they aren't steps and cost nothing. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `alike` lists [{node, variations, seeds}] for nodes asking for several variations with a pinned seed: a deterministic model returns the same result each time, at the price of all of them. `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. `requests` lists, per node whose model calls are already known, its largest call counted against one call's limits (`values`, `inputs`, `bytes`, `media_bytes`, each with its `*_limit`) and why it would be `refused` (`jobs` of `total_jobs` checked; refused first, first 500); a refused call blocks the run. `requests_complete` is false when some known calls were left to runtime admission (at most 4,096 are checked, each node's first before any node's second). Read-only.",
+            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale|pending|workflow, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, reused, waiting, waiting_total, alike, requests, requests_complete, blocked?, token}. `nodes` is used by selected and with_upstream. `pending` covers every generation, action and technique node that is stale, part-made or has no result, with the upstream it needs (run.changed); `workflow` adds every other generation and technique node (run.workflow). Both also run any node with work between two of their nodes, so nothing runs from an outdated input, and list in `waiting` (first 500; `waiting_total` counts them all) the nodes left for a later run because they follow a batch fed by this one (a batch collects existing results). `reused` lists nodes with caching on (node.cache_set) whose identical result is already in the project: they aren't steps and cost nothing. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `alike` lists [{node, variations, seeds}] for nodes asking for several variations with a pinned seed: a deterministic model returns the same result each time, at the price of all of them. `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. `requests` lists, per node whose model calls are already known, its largest call counted against one call's limits (`values`, `inputs`, `bytes`, `media_bytes`, each with its `*_limit`) and why it would be `refused` (`jobs` of `total_jobs` checked; refused first, first 500); a refused call blocks the run. `requests_complete` is false when some known calls were left to runtime admission (at most 4,096 are checked, each node's first before any node's second). Read-only.",
             enabled: enabled_quote,
             run: run_quote,
         },
