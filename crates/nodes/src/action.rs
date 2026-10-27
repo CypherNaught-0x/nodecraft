@@ -391,7 +391,15 @@ impl NodeKind for ActionKind {
                 break;
             }
             if port.port_type.many {
-                let all: Vec<Value> = values.collect();
+                let mut all = Vec::new();
+                for value in values {
+                    // The planner folds a collection port into one list. Stitch's local
+                    // executor takes individual clips, in exactly that collection order.
+                    match value {
+                        Value::List(items) if self.descriptor.id == crate::video_edit::STITCH => all.extend(items),
+                        value => all.push(value),
+                    }
+                }
                 if all.is_empty() {
                     return Err(invalid("connect an input first"));
                 }
