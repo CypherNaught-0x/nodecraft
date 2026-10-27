@@ -3551,7 +3551,7 @@ dependencies = [
 [[package]]
 name = "nodecraft-template-data"
 version = "0.1.0"
-source = "git+https://github.com/CypherNaught-0x/nodecraft-templates?rev=c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9#c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9"
+source = "git+https://github.com/CypherNaught-0x/nodecraft-templates?rev=5e7ed638fa75d4615701832184e5141cfe7cc293#5e7ed638fa75d4615701832184e5141cfe7cc293"
 
 [[package]]
 name = "nodecraft-testkit"

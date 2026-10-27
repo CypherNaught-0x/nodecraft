@@ -13,7 +13,7 @@ fn recraft35_svg_is_typed_and_preview_keeps_intrinsic_geometry_and_straight_alph
     let image = render(SVG, 128, &Default::default()).unwrap();
     assert_eq!((image.width, image.height, image.source_width, image.source_height), (128, 64, 200, 100));
     assert_eq!(image.rgba.len(), 128 * 64 * 4);
-    assert!(image.rgba.chunks_exact(4).any(|pixel| pixel[0] > 180));
+    assert!(image.rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[0] > 180));
     let alpha = document("<rect width=\"100\" height=\"100\" fill=\"red\" opacity=\"0.5\"/>");
     let image = render(&alpha, 32, &Default::default()).unwrap();
     assert_eq!(image.rgba[0], 255, "renderer premultiplication must be undone");
@@ -201,4 +201,76 @@ fn recraft35_lowered_document_allocation_budget_is_checked_before_dom_allocation
     assert!(comments.len() * 4 < 100_000);
     assert!(probe(&comments, &Limits { max_alloc: 100_000, ..Default::default() }).is_err());
     assert_eq!(DOM_PARSE_CALLS.with(std::cell::Cell::get), before, "caller-lowered limits precede DOM allocation for elements AND comments");
+}
+
+#[test]
+fn recraft35_renderer_uses_admitted_default_viewport_and_keeps_fractional_aspect() {
+    let svg = format!("<svg xmlns='{NS}'><rect width='30' height='30' fill='red'/></svg>");
+    let info = probe(svg.as_bytes(), &Default::default()).unwrap();
+    assert_eq!((info.width, info.height), (300, 150));
+    let image = render(svg.as_bytes(), 120, &Default::default()).unwrap();
+    assert_eq!((image.width, image.height), (120, 60));
+    assert_eq!(image.rgba[(5 * 120 + 5) * 4 + 3], 255);
+    assert_eq!(image.rgba[(5 * 120 + 20) * 4 + 3], 0, "a30-unit rect occupies12preview pixels, not36 from usvg's100-unit default");
+    for attrs in ["width='3.2' height='1.2'", "width='100%' height='100%' viewBox='0 0 3.2 1.2'"] {
+        let svg = format!("<svg xmlns='{NS}' {attrs}><rect width='1' height='1'/></svg>");
+        let info = probe(svg.as_bytes(), &Default::default()).unwrap();
+        assert_eq!((info.width, info.height), (4, 2));
+        let image = render(svg.as_bytes(), 128, &Default::default()).unwrap();
+        assert_eq!((image.width, image.height), (128, 48), "ceil metadata must not stretch fractional vector viewports");
+    }
+}
+
+#[test]
+fn recraft35_preview_root_copy_is_bounded_and_preserves_namespaces_escaped_attributes_and_original() {
+    let original = b"\xef\xbb\xbf<?xml version='1.0'?><!--before--><s:svg xmlns:s='http://www.w3.org/2000/svg' width='8' height='6' data-note='a &quot; &gt; b'><s:rect width='4' height='3'/></s:svg>";
+    let copy = viewport::explicit(original, f64::MIN_POSITIVE, 16_384.0).unwrap();
+    assert!(copy.len() <= original.len() + 128, "scientific dimensions cannot expand to hundreds of zeroes");
+    let text = std::str::from_utf8(&copy).unwrap();
+    let doc = Document::parse(text).unwrap();
+    assert_eq!(doc.root_element().tag_name().namespace(), Some(NS));
+    assert_eq!(doc.root_element().attribute("data-note"), Some("a \" > b"));
+    assert_eq!(doc.root_element().children().filter(Node::is_element).count(), 1);
+    assert_eq!((probe(original, &Default::default()).unwrap().width, probe(original, &Default::default()).unwrap().height), (8, 6));
+}
+
+#[test]
+fn recraft35_inert_root_quote_cannot_inject_preview_attributes() {
+    let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" data-note='x" stroke-dasharray=".0001 .0001'><path d="M0 0 L100 100" fill="none" stroke="black"/></svg>"##;
+    assert!(probe(bytes, &Default::default()).unwrap().preview_unavailable.is_none());
+    let normalized = viewport::explicit(bytes, 100.0, 100.0).unwrap();
+    let text = std::str::from_utf8(&normalized).unwrap();
+    let doc = Document::parse(text).unwrap();
+    assert_eq!(doc.root_element().attribute("data-note"), Some("x\" stroke-dasharray=\".0001 .0001"), "inert quoted text remains one attribute");
+    assert!(doc.root_element().attribute("stroke-dasharray").is_none(), "no preview-only work attribute");
+    assert!(probe(&normalized, &Default::default()).unwrap().preview_unavailable.is_none());
+    // Only render after the structural assertions, so the old unsafe code never executes
+    // the injected ~707K dashes while proving the regression red.
+    assert!(render(bytes, 128, &Default::default()).is_ok());
+}
+
+#[test]
+fn recraft35_root_quotes_entities_and_namespace_values_survive_without_double_escaping() {
+    let input = br##"<s:svg xmlns:s="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100" height="100" data-note='literal " &quot; &#34; &amp; value' xlink:title='quoted " name' style='fill:url("#g")'><s:defs><s:linearGradient id="g"><s:stop stop-color="red"/></s:linearGradient></s:defs><s:rect width="100" height="100"/></s:svg>"##;
+    let original = Document::parse(std::str::from_utf8(input).unwrap()).unwrap();
+    let normalized = viewport::explicit(input, 100.0, 100.0).unwrap();
+    let doc = Document::parse(std::str::from_utf8(&normalized).unwrap()).unwrap();
+    assert_eq!(doc.root_element().tag_name().namespace(), Some(NS));
+    assert_eq!(doc.root_element().attributes().len(), original.root_element().attributes().len());
+    for name in ["data-note", "style"] {
+        assert_eq!(doc.root_element().attribute(name), original.root_element().attribute(name));
+    }
+    assert_eq!(doc.root_element().attribute(("http://www.w3.org/1999/xlink", "title")), Some("quoted \" name"));
+    assert!(render(input, 128, &Default::default()).is_ok());
+}
+
+#[test]
+fn recraft35_escaped_root_extent_refuses_before_materialization_and_keeps_original_admitted() {
+    let bytes = format!("<svg xmlns='{NS}' width='100' height='100' data-note='{}'><rect width='10' height='10'/></svg>", "\"".repeat(512));
+    assert!(probe(bytes.as_bytes(), &Default::default()).unwrap().preview_unavailable.is_none(), "inert original remains useful");
+    let before = viewport::ROOT_MATERIALIZATIONS.with(std::cell::Cell::get);
+    assert!(viewport::explicit(bytes.as_bytes(), 100.0, 100.0).is_err());
+    assert_eq!(viewport::ROOT_MATERIALIZATIONS.with(std::cell::Cell::get), before, "escaped root extent checked before owned document buffers");
+    assert!(render(bytes.as_bytes(), 128, &Default::default()).is_err());
+    assert!(probe(bytes.as_bytes(), &Default::default()).is_ok(), "failed preview never discards the original");
 }

@@ -157,8 +157,11 @@ fn a_fanned_result_shows_a_row_of_images_per_item() {
         node.history.push(result);
         node.active = Some(nodecraft_types::GenerationId::from_bytes([61; 16]));
         let (rows, count) = image_rows(&node);
-        let first = image_of(&node).map(|a| a.mime.essence().to_owned());
-        assert_eq!(first, rows.first().and_then(|r| r.first()).map(|a| a.mime.essence().to_owned()), "image_of is the first shown");
+        let first = preview_image_of(&node).map(|a| a.mime.essence().to_owned());
+        assert_eq!(first, rows.first().and_then(|r| r.first()).map(|a| a.mime.essence().to_owned()), "preview_image_of is the first shown");
+        if first.as_deref() == Some("image/svg+xml") {
+            assert!(image_of(&node).is_none(), "SVG preview does not grant raster split permission");
+        }
         (rows.iter().map(Vec::len).collect::<Vec<_>>(), count)
     };
     let shown = |outputs: Vec<Value>| fanned(outputs, 0);
@@ -166,6 +169,6 @@ fn a_fanned_result_shows_a_row_of_images_per_item() {
     assert_eq!(fanned(vec![Value::List(vec![media(2), media(0), media(1)])], 3), (vec![2, 1], 3), "a row per item; an empty item shows none");
     assert_eq!(fanned(vec![Value::List(vec![media(9); 9])], 9), (vec![GALLERY_COLUMNS; GALLERY_ROWS], 81), "capped, but counted");
     assert_eq!(shown(vec![Value::List(vec![media(2), media(1)])]), (vec![], 0), "an unfanned list of lists isn't opened");
-    assert_eq!(shown(vec![Value::Text("x".into()), Value::List(vec![Value::Media(svg), Value::Media(asset)])]), (vec![1], 1));
+    assert_eq!(shown(vec![Value::Text("x".into()), Value::List(vec![Value::Media(svg), Value::Media(asset)])]), (vec![2], 2));
     assert_eq!(shown(vec![Value::Text("x".into())]), (vec![], 0));
 }

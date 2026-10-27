@@ -123,7 +123,7 @@ fn path_numbers(segment: svgtypes::PathSegment) -> Result<(), MediaError> {
     }
     Ok(())
 }
-fn dimension(value: Option<&str>, fallback: f64, maximum: u32) -> Result<u32, MediaError> {
+fn dimension(value: Option<&str>, fallback: f64, maximum: u32) -> Result<f64, MediaError> {
     let n = if let Some(value) = value {
         let length: svgtypes::Length = value.parse().map_err(|_| bad())?;
         let scale = match length.unit {
@@ -143,7 +143,7 @@ fn dimension(value: Option<&str>, fallback: f64, maximum: u32) -> Result<u32, Me
     if !n.is_finite() || n <= 0.0 || n.ceil() > f64::from(maximum.min(MAX_DIMENSION)) {
         return Err(cap());
     }
-    Ok(n.ceil() as u32)
+    Ok(n)
 }
 fn local_ref(text: &str) -> Result<&str, MediaError> {
     let id = text.strip_prefix('#').ok_or_else(bad)?;
@@ -153,7 +153,8 @@ fn local_ref(text: &str) -> Result<&str, MediaError> {
     Ok(id)
 }
 mod css;
-fn geometry(node: Node<'_, '_>, limits: &Limits) -> Result<(u32, u32), MediaError> {
+mod viewport;
+fn viewport(node: Node<'_, '_>, limits: &Limits) -> Result<(f64, f64), MediaError> {
     let view = node.attribute("viewBox").map(|s| s.parse::<svgtypes::ViewBox>().map_err(|_| bad())).transpose()?;
     if let Some(v) = view {
         for n in [v.x, v.y, v.w, v.h] {
@@ -162,14 +163,20 @@ fn geometry(node: Node<'_, '_>, limits: &Limits) -> Result<(u32, u32), MediaErro
     }
     let width = dimension(node.attribute("width"), view.map_or(300.0, |v| v.w), limits.max_width)?;
     let height = dimension(node.attribute("height"), view.map_or(150.0, |v| v.h), limits.max_height)?;
-    if u64::from(width).checked_mul(u64::from(height)).is_none_or(|n| n > MAX_PIXELS) {
+    if (width.ceil() as u64).checked_mul(height.ceil() as u64).is_none_or(|n| n > MAX_PIXELS) {
         return Err(cap());
     }
     Ok((width, height))
 }
 
 fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info), MediaError> {
-    if bytes.len() as u64 > MAX_BYTES.min(limits.max_input_bytes) {
+    admitted_with_allowance(bytes, limits, 0)
+}
+
+// Only the bounded, trusted viewport copy gets this private byte allowance. All original
+// input, structure, allocation, resource and expanded-work bounds stay unchanged.
+fn admitted_with_allowance<'a>(bytes: &'a [u8], limits: &Limits, allowance: u64) -> Result<(Document<'a>, Info), MediaError> {
+    if bytes.len() as u64 > MAX_BYTES.saturating_add(allowance).min(limits.max_input_bytes.saturating_add(allowance)) {
         return Err(cap());
     }
     let document_budget = limits.max_alloc.min(MAX_LOGICAL_BYTES);
@@ -186,7 +193,8 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
     if root.tag_name().name() != "svg" || root.tag_name().namespace() != Some(NS) {
         return Err(bad());
     }
-    let (width, height) = geometry(root, limits)?;
+    let (width, height) = viewport(root, limits)?;
+    let (width, height) = (width.ceil() as u32, height.ceil() as u32);
     let mut reason = None;
     let mut count = 0usize;
     let mut segments = 0usize;
@@ -258,10 +266,10 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
         {
             return Err(bad());
         }
-        if let Some(id) = node.attribute("id") {
-            if id.len() > 128 || ids.insert(id, node).is_some() {
-                return Err(bad());
-            }
+        if let Some(id) = node.attribute("id")
+            && (id.len() > 128 || ids.insert(id, node).is_some())
+        {
+            return Err(bad());
         }
         if matches!(name, "text" | "tspan" | "textPath" | "image" | "filter" | "pattern" | "marker") || name.starts_with("fe") {
             reason = Some("SVG original retained; this static feature or font has no bounded preview");
@@ -325,7 +333,7 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
                 }
                 sheet.push_str(text);
             }
-            let _ = css::sheet(&sheet)?;
+            css::sheet(&sheet)?;
             reason = Some("SVG original retained; stylesheet preview is unavailable");
         }
     }
@@ -400,34 +408,51 @@ pub fn render(bytes: &[u8], edge: u32, limits: &Limits) -> Result<Raster, MediaE
     if let Some(reason) = info.preview_unavailable {
         return Err(MediaError::UnsupportedFeature(reason.into()));
     }
-    let scale = f64::from(edge) / f64::from(info.width.max(info.height));
-    let width = (f64::from(info.width) * scale).ceil().max(1.0) as u32;
-    let height = (f64::from(info.height) * scale).ceil().max(1.0) as u32;
+    let (viewport_width, viewport_height) = viewport(doc.root_element(), limits)?;
+    drop(doc);
+    let normalized = viewport::explicit(bytes, viewport_width, viewport_height)?;
+    let (doc, normalized_info) = admitted_with_allowance(&normalized, limits, viewport::COPY_ALLOWANCE)?;
+    if let Some(reason) = normalized_info.preview_unavailable {
+        return Err(MediaError::UnsupportedFeature(reason.into()));
+    }
+    if (normalized_info.width, normalized_info.height) != (info.width, info.height) {
+        return Err(bad());
+    }
+    let default_size = resvg::usvg::Size::from_wh(viewport_width as f32, viewport_height as f32).ok_or_else(cap)?;
+    let options = resvg::usvg::Options {
+        default_size,
+        image_href_resolver: resvg::usvg::ImageHrefResolver { resolve_data: Box::new(|_, _, _| None), resolve_string: Box::new(|_, _| None) },
+        ..Default::default()
+    };
+    let tree = resvg::usvg::Tree::from_xmltree(&doc, &options).map_err(|_| bad())?;
+    // Integer metadata uses ceil extents; preview aspect uses the admitted f64 viewport,
+    // avoiding both ceil distortion and f32 rounding that adds an unwanted pixel.
+    let scale = f64::from(edge) / viewport_width.max(viewport_height);
+    let width = (viewport_width * scale).ceil().max(1.0) as u32;
+    let height = (viewport_height * scale).ceil().max(1.0) as u32;
+    if width > 2048 || height > 2048 {
+        return Err(cap());
+    }
     let pixels = u64::from(width).checked_mul(u64::from(height)).ok_or_else(cap)?;
     if pixels.checked_mul(32).is_none_or(|n| n > limits.max_alloc.min(128 * 1024 * 1024)) {
         return Err(cap());
     }
-    let mut options = resvg::usvg::Options::default();
-    options.image_href_resolver = resvg::usvg::ImageHrefResolver { resolve_data: Box::new(|_, _, _| None), resolve_string: Box::new(|_, _| None) };
-    let tree = resvg::usvg::Tree::from_xmltree(&doc, &options).map_err(|_| bad())?;
     let sx = width as f32 / tree.size().width();
     let sy = height as f32 / tree.size().height();
     render_budget(&tree, sx, sy, pixels, limits)?;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).ok_or_else(cap)?;
     resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(sx, sy), &mut pixmap.as_mut());
     let mut rgba = pixmap.take();
-    for pixel in rgba.chunks_exact_mut(4) {
-        if let [r, g, b, a] = pixel {
-            if *a == 0 {
-                *r = 0;
-                *g = 0;
-                *b = 0;
-            } else {
-                let straight = |v: u8| ((u16::from(v) * 255 + u16::from(*a) / 2) / u16::from(*a)).min(255) as u8;
-                *r = straight(*r);
-                *g = straight(*g);
-                *b = straight(*b);
-            }
+    for [r, g, b, a] in rgba.as_chunks_mut::<4>().0 {
+        if *a == 0 {
+            *r = 0;
+            *g = 0;
+            *b = 0;
+        } else {
+            let straight = |v: u8| ((u16::from(v) * 255 + u16::from(*a) / 2) / u16::from(*a)).min(255) as u8;
+            *r = straight(*r);
+            *g = straight(*g);
+            *b = straight(*b);
         }
     }
     Ok(Raster { width, height, source_width: info.width, source_height: info.height, rgba })

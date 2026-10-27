@@ -29,6 +29,12 @@ read local files even with no resources directory. Reject scripts, events, anima
 foreign content, processing instructions, external/font resources and CSS escape/at-rule
 tricks in the retained original. No system fonts or resource files are read.
 
+Metadata ceil extents do not change preview aspect: an admitted finite viewport is written
+only into a disposable bounded root-dimension copy before normalization. This avoids the
+renderer fitting missing-size roots to content. Exact escaped root extent is admitted before
+allocation, literal quotes cannot become attributes, and the disposable copy passes full
+admission again before renderer normalization. Original bytes/hash remain unchanged.
+
 Native previews render directly at cached size buckets on the existing worker. Preview
 work has narrower node/path/pixel-pass and scratch budgets. Unsupported static text/fonts,
 stylesheets, filters, patterns and embedded images retain their safe original and display
