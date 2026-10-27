@@ -413,6 +413,9 @@ mod tag_definitions;
 mod tags;
 mod technique_menu;
 mod timeline_editor;
+mod topbar;
+#[cfg(test)]
+mod topbar_tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod updates;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -537,6 +540,7 @@ pub struct NodeCraftApp {
     split_shown: Option<(NodeId, u32, u32)>,
     /// The "Turn into" menu after a new noodle was dropped on empty canvas.
     turn_into: Option<TurnInto>,
+    topbar: topbar::Topbar,
     model_choice: Option<models::ModelChoice>,
     /// The price confirmation a card's Generate opened (#83).
     run_confirm: Option<generate::RunConfirm>,
@@ -1155,6 +1159,7 @@ impl NodeCraftApp {
             split_seen: None,
             split_shown: None,
             turn_into: None,
+            topbar: Default::default(),
             model_choice: None,
             run_confirm: None,
             viewer: None,
@@ -2577,7 +2582,6 @@ impl NodeCraftApp {
         self.bulk.finish_frame(ui.ctx());
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
-        self.keys_button(ui, viewport);
         #[cfg(not(target_arch = "wasm32"))]
         self.file_button(ui, t);
         #[cfg(target_arch = "wasm32")]
@@ -2731,78 +2735,6 @@ impl NodeCraftApp {
         let at = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
         self.create_node(&kind, self.view.to_world(viewport.min, at));
         ui.ctx().request_repaint();
-    }
-
-    /// Top-right button that opens the API keys panel.
-    fn keys_button(&mut self, ui: &mut egui::Ui, viewport: Rect) {
-        let t = self.theme.tokens();
-        let frame = egui::Frame::NONE
-            .fill(t.panel_fill)
-            .stroke(egui::Stroke::new(1.0, t.panel_stroke))
-            .corner_radius(t.panel_radius)
-            .inner_margin(egui::Margin::symmetric(6, 4));
-        // Left of the search and closed tags controls, which own the top-right corner; overlapping
-        // them, a click here also opened search or the tag filter.
-        let right = if self.tag_filter.open { self.search_rect().min.x } else { self.tag_rect().min.x.min(self.search_rect().min.x) };
-        egui::Area::new(ui.id().with("keys_button"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, Vec2::new(right - viewport.max.x - t.navigation_gap, t.navigation_margin))
-            .constrain_to(viewport)
-            .show(ui.ctx(), |ui| {
-                frame.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        self.sheets_button(ui, t);
-                        self.techniques_button(ui, t);
-                        self.elements_button(ui, t);
-                        if let Some(node) = self.selected_technique()
-                            && ui
-                                .add(egui::Button::new(egui::RichText::new("Open as app").color(t.text_muted)).frame(false))
-                                .on_hover_text("Fill the selected technique's inputs and run it from a simple form")
-                                .clicked()
-                        {
-                            self.open_app_mode(node);
-                        }
-                        if let Some(label) = self.queue_label()
-                            && ui
-                                .add(egui::Button::new(egui::RichText::new(label).color(t.text_muted)).frame(false))
-                                .on_hover_text("Every job: status, provider, cost, cancel and retry")
-                                .clicked()
-                        {
-                            self.queue_open = !self.queue_open;
-                        }
-                        self.share_button(ui, t);
-                        self.browser_providers_button(ui, t);
-                        if ui
-                            .add(crate::icons::Icon::Wallet.button(ui, egui::RichText::new("Budgets").color(t.text_muted), t).frame(false))
-                            .on_hover_text("The most runs may spend per call, per session and in total")
-                            .clicked()
-                        {
-                            if self.budgets.open {
-                                self.budgets.open = false;
-                            } else {
-                                self.budgets.open();
-                            }
-                        }
-                        if ui
-                            .add(crate::icons::Icon::Key.button(ui, egui::RichText::new("API keys").color(t.text_muted), t).frame(false))
-                            .on_hover_text("Add, check and remove provider keys")
-                            .clicked()
-                        {
-                            self.keys.open = !self.keys.open;
-                        }
-                        #[cfg(not(target_arch = "wasm32"))]
-                        self.comfy_server_button(ui, t);
-                        if self.session.enabled("plugins.list", &json!({})).is_ok()
-                            && ui
-                                .add(egui::Button::new(egui::RichText::new("Plugins").color(t.text_muted)).frame(false))
-                                .on_hover_text("Install, enable and grant plugin packages")
-                                .clicked()
-                        {
-                            self.plugin_panel.open = !self.plugin_panel.open;
-                        }
-                    });
-                });
-            });
     }
 
     /// Stops new quotes and runs using an adapter that captured the previous key.

@@ -73,7 +73,7 @@ impl NodeCraftApp {
         let t = self.theme.tokens();
         let available_width = (self.viewport.width() - 2.0 * t.navigation_margin).max(1.0);
         let width = t.comments_width.min(if self.tag_filter.open { ((available_width - t.navigation_gap) / 2.0).max(1.0) } else { available_width });
-        let top = self.comments_toolbar_rect().bottom() + t.navigation_gap;
+        let top = self.search_rect().bottom().max(self.topbar_rect().bottom()) + t.navigation_gap;
         let map_top = self.navigation.usable(self.viewport, t).bottom();
         // Prefer the space above navigation. A short viewport must still leave a usable
         // scrolling discussion panel; foreground hit ownership then protects the map below it.
@@ -82,14 +82,9 @@ impl NodeCraftApp {
         Rect::from_min_size(Pos2::new(self.viewport.right() - t.navigation_margin - width, top), Vec2::new(width, height))
     }
     pub(super) fn comments_toolbar_rect(&self) -> Rect {
-        let t = self.theme.tokens();
-        let width = t.comments_button_width.min((self.viewport.width() - 2.0 * t.navigation_margin).max(1.0));
-        Rect::from_min_size(
-            Pos2::new(self.viewport.right() - t.navigation_margin - width, self.search_rect().bottom() + t.navigation_gap),
-            Vec2::new(width, t.navigation_toolbar_height),
-        )
+        self.topbar.comments.unwrap_or_else(|| self.topbar_rect())
     }
-    fn discussion_context(&self, ctx: &egui::Context, owner: Option<egui::Id>) -> CommentContext {
+    pub(super) fn discussion_context(&self, ctx: &egui::Context, owner: Option<egui::Id>) -> CommentContext {
         let focused = ctx.memory(|m| m.focused());
         let own = focused.map_or_else(
             || self.comments.last_focus.is_some() && self.last_text_focus == self.comments.last_focus,
@@ -484,20 +479,7 @@ impl NodeCraftApp {
             }
         }
         let available = !self.discussion_context(&ctx, None).blocked;
-        let toolbar_rect = self.comments_toolbar_rect();
-        let toolbar = egui::Area::new(egui::Id::new("comments_toolbar"))
-            .order(egui::Order::Foreground)
-            .movable(false)
-            .fixed_pos(toolbar_rect.min)
-            .constrain(false)
-            .show(&ctx, |ui| ui.add_enabled(available, crate::icons::Icon::Comments.button(ui, "Comments", t).min_size(toolbar_rect.size())));
-        // A short viewport can put this row over the minimap. Keep actionable chrome
-        // above the map without raising it over an unrelated popup.
-        if !egui::Popup::is_any_open(&ctx) && toolbar.response.rect.intersects(crate::navigation::layout(self.viewport, self.navigation.visible, t).overlay) {
-            ctx.move_to_top(toolbar.response.layer_id);
-        }
-        let exposed =
-            ctx.pointer_interact_pos().is_some_and(|pos| toolbar.response.rect.contains(pos) && ctx.layer_id_at(pos) == Some(toolbar.response.layer_id));
+        let exposed = self.topbar(ui);
         if !available
             && self.text_focused
             && !egui::Popup::is_any_open(&ctx)
@@ -508,11 +490,6 @@ impl NodeCraftApp {
         {
             ctx.memory_mut(|m| m.request_focus(id));
             ctx.options_mut(|options| options.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
-        }
-        if toolbar.inner.clicked()
-            && let Err(error) = self.dispatch_comments(&ctx, "canvas.comments_toggle", &json!({}))
-        {
-            self.notice = Some(error.message);
         }
         let mut blocked = exposed || self.comments.gesture_cancelled;
         let identity = self.session.view_identity();
@@ -1246,7 +1223,12 @@ mod tests {
         h.run();
         assert!(!h.state().comments.open);
         assert!(h.state().comments.drafts.is_empty());
-        h.get_by_role_and_label(Role::Button, "Comments").click();
+        // In overflow, the same editor admission disables the More entry itself.
+        if let Some(button) = h.query_by_role_and_label(Role::Button, "Comments") {
+            button.click();
+        } else {
+            h.get_by_role_and_label(Role::Button, "More").click();
+        }
         h.run();
         assert_eq!(h.state().session.document(), &original);
         assert!(canvas::text_input_focused(&h.ctx));

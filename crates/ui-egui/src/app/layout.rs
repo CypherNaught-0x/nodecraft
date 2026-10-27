@@ -182,6 +182,10 @@ impl NodeCraftApp {
         // separately there, then checked again at scoped dispatch.
         !self.layout_busy(ctx) && host.selection.len() >= 2 && host.extents.len() == host.selection.len()
     }
+    pub(super) fn layout_toolbar_width(&self) -> f32 {
+        let t = self.theme.tokens();
+        t.layout_button_width.min((self.viewport.width() - t.navigation_margin * 2.0).max(1.0) * 0.4)
+    }
     pub(super) fn layout_overlay(&mut self, ui: &mut egui::Ui) -> bool {
         let ctx = ui.ctx().clone();
         passive_toolbar(&ctx);
@@ -197,10 +201,10 @@ impl NodeCraftApp {
         let area = egui::Area::new(egui::Id::new("selection_format_toolbar"))
             .order(egui::Order::Foreground)
             .movable(false)
-            .fixed_pos(self.viewport.left_top() + Vec2::new(t.navigation_margin + t.comments_button_width + t.navigation_gap, t.navigation_margin))
+            .fixed_pos(Pos2::new(self.viewport.left() + t.navigation_margin + self.closed_tag_width() + t.navigation_gap, self.topbar_rect().top() + t.navigation_gap))
             .show(&ctx, |ui| {
                 let button =
-                    ui.add_enabled(can_open, egui::Button::new("Format selection").min_size(Vec2::new(t.layout_button_width, t.navigation_toolbar_height)));
+                    ui.add_enabled(can_open, egui::Button::new("Format selection").min_size(Vec2::new(self.layout_toolbar_width(), t.navigation_toolbar_height)));
                 button.clone().on_hover_text("Arrange selected nodes in one undo step. Finish text editing or gestures first. Unselected cards stay fixed and may overlap the result. Dependency columns retain ranks through unselected nodes and can have uneven gaps.");
                 egui::Popup::menu(&button).id(popup).show(|ui| {
                     for (label, choice) in [("Grid", "grid"), ("Dependency order", "layered")] {
@@ -339,7 +343,7 @@ mod tests {
     #[test]
     fn comments_toolbar_does_not_overlap_format_and_cancelled_pin_blocks_layout() {
         let mut h = harness();
-        let comments = h.get_by_role_and_label(egui::accesskit::Role::Button, "Comments").rect();
+        let comments = h.state().comments_toolbar_rect();
         let format = h.get_by_role_and_label(egui::accesskit::Role::Button, "Format selection").rect();
         assert!(!comments.intersects(format));
         let ctx = egui::Context::default();
@@ -568,7 +572,10 @@ mod tests {
         assert!(h.query_by_role_and_label(egui::accesskit::Role::Button, "Format selection").is_none());
         h.run();
         assert!(h.ctx.data(|d| d.get_temp::<PassiveToolbar>(egui::Id::new("layout_passive_owner"))).is_none());
-        primary_click(&mut h, point);
+        // The application row can expand into Format's former slot. Exercise clear
+        // canvas after proving that the vanished passive owner was removed.
+        let clear = Pos2::new(point.x, h.state().topbar_rect().bottom() + h.state().theme.tokens().navigation_toolbar_height);
+        primary_click(&mut h, clear);
         assert!(!canvas::text_input_focused(&h.ctx));
         assert!(!h.ctx.input(|i| i.pointer.any_down()));
     }

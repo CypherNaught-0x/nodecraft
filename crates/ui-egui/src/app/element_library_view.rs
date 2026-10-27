@@ -158,18 +158,9 @@ pub(super) fn menu(ui: &mut egui::Ui, view: &ElementLibraryView, node: &Node) ->
 }
 
 impl NodeCraftApp {
-    pub(super) fn elements_button(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        if !self.has_element_library() {
-            return;
-        }
-        if ui
-            .add(egui::Button::new(egui::RichText::new("Elements").color(t.text_muted)).frame(false))
-            .on_hover_text("Place an Element saved in the library every project shares")
-            .clicked()
-        {
-            self.element_library.open = !self.element_library.open;
-            self.element_library.listed = None;
-        }
+    pub(super) fn toggle_elements(&mut self) {
+        self.element_library.open = !self.element_library.open;
+        self.element_library.listed = None;
     }
 
     /// Whether this window keeps an Elements library.

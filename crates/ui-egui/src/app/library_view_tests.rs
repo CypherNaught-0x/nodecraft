@@ -30,6 +30,7 @@ fn publishing(store: &MemoryLibrary) -> Harness<'static, NodeCraftApp> {
 }
 
 fn open_panel(h: &mut Harness<'static, NodeCraftApp>) {
+    crate::app::topbar_tests::reveal(h, "Techniques");
     h.get_by_label("Techniques").click();
     h.run();
     assert!(h.state().library.open);

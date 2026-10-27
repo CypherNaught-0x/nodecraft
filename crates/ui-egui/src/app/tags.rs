@@ -120,23 +120,27 @@ impl NodeCraftApp {
     pub(super) fn tag_rect(&self) -> Rect {
         let t = self.theme.tokens();
         let available = (self.viewport.width() - 2.0 * t.navigation_margin).max(1.0);
-        let left = if self.tag_filter.open {
-            self.viewport.min.x + t.navigation_margin
-        } else {
-            (self.search_rect().left() - t.navigation_gap - t.search_button_width).max(self.viewport.min.x + t.navigation_margin)
-        };
+        let left = self.viewport.min.x + t.navigation_margin;
         let width_limit = if self.tag_filter.open && self.comments.open { ((available - t.navigation_gap) / 2.0).max(1.0) } else { available };
-        let width = if self.tag_filter.open { t.tag_panel_width } else { t.search_button_width }
+        let width = if self.tag_filter.open { t.tag_panel_width } else { self.closed_tag_width() }
             .min(width_limit)
             .min((self.viewport.max.x - t.navigation_margin - left).max(1.0));
-        let top = if self.search.open {
+        let top = if !self.tag_filter.open {
+            self.topbar_rect().top() + t.navigation_gap
+        } else if self.search.open {
             self.search_rect().bottom() + t.navigation_gap
         } else {
-            self.viewport.min.y + t.navigation_margin + if self.tag_filter.open { t.navigation_toolbar_height + t.navigation_gap } else { 0.0 }
+            self.topbar_rect().bottom() + t.navigation_gap
         };
         let height =
             if self.tag_filter.open { t.tag_panel_height } else { t.navigation_toolbar_height }.min((self.viewport.max.y - top - t.navigation_margin).max(1.0));
         Rect::from_min_size(Pos2::new(left, top), Vec2::new(width, height))
+    }
+    pub(super) fn closed_tag_width(&self) -> f32 {
+        let t = self.theme.tokens();
+        let available = self.viewport.width() - t.navigation_margin * 2.0;
+        let remaining = if self.selection.len() >= 2 { available - self.layout_toolbar_width() - t.navigation_gap * 3.0 } else { available - t.navigation_gap };
+        t.search_button_width.min((remaining * 0.5).max(1.0))
     }
     fn tag_context(&mut self, ctx: &egui::Context) -> TagFilterContext {
         self.sync_tag_session();
@@ -192,6 +196,8 @@ impl NodeCraftApp {
             Some("open") => {
                 self.tag_filter.open = true;
                 self.tag_focus_pending = true;
+                // A later explicit panel open owns focus even before either Area paints.
+                self.search_focus_pending = false;
             }
             Some("close") => {
                 let owned = self.tag_owns_focus(ctx);
@@ -434,10 +440,11 @@ mod tests {
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_open", &json!({})).unwrap();
         h.run();
         for name in ["Comments", "Format selection"] {
-            let rect = h.get_by_role_and_label(Role::Button, name).rect();
+            let rect = if name == "Comments" { h.state().comments_toolbar_rect() } else { h.get_by_role_and_label(Role::Button, name).rect() };
             assert!(!h.state().tag_rect().intersects(rect), "{name}: {rect:?}");
         }
         assert!(h.state_mut().comments_enabled(&ctx, "canvas.comments_toggle", &json!({})).is_ok());
+        crate::app::topbar_tests::reveal(&mut h, "Comments");
         h.get_by_role_and_label(Role::Button, "Comments").click();
         h.run();
         assert!(h.state().comments.open && h.state().tag_filter.open);
@@ -797,6 +804,7 @@ mod tests {
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":[],"untagged":true})).unwrap();
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_next", &json!({})).unwrap();
         h.run();
+        assert!(h.state().tag_owns_focus(&ctx), "the later panel open retains focus");
         let first = NodeId::from_bytes([3; 16]);
         assert!(
             h.state().selection.contains(first),

@@ -103,6 +103,7 @@ fn prompts(app: &NodeCraftApp, canvas: CanvasId) -> Vec<String> {
 }
 
 fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
+    crate::app::topbar_tests::reveal(h, label);
     let pos = h.get_by_role_and_label(role, label).rect().center();
     click(h, pos);
 }
@@ -211,6 +212,34 @@ fn run_all_quotes_every_row_in_one_price_then_records_each() {
     });
     h.run();
     assert_eq!(h.query_all_by_label("Done").count(), 2);
+}
+
+#[test]
+fn disabled_narrow_sheet_more_preserves_prompt_focus_and_uncommitted_text() {
+    let mut h = scene(&["a fox"]);
+    h.state_mut().open_canvas(S);
+    h.set_size(Vec2::new(480.0, 700.0));
+    h.run();
+    let prompt = h.query_all_by_role(Role::MultilineTextInput).next().unwrap();
+    prompt.focus();
+    h.run();
+    h.key_press(egui::Key::End);
+    h.event(egui::Event::Text(" at dusk".into()));
+    h.run();
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let focus = h.ctx.memory(|m| m.focused());
+    let draft = h.query_all_by_role(Role::MultilineTextInput).next().unwrap().value().unwrap();
+    assert!(h.state().sheet_drafts_pending());
+    assert!(h.get_by_role_and_label(Role::Button, "More").accesskit_node().is_disabled());
+    let at = h.get_by_role_and_label(Role::Button, "More").rect().center();
+    click(&mut h, at);
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+    assert_eq!(h.query_all_by_role(Role::MultilineTextInput).next().unwrap().value().unwrap(), draft);
+    assert!(h.state().sheet_drafts_pending());
+    assert_eq!(h.ctx.memory(|m| m.focused()), focus);
+    assert!(!egui::Popup::is_id_open(&h.ctx, topbar::popup_id()));
 }
 
 /// Clicks into the prompt field showing `prompt` and types `more` at its end.

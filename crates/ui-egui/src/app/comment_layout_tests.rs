@@ -240,11 +240,15 @@ fn right_chrome_stacks_below_search_and_stays_disjoint_from_tags_at_small_sizes(
         for search in [false, true] {
             h.state_mut().search.open = search;
             h.run();
-            let button = h.get_by_role_and_label(Role::Button, "Comments").rect();
+            let button = h.state().comments_toolbar_rect();
             let app = h.state();
             assert!((button.right() - (app.viewport.right() - app.theme.tokens().navigation_margin)).abs() < 1.0);
-            assert!(button.top() >= app.search_rect().bottom() + app.theme.tokens().navigation_gap - 1.0);
+            assert!(app.topbar_rect().contains_rect(button));
+            if search {
+                assert!(app.search_rect().top() >= app.topbar_rect().bottom() + app.theme.tokens().navigation_gap - 1.0);
+            }
             let view = h.state().view;
+            crate::app::topbar_tests::reveal(&mut h, "Comments");
             h.get_by_role_and_label(Role::Button, "Comments").click();
             h.run();
             assert_eq!(h.state().view, view, "Comments click must not also pan the minimap");
@@ -261,7 +265,7 @@ fn right_chrome_stacks_below_search_and_stays_disjoint_from_tags_at_small_sizes(
             }
             assert!(!panel.intersects(h.state().tag_rect()));
             assert!(panel.top() >= button.bottom());
-            assert!((panel.right() - button.right()).abs() < 1.0);
+            assert!((panel.right() - (h.state().viewport.right() - h.state().theme.tokens().navigation_margin)).abs() < 1.0);
             h.state_mut().comments.close();
             h.state_mut().tag_filter.open = false;
             h.run();

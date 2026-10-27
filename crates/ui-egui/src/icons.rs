@@ -13,9 +13,29 @@ pub enum Icon {
     Wallet,
     Open,
     Save,
+    Table,
+    Technique,
+    Elements,
+    Queue,
+    Share,
+    Server,
+    Plugin,
+    More,
+    Apps,
+    Cloud,
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("table", include_bytes!("../../../assets/icons/tabler/table.svg")),
+    ("affiliate", include_bytes!("../../../assets/icons/tabler/affiliate.svg")),
+    ("components", include_bytes!("../../../assets/icons/tabler/components.svg")),
+    ("list-details", include_bytes!("../../../assets/icons/tabler/list-details.svg")),
+    ("share", include_bytes!("../../../assets/icons/tabler/share.svg")),
+    ("server", include_bytes!("../../../assets/icons/tabler/server.svg")),
+    ("puzzle", include_bytes!("../../../assets/icons/tabler/puzzle.svg")),
+    ("dots", include_bytes!("../../../assets/icons/tabler/dots.svg")),
+    ("apps", include_bytes!("../../../assets/icons/tabler/apps.svg")),
+    ("cloud", include_bytes!("../../../assets/icons/tabler/cloud.svg")),
     ("search", include_bytes!("../../../assets/icons/tabler/search.svg")),
     ("message-circle", include_bytes!("../../../assets/icons/tabler/message-circle.svg")),
     ("key", include_bytes!("../../../assets/icons/tabler/key.svg")),
@@ -38,7 +58,24 @@ fn catalog() -> &'static SvgIconSet {
 }
 
 impl Icon {
-    pub const ALL: [Self; 6] = [Self::Search, Self::Comments, Self::Key, Self::Wallet, Self::Open, Self::Save];
+    pub const ALL: [Self; 16] = [
+        Self::Search,
+        Self::Comments,
+        Self::Key,
+        Self::Wallet,
+        Self::Open,
+        Self::Save,
+        Self::Table,
+        Self::Technique,
+        Self::Elements,
+        Self::Queue,
+        Self::Share,
+        Self::Server,
+        Self::Plugin,
+        Self::More,
+        Self::Apps,
+        Self::Cloud,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -48,6 +85,16 @@ impl Icon {
             Self::Wallet => "wallet",
             Self::Open => "folder-open",
             Self::Save => "device-floppy",
+            Self::Table => "table",
+            Self::Technique => "affiliate",
+            Self::Elements => "components",
+            Self::Queue => "list-details",
+            Self::Share => "share",
+            Self::Server => "server",
+            Self::Plugin => "puzzle",
+            Self::More => "dots",
+            Self::Apps => "apps",
+            Self::Cloud => "cloud",
         }
     }
 
@@ -59,6 +106,16 @@ impl Icon {
             Self::Wallet => "Budgets",
             Self::Open => "Open",
             Self::Save => "Save",
+            Self::Table => "Sheets",
+            Self::Technique => "Techniques",
+            Self::Elements => "Elements",
+            Self::Queue => "Queue",
+            Self::Share => "Share",
+            Self::Server => "ComfyUI",
+            Self::Plugin => "Plugins",
+            Self::More => "More",
+            Self::Apps => "Open as app",
+            Self::Cloud => "Providers",
         }
     }
 
@@ -101,7 +158,7 @@ mod tests {
                 let mut h = Harness::builder().with_size(Vec2::new(500.0, 180.0)).with_pixels_per_point(density).build_ui(move |ui| {
                     theme::apply(ui.ctx(), kind);
                     for size in [t.icon_size, t.icon_large_size] {
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             for icon in Icon::ALL {
                                 ui.vertical(|ui| {
                                     ui.add(icon.image(ui.ctx(), size, t));

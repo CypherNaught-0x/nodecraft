@@ -43,6 +43,7 @@ fn server_panel_saves_through_commands_and_a_reload_reads_the_same_origin() {
     let origin = Arc::new(Origin::default());
     let mut h = harness(app(Arc::clone(&origin)));
     h.run();
+    crate::app::topbar_tests::reveal(&mut h, "Providers");
     h.get_by_label("Providers").click();
     h.run();
     assert!(h.query_by_label_contains("CORS").is_some());

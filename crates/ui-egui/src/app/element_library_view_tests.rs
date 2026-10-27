@@ -55,6 +55,7 @@ fn an_element_is_saved_from_its_menu_and_placed_from_the_panel() {
     h.key_press(egui::Key::Escape);
     h.run();
 
+    crate::app::topbar_tests::reveal(&mut h, "Elements");
     h.get_by_label("Elements").click();
     h.run();
     assert!(h.query_by_label_contains("#element · general · 1 image").is_some());

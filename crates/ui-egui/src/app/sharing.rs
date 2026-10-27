@@ -630,21 +630,10 @@ impl NodeCraftApp {
         Ok(())
     }
 
-    /// The chip beside API keys: Share, or how the shared session is doing.
-    pub(super) fn share_button(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        self.people_avatars(ui, t);
-        let Some(sharing) = &mut self.sharing else { return };
-        let label = sharing.chip();
-        let color = if sharing.live.is_some() { t.accent } else { t.text_muted };
-        if ui.add(egui::Button::new(egui::RichText::new(label).color(color)).frame(false)).on_hover_text("Share this project live, or join one").clicked() {
-            sharing.panel.open = !sharing.panel.open;
-        }
-    }
-
     /// The share panel, under its chip.
     pub(super) fn share_panel(&mut self, ctx: &egui::Context, t: &Tokens) {
         let anchor = [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap];
-        let Some(sharing) = &mut self.sharing else { return };
+        let Some(sharing) = &self.sharing else { return };
         if !sharing.panel.open {
             return;
         }
@@ -662,12 +651,16 @@ impl NodeCraftApp {
             .frame(frame)
             .show(ctx, |ui| {
                 ui.set_max_width(t.minimap_height * 2.5);
+                ui.horizontal(|ui| self.people_avatars(ui, t));
+                let Some(sharing) = &mut self.sharing else { return };
                 match &sharing.live {
                     None => idle(ui, t, &mut sharing.panel, &mut command),
                     Some(live) => shared(ui, t, live, live.status.role, &mut sharing.panel, &mut command),
                 }
             });
-        sharing.panel.open &= open;
+        if let Some(sharing) = &mut self.sharing {
+            sharing.panel.open &= open;
+        }
         if let Some((id, params)) = command
             && let Err(error) = self.session.dispatch(id, &params)
         {

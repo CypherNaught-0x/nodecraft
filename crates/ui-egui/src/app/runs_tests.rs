@@ -206,6 +206,7 @@ fn wait_for_generate(h: &mut Harness<'static, NodeCraftApp>) {
 }
 
 fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
+    crate::app::topbar_tests::reveal(h, label);
     let pos = h.get_by_role_and_label(role, label).rect().center();
     h.hover_at(pos);
     h.run();
