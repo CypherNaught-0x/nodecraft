@@ -871,7 +871,7 @@ families compose official model HTTP roots and the generic contract, not observe
 
 No ambiguous create is automatically replayed. X-Fal-No-Retry and disabled fallback are sent,
 but these headers and local idempotency keys do not establish remote billing deduplication.
-NodeCraft treats only the matching HTTP/body pairs 202/CANCELLATION_REQUESTED,
+NodeCraft treats only the matching HTTP/body pairs 200/OK (removed while queued), 202/CANCELLATION_REQUESTED,
 400/ALREADY_COMPLETED and 404/NOT_FOUND as successful best-effort cancel dispositions. Malformed,
 contradictory, authentication and server replies remain errors. This is an explicit NodeCraft
 policy: fal's SDK documents raising on 400/404. No disposition establishes nonbilling proof. Local poll/result/download/validation failures retain an accepted handle and unfinished

@@ -378,6 +378,7 @@ impl Record {
 }
 #[derive(Debug, PartialEq, Eq)]
 enum CancelDisposition {
+    CancelledQueued,
     Requested,
     AlreadyCompleted,
     NotFound,
@@ -385,6 +386,7 @@ enum CancelDisposition {
 impl CancelDisposition {
     fn label(&self) -> &'static str {
         match self {
+            Self::CancelledQueued => "cancelled_queued",
             Self::Requested => "cancellation_requested",
             Self::AlreadyCompleted => "already_completed",
             Self::NotFound => "not_found",
@@ -416,7 +418,7 @@ impl Fal {
             .await
             .map_err(transport)?;
         response_bounds(&r, self.limits.response_bytes)?;
-        if !matches!(r.status, 202 | 400 | 404) {
+        if !matches!(r.status, 200 | 202 | 400 | 404) {
             status(&r, self.limits.response_bytes)?;
             return Err(malformed("fal unexpected cancellation HTTP status"));
         }
@@ -425,6 +427,7 @@ impl Fal {
             return Err(malformed("fal contradictory cancellation response"));
         }
         match (r.status, body.text("status")?.as_ref()) {
+            (200, "OK") => Ok(CancelDisposition::CancelledQueued),
             (202, "CANCELLATION_REQUESTED") => Ok(CancelDisposition::Requested),
             (400, "ALREADY_COMPLETED") => Ok(CancelDisposition::AlreadyCompleted),
             (404, "NOT_FOUND") => Ok(CancelDisposition::NotFound),
