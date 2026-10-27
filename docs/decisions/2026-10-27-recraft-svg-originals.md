@@ -16,6 +16,11 @@ per element/262,144 total and parsed path/point/dash entries at 250,000. Intrins
 is bounded to 16,384 per axis and 16,777,216 pixels; caller limits may lower it. Logical
 document work is capped at 128 MiB. These are logical operation limits, not allocator/RSS
 claims. Reference expansion is counted separately with cycle/depth limits before rendering.
+Every repeated path/shape and clip/mask reference is charged before normalization, with
+250,000 expanded path operations retained and 32,768 preview operations. DFS holds only
+the active path. CSS uses an explicit static property/function grammar; unknown resource
+syntax (including image-set and string URLs) is rejected. Dashed strokes retain their
+originals with unavailable previews so tiny dash lengths cannot expand renderer work.
 
 Use exact resvg/usvg 0.45.1 with default features disabled and permissive dependencies.
 Parse XML with DTD disabled and feed `Tree::from_xmltree`; the convenience string parser

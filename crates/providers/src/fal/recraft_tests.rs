@@ -385,3 +385,14 @@ fn recraft35_live_smoke() {
         panic!("Recraft live task timed out");
     });
 }
+
+#[test]
+fn recraft35_svg_reference_requires_explicit_rasterization_before_a_raster_fal_job() {
+    let wire = Arc::new(Wire::default());
+    let mut j = job(ESRGAN);
+    j.inputs = vec![crate::JobInput::Media { role: "image".into(), mime: nodecraft_media::svg::MIME.into(), bytes: SVG.into() }];
+    let scope = crate::SubmitContext::new();
+    assert!(block_on(fal(&wire).submit_with_delivery(&j, &scope)).is_err());
+    assert!(wire.requests.lock().unwrap().is_empty());
+    assert!(scope.finish_error().is_some());
+}

@@ -192,6 +192,13 @@ fn recraft35_import_and_explicit_rasterize_action_preserve_original_and_reject_i
     let Value::Media(png) = converted else { panic!() };
     assert_eq!(png.mime.essence(), "image/png");
     assert_eq!((png.meta.width, png.meta.height), (Some(256), Some(128)));
+    let mut mixed = nodecraft_graph::Node::new(NodeId::from_bytes([3; 16]), "generation.image");
+    let generation = nodecraft_types::GenerationId::from_bytes([3; 16]);
+    mixed.history.push(nodecraft_graph::Generation::new(generation, vec![Value::List(vec![source.clone(), Value::Media(png.clone())])]));
+    mixed.active = Some(generation);
+    assert_eq!(nodecraft_engine::split::image_rows(&mixed).1, 2);
+    assert!(nodecraft_engine::split::image_of(&mixed).is_none(), "raster tools must not silently target a later raster behind the displayed SVG");
+    assert_eq!(nodecraft_engine::split::preview_image_of(&mixed).unwrap().mime.essence(), "image/svg+xml");
     assert!(actions.execute("image.resize", &Default::default(), std::slice::from_ref(&source)).is_err());
     let Value::Media(original) = source else { panic!() };
     assert_eq!(session.assets().get(&original.hash).unwrap(), SVG);

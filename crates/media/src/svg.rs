@@ -16,6 +16,8 @@ const MAX_SEGMENTS: usize = 250_000;
 const MAX_DIMENSION: u32 = 16_384;
 const MAX_PIXELS: u64 = 16_777_216;
 const MAX_LOGICAL_BYTES: u64 = 128 * 1024 * 1024;
+#[cfg(test)]
+thread_local! { static DOM_PARSE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Info {
@@ -43,7 +45,12 @@ fn cap() -> MediaError {
 /// inner svg element inside an HTML document, nor trust a file extension or claimed MIME.
 pub fn recognizes(bytes: &[u8]) -> bool {
     let maximum = usize::try_from(MAX_BYTES).unwrap_or(usize::MAX);
-    let mut reader = Reader::from_reader(bytes.get(..bytes.len().min(maximum)).unwrap_or_default());
+    let bytes = bytes.get(..bytes.len().min(maximum)).unwrap_or_default();
+    let start = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes).trim_ascii_start();
+    if !start.starts_with(b"<") {
+        return false;
+    }
+    let mut reader = Reader::from_reader(bytes);
     loop {
         match reader.read_event() {
             Ok(Event::Start(e) | Event::Empty(e)) => return e.local_name().as_ref() == b"svg",
@@ -60,13 +67,16 @@ pub fn probe(bytes: &[u8], limits: &Limits) -> Result<Info, MediaError> {
     admitted(bytes, limits).map(|(_, info)| info)
 }
 
-fn preflight(text: &str) -> Result<(), MediaError> {
+fn preflight(text: &str) -> Result<u32, MediaError> {
     let mut reader = Reader::from_str(text);
     let mut depth = 0usize;
     let mut nodes = 0u32;
     let mut attributes = 0usize;
     loop {
         let event = reader.read_event().map_err(|_| bad())?;
+        if matches!(event, Event::Start(_) | Event::Empty(_) | Event::Text(_) | Event::Comment(_) | Event::CData(_)) {
+            nodes = nodes.checked_add(1).filter(|n| *n <= MAX_NODES).ok_or_else(cap)?;
+        }
         match &event {
             Event::Start(e) | Event::Empty(e) => {
                 if depth >= MAX_DEPTH {
@@ -75,8 +85,11 @@ fn preflight(text: &str) -> Result<(), MediaError> {
                 if matches!(event, Event::Start(_)) {
                     depth = depth.checked_add(1).ok_or_else(cap)?;
                 }
-                nodes = nodes.checked_add(1).filter(|n| *n <= MAX_NODES).ok_or_else(cap)?;
-                let count = e.attributes().take(65).collect::<Result<Vec<_>, _>>().map_err(|_| bad())?.len();
+                let mut count = 0usize;
+                for attribute in e.attributes().take(65) {
+                    attribute.map_err(|_| bad())?;
+                    count += 1;
+                }
                 attributes = attributes.checked_add(count).filter(|n| *n <= 262_144).ok_or_else(cap)?;
                 if count > 64 {
                     return Err(cap());
@@ -84,7 +97,7 @@ fn preflight(text: &str) -> Result<(), MediaError> {
             }
             Event::DocType(_) | Event::PI(_) => return Err(bad()),
             Event::End(_) => depth = depth.checked_sub(1).ok_or_else(bad)?,
-            Event::Eof => return if depth == 0 { Ok(()) } else { Err(bad()) },
+            Event::Eof => return if depth == 0 { Ok(nodes) } else { Err(bad()) },
             _ => {}
         }
     }
@@ -159,8 +172,15 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
     if bytes.len() as u64 > MAX_BYTES.min(limits.max_input_bytes) {
         return Err(cap());
     }
+    let document_budget = limits.max_alloc.min(MAX_LOGICAL_BYTES);
+    let encoded_work = (bytes.len() as u64).checked_mul(4).filter(|n| *n <= document_budget).ok_or_else(cap)?;
     let text = std::str::from_utf8(bytes).map_err(|_| bad())?;
-    preflight(text)?;
+    let xml_nodes = preflight(text)?;
+    if encoded_work.checked_add(u64::from(xml_nodes).checked_mul(512).ok_or_else(cap)?).is_none_or(|n| n > document_budget) {
+        return Err(cap());
+    }
+    #[cfg(test)]
+    DOM_PARSE_CALLS.with(|calls| calls.set(calls.get() + 1));
     let doc = Document::parse_with_options(text, ParsingOptions { allow_dtd: false, nodes_limit: MAX_NODES }).map_err(|_| bad())?;
     let root = doc.root_element();
     if root.tag_name().name() != "svg" || root.tag_name().namespace() != Some(NS) {
@@ -321,7 +341,7 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
     }
     let work = (bytes.len() as u64)
         .checked_mul(4)
-        .and_then(|n| n.checked_add((count as u64).checked_mul(512)?))
+        .and_then(|n| n.checked_add(u64::from(xml_nodes).checked_mul(512)?))
         .and_then(|n| n.checked_add((segments as u64).checked_mul(128)?))
         .ok_or_else(cap)?;
     if work > limits.max_alloc.min(MAX_LOGICAL_BYTES) {

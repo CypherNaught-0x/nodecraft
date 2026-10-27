@@ -22,6 +22,9 @@ pub(crate) fn extension(mime: &str) -> &str {
 /// loader videos (and animated GIF or WebP, which video loaders read as frames), an audio loader
 /// sounds (and videos, whose sound it reads), a 3D loader models. Text and documents never go.
 pub(crate) fn check_kind(target: &str, loader: Media, bytes: &[u8], mime: &str) -> Result<(), String> {
+    if mime == nodecraft_media::svg::MIME || nodecraft_media::svg::recognizes(bytes) {
+        return Err(format!("{target} needs raster media; connect a Rasterize SVG action before this loader"));
+    }
     let kind = nodecraft_media::sniff(bytes).map(|s| s.kind);
     let fits = match (loader, kind) {
         (Media::Image, Some(MediaKind::Image)) | (Media::Audio, Some(MediaKind::Audio | MediaKind::Video)) | (Media::Mesh, Some(MediaKind::Model3d)) => true,

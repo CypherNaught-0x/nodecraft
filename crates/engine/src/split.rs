@@ -89,7 +89,7 @@ pub fn result_rows(result: &Generation) -> (Vec<Vec<&AssetRef>>, usize) {
 /// image of its active result (inside a list too), of a type NodeCraft decodes: the first of
 /// [`image_rows`], found without walking the rest (cards ask for it every frame).
 pub fn image_of(node: &Node) -> Option<&AssetRef> {
-    first_image(node, image)
+    first_image(node, preview_image).filter(|asset| SPLITTABLE.contains(&asset.mime.essence()))
 }
 
 /// First previewable image; SVG originals remain unavailable to raster-only tools.

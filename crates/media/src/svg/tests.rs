@@ -69,8 +69,11 @@ fn recraft35_scripts_entities_external_resources_and_css_escape_tricks_are_refus
 fn recraft35_bounded_static_features_keep_the_useful_original_when_preview_cannot_render_them() {
     for body in [
         "<text x=\"5\" y=\"20\">Typography stays in the original</text>",
+        "<text style=\"font-family:未知;fill:red !important\">文字</text>",
         "<filter id=\"f\"><feGaussianBlur stdDeviation=\"2\"/></filter><rect width=\"50\" height=\"50\" filter=\"url(#f)\"/>",
         "<pattern id=\"p\" width=\"10\" height=\"10\"><rect width=\"5\" height=\"5\"/></pattern>",
+        "<rect width=\"50\" height=\"50\" style=\"filter:blur(2px) drop-shadow(0 1px 2px #000)\"/>",
+        "<g style=\"transform:translate(2px,3px)\"><rect width=\"50\" height=\"50\"/></g>",
         "<style>.a{fill:red}</style><rect class=\"a\" width=\"100\" height=\"100\"/>",
     ] {
         let bytes = document(body);
@@ -146,6 +149,9 @@ fn recraft35_css_admission_covers_resource_functions_properties_and_browser_gram
         "list-style-image:url(//host/image)",
         "fill:rgb(1,2,3) image-set('image.png' 1x)",
         "fill:cross-fade(url(#p),red,1)",
+        "filter:blur(var(--x))",
+        "filter:drop-shadow(0 1px url(//host/image))",
+        "transform:translate(1e999px)",
         "font-family:foo;src:local(foo)",
         "--custom:url(//host/image)",
     ] {
@@ -182,4 +188,17 @@ fn recraft35_expanded_segments_are_charged_before_normalization_and_safe_origina
     let dashed = document("<path d='M0 0 L100 100' stroke='black' stroke-dasharray='.0000000001 .0000000001'/>");
     assert!(probe(&dashed, &Default::default()).unwrap().preview_unavailable.is_some());
     assert!(render(&dashed, 128, &Default::default()).is_err());
+}
+
+#[test]
+fn recraft35_lowered_document_allocation_budget_is_checked_before_dom_allocation() {
+    let before = DOM_PARSE_CALLS.with(std::cell::Cell::get);
+    assert!(probe(SVG, &Limits { max_alloc: 1, ..Default::default() }).is_err());
+    let many_nodes = document(&"<g/>".repeat(1000));
+    assert!(many_nodes.len() * 4 < 100_000);
+    assert!(probe(&many_nodes, &Limits { max_alloc: 100_000, ..Default::default() }).is_err());
+    let comments = document(&"<!--x-->".repeat(1000));
+    assert!(comments.len() * 4 < 100_000);
+    assert!(probe(&comments, &Limits { max_alloc: 100_000, ..Default::default() }).is_err());
+    assert_eq!(DOM_PARSE_CALLS.with(std::cell::Cell::get), before, "caller-lowered limits precede DOM allocation for elements AND comments");
 }
