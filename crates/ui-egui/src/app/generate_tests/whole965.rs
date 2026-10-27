@@ -124,3 +124,31 @@ fn ctrl_enter_in_a_prompt_still_quotes_only_that_card() {
     assert!(h.query_by_label_contains("Run changed for").is_none());
     assert!(runs.lock().unwrap().is_empty());
 }
+
+#[test]
+fn ctrl_enter_waits_while_the_recovery_question_is_open() {
+    let (mut h, runs) = two_cards();
+    let missing = std::env::temp_dir().join("nodecraft-965-no-such-journal").join("kept.journal");
+    h.state_mut().recovery = Some(recovery::RecoveryOffer::read(missing));
+    h.run();
+    ctrl_enter(&mut h);
+    assert!(h.state().run_confirm.is_none(), "the recovery answer may replace this document: nothing is quoted on it");
+    assert!(runs.lock().unwrap().is_empty());
+    h.state_mut().recovery = None;
+    h.run();
+    ctrl_enter(&mut h);
+    assert!(h.state().run_confirm.is_some(), "once it is answered, the shortcut quotes again");
+}
+
+#[test]
+fn the_dialog_counts_every_step_past_the_listed_ones_and_says_what_waits_for_a_batch() {
+    let (mut h, _) = two_cards();
+    ctrl_enter(&mut h);
+    let mut quote = h.state_mut().session.dispatch("run.changed", &json!({"canvas": C})).unwrap();
+    quote["steps_total"] = json!(612);
+    quote["waiting"] = json!([M]);
+    h.state_mut().run_confirm.as_mut().unwrap().set_quote(&quote);
+    h.run();
+    assert!(h.query_by_label_contains("Runs 612 steps:").is_some(), "the count is the run's, not the listed page's");
+    assert!(h.query_by_label_contains("1 card(s) after a batch wait for this run's results").is_some());
+}

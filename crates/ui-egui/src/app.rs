@@ -1494,9 +1494,17 @@ impl NodeCraftApp {
             // ⌘/Ctrl+Enter quotes a run of everything that changed or hasn't run (#965); nothing
             // starts until the person confirms the price. A focused text field keeps its own
             // ⌘/Ctrl+Enter (a prompt quotes its card, a multiline value commits), and so do a
-            // gesture in flight and an open menu.
-            let gesture = minimap_held || self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || self.reordering.is_some();
-            if !gesture && !bulk_blocks && !egui::Popup::is_any_open(ui.ctx()) {
+            // gesture in flight and an open menu or panel. Not while the recovery question is open
+            // either: its answer may replace the document the run would be quoted on.
+            #[cfg(not(target_arch = "wasm32"))]
+            let recovering = recovery_owns_input || self.recovery.is_some();
+            #[cfg(target_arch = "wasm32")]
+            let recovering = recovery_owns_input || self.web_recovery_owns_input();
+            let blocked = self.canvas_letter_keys_blocked(ui, minimap_held, model_blocks, bulk_blocks)
+                || recovering
+                || self.keys.open
+                || self.browser_providers.as_ref().is_some_and(|providers| providers.open);
+            if !blocked {
                 let whole = ui.input_mut(|input| {
                     self.session.registry().specs().filter(|spec| matches!(spec.id, "run.changed" | "run.workflow")).find_map(|spec| {
                         spec.shortcut

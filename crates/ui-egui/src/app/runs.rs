@@ -858,25 +858,57 @@ fn wall_clock_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
     Arc::new(|| browser::millis(js_sys::Date::now()))
 }
 
-/// The cards a run of the whole canvas starts from (#965), as the engine's `pending` mode picks
-/// them: generation, action and technique cards (and ones of a kind not installed) whose result
-/// is stale or missing; with `workflow`, every generation and technique card as well. Its
-/// providers are set up for these and what they need upstream.
+/// The cards a run of the whole canvas covers (#965), as the engine's `pending` and `workflow`
+/// modes pick them, for setting up their providers: generation, action and technique cards (and
+/// ones of a kind not installed) whose result is stale or missing; with `workflow`, every
+/// generation and technique card as well; then what they need upstream, and any card with work
+/// between two of them. The engine plans the run itself.
 pub(super) fn whole_roots(session: &Session, canvas: CanvasId, workflow: bool, stale: &BTreeSet<NodeId>) -> Vec<NodeId> {
     use nodecraft_nodes::Category;
-    let Some(canvas) = session.document().canvases().get(&canvas) else {
+    let Some(on) = session.document().canvases().get(&canvas) else {
         return Vec::new();
     };
-    canvas
+    let category = |node: &nodecraft_graph::Node| session.kinds().get(&node.kind).map(|kind| kind.descriptor().category);
+    let generative = |node: &nodecraft_graph::Node| node.kind == nodecraft_nodes::technique::ID || matches!(category(node), Ok(Category::Generation));
+    let has_work = |node: &nodecraft_graph::Node| generative(node) || matches!(category(node), Ok(Category::Action) | Err(_));
+    let roots: Vec<NodeId> = on
         .nodes()
         .values()
-        .filter(|node| {
-            let category = session.kinds().get(&node.kind).map(|kind| kind.descriptor().category);
-            let makes = node.kind == nodecraft_nodes::technique::ID || matches!(category, Ok(Category::Generation) | Err(_));
-            (makes || matches!(category, Ok(Category::Action))) && ((workflow && makes) || stale.contains(&node.id) || !has_result(node))
-        })
+        .filter(|node| has_work(node) && ((workflow && generative(node)) || stale.contains(&node.id) || !has_result(node)))
         .map(|node| node.id)
-        .collect()
+        .collect();
+    let mut up: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    let mut down: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for edge in on.edges().values() {
+        up.entry(edge.to.node).or_default().push(edge.from.node);
+        down.entry(edge.from.node).or_default().push(edge.to.node);
+    }
+    // The graph may have cycles: seen-sets end each walk.
+    let reach = |from: &BTreeSet<NodeId>, next: &BTreeMap<NodeId, Vec<NodeId>>| {
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<NodeId> = from.iter().copied().collect();
+        while let Some(id) = stack.pop() {
+            for to in next.get(&id).into_iter().flatten() {
+                if seen.insert(*to) {
+                    stack.push(*to);
+                }
+            }
+        }
+        seen
+    };
+    let mut run = with_upstream(session, canvas, &roots, stale);
+    loop {
+        let after = reach(&run, &down);
+        let between: Vec<NodeId> =
+            reach(&run, &up).into_iter().filter(|id| after.contains(id) && !run.contains(id) && on.nodes().get(id).is_some_and(has_work)).collect();
+        if between.is_empty() {
+            break;
+        }
+        run.extend(between);
+        let ids: Vec<NodeId> = run.iter().copied().collect();
+        run = with_upstream(session, canvas, &ids, stale);
+    }
+    run.into_iter().collect()
 }
 
 /// `ids` and every node upstream of them on `canvas` that a `with_upstream` run would run too.

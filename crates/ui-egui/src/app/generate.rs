@@ -144,6 +144,10 @@ pub(super) struct Quote {
     reused: usize,
     /// The nodes of the listed steps, in run order.
     steps: Vec<NodeId>,
+    /// How many steps the run has, listed or not.
+    steps_total: usize,
+    /// Nodes a whole-canvas run leaves for the next one, after a batch it feeds (#965).
+    waiting: usize,
     /// Whether applying cached results is the only work in this quote.
     cached_only: bool,
     /// The planner found nothing in the way; a budget may still refuse the price.
@@ -192,7 +196,9 @@ impl Quote {
         let cached_only = reused > 0 && steps.is_empty() && listed;
         let planned = value.get("blocked").and_then(Json::as_array).is_none_or(Vec::is_empty);
         let capped = value.get("blocks").and_then(Json::as_array).is_some_and(|blocks| !blocks.is_empty());
+        let steps_total = value.get("steps_total").and_then(Json::as_u64).and_then(|n| usize::try_from(n).ok()).unwrap_or(steps.len());
         let steps = steps.iter().filter_map(|step| serde_json::from_value(step.get("node")?.clone()).ok()).collect();
+        let waiting = value.get("waiting").and_then(Json::as_array).map_or(0, Vec::len);
         Some(Self {
             token,
             amounts,
@@ -207,6 +213,8 @@ impl Quote {
             alike,
             reused,
             steps,
+            steps_total,
+            waiting,
             cached_only,
             planned,
             capped,
@@ -431,6 +439,17 @@ impl NodeCraftApp {
         let mut change_caps = false;
         // A run of the whole canvas names the cards it runs (#965); a card's own run is that card.
         let runs = (confirm.kind.whole() && !stale).then(|| self.steps_line(&confirm.quote)).flatten();
+        // A card still running from an earlier run would be generated, and charged, twice: a
+        // whole-canvas run waits until it finishes (#965).
+        let busy = match &self.runs {
+            Some(host) if confirm.kind.whole() => {
+                let mut cards: Vec<NodeId> = confirm.quote.steps.iter().copied().filter(|id| host.is_running(confirm.canvas, *id)).collect();
+                cards.sort();
+                cards.dedup();
+                cards.len()
+            }
+            _ => 0,
+        };
         let modal = egui::Modal::new(egui::Id::new("run_confirm")).show(ui.ctx(), |ui| {
             ui.set_width(t.dialog_width);
             ui.heading(confirm.kind.title());
@@ -454,6 +473,20 @@ impl NodeCraftApp {
                 ui.label(egui::RichText::new(quote.price()).color(t.text).strong());
                 if let Some(runs) = &runs {
                     ui.label(runs);
+                }
+                if quote.waiting > 0 {
+                    ui.label(format!(
+                        "{} card(s) after a batch wait for this run's results: press ⌘/Ctrl+Enter (Run changed) again once it finishes.",
+                        quote.waiting
+                    ));
+                }
+                if busy > 0 {
+                    ui.colored_label(
+                        t.danger,
+                        format!(
+                            "{busy} card(s) in this run are still running from an earlier run. Wait for them to finish, then quote again, so they aren't generated and charged twice."
+                        ),
+                    );
                 }
                 if quote.reused > 0 {
                     ui.label(format!("{} reused, free", quote.reused));
@@ -516,7 +549,7 @@ impl NodeCraftApp {
                     } else {
                         format!("{title} for {}", quote.price())
                     };
-                    start = ui.add_enabled(quote.acceptable(confirm.partial), egui::Button::new(label)).clicked();
+                    start = ui.add_enabled(quote.acceptable(confirm.partial) && busy == 0, egui::Button::new(label)).clicked();
                 }
                 if quote.capped && !quote.allowed && !stale {
                     change_caps = ui.button("Change budgets…").on_hover_text("Raise or remove the cap that blocks this run").clicked();
@@ -530,7 +563,7 @@ impl NodeCraftApp {
             close = true;
         }
         close |= modal.should_close();
-        if start && !stale && confirm.error.is_none() {
+        if start && busy == 0 && !stale && confirm.error.is_none() {
             let quote = &confirm.quote;
             let mut accept = json!({"token": quote.token, "amounts": quote.amounts});
             if !quote.complete {
@@ -580,7 +613,15 @@ impl NodeCraftApp {
             .map(|node| card::title(node, self.session.kinds().get(&node.kind).ok().map(|kind| kind.descriptor())))
             .collect();
         let more = cards.len().saturating_sub(names.len());
-        let count = if cards.len() == 1 { "1 card".to_owned() } else { format!("{} cards", cards.len()) };
+        // Past the listed steps the count is of steps, as a technique's inlined steps aren't told
+        // apart from cards there.
+        let count = if !quote.listed {
+            format!("{} steps", quote.steps_total)
+        } else if cards.len() == 1 {
+            "1 card".to_owned()
+        } else {
+            format!("{} cards", cards.len())
+        };
         let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
         Some(line(&format!("Runs {count}: {}{tail}.", names.join(", "))))
     }
