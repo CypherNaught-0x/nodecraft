@@ -559,6 +559,8 @@ fn template(id: &str) -> (Session, Value) {
             json!({"scope":"user","id":skill,"text":text,"origin":"a file"})
         }
         "library.list" => json!({}),
+        "template.list" => json!({}),
+        "template.add" => json!({"id":"generate-text"}),
         "library.add" => json!({"canvas":technique_canvas}),
         "library.remove" => json!({"technique":technique,"version":1}),
         "library.place" => {

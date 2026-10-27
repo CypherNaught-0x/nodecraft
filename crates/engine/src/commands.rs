@@ -167,6 +167,10 @@ impl Context<'_> {
 }
 
 pub enum Effect {
+    /// Add a verified shipped starter graph and its assets as one ordinary undoable edit.
+    TemplateAdd {
+        id: String,
+    },
     /// Read project PDF media only at dispatch, then stage one ordinary document edit.
     DocumentExtract {
         request: Box<crate::document_cmds::ExtractionRequest>,
@@ -285,6 +289,7 @@ impl Registry {
             crate::technique_node_cmds::specs,
             crate::app_cmds::specs,
             crate::library_cmds::specs,
+            crate::templates::specs,
             crate::describe_cmds::specs,
             crate::option_cmds::specs,
             crate::option_fetch::specs,

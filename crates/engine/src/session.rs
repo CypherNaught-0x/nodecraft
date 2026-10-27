@@ -33,6 +33,7 @@ pub const MAX_EVENTS: usize = 256;
 
 mod document_extract;
 mod imports;
+mod starters;
 pub use imports::PreparedImports;
 mod file_lifecycle;
 pub(crate) mod project_identity;
@@ -1145,6 +1146,7 @@ impl Session {
                 });
             }
             Effect::Place { media, changes, result } => return self.place(spec.id, media, changes, result),
+            Effect::TemplateAdd { id } => return self.add_template(spec.id, &id),
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
                 return guard(|| {
@@ -1460,6 +1462,7 @@ impl Session {
             | Effect::CancelFile
             | Effect::CancelExport { .. }
             | Effect::Elements { .. }
+            | Effect::TemplateAdd { .. }
             | Effect::Place { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));
             }

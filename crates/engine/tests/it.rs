@@ -192,3 +192,9 @@ mod alibaba32;
 
 #[path = "rodin41.rs"]
 mod rodin41;
+
+#[path = "templates952/author.rs"]
+mod templates952_author;
+
+#[path = "templates952.rs"]
+mod templates952;
