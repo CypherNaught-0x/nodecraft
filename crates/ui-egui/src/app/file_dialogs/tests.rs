@@ -34,13 +34,13 @@ fn harness(app: NodeCraftApp) -> Harness<'static, NodeCraftApp> {
         .with_size(Vec2::new(1000.0, 700.0))
         .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app)
 }
-// Native saves now complete on a real worker. Simulated frames must yield wall-clock time;
+// Native saves and opens now complete on a real worker. Simulated frames must yield wall-clock time;
 // the fixed deadline fails rather than hiding a stuck publication or retrying an operation.
 fn settle(h: &mut Harness<'static, NodeCraftApp>) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         h.step();
-        if !h.state().session.file_status().saving
+        if h.state().session.file_status().operation.is_none()
             && h.output().viewport_output.get(&egui::ViewportId::ROOT).unwrap().repaint_delay != std::time::Duration::ZERO
         {
             return;
@@ -795,6 +795,12 @@ fn selected_save_as_waits_for_publication_before_recents_and_open_or_failure() {
         }
         runner.run();
         h.step();
+        if !fail {
+            // The published save starts the open on the same held runner (#367).
+            assert!(h.state().session.file_status().operation.is_some_and(|op| op.kind == nodecraft_engine::file_cmds::FileOperationKind::Open));
+            assert_eq!(h.state().session.document(), &expected, "nothing is replaced until the open finishes");
+            runner.run();
+        }
         settle(&mut h);
         assert!(!h.state().files.owns_input());
         if fail {
@@ -1153,4 +1159,167 @@ fn render_storage968_evidence() {
     assert!(h.state().files.menu_open, "An unavailable save opens the File panel with its storage guidance");
     h.get_by_label("Open project…");
     h.render().unwrap().save(output.join("closed-recovery.png")).unwrap();
+}
+
+/// Steps frame time past the progress window's delay while a held operation stays pending.
+fn past_progress_delay(h: &mut Harness<'static, NodeCraftApp>) {
+    for _ in 0..((progress::SHOW_AFTER * 60.0) as usize + 4) {
+        h.step();
+    }
+}
+fn progress_shown(h: &Harness<'static, NodeCraftApp>, title: &str) -> bool {
+    h.query_by_label(title).is_some()
+}
+
+#[test]
+fn a_held_open_shows_progress_and_installs_the_project_only_when_it_finishes() {
+    let dir = Scratch::new("open367");
+    let target = saved(&dir, "target.ncraft", 90);
+    let mut app = dir.app("journal");
+    app.session.dispatch("file.save_as", &json!({"location":dir.file("initial.ncraft").to_str().unwrap()})).unwrap();
+    let before = app.session.document().clone();
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    stub(&mut app, vec![Some(target.clone())]);
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
+    h.step();
+    h.step();
+    assert!(runner.0.lock().unwrap().is_some(), "the open runs on the runner, not in the frame");
+    assert!(!progress_shown(&h, "Opening project…"), "a short operation doesn't flash the window");
+    past_progress_delay(&mut h);
+    assert!(progress_shown(&h, "Opening project…"));
+    h.get_by_label("Reading and checking the project file…");
+    assert_eq!(h.state().session.document(), &before, "nothing is replaced while it reads");
+    assert!(h.state().files.projects.recent().iter().all(|path| path != target.to_str().unwrap()));
+    runner.run();
+    settle(&mut h);
+    assert!(!progress_shown(&h, "Opening project…"));
+    assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(target.clone())));
+    assert!(h.state().session.document().canvases().values().any(|c| c.nodes().contains_key(&NodeId::from_bytes([90; 16]))));
+    assert!(h.state().session.document().canvases().contains_key(&h.state().canvas), "the opened project's canvas is shown");
+    assert_eq!(h.state().files.projects.recent().first().map(String::as_str), target.to_str());
+    assert!(!h.state().files.owns_input());
+}
+
+#[test]
+fn cancelling_a_held_open_keeps_the_current_project_and_its_file() {
+    let dir = Scratch::new("open367-cancel");
+    let target = saved(&dir, "target.ncraft", 91);
+    let initial = dir.file("initial.ncraft");
+    let mut app = dir.app("journal");
+    add(&mut app, 92);
+    app.session.dispatch("file.save_as", &json!({"location":initial.to_str().unwrap()})).unwrap();
+    let before = app.session.document().clone();
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    stub(&mut app, vec![Some(target.clone())]);
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
+    past_progress_delay(&mut h);
+    h.get_by_label("Cancel").click();
+    h.step();
+    h.step();
+    let operation = h.state().session.file_status().operation.unwrap();
+    assert!(operation.cancel_requested);
+    h.get_by_label("Cancelling… the current step finishes first.");
+    runner.run();
+    settle(&mut h);
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(initial)));
+    assert!(!h.state().session.file_status().dirty);
+    assert!(h.state().notice.as_deref().unwrap().contains("opening was cancelled"), "{:?}", h.state().notice);
+    assert!(h.state().files.projects.recent().iter().all(|path| path != target.to_str().unwrap()));
+    // The current project still journals and saves.
+    add(h.state_mut(), 93);
+    h.state_mut().session.dispatch("file.save", &json!({})).unwrap();
+}
+
+#[test]
+fn cancelling_a_held_save_leaves_the_previous_file_byte_for_byte() {
+    let dir = Scratch::new("save367-cancel");
+    let path = dir.file("project.ncraft");
+    let mut app = dir.app("journal");
+    app.session.dispatch("file.save_as", &json!({"location":path.to_str().unwrap()})).unwrap();
+    let on_disk = std::fs::read(&path).unwrap();
+    add(&mut app, 94);
+    let edited = app.session.document().clone();
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    past_progress_delay(&mut h);
+    assert!(progress_shown(&h, "Saving project…"));
+    h.get_by_label("Preparing the project's files…");
+    h.get_by_label("Cancel").click();
+    h.step();
+    runner.run();
+    settle(&mut h);
+    assert!(!progress_shown(&h, "Saving project…"));
+    assert_eq!(std::fs::read(&path).unwrap(), on_disk, "the file is unchanged");
+    assert_eq!(h.state().session.document(), &edited, "and the edits are still open");
+    assert!(h.state().session.file_status().dirty);
+    assert!(h.state().notice.as_deref().unwrap().contains("the save was cancelled; the file is unchanged"), "{:?}", h.state().notice);
+    // Saving again afterwards writes the edits.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    h.step();
+    runner.run();
+    settle(&mut h);
+    assert!(!h.state().session.file_status().dirty);
+    assert_eq!(nodecraft_format::decode(&std::fs::read(&path).unwrap()).unwrap().project, edited);
+}
+
+#[test]
+fn a_background_open_started_elsewhere_shows_progress_and_its_project() {
+    let dir = Scratch::new("open367-external");
+    let target = saved(&dir, "target.ncraft", 95);
+    let mut app = dir.app("journal");
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    let mut h = harness(app);
+    settle(&mut h);
+    // As the control channel or MCP would: the same command, no dialog involved.
+    let opening = h.state_mut().session.dispatch("file.open", &json!({"location":target.to_str().unwrap(),"discard_dirty":true,"background":true})).unwrap();
+    assert_eq!(opening["opening"], true);
+    past_progress_delay(&mut h);
+    assert!(progress_shown(&h, "Opening project…"));
+    runner.run();
+    settle(&mut h);
+    assert!(h.state().session.document().canvases().contains_key(&h.state().canvas));
+    assert!(h.state().session.document().canvases().values().any(|c| c.nodes().contains_key(&NodeId::from_bytes([95; 16]))));
+}
+
+#[test]
+#[ignore = "writes review screenshots to NODECRAFT_REVIEW_EVIDENCE"]
+fn render_file367_progress_evidence() {
+    let output = PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let dir = Scratch::new("public-evidence367");
+    let target = saved(&dir, "Public-forest.ncraft", 96);
+    let mut app = dir.app("journal");
+    app.session.dispatch("file.save_as", &json!({"location":dir.file("Public-start.ncraft").to_str().unwrap()})).unwrap();
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    stub(&mut app, vec![Some(target)]);
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
+    past_progress_delay(&mut h);
+    h.render().unwrap().save(output.join("opening-progress.png")).unwrap();
+    runner.run();
+    settle(&mut h);
+    add(h.state_mut(), 97);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    past_progress_delay(&mut h);
+    h.render().unwrap().save(output.join("saving-progress.png")).unwrap();
+    h.get_by_label("Cancel").click();
+    h.step();
+    h.step();
+    h.render().unwrap().save(output.join("saving-cancelling.png")).unwrap();
+    runner.run();
+    settle(&mut h);
+    h.render().unwrap().save(output.join("save-cancelled-notice.png")).unwrap();
 }
