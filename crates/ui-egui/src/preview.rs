@@ -4,9 +4,31 @@
 //! Thumbnails are keyed by asset hash and a size bucket, so zooming in asks for a sharper one
 //! while the smaller one keeps showing. Natively, one worker thread decodes (within tighter
 //! limits than `media`'s defaults) and the card shows a placeholder until it's ready. Browsers
-//! have no worker here yet, so small images decode inline and larger ones say so. Textures are
-//! evicted least recently used past [`MAX_TEXTURE_BYTES`]; decode failures are remembered, so a
-//! broken image isn't decoded again every frame.
+//! have no worker here yet, so small images decode inline and larger ones say so.
+//!
+//! # What the cache bounds (#396)
+//!
+//! - **Texture bytes.** The RGBA bytes of every texture the cache holds, plus a worst-case
+//!   reservation (`edge × edge × 4`) for every decode in flight, never exceed
+//!   [`MAX_TEXTURE_BYTES`]. A decode is admitted against that budget *before* its asset is read
+//!   or decoded; when least-recently-used textures not drawn this frame can't make room, the card
+//!   shows "Preview cache full" (or a smaller ready size of the same image) instead. Textures
+//!   handed out this frame are never dropped, and a smaller ready fallback is pinned before a
+//!   sharper size is admitted. A stable visible set larger than the budget stays partly uncached
+//!   rather than churning.
+//! - **Metadata.** At most [`MAX_ENTRIES`] entries of any kind, of which at most [`MAX_FAILED`]
+//!   are remembered failures (in flight decodes hold a failure slot, so a completion always
+//!   fits). A failure is remembered while it is still asked for, so a visible broken image is
+//!   decoded once; one nobody asked for in the last frame is forgotten after
+//!   [`FAILED_IDLE_SECS`], and the cache schedules the repaints that make that happen without
+//!   further input, a finite number of them per input frame.
+//! - **Reservations** belong to one request ticket: a completion releases its reservation only
+//!   when its ticket matches the pending entry, so a stale result can't free another request's
+//!   budget. A worker that dies releases them all.
+//!
+//! This is a cache ownership limit, not a process memory limit: the decoder's own working memory
+//! (bounded separately by its decoding limits), egui's copy of the pixels while it uploads them, the GPU
+//! driver's allocations and the encoded bytes being read are not counted.
 use egui::{ColorImage, TextureHandle, TextureOptions};
 use nodecraft_media::{Limits, decode_image, thumbnail};
 use nodecraft_types::Blake3;
@@ -14,7 +36,8 @@ use std::collections::HashMap;
 
 /// Edge lengths, in pixels, thumbnails are made at.
 pub const BUCKETS: [u32; 3] = [128, 256, 512];
-/// Texture memory previews may hold at once (RGBA bytes).
+/// Texture memory previews may hold at once (RGBA bytes), counting reservations for decodes in
+/// flight.
 pub const MAX_TEXTURE_BYTES: usize = 96 * 1024 * 1024;
 /// Thumbnails being decoded at once; more requests wait for a later frame.
 pub const MAX_IN_FLIGHT: usize = 4;
@@ -30,6 +53,14 @@ fn limits() -> Limits {
 pub const MAX_INLINE_PIXEL_BYTES: u64 = 64 * 1024 * 1024;
 /// Times a worker that died is started again before previews give up for the session.
 pub const MAX_RESTARTS: u32 = 3;
+/// Entries of any kind the cache keeps: textures, decodes in flight and remembered failures.
+pub const MAX_ENTRIES: usize = 1024;
+/// Remembered failures, decodes in flight included (each holds the slot its failure would take).
+pub const MAX_FAILED: usize = 256;
+/// Seconds a failure nobody asks for is remembered, so the asset is tried again after it changes.
+pub const FAILED_IDLE_SECS: f64 = 1.0;
+/// What a card says when the budget has no room for its preview this frame.
+pub const CACHE_FULL: &str = "Preview cache full";
 
 /// The smallest bucket at least `edge` pixels, or the largest.
 pub fn bucket(edge: f32) -> u32 {
@@ -109,11 +140,25 @@ fn inline_input(input: Input, edge: u32, page: u32) -> Result<DecodedPreview, &'
     }))
     .unwrap_or(Err("Can't preview this image"))
 }
-
 enum Entry {
-    Pending,
-    Ready { texture: TextureHandle, size: [u32; 2], source_size: [u32; 2], bytes: usize, used: u64 },
-    Failed(&'static str),
+    /// A decode in flight for request `ticket`, holding `reserved` bytes of the texture budget.
+    Pending {
+        ticket: u64,
+        reserved: usize,
+    },
+    Ready {
+        texture: TextureHandle,
+        size: [u32; 2],
+        source_size: [u32; 2],
+        bytes: usize,
+        used: u64,
+    },
+    /// A remembered failure, last asked for on frame `used` at `seen` seconds.
+    Failed {
+        why: &'static str,
+        used: u64,
+        seen: f64,
+    },
 }
 
 /// What a card can show for its image right now.
@@ -156,6 +201,13 @@ fn decode_unguarded(bytes: &[u8], edge: u32, page: u32) -> Result<DecodedPreview
     Ok(DecodedPreview { image: ColorImage::from_rgba_unmultiplied(size, thumb.rgba()), source_size: [meta.width, meta.height] })
 }
 
+/// The most texture a decode at `edge` pixels can produce: thumbnails and PDF pages fit within
+/// `edge` on their longer side.
+fn reservation(edge: u32) -> usize {
+    let edge = usize::try_from(edge).unwrap_or(usize::MAX);
+    edge.saturating_mul(edge).saturating_mul(4)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod worker {
     use super::{Completion, Input, Key, consume};
@@ -165,9 +217,10 @@ mod worker {
         mpsc::{Receiver, SyncSender, TrySendError, sync_channel},
     };
 
-    pub(super) type Done = (Key, Completion);
-    /// A decode to do: what for, the encoded bytes and the edge length.
-    type Job = (Key, Input, u32);
+    /// A finished decode: what for, the request ticket it answers and how it went.
+    pub(super) type Done = (Key, u64, Completion);
+    /// A decode to do: what for, its request ticket, the encoded bytes and the edge length.
+    type Job = (Key, u64, Input, u32);
 
     /// One thread that decodes thumbnails; it ends when the cache drops its sender.
     pub(super) struct Worker {
@@ -190,13 +243,13 @@ mod worker {
             let handle = std::thread::Builder::new()
                 .name("nodecraft-previews".into())
                 .spawn(move || {
-                    for (key, input, edge) in queue {
+                    for (key, ticket, input, edge) in queue {
                         if stop.load(Ordering::Relaxed) {
                             break;
                         }
                         let result = consume(input, edge, key.2, &active_cancel);
                         let wake = !matches!(result, Completion::Busy);
-                        if send.send((key, result)).is_err() {
+                        if send.send((key, ticket, result)).is_err() {
                             break;
                         }
                         if wake {
@@ -213,9 +266,15 @@ mod worker {
             self.read_cancel.cancel();
         }
 
+        /// Closes the job queue, so the thread ends once it has drained it, as a dying one would.
+        #[cfg(test)]
+        pub(super) fn close_queue(&mut self) {
+            self.jobs = None;
+        }
+
         /// Queues a decode; `false` when the worker is busy (try again next frame) or gone.
-        pub(super) fn submit(&self, key: Key, input: Input, edge: u32) -> bool {
-            match self.jobs.as_ref().map(|jobs| jobs.try_send((key, input, edge))) {
+        pub(super) fn submit(&self, key: Key, ticket: u64, input: Input, edge: u32) -> bool {
+            match self.jobs.as_ref().map(|jobs| jobs.try_send((key, ticket, input, edge))) {
                 Some(Ok(())) => true,
                 Some(Err(TrySendError::Full(_) | TrySendError::Disconnected(_))) | None => false,
             }
@@ -237,14 +296,45 @@ mod worker {
     }
 }
 
+/// How a request's attempt to start a decode went.
+enum Start {
+    /// Started, queued, recorded as failed, or waiting for a free decode slot.
+    Tried,
+    /// The asset's data is missing; nothing is remembered, so it previews once it's back.
+    Missing,
+    /// The budget has no room for it this frame; nothing was read or decoded.
+    Full,
+}
+
+/// Which entries [`Previews::evict_lru`] may drop.
+#[derive(Clone, Copy)]
+enum Victims {
+    Textures,
+    Failures,
+    Either,
+}
+
 /// The preview cache. One per app.
 #[derive(Default)]
 pub struct Previews {
     entries: HashMap<Key, Entry>,
+    /// Bytes of the textures held.
     bytes: usize,
+    /// Bytes reserved by pending decodes.
+    reserved: usize,
+    /// Remembered failures.
+    failed: usize,
     clock: u64,
+    /// The frame's `egui` time, in seconds.
+    now: f64,
+    next_ticket: u64,
     in_flight: usize,
     busy_this_frame: [Option<Key>; MAX_IN_FLIGHT],
+    /// The smallest reservation refused this frame: nothing frees capacity until the next poll,
+    /// so anything as large is refused without scanning again. `Some(0)`: metadata is full.
+    refused: Option<usize>,
+    /// When the repaint scheduled to look for failures that stopped being asked for is due.
+    check_at: Option<f64>,
     #[cfg(not(target_arch = "wasm32"))]
     worker: Option<worker::Worker>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -254,15 +344,21 @@ pub struct Previews {
 }
 
 impl Previews {
-    /// Texture bytes held now.
+    /// Texture bytes held now, not counting reservations for decodes in flight.
     pub fn bytes(&self) -> usize {
         self.bytes
     }
 
-    /// Takes finished decodes into textures; call once per frame.
+    /// Takes finished decodes into textures and forgets idle failures; call once per frame,
+    /// before any request.
     pub fn poll(&mut self, ctx: &egui::Context) {
         self.clock = self.clock.wrapping_add(1);
         self.busy_this_frame.fill(None);
+        self.refused = None;
+        let now = ctx.input(|i| i.time);
+        if now.is_finite() {
+            self.now = now;
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::sync::mpsc::TryRecvError;
@@ -280,74 +376,191 @@ impl Previews {
                     }
                 }
             }
-            for (key, result) in finished {
-                if !matches!(self.entries.get(&key), Some(Entry::Pending)) {
-                    continue;
-                }
-                self.in_flight = self.in_flight.saturating_sub(1);
-                match result {
-                    Completion::Finished(result) => self.finish(ctx, key, result),
-                    Completion::Busy => {
-                        self.entries.remove(&key);
-                        if let Some(slot) = self.busy_this_frame.iter_mut().find(|slot| slot.is_none()) {
-                            *slot = Some(key);
-                        }
-                    }
-                }
+            for (key, ticket, result) in finished {
+                self.complete(ctx, key, ticket, result);
             }
             if died {
                 self.worker_died();
             }
         }
-        #[cfg(target_arch = "wasm32")]
-        let _ = ctx;
+        self.expire(ctx);
     }
 
-    /// The worker ended without being asked: forget what it was decoding, so those images are
-    /// asked for again, and allow a fresh worker a few times before giving up for the session.
+    /// Applies a worker's result, if it answers the request still pending for `key`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn complete(&mut self, ctx: &egui::Context, key: Key, ticket: u64, result: Completion) {
+        let reserved = match self.entries.get(&key) {
+            Some(Entry::Pending { ticket: pending, reserved }) if *pending == ticket => *reserved,
+            // Stale: that request is gone, and its reservation with it.
+            _ => return,
+        };
+        self.remove(&key);
+        match result {
+            Completion::Finished(result) => self.finish(ctx, key, reserved, result),
+            Completion::Busy => {
+                if let Some(slot) = self.busy_this_frame.iter_mut().find(|slot| slot.is_none()) {
+                    *slot = Some(key);
+                }
+            }
+        }
+    }
+
+    /// Forgets failures nobody asked for last frame once they're [`FAILED_IDLE_SECS`] old, and
+    /// asks for the repaints that let that happen without input.
+    fn expire(&mut self, ctx: &egui::Context) {
+        let (now, last) = (self.now, self.clock.wrapping_sub(1));
+        let is_check = self.check_at.is_some_and(|due| now >= due);
+        if is_check {
+            self.check_at = None;
+        }
+        // A clock that went backwards (or isn't a number) counts as long idle.
+        let idle_for = |seen: f64| {
+            let idle = now - seen;
+            if idle.is_finite() && idle >= 0.0 { idle } else { f64::INFINITY }
+        };
+        let expired: Vec<Key> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| matches!(entry, Entry::Failed { used, seen, .. } if *used != last && idle_for(*seen) >= FAILED_IDLE_SECS))
+            .map(|(key, _)| *key)
+            .collect();
+        for key in &expired {
+            self.remove(key);
+        }
+        let mut wake: Option<f64> = None;
+        let mut asked_last_frame = false;
+        for entry in self.entries.values() {
+            if let Entry::Failed { used, seen, .. } = entry {
+                if *used == last {
+                    asked_last_frame = true;
+                } else {
+                    let due = (FAILED_IDLE_SECS - idle_for(*seen)).max(0.0);
+                    wake = Some(wake.map_or(due, |w| w.min(due)));
+                }
+            }
+        }
+        // A failure asked for last frame may stop being asked for this one, which only a later
+        // frame can see. Look once, a second after each frame that wasn't itself that look; a
+        // stable view then needs no more frames.
+        if asked_last_frame && !is_check && self.check_at.is_none() {
+            self.check_at = Some(now + FAILED_IDLE_SECS);
+        }
+        if let Some(due) = self.check_at {
+            let due = (due - now).max(0.0);
+            wake = Some(wake.map_or(due, |w| w.min(due)));
+        }
+        if let Some(due) = wake.filter(|due| due.is_finite()) {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(due.clamp(0.0, FAILED_IDLE_SECS)));
+        }
+    }
+
+    /// The worker ended without being asked: forget what it was decoding, releasing its
+    /// reservations, so those images are asked for again, and allow a fresh worker a few times
+    /// before giving up for the session.
     #[cfg(not(target_arch = "wasm32"))]
     fn worker_died(&mut self) {
         self.worker = None;
+        let pending: Vec<Key> = self.entries.iter().filter(|(_, entry)| matches!(entry, Entry::Pending { .. })).map(|(key, _)| *key).collect();
+        for key in &pending {
+            self.remove(key);
+        }
         self.in_flight = 0;
-        self.entries.retain(|_, entry| !matches!(entry, Entry::Pending));
+        self.reserved = 0;
         self.restarts = self.restarts.saturating_add(1);
         self.worker_failed = self.restarts > MAX_RESTARTS;
     }
 
-    fn finish(&mut self, ctx: &egui::Context, key: Key, result: Result<DecodedPreview, &'static str>) {
-        let entry = match result {
-            Ok(DecodedPreview { image, source_size }) => {
-                let size = [u32::try_from(image.size[0]).unwrap_or(u32::MAX), u32::try_from(image.size[1]).unwrap_or(u32::MAX)];
-                let bytes = image.size[0].saturating_mul(image.size[1]).saturating_mul(4);
-                let texture = ctx.load_texture(format!("preview-{:?}-{}-{}", key.0, key.1, key.2), image, TextureOptions::LINEAR);
-                self.bytes = self.bytes.saturating_add(bytes);
-                Entry::Ready { texture, size, source_size, bytes, used: self.clock }
+    /// Removes `key`, releasing what it held.
+    fn remove(&mut self, key: &Key) -> Option<Entry> {
+        let entry = self.entries.remove(key)?;
+        match &entry {
+            Entry::Pending { reserved, .. } => {
+                self.reserved = self.reserved.saturating_sub(*reserved);
+                self.in_flight = self.in_flight.saturating_sub(1);
             }
-            Err(why) => Entry::Failed(why),
-        };
-        if let Some(Entry::Ready { bytes, .. }) = self.entries.insert(key, entry) {
-            self.bytes = self.bytes.saturating_sub(bytes);
+            Entry::Ready { bytes, .. } => self.bytes = self.bytes.saturating_sub(*bytes),
+            Entry::Failed { .. } => self.failed = self.failed.saturating_sub(1),
         }
-        self.evict();
+        Some(entry)
     }
 
-    /// Drops least recently used textures until under budget, never one used this frame.
-    fn evict(&mut self) {
-        while self.bytes > MAX_TEXTURE_BYTES {
-            let oldest = self
-                .entries
-                .iter()
-                .filter_map(|(key, entry)| match entry {
-                    Entry::Ready { used, .. } if *used != self.clock => Some((*used, *key)),
-                    _ => None,
-                })
-                .min();
-            let Some((_, key)) = oldest else {
-                return;
-            };
-            if let Some(Entry::Ready { bytes, .. }) = self.entries.remove(&key) {
-                self.bytes = self.bytes.saturating_sub(bytes);
+    /// Stores `entry` at `key`, replacing (and releasing) what was there.
+    fn put(&mut self, key: Key, entry: Entry) {
+        self.remove(&key);
+        match &entry {
+            Entry::Pending { reserved, .. } => {
+                self.reserved = self.reserved.saturating_add(*reserved);
+                self.in_flight = self.in_flight.saturating_add(1);
             }
+            Entry::Ready { bytes, .. } => self.bytes = self.bytes.saturating_add(*bytes),
+            Entry::Failed { .. } => self.failed = self.failed.saturating_add(1),
+        }
+        self.entries.insert(key, entry);
+    }
+
+    fn fail(&mut self, key: Key, why: &'static str) {
+        self.put(key, Entry::Failed { why, used: self.clock, seen: self.now });
+    }
+
+    /// Turns a decode admitted with `allowed` bytes into a texture or a remembered failure.
+    fn finish(&mut self, ctx: &egui::Context, key: Key, allowed: usize, result: Result<DecodedPreview, &'static str>) {
+        match result {
+            Ok(DecodedPreview { image, source_size }) => {
+                let bytes = image.size[0].saturating_mul(image.size[1]).saturating_mul(4);
+                // Never more than was admitted, nor past the budget: a decoder that ignored its
+                // edge is a failure, not a reason to overrun.
+                if bytes > allowed || self.bytes.saturating_add(self.reserved).saturating_add(bytes) > MAX_TEXTURE_BYTES {
+                    return self.fail(key, "Preview not available here");
+                }
+                let size = [u32::try_from(image.size[0]).unwrap_or(u32::MAX), u32::try_from(image.size[1]).unwrap_or(u32::MAX)];
+                let texture = ctx.load_texture(format!("preview-{:?}-{}-{}", key.0, key.1, key.2), image, TextureOptions::LINEAR);
+                self.put(key, Entry::Ready { texture, size, source_size, bytes, used: self.clock });
+            }
+            Err(why) => self.fail(key, why),
+        }
+    }
+
+    /// Makes room for one more entry that may hold `need` texture bytes, and a failure slot, by
+    /// dropping least recently used entries not asked for this frame; `false` when it can't.
+    fn admit(&mut self, need: usize) -> bool {
+        if self.refused.is_some_and(|refused| need >= refused) {
+            return false;
+        }
+        loop {
+            let (victims, refused) = if self.bytes.saturating_add(self.reserved).saturating_add(need) > MAX_TEXTURE_BYTES {
+                (Victims::Textures, need)
+            } else if self.entries.len() >= MAX_ENTRIES {
+                (Victims::Either, 0)
+            } else if self.failed.saturating_add(self.in_flight) >= MAX_FAILED {
+                (Victims::Failures, 0)
+            } else {
+                return true;
+            };
+            if !self.evict_lru(victims) {
+                self.refused = Some(self.refused.map_or(refused, |r| r.min(refused)));
+                return false;
+            }
+        }
+    }
+
+    /// Drops the least recently used of `victims` not asked for this frame; `false` if none.
+    fn evict_lru(&mut self, victims: Victims) -> bool {
+        let clock = self.clock;
+        let oldest = self
+            .entries
+            .iter()
+            .filter_map(|(key, entry)| match (entry, victims) {
+                (Entry::Ready { used, .. }, Victims::Textures | Victims::Either) | (Entry::Failed { used, .. }, Victims::Failures | Victims::Either)
+                    if *used != clock =>
+                {
+                    Some((*used, *key))
+                }
+                _ => None,
+            })
+            .min();
+        match oldest {
+            Some((_, key)) => self.remove(&key).is_some(),
+            None => false,
         }
     }
 
@@ -399,21 +612,21 @@ impl Previews {
     }
     fn request_input(&mut self, ctx: &egui::Context, wanted: Key, sizes: &[u32], source: impl FnOnce() -> Result<Input, CaptureError>) -> Preview {
         let (hash, _, page) = wanted;
-        let busy = self.busy_this_frame.contains(&Some(wanted));
-        let clock = self.clock;
-        let mut show = None;
-        let mut missing = false;
+        let (clock, now) = (self.clock, self.now);
         match self.entries.get_mut(&wanted) {
             Some(Entry::Ready { texture, size, source_size, used, .. }) => {
                 *used = clock;
                 return Preview::Ready { texture: texture.id(), size: *size, source_size: *source_size };
             }
-            Some(Entry::Failed(why)) => return Preview::Unavailable(why),
-            Some(Entry::Pending) => {}
-            None if busy => {}
-            None => missing = self.start(ctx, wanted, source),
+            Some(Entry::Failed { why, used, seen }) => {
+                (*used, *seen) = (clock, now);
+                return Preview::Unavailable(why);
+            }
+            Some(Entry::Pending { .. }) | None => {}
         }
-        // While a sharper one decodes, any other size of the same image will do.
+        // While a sharper one decodes, any other size of the same image will do. It is pinned
+        // first, so making room for the sharper one can't evict it.
+        let mut show = None;
         for bucket in sizes.iter().rev() {
             if let Some(Entry::Ready { texture, size, source_size, used, .. }) = self.entries.get_mut(&(hash, *bucket, page)) {
                 *used = clock;
@@ -421,31 +634,39 @@ impl Previews {
                 break;
             }
         }
+        let busy = self.busy_this_frame.contains(&Some(wanted));
+        let started = if self.entries.contains_key(&wanted) || busy { Start::Tried } else { self.start(ctx, wanted, source) };
         match self.entries.get(&wanted) {
-            Some(Entry::Failed(why)) => show.unwrap_or(Preview::Unavailable(why)),
-            Some(_) => show.unwrap_or(Preview::Pending),
-            // Nothing started: the data is missing, or decoding is busy until a later frame.
-            None => show.unwrap_or(if missing {
-                Preview::Unavailable("This image's data is missing")
-            } else if busy {
-                Preview::Unavailable("Preview busy; try again")
-            } else {
-                Preview::Pending
+            // Decoded inline just now.
+            Some(Entry::Ready { texture, size, source_size, .. }) => Preview::Ready { texture: texture.id(), size: *size, source_size: *source_size },
+            Some(Entry::Failed { why, .. }) => show.unwrap_or(Preview::Unavailable(why)),
+            Some(Entry::Pending { .. }) => show.unwrap_or(Preview::Pending),
+            // Nothing started: the data is missing, the cache is full, or decoding is busy until a
+            // later frame.
+            None => show.unwrap_or(match started {
+                Start::Missing => Preview::Unavailable("This image's data is missing"),
+                Start::Full => Preview::Unavailable(CACHE_FULL),
+                Start::Tried if busy => Preview::Unavailable("Preview busy; try again"),
+                Start::Tried => Preview::Pending,
             }),
         }
     }
 
-    /// Starts decoding `key`; `true` when the asset's data is missing.
-    fn start(&mut self, ctx: &egui::Context, key: Key, source: impl FnOnce() -> Result<Input, CaptureError>) -> bool {
+    /// Starts decoding `key` once the budget admits it, before anything is read.
+    fn start(&mut self, ctx: &egui::Context, key: Key, source: impl FnOnce() -> Result<Input, CaptureError>) -> Start {
         if self.in_flight >= MAX_IN_FLIGHT {
-            return false;
+            return Start::Tried;
+        }
+        let need = reservation(key.1);
+        if !self.admit(need) {
+            return Start::Full;
         }
         let input = match source() {
             Ok(input) => input,
-            Err(CaptureError::Missing) => return true,
+            Err(CaptureError::Missing) => return Start::Missing,
             Err(CaptureError::Failed(why)) => {
-                self.entries.insert(key, Entry::Failed(why));
-                return false;
+                self.fail(key, why);
+                return Start::Tried;
             }
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -455,23 +676,23 @@ impl Previews {
                 self.worker_failed = self.worker.is_none();
             }
             if self.worker.is_some() {
-                let submitted = self.worker.as_ref().is_some_and(|w| w.submit(key, input, key.1));
-                if submitted {
-                    self.in_flight = self.in_flight.saturating_add(1);
-                    self.entries.insert(key, Entry::Pending);
+                let ticket = self.next_ticket;
+                self.next_ticket = self.next_ticket.wrapping_add(1);
+                if self.worker.as_ref().is_some_and(|w| w.submit(key, ticket, input, key.1)) {
+                    self.put(key, Entry::Pending { ticket, reserved: need });
                 }
-                return false;
+                return Start::Tried;
             }
         }
         // No worker: only immutable resident bytes may decode inline. Lazy content
         // is unsupported here, regardless of how small its descriptor is.
-        self.finish(ctx, key, inline_input(input, key.1, key.2));
-        false
+        self.finish(ctx, key, need, inline_input(input, key.1, key.2));
+        Start::Tried
     }
 
     #[cfg(test)]
     pub(crate) fn test_pending_and_failed(&self) -> (usize, usize) {
-        (self.in_flight, self.entries.values().filter(|entry| matches!(entry, Entry::Failed(_))).count())
+        (self.in_flight, self.failed)
     }
 
     /// Decodes inline, for tests: no worker, so results are ready in the same frame.
@@ -482,7 +703,7 @@ impl Previews {
         {
             previews.worker_failed = true;
         }
-        previews.finish(ctx, (hash, edge, 0), decode(bytes, edge, 0));
+        previews.finish(ctx, (hash, edge, 0), reservation(edge), decode(bytes, edge, 0));
         previews
     }
 }
