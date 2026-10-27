@@ -399,6 +399,7 @@ mod queue_panel;
 mod reader;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
+mod result_save967;
 mod reverse_wiring;
 mod runs;
 mod search;
@@ -1864,6 +1865,7 @@ impl NodeCraftApp {
                 );
                 if let Some(result) = result {
                     let r = result.response;
+                    let context = result.context;
                     self.painted.insert(node.id, r.rect);
                     let tag_painter = egui::Painter::new(ui.ctx().clone(), r.layer_id, tag_world_clip(&self.view, viewport, ui.clip_rect()));
                     if node.kind == nodecraft_nodes::deck::ID && self.view.zoom >= card::BODY_MIN_ZOOM {
@@ -1941,7 +1943,7 @@ impl NodeCraftApp {
                             self.selection.only(node.id);
                         }
                     } else if !canvas_blocks
-                        && (r.drag_started_by(egui::PointerButton::Primary) || r.secondary_clicked() || r.long_touched())
+                        && (r.drag_started_by(egui::PointerButton::Primary) || context.secondary_clicked() || context.long_touched())
                         && !self.selection.contains(node.id)
                     {
                         // Grabbing or right-clicking a selected card keeps the rest of the selection.
@@ -1955,9 +1957,24 @@ impl NodeCraftApp {
                         && (!overlay_blocks || egui::Popup::is_any_open(ui.ctx()))
                         && (!self.text_focused && !canvas::text_input_focused(ui.ctx()) || egui::Popup::is_any_open(ui.ctx()))
                     {
-                        r.context_menu(|ui| {
-                            let owner = egui::Popup::context_menu(&r).get_id();
+                        context.context_menu(|ui| {
+                            let owner = egui::Popup::context_menu(&context).get_id();
                             let owned = egui::Popup::is_id_open(ui.ctx(), owner);
+                            let targets = crate::result_save::pinned(
+                                ui.ctx(),
+                                &context,
+                                node,
+                                result.save_hit,
+                                self.live.preview(&self.session, self.canvas, node.id).is_some()
+                                    || (matches!(result.save_hit, Some(crate::result_save::Hit::Audio)) && sound_so_far.is_some()),
+                                &self.session.view_identity(),
+                            );
+                            ui.add_enabled_ui(owned && !file_owns_input && !file_menu_owns_input, |ui| {
+                                if let Some(intent) = crate::result_save::menu(ui, &targets, t) {
+                                    intents.push((node.id, Intent::History(intent)));
+                                }
+                            });
+                            ui.separator();
                             ui.label("Format selection");
                             ui.add_enabled_ui(layout_context_ready && owned, |ui| {
                                 if ui.button("Grid").clicked() {
@@ -2364,6 +2381,7 @@ impl NodeCraftApp {
         // when nothing else owns the frame.
         let toolbar_live = !overlay_blocks && !file_owns_input && !file_menu_owns_input && !recovery_owns_input;
         intents.extend(self.generation_toolbar(ui, viewport, toolbar_live));
+        intents.extend(self.result_save_toolbar(ui, viewport, toolbar_live));
         self.image_viewer(ui.ctx());
         self.pdf_reader(ui.ctx());
         if let Some(action) = tag_action {
@@ -2963,6 +2981,10 @@ impl NodeCraftApp {
                 self.start_export(self.canvas, id, generation, port, item, &name);
                 return None;
             }
+            HistoryIntent::SaveToFolder { generation, port, item } => {
+                self.start_results_save(Some(vec![nodecraft_engine::results_export::ResultSelector { node: id, generation, port, item }]));
+                return None;
+            }
             HistoryIntent::Copy { generation, port, item } => {
                 let mut params = json!({"canvas": self.canvas, "id": id, "generation": generation});
                 if let Some(port) = port {
@@ -3540,6 +3562,8 @@ mod reader_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod runs_tests;
+#[cfg(test)]
+mod save967_tests;
 #[cfg(test)]
 mod shader_editor_tests;
 #[cfg(test)]

@@ -498,7 +498,8 @@ impl NodeCraftApp {
         let shown_result = node.history.iter().find(|generation| Some(generation.id) == node.active);
         let result = shown_result.map(|generation| crate::history::export_targets(node, generation)).transpose();
         let downloads = result.as_ref().ok().and_then(Option::as_deref).unwrap_or_default();
-        let mut download = None;
+        let mut download_all = false;
+        let mut save_intent = None;
         egui::Area::new(egui::Id::new(("generation_toolbar", id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
             ui.add_enabled_ui(interactive, |ui| {
                 egui::Frame::new()
@@ -597,20 +598,18 @@ impl NodeCraftApp {
                                 }
                                 [(_, port, item, name)] => {
                                     if ui.button("Download").on_hover_text("Save this result to a file").clicked() {
-                                        download = Some(Download::One(port.clone(), *item, name.clone()));
+                                        save_intent = shown_result.map(|generation| crate::result_save::Target {
+                                            generation: generation.id, port: port.clone(), item: *item, label: name.clone(), name: name.clone(),
+                                        }.file());
                                     }
                                 }
                                 many => {
                                     ui.menu_button("Download", |ui| {
-                                        for (label, port, item, name) in many {
-                                            if ui.button(label).clicked() {
-                                                download = Some(Download::One(port.clone(), *item, name.clone()));
-                                                ui.close();
-                                            }
-                                        }
+                                        let targets = crate::result_save::active(node);
+                                        save_intent = crate::result_save::menu(ui, &targets, t);
                                         ui.separator();
                                         if ui.button(format!("All {} to a folder…", many.len())).clicked() {
-                                            download = Some(Download::All);
+                                            download_all = true;
                                             ui.close();
                                         }
                                     });
@@ -623,14 +622,12 @@ impl NodeCraftApp {
         if expand && interactive {
             self.viewer = Some(id);
         }
-        if let (Some(download), Some(generation), true) = (download, node.active, interactive) {
-            match download {
-                Download::One(port, item, name) => self.start_export(self.canvas, id, generation, port, item, &name),
-                Download::All => {
-                    let targets = downloads.iter().map(|(_, port, item, name)| (port.clone(), *item, name.clone())).collect();
-                    self.start_export_all(self.canvas, id, generation, targets);
-                }
-            }
+        if let Some(intent) = save_intent.filter(|_| interactive) {
+            intents.push((id, Intent::History(intent)));
+        }
+        if let (true, Some(generation), true) = (download_all, node.active, interactive) {
+            let targets = downloads.iter().map(|(_, port, item, name)| (port.clone(), *item, name.clone())).collect();
+            self.start_export_all(self.canvas, id, generation, targets);
         }
         if improve && interactive {
             self.improve_prompt(id);
@@ -694,14 +691,6 @@ impl NodeCraftApp {
             self.viewer = None;
         }
     }
-}
-
-/// What the toolbar's Download asked to save.
-enum Download {
-    /// One output (port, item) under its suggested file name.
-    One(Option<String>, Option<usize>, String),
-    /// Every media output of the shown result, into a folder.
-    All,
 }
 
 /// A multi-mode model's mode, as the toolbar names it.

@@ -176,7 +176,11 @@ impl NodeCraftApp {
             let future = dialog.set_title("Export to a folder").pick_folder();
             return Some(Box::pin(async move { future.await.map(|folder| folder.path().to_path_buf()) }));
         }
-        let future = dialog.set_title("Export result").set_file_name(name).save_file();
+        let dialog = match std::path::Path::new(name).extension().and_then(|extension| extension.to_str()) {
+            Some(extension) => dialog.add_filter("Result", &[extension]),
+            None => dialog,
+        };
+        let future = dialog.set_title("Save result as").set_file_name(name).save_file();
         Some(Box::pin(async move { future.await.map(|file| file.path().to_path_buf()) }))
     }
     #[cfg(all(not(test), target_arch = "wasm32"))]

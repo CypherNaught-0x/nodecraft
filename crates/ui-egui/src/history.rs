@@ -28,6 +28,12 @@ pub enum HistoryIntent {
         item: Option<usize>,
         name: String,
     },
+    /// Save this exact historical media through the shared batch-save preview and worker.
+    SaveToFolder {
+        generation: GenerationId,
+        port: Option<String>,
+        item: Option<usize>,
+    },
     /// Put one text or image output (or list item) on the OS clipboard.
     Copy {
         generation: GenerationId,
@@ -155,24 +161,7 @@ pub fn export_targets(node: &Node, generation: &Generation) -> Result<Vec<Export
 
 /// The file name the save dialog suggests for a result of type `mime`.
 pub fn suggested_name(mime: &str) -> String {
-    let extension = match mime {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        "video/mp4" => "mp4",
-        "video/webm" => "webm",
-        "video/quicktime" => "mov",
-        "audio/mpeg" => "mp3",
-        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
-        "audio/ogg" => "ogg",
-        "audio/flac" => "flac",
-        "model/gltf-binary" => "glb",
-        "model/gltf+json" => "gltf",
-        "model/obj" => "obj",
-        "application/pdf" => "pdf",
-        _ => "bin",
-    };
+    let extension = if mime == "audio/wave" { "wav".into() } else { nodecraft_format::export::extension_for(mime).unwrap_or_else(|| "bin".into()) };
     format!("result.{extension}")
 }
 
