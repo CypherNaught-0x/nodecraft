@@ -258,7 +258,8 @@ struct Wiring {
 
 /// A copied node's card rect, from its kind's resolved instance (it isn't on the canvas yet).
 fn payload_rect(session: &Session, node: &nodecraft_graph::Node, t: &theme::Tokens) -> Rect {
-    card::world_rect(node, admission::admit_uncached(session, node).as_ref().map(|a| a.descriptor.as_ref()), t)
+    let admitted = admission::admit_uncached(session, node);
+    card::world_rect_with_roles(node, admitted.as_ref().map(|a| a.descriptor.as_ref()), admitted.as_ref().map(|a| &a.roles), t)
 }
 
 /// Screen points within which a click selects a noodle.
@@ -3007,7 +3008,7 @@ impl NodeCraftApp {
         };
         node.pos = pos;
         let admitted = admission::admit_uncached(&self.session, &node);
-        let size = card::world_size(&node, admitted.as_ref().map(|a| a.descriptor.as_ref()), t);
+        let size = card::world_size_with_roles(&node, admitted.as_ref().map(|a| a.descriptor.as_ref()), admitted.as_ref().map(|a| &a.roles), t);
         let anchor = match port {
             Some((side, name)) => {
                 let ports = match side {
