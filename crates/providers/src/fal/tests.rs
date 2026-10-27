@@ -12,10 +12,10 @@ pub(super) fn observe(n: usize) {
         }
     });
 }
-fn stages() -> [usize; 3] {
+pub(super) fn stages() -> [usize; 3] {
     STAGES.with(|s| *s.borrow())
 }
-fn reset() {
+pub(super) fn reset() {
     STAGES.with(|s| *s.borrow_mut() = [0; 3]);
 }
 const KEY: &str = "fal-fixture-key-not-real";

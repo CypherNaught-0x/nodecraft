@@ -27,6 +27,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file or pasting its JSON on the canvas does the same. Pasted workflow text is titled Pasted workflow because the text clipboard supplies no filename; a file drop keeps its filename. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
+| **Pika 2.5 through fal** | `fal` | the existing fal key | prompt and one first frame → 720p video, 5/10 seconds | Native streamed project storage required; $0.25/$0.50 estimates. Current image-to-video only; see below. |
 | **Topaz Precision through fal** | `fal` | the existing fal key | one upright image → Standard V2 upscale PNG | Native streamed project storage required; integer 1–4× within one $0.08 output block. Existing queue/resume and no ambiguous paid replay; see below. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
@@ -2128,3 +2129,61 @@ No paid live generation was performed. Offline tests use original procedural ras
 including a result larger than 16 MiB through actual native RunHost history/save/reopen. The
 ignored Topaz live smoke requires explicit cost acknowledgement and the fal key; it is never
 run in CI.
+
+
+## Pika 2.5 through fal (#29)
+
+Use the existing **fal** key and select **Pika 2.5 image to video (fal)**
+(`fal.pika25-i2v`) on a Generate video card with a prompt and one image wired to
+**first_frame**. Desktop projects and the native CLI support this model. Browser sessions and
+classic asset storage refuse before consent or paid HTTP, including a model renamed in a custom
+catalog and deferred/inlined Technique work. Unused canvas nodes do not block other runs.
+
+The current alias is `fal-ai/pika/v2.5/image-to-video`, checked **2026-10-28** against fal's
+[model/rates](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video),
+[API](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video/api), and
+[formal schema](https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/pika/v2.5/image-to-video).
+The catalog fixes **720p** and offers **5 or 10 seconds**. The published price is **$0.25 for
+5 seconds**, doubled for 10 seconds; the quote reserves **$0.05 per requested second**.
+A variation is another separately quoted request. This estimate is not a receipt: optional fal
+billable-unit evidence remains separate from money, and uncertain submissions retain their
+reservation. No live paid generation was performed for this change.
+
+The request has exactly `prompt`, `image_url`, `resolution="720p"` and integer `duration`.
+NodeCraft requires a nonempty prompt of at most **2048 characters** and exactly one upright,
+static **PNG/JPEG/WebP**, at most **1 MiB and 1024 pixels per side**. These are conservative local
+limits, not published Pika service limits. Original image bytes are checked with the actual
+codec before payment; EXIF rotation/reflection and animation refuse. Complete escaped JSON plus
+the encoded image is bounded before decoding or base64 allocation. Resolution, negative prompt,
+seed, frame rate, audio, safety and output-count controls are not exposed or sent. The service's
+other defaults apply; the absence of a safety field is not a claim about moderation.
+
+This initial integration covers **current image-to-video only**. Text-to-video, multiple
+keyframes, Pikaframes, effects, the separate native Pika API and Pika 2.2 are outside this scope.
+The native service uses a separate credential/protocol; it is not configured with a fal key.
+
+The [fal queue contract](https://fal.ai/docs/api-reference/inference-api/queue/submit-path)
+uses `fal-ai/pika/requests/<id>` for status, result and best-effort cancellation. Saved handles
+retain the full model alias and resume the same task without another paid POST. Ambiguous creates
+never replay. Result failures retain accepted handles; cancelling does not promise a refund.
+
+One MP4 result is admitted at **256 MiB per file and in total**, scoped to this alias. Existing
+fal aliases retain their limits. The shared structural MP4 checks remain, with Pika-only local
+limits on movie/track timing (positive and at most **11 seconds**, a conservative envelope for
+the longest offered request), positive display geometry within **4096 pixels per side and
+16,777,216 pixels**, at most **256 KiB movie metadata**, **4096 boxes** and **16 levels**.
+Declared MIME, byte size and dimensions must agree with the downloaded bytes. These are bounded
+container checks, not proof of full decoding or generated content quality.
+
+Downloads carry no API key and refuse redirects. They use the existing HTTPS fal.media
+allowlist, plus the exact public `https://storage.googleapis.com/falserverless/` bucket shown in
+the formal Pika schema. The latter exception is scoped to Pika and the existing Recraft models:
+no other bucket, credentials, query, port, encoded path or traversal is admitted.
+
+Large result conversion, hashing and sealing reuse the native runtime workers; the UI adopts
+sealed receipts. Held-result persistence/retry and journal resume retain complete original bytes.
+Offline tests drive the actual RunHost through consent, large MP4 history, held retry, restart
+resume and save/close/reopen with exactly one paid create. The procedural blue-and-gold fixture
+was authored locally with FFmpeg; it is **not Pika output**. The ignored `pika29_live_smoke` test
+requires `NODECRAFT_LIVE_PIKA=1`, `NODECRAFT_LIVE_PIKA_COST=0.25USD` and `FAL_KEY`; it is compiled
+but never run by ordinary CI.

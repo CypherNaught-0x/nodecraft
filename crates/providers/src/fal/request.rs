@@ -7,6 +7,7 @@ mod hunyuan;
 mod ideogram;
 mod ltx;
 mod luma;
+mod pika;
 mod recraft;
 mod rodin;
 mod topaz;
@@ -200,6 +201,13 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     if model == Model::Topaz {
         return Err(invalid("Topaz Precision needs a desktop project so its large image results can be saved"));
     }
+    #[cfg(target_arch = "wasm32")]
+    if model == Model::Pika {
+        return Err(invalid("Pika 2.5 needs a desktop project so its large video results can be saved"));
+    }
+    if model == Model::Pika {
+        return pika::prepare(j, l);
+    }
     if model == Model::Topaz {
         return topaz::prepare(j, l);
     }
@@ -307,6 +315,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             | Model::Ideogram
             | Model::LtxText
             | Model::LtxFrames
+            | Model::Pika
             | Model::Topaz => false,
             Model::Image => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "seed"),
             Model::Styled => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "guidance_scale" | "lora_scale" | "seed"),
@@ -391,6 +400,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         | Model::Ideogram
         | Model::LtxText
         | Model::LtxFrames
+        | Model::Pika
         | Model::Topaz => {
             return Err(invalid("fal model requests require their own schema"));
         }

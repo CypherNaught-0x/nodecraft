@@ -396,3 +396,6 @@ mod rodin41_tests;
 
 #[cfg(test)]
 mod topaz37_tests;
+
+#[cfg(test)]
+mod pika29_tests;
