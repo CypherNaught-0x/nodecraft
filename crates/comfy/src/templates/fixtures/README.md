@@ -29,6 +29,14 @@ and schema verification. No test submits a generation request or spends provider
 Live-instance validation is an explicit merge blocker requested by the user. These offline
 fixtures and successful CI runs cannot satisfy that requirement on their own.
 
+The four image/audio/API fixtures also pass the ordinary workflow check used before provider
+submission and bounded prompt-request serialization. Connection-only V3 Autogrow descriptors
+validate their named or numbered dotted ports using one stored template. MatchType ports remain
+polymorphic. Original synthetic cases additionally cover typed frontend primitive fanout,
+preserved seed modes, invalid names/types, broken links and refusal of paid substitutes.
+DynamicCombo serialization and the complete video contracts are still unfinished; none of
+these offline checks establish acceptance by a live server.
+
 The production manifest stores structural contracts and field/result selectors only. A changed
 contract or incompatible discovered field prevents curation and leaves generic discovery intact.
 Explicit import `params` bypasses curation. A saved card uses its own serialized mapping, so

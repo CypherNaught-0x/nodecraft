@@ -8,6 +8,12 @@ while rejecting changed graph contracts. A match changes field visibility, names
 it never substitutes provider inputs, model choices or prices. Explicit import parameters and
 the saved field editor remain authoritative. Unknown or changed workflows keep generic discovery.
 
+Some selector nodes save widget values without declaring their parameter names in the UI file.
+For root nodes with no input sockets, a mapping may use the pinned widget ordinal and kind,
+but only while discovery reports the exact pinned widget count. Keep the server's label in
+this case instead of guessing its parameter name or units. Linked fields, changed counts or
+changed types prevent curation.
+
 277 files use embedded UI subgraphs, including the most-used templates. Their public JSON
 interfaces are expanded into the same API workflow the existing server-catalog converter reads.
 Node ids are namespaced per instance, input/output boundaries are aliases, and saved widget
@@ -21,6 +27,12 @@ nodes preserve that fanout; missing or paid substitutes are refused. Different u
 defaults remain distinct. New V3 dynamic widget groups need protocol-aware conversion and
 submission checks before they can be marked supported; positional mismatches must never shift
 a model option into the next seed or other input.
+
+Connection-only V3 Autogrow groups retain one bounded template in the catalog; validation
+checks the provided dotted ports without allocating one descriptor per possible socket.
+MatchType ports are polymorphic. Frontend primitive values feeding connection-only ports use
+one compatible free typed Primitive node per immutable source id, including fanout and saved
+seed modes; missing, paid or incompatible substitutes are refused instead of dropping values.
 
 Only mappings ship in the product. Survey metadata and test fixtures derived from the pinned
 MIT files retain attribution and the MIT notice. No reference prompts, images, videos or ComfyUI

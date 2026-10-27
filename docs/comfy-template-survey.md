@@ -15,13 +15,18 @@ claim that every template runs, or that structural matching alone verifies a ser
 The field column records user-facing subgraph interfaces and recognizable unconnected scalar
 widgets from available node descriptors. Media comes from loaders and the upstream index IO
 hints, with reference filenames omitted. A `node:media` entry is an upload candidate. `instance.field`
-names a promoted field, while ordinary `node.field` names a widget. Model filenames, file prefixes,
+names a promoted field, while ordinary `node.field` names a widget. A `node.widget[index]`
+selector keeps the server label and requires the exact pinned widget count and kind on a node
+with no input sockets; this avoids inventing unknown server parameter names. Model filenames, file prefixes,
 helper expressions, system prompts and other internal widgets are excluded. Result candidates
 are savers (plus media previews that may need conversion to a compatible saver). A result's node
 id remains significant even when several savers share one media list port.
 
 **Mapping status:** curated import tests exercise conversion and discovery against pinned,
 redacted fixtures with recorded descriptor facts plus explicitly synthetic missing core classes.
+The four tested image/audio/API fixtures also pass client workflow validation and bounded request
+serialization; they have not been submitted to a live server. Connection-only V3 Autogrow and
+MatchType are covered offline, while DynamicCombo serialization remains unsupported.
 Candidate means the profile is not yet verified for import. Surveyed means this is an inventory,
 using generic discovery when the server can describe it; unknown descriptors and dynamic widgets
 need further validation. The absence of a recognized field/result is a recorded gap, not proof that
@@ -39,13 +44,13 @@ mapping remains authoritative. Inputs that upload media and partner-credit evide
 
 | Template | Pinned usage | Mapping status | User fields / candidates | Results / candidates |
 |---|---:|---|---|---|
-| [video_minimax_h3_i2v](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/video_minimax_h3_i2v.json) | 21648 | Candidate; schema validation pending | `105.prompt (Prompt)`, `105.value_1 (Duration (seconds))`, `105.noise_seed (Seed)`, `115.resolution (Resolution)`, `114:media` | `92 (Result)` |
+| [video_minimax_h3_i2v](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/video_minimax_h3_i2v.json) | 21648 | Candidate; schema validation pending | `105.prompt (Prompt)`, `105.value_1 (Duration (seconds))`, `105.noise_seed (Seed)`, `115.widget[0]` (server label), `115.widget[1]` (server label), `114:media` | `92 (Result)` |
 | [video_ltx2_3_i2v](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/video_ltx2_3_i2v.json) | 18137 | Surveyed; dynamic widgets need support | `269:media`, `320.value`, `320.value_2`, `320.value_3`, `320.value_4`, `320.value_5`, `320.noise_seed` | `75:SaveVideo` |
 | [image_qwen_image_2_1_image_edit](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/image_qwen_image_2_1_image_edit.json) | 17538 | Surveyed; dynamic widgets need support | `459.resolution`, `459.prompt`, `459.negative_prompt`, `459.cfg`, `459.steps`, `459.width`, `459.height`, `459.seed`, `470:media`, `475:media` | `461:SaveImageAdvanced` |
 | [image_z_image_turbo](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/image_z_image_turbo.json) | 15150 | Curated; import tests | `57.text (Prompt)`, `57.width (Width)`, `57.height (Height)`, `57.seed (Seed)`, `57.steps (Steps)` | `9 (Result)` |
 | [video_wan2_2_14B_i2v](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/video_wan2_2_14B_i2v.json) | 10700 | Candidate; schema validation pending | `129.text (Prompt)`, `129.width (Width)`, `129.height (Height)`, `129.value_1 (Duration (seconds))`, `129.noise_seed (Seed)`, `97:media` | `108 (Result)` |
 | [image_krea2_turbo_t2i](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/image_krea2_turbo_t2i.json) | 9439 | Surveyed; server schema needed | `30.width_1`, `30.height_1`, `30.seed_1` | `29:SaveImage` |
-| [video_minimax_h3_r2v](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/video_minimax_h3_r2v.json) | 8616 | Candidate; schema validation pending | `138.value (Prompt)`, `132.value (Duration (seconds))`, `129.noise_seed (Seed)`, `115.resolution (Resolution)`, `137:media`, `139:media` | `92 (Result)` |
+| [video_minimax_h3_r2v](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/video_minimax_h3_r2v.json) | 8616 | Candidate; schema validation pending | `138.value (Prompt)`, `132.value (Duration (seconds))`, `129.noise_seed (Seed)`, `115.widget[0]` (server label), `115.widget[1]` (server label), `137:media`, `139:media` | `92 (Result)` |
 | [api_nano_banana_2_1_t2i](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/api_nano_banana_2_1_t2i.json) | 5020 | Surveyed; dynamic widgets need support | `1.prompt`, `1.seed` | `3:SaveImageAdvanced` |
 | [image_qwen_image_2_1_t2i](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/image_qwen_image_2_1_t2i.json) | 4938 | Surveyed; dynamic widgets need support | `459.prompt`, `459.negative_prompt`, `459.cfg`, `459.steps`, `459.width`, `459.height`, `459.seed` | `461:SaveImageAdvanced` |
 | [video_ltx2_5_i2v](https://github.com/Comfy-Org/workflow_templates/blob/3c2199b9362457b12b9c60c6cc303501526ebd62/templates/video_ltx2_5_i2v.json) | 4258 | Surveyed; server schema needed | `395:media`, `398.value`, `398.value_2`, `398.value_3`, `398.value_4`, `398.noise_seed`, `398.value_5` | `75:SaveVideo` |

@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use crate::ComfyError;
 use crate::ordered::OValue;
+mod dynamic;
 
 /// Cap on an `/object_info` reply. Large installs with many custom nodes send tens of MB.
 pub const MAX_OBJECT_INFO_BYTES: usize = 128 * 1024 * 1024;
@@ -151,6 +152,7 @@ pub struct NodeInfo {
     pub display_name: String,
     pub category: String,
     pub inputs: Vec<InputSpec>,
+    pub(crate) dynamic_inputs: Vec<dynamic::Autogrow>,
     pub outputs: Vec<OutputSpec>,
     /// Output nodes (savers, previews) are what a prompt executes towards.
     pub output_node: bool,
@@ -161,6 +163,10 @@ pub struct NodeInfo {
 impl NodeInfo {
     pub fn input(&self, name: &str) -> Option<&InputSpec> {
         self.inputs.iter().find(|i| i.name == name)
+    }
+
+    pub(crate) fn dynamic_input(&self, name: &str) -> Result<Option<&InputSpec>, &'static str> {
+        dynamic::input(&self.dynamic_inputs, name)
     }
 }
 
@@ -233,6 +239,7 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
     let input = obj.get("input").and_then(Value::as_object);
     let order = obj.get("input_order").and_then(Value::as_object);
     let mut inputs = Vec::new();
+    let mut dynamic_inputs = Vec::new();
     for (section, required) in [("required", true), ("optional", false)] {
         let Some(specs) = input.and_then(|i| i.get(section)).and_then(Value::as_object) else { continue };
         // `input_order` (newer servers) is authoritative; otherwise the document order.
@@ -244,6 +251,10 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
         // the first occurrence before copying defaults/options, preserving tolerant parsing.
         let mut seen = HashSet::new();
         for name in names.iter().filter(|name| seen.insert(name.as_str())) {
+            if let Some(group) = specs.get(name).and_then(|s| dynamic::Autogrow::parse(name, s)) {
+                dynamic_inputs.push(group);
+                continue;
+            }
             if let Some(mut spec) = specs.get(name).and_then(|s| parse_input(name, s, required)) {
                 if let InputKind::Combo { upload: upload @ None, .. } = &mut spec.kind {
                     *upload = unflagged_upload(class, name);
@@ -260,6 +271,7 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
         .enumerate()
         .map(|(i, t)| {
             let kind = match t {
+                Value::String(s) if s == "COMFY_MATCHTYPE_V3" => "*".into(),
                 Value::String(s) => s.clone(),
                 Value::Array(_) => "COMBO".into(),
                 other => other.to_string(),
@@ -275,6 +287,7 @@ fn parse_node(class: &str, ordered: &OValue) -> Option<NodeInfo> {
         display_name,
         category: text("category"),
         inputs,
+        dynamic_inputs,
         outputs,
         output_node: obj.get("output_node").and_then(Value::as_bool).unwrap_or(false),
         api_node: obj.get("api_node").and_then(Value::as_bool).unwrap_or(false),
@@ -292,6 +305,7 @@ fn parse_input(name: &str, spec: &Value, required: bool) -> Option<InputSpec> {
     let force_input = opts.get("forceInput").and_then(Value::as_bool).unwrap_or(false);
     let kind = match ty {
         Value::Array(options) => combo(strings(&Value::Array(options.clone())).unwrap_or_default(), opts),
+        Value::String(t) if t == "COMFY_MATCHTYPE_V3" => InputKind::Link("*".into()),
         Value::String(t) if force_input => InputKind::Link(t.clone()),
         Value::String(t) => match t.as_str() {
             "INT" => InputKind::Int { default: i("default"), min: i("min"), max: i("max"), step: i("step") },

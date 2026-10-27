@@ -25,7 +25,7 @@ pub(super) fn copy_source(source: Source<'_>, budget: &mut Budget, boundary: Opt
             budget.text(node, 0)?;
             Ok(Signal::Link { node: node.into(), output, wired: boundary != Some(node) })
         }
-        Source::Value(value, mode) => {
+        Source::Value(_, value, mode) => {
             budget.value(value, 0)?;
             Ok(Signal::Literal { value: value.clone(), mode, inherit_mode: false })
         }
@@ -372,33 +372,9 @@ impl Expansion<'_> {
                     .collect::<Option<Vec<_>>>();
                 let common = values.as_ref().and_then(|values| values.first().filter(|first| values.iter().all(|v| v == *first))).copied();
                 if let Some(value) = common {
-                    let candidates: &[&str] = match interface.kind.as_str() {
-                        "INT" => &["PrimitiveInt"],
-                        "FLOAT" => &["PrimitiveFloat"],
-                        "BOOLEAN" => &["PrimitiveBoolean"],
-                        _ => &["PrimitiveStringMultiline", "PrimitiveString"],
-                    };
-                    let primitive = candidates
-                        .iter()
-                        .filter_map(|class| self.catalog.get(class))
-                        .find(|info| {
-                            !info.api_node
-                                && !info.output_node
-                                && info.inputs.len() == 1
-                                && info.input("value").is_some_and(|s| {
-                                    matches!(
-                                        (interface.kind.as_str(), &s.kind),
-                                        ("INT", InputKind::Int { .. })
-                                            | ("FLOAT", InputKind::Float { .. })
-                                            | ("BOOLEAN", InputKind::Boolean { .. })
-                                            | ("STRING", InputKind::String { .. })
-                                    ) && s.check(value).is_ok()
-                                })
-                                && info.outputs.first().is_some_and(|s| s.kind == interface.kind && !s.is_list)
-                        })
-                        .ok_or_else(|| {
-                            invalid("shared subgraph widgets need a compatible free Primitive node on the server; unpack the subgraph before importing")
-                        })?;
+                    let primitive = super::primitive::compatible(self.catalog, &interface.kind, value).ok_or_else(|| {
+                        invalid("shared subgraph widgets need a compatible free Primitive node on the server; unpack the subgraph before importing")
+                    })?;
                     let suffix = format!(":shared:{}", key.1);
                     let id = qualified(&key.0, &suffix)?;
                     if nodes.contains_key(&id) || self.aliases.keys().any(|(existing, _)| existing == &id) {

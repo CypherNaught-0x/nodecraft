@@ -61,6 +61,9 @@ fn templates948_pinned_image_audio_and_partner_graphs_convert_and_select_real_fi
     {
         let converted = crate::ApiWorkflow::convert(fixture.as_bytes(), Some(&catalog)).unwrap();
         assert_eq!(converted.template, Some(id));
+        let check = converted.workflow.check(&catalog);
+        assert!(check.is_ok(), "{id}: {:?}", check.problems);
+        crate::PromptRequest::new(converted.workflow.clone(), "offline-template-contract").to_json().unwrap();
         let original = converted.workflow.clone();
         let mut exposed = crate::discover(&converted.workflow, &catalog).unwrap();
         crate::annotate_promoted(&mut exposed, &converted.promoted);
@@ -69,7 +72,7 @@ fn templates948_pinned_image_audio_and_partner_graphs_convert_and_select_real_fi
         let expected = manifest().unwrap().profiles.iter().find(|p| p.id == id).unwrap();
         assert_eq!(
             exposed.inputs.iter().filter(|i| !matches!(i.kind, ExposedKind::Media(_))).map(|i| i.label.as_str()).collect::<Vec<_>>(),
-            expected.fields.iter().filter(|f| !matches!(f.kind, Kind::Media)).map(|f| f.label.as_str()).collect::<Vec<_>>()
+            expected.fields.iter().filter(|f| !matches!(f.kind, Kind::Media)).map(|f| f.label.as_deref().unwrap_or_default()).collect::<Vec<_>>()
         );
         assert_eq!(exposed.partners, partners);
         assert_eq!(converted.workflow, original, "curation must not rewrite generation inputs");
@@ -86,5 +89,51 @@ fn templates948_pinned_image_audio_and_partner_graphs_convert_and_select_real_fi
             assert_eq!(exposed.partners.len(), 1, "paid credit evidence survives selection");
             assert_eq!(exposed.inputs.iter().filter(|i| matches!(i.kind, ExposedKind::Media(_))).count(), 2, "both reference images remain uploads");
         }
+    }
+}
+
+#[test]
+fn templates948_ordinal_selector_keeps_server_labels_and_rejects_shifted_widget_contracts() {
+    for names in [["ratio", "area", "align"], ["aspect_ratio", "megapixels", "multiple_of"]] {
+        let raw = serde_json::json!({
+          "Controls":{"input":{"required":{"prompt":["STRING",{}],"seconds":["FLOAT",{}],"seed":["INT",{}]}}},
+          "Selector":{"input":{"required":{names[0]:["COMBO",{"options":["1:1"]}],names[1]:["FLOAT",{}],names[2]:["INT",{}]}},"input_order":{"required":names}},
+          "SaveVideo":{"input":{"required":{"filename_prefix":["STRING",{}]}} ,"output_node":true}
+        });
+        let c = crate::NodeCatalog::parse(&serde_json::to_vec(&raw).unwrap()).unwrap().0;
+        let w = crate::ApiWorkflow::parse(
+            &serde_json::to_vec(&serde_json::json!({
+              "10":{"class_type":"Controls","inputs":{"prompt":"Own prompt","seconds":5.0,"seed":7}},
+              "115":{"class_type":"Selector","inputs":{names[0]:"1:1",names[1]:0.4,names[2]:32}},
+              "92":{"class_type":"SaveVideo","inputs":{"filename_prefix":"NodeCraft"}}
+            }))
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+        let fields = crate::discover(&w, &c).unwrap();
+        let promoted = [("prompt", "prompt"), ("value_1", "seconds"), ("noise_seed", "seed")].map(|(name, input)| PromotedInput {
+            instance: "105".into(),
+            name: name.into(),
+            label: name.into(),
+            kind: String::new(),
+            targets: vec![("10".into(), input.into())],
+        });
+        let mut selected = fields.clone();
+        assert!(curate_template(Some("video_minimax_h3_i2v"), &promoted, &mut selected).unwrap());
+        let size = selected.inputs.iter().filter(|i| i.node == "115").collect::<Vec<_>>();
+        assert_eq!(size.len(), 2);
+        assert!(size[0].label.ends_with(names[0]) && size[1].label.ends_with(names[1]));
+        assert_eq!(size[1].current, Some(serde_json::json!(0.4)));
+        let mut shifted = fields.clone();
+        shifted.inputs.retain(|i| !(i.node == "115" && i.input == names[2]));
+        let before = shifted.clone();
+        assert!(!curate_template(Some("video_minimax_h3_i2v"), &promoted, &mut shifted).unwrap());
+        assert_eq!(shifted, before);
+        let mut wrong_kind = fields;
+        wrong_kind.inputs.iter_mut().find(|i| i.node == "115" && i.input == names[1]).unwrap().kind = ExposedKind::Bool;
+        let before = wrong_kind.clone();
+        assert!(!curate_template(Some("video_minimax_h3_i2v"), &promoted, &mut wrong_kind).unwrap());
+        assert_eq!(wrong_kind, before);
     }
 }

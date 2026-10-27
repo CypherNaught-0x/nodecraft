@@ -31,8 +31,12 @@ struct Field {
     instance: Option<String>,
     #[serde(default)]
     node: Option<String>,
-    input: String,
-    label: String,
+    #[serde(default)]
+    input: Option<String>,
+    #[serde(default)]
+    widget: Option<usize>,
+    #[serde(default)]
+    label: Option<String>,
     kind: Kind,
 }
 #[derive(Deserialize)]
@@ -91,8 +95,10 @@ fn manifest() -> Result<&'static Manifest, ComfyError> {
             let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
             for field in &profile.fields {
                 if field.instance.is_some() == field.node.is_some()
-                    || !bounded(&field.input)
-                    || !bounded(&field.label)
+                    || field.input.is_some() == field.widget.is_some()
+                    || field.input.as_deref().is_some_and(|i| !bounded(i))
+                    || field.label.as_deref().is_some_and(|label| !bounded(label))
+                    || field.widget.is_some_and(|slot| field.node.as_deref().and_then(|node| widget_count(profile, node)).is_none_or(|count| slot >= count))
                     || !bounded(field.instance.as_deref().or(field.node.as_deref()).unwrap_or_default())
                 {
                     return Err(invalid());
@@ -202,6 +208,53 @@ pub(crate) fn matching(root: &Value) -> Result<Option<&'static str>, ComfyError>
     Ok(candidates.into_iter().find(|p| p.shape == actual).map(|p| p.id.as_str()))
 }
 
+/// Ordinal selectors are limited to root nodes with no UI input sockets and the pinned widget
+/// count. This avoids guessing server parameter names for selector nodes; linked fields or a
+/// changed descriptor count must not shift the ordinal onto a different control.
+fn widget_count(profile: &Profile, node: &str) -> Option<usize> {
+    let source = profile.shape.get("root")?.get("nodes")?.as_array()?.iter().find(|n| match n.get("id") {
+        Some(Value::Number(id)) => id.to_string() == node,
+        Some(Value::String(id)) => id == node,
+        _ => false,
+    })?;
+    if !source.get("inputs")?.as_array()?.is_empty() {
+        return None;
+    }
+    source.get("widget_count")?.as_u64().and_then(|c| usize::try_from(c).ok()).filter(|c| *c > 0 && *c <= 256)
+}
+
+fn locate_field(profile: &Profile, field: &Field, promoted: &[PromotedInput], exposed: &Exposed) -> Option<usize> {
+    if let Some(slot) = field.widget {
+        let node = field.node.as_deref()?;
+        let expected = widget_count(profile, node)?;
+        let mut found = None;
+        let mut count = 0usize;
+        for (index, input) in exposed.inputs.iter().enumerate().filter(|(_, i)| i.node == node) {
+            if count == slot {
+                found = Some((index, input));
+            }
+            count = count.saturating_add(1);
+            if count > expected {
+                return None;
+            }
+        }
+        if count != expected {
+            return None;
+        }
+        let (index, input) = found?;
+        return field.kind.accepts(&input.kind).then_some(index);
+    }
+    let input = field.input.as_deref()?;
+    let target = if let Some(instance) = &field.instance {
+        let promoted = promoted.iter().find(|p| p.instance == *instance && p.name == input)?;
+        let [target] = promoted.targets.as_slice() else { return None };
+        (target.0.as_str(), target.1.as_str())
+    } else {
+        (field.node.as_deref()?, input)
+    };
+    exposed.inputs.iter().position(|i| i.node == target.0 && i.input == target.1 && field.kind.accepts(&i.kind))
+}
+
 /// Apply a matched template's choices atomically. If server metadata differs, return false and
 /// leave discovery intact. Paid-node evidence and every discovered upload remain available.
 pub fn curate_template(id: Option<&str>, promoted: &[PromotedInput], exposed: &mut Exposed) -> Result<bool, ComfyError> {
@@ -209,20 +262,11 @@ pub fn curate_template(id: Option<&str>, promoted: &[PromotedInput], exposed: &m
     let Some(profile) = manifest()?.profiles.iter().find(|p| p.id == id) else { return Ok(false) };
     let mut wanted = Vec::new();
     for field in &profile.fields {
-        let target = if let Some(instance) = &field.instance {
-            let Some(promoted) = promoted.iter().find(|p| p.instance == *instance && p.name == field.input) else { return Ok(false) };
-            let [target] = promoted.targets.as_slice() else { return Ok(false) };
-            (target.0.as_str(), target.1.as_str())
-        } else {
-            (field.node.as_deref().unwrap_or_default(), field.input.as_str())
-        };
-        let Some(index) = exposed.inputs.iter().position(|i| i.node == target.0 && i.input == target.1 && field.kind.accepts(&i.kind)) else {
-            return Ok(false);
-        };
+        let Some(index) = locate_field(profile, field, promoted, exposed) else { return Ok(false) };
         if wanted.iter().any(|(i, _)| *i == index) {
             return Ok(false);
         }
-        wanted.push((index, field.label.as_str()));
+        wanted.push((index, field.label.as_deref().unwrap_or_else(|| exposed.inputs.get(index).map(|i| i.label.as_str()).unwrap_or_default())));
     }
     // Never lose a file upload simply because a server adds another optional loader input.
     for (index, input) in exposed.inputs.iter().enumerate() {

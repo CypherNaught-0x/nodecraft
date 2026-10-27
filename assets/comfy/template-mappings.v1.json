@@ -1411,9 +1411,13 @@
         },
         {
           "node": "115",
-          "input": "resolution",
-          "label": "Resolution",
+          "widget": 0,
           "kind": "choice"
+        },
+        {
+          "node": "115",
+          "widget": 1,
+          "kind": "float"
         }
       ],
       "outputs": [
@@ -4795,9 +4799,13 @@
         },
         {
           "node": "115",
-          "input": "resolution",
-          "label": "Resolution",
+          "widget": 0,
           "kind": "choice"
+        },
+        {
+          "node": "115",
+          "widget": 1,
+          "kind": "float"
         }
       ],
       "outputs": [

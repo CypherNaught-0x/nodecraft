@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde_json::{Map, Value};
 
 use crate::ComfyError;
-use crate::object_info::{InputKind, NodeCatalog};
+use crate::object_info::{InputKind, InputSpec, NodeCatalog, NodeInfo};
+mod primitive;
 mod subgraphs;
 
 /// Cap on a workflow file.
@@ -91,6 +92,33 @@ pub(crate) fn id_order(a: &str, b: &str) -> std::cmp::Ordering {
         (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
         (Err(_), Err(_)) => a.cmp(b),
     }
+}
+
+fn checked_inputs<'a>(info: &'a NodeInfo, node: &'a ApiNode) -> impl Iterator<Item = (&'a str, Result<&'a InputSpec, &'static str>)> {
+    let ordinary = info.inputs.iter().map(|spec| (spec.name.as_str(), Ok(spec)));
+    let ordinary_names: HashSet<&str> = if info.dynamic_inputs.is_empty() { HashSet::new() } else { info.inputs.iter().map(|i| i.name.as_str()).collect() };
+    // Large schemas must not scan every ordinary spec for each dynamic port. Ordinary-only
+    // classes avoid both the temporary set and the extra iteration entirely.
+    let dynamic = (!info.dynamic_inputs.is_empty())
+        .then_some(node.inputs.keys())
+        .into_iter()
+        .flatten()
+        .filter(move |name| !ordinary_names.contains(name.as_str()))
+        .filter_map(move |name| match info.dynamic_input(name) {
+            Ok(None) => None,
+            Ok(Some(spec)) => Some((name.as_str(), Ok(spec))),
+            Err(message) => Some((name.as_str(), Err(message))),
+        });
+    ordinary.chain(dynamic)
+}
+
+/// Report context comes from files and server schemas; bound it before cloning or formatting.
+fn report_name(text: &str) -> &str {
+    let mut end = text.len().min(128);
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    text.get(..end).unwrap_or_default()
 }
 
 impl ApiWorkflow {
@@ -238,13 +266,14 @@ impl ApiWorkflow {
             self.validate_budget(&mut budget, 0)?;
             for (id, node) in &self.nodes {
                 let Some(info) = catalog.get(&node.class_type) else { continue };
-                budget.container(info.inputs.len(), 0)?;
-                for spec in &info.inputs {
+                budget.container(info.inputs.len().saturating_add(node.inputs.len()), 0)?;
+                for (name, spec) in checked_inputs(info, node) {
                     // Every input can produce a report row with copied context.
                     budget.text(id, 1)?;
-                    budget.text(&spec.name, 1)?;
+                    budget.text(name, 1)?;
                     budget.bytes(256)?;
-                    if let Some(InputValue::Link { node: from, output }) = node.inputs.get(&spec.name) {
+                    let Ok(spec) = spec else { continue };
+                    if let Some(InputValue::Link { node: from, output }) = node.inputs.get(name) {
                         if let Some(kind) = self.nodes.get(from).and_then(|src| catalog.get(&src.class_type)).and_then(|src| src.outputs.get(*output as usize))
                         {
                             budget.text(&kind.kind, 1)?;
@@ -270,24 +299,32 @@ impl ApiWorkflow {
                 }
                 continue;
             };
-            let mut problem = |input: &str, message: String| report.problems.push(InputProblem { node: id.into(), input: input.into(), message });
-            for spec in &info.inputs {
-                match node.inputs.get(&spec.name) {
-                    None if spec.required => problem(&spec.name, "required input is not set".into()),
+            let mut problem =
+                |input: &str, message: String| report.problems.push(InputProblem { node: report_name(id).into(), input: report_name(input).into(), message });
+            for (name, spec) in checked_inputs(info, node) {
+                let spec = match spec {
+                    Ok(spec) => spec,
+                    Err(message) => {
+                        problem(name, message.into());
+                        continue;
+                    }
+                };
+                match node.inputs.get(name) {
+                    None if spec.required => problem(name, "required input is not set".into()),
                     None => {}
                     Some(InputValue::Value(v)) => {
                         if let Err(m) = spec.check(v) {
-                            problem(&spec.name, m);
+                            problem(name, m);
                         }
                     }
                     Some(InputValue::Link { node: from, output }) => match self.nodes.get(from) {
-                        None => problem(&spec.name, format!("connected to node {from}, which is not in the workflow")),
+                        None => problem(name, format!("connected to node {}, which is not in the workflow", report_name(from))),
                         Some(src) => {
                             let out = catalog.get(&src.class_type).map(|i| i.outputs.get(*output as usize).map(|o| o.kind.clone()));
                             match (out, &spec.kind) {
-                                (Some(None), _) => problem(&spec.name, format!("node {from} has no output {output}")),
+                                (Some(None), _) => problem(name, format!("node {} has no output {output}", report_name(from))),
                                 (Some(Some(kind)), InputKind::Link(want)) if !types_match(&kind, want) => {
-                                    problem(&spec.name, format!("expects {want} but is connected to {kind}"));
+                                    problem(name, format!("expects {} but is connected to {}", report_name(want), report_name(&kind)));
                                 }
                                 _ => {}
                             }
@@ -390,7 +427,7 @@ enum Source<'a> {
         output: u32,
     },
     /// A value from a PrimitiveNode, with its own "control after generate" mode.
-    Value(&'a Value, Option<String>),
+    Value(&'a str, &'a Value, Option<String>),
 }
 
 /// ComfyUI writes ids as numbers; newer files may use strings.
@@ -524,7 +561,7 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
             } else if origin.class == "PrimitiveNode" {
                 let widgets = origin.widgets.as_array()?;
                 let mode = widgets.get(1).and_then(Value::as_str).filter(|s| SEED_CONTROLS.contains(s)).map(str::to_owned);
-                return widgets.first().map(|v| Source::Value(v, mode));
+                return widgets.first().map(|v| Source::Value(origin.id.as_str(), v, mode));
             } else if origin.mode == MODE_MUTED {
                 return None;
             } else if origin.mode == MODE_BYPASS {
@@ -550,7 +587,7 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
     ids.sort_by(|a, b| id_order(a, b));
     for id in ids {
         let Some(node) = nodes.get(id) else { continue };
-        if node.mode == MODE_MUTED || node.mode == MODE_BYPASS || matches!(node.class.as_str(), "SetNode" | "GetNode") {
+        if node.mode == MODE_MUTED || node.mode == MODE_BYPASS || FRONTEND_ONLY.contains(&node.class.as_str()) {
             continue;
         }
         if placeholder(id) {
@@ -599,10 +636,7 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
                 skip_upload_marker(values, &mut consumed);
             }
             let linked = node.inputs.iter().find(|i| i.name == spec.name).and_then(|i| i.link).and_then(resolve);
-            if matches!(&spec.kind, InputKind::Link(kind) if kind=="COMFY_DYNAMICCOMBO_V3")
-                && linked.is_none()
-                && node.widgets.as_object().is_some_and(|widgets| widgets.contains_key(&spec.name))
-            {
+            if matches!(&spec.kind, InputKind::Link(kind) if matches!(kind.as_str(), "COMFY_DYNAMICCOMBO_V3" | "COMFY_AUTOGROW_V3")) {
                 return Err(ComfyError::InvalidWorkflow("dynamic widgets are not supported in UI workflow imports".into()));
             }
             let mut widget_value = None;
@@ -644,7 +678,13 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
                     output_budget.text(node, 4)?;
                     (Some(InputValue::Link { node: node.into(), output }), None)
                 }
-                Some(Source::Value(v, mode)) => {
+                Some(Source::Value(source, _, mode)) if !spec.is_widget() => {
+                    let source = nodes.get(source).ok_or_else(|| ComfyError::InvalidWorkflow("a frontend primitive source is missing".into()))?;
+                    let InputKind::Link(wanted) = &spec.kind else { return Err(ComfyError::InvalidWorkflow("a connection has no server type".into())) };
+                    let id = primitive::materialize(catalog, &mut conversion, &mut output_budget, source, wanted, mode.as_deref())?;
+                    (Some(InputValue::Link { node: id, output: 0 }), None)
+                }
+                Some(Source::Value(_, v, mode)) => {
                     output_budget.value(v, 3)?;
                     (Some(InputValue::Value(v.clone())), mode)
                 }
@@ -675,9 +715,6 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
         if let Some(saved) = saved
             && saved.len() != consumed
         {
-            if info.inputs.iter().any(|spec| matches!(&spec.kind,InputKind::Link(kind) if kind=="COMFY_DYNAMICCOMBO_V3")) {
-                return Err(ComfyError::InvalidWorkflow("dynamic widgets are not supported in UI workflow imports".into()));
-            }
             conversion.warnings.push(format!(
                 "node {id} ({}): {} saved widget values but {consumed} matched the server's inputs; check its settings",
                 node.class,
@@ -686,13 +723,29 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
         }
         // Dynamic inputs some custom nodes add at runtime aren't in /object_info; keep their links.
         for input in &node.inputs {
-            if !inputs.contains_key(&input.name)
-                && info.input(&input.name).is_none()
-                && let Some(Source::Link { node, output }) = input.link.and_then(resolve)
-            {
+            if !inputs.contains_key(&input.name) && info.input(&input.name).is_none() {
+                let Some(source) = input.link.and_then(resolve) else { continue };
                 output_budget.key(&input.name, 3)?;
-                output_budget.text(node, 4)?;
-                inputs.insert(input.name.clone(), InputValue::Link { node: node.into(), output });
+                let (source, output) = match source {
+                    Source::Link { node, output } => {
+                        output_budget.text(node, 4)?;
+                        (node.to_owned(), output)
+                    }
+                    Source::Value(source, _, mode) => {
+                        let wanted = info
+                            .dynamic_input(&input.name)
+                            .ok()
+                            .flatten()
+                            .and_then(|s| match &s.kind {
+                                InputKind::Link(kind) => Some(kind.as_str()),
+                                _ => None,
+                            })
+                            .ok_or_else(|| ComfyError::InvalidWorkflow("an untyped dynamic input cannot import a frontend primitive".into()))?;
+                        let source = nodes.get(source).ok_or_else(|| ComfyError::InvalidWorkflow("a frontend primitive source is missing".into()))?;
+                        (primitive::materialize(catalog, &mut conversion, &mut output_budget, source, wanted, mode.as_deref())?, 0)
+                    }
+                };
+                inputs.insert(input.name.clone(), InputValue::Link { node: source, output });
             }
         }
         conversion.workflow.nodes.insert(node.id.clone(), ApiNode { class_type: node.class.clone(), inputs, title: node.title.clone() });
