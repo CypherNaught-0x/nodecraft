@@ -1744,8 +1744,9 @@ not a new native `generateContent` or Interactions dialect; #489 remains a separ
 
 Issue #31 uses the existing `fal` provider and its stored fal key. Enable the existing fal
 runtime; pick **Grok Imagine Image 2.0**, **Image 2.0 edit**, **Video 1.5**, or **Video 1.5
-frame**. A direct xAI key is not a fal credential. Desktop and browser builds use the same
-adapter; browser deployments retain the existing provider proxy/CORS requirements.
+frame**. A direct xAI key is not a fal credential. The catalog and adapter build for WebAssembly,
+but the builtin browser HTTP transport refuses no-redirect requests before fetch. These models
+need the native fal runtime or an audited host transport that provides that guarantee.
 
 Contracts and prices checked **2026-10-27** against the official
 [image schema](https://fal.ai/models/xai/grok-imagine-image/v2.0/text-to-image/api),
