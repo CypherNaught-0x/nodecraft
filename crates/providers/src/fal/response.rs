@@ -42,9 +42,11 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         return Err(malformed("fal result contains an error instead of a complete output"));
     }
     let name = match r.model {
-        Model::Image | Model::Styled | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => "images",
+        Model::Image | Model::Styled | Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => "images",
         Model::Train => "diffusers_lora_file",
-        Model::GrokText
+        Model::Wan3Text
+        | Model::Wan3Frames
+        | Model::GrokText
         | Model::GrokFrames
         | Model::Video
         | Model::Frames
@@ -126,8 +128,12 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         }
         let allowed: &[&str] = match r.model {
             Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => &["image/png"],
-            Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => &["image/png", "image/jpeg", "image/webp"],
-            Model::GrokText
+            Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => {
+                &["image/png", "image/jpeg", "image/webp"]
+            }
+            Model::Wan3Text
+            | Model::Wan3Frames
+            | Model::GrokText
             | Model::GrokFrames
             | Model::Video
             | Model::Frames

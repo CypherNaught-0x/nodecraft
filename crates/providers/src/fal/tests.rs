@@ -417,7 +417,7 @@ fn reported_terminal_failure_and_best_effort_cancel_are_distinct() {
     let JobProgress::Failed(e) = block_on(f.poll(&handle(WAN))).unwrap() else { panic!() };
     assert_eq!(e.kind, ErrorKind::JobFailed);
     assert!(!e.to_string().contains("private"));
-    for (code, disposition) in [(202, "CANCELLATION_REQUESTED"), (400, "ALREADY_COMPLETED"), (404, "NOT_FOUND")] {
+    for (code, disposition) in [(200, "OK"), (202, "CANCELLATION_REQUESTED"), (400, "ALREADY_COMPLETED"), (404, "NOT_FOUND")] {
         let t = Transport::new(vec![HttpResponse { status: code, headers: vec![], body: serde_json::to_vec(&json!({"status":disposition})).unwrap() }]);
         let f = Fal::new(key(), t.clone());
         assert!(block_on(f.cancel(&handle(WAN))).is_ok());
@@ -587,6 +587,7 @@ fn api_and_download_accept_spare_capacity_but_never_excess_length() {
 #[test]
 fn identity_only_receipts_cleanup_local_routes_and_report_actual_outcome() {
     for (cancel_status, cancel_body, outcome) in [
+        (200, json!({"status":"OK"}), "cancelled_queued"),
         (202, json!({"status":"CANCELLATION_REQUESTED"}), "cancellation_requested"),
         (400, json!({"status":"ALREADY_COMPLETED"}), "already_completed"),
         (404, json!({"status":"NOT_FOUND"}), "not_found"),
@@ -637,6 +638,8 @@ fn cancellation_refuses_malformed_or_contradictory_status_and_preserves_http_err
         (404, json!({"status":"ALREADY_COMPLETED"})),
         (202, json!({"status":"CANCELLATION_REQUESTED","error":"private"})),
         (200, json!({"status":"CANCELLATION_REQUESTED"})),
+        (202, json!({"status":"OK"})),
+        (200, json!({"status":"OK","error":"private"})),
     ] {
         let t = Transport::new(vec![HttpResponse { status: code, headers: vec![], body: serde_json::to_vec(&body).unwrap() }]);
         assert_eq!(block_on(Fal::new(key(), t).cancel(&handle(FLUX))).unwrap_err().kind, ErrorKind::Malformed);

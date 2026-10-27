@@ -385,3 +385,7 @@ mod grok31_tests;
 mod hunyuan42_tests;
 #[cfg(test)]
 mod stability36_tests;
+
+
+#[cfg(test)]
+mod alibaba32_tests;

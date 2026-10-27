@@ -186,3 +186,6 @@ mod grok31;
 
 #[path = "hunyuan42.rs"]
 mod hunyuan42;
+
+#[path = "alibaba32.rs"]
+mod alibaba32;

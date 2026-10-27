@@ -1,6 +1,8 @@
 //! Bounded fal queue adapter for explicitly selected live model aliases.
 //! No remote deduplication guarantee; accepted handles resume, ambiguous creates never replay.
 #[cfg(test)]
+mod alibaba_tests;
+#[cfg(test)]
 mod grok_tests;
 #[cfg(test)]
 mod hunyuan_tests;
@@ -35,6 +37,11 @@ pub const GROK_IMAGE: &str = "xai/grok-imagine-image/v2.0/text-to-image";
 pub const GROK_EDIT: &str = "xai/grok-imagine-image/v2.0/edit";
 pub const GROK_VIDEO: &str = "xai/grok-imagine-video/v1.5/text-to-video";
 pub const GROK_I2V: &str = "xai/grok-imagine-video/v1.5/image-to-video";
+/// Alibaba Qwen-Image 3 and Wan 3.0 through fal (#32).
+pub const QWEN_IMAGE: &str = "alibaba/qwen-image-3/text-to-image";
+pub const QWEN_EDIT: &str = "alibaba/qwen-image-3/edit";
+pub const WAN3_VIDEO: &str = "alibaba/wan-3.0/text-to-video";
+pub const WAN3_I2V: &str = "alibaba/wan-3.0/image-to-video";
 /// Hunyuan3D V3 through the same fal queue (#42).
 pub const HUNYUAN_TEXT: &str = "fal-ai/hunyuan3d-v3/text-to-3d";
 pub const HUNYUAN_IMAGE: &str = "fal-ai/hunyuan3d-v3/image-to-3d";
@@ -123,6 +130,10 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Model {
+    QwenImage,
+    QwenEdit,
+    Wan3Text,
+    Wan3Frames,
     HunyuanText,
     HunyuanImage,
     HunyuanSketch,
@@ -154,6 +165,10 @@ enum Model {
 impl Model {
     fn read(s: &str) -> Result<Self, ProviderError> {
         match s {
+            QWEN_IMAGE => Ok(Self::QwenImage),
+            QWEN_EDIT => Ok(Self::QwenEdit),
+            WAN3_VIDEO => Ok(Self::Wan3Text),
+            WAN3_I2V => Ok(Self::Wan3Frames),
             HUNYUAN_TEXT => Ok(Self::HunyuanText),
             HUNYUAN_IMAGE => Ok(Self::HunyuanImage),
             HUNYUAN_SKETCH => Ok(Self::HunyuanSketch),
@@ -182,6 +197,10 @@ impl Model {
     }
     fn wire(self) -> &'static str {
         match self {
+            Self::QwenImage => QWEN_IMAGE,
+            Self::QwenEdit => QWEN_EDIT,
+            Self::Wan3Text => WAN3_VIDEO,
+            Self::Wan3Frames => WAN3_I2V,
             Self::HunyuanText => HUNYUAN_TEXT,
             Self::HunyuanImage => HUNYUAN_IMAGE,
             Self::HunyuanSketch => HUNYUAN_SKETCH,
@@ -211,8 +230,21 @@ impl Model {
     fn video(self) -> bool {
         matches!(
             self,
-            Self::GrokText | Self::GrokFrames | Self::Video | Self::Frames | Self::Speech | Self::RayText | Self::RayFrames | Self::LtxText | Self::LtxFrames
+            Self::Wan3Text
+                | Self::Wan3Frames
+                | Self::GrokText
+                | Self::GrokFrames
+                | Self::Video
+                | Self::Frames
+                | Self::Speech
+                | Self::RayText
+                | Self::RayFrames
+                | Self::LtxText
+                | Self::LtxFrames
         )
+    }
+    fn alibaba(self) -> bool {
+        matches!(self, Self::QwenImage | Self::QwenEdit | Self::Wan3Text | Self::Wan3Frames)
     }
     fn grok(self) -> bool {
         matches!(self, Self::GrokImage | Self::GrokEdit | Self::GrokText | Self::GrokFrames)
@@ -222,6 +254,8 @@ impl Model {
     }
     fn root(self) -> &'static str {
         match self {
+            Self::QwenImage | Self::QwenEdit => "alibaba/qwen-image-3",
+            Self::Wan3Text | Self::Wan3Frames => "alibaba/wan-3.0",
             Self::HunyuanText | Self::HunyuanImage | Self::HunyuanSketch => "fal-ai/hunyuan3d-v3",
             Self::GrokImage | Self::GrokEdit => "xai/grok-imagine-image",
             Self::GrokText | Self::GrokFrames => "xai/grok-imagine-video",
@@ -241,7 +275,7 @@ impl Model {
     }
     /// Whether fal lists this model's images under `images`.
     fn images(self) -> bool {
-        matches!(self, Self::GrokImage | Self::GrokEdit | Self::Image | Self::Styled | Self::Photon | Self::Ideogram)
+        matches!(self, Self::QwenImage | Self::QwenEdit | Self::GrokImage | Self::GrokEdit | Self::Image | Self::Styled | Self::Photon | Self::Ideogram)
     }
 }
 #[derive(Clone, Copy)]
@@ -313,6 +347,8 @@ impl Record {
         };
         if !(1..=if matches!(model, Model::GrokImage | Model::GrokEdit) {
             10
+        } else if matches!(model, Model::QwenImage | Model::QwenEdit) {
+            6
         } else if matches!(model, Model::Image | Model::Styled) {
             4
         } else {
@@ -342,6 +378,7 @@ impl Record {
 }
 #[derive(Debug, PartialEq, Eq)]
 enum CancelDisposition {
+    CancelledQueued,
     Requested,
     AlreadyCompleted,
     NotFound,
@@ -349,6 +386,7 @@ enum CancelDisposition {
 impl CancelDisposition {
     fn label(&self) -> &'static str {
         match self {
+            Self::CancelledQueued => "cancelled_queued",
             Self::Requested => "cancellation_requested",
             Self::AlreadyCompleted => "already_completed",
             Self::NotFound => "not_found",
@@ -380,7 +418,7 @@ impl Fal {
             .await
             .map_err(transport)?;
         response_bounds(&r, self.limits.response_bytes)?;
-        if !matches!(r.status, 202 | 400 | 404) {
+        if !matches!(r.status, 200 | 202 | 400 | 404) {
             status(&r, self.limits.response_bytes)?;
             return Err(malformed("fal unexpected cancellation HTTP status"));
         }
@@ -389,6 +427,7 @@ impl Fal {
             return Err(malformed("fal contradictory cancellation response"));
         }
         match (r.status, body.text("status")?.as_ref()) {
+            (200, "OK") => Ok(CancelDisposition::CancelledQueued),
             (202, "CANCELLATION_REQUESTED") => Ok(CancelDisposition::Requested),
             (400, "ALREADY_COMPLETED") => Ok(CancelDisposition::AlreadyCompleted),
             (404, "NOT_FOUND") => Ok(CancelDisposition::NotFound),

@@ -253,11 +253,21 @@ fn glb(b: &[u8], l: Limits) -> Result<(), ProviderError> {
 }
 pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Result<&'static str, ProviderError> {
     match r.model {
-        Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => {
+        Model::Image
+        | Model::Styled
+        | Model::Upscale
+        | Model::RemoveBackground
+        | Model::QwenImage
+        | Model::QwenEdit
+        | Model::GrokImage
+        | Model::GrokEdit
+        | Model::Photon
+        | Model::Ideogram => {
             let m = nodecraft_media::probe_image(b, &l.image(false)).map_err(|_| bad())?;
             if m.mime == "image/png" {
                 png_extent(b)?;
-            } else if !matches!(r.model, Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram) || !matches!(m.mime, "image/jpeg" | "image/webp")
+            } else if !matches!(r.model, Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram)
+                || !matches!(m.mime, "image/jpeg" | "image/webp")
             {
                 return Err(bad());
             }
@@ -271,7 +281,9 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             drop(decoded);
             Ok(m.mime)
         }
-        Model::GrokText
+        Model::Wan3Text
+        | Model::Wan3Frames
+        | Model::GrokText
         | Model::GrokFrames
         | Model::Video
         | Model::Frames
