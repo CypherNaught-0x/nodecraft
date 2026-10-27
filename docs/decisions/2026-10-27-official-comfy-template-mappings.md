@@ -44,6 +44,12 @@ every reachable required input still must validate. Traversal uses bounded parse
 dotted DynamicCombo/Autogrow references, and never guesses references inside literal arrays.
 The imported stored workflow remains intact for later mapping edits; generic workflow checks
 without explicit result selection remain strict.
+The card may still carry parameters/files for the discarded branches. The provider ignores
+only declared, valid scalar targets and declared upload roles on node IDs actually removed
+from the admitted original workflow, before
+applying overrides or inspecting/uploading media. Unknown original targets, retained targets and
+required ancestors still undergo the normal checks. This preserves saved mappings without
+letting unused uploads block or leak into a selected request.
 
 Connection-only V3 Autogrow groups retain one bounded template in the catalog; validation
 checks the provided dotted ports without allocating one descriptor per possible socket.

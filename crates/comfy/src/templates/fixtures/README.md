@@ -75,6 +75,12 @@ Card request checks select the mapped outputs and their complete upstream depend
 just as the provider does. Disconnected sizing helpers and unselected custom comparison savers
 are not scheduled. Missing or invalid required ancestors still fail before uploads or prompt
 submission. The stored imported workflow remains intact for subsequent mapping edits.
+An engine-generated job can still carry saved parameters and wired files for a removed branch.
+The provider skips only valid declared targets on nodes actually pruned from that original card;
+unknown targets and all
+retained values/uploads still validate. An import/plan/provider regression covers an unused
+prompt and image loader, verifies zero unused uploads, and refuses unknown or invalid required
+targets before prompt submission.
 
 The same pinned LTX source explicitly names a trailing legacy SaveVideo `codec` widget
 alongside `format.codec`. It is not projected as a current server input. Compatibility omits

@@ -5,6 +5,7 @@ use nodecraft_types::ProjectId;
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
 const CARD: NodeId = NodeId::from_bytes([5; 16]);
+mod selection948;
 
 #[test]
 fn templates948_all_documented_projections_import_save_and_build_checked_selected_requests() {
