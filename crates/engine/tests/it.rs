@@ -81,6 +81,8 @@ mod layers101;
 mod layout;
 #[path = "lazy_assets147.rs"]
 mod lazy_assets147;
+#[path = "ltx30.rs"]
+mod ltx30;
 #[path = "mask_edit102.rs"]
 mod mask_edit102;
 #[path = "media_fanout519.rs"]

@@ -44,7 +44,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
     let name = match r.model {
         Model::Image | Model::Styled | Model::Photon | Model::Ideogram => "images",
         Model::Train => "diffusers_lora_file",
-        Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames => "video",
+        Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames => "video",
         Model::Audio => "audio",
         Model::Mesh => "model_glb",
         Model::Upscale | Model::RemoveBackground => "image",
@@ -119,7 +119,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         let allowed: &[&str] = match r.model {
             Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => &["image/png"],
             Model::Photon | Model::Ideogram => &["image/png", "image/jpeg", "image/webp"],
-            Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames => &["video/mp4"],
+            Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames => &["video/mp4"],
             Model::Audio => &["audio/wav"],
             Model::Mesh => &["model/gltf-binary"],
             Model::Train => return Err(malformed("fal trained weights are never downloaded")),

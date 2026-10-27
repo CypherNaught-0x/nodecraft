@@ -60,6 +60,8 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `fal.flux-schnell` | [Documentation](https://fal.ai/models/fal-ai/flux/schnell) | 2026-10-27 |
 | `fal.ideogram-v3` | [Documentation](https://fal.ai/models/fal-ai/ideogram/v3) | 2026-10-27 |
 | `fal.kokoro` | [Documentation](https://fal.ai/models/fal-ai/kokoro/american-english) | 2026-10-27 |
+| `fal.ltx23` | [Documentation](https://fal.ai/models/fal-ai/ltx-2.3/text-to-video/api) | 2026-10-27 |
+| `fal.ltx23-i2v` | [Documentation](https://fal.ai/models/fal-ai/ltx-2.3/image-to-video/api) | 2026-10-27 |
 | `fal.luma-photon` | [Documentation](https://fal.ai/models/fal-ai/luma-photon) | 2026-10-27 |
 | `fal.luma-ray32` | [Documentation](https://fal.ai/models/luma/agent/ray/v3.2/text-to-video) | 2026-10-27 |
 | `fal.luma-ray32-i2v` | [Documentation](https://fal.ai/models/luma/agent/ray/v3.2/image-to-video/api) | 2026-10-27 |

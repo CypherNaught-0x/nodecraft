@@ -359,6 +359,8 @@ mod bfl33_tests;
 mod catalog963_tests;
 #[cfg(test)]
 mod ideogram34_tests;
+#[cfg(test)]
+mod ltx30_tests;
 
 #[cfg(test)]
 mod huggingface48_tests;
