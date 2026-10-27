@@ -200,13 +200,14 @@ impl Expansion<'_> {
                 let node = self.conversion.workflow.nodes.get(&id).ok_or_else(|| invalid("a subgraph proxy refers to a missing node"))?;
                 let info = self.catalog.get(&node.class_type).ok_or_else(|| invalid("a subgraph proxy has no server description"))?;
                 if name == "control_after_generate" {
-                    let mut candidates = info.inputs.iter().filter(|s| s.control_after_generate || matches!(s.name.as_str(), "seed" | "noise_seed"));
+                    let mut candidates =
+                        info.effective_inputs(node).into_iter().filter(|s| s.control_after_generate || matches!(s.name.as_str(), "seed" | "noise_seed"));
                     let spec =
                         candidates.next().filter(|_| candidates.next().is_none()).ok_or_else(|| invalid("a subgraph seed-control target is ambiguous"))?;
                     let mode = value.as_str().filter(|s| SEED_CONTROLS.contains(s)).ok_or_else(|| invalid("a saved subgraph seed control is invalid"))?;
                     self.modes.insert((id, spec.name.clone()), mode.into());
                 } else {
-                    if !info.input(name).is_some_and(|s| s.is_widget()) {
+                    if !info.effective_input(name, node).is_some_and(|s| s.is_widget()) {
                         return Err(invalid("a subgraph proxy is not a server widget"));
                     }
                     self.budget.value(value, 0)?;

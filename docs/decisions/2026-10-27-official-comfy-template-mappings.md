@@ -24,9 +24,26 @@ Expansion is bounded by depth, node count, link hops and the shared JSON allocat
 
 A shared scalar interface must remain one editable control. Compatible free server Primitive
 nodes preserve that fanout; missing or paid substitutes are refused. Different unprovided
-defaults remain distinct. New V3 dynamic widget groups need protocol-aware conversion and
-submission checks before they can be marked supported; positional mismatches must never shift
-a model option into the next seed or other input.
+defaults remain distinct. DynamicCombo descriptors compile bounded option trees, preserving
+nested child order from the descriptor. The selected literal option inserts its active widgets
+into conversion at that position. Child request names use dotted paths, as demonstrated by the
+[public API reproduction](https://github.com/Comfy-Org/ComfyUI_frontend/issues/20068). Active
+children retain their own types, choices and bounds; inactive or unknown paths are refused.
+Positional mismatches never shift a model option into the next seed or other input. Unsupported
+schemas stay unsupported rather than being partially compiled.
+
+Some pinned UI exports contain one obsolete trailing widget and an explicit named-widget map.
+That suffix may be omitted only when the named map matches every active typed widget and value
+exactly, with exactly one undeclared scalar matching that trailing positional value. It cannot
+replace active values, links or seed modes. Stale/conflicting names, additional widgets or an
+unproven positional mapping keep the API-export refusal. This does not invent a server input.
+
+Explicit card output selection retains the complete upstream dependency closure before request
+validation. Disconnected helpers and unselected custom/paid output branches are not scheduled;
+every reachable required input still must validate. Traversal uses bounded parsed links, including
+dotted DynamicCombo/Autogrow references, and never guesses references inside literal arrays.
+The imported stored workflow remains intact for later mapping edits; generic workflow checks
+without explicit result selection remain strict.
 
 Connection-only V3 Autogrow groups retain one bounded template in the catalog; validation
 checks the provided dotted ports without allocating one descriptor per possible socket.
@@ -41,3 +58,10 @@ original synthetic text; the source Git blob ids and deterministic structural au
 provenance. Tests exercise the same conversion and import commands with recorded descriptor
 facts and clearly separated original mock catalogs. Import success alone does not establish
 that a template can be submitted; mapped templates also need request-validation coverage.
+
+Offline evidence is layered: 42 observed descriptor fact classes, 13 separately synthetic core
+classes, and 20 current-documentation projections. The pinned resize selector subset is separate
+because current documentation spelling differs from the saved MIT graph. All ten profiles pass
+conversion, selection, bounded selected-request checks and command import/save-reopen under this
+explicit projection; that is not an exact installed-server contract or live acceptance proof.
+Live-instance validation remains the user's hard merge blocker.

@@ -152,7 +152,7 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Result<Exposed
             budget.text(id, 1)?;
             budget.text(&node.class_type, 1)?;
         }
-        for spec in info.inputs.iter().filter(|spec| spec.is_widget()) {
+        for spec in info.effective_inputs(node).into_iter().filter(|spec| spec.is_widget()) {
             if matches!(node.inputs.get(&spec.name), Some(InputValue::Link { .. })) {
                 continue;
             }
@@ -203,7 +203,7 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Result<Exposed
                 preview: node.class_type.to_ascii_lowercase().starts_with("preview"),
             });
         }
-        for spec in info.inputs.iter().filter(|s| s.is_widget()) {
+        for spec in info.effective_inputs(node).into_iter().filter(|s| s.is_widget()) {
             let current = match node.inputs.get(&spec.name) {
                 Some(InputValue::Link { .. }) => continue,
                 Some(InputValue::Value(v)) => Some(v.clone()),
@@ -295,6 +295,7 @@ fn negative_encoders(workflow: &ApiWorkflow) -> HashSet<String> {
 
 fn role_of(name: &str, kind: &ExposedKind, negative: bool) -> InputRole {
     use InputRole::*;
+    let name = name.rsplit('.').next().unwrap_or(name);
     match (name, kind) {
         (_, ExposedKind::Media(_)) => MediaInput,
         ("negative_prompt", ExposedKind::Text { .. }) => NegativePrompt,

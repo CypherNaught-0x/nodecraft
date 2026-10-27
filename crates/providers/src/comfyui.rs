@@ -465,11 +465,10 @@ pub(crate) fn card_values(job: &ProviderJob) -> Result<Map<String, Value>, Provi
     Ok(values)
 }
 
-/// Keeps only a workflow card's output nodes (#9), named by its outputs input as a JSON list of
-/// node ids: the workflow's other output nodes are dropped before it is queued, so the server
-/// never runs them and no file comes back that the card has no port for. A node another node
-/// reads from is kept. No outputs input keeps every node.
-pub(crate) fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, catalog: &NodeCatalog) -> Result<(), ProviderError> {
+/// Keeps a card's explicitly selected outputs and their complete dependency closure. Unrelated
+/// helpers and unselected paid/saver branches cannot block validation or run accidentally.
+/// Every required ancestor remains checked. No outputs input keeps every node.
+pub(crate) fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, _: &NodeCatalog) -> Result<(), ProviderError> {
     let refused = |message: String| ProviderError::new(ErrorKind::UnsupportedInput, format!("the card's ComfyUI outputs {message}"));
     let Some(text) = template::card_text(job, template::CARD_OUTPUTS) else { return Ok(()) };
     if text.len() > MAX_CARD_TEXT_BYTES {
@@ -485,25 +484,7 @@ pub(crate) fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, c
         let shown: String = missing.chars().take(64).collect();
         return Err(refused(format!("name node {shown}, which the workflow doesn't have")));
     }
-    let read: std::collections::BTreeSet<&str> = workflow
-        .nodes
-        .values()
-        .flat_map(|node| node.inputs.values())
-        .filter_map(|value| match value {
-            comfy::InputValue::Link { node, .. } => Some(node.as_str()),
-            comfy::InputValue::Value(_) => None,
-        })
-        .collect();
-    let dropped: Vec<String> = workflow
-        .nodes
-        .iter()
-        .filter(|(id, node)| !kept.contains(*id) && !read.contains(id.as_str()) && catalog.get(&node.class_type).is_some_and(|info| info.output_node))
-        .map(|(id, _)| id.clone())
-        .collect();
-    for id in dropped {
-        workflow.nodes.remove(&id);
-    }
-    Ok(())
+    workflow.retain_upstream(&kept.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|_| refused("have invalid or oversized dependencies".into()))
 }
 
 pub(crate) fn split_target(target: &str) -> Result<(&str, &str), ProviderError> {

@@ -205,7 +205,7 @@ fn templates948_cyclic_boundary_connections_are_errors() {
 }
 
 #[test]
-fn templates948_dynamic_widget_groups_are_not_misread_as_the_following_seed() {
+fn templates948_unsupported_dynamic_widget_groups_are_not_misread_as_the_following_seed() {
     let catalog =
         NodeCatalog::parse(br#"{"Dynamic":{"input":{"required":{"model":["COMFY_DYNAMICCOMBO_V3",{}],"seed":["INT",{}]}},"output":["IMAGE"]}}"#).unwrap().0;
     let v = json!({"nodes":[{"id":1,"type":"Dynamic","widgets_values":["model-choice","wide",17]}],"links":[]});

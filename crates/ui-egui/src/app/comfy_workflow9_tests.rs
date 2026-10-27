@@ -126,3 +126,51 @@ fn templates948_visual_evidence() {
         }
     }
 }
+
+fn dynamic948_app() -> NodeCraftApp {
+    let mut app = app();
+    let info=br#"{
+      "Dynamic":{"input":{"required":{"model":["COMFY_DYNAMICCOMBO_V3",{"options":[{"key":"small","inputs":{"required":{"resolution":[["64","128"],{}]}}}]}]}},"output":["IMAGE"]},
+      "SaveImage":{"input":{"required":{"images":["IMAGE",{}],"filename_prefix":["STRING",{}]}},"output":[],"output_node":true}
+    }"#;
+    nodecraft_engine::comfy_workflow_cmds::finish(
+        &mut app.session,
+        1,
+        Ok(std::sync::Arc::new(nodecraft_engine::comfy_workflow_cmds::NodeCatalog::parse(info).unwrap().0).into()),
+    );
+    app.session.dispatch("node.remove", &json!({"canvas":C,"id":CARD})).unwrap();
+    let flow = r#"{"1":{"class_type":"Dynamic","inputs":{"model":"small","model.resolution":"64"}},"2":{"class_type":"SaveImage","inputs":{"images":["1",0],"filename_prefix":"NodeCraft"}}}"#;
+    app.session
+        .dispatch("comfy.workflow.import", &json!({"canvas":C,"id":CARD,"pos":{"x":150,"y":100},"title":"Dynamic image workflow","workflow":flow}))
+        .unwrap();
+    app.selection.only(CARD);
+    app
+}
+#[test]
+fn templates948_dynamic_child_is_a_generated_editable_card_control() {
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let mut state = dynamic948_app();
+        state.theme = theme;
+        let mut h = Harness::builder().with_size(Vec2::new(1100.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), state);
+        crate::theme::apply(&h.ctx, theme);
+        h.run();
+        assert!(h.query_by_label("Dynamic · model.resolution").is_some());
+        let node = &h.state().session.document().canvases()[&C].nodes()[&CARD];
+        let mapping = comfy_workflow::mapping(node).unwrap();
+        assert!(mapping.params.iter().any(|p| p.input == "model.resolution" && matches!(p.spec.control, ParamControl::Choice { .. })));
+    }
+}
+#[test]
+#[ignore = "manual public-safe dynamic input capture; NODECRAFT_TEMPLATE948_DYNAMIC_CAPTURE"]
+fn templates948_dynamic_visual_evidence() {
+    let root = std::path::PathBuf::from(std::env::var_os("NODECRAFT_TEMPLATE948_DYNAMIC_CAPTURE").unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    for (theme, name) in [(crate::theme::ThemeKind::Dark, "dark"), (crate::theme::ThemeKind::Light, "light")] {
+        let mut app = dynamic948_app();
+        app.theme = theme;
+        let mut h = Harness::builder().wgpu().with_size(Vec2::new(1100.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        crate::theme::apply(&h.ctx, theme);
+        h.run();
+        h.render().unwrap().save(root.join(format!("dynamic-{name}.png"))).unwrap();
+    }
+}

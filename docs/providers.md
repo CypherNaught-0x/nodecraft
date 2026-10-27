@@ -1470,7 +1470,10 @@ Results remain one list port per media type. Selected saver order is saved in th
 so a resumed local ComfyUI job keeps the same image order. Comfy Cloud also honors that order
 when its response supplies node ids; results without node ids retain the server's order after
 identified results. Older saved handles retain their previous ordering. Renaming a media list
-port writes workflow config version 2, which older NodeCraft builds refuse as unsupported.
+port, or mapping a dotted DynamicCombo child input, writes workflow config version 2, which
+older NodeCraft builds refuse as unsupported. DynamicCombo imports preserve the selected branch
+and its nested dotted fields. Changing a selector requires supplying the new branch's valid
+values; the adapter checks the full effective workflow before sending a generation POST.
 For programmatic editing and explicit disconnection/history flags, see [MCP](mcp.md).
 
 ## Comfy Cloud workflows

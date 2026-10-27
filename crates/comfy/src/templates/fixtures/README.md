@@ -5,7 +5,7 @@ commit `3c2199b9362457b12b9c60c6cc303501526ebd62`, MIT; the unchanged notice is 
 The matching profile in `assets/comfy/template-mappings.v1.json` records each original Git blob
 id. Original blobs were checked against their Git SHA-1 (`blob <length>\0<bytes>`) and tree size.
 
-The seven workflow JSON files here are **redacted structural derivatives**, not executable
+The ten workflow JSON files here are **redacted structural derivatives**, not executable
 examples for a real account. Node classes/ids, modes, port order, links, interface names and
 saved-widget counts are retained. Titles, positions, groups and help notes are omitted; note
 widgets are blank. Prompt widgets use original NodeCraft test text. Model and media filenames
@@ -23,8 +23,9 @@ server does not implement it: the remaining descriptor requests timed out.
 `mock-core-nodes.json` is an original **synthetic** test catalog for missing core descriptors.
 It is kept separate from recorded facts. Tests use this union to verify conversion, mapping,
 preserved values and connections; they do not prove a particular live installation can run all
-templates. Dynamic widget groups and the three video profiles still require further protocol
-and schema verification. No test submits a generation request or spends provider credits.
+templates. The six additional candidate profiles, including the popular LTX, Qwen and Krea templates,
+still require complete descriptor and request-contract verification;
+unsupported dynamic variants are refused. No test submits a generation request or spends provider credits.
 
 Live-instance validation is an explicit merge blocker requested by the user. These offline
 fixtures and successful CI runs cannot satisfy that requirement on their own.
@@ -34,10 +35,50 @@ submission and bounded prompt-request serialization. Connection-only V3 Autogrow
 validate their named or numbered dotted ports using one stored template. MatchType ports remain
 polymorphic. Original synthetic cases additionally cover typed frontend primitive fanout,
 preserved seed modes, invalid names/types, broken links and refusal of paid substitutes.
-DynamicCombo serialization and the complete video contracts are still unfinished; none of
-these offline checks establish acceptance by a live server.
+Original synthetic DynamicCombo tests exercise nested selected branches, dotted API inputs,
+linked siblings, following seed values, inactive/missing children and malformed metadata.
+Recorded BlockSparseAttention metadata verifies the selected child range. The provider mock
+checks the actual generation POST and proves invalid child values never reach it. The public
+API reproduction [ComfyUI_frontend#20068](https://github.com/Comfy-Org/ComfyUI_frontend/issues/20068)
+provides independent evidence for dotted request paths; no ComfyUI implementation code was read.
+All ten profiles now have client conversion, field selection, dependency-closure validation and
+bounded request serialization checks under the explicitly combined projections below. Engine
+tests also import each through the shared command and save/reopen its card. Complete observed
+video contracts remain unavailable; none of these checks establish acceptance by a live server.
 
 The production manifest stores structural contracts and field/result selectors only. A changed
 contract or incompatible discovered field prevents curation and leaves generic discovery intact.
 Explicit import `params` bypasses curation. A saved card uses its own serialized mapping, so
 updating the bundled data cannot rewrite an existing project's field choices.
+
+`documented-nodes.json` is an original, documentation-backed **projected** test catalog for
+20 otherwise missing classes. It records public interface facts (names, types, selector values
+and documented bounds), with source URLs, document hashes and available source fingerprints in
+`documented-provenance.json`. No implementation, documentation prose, reference prompts or
+system instructions were copied. Widget order and available saved selector values are checked
+against the pinned MIT workflow structure. This projection is neither recorded `/object_info`
+nor proof that a particular installed version has the same descriptor: current documentation
+and the pinned templates can differ. Remaining mismatches must stay explicit. These fixtures
+cannot clear the live-instance merge blocker.
+
+`pinned-selector-facts.json` is a separate, **partial** two-branch projection for the resize
+node in the pinned LTX graph. Current docs name these selectors `SCALE_DIMENSIONS` and
+`SCALE_LONGER_DIMENSION`, while the verified MIT graph saves `scale dimensions` and
+`scale longer dimension`. This file combines only those observed saved spellings with the
+documented child names/types/bounds; its provenance records the pin and exact source blob.
+It is not recorded server metadata and does not claim any other resize option or installed
+version. A negative test retains the incompatible current-documentation spelling. The original
+four-fixture catalog remains recorded facts plus the separate synthetic core catalog; the
+ten-candidate projection test adds the documentation and explicitly pinned subset.
+
+Card request checks select the mapped outputs and their complete upstream dependencies first,
+just as the provider does. Disconnected sizing helpers and unselected custom comparison savers
+are not scheduled. Missing or invalid required ancestors still fail before uploads or prompt
+submission. The stored imported workflow remains intact for subsequent mapping edits.
+
+The same pinned LTX source explicitly names a trailing legacy SaveVideo `codec` widget
+alongside `format.codec`. It is not projected as a current server input. Compatibility omits
+exactly that one scalar only when the saved named map matches every active typed widget/value
+and its sole undeclared entry matches the positional suffix. Stale names, different values,
+missing active fields and multiple extras still refuse conversion. Synthetic tests also retain
+seed modes; no named value can overwrite a current value or link.

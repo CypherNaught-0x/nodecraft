@@ -6,8 +6,18 @@ fn catalog() -> crate::NodeCatalog {
     catalog
 }
 
-fn fixtures() -> [(&'static str, &'static str); 7] {
+fn projected_catalog() -> crate::NodeCatalog {
+    let mut catalog = catalog();
+    catalog.extend(crate::NodeCatalog::parse(include_bytes!("fixtures/documented-nodes.json")).unwrap().0);
+    catalog.extend(crate::NodeCatalog::parse(include_bytes!("fixtures/pinned-selector-facts.json")).unwrap().0);
+    catalog
+}
+
+fn fixtures() -> [(&'static str, &'static str); 10] {
     [
+        ("video_ltx2_3_i2v", include_str!("fixtures/video_ltx2_3_i2v.json")),
+        ("image_qwen_image_2_1_image_edit", include_str!("fixtures/image_qwen_image_2_1_image_edit.json")),
+        ("image_krea2_turbo_t2i", include_str!("fixtures/image_krea2_turbo_t2i.json")),
         ("video_minimax_h3_i2v", include_str!("fixtures/video_minimax_h3_i2v.json")),
         ("image_z_image_turbo", include_str!("fixtures/image_z_image_turbo.json")),
         ("video_wan2_2_14B_i2v", include_str!("fixtures/video_wan2_2_14B_i2v.json")),
@@ -136,4 +146,62 @@ fn templates948_ordinal_selector_keeps_server_labels_and_rejects_shifted_widget_
         assert!(!curate_template(Some("video_minimax_h3_i2v"), &promoted, &mut wrong_kind).unwrap());
         assert_eq!(wrong_kind, before);
     }
+}
+
+#[test]
+fn templates948_documented_candidates_convert_check_and_serialize_offline() {
+    let catalog = projected_catalog();
+    let mut problems = Vec::new();
+    for (id, fixture) in fixtures() {
+        let converted = match crate::ApiWorkflow::convert(fixture.as_bytes(), Some(&catalog)) {
+            Ok(converted) => converted,
+            Err(error) => {
+                problems.push(format!("{id}: conversion: {error}"));
+                continue;
+            }
+        };
+        let mut fields = crate::discover(&converted.workflow, &catalog).unwrap();
+        crate::annotate_promoted(&mut fields, &converted.promoted);
+        if !curate_template(converted.template, &converted.promoted, &mut fields).unwrap() {
+            problems.push(format!("{id}: field selection differs from the documented projection"));
+            continue;
+        }
+        let roots = fields.outputs.iter().map(|output| output.node.as_str()).collect::<Vec<_>>();
+        let mut request_workflow = converted.workflow.clone();
+        request_workflow.retain_upstream(&roots).unwrap();
+        let check = request_workflow.check(&catalog);
+        if !check.is_ok() {
+            problems.push(format!("{id}: check: {:?}", check.problems));
+            continue;
+        }
+        let request = crate::PromptRequest::new(request_workflow, "original-offline-fixture").to_json().unwrap();
+        assert!(!request["prompt"].as_object().unwrap().is_empty());
+        if id == "video_minimax_h3_i2v" {
+            assert!(request["prompt"].get("119").is_none(), "unconnected sizing helper is not scheduled");
+        }
+        if id == "image_qwen_image_2_1_image_edit" {
+            assert!(request["prompt"].get("472").is_none(), "unselected custom comparison is not scheduled");
+            assert_eq!(request["prompt"]["459:469"]["inputs"]["device"], "auto");
+            assert_eq!(request["prompt"]["459:469"]["inputs"]["dtype"], "default");
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn templates948_documentation_selector_spelling_is_not_claimed_to_match_the_pin() {
+    let mut docs = catalog();
+    docs.extend(crate::NodeCatalog::parse(include_bytes!("fixtures/documented-nodes.json")).unwrap().0);
+    let fixture = include_bytes!("fixtures/video_ltx2_3_i2v.json");
+    assert!(crate::ApiWorkflow::convert(fixture, Some(&docs)).is_err(), "current documentation uses different selector spellings than the pinned saved graph");
+    let subset: Value = serde_json::from_slice(include_bytes!("fixtures/pinned-selector-facts.json")).unwrap();
+    assert_eq!(
+        subset["ResizeImageMaskNode"]["input"]["required"]["resize_type"][1]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["key"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["scale dimensions", "scale longer dimension"]
+    );
 }

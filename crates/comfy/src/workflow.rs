@@ -12,7 +12,9 @@ use serde_json::{Map, Value};
 
 use crate::ComfyError;
 use crate::object_info::{InputKind, InputSpec, NodeCatalog, NodeInfo};
+mod named_suffix;
 mod primitive;
+mod selection;
 mod subgraphs;
 
 /// Cap on a workflow file.
@@ -95,21 +97,25 @@ pub(crate) fn id_order(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 fn checked_inputs<'a>(info: &'a NodeInfo, node: &'a ApiNode) -> impl Iterator<Item = (&'a str, Result<&'a InputSpec, &'static str>)> {
-    let ordinary = info.inputs.iter().map(|spec| (spec.name.as_str(), Ok(spec)));
-    let ordinary_names: HashSet<&str> = if info.dynamic_inputs.is_empty() { HashSet::new() } else { info.inputs.iter().map(|i| i.name.as_str()).collect() };
-    // Large schemas must not scan every ordinary spec for each dynamic port. Ordinary-only
-    // classes avoid both the temporary set and the extra iteration entirely.
-    let dynamic = (!info.dynamic_inputs.is_empty())
-        .then_some(node.inputs.keys())
-        .into_iter()
-        .flatten()
-        .filter(move |name| !ordinary_names.contains(name.as_str()))
-        .filter_map(move |name| match info.dynamic_input(name) {
+    let ordinary = info.effective_inputs(node);
+    let has_dynamic = !info.dynamic_inputs.is_empty() || !info.dynamic_combos.is_empty();
+    let names: HashSet<&str> = if has_dynamic { ordinary.iter().map(|i| i.name.as_str()).collect() } else { HashSet::new() };
+    let dynamic = has_dynamic.then_some(node.inputs.keys()).into_iter().flatten().filter(move |name| !names.contains(name.as_str())).filter_map(move |name| {
+        match info.dynamic_input_for(name, node) {
             Ok(None) => None,
             Ok(Some(spec)) => Some((name.as_str(), Ok(spec))),
             Err(message) => Some((name.as_str(), Err(message))),
-        });
-    ordinary.chain(dynamic)
+        }
+    });
+    ordinary
+        .into_iter()
+        .map(move |spec| {
+            let literal = !info.is_dynamic_selector(&spec.name, node)
+                || !node.inputs.contains_key(&spec.name)
+                || matches!(node.inputs.get(&spec.name), Some(InputValue::Value(Value::String(_))));
+            (spec.name.as_str(), if literal { Ok(spec) } else { Err("a dynamic selector must be a literal string option") })
+        })
+        .chain(dynamic)
 }
 
 /// Report context comes from files and server schemas; bound it before cloning or formatting.
@@ -249,7 +255,7 @@ impl ApiWorkflow {
         let err = |message: String| ComfyError::InvalidInput { node: node.into(), input: input.into(), message };
         let n = self.nodes.get_mut(node).ok_or_else(|| err("no such node in the workflow".into()))?;
         let info = catalog.get(&n.class_type).ok_or_else(|| ComfyError::MissingNodes(vec![n.class_type.clone()]))?;
-        let spec = info.input(input).ok_or_else(|| err(format!("{} has no input named {input}", n.class_type)))?;
+        let spec = info.effective_input(input, n).ok_or_else(|| err(format!("{} has no active input named {input}", n.class_type)))?;
         spec.check(&value).map_err(err)?;
         n.inputs.insert(input.into(), InputValue::Value(value));
         Ok(())
@@ -413,6 +419,7 @@ struct UiNode {
     output_types: Vec<String>,
     has_output_links: bool,
     widgets: Value,
+    named_widgets: Option<Map<String, Value>>,
 }
 
 struct UiInput {
@@ -460,6 +467,7 @@ fn parse_ui_node(v: &Value) -> Option<UiNode> {
         output_types,
         has_output_links,
         widgets: v.get("widgets_values").cloned().unwrap_or(Value::Null),
+        named_widgets: v.get("widgets_values_named").and_then(Value::as_object).cloned(),
     })
 }
 
@@ -524,6 +532,7 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
                 output_types: Vec::new(),
                 has_output_links: false,
                 widgets: Value::Null,
+                named_widgets: None,
             },
         );
     }
@@ -627,7 +636,9 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
                 *consumed += 1;
             }
         };
-        for spec in &info.inputs {
+        let mut pending = info.inputs.iter().collect::<std::collections::VecDeque<_>>();
+        let mut choices = BTreeMap::new();
+        while let Some(spec) = pending.pop_front() {
             if !spec.required
                 && !upload_marker_checked
                 && let Some(values) = &mut positional
@@ -660,6 +671,29 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
                     }
                     (None, Value::Object(by_name)) => widget_value = by_name.get(&spec.name),
                     _ => {}
+                }
+            }
+            // A dynamic selector is serialized as one ordinary combo value, followed by the
+            // selected branch's widgets. Resolve only literal frontend values or the saved
+            // boundary fallback here; finish/check validates the final expanded selection.
+            if info.combo_children(&spec.name, &choices).is_err() {
+                let selection = match &linked {
+                    Some(Source::Value(_, value, _)) => value.as_str(),
+                    Some(Source::Link { node, .. }) if !placeholder(node) => None,
+                    _ => widget_value.and_then(Value::as_str),
+                }
+                .filter(|s| s.len() <= 256)
+                .ok_or_else(|| {
+                    ComfyError::InvalidWorkflow("a dynamic selector needs a bounded literal saved option; export this workflow in API format".into())
+                })?;
+                output_budget.text(&spec.name, 0)?;
+                output_budget.text(selection, 0)?;
+                choices.insert(spec.name.clone(), selection.to_owned());
+                if let Some(children) = info.combo_children(&spec.name, &choices).map_err(|m| ComfyError::InvalidWorkflow(m.into()))? {
+                    output_budget.container(children.len(), 0)?;
+                    for child in children.iter().rev() {
+                        pending.push_front(child);
+                    }
                 }
             }
             // The editor's seed mode belongs to whatever supplies the value: a primitive's own mode,
@@ -712,15 +746,6 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
         if !upload_marker_checked && let Some(values) = &mut positional {
             skip_upload_marker(values, &mut consumed);
         }
-        if let Some(saved) = saved
-            && saved.len() != consumed
-        {
-            conversion.warnings.push(format!(
-                "node {id} ({}): {} saved widget values but {consumed} matched the server's inputs; check its settings",
-                node.class,
-                saved.len()
-            ));
-        }
         // Dynamic inputs some custom nodes add at runtime aren't in /object_info; keep their links.
         for input in &node.inputs {
             if !inputs.contains_key(&input.name) && info.input(&input.name).is_none() {
@@ -733,7 +758,7 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
                     }
                     Source::Value(source, _, mode) => {
                         let wanted = info
-                            .dynamic_input(&input.name)
+                            .dynamic_input_for_values(&input.name, &inputs)
                             .ok()
                             .flatten()
                             .and_then(|s| match &s.kind {
@@ -748,7 +773,26 @@ fn flat_ui(v: &Value, catalog: &NodeCatalog, definitions: &BTreeMap<String, &Val
                 inputs.insert(input.name.clone(), InputValue::Link { node: source, output });
             }
         }
-        conversion.workflow.nodes.insert(node.id.clone(), ApiNode { class_type: node.class.clone(), inputs, title: node.title.clone() });
+        let api = ApiNode { class_type: node.class.clone(), inputs, title: node.title.clone() };
+        if let Some(saved) = saved
+            && saved.len() != consumed
+        {
+            if !info.dynamic_combos.is_empty() {
+                if !named_suffix::matches(info, &api, node.named_widgets.as_ref(), saved, consumed) {
+                    return Err(ComfyError::InvalidWorkflow(
+                        "saved dynamic widget values do not match the selected options; export this workflow in API format".into(),
+                    ));
+                }
+                conversion.warnings.push(format!("node {id}: omitted one obsolete named UI widget after matching every active widget value"));
+            } else {
+                conversion.warnings.push(format!(
+                    "node {id} ({}): {} saved widget values but {consumed} matched the server's inputs; check its settings",
+                    node.class,
+                    saved.len()
+                ));
+            }
+        }
+        conversion.workflow.nodes.insert(node.id.clone(), api);
     }
     if !missing.is_empty() {
         return Err(ComfyError::MissingNodes(missing));

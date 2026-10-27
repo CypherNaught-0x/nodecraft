@@ -1428,6 +1428,4379 @@
       ]
     },
     {
+      "id": "video_ltx2_3_i2v",
+      "source_blob": "210c5738cc790abec0d01be0528e7b149d8af89a",
+      "usage": 18137,
+      "shape": {
+        "root": {
+          "links": [
+            [
+              632,
+              320,
+              0,
+              75,
+              0,
+              "VIDEO"
+            ],
+            [
+              633,
+              269,
+              0,
+              320,
+              0,
+              "IMAGE"
+            ]
+          ],
+          "nodes": [
+            {
+              "id": 103,
+              "type": "MarkdownNote",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [],
+              "widget_count": 1
+            },
+            {
+              "id": 269,
+              "type": "LoadImage",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [
+                {
+                  "name": "IMAGE",
+                  "type": "IMAGE",
+                  "links": [
+                    633
+                  ]
+                },
+                {
+                  "name": "MASK",
+                  "type": "MASK",
+                  "links": null
+                }
+              ],
+              "widget_count": 2
+            },
+            {
+              "id": 320,
+              "type": "2454ad83-157c-40dd-9f19-5daaf4041ce0",
+              "mode": 0,
+              "inputs": [
+                {
+                  "name": "input",
+                  "type": "IMAGE,MASK",
+                  "link": 633
+                },
+                {
+                  "name": "value",
+                  "type": "STRING",
+                  "link": null,
+                  "widget": {
+                    "name": "value"
+                  }
+                },
+                {
+                  "name": "value_1",
+                  "type": "BOOLEAN",
+                  "link": null,
+                  "widget": {
+                    "name": "value_1"
+                  }
+                },
+                {
+                  "name": "value_2",
+                  "type": "INT",
+                  "link": null,
+                  "widget": {
+                    "name": "value_2"
+                  }
+                },
+                {
+                  "name": "value_3",
+                  "type": "INT",
+                  "link": null,
+                  "widget": {
+                    "name": "value_3"
+                  }
+                },
+                {
+                  "name": "value_4",
+                  "type": "INT",
+                  "link": null,
+                  "widget": {
+                    "name": "value_4"
+                  }
+                },
+                {
+                  "name": "value_5",
+                  "type": "INT",
+                  "link": null,
+                  "widget": {
+                    "name": "value_5"
+                  }
+                },
+                {
+                  "name": "noise_seed",
+                  "type": "INT",
+                  "link": null,
+                  "widget": {
+                    "name": "noise_seed"
+                  }
+                },
+                {
+                  "name": "lora_name",
+                  "type": "COMBO",
+                  "link": null,
+                  "widget": {
+                    "name": "lora_name"
+                  }
+                },
+                {
+                  "name": "text_encoder",
+                  "type": "COMBO",
+                  "link": null,
+                  "widget": {
+                    "name": "text_encoder"
+                  }
+                },
+                {
+                  "name": "model_name",
+                  "type": "COMBO",
+                  "link": null,
+                  "widget": {
+                    "name": "model_name"
+                  }
+                },
+                {
+                  "name": "lora_name_1",
+                  "type": "COMBO",
+                  "link": null,
+                  "widget": {
+                    "name": "lora_name_1"
+                  }
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "VIDEO",
+                  "type": "VIDEO",
+                  "links": [
+                    632
+                  ]
+                }
+              ],
+              "widget_count": 12
+            },
+            {
+              "id": 75,
+              "type": "SaveVideo",
+              "mode": 0,
+              "inputs": [
+                {
+                  "name": "video",
+                  "type": "VIDEO",
+                  "link": 632
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "video",
+                  "type": "VIDEO",
+                  "links": null
+                }
+              ],
+              "widget_count": 4
+            }
+          ],
+          "inputs": [],
+          "outputs": []
+        },
+        "definitions": [
+          {
+            "id": "2454ad83-157c-40dd-9f19-5daaf4041ce0",
+            "links": [
+              {
+                "id": 512,
+                "origin_id": 288,
+                "origin_slot": 0,
+                "target_id": 278,
+                "target_slot": 0,
+                "type": "LATENT"
+              },
+              {
+                "id": 513,
+                "origin_id": 307,
+                "origin_slot": 1,
+                "target_id": 278,
+                "target_slot": 1,
+                "type": "LATENT"
+              },
+              {
+                "id": 478,
+                "origin_id": 285,
+                "origin_slot": 0,
+                "target_id": 282,
+                "target_slot": 0,
+                "type": "MODEL"
+              },
+              {
+                "id": 479,
+                "origin_id": 284,
+                "origin_slot": 0,
+                "target_id": 282,
+                "target_slot": 1,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 480,
+                "origin_id": 284,
+                "origin_slot": 1,
+                "target_id": 282,
+                "target_slot": 2,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 541,
+                "origin_id": 285,
+                "origin_slot": 0,
+                "target_id": 314,
+                "target_slot": 0,
+                "type": "MODEL"
+              },
+              {
+                "id": 518,
+                "origin_id": 304,
+                "origin_slot": 0,
+                "target_id": 314,
+                "target_slot": 1,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 519,
+                "origin_id": 304,
+                "origin_slot": 1,
+                "target_id": 314,
+                "target_slot": 2,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 483,
+                "origin_id": 277,
+                "origin_slot": 0,
+                "target_id": 283,
+                "target_slot": 0,
+                "type": "NOISE"
+              },
+              {
+                "id": 484,
+                "origin_id": 314,
+                "origin_slot": 0,
+                "target_id": 283,
+                "target_slot": 1,
+                "type": "GUIDER"
+              },
+              {
+                "id": 485,
+                "origin_id": 291,
+                "origin_slot": 0,
+                "target_id": 283,
+                "target_slot": 2,
+                "type": "SAMPLER"
+              },
+              {
+                "id": 544,
+                "origin_id": 306,
+                "origin_slot": 0,
+                "target_id": 283,
+                "target_slot": 3,
+                "type": "SIGMAS"
+              },
+              {
+                "id": 487,
+                "origin_id": 318,
+                "origin_slot": 0,
+                "target_id": 283,
+                "target_slot": 4,
+                "type": "LATENT"
+              },
+              {
+                "id": 475,
+                "origin_id": 304,
+                "origin_slot": 0,
+                "target_id": 284,
+                "target_slot": 0,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 476,
+                "origin_id": 304,
+                "origin_slot": 1,
+                "target_id": 284,
+                "target_slot": 1,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 477,
+                "origin_id": 307,
+                "origin_slot": 0,
+                "target_id": 284,
+                "target_slot": 2,
+                "type": "LATENT"
+              },
+              {
+                "id": 520,
+                "origin_id": 316,
+                "origin_slot": 0,
+                "target_id": 285,
+                "target_slot": 0,
+                "type": "MODEL"
+              },
+              {
+                "id": 547,
+                "origin_id": 307,
+                "origin_slot": 0,
+                "target_id": 287,
+                "target_slot": 0,
+                "type": "LATENT"
+              },
+              {
+                "id": 545,
+                "origin_id": 311,
+                "origin_slot": 0,
+                "target_id": 287,
+                "target_slot": 1,
+                "type": "LATENT_UPSCALE_MODEL"
+              },
+              {
+                "id": 554,
+                "origin_id": 293,
+                "origin_slot": 0,
+                "target_id": 287,
+                "target_slot": 2,
+                "type": "VAE"
+              },
+              {
+                "id": 552,
+                "origin_id": 293,
+                "origin_slot": 0,
+                "target_id": 288,
+                "target_slot": 0,
+                "type": "VAE"
+              },
+              {
+                "id": 515,
+                "origin_id": 289,
+                "origin_slot": 0,
+                "target_id": 288,
+                "target_slot": 1,
+                "type": "IMAGE"
+              },
+              {
+                "id": 548,
+                "origin_id": 287,
+                "origin_slot": 0,
+                "target_id": 288,
+                "target_slot": 2,
+                "type": "LATENT"
+              },
+              {
+                "id": 543,
+                "origin_id": 302,
+                "origin_slot": 0,
+                "target_id": 288,
+                "target_slot": 3,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 558,
+                "origin_id": 312,
+                "origin_slot": 0,
+                "target_id": 290,
+                "target_slot": 1,
+                "type": "INT"
+              },
+              {
+                "id": 559,
+                "origin_id": 299,
+                "origin_slot": 0,
+                "target_id": 290,
+                "target_slot": 2,
+                "type": "INT"
+              },
+              {
+                "id": 560,
+                "origin_id": 312,
+                "origin_slot": 0,
+                "target_id": 292,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 557,
+                "origin_id": 316,
+                "origin_slot": 2,
+                "target_id": 293,
+                "target_slot": 0,
+                "type": "VAE"
+              },
+              {
+                "id": 562,
+                "origin_id": 299,
+                "origin_slot": 0,
+                "target_id": 294,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 561,
+                "origin_id": 292,
+                "origin_slot": 1,
+                "target_id": 295,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 563,
+                "origin_id": 294,
+                "origin_slot": 1,
+                "target_id": 295,
+                "target_slot": 1,
+                "type": "INT"
+              },
+              {
+                "id": 556,
+                "origin_id": 316,
+                "origin_slot": 2,
+                "target_id": 296,
+                "target_slot": 0,
+                "type": "VAE"
+              },
+              {
+                "id": 510,
+                "origin_id": 289,
+                "origin_slot": 0,
+                "target_id": 296,
+                "target_slot": 1,
+                "type": "IMAGE"
+              },
+              {
+                "id": 511,
+                "origin_id": 295,
+                "origin_slot": 0,
+                "target_id": 296,
+                "target_slot": 2,
+                "type": "LATENT"
+              },
+              {
+                "id": 542,
+                "origin_id": 302,
+                "origin_slot": 0,
+                "target_id": 296,
+                "target_slot": 3,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 495,
+                "origin_id": 309,
+                "origin_slot": 1,
+                "target_id": 297,
+                "target_slot": 0,
+                "type": "LATENT"
+              },
+              {
+                "id": 496,
+                "origin_id": 279,
+                "origin_slot": 0,
+                "target_id": 297,
+                "target_slot": 1,
+                "type": "VAE"
+              },
+              {
+                "id": 564,
+                "origin_id": 300,
+                "origin_slot": 0,
+                "target_id": 298,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 526,
+                "origin_id": 303,
+                "origin_slot": 0,
+                "target_id": 304,
+                "target_slot": 0,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 527,
+                "origin_id": 313,
+                "origin_slot": 0,
+                "target_id": 304,
+                "target_slot": 1,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 566,
+                "origin_id": 298,
+                "origin_slot": 0,
+                "target_id": 304,
+                "target_slot": 2,
+                "type": "FLOAT"
+              },
+              {
+                "id": 497,
+                "origin_id": 296,
+                "origin_slot": 0,
+                "target_id": 318,
+                "target_slot": 0,
+                "type": "LATENT"
+              },
+              {
+                "id": 498,
+                "origin_id": 305,
+                "origin_slot": 0,
+                "target_id": 318,
+                "target_slot": 1,
+                "type": "LATENT"
+              },
+              {
+                "id": 481,
+                "origin_id": 279,
+                "origin_slot": 0,
+                "target_id": 305,
+                "target_slot": 0,
+                "type": "VAE"
+              },
+              {
+                "id": 565,
+                "origin_id": 298,
+                "origin_slot": 1,
+                "target_id": 305,
+                "target_slot": 2,
+                "type": "INT"
+              },
+              {
+                "id": 488,
+                "origin_id": 283,
+                "origin_slot": 0,
+                "target_id": 307,
+                "target_slot": 0,
+                "type": "LATENT"
+              },
+              {
+                "id": 490,
+                "origin_id": 276,
+                "origin_slot": 0,
+                "target_id": 308,
+                "target_slot": 0,
+                "type": "NOISE"
+              },
+              {
+                "id": 491,
+                "origin_id": 282,
+                "origin_slot": 0,
+                "target_id": 308,
+                "target_slot": 1,
+                "type": "GUIDER"
+              },
+              {
+                "id": 492,
+                "origin_id": 280,
+                "origin_slot": 0,
+                "target_id": 308,
+                "target_slot": 2,
+                "type": "SAMPLER"
+              },
+              {
+                "id": 493,
+                "origin_id": 281,
+                "origin_slot": 0,
+                "target_id": 308,
+                "target_slot": 3,
+                "type": "SIGMAS"
+              },
+              {
+                "id": 494,
+                "origin_id": 278,
+                "origin_slot": 0,
+                "target_id": 308,
+                "target_slot": 4,
+                "type": "LATENT"
+              },
+              {
+                "id": 578,
+                "origin_id": 308,
+                "origin_slot": 0,
+                "target_id": 309,
+                "target_slot": 0,
+                "type": "LATENT"
+              },
+              {
+                "id": 539,
+                "origin_id": 309,
+                "origin_slot": 0,
+                "target_id": 315,
+                "target_slot": 0,
+                "type": "LATENT"
+              },
+              {
+                "id": 553,
+                "origin_id": 293,
+                "origin_slot": 0,
+                "target_id": 315,
+                "target_slot": 1,
+                "type": "VAE"
+              },
+              {
+                "id": 538,
+                "origin_id": 315,
+                "origin_slot": 0,
+                "target_id": 310,
+                "target_slot": 0,
+                "type": "IMAGE"
+              },
+              {
+                "id": 534,
+                "origin_id": 297,
+                "origin_slot": 0,
+                "target_id": 310,
+                "target_slot": 1,
+                "type": "AUDIO"
+              },
+              {
+                "id": 591,
+                "origin_id": 298,
+                "origin_slot": 0,
+                "target_id": 310,
+                "target_slot": 2,
+                "type": "FLOAT"
+              },
+              {
+                "id": 535,
+                "origin_id": -10,
+                "origin_slot": 0,
+                "target_id": 290,
+                "target_slot": 0,
+                "type": "IMAGE,MASK"
+              },
+              {
+                "id": 536,
+                "origin_id": 310,
+                "origin_slot": 0,
+                "target_id": -20,
+                "target_slot": 0,
+                "type": "VIDEO"
+              },
+              {
+                "id": 595,
+                "origin_id": -10,
+                "origin_slot": 1,
+                "target_id": 319,
+                "target_slot": 0,
+                "type": "STRING"
+              },
+              {
+                "id": 597,
+                "origin_id": -10,
+                "origin_slot": 3,
+                "target_id": 312,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 598,
+                "origin_id": -10,
+                "origin_slot": 4,
+                "target_id": 299,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 599,
+                "origin_id": -10,
+                "origin_slot": 5,
+                "target_id": 301,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 601,
+                "origin_id": -10,
+                "origin_slot": 8,
+                "target_id": 316,
+                "target_slot": 0,
+                "type": "COMBO"
+              },
+              {
+                "id": 602,
+                "origin_id": -10,
+                "origin_slot": 9,
+                "target_id": 285,
+                "target_slot": 1,
+                "type": "COMBO"
+              },
+              {
+                "id": 604,
+                "origin_id": -10,
+                "origin_slot": 8,
+                "target_id": 279,
+                "target_slot": 0,
+                "type": "COMBO"
+              },
+              {
+                "id": 605,
+                "origin_id": -10,
+                "origin_slot": 8,
+                "target_id": 317,
+                "target_slot": 1,
+                "type": "COMBO"
+              },
+              {
+                "id": 606,
+                "origin_id": -10,
+                "origin_slot": 10,
+                "target_id": 317,
+                "target_slot": 0,
+                "type": "COMBO"
+              },
+              {
+                "id": 607,
+                "origin_id": -10,
+                "origin_slot": 11,
+                "target_id": 311,
+                "target_slot": 0,
+                "type": "COMBO"
+              },
+              {
+                "id": 624,
+                "origin_id": -10,
+                "origin_slot": 6,
+                "target_id": 300,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 627,
+                "origin_id": 317,
+                "origin_slot": 0,
+                "target_id": 313,
+                "target_slot": 0,
+                "type": "CLIP"
+              },
+              {
+                "id": 628,
+                "origin_id": 301,
+                "origin_slot": 0,
+                "target_id": 323,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 629,
+                "origin_id": 300,
+                "origin_slot": 0,
+                "target_id": 323,
+                "target_slot": 1,
+                "type": "INT"
+              },
+              {
+                "id": 630,
+                "origin_id": 323,
+                "origin_slot": 1,
+                "target_id": 305,
+                "target_slot": 1,
+                "type": "INT"
+              },
+              {
+                "id": 631,
+                "origin_id": 323,
+                "origin_slot": 1,
+                "target_id": 295,
+                "target_slot": 2,
+                "type": "INT"
+              },
+              {
+                "id": 634,
+                "origin_id": 324,
+                "origin_slot": 1,
+                "target_id": 325,
+                "target_slot": 0,
+                "type": "CLIP"
+              },
+              {
+                "id": 635,
+                "origin_id": 327,
+                "origin_slot": 0,
+                "target_id": 326,
+                "target_slot": 0,
+                "type": "*"
+              },
+              {
+                "id": 636,
+                "origin_id": 325,
+                "origin_slot": 0,
+                "target_id": 327,
+                "target_slot": 1,
+                "type": "STRING"
+              },
+              {
+                "id": 637,
+                "origin_id": 328,
+                "origin_slot": 0,
+                "target_id": 327,
+                "target_slot": 2,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 638,
+                "origin_id": 327,
+                "origin_slot": 0,
+                "target_id": 303,
+                "target_slot": 1,
+                "type": "STRING"
+              },
+              {
+                "id": 639,
+                "origin_id": 319,
+                "origin_slot": 0,
+                "target_id": 325,
+                "target_slot": 4,
+                "type": "STRING"
+              },
+              {
+                "id": 640,
+                "origin_id": 319,
+                "origin_slot": 0,
+                "target_id": 327,
+                "target_slot": 0,
+                "type": "STRING"
+              },
+              {
+                "id": 641,
+                "origin_id": 285,
+                "origin_slot": 0,
+                "target_id": 324,
+                "target_slot": 0,
+                "type": "MODEL"
+              },
+              {
+                "id": 642,
+                "origin_id": 317,
+                "origin_slot": 0,
+                "target_id": 303,
+                "target_slot": 0,
+                "type": "CLIP"
+              },
+              {
+                "id": 643,
+                "origin_id": 317,
+                "origin_slot": 0,
+                "target_id": 324,
+                "target_slot": 1,
+                "type": "CLIP"
+              },
+              {
+                "id": 644,
+                "origin_id": -10,
+                "origin_slot": 2,
+                "target_id": 328,
+                "target_slot": 0,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 645,
+                "origin_id": -10,
+                "origin_slot": 12,
+                "target_id": 324,
+                "target_slot": 2,
+                "type": "COMBO"
+              },
+              {
+                "id": 646,
+                "origin_id": -10,
+                "origin_slot": 7,
+                "target_id": 277,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 648,
+                "origin_id": 290,
+                "origin_slot": 0,
+                "target_id": 330,
+                "target_slot": 0,
+                "type": "IMAGE,MASK"
+              },
+              {
+                "id": 649,
+                "origin_id": 330,
+                "origin_slot": 0,
+                "target_id": 289,
+                "target_slot": 0,
+                "type": "IMAGE"
+              },
+              {
+                "id": 650,
+                "origin_id": 330,
+                "origin_slot": 0,
+                "target_id": 325,
+                "target_slot": 1,
+                "type": "IMAGE"
+              }
+            ],
+            "inputNode": {
+              "id": -10
+            },
+            "outputNode": {
+              "id": -20
+            },
+            "nodes": [
+              {
+                "id": 276,
+                "type": "RandomNoise",
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "NOISE",
+                    "type": "NOISE",
+                    "links": [
+                      490
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 277,
+                "type": "RandomNoise",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "noise_seed",
+                    "type": "INT",
+                    "link": 646,
+                    "widget": {
+                      "name": "noise_seed"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "NOISE",
+                    "type": "NOISE",
+                    "links": [
+                      483
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 278,
+                "type": "LTXVConcatAVLatent",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "video_latent",
+                    "type": "LATENT",
+                    "link": 512
+                  },
+                  {
+                    "name": "audio_latent",
+                    "type": "LATENT",
+                    "link": 513
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "latent",
+                    "type": "LATENT",
+                    "links": [
+                      494
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 279,
+                "type": "LTXVAudioVAELoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "ckpt_name",
+                    "type": "COMBO",
+                    "link": 604,
+                    "widget": {
+                      "name": "ckpt_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "Audio VAE",
+                    "type": "VAE",
+                    "links": [
+                      481,
+                      496
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 280,
+                "type": "KSamplerSelect",
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "SAMPLER",
+                    "type": "SAMPLER",
+                    "links": [
+                      492
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 281,
+                "type": "ManualSigmas",
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "SIGMAS",
+                    "type": "SIGMAS",
+                    "links": [
+                      493
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 282,
+                "type": "CFGGuider",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "model",
+                    "type": "MODEL",
+                    "link": 478
+                  },
+                  {
+                    "name": "positive",
+                    "type": "CONDITIONING",
+                    "link": 479
+                  },
+                  {
+                    "name": "negative",
+                    "type": "CONDITIONING",
+                    "link": 480
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "GUIDER",
+                    "type": "GUIDER",
+                    "links": [
+                      491
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 283,
+                "type": "SamplerCustomAdvanced",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "noise",
+                    "type": "NOISE",
+                    "link": 483
+                  },
+                  {
+                    "name": "guider",
+                    "type": "GUIDER",
+                    "link": 484
+                  },
+                  {
+                    "name": "sampler",
+                    "type": "SAMPLER",
+                    "link": 485
+                  },
+                  {
+                    "name": "sigmas",
+                    "type": "SIGMAS",
+                    "link": 544
+                  },
+                  {
+                    "name": "latent_image",
+                    "type": "LATENT",
+                    "link": 487
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "output",
+                    "type": "LATENT",
+                    "links": [
+                      488
+                    ]
+                  },
+                  {
+                    "name": "denoised_output",
+                    "type": "LATENT",
+                    "links": []
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 284,
+                "type": "LTXVCropGuides",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "positive",
+                    "type": "CONDITIONING",
+                    "link": 475
+                  },
+                  {
+                    "name": "negative",
+                    "type": "CONDITIONING",
+                    "link": 476
+                  },
+                  {
+                    "name": "latent",
+                    "type": "LATENT",
+                    "link": 477
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "positive",
+                    "type": "CONDITIONING",
+                    "links": [
+                      479
+                    ]
+                  },
+                  {
+                    "name": "negative",
+                    "type": "CONDITIONING",
+                    "links": [
+                      480
+                    ]
+                  },
+                  {
+                    "name": "latent",
+                    "type": "LATENT",
+                    "links": []
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 285,
+                "type": "LoraLoaderModelOnly",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "model",
+                    "type": "MODEL",
+                    "link": 520
+                  },
+                  {
+                    "name": "lora_name",
+                    "type": "COMBO",
+                    "link": 602,
+                    "widget": {
+                      "name": "lora_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "MODEL",
+                    "type": "MODEL",
+                    "links": [
+                      478,
+                      541,
+                      641
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 287,
+                "type": "LTXVLatentUpsampler",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "samples",
+                    "type": "LATENT",
+                    "link": 547
+                  },
+                  {
+                    "name": "upscale_model",
+                    "type": "LATENT_UPSCALE_MODEL",
+                    "link": 545
+                  },
+                  {
+                    "name": "vae",
+                    "type": "VAE",
+                    "link": 554
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "LATENT",
+                    "type": "LATENT",
+                    "links": [
+                      548
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 288,
+                "type": "LTXVImgToVideoInplace",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "vae",
+                    "type": "VAE",
+                    "link": 552
+                  },
+                  {
+                    "name": "image",
+                    "type": "IMAGE",
+                    "link": 515
+                  },
+                  {
+                    "name": "latent",
+                    "type": "LATENT",
+                    "link": 548
+                  },
+                  {
+                    "name": "bypass",
+                    "type": "BOOLEAN",
+                    "link": 543,
+                    "widget": {
+                      "name": "bypass"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "latent",
+                    "type": "LATENT",
+                    "links": [
+                      512
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 289,
+                "type": "LTXVPreprocess",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "image",
+                    "type": "IMAGE",
+                    "link": 649
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "output_image",
+                    "type": "IMAGE",
+                    "links": [
+                      510,
+                      515
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 290,
+                "type": "ResizeImageMaskNode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "input",
+                    "type": "IMAGE,MASK",
+                    "link": 535
+                  },
+                  {
+                    "name": "resize_type.width",
+                    "type": "INT",
+                    "link": 558,
+                    "widget": {
+                      "name": "resize_type.width"
+                    }
+                  },
+                  {
+                    "name": "resize_type.height",
+                    "type": "INT",
+                    "link": 559,
+                    "widget": {
+                      "name": "resize_type.height"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "resized",
+                    "type": "IMAGE,MASK",
+                    "links": [
+                      648
+                    ]
+                  }
+                ],
+                "widget_count": 5
+              },
+              {
+                "id": 291,
+                "type": "KSamplerSelect",
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "SAMPLER",
+                    "type": "SAMPLER",
+                    "links": [
+                      485
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 292,
+                "type": "ComfyMathExpression",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "values.a",
+                    "type": "FLOAT,INT,BOOLEAN",
+                    "link": 560
+                  },
+                  {
+                    "name": "values.b",
+                    "type": "FLOAT,INT,BOOLEAN",
+                    "link": null
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "FLOAT",
+                    "type": "FLOAT",
+                    "links": null
+                  },
+                  {
+                    "name": "INT",
+                    "type": "INT",
+                    "links": [
+                      561
+                    ]
+                  },
+                  {
+                    "name": "BOOL",
+                    "type": "BOOLEAN",
+                    "links": null
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 293,
+                "type": "Reroute",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "",
+                    "type": "*",
+                    "link": 557
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "",
+                    "type": "VAE",
+                    "links": [
+                      552,
+                      553,
+                      554
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 294,
+                "type": "ComfyMathExpression",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "values.a",
+                    "type": "FLOAT,INT,BOOLEAN",
+                    "link": 562
+                  },
+                  {
+                    "name": "values.b",
+                    "type": "FLOAT,INT,BOOLEAN",
+                    "link": null
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "FLOAT",
+                    "type": "FLOAT",
+                    "links": null
+                  },
+                  {
+                    "name": "INT",
+                    "type": "INT",
+                    "links": [
+                      563
+                    ]
+                  },
+                  {
+                    "name": "BOOL",
+                    "type": "BOOLEAN",
+                    "links": null
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 295,
+                "type": "EmptyLTXVLatentVideo",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "width",
+                    "type": "INT",
+                    "link": 561,
+                    "widget": {
+                      "name": "width"
+                    }
+                  },
+                  {
+                    "name": "height",
+                    "type": "INT",
+                    "link": 563,
+                    "widget": {
+                      "name": "height"
+                    }
+                  },
+                  {
+                    "name": "length",
+                    "type": "INT",
+                    "link": 631,
+                    "widget": {
+                      "name": "length"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "LATENT",
+                    "type": "LATENT",
+                    "links": [
+                      511
+                    ]
+                  }
+                ],
+                "widget_count": 4
+              },
+              {
+                "id": 296,
+                "type": "LTXVImgToVideoInplace",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "vae",
+                    "type": "VAE",
+                    "link": 556
+                  },
+                  {
+                    "name": "image",
+                    "type": "IMAGE",
+                    "link": 510
+                  },
+                  {
+                    "name": "latent",
+                    "type": "LATENT",
+                    "link": 511
+                  },
+                  {
+                    "name": "bypass",
+                    "type": "BOOLEAN",
+                    "link": 542,
+                    "widget": {
+                      "name": "bypass"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "latent",
+                    "type": "LATENT",
+                    "links": [
+                      497
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 297,
+                "type": "LTXVAudioVAEDecode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "samples",
+                    "type": "LATENT",
+                    "link": 495
+                  },
+                  {
+                    "name": "audio_vae",
+                    "type": "VAE",
+                    "link": 496
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "Audio",
+                    "type": "AUDIO",
+                    "links": [
+                      534
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 298,
+                "type": "ComfyMathExpression",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "values.a",
+                    "type": "FLOAT,INT,BOOLEAN",
+                    "link": 564
+                  },
+                  {
+                    "name": "values.b",
+                    "type": "FLOAT,INT,BOOLEAN",
+                    "link": null
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "FLOAT",
+                    "type": "FLOAT",
+                    "links": [
+                      566,
+                      591
+                    ]
+                  },
+                  {
+                    "name": "INT",
+                    "type": "INT",
+                    "links": [
+                      565
+                    ]
+                  },
+                  {
+                    "name": "BOOL",
+                    "type": "BOOLEAN",
+                    "links": null
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 299,
+                "type": "PrimitiveInt",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "value",
+                    "type": "INT",
+                    "link": 598,
+                    "widget": {
+                      "name": "value"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "INT",
+                    "type": "INT",
+                    "links": [
+                      559,
+                      562
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 300,
+                "type": "PrimitiveInt",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "value",
+                    "type": "INT",
+                    "link": 624,
+                    "widget": {
+                      "name": "value"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "INT",
+                    "type": "INT",
+                    "links": [
+                      564,
+                      629
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 301,
+                "type": "PrimitiveInt",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "value",
+                    "type": "INT",
+                    "link": 599,
+                    "widget": {
+                      "name": "value"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "INT",
+                    "type": "INT",
+                    "links": [
+                      628
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 302,
+                "type": "PrimitiveBoolean",
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "BOOLEAN",
+                    "type": "BOOLEAN",
+                    "links": [
+                      542,
+                      543
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 303,
+                "type": "CLIPTextEncode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "clip",
+                    "type": "CLIP",
+                    "link": 642
+                  },
+                  {
+                    "name": "text",
+                    "type": "STRING",
+                    "link": 638,
+                    "widget": {
+                      "name": "text"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "CONDITIONING",
+                    "type": "CONDITIONING",
+                    "links": [
+                      526
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 304,
+                "type": "LTXVConditioning",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "positive",
+                    "type": "CONDITIONING",
+                    "link": 526
+                  },
+                  {
+                    "name": "negative",
+                    "type": "CONDITIONING",
+                    "link": 527
+                  },
+                  {
+                    "name": "frame_rate",
+                    "type": "FLOAT",
+                    "link": 566,
+                    "widget": {
+                      "name": "frame_rate"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "positive",
+                    "type": "CONDITIONING",
+                    "links": [
+                      475,
+                      518
+                    ]
+                  },
+                  {
+                    "name": "negative",
+                    "type": "CONDITIONING",
+                    "links": [
+                      476,
+                      519
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 305,
+                "type": "LTXVEmptyLatentAudio",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "audio_vae",
+                    "type": "VAE",
+                    "link": 481
+                  },
+                  {
+                    "name": "frames_number",
+                    "type": "INT",
+                    "link": 630,
+                    "widget": {
+                      "name": "frames_number"
+                    }
+                  },
+                  {
+                    "name": "frame_rate",
+                    "type": "FLOAT,INT",
+                    "link": 565,
+                    "widget": {
+                      "name": "frame_rate"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "Latent",
+                    "type": "LATENT",
+                    "links": [
+                      498
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 306,
+                "type": "ManualSigmas",
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "SIGMAS",
+                    "type": "SIGMAS",
+                    "links": [
+                      544
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 307,
+                "type": "LTXVSeparateAVLatent",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "av_latent",
+                    "type": "LATENT",
+                    "link": 488
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "video_latent",
+                    "type": "LATENT",
+                    "links": [
+                      477,
+                      547
+                    ]
+                  },
+                  {
+                    "name": "audio_latent",
+                    "type": "LATENT",
+                    "links": [
+                      513
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 308,
+                "type": "SamplerCustomAdvanced",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "noise",
+                    "type": "NOISE",
+                    "link": 490
+                  },
+                  {
+                    "name": "guider",
+                    "type": "GUIDER",
+                    "link": 491
+                  },
+                  {
+                    "name": "sampler",
+                    "type": "SAMPLER",
+                    "link": 492
+                  },
+                  {
+                    "name": "sigmas",
+                    "type": "SIGMAS",
+                    "link": 493
+                  },
+                  {
+                    "name": "latent_image",
+                    "type": "LATENT",
+                    "link": 494
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "output",
+                    "type": "LATENT",
+                    "links": [
+                      578
+                    ]
+                  },
+                  {
+                    "name": "denoised_output",
+                    "type": "LATENT",
+                    "links": []
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 309,
+                "type": "LTXVSeparateAVLatent",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "av_latent",
+                    "type": "LATENT",
+                    "link": 578
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "video_latent",
+                    "type": "LATENT",
+                    "links": [
+                      539
+                    ]
+                  },
+                  {
+                    "name": "audio_latent",
+                    "type": "LATENT",
+                    "links": [
+                      495
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 310,
+                "type": "CreateVideo",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "images",
+                    "type": "IMAGE",
+                    "link": 538
+                  },
+                  {
+                    "name": "audio",
+                    "type": "AUDIO",
+                    "link": 534
+                  },
+                  {
+                    "name": "fps",
+                    "type": "FLOAT",
+                    "link": 591,
+                    "widget": {
+                      "name": "fps"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "VIDEO",
+                    "type": "VIDEO",
+                    "links": [
+                      536
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 311,
+                "type": "LatentUpscaleModelLoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "model_name",
+                    "type": "COMBO",
+                    "link": 607,
+                    "widget": {
+                      "name": "model_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "LATENT_UPSCALE_MODEL",
+                    "type": "LATENT_UPSCALE_MODEL",
+                    "links": [
+                      545
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 312,
+                "type": "PrimitiveInt",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "value",
+                    "type": "INT",
+                    "link": 597,
+                    "widget": {
+                      "name": "value"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "INT",
+                    "type": "INT",
+                    "links": [
+                      558,
+                      560
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 313,
+                "type": "CLIPTextEncode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "clip",
+                    "type": "CLIP",
+                    "link": 627
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "CONDITIONING",
+                    "type": "CONDITIONING",
+                    "links": [
+                      527
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 314,
+                "type": "CFGGuider",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "model",
+                    "type": "MODEL",
+                    "link": 541
+                  },
+                  {
+                    "name": "positive",
+                    "type": "CONDITIONING",
+                    "link": 518
+                  },
+                  {
+                    "name": "negative",
+                    "type": "CONDITIONING",
+                    "link": 519
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "GUIDER",
+                    "type": "GUIDER",
+                    "links": [
+                      484
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 315,
+                "type": "VAEDecodeTiled",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "samples",
+                    "type": "LATENT",
+                    "link": 539
+                  },
+                  {
+                    "name": "vae",
+                    "type": "VAE",
+                    "link": 553
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "IMAGE",
+                    "type": "IMAGE",
+                    "links": [
+                      538
+                    ]
+                  }
+                ],
+                "widget_count": 4
+              },
+              {
+                "id": 316,
+                "type": "CheckpointLoaderSimple",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "ckpt_name",
+                    "type": "COMBO",
+                    "link": 601,
+                    "widget": {
+                      "name": "ckpt_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "MODEL",
+                    "type": "MODEL",
+                    "links": [
+                      520
+                    ]
+                  },
+                  {
+                    "name": "CLIP",
+                    "type": "CLIP",
+                    "links": []
+                  },
+                  {
+                    "name": "VAE",
+                    "type": "VAE",
+                    "links": [
+                      556,
+                      557
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 317,
+                "type": "LTXAVTextEncoderLoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "text_encoder",
+                    "type": "COMBO",
+                    "link": 606,
+                    "widget": {
+                      "name": "text_encoder"
+                    }
+                  },
+                  {
+                    "name": "ckpt_name",
+                    "type": "COMBO",
+                    "link": 605,
+                    "widget": {
+                      "name": "ckpt_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "CLIP",
+                    "type": "CLIP",
+                    "links": [
+                      627,
+                      642,
+                      643
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 318,
+                "type": "LTXVConcatAVLatent",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "video_latent",
+                    "type": "LATENT",
+                    "link": 497
+                  },
+                  {
+                    "name": "audio_latent",
+                    "type": "LATENT",
+                    "link": 498
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "latent",
+                    "type": "LATENT",
+                    "links": [
+                      487
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 319,
+                "type": "PrimitiveStringMultiline",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "value",
+                    "type": "STRING",
+                    "link": 595,
+                    "widget": {
+                      "name": "value"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "STRING",
+                    "type": "STRING",
+                    "links": [
+                      639,
+                      640
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 323,
+                "type": "ComfyMathExpression",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "values.a",
+                    "type": "FLOAT,INT,BOOLEAN",
+                    "link": 628
+                  },
+                  {
+                    "name": "values.b",
+                    "type": "FLOAT,INT,BOOLEAN",
+                    "link": 629
+                  },
+                  {
+                    "name": "values.c",
+                    "type": "FLOAT,INT,BOOLEAN",
+                    "link": null
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "FLOAT",
+                    "type": "FLOAT",
+                    "links": null
+                  },
+                  {
+                    "name": "INT",
+                    "type": "INT",
+                    "links": [
+                      630,
+                      631
+                    ]
+                  },
+                  {
+                    "name": "BOOL",
+                    "type": "BOOLEAN",
+                    "links": null
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 324,
+                "type": "LoraLoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "model",
+                    "type": "MODEL",
+                    "link": 641
+                  },
+                  {
+                    "name": "clip",
+                    "type": "CLIP",
+                    "link": 643
+                  },
+                  {
+                    "name": "lora_name",
+                    "type": "COMBO",
+                    "link": 645,
+                    "widget": {
+                      "name": "lora_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "MODEL",
+                    "type": "MODEL",
+                    "links": null
+                  },
+                  {
+                    "name": "CLIP",
+                    "type": "CLIP",
+                    "links": [
+                      634
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 325,
+                "type": "TextGenerateLTX2Prompt",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "clip",
+                    "type": "CLIP",
+                    "link": 634
+                  },
+                  {
+                    "name": "image",
+                    "type": "IMAGE",
+                    "link": 650
+                  },
+                  {
+                    "name": "video",
+                    "type": "IMAGE",
+                    "link": null
+                  },
+                  {
+                    "name": "audio",
+                    "type": "AUDIO",
+                    "link": null
+                  },
+                  {
+                    "name": "prompt",
+                    "type": "STRING",
+                    "link": 639,
+                    "widget": {
+                      "name": "prompt"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "generated_text",
+                    "type": "STRING",
+                    "links": [
+                      636
+                    ]
+                  }
+                ],
+                "widget_count": 12
+              },
+              {
+                "id": 326,
+                "type": "PreviewAny",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "source",
+                    "type": "*",
+                    "link": 635
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "STRING",
+                    "type": "STRING",
+                    "links": []
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 327,
+                "type": "ComfySwitchNode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "on_false",
+                    "type": "STRING",
+                    "link": 640
+                  },
+                  {
+                    "name": "on_true",
+                    "type": "STRING",
+                    "link": 636
+                  },
+                  {
+                    "name": "switch",
+                    "type": "BOOLEAN",
+                    "link": 637,
+                    "widget": {
+                      "name": "switch"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "output",
+                    "type": "STRING",
+                    "links": [
+                      635,
+                      638
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 328,
+                "type": "PrimitiveBoolean",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "value",
+                    "type": "BOOLEAN",
+                    "link": 644,
+                    "widget": {
+                      "name": "value"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "BOOLEAN",
+                    "type": "BOOLEAN",
+                    "links": [
+                      637
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 330,
+                "type": "ResizeImageMaskNode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "input",
+                    "type": "IMAGE,MASK",
+                    "link": 648
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "resized",
+                    "type": "IMAGE,MASK",
+                    "links": [
+                      649,
+                      650
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              }
+            ],
+            "inputs": [
+              {
+                "name": "input",
+                "type": "IMAGE,MASK",
+                "linkIds": [
+                  535
+                ]
+              },
+              {
+                "name": "value",
+                "type": "STRING",
+                "linkIds": [
+                  595
+                ]
+              },
+              {
+                "name": "value_1",
+                "type": "BOOLEAN",
+                "linkIds": [
+                  644
+                ]
+              },
+              {
+                "name": "value_2",
+                "type": "INT",
+                "linkIds": [
+                  597
+                ]
+              },
+              {
+                "name": "value_3",
+                "type": "INT",
+                "linkIds": [
+                  598
+                ]
+              },
+              {
+                "name": "value_4",
+                "type": "INT",
+                "linkIds": [
+                  599
+                ]
+              },
+              {
+                "name": "value_5",
+                "type": "INT",
+                "linkIds": [
+                  624
+                ]
+              },
+              {
+                "name": "noise_seed",
+                "type": "INT",
+                "linkIds": [
+                  646
+                ]
+              },
+              {
+                "name": "ckpt_name",
+                "type": "COMBO",
+                "linkIds": [
+                  601,
+                  604,
+                  605
+                ]
+              },
+              {
+                "name": "lora_name",
+                "type": "COMBO",
+                "linkIds": [
+                  602
+                ]
+              },
+              {
+                "name": "text_encoder",
+                "type": "COMBO",
+                "linkIds": [
+                  606
+                ]
+              },
+              {
+                "name": "model_name",
+                "type": "COMBO",
+                "linkIds": [
+                  607
+                ]
+              },
+              {
+                "name": "lora_name_1",
+                "type": "COMBO",
+                "linkIds": [
+                  645
+                ]
+              }
+            ],
+            "outputs": [
+              {
+                "name": "VIDEO",
+                "type": "VIDEO",
+                "linkIds": [
+                  536
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "fields": [
+        {
+          "instance": "320",
+          "input": "value",
+          "label": "Prompt",
+          "kind": "text"
+        },
+        {
+          "instance": "320",
+          "input": "value_1",
+          "label": "Enhance prompt",
+          "kind": "bool"
+        },
+        {
+          "instance": "320",
+          "input": "value_2",
+          "label": "Width",
+          "kind": "int"
+        },
+        {
+          "instance": "320",
+          "input": "value_3",
+          "label": "Height",
+          "kind": "int"
+        },
+        {
+          "instance": "320",
+          "input": "value_4",
+          "label": "Duration",
+          "kind": "int"
+        },
+        {
+          "instance": "320",
+          "input": "value_5",
+          "label": "Frame rate",
+          "kind": "int"
+        },
+        {
+          "instance": "320",
+          "input": "noise_seed",
+          "label": "Seed",
+          "kind": "int"
+        }
+      ],
+      "outputs": [
+        {
+          "node": "75",
+          "label": "Result"
+        }
+      ]
+    },
+    {
+      "id": "image_qwen_image_2_1_image_edit",
+      "source_blob": "f6c9b7bc58388acce06f9e6314d5513df3224a47",
+      "usage": 17538,
+      "shape": {
+        "root": {
+          "links": [
+            [
+              707,
+              470,
+              0,
+              472,
+              0,
+              "IMAGE"
+            ],
+            [
+              708,
+              461,
+              0,
+              472,
+              1,
+              "IMAGE"
+            ],
+            [
+              704,
+              470,
+              0,
+              459,
+              9,
+              "IMAGE"
+            ],
+            [
+              728,
+              475,
+              0,
+              459,
+              10,
+              "IMAGE"
+            ],
+            [
+              672,
+              459,
+              0,
+              461,
+              0,
+              "IMAGE"
+            ]
+          ],
+          "nodes": [
+            {
+              "id": 459,
+              "type": "bc1c967a-7f6a-4be9-a372-dad16e4f28e3",
+              "mode": 0,
+              "inputs": [
+                {
+                  "name": "prompt",
+                  "type": "STRING",
+                  "link": null,
+                  "widget": {
+                    "name": "prompt"
+                  }
+                },
+                {
+                  "name": "switch_1",
+                  "type": "BOOLEAN",
+                  "link": null,
+                  "widget": {
+                    "name": "switch_1"
+                  }
+                },
+                {
+                  "name": "steps",
+                  "type": "INT",
+                  "link": null,
+                  "widget": {
+                    "name": "steps"
+                  }
+                },
+                {
+                  "name": "switch",
+                  "type": "BOOLEAN",
+                  "link": null,
+                  "widget": {
+                    "name": "switch"
+                  }
+                },
+                {
+                  "name": "scheduler",
+                  "type": "COMBO",
+                  "link": null,
+                  "widget": {
+                    "name": "scheduler"
+                  }
+                },
+                {
+                  "name": "scheduler_1",
+                  "type": "COMBO",
+                  "link": null,
+                  "widget": {
+                    "name": "scheduler_1"
+                  }
+                },
+                {
+                  "name": "device",
+                  "type": "COMBO",
+                  "link": null,
+                  "widget": {
+                    "name": "device"
+                  }
+                },
+                {
+                  "name": "dtype",
+                  "type": "COMBO",
+                  "link": null,
+                  "widget": {
+                    "name": "dtype"
+                  }
+                },
+                {
+                  "name": "clip_name_1",
+                  "type": "COMBO",
+                  "link": null,
+                  "widget": {
+                    "name": "clip_name_1"
+                  }
+                },
+                {
+                  "name": "images.image_1",
+                  "type": "IMAGE",
+                  "link": 704
+                },
+                {
+                  "name": "images.image_2",
+                  "type": "IMAGE",
+                  "link": 728
+                },
+                {
+                  "name": "images.image_3",
+                  "type": "IMAGE",
+                  "link": null
+                },
+                {
+                  "name": "images.image_4",
+                  "type": "IMAGE",
+                  "link": null
+                },
+                {
+                  "name": "images.image_5_1",
+                  "type": "IMAGE",
+                  "link": null
+                },
+                {
+                  "name": "images.image_6",
+                  "type": "IMAGE",
+                  "link": null
+                },
+                {
+                  "name": "images.image_7",
+                  "type": "IMAGE",
+                  "link": null
+                },
+                {
+                  "name": "images.image_8",
+                  "type": "IMAGE",
+                  "link": null
+                },
+                {
+                  "name": "images.image_9",
+                  "type": "IMAGE",
+                  "link": null
+                },
+                {
+                  "name": "images.image_10",
+                  "type": "IMAGE",
+                  "link": null
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "IMAGE",
+                  "type": "IMAGE",
+                  "links": [
+                    672
+                  ]
+                }
+              ],
+              "widget_count": 20
+            },
+            {
+              "id": 461,
+              "type": "SaveImageAdvanced",
+              "mode": 0,
+              "inputs": [
+                {
+                  "name": "images",
+                  "type": "IMAGE",
+                  "link": 672
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "images",
+                  "type": "IMAGE",
+                  "links": [
+                    708
+                  ]
+                }
+              ],
+              "widget_count": 4
+            },
+            {
+              "id": 463,
+              "type": "MarkdownNote",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [],
+              "widget_count": 1
+            },
+            {
+              "id": 470,
+              "type": "LoadImage",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [
+                {
+                  "name": "IMAGE",
+                  "type": "IMAGE",
+                  "links": [
+                    704,
+                    707
+                  ]
+                },
+                {
+                  "name": "MASK",
+                  "type": "MASK",
+                  "links": null
+                }
+              ],
+              "widget_count": 2
+            },
+            {
+              "id": 472,
+              "type": "ImageCompare",
+              "mode": 0,
+              "inputs": [
+                {
+                  "name": "image_a",
+                  "type": "IMAGE",
+                  "link": 707
+                },
+                {
+                  "name": "image_b",
+                  "type": "IMAGE",
+                  "link": 708
+                }
+              ],
+              "outputs": [],
+              "widget_count": 0
+            },
+            {
+              "id": 475,
+              "type": "LoadImage",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [
+                {
+                  "name": "IMAGE",
+                  "type": "IMAGE",
+                  "links": [
+                    728
+                  ]
+                },
+                {
+                  "name": "MASK",
+                  "type": "MASK",
+                  "links": []
+                }
+              ],
+              "widget_count": 2
+            },
+            {
+              "id": 476,
+              "type": "MarkdownNote",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [],
+              "widget_count": 1
+            },
+            {
+              "id": 501,
+              "type": "MarkdownNote",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [],
+              "widget_count": 1
+            }
+          ],
+          "inputs": [],
+          "outputs": []
+        },
+        "definitions": [
+          {
+            "id": "bc1c967a-7f6a-4be9-a372-dad16e4f28e3",
+            "links": [
+              {
+                "id": 649,
+                "origin_id": 454,
+                "origin_slot": 0,
+                "target_id": 457,
+                "target_slot": 1,
+                "type": "VAE"
+              },
+              {
+                "id": 650,
+                "origin_id": 457,
+                "origin_slot": 0,
+                "target_id": -20,
+                "target_slot": 0,
+                "type": "IMAGE"
+              },
+              {
+                "id": 651,
+                "origin_id": 458,
+                "origin_slot": 0,
+                "target_id": 457,
+                "target_slot": 0,
+                "type": "LATENT"
+              },
+              {
+                "id": 682,
+                "origin_id": 468,
+                "origin_slot": 0,
+                "target_id": 458,
+                "target_slot": 3,
+                "type": "LATENT"
+              },
+              {
+                "id": 684,
+                "origin_id": 456,
+                "origin_slot": 0,
+                "target_id": 468,
+                "target_slot": 1,
+                "type": "LATENT"
+              },
+              {
+                "id": 688,
+                "origin_id": 451,
+                "origin_slot": 0,
+                "target_id": 469,
+                "target_slot": 0,
+                "type": "MODEL"
+              },
+              {
+                "id": 689,
+                "origin_id": 469,
+                "origin_slot": 0,
+                "target_id": 458,
+                "target_slot": 0,
+                "type": "MODEL"
+              },
+              {
+                "id": 722,
+                "origin_id": 474,
+                "origin_slot": 0,
+                "target_id": 458,
+                "target_slot": 1,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 723,
+                "origin_id": 474,
+                "origin_slot": 1,
+                "target_id": 458,
+                "target_slot": 2,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 724,
+                "origin_id": 474,
+                "origin_slot": 2,
+                "target_id": 468,
+                "target_slot": 0,
+                "type": "LATENT"
+              },
+              {
+                "id": 791,
+                "origin_id": 484,
+                "origin_slot": 0,
+                "target_id": 480,
+                "target_slot": 0,
+                "type": "STRING"
+              },
+              {
+                "id": 806,
+                "origin_id": 500,
+                "origin_slot": 0,
+                "target_id": 484,
+                "target_slot": 1,
+                "type": "STRING"
+              },
+              {
+                "id": 739,
+                "origin_id": -10,
+                "origin_slot": 1,
+                "target_id": 484,
+                "target_slot": 0,
+                "type": "STRING"
+              },
+              {
+                "id": 741,
+                "origin_id": -10,
+                "origin_slot": 2,
+                "target_id": 484,
+                "target_slot": 2,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 658,
+                "origin_id": -10,
+                "origin_slot": 6,
+                "target_id": 458,
+                "target_slot": 6,
+                "type": "FLOAT"
+              },
+              {
+                "id": 659,
+                "origin_id": -10,
+                "origin_slot": 7,
+                "target_id": 458,
+                "target_slot": 5,
+                "type": "INT"
+              },
+              {
+                "id": 703,
+                "origin_id": -10,
+                "origin_slot": 8,
+                "target_id": 468,
+                "target_slot": 2,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 660,
+                "origin_id": -10,
+                "origin_slot": 9,
+                "target_id": 456,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 661,
+                "origin_id": -10,
+                "origin_slot": 10,
+                "target_id": 456,
+                "target_slot": 1,
+                "type": "INT"
+              },
+              {
+                "id": 662,
+                "origin_id": -10,
+                "origin_slot": 11,
+                "target_id": 458,
+                "target_slot": 7,
+                "type": "COMBO"
+              },
+              {
+                "id": 668,
+                "origin_id": -10,
+                "origin_slot": 12,
+                "target_id": 458,
+                "target_slot": 8,
+                "type": "COMBO"
+              },
+              {
+                "id": 667,
+                "origin_id": -10,
+                "origin_slot": 13,
+                "target_id": 458,
+                "target_slot": 4,
+                "type": "INT"
+              },
+              {
+                "id": 663,
+                "origin_id": -10,
+                "origin_slot": 14,
+                "target_id": 451,
+                "target_slot": 0,
+                "type": "COMBO"
+              },
+              {
+                "id": 664,
+                "origin_id": -10,
+                "origin_slot": 15,
+                "target_id": 453,
+                "target_slot": 0,
+                "type": "COMBO"
+              },
+              {
+                "id": 665,
+                "origin_id": -10,
+                "origin_slot": 16,
+                "target_id": 454,
+                "target_slot": 0,
+                "type": "COMBO"
+              },
+              {
+                "id": 729,
+                "origin_id": -10,
+                "origin_slot": 17,
+                "target_id": 469,
+                "target_slot": 1,
+                "type": "COMBO"
+              },
+              {
+                "id": 730,
+                "origin_id": -10,
+                "origin_slot": 18,
+                "target_id": 469,
+                "target_slot": 2,
+                "type": "COMBO"
+              },
+              {
+                "id": 746,
+                "origin_id": -10,
+                "origin_slot": 19,
+                "target_id": 477,
+                "target_slot": 0,
+                "type": "COMBO"
+              },
+              {
+                "id": 721,
+                "origin_id": 453,
+                "origin_slot": 0,
+                "target_id": 474,
+                "target_slot": 0,
+                "type": "CLIP"
+              },
+              {
+                "id": 710,
+                "origin_id": -10,
+                "origin_slot": 20,
+                "target_id": 474,
+                "target_slot": 1,
+                "type": "IMAGE"
+              },
+              {
+                "id": 720,
+                "origin_id": 454,
+                "origin_slot": 0,
+                "target_id": 474,
+                "target_slot": 2,
+                "type": "VAE"
+              },
+              {
+                "id": 743,
+                "origin_id": 480,
+                "origin_slot": 0,
+                "target_id": 474,
+                "target_slot": 3,
+                "type": "STRING"
+              },
+              {
+                "id": 727,
+                "origin_id": -10,
+                "origin_slot": 5,
+                "target_id": 474,
+                "target_slot": 4,
+                "type": "STRING"
+              },
+              {
+                "id": 725,
+                "origin_id": -10,
+                "origin_slot": 0,
+                "target_id": 474,
+                "target_slot": 5,
+                "type": "INT"
+              },
+              {
+                "id": 716,
+                "origin_id": -10,
+                "origin_slot": 26,
+                "target_id": 474,
+                "target_slot": 7,
+                "type": "IMAGE"
+              },
+              {
+                "id": 717,
+                "origin_id": -10,
+                "origin_slot": 27,
+                "target_id": 474,
+                "target_slot": 8,
+                "type": "IMAGE"
+              },
+              {
+                "id": 718,
+                "origin_id": -10,
+                "origin_slot": 28,
+                "target_id": 474,
+                "target_slot": 9,
+                "type": "IMAGE"
+              },
+              {
+                "id": 719,
+                "origin_id": -10,
+                "origin_slot": 29,
+                "target_id": 474,
+                "target_slot": 10,
+                "type": "IMAGE"
+              },
+              {
+                "id": 711,
+                "origin_id": -10,
+                "origin_slot": 21,
+                "target_id": 474,
+                "target_slot": 12,
+                "type": "IMAGE"
+              },
+              {
+                "id": 712,
+                "origin_id": -10,
+                "origin_slot": 22,
+                "target_id": 474,
+                "target_slot": 13,
+                "type": "IMAGE"
+              },
+              {
+                "id": 713,
+                "origin_id": -10,
+                "origin_slot": 23,
+                "target_id": 474,
+                "target_slot": 14,
+                "type": "IMAGE"
+              },
+              {
+                "id": 714,
+                "origin_id": -10,
+                "origin_slot": 24,
+                "target_id": 474,
+                "target_slot": 15,
+                "type": "IMAGE"
+              },
+              {
+                "id": 715,
+                "origin_id": -10,
+                "origin_slot": 25,
+                "target_id": 474,
+                "target_slot": 16,
+                "type": "IMAGE"
+              },
+              {
+                "id": 750,
+                "origin_id": -10,
+                "origin_slot": 20,
+                "target_id": 485,
+                "target_slot": 0,
+                "type": "IMAGE"
+              },
+              {
+                "id": 779,
+                "origin_id": -10,
+                "origin_slot": 21,
+                "target_id": 485,
+                "target_slot": 1,
+                "type": "IMAGE"
+              },
+              {
+                "id": 780,
+                "origin_id": -10,
+                "origin_slot": 22,
+                "target_id": 485,
+                "target_slot": 2,
+                "type": "IMAGE"
+              },
+              {
+                "id": 781,
+                "origin_id": -10,
+                "origin_slot": 23,
+                "target_id": 485,
+                "target_slot": 3,
+                "type": "IMAGE"
+              },
+              {
+                "id": 782,
+                "origin_id": -10,
+                "origin_slot": 24,
+                "target_id": 485,
+                "target_slot": 4,
+                "type": "IMAGE"
+              },
+              {
+                "id": 783,
+                "origin_id": -10,
+                "origin_slot": 25,
+                "target_id": 485,
+                "target_slot": 5,
+                "type": "IMAGE"
+              },
+              {
+                "id": 784,
+                "origin_id": -10,
+                "origin_slot": 26,
+                "target_id": 485,
+                "target_slot": 6,
+                "type": "IMAGE"
+              },
+              {
+                "id": 785,
+                "origin_id": -10,
+                "origin_slot": 27,
+                "target_id": 485,
+                "target_slot": 7,
+                "type": "IMAGE"
+              },
+              {
+                "id": 786,
+                "origin_id": -10,
+                "origin_slot": 28,
+                "target_id": 485,
+                "target_slot": 8,
+                "type": "IMAGE"
+              },
+              {
+                "id": 787,
+                "origin_id": -10,
+                "origin_slot": 29,
+                "target_id": 485,
+                "target_slot": 9,
+                "type": "IMAGE"
+              },
+              {
+                "id": 800,
+                "origin_id": 477,
+                "origin_slot": 0,
+                "target_id": 500,
+                "target_slot": 0,
+                "type": "CLIP"
+              },
+              {
+                "id": 801,
+                "origin_id": 485,
+                "origin_slot": 0,
+                "target_id": 500,
+                "target_slot": 1,
+                "type": "IMAGE"
+              },
+              {
+                "id": 901,
+                "origin_id": 479,
+                "origin_slot": 0,
+                "target_id": 500,
+                "target_slot": 4,
+                "type": "STRING"
+              },
+              {
+                "id": 802,
+                "origin_id": -10,
+                "origin_slot": 1,
+                "target_id": 500,
+                "target_slot": 5,
+                "type": "STRING"
+              },
+              {
+                "id": 903,
+                "origin_id": -10,
+                "origin_slot": 4,
+                "target_id": 500,
+                "target_slot": 6,
+                "type": "INT"
+              },
+              {
+                "id": 902,
+                "origin_id": -10,
+                "origin_slot": 3,
+                "target_id": 500,
+                "target_slot": 8,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 804,
+                "origin_id": -10,
+                "origin_slot": 13,
+                "target_id": 500,
+                "target_slot": 7,
+                "type": "INT"
+              }
+            ],
+            "inputNode": {
+              "id": -10
+            },
+            "outputNode": {
+              "id": -20
+            },
+            "nodes": [
+              {
+                "id": 451,
+                "type": "UNETLoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "unet_name",
+                    "type": "COMBO",
+                    "link": 663,
+                    "widget": {
+                      "name": "unet_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "MODEL",
+                    "type": "MODEL",
+                    "links": [
+                      688
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 453,
+                "type": "CLIPLoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "clip_name",
+                    "type": "COMBO",
+                    "link": 664,
+                    "widget": {
+                      "name": "clip_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "CLIP",
+                    "type": "CLIP",
+                    "links": [
+                      721
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 454,
+                "type": "VAELoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "vae_name",
+                    "type": "COMBO",
+                    "link": 665,
+                    "widget": {
+                      "name": "vae_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "VAE",
+                    "type": "VAE",
+                    "links": [
+                      649,
+                      720
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 456,
+                "type": "EmptyLatentImage",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "width",
+                    "type": "INT",
+                    "link": 660,
+                    "widget": {
+                      "name": "width"
+                    }
+                  },
+                  {
+                    "name": "height",
+                    "type": "INT",
+                    "link": 661,
+                    "widget": {
+                      "name": "height"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "LATENT",
+                    "type": "LATENT",
+                    "links": [
+                      684
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 457,
+                "type": "VAEDecode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "samples",
+                    "type": "LATENT",
+                    "link": 651
+                  },
+                  {
+                    "name": "vae",
+                    "type": "VAE",
+                    "link": 649
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "IMAGE",
+                    "type": "IMAGE",
+                    "links": [
+                      650
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 458,
+                "type": "KSampler",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "model",
+                    "type": "MODEL",
+                    "link": 689
+                  },
+                  {
+                    "name": "positive",
+                    "type": "CONDITIONING",
+                    "link": 722
+                  },
+                  {
+                    "name": "negative",
+                    "type": "CONDITIONING",
+                    "link": 723
+                  },
+                  {
+                    "name": "latent_image",
+                    "type": "LATENT",
+                    "link": 682
+                  },
+                  {
+                    "name": "seed",
+                    "type": "INT",
+                    "link": 667,
+                    "widget": {
+                      "name": "seed"
+                    }
+                  },
+                  {
+                    "name": "steps",
+                    "type": "INT",
+                    "link": 659,
+                    "widget": {
+                      "name": "steps"
+                    }
+                  },
+                  {
+                    "name": "cfg",
+                    "type": "FLOAT",
+                    "link": 658,
+                    "widget": {
+                      "name": "cfg"
+                    }
+                  },
+                  {
+                    "name": "sampler_name",
+                    "type": "COMBO",
+                    "link": 662,
+                    "widget": {
+                      "name": "sampler_name"
+                    }
+                  },
+                  {
+                    "name": "scheduler",
+                    "type": "COMBO",
+                    "link": 668,
+                    "widget": {
+                      "name": "scheduler"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "LATENT",
+                    "type": "LATENT",
+                    "links": [
+                      651
+                    ]
+                  }
+                ],
+                "widget_count": 7
+              },
+              {
+                "id": 468,
+                "type": "ComfySwitchNode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "on_false",
+                    "type": "LATENT",
+                    "link": 724
+                  },
+                  {
+                    "name": "on_true",
+                    "type": "LATENT",
+                    "link": 684
+                  },
+                  {
+                    "name": "switch",
+                    "type": "BOOLEAN",
+                    "link": 703,
+                    "widget": {
+                      "name": "switch"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "output",
+                    "type": "LATENT",
+                    "links": [
+                      682
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 469,
+                "type": "QwenImage21Cache",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "model",
+                    "type": "MODEL",
+                    "link": 688
+                  },
+                  {
+                    "name": "device",
+                    "type": "COMBO",
+                    "link": 729,
+                    "widget": {
+                      "name": "device"
+                    }
+                  },
+                  {
+                    "name": "dtype",
+                    "type": "COMBO",
+                    "link": 730,
+                    "widget": {
+                      "name": "dtype"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "MODEL",
+                    "type": "MODEL",
+                    "links": [
+                      689
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 474,
+                "type": "TextEncodeQwenImage21",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "clip",
+                    "type": "CLIP",
+                    "link": 721
+                  },
+                  {
+                    "name": "images.image_1",
+                    "type": "IMAGE",
+                    "link": 710
+                  },
+                  {
+                    "name": "vae",
+                    "type": "VAE",
+                    "link": 720
+                  },
+                  {
+                    "name": "prompt",
+                    "type": "STRING",
+                    "link": 743,
+                    "widget": {
+                      "name": "prompt"
+                    }
+                  },
+                  {
+                    "name": "negative_prompt",
+                    "type": "STRING",
+                    "link": 727,
+                    "widget": {
+                      "name": "negative_prompt"
+                    }
+                  },
+                  {
+                    "name": "resolution",
+                    "type": "INT",
+                    "link": 725,
+                    "widget": {
+                      "name": "resolution"
+                    }
+                  },
+                  {
+                    "name": "images.image_12",
+                    "type": "IMAGE",
+                    "link": null
+                  },
+                  {
+                    "name": "images.image_7",
+                    "type": "IMAGE",
+                    "link": 716
+                  },
+                  {
+                    "name": "images.image_8",
+                    "type": "IMAGE",
+                    "link": 717
+                  },
+                  {
+                    "name": "images.image_9",
+                    "type": "IMAGE",
+                    "link": 718
+                  },
+                  {
+                    "name": "images.image_10",
+                    "type": "IMAGE",
+                    "link": 719
+                  },
+                  {
+                    "name": "images.image_11",
+                    "type": "IMAGE",
+                    "link": null
+                  },
+                  {
+                    "name": "images.image_2",
+                    "type": "IMAGE",
+                    "link": 711
+                  },
+                  {
+                    "name": "images.image_3",
+                    "type": "IMAGE",
+                    "link": 712
+                  },
+                  {
+                    "name": "images.image_4",
+                    "type": "IMAGE",
+                    "link": 713
+                  },
+                  {
+                    "name": "images.image_5",
+                    "type": "IMAGE",
+                    "link": 714
+                  },
+                  {
+                    "name": "images.image_6",
+                    "type": "IMAGE",
+                    "link": 715
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "positive",
+                    "type": "CONDITIONING",
+                    "links": [
+                      722
+                    ]
+                  },
+                  {
+                    "name": "negative",
+                    "type": "CONDITIONING",
+                    "links": [
+                      723
+                    ]
+                  },
+                  {
+                    "name": "latent",
+                    "type": "LATENT",
+                    "links": [
+                      724
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 477,
+                "type": "CLIPLoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "clip_name",
+                    "type": "COMBO",
+                    "link": 746,
+                    "widget": {
+                      "name": "clip_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "CLIP",
+                    "type": "CLIP",
+                    "links": [
+                      800
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 479,
+                "type": "PrimitiveStringMultiline",
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "STRING",
+                    "type": "STRING",
+                    "links": [
+                      901
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 480,
+                "type": "PreviewAny",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "source",
+                    "type": "*",
+                    "link": 791
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "STRING",
+                    "type": "STRING",
+                    "links": [
+                      743
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 484,
+                "type": "ComfySwitchNode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "on_false",
+                    "type": "STRING",
+                    "link": 739
+                  },
+                  {
+                    "name": "on_true",
+                    "type": "STRING",
+                    "link": 806
+                  },
+                  {
+                    "name": "switch",
+                    "type": "BOOLEAN",
+                    "link": 741,
+                    "widget": {
+                      "name": "switch"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "output",
+                    "type": "STRING",
+                    "links": [
+                      791
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 485,
+                "type": "BatchImagesNode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "images.image0",
+                    "type": "IMAGE",
+                    "link": 750
+                  },
+                  {
+                    "name": "images.image1",
+                    "type": "IMAGE",
+                    "link": 779
+                  },
+                  {
+                    "name": "images.image5",
+                    "type": "IMAGE",
+                    "link": 780
+                  },
+                  {
+                    "name": "images.image6",
+                    "type": "IMAGE",
+                    "link": 781
+                  },
+                  {
+                    "name": "images.image7",
+                    "type": "IMAGE",
+                    "link": 782
+                  },
+                  {
+                    "name": "images.image8",
+                    "type": "IMAGE",
+                    "link": 783
+                  },
+                  {
+                    "name": "images.image9",
+                    "type": "IMAGE",
+                    "link": 784
+                  },
+                  {
+                    "name": "images.image10",
+                    "type": "IMAGE",
+                    "link": 785
+                  },
+                  {
+                    "name": "images.image11",
+                    "type": "IMAGE",
+                    "link": 786
+                  },
+                  {
+                    "name": "images.image12",
+                    "type": "IMAGE",
+                    "link": 787
+                  },
+                  {
+                    "name": "images.image13",
+                    "type": "IMAGE",
+                    "link": null
+                  },
+                  {
+                    "name": "images.image2",
+                    "type": "IMAGE",
+                    "link": null
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "IMAGE",
+                    "type": "IMAGE",
+                    "links": [
+                      801
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 500,
+                "type": "TextGenerate",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "clip",
+                    "type": "CLIP",
+                    "link": 800
+                  },
+                  {
+                    "name": "image",
+                    "type": "IMAGE",
+                    "link": 801
+                  },
+                  {
+                    "name": "video",
+                    "type": "IMAGE",
+                    "link": null
+                  },
+                  {
+                    "name": "audio",
+                    "type": "AUDIO",
+                    "link": null
+                  },
+                  {
+                    "name": "system_prompt",
+                    "type": "STRING",
+                    "link": 901
+                  },
+                  {
+                    "name": "prompt",
+                    "type": "STRING",
+                    "link": 802,
+                    "widget": {
+                      "name": "prompt"
+                    }
+                  },
+                  {
+                    "name": "max_length",
+                    "type": "INT",
+                    "link": 903,
+                    "widget": {
+                      "name": "max_length"
+                    }
+                  },
+                  {
+                    "name": "sampling_mode.seed",
+                    "type": "INT",
+                    "link": 804,
+                    "widget": {
+                      "name": "sampling_mode.seed"
+                    }
+                  },
+                  {
+                    "name": "thinking",
+                    "type": "BOOLEAN",
+                    "link": 902,
+                    "widget": {
+                      "name": "thinking"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "generated_text",
+                    "type": "STRING",
+                    "links": [
+                      806
+                    ]
+                  },
+                  {
+                    "name": "thinking",
+                    "type": "STRING",
+                    "links": null
+                  }
+                ],
+                "widget_count": 13
+              }
+            ],
+            "inputs": [
+              {
+                "name": "resolution",
+                "type": "INT",
+                "linkIds": [
+                  725
+                ]
+              },
+              {
+                "name": "prompt",
+                "type": "STRING",
+                "linkIds": [
+                  739,
+                  802
+                ]
+              },
+              {
+                "name": "switch_1",
+                "type": "BOOLEAN",
+                "linkIds": [
+                  741
+                ]
+              },
+              {
+                "name": "thinking",
+                "type": "BOOLEAN",
+                "linkIds": [
+                  902
+                ]
+              },
+              {
+                "name": "max_length",
+                "type": "INT",
+                "linkIds": [
+                  903
+                ]
+              },
+              {
+                "name": "negative_prompt",
+                "type": "STRING",
+                "linkIds": [
+                  727
+                ]
+              },
+              {
+                "name": "cfg",
+                "type": "FLOAT",
+                "linkIds": [
+                  658
+                ]
+              },
+              {
+                "name": "steps",
+                "type": "INT",
+                "linkIds": [
+                  659
+                ]
+              },
+              {
+                "name": "switch",
+                "type": "BOOLEAN",
+                "linkIds": [
+                  703
+                ]
+              },
+              {
+                "name": "width",
+                "type": "INT",
+                "linkIds": [
+                  660
+                ]
+              },
+              {
+                "name": "height",
+                "type": "INT",
+                "linkIds": [
+                  661
+                ]
+              },
+              {
+                "name": "scheduler",
+                "type": "COMBO",
+                "linkIds": [
+                  662
+                ]
+              },
+              {
+                "name": "scheduler_1",
+                "type": "COMBO",
+                "linkIds": [
+                  668
+                ]
+              },
+              {
+                "name": "seed",
+                "type": "INT",
+                "linkIds": [
+                  667,
+                  804
+                ]
+              },
+              {
+                "name": "unet_name",
+                "type": "COMBO",
+                "linkIds": [
+                  663
+                ]
+              },
+              {
+                "name": "clip_name",
+                "type": "COMBO",
+                "linkIds": [
+                  664
+                ]
+              },
+              {
+                "name": "vae_name",
+                "type": "COMBO",
+                "linkIds": [
+                  665
+                ]
+              },
+              {
+                "name": "device",
+                "type": "COMBO",
+                "linkIds": [
+                  729
+                ]
+              },
+              {
+                "name": "dtype",
+                "type": "COMBO",
+                "linkIds": [
+                  730
+                ]
+              },
+              {
+                "name": "clip_name_1",
+                "type": "COMBO",
+                "linkIds": [
+                  746
+                ]
+              },
+              {
+                "name": "images.image_1",
+                "type": "IMAGE",
+                "linkIds": [
+                  710,
+                  750
+                ]
+              },
+              {
+                "name": "images.image_2",
+                "type": "IMAGE",
+                "linkIds": [
+                  711,
+                  779
+                ]
+              },
+              {
+                "name": "images.image_3",
+                "type": "IMAGE",
+                "linkIds": [
+                  712,
+                  780
+                ]
+              },
+              {
+                "name": "images.image_4",
+                "type": "IMAGE",
+                "linkIds": [
+                  713,
+                  781
+                ]
+              },
+              {
+                "name": "images.image_5_1",
+                "type": "IMAGE",
+                "linkIds": [
+                  714,
+                  782
+                ]
+              },
+              {
+                "name": "images.image_6",
+                "type": "IMAGE",
+                "linkIds": [
+                  715,
+                  783
+                ]
+              },
+              {
+                "name": "images.image_7",
+                "type": "IMAGE",
+                "linkIds": [
+                  716,
+                  784
+                ]
+              },
+              {
+                "name": "images.image_8",
+                "type": "IMAGE",
+                "linkIds": [
+                  717,
+                  785
+                ]
+              },
+              {
+                "name": "images.image_9",
+                "type": "IMAGE",
+                "linkIds": [
+                  718,
+                  786
+                ]
+              },
+              {
+                "name": "images.image_10",
+                "type": "IMAGE",
+                "linkIds": [
+                  719,
+                  787
+                ]
+              }
+            ],
+            "outputs": [
+              {
+                "name": "IMAGE",
+                "type": "IMAGE",
+                "linkIds": [
+                  650
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "fields": [
+        {
+          "instance": "459",
+          "input": "prompt",
+          "label": "Prompt",
+          "kind": "text"
+        },
+        {
+          "instance": "459",
+          "input": "negative_prompt",
+          "label": "Negative prompt",
+          "kind": "text"
+        },
+        {
+          "instance": "459",
+          "input": "resolution",
+          "label": "Resolution",
+          "kind": "int"
+        },
+        {
+          "instance": "459",
+          "input": "cfg",
+          "label": "Guidance",
+          "kind": "float"
+        },
+        {
+          "instance": "459",
+          "input": "steps",
+          "label": "Steps",
+          "kind": "int"
+        },
+        {
+          "instance": "459",
+          "input": "switch",
+          "label": "Custom size",
+          "kind": "bool"
+        },
+        {
+          "instance": "459",
+          "input": "width",
+          "label": "Width",
+          "kind": "int"
+        },
+        {
+          "instance": "459",
+          "input": "height",
+          "label": "Height",
+          "kind": "int"
+        },
+        {
+          "instance": "459",
+          "input": "seed",
+          "label": "Seed",
+          "kind": "int"
+        }
+      ],
+      "outputs": [
+        {
+          "node": "461",
+          "label": "Result"
+        }
+      ]
+    },
+    {
       "id": "image_z_image_turbo",
       "source_blob": "222ad65430548b141f485f5111aa6f691b7ca611",
       "usage": 15150,
@@ -3789,6 +8162,1310 @@
       "outputs": [
         {
           "node": "108",
+          "label": "Result"
+        }
+      ]
+    },
+    {
+      "id": "image_krea2_turbo_t2i",
+      "source_blob": "bba12eb2145d0496a883629f6b711b8d60052b2b",
+      "usage": 9439,
+      "shape": {
+        "root": {
+          "links": [
+            [
+              44,
+              30,
+              0,
+              29,
+              0,
+              "IMAGE"
+            ],
+            [
+              85,
+              49,
+              0,
+              30,
+              3,
+              "INT"
+            ],
+            [
+              86,
+              49,
+              1,
+              30,
+              4,
+              "INT"
+            ]
+          ],
+          "nodes": [
+            {
+              "id": 29,
+              "type": "SaveImage",
+              "mode": 0,
+              "inputs": [
+                {
+                  "name": "images",
+                  "type": "IMAGE",
+                  "link": 44
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "images",
+                  "type": "IMAGE",
+                  "links": null
+                }
+              ],
+              "widget_count": 1
+            },
+            {
+              "id": 30,
+              "type": "b0e5ca93-2731-42b9-8e0a-d28ea851ff81",
+              "mode": 0,
+              "inputs": [
+                {
+                  "name": "value_1",
+                  "type": "BOOLEAN",
+                  "link": null,
+                  "widget": {
+                    "name": "value_1"
+                  }
+                },
+                {
+                  "name": "thinking",
+                  "type": "BOOLEAN",
+                  "link": null,
+                  "widget": {
+                    "name": "thinking"
+                  }
+                },
+                {
+                  "name": "max_length_1",
+                  "type": "INT",
+                  "link": null,
+                  "widget": {
+                    "name": "max_length_1"
+                  }
+                },
+                {
+                  "name": "width_1",
+                  "type": "INT",
+                  "link": 85,
+                  "widget": {
+                    "name": "width_1"
+                  }
+                },
+                {
+                  "name": "height_1",
+                  "type": "INT",
+                  "link": 86,
+                  "widget": {
+                    "name": "height_1"
+                  }
+                },
+                {
+                  "name": "seed_1",
+                  "type": "INT",
+                  "link": null,
+                  "widget": {
+                    "name": "seed_1"
+                  }
+                },
+                {
+                  "name": "value_3",
+                  "type": "BOOLEAN",
+                  "link": null,
+                  "widget": {
+                    "name": "value_3"
+                  }
+                },
+                {
+                  "name": "lora_name_1",
+                  "type": "COMBO",
+                  "link": null,
+                  "widget": {
+                    "name": "lora_name_1"
+                  }
+                },
+                {
+                  "name": "strength_model_1",
+                  "type": "FLOAT",
+                  "link": null,
+                  "widget": {
+                    "name": "strength_model_1"
+                  }
+                },
+                {
+                  "name": "string_b_1",
+                  "type": "STRING",
+                  "link": null,
+                  "widget": {
+                    "name": "string_b_1"
+                  }
+                }
+              ],
+              "outputs": [
+                {
+                  "name": "IMAGE",
+                  "type": "IMAGE",
+                  "links": [
+                    44
+                  ]
+                }
+              ],
+              "widget_count": 14
+            },
+            {
+              "id": 47,
+              "type": "MarkdownNote",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [],
+              "widget_count": 1
+            },
+            {
+              "id": 48,
+              "type": "MarkdownNote",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [],
+              "widget_count": 1
+            },
+            {
+              "id": 49,
+              "type": "ResolutionSelector",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [
+                {
+                  "name": "width",
+                  "type": "INT",
+                  "links": [
+                    85
+                  ]
+                },
+                {
+                  "name": "height",
+                  "type": "INT",
+                  "links": [
+                    86
+                  ]
+                }
+              ],
+              "widget_count": 3
+            },
+            {
+              "id": 50,
+              "type": "MarkdownNote",
+              "mode": 0,
+              "inputs": [],
+              "outputs": [],
+              "widget_count": 1
+            }
+          ],
+          "inputs": [],
+          "outputs": []
+        },
+        "definitions": [
+          {
+            "id": "b0e5ca93-2731-42b9-8e0a-d28ea851ff81",
+            "links": [
+              {
+                "id": 10,
+                "origin_id": 11,
+                "origin_slot": 0,
+                "target_id": 6,
+                "target_slot": 0,
+                "type": "CLIP"
+              },
+              {
+                "id": 30,
+                "origin_id": 22,
+                "origin_slot": 0,
+                "target_id": 3,
+                "target_slot": 0,
+                "type": "MODEL"
+              },
+              {
+                "id": 4,
+                "origin_id": 6,
+                "origin_slot": 0,
+                "target_id": 3,
+                "target_slot": 1,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 14,
+                "origin_id": 13,
+                "origin_slot": 0,
+                "target_id": 3,
+                "target_slot": 2,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 2,
+                "origin_id": 5,
+                "origin_slot": 0,
+                "target_id": 3,
+                "target_slot": 3,
+                "type": "LATENT"
+              },
+              {
+                "id": 7,
+                "origin_id": 3,
+                "origin_slot": 0,
+                "target_id": 8,
+                "target_slot": 0,
+                "type": "LATENT"
+              },
+              {
+                "id": 12,
+                "origin_id": 12,
+                "origin_slot": 0,
+                "target_id": 8,
+                "target_slot": 1,
+                "type": "VAE"
+              },
+              {
+                "id": 13,
+                "origin_id": 6,
+                "origin_slot": 0,
+                "target_id": 13,
+                "target_slot": 0,
+                "type": "CONDITIONING"
+              },
+              {
+                "id": 16,
+                "origin_id": 10,
+                "origin_slot": 0,
+                "target_id": 15,
+                "target_slot": 0,
+                "type": "MODEL"
+              },
+              {
+                "id": 18,
+                "origin_id": 11,
+                "origin_slot": 0,
+                "target_id": 16,
+                "target_slot": 0,
+                "type": "CLIP"
+              },
+              {
+                "id": 19,
+                "origin_id": 17,
+                "origin_slot": 0,
+                "target_id": 16,
+                "target_slot": 4,
+                "type": "STRING"
+              },
+              {
+                "id": 21,
+                "origin_id": 18,
+                "origin_slot": 0,
+                "target_id": 17,
+                "target_slot": 0,
+                "type": "STRING"
+              },
+              {
+                "id": 22,
+                "origin_id": 19,
+                "origin_slot": 0,
+                "target_id": 17,
+                "target_slot": 1,
+                "type": "STRING"
+              },
+              {
+                "id": 27,
+                "origin_id": 21,
+                "origin_slot": 0,
+                "target_id": 20,
+                "target_slot": 0,
+                "type": "STRING"
+              },
+              {
+                "id": 34,
+                "origin_id": 19,
+                "origin_slot": 0,
+                "target_id": 21,
+                "target_slot": 0,
+                "type": "STRING"
+              },
+              {
+                "id": 33,
+                "origin_id": 16,
+                "origin_slot": 0,
+                "target_id": 21,
+                "target_slot": 1,
+                "type": "STRING"
+              },
+              {
+                "id": 32,
+                "origin_id": 24,
+                "origin_slot": 0,
+                "target_id": 21,
+                "target_slot": 2,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 28,
+                "origin_id": 10,
+                "origin_slot": 0,
+                "target_id": 22,
+                "target_slot": 0,
+                "type": "MODEL"
+              },
+              {
+                "id": 29,
+                "origin_id": 15,
+                "origin_slot": 0,
+                "target_id": 22,
+                "target_slot": 1,
+                "type": "MODEL"
+              },
+              {
+                "id": 31,
+                "origin_id": 23,
+                "origin_slot": 0,
+                "target_id": 22,
+                "target_slot": 2,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 41,
+                "origin_id": 20,
+                "origin_slot": 0,
+                "target_id": 27,
+                "target_slot": 0,
+                "type": "STRING"
+              },
+              {
+                "id": 37,
+                "origin_id": 20,
+                "origin_slot": 0,
+                "target_id": 28,
+                "target_slot": 0,
+                "type": "STRING"
+              },
+              {
+                "id": 38,
+                "origin_id": 27,
+                "origin_slot": 0,
+                "target_id": 28,
+                "target_slot": 1,
+                "type": "STRING"
+              },
+              {
+                "id": 42,
+                "origin_id": 23,
+                "origin_slot": 0,
+                "target_id": 28,
+                "target_slot": 2,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 43,
+                "origin_id": 8,
+                "origin_slot": 0,
+                "target_id": -20,
+                "target_slot": 0,
+                "type": "IMAGE"
+              },
+              {
+                "id": 45,
+                "origin_id": -10,
+                "origin_slot": 0,
+                "target_id": 19,
+                "target_slot": 0,
+                "type": "STRING"
+              },
+              {
+                "id": 46,
+                "origin_id": -10,
+                "origin_slot": 1,
+                "target_id": 24,
+                "target_slot": 0,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 72,
+                "origin_id": 28,
+                "origin_slot": 0,
+                "target_id": 6,
+                "target_slot": 1,
+                "type": "STRING"
+              },
+              {
+                "id": 73,
+                "origin_id": -10,
+                "origin_slot": 2,
+                "target_id": 16,
+                "target_slot": 6,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 74,
+                "origin_id": -10,
+                "origin_slot": 3,
+                "target_id": 16,
+                "target_slot": 5,
+                "type": "INT"
+              },
+              {
+                "id": 75,
+                "origin_id": -10,
+                "origin_slot": 4,
+                "target_id": 5,
+                "target_slot": 0,
+                "type": "INT"
+              },
+              {
+                "id": 76,
+                "origin_id": -10,
+                "origin_slot": 5,
+                "target_id": 5,
+                "target_slot": 1,
+                "type": "INT"
+              },
+              {
+                "id": 77,
+                "origin_id": -10,
+                "origin_slot": 6,
+                "target_id": 3,
+                "target_slot": 4,
+                "type": "INT"
+              },
+              {
+                "id": 78,
+                "origin_id": -10,
+                "origin_slot": 7,
+                "target_id": 23,
+                "target_slot": 0,
+                "type": "BOOLEAN"
+              },
+              {
+                "id": 79,
+                "origin_id": -10,
+                "origin_slot": 8,
+                "target_id": 15,
+                "target_slot": 1,
+                "type": "COMBO"
+              },
+              {
+                "id": 80,
+                "origin_id": -10,
+                "origin_slot": 9,
+                "target_id": 15,
+                "target_slot": 2,
+                "type": "FLOAT"
+              },
+              {
+                "id": 81,
+                "origin_id": -10,
+                "origin_slot": 10,
+                "target_id": 27,
+                "target_slot": 1,
+                "type": "STRING"
+              },
+              {
+                "id": 82,
+                "origin_id": -10,
+                "origin_slot": 11,
+                "target_id": 10,
+                "target_slot": 0,
+                "type": "COMBO"
+              },
+              {
+                "id": 83,
+                "origin_id": -10,
+                "origin_slot": 12,
+                "target_id": 11,
+                "target_slot": 0,
+                "type": "COMBO"
+              },
+              {
+                "id": 84,
+                "origin_id": -10,
+                "origin_slot": 13,
+                "target_id": 12,
+                "target_slot": 0,
+                "type": "COMBO"
+              }
+            ],
+            "inputNode": {
+              "id": -10
+            },
+            "outputNode": {
+              "id": -20
+            },
+            "nodes": [
+              {
+                "id": 10,
+                "type": "UNETLoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "unet_name",
+                    "type": "COMBO",
+                    "link": 82,
+                    "widget": {
+                      "name": "unet_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "MODEL",
+                    "type": "MODEL",
+                    "links": [
+                      16,
+                      28
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 11,
+                "type": "CLIPLoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "clip_name",
+                    "type": "COMBO",
+                    "link": 83,
+                    "widget": {
+                      "name": "clip_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "CLIP",
+                    "type": "CLIP",
+                    "links": [
+                      10,
+                      18
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 12,
+                "type": "VAELoader",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "vae_name",
+                    "type": "COMBO",
+                    "link": 84,
+                    "widget": {
+                      "name": "vae_name"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "VAE",
+                    "type": "VAE",
+                    "links": [
+                      12
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 13,
+                "type": "ConditioningZeroOut",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "conditioning",
+                    "type": "CONDITIONING",
+                    "link": 13
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "CONDITIONING",
+                    "type": "CONDITIONING",
+                    "links": [
+                      14
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 15,
+                "type": "LoraLoaderModelOnly",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "model",
+                    "type": "MODEL",
+                    "link": 16
+                  },
+                  {
+                    "name": "lora_name",
+                    "type": "COMBO",
+                    "link": 79,
+                    "widget": {
+                      "name": "lora_name"
+                    }
+                  },
+                  {
+                    "name": "strength_model",
+                    "type": "FLOAT",
+                    "link": 80,
+                    "widget": {
+                      "name": "strength_model"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "MODEL",
+                    "type": "MODEL",
+                    "links": [
+                      29
+                    ]
+                  }
+                ],
+                "widget_count": 2
+              },
+              {
+                "id": 16,
+                "type": "TextGenerate",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "clip",
+                    "type": "CLIP",
+                    "link": 18
+                  },
+                  {
+                    "name": "image",
+                    "type": "IMAGE",
+                    "link": null
+                  },
+                  {
+                    "name": "video",
+                    "type": "IMAGE",
+                    "link": null
+                  },
+                  {
+                    "name": "audio",
+                    "type": "AUDIO",
+                    "link": null
+                  },
+                  {
+                    "name": "prompt",
+                    "type": "STRING",
+                    "link": 19,
+                    "widget": {
+                      "name": "prompt"
+                    }
+                  },
+                  {
+                    "name": "max_length",
+                    "type": "INT",
+                    "link": 74,
+                    "widget": {
+                      "name": "max_length"
+                    }
+                  },
+                  {
+                    "name": "thinking",
+                    "type": "BOOLEAN",
+                    "link": 73,
+                    "widget": {
+                      "name": "thinking"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "generated_text",
+                    "type": "STRING",
+                    "links": [
+                      33
+                    ]
+                  }
+                ],
+                "widget_count": 12
+              },
+              {
+                "id": 17,
+                "type": "StringConcatenate",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "string_a",
+                    "type": "STRING",
+                    "link": 21,
+                    "widget": {
+                      "name": "string_a"
+                    }
+                  },
+                  {
+                    "name": "string_b",
+                    "type": "STRING",
+                    "link": 22,
+                    "widget": {
+                      "name": "string_b"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "STRING",
+                    "type": "STRING",
+                    "links": [
+                      19
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 18,
+                "type": "PrimitiveStringMultiline",
+                "mode": 0,
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "STRING",
+                    "type": "STRING",
+                    "links": [
+                      21
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 19,
+                "type": "PrimitiveStringMultiline",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "value",
+                    "type": "STRING",
+                    "link": 45,
+                    "widget": {
+                      "name": "value"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "STRING",
+                    "type": "STRING",
+                    "links": [
+                      22,
+                      34
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 20,
+                "type": "PreviewAny",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "source",
+                    "type": "*",
+                    "link": 27
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "STRING",
+                    "type": "STRING",
+                    "links": [
+                      37,
+                      41
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              },
+              {
+                "id": 21,
+                "type": "ComfySwitchNode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "on_false",
+                    "type": "STRING",
+                    "link": 34
+                  },
+                  {
+                    "name": "on_true",
+                    "type": "STRING",
+                    "link": 33
+                  },
+                  {
+                    "name": "switch",
+                    "type": "BOOLEAN",
+                    "link": 32,
+                    "widget": {
+                      "name": "switch"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "output",
+                    "type": "STRING",
+                    "links": [
+                      27
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 22,
+                "type": "ComfySwitchNode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "on_false",
+                    "type": "MODEL",
+                    "link": 28
+                  },
+                  {
+                    "name": "on_true",
+                    "type": "MODEL",
+                    "link": 29
+                  },
+                  {
+                    "name": "switch",
+                    "type": "BOOLEAN",
+                    "link": 31,
+                    "widget": {
+                      "name": "switch"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "output",
+                    "type": "MODEL",
+                    "links": [
+                      30
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 23,
+                "type": "PrimitiveBoolean",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "value",
+                    "type": "BOOLEAN",
+                    "link": 78,
+                    "widget": {
+                      "name": "value"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "BOOLEAN",
+                    "type": "BOOLEAN",
+                    "links": [
+                      31,
+                      42
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 24,
+                "type": "PrimitiveBoolean",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "value",
+                    "type": "BOOLEAN",
+                    "link": 46,
+                    "widget": {
+                      "name": "value"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "BOOLEAN",
+                    "type": "BOOLEAN",
+                    "links": [
+                      32
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 27,
+                "type": "StringConcatenate",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "string_a",
+                    "type": "STRING",
+                    "link": 41,
+                    "widget": {
+                      "name": "string_a"
+                    }
+                  },
+                  {
+                    "name": "string_b",
+                    "type": "STRING",
+                    "link": 81,
+                    "widget": {
+                      "name": "string_b"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "STRING",
+                    "type": "STRING",
+                    "links": [
+                      38
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 28,
+                "type": "ComfySwitchNode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "on_false",
+                    "type": "STRING",
+                    "link": 37
+                  },
+                  {
+                    "name": "on_true",
+                    "type": "STRING",
+                    "link": 38
+                  },
+                  {
+                    "name": "switch",
+                    "type": "BOOLEAN",
+                    "link": 42,
+                    "widget": {
+                      "name": "switch"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "output",
+                    "type": "STRING",
+                    "links": [
+                      72
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 3,
+                "type": "KSampler",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "model",
+                    "type": "MODEL",
+                    "link": 30
+                  },
+                  {
+                    "name": "positive",
+                    "type": "CONDITIONING",
+                    "link": 4
+                  },
+                  {
+                    "name": "negative",
+                    "type": "CONDITIONING",
+                    "link": 14
+                  },
+                  {
+                    "name": "latent_image",
+                    "type": "LATENT",
+                    "link": 2
+                  },
+                  {
+                    "name": "seed",
+                    "type": "INT",
+                    "link": 77,
+                    "widget": {
+                      "name": "seed"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "LATENT",
+                    "type": "LATENT",
+                    "links": [
+                      7
+                    ]
+                  }
+                ],
+                "widget_count": 7
+              },
+              {
+                "id": 5,
+                "type": "EmptyLatentImage",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "width",
+                    "type": "INT",
+                    "link": 75,
+                    "widget": {
+                      "name": "width"
+                    }
+                  },
+                  {
+                    "name": "height",
+                    "type": "INT",
+                    "link": 76,
+                    "widget": {
+                      "name": "height"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "LATENT",
+                    "type": "LATENT",
+                    "links": [
+                      2
+                    ]
+                  }
+                ],
+                "widget_count": 3
+              },
+              {
+                "id": 6,
+                "type": "CLIPTextEncode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "clip",
+                    "type": "CLIP",
+                    "link": 10
+                  },
+                  {
+                    "name": "text",
+                    "type": "STRING",
+                    "link": 72,
+                    "widget": {
+                      "name": "text"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "CONDITIONING",
+                    "type": "CONDITIONING",
+                    "links": [
+                      4,
+                      13
+                    ]
+                  }
+                ],
+                "widget_count": 1
+              },
+              {
+                "id": 8,
+                "type": "VAEDecode",
+                "mode": 0,
+                "inputs": [
+                  {
+                    "name": "samples",
+                    "type": "LATENT",
+                    "link": 7
+                  },
+                  {
+                    "name": "vae",
+                    "type": "VAE",
+                    "link": 12
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "IMAGE",
+                    "type": "IMAGE",
+                    "links": [
+                      43
+                    ]
+                  }
+                ],
+                "widget_count": 0
+              }
+            ],
+            "inputs": [
+              {
+                "name": "value",
+                "type": "STRING",
+                "linkIds": [
+                  45
+                ]
+              },
+              {
+                "name": "value_1",
+                "type": "BOOLEAN",
+                "linkIds": [
+                  46
+                ]
+              },
+              {
+                "name": "thinking",
+                "type": "BOOLEAN",
+                "linkIds": [
+                  73
+                ]
+              },
+              {
+                "name": "max_length_1",
+                "type": "INT",
+                "linkIds": [
+                  74
+                ]
+              },
+              {
+                "name": "width_1",
+                "type": "INT",
+                "linkIds": [
+                  75
+                ]
+              },
+              {
+                "name": "height_1",
+                "type": "INT",
+                "linkIds": [
+                  76
+                ]
+              },
+              {
+                "name": "seed_1",
+                "type": "INT",
+                "linkIds": [
+                  77
+                ]
+              },
+              {
+                "name": "value_3",
+                "type": "BOOLEAN",
+                "linkIds": [
+                  78
+                ]
+              },
+              {
+                "name": "lora_name_1",
+                "type": "COMBO",
+                "linkIds": [
+                  79
+                ]
+              },
+              {
+                "name": "strength_model_1",
+                "type": "FLOAT",
+                "linkIds": [
+                  80
+                ]
+              },
+              {
+                "name": "string_b_1",
+                "type": "STRING",
+                "linkIds": [
+                  81
+                ]
+              },
+              {
+                "name": "unet_name",
+                "type": "COMBO",
+                "linkIds": [
+                  82
+                ]
+              },
+              {
+                "name": "clip_name",
+                "type": "COMBO",
+                "linkIds": [
+                  83
+                ]
+              },
+              {
+                "name": "vae_name",
+                "type": "COMBO",
+                "linkIds": [
+                  84
+                ]
+              }
+            ],
+            "outputs": [
+              {
+                "name": "IMAGE",
+                "type": "IMAGE",
+                "linkIds": [
+                  43
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "fields": [
+        {
+          "instance": "30",
+          "input": "value",
+          "label": "Prompt",
+          "kind": "text"
+        },
+        {
+          "instance": "30",
+          "input": "value_1",
+          "label": "Enhance prompt",
+          "kind": "bool"
+        },
+        {
+          "instance": "30",
+          "input": "seed_1",
+          "label": "Seed",
+          "kind": "int"
+        },
+        {
+          "node": "49",
+          "widget": 0,
+          "kind": "choice"
+        },
+        {
+          "node": "49",
+          "widget": 1,
+          "kind": "float"
+        }
+      ],
+      "outputs": [
+        {
+          "node": "29",
           "label": "Result"
         }
       ]

@@ -7,6 +7,50 @@ const C: CanvasId = CanvasId::from_bytes([1; 16]);
 const CARD: NodeId = NodeId::from_bytes([5; 16]);
 
 #[test]
+fn templates948_all_documented_projections_import_save_and_build_checked_selected_requests() {
+    let mut catalog = NodeCatalog::parse(include_bytes!("../../../comfy/src/templates/fixtures/catalog-facts.json")).unwrap().0;
+    for raw in [
+        include_bytes!("../../../comfy/src/templates/fixtures/mock-core-nodes.json").as_slice(),
+        include_bytes!("../../../comfy/src/templates/fixtures/documented-nodes.json").as_slice(),
+        include_bytes!("../../../comfy/src/templates/fixtures/pinned-selector-facts.json").as_slice(),
+    ] {
+        catalog.extend(NodeCatalog::parse(raw).unwrap().0);
+    }
+    let catalog = Arc::new(catalog);
+    for (name, raw) in [
+        ("minimax-i2v", include_str!("../../../comfy/src/templates/fixtures/video_minimax_h3_i2v.json")),
+        ("ltx", include_str!("../../../comfy/src/templates/fixtures/video_ltx2_3_i2v.json")),
+        ("qwen", include_str!("../../../comfy/src/templates/fixtures/image_qwen_image_2_1_image_edit.json")),
+        ("z-image", include_str!("../../../comfy/src/templates/fixtures/image_z_image_turbo.json")),
+        ("wan", include_str!("../../../comfy/src/templates/fixtures/video_wan2_2_14B_i2v.json")),
+        ("krea", include_str!("../../../comfy/src/templates/fixtures/image_krea2_turbo_t2i.json")),
+        ("minimax-r2v", include_str!("../../../comfy/src/templates/fixtures/video_minimax_h3_r2v.json")),
+        ("nano", include_str!("../../../comfy/src/templates/fixtures/api_nano_banana_pro.json")),
+        ("sdxl", include_str!("../../../comfy/src/templates/fixtures/image_sdxl_simple.json")),
+        ("audio", include_str!("../../../comfy/src/templates/fixtures/audio_stable_audio_example.json")),
+    ] {
+        let mut s = session();
+        finish(&mut s, 1, Ok(Arc::clone(&catalog).into()));
+        s.dispatch("comfy.workflow.import", &import_params(raw)).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let mapped = comfy_workflow::card(card(&s)).unwrap();
+        assert!(!mapped.mapping.params.is_empty(), "{name}");
+        let mut baked = comfy_workflow::bake_values(card(&s), &catalog).unwrap();
+        let outputs = mapped.mapping.outputs.iter().map(|output| output.node.as_str()).collect::<Vec<_>>();
+        baked.retain_upstream(&outputs).unwrap();
+        baked.check(&catalog).into_result().unwrap_or_else(|error| panic!("{name}: {error}"));
+        nodecraft_comfy::PromptRequest::new(baked, "original-offline-command-proof").to_json().unwrap();
+        if name == "krea" {
+            let size = mapped.mapping.params.iter().find(|param| param.input == "megapixels").unwrap();
+            assert!(matches!(card(&s).params.get(&size.spec.name), Some(nodecraft_types::Value::Number(_))), "megapixels remains a FLOAT control");
+        }
+        let snapshot = nodecraft_format::Snapshot { project: s.document().clone(), assets: s.assets().clone(), epoch: 0 };
+        let bytes = nodecraft_format::encode(&snapshot).unwrap();
+        let loaded = Session::with_storage(nodecraft_format::decode(&bytes).unwrap(), Box::new(nodecraft_format::MemoryStorage::default())).unwrap();
+        assert_eq!(comfy_workflow::card(card(&loaded)).unwrap(), mapped, "{name}");
+    }
+}
+
+#[test]
 fn templates948_curated_subgraph_import_keeps_values_explicit_overrides_and_saved_mapping() {
     let mut catalog = NodeCatalog::parse(include_bytes!("../../../comfy/src/templates/fixtures/catalog-facts.json")).unwrap().0;
     catalog.extend(NodeCatalog::parse(include_bytes!("../../../comfy/src/templates/fixtures/mock-core-nodes.json")).unwrap().0);

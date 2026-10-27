@@ -7,8 +7,10 @@ and result selectors. It contains no prompt defaults, media assets or model sele
 [decision](../../docs/decisions/2026-10-27-official-comfy-template-mappings.md).
 
 The structural data is derived from Comfy Org's MIT-licensed workflow templates; the unchanged
-notice is in `LICENSE`. The mapping choices are NodeCraft's own. Candidate video profiles remain
-under validation; these files are work in progress until #948's acceptance criteria are met.
+notice is in `LICENSE`. The mapping choices are NodeCraft's own. Profiles cover all seven most-used
+templates. All ten have offline conversion, selected-request and command import/save-reopen checks
+under explicitly separated observed, synthetic and projected metadata. Installed descriptor and
+live request acceptance remain unverified; these files stay work in progress until #948 is met.
 
 Live ComfyUI validation is an explicit user-required merge blocker. Keep the PR draft until
 that validation is recorded, even if every offline gate passes.
