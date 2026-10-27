@@ -6,7 +6,7 @@ id = "comfyui.hunyuan3d-2"
 provider = "comfyui"
 provider_model = "hunyuan3d-2.0"
 label = "Hunyuan3D 2.0 (local)"
-description = "Convert one image to an untextured GLB on your ComfyUI server. Requires the Hunyuan3D 2.0 checkpoint. Speed and hosting costs depend on your server."
+description = "Make an untextured GLB from one image on your ComfyUI server. Text does not guide this model. Requires the Hunyuan3D 2.0 checkpoint; speed and hosting costs depend on your server."
 latency_s = 120
 quality = 4
 pricing = { type = "free" }
@@ -77,7 +77,7 @@ id = "comfyui.hunyuan3d-2.1"
 provider = "comfyui"
 provider_model = "hunyuan3d-2.1"
 label = "Hunyuan3D 2.1 (local)"
-description = "Convert one image to an untextured GLB on your ComfyUI server. Requires the Hunyuan3D 2.1 checkpoint. Speed and hosting costs depend on your server."
+description = "Make an untextured GLB from one image on your ComfyUI server. Text does not guide this model. Requires the Hunyuan3D 2.1 checkpoint; speed and hosting costs depend on your server."
 latency_s = 120
 quality = 4
 pricing = { type = "free" }

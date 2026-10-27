@@ -49,6 +49,9 @@ Hunyuan multi-view and other mesh-producing plugins can use that path when their
 schema and saved formats match. No TRELLIS plugin/version compatibility is claimed by these
 two named presets. Missing custom nodes are reported before queueing.
 
+Generation cards retain their common prompt field for switching models. These two image-only
+presets do not transmit that text or use it as conditioning; the wired image drives the shape.
+
 ## Validation record and merge blocker
 
 **Live validation is outstanding and blocks merging this change.** No configured server was
