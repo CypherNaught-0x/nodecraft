@@ -64,7 +64,7 @@ selected border more visible than the resting one, in both themes.
 | Input | Effect |
 |---|---|
 | Drag empty canvas (primary) or drag anywhere (middle or right button) | pan |
-| Two-finger scroll / mouse wheel | pan the canvas (zoom about the pointer with *Scroll = Zoom*), over cards too. Scroll chains: the innermost region under the pointer that can still scroll that way (a long text field, then a card's parameter body) takes what it can before reaching its limit, and the canvas takes the remainder; a card with nothing to scroll, a body at its limit, and horizontal scroll over a vertical body all pan the canvas. A swipe belongs to where it started: one begun on the canvas keeps panning when the pointer crosses a card, until the gesture ends |
+| Two-finger scroll / mouse wheel | pan the canvas (zoom about the pointer with *Scroll = Zoom*), over cards too. Scroll chains: the innermost region under the pointer that can still scroll that way takes what it can before reaching its limit, and the canvas takes the remainder. The chained regions are a multiline text field, a card's parameter body (outside the text field), a text card's answer and a text action's input/output preview rows; distances are in screen points, so content moves exactly with the finger at any zoom; a card with nothing to scroll, a body at its limit, and horizontal scroll over a vertical body all pan the canvas. A swipe belongs to where it started: one begun on the canvas keeps panning when the pointer crosses a card, until the gesture ends |
 | Pinch, or ⌘/Ctrl + scroll | zoom about the pointer (10%–400%) |
 | ⌘/Ctrl + `=` / `-` | zoom about the centre by 1.25× |
 | ⌘/Ctrl + `0`, or click the zoom badge | 100%, centred on the cards |
