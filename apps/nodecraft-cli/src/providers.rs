@@ -11,6 +11,15 @@ use nodecraft_engine::settings::ProviderSettings;
 use nodecraft_providers::Provider;
 use nodecraft_types::{Error, ErrorKind};
 use serde_json::{Value, json};
+mod checks;
+
+pub fn command(args: &[String]) -> std::process::ExitCode {
+    match args.first().map(String::as_str) {
+        Some("test") => checks::command(args.get(1..).unwrap_or_default()),
+        Some("list") => crate::read_only("providers", args.get(1..).unwrap_or_default()),
+        _ => crate::read_only("providers", args),
+    }
+}
 
 /// The host's maker over the keychain and `settings`, as the app builds adapters.
 pub fn keychain_maker(settings: ProviderSettings) -> Result<impl FnMut(&str) -> Result<Arc<dyn Provider>, Readiness>, Error> {
