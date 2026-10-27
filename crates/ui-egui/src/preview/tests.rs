@@ -559,3 +559,21 @@ fn a_real_worker_disconnect_releases_reservations_and_a_fresh_worker_recovers() 
     assert!(matches!(previews.request(&ctx, queued, 512.0, || None), Preview::Ready { size: [64, 64], .. }));
     assert_eq!((previews.reserved, previews.bytes), (0, 64 * 64 * 4));
 }
+
+#[test]
+fn expiry_repaints_stay_delayed_even_when_due_within_a_frame() {
+    // egui makes a repaint due within `predicted_dt` immediate; kittest's `run` (and a held
+    // pointer) would then step through the whole second, turning a click into a long press.
+    let ctx = egui::Context::default();
+    let mut previews = inline_cache();
+    let broken = Blake3::from_bytes([190; 32]);
+    for step in 0..24u32 {
+        let mut output = ctx.run_ui(egui::RawInput { time: Some(f64::from(step) * 0.25), predicted_dt: 0.25, ..Default::default() }, |ui| {
+            previews.poll(ui.ctx());
+            let _ = previews.request(ui.ctx(), broken, 128.0, || Some(b"broken".to_vec()));
+        });
+        output.textures_delta.clear();
+        let delay = output.viewport_output.get(&egui::ViewportId::ROOT).map_or(std::time::Duration::MAX, |v| v.repaint_delay);
+        assert!(step < 2 || delay > std::time::Duration::ZERO, "frame {step} asked for an immediate repaint");
+    }
+}

@@ -450,7 +450,12 @@ impl Previews {
             wake = Some(wake.map_or(due, |w| w.min(due)));
         }
         if let Some(due) = wake.filter(|due| due.is_finite()) {
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(due.clamp(0.0, FAILED_IDLE_SECS)));
+            // egui brings a delayed repaint forward by a frame, and one due within a frame
+            // becomes immediate, which a test harness (or a pointer held down) would then run
+            // through frame after frame. Ask for a frame later, so it stays a delayed one.
+            let frame = f64::from(ctx.input(|i| i.predicted_dt));
+            let frame = if frame.is_finite() { frame.clamp(0.0, FAILED_IDLE_SECS) } else { 0.0 };
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(due.clamp(0.0, FAILED_IDLE_SECS) + frame));
         }
     }
 
