@@ -35,6 +35,12 @@ pub enum RunMode {
     Field(FieldId),
     /// Every stale node on the canvas, with the ancestors it needs (as [`RunMode::WithUpstream`]).
     AllStale,
+    /// Every node with work to do (#965): a generation, action or technique node whose result is
+    /// stale, part-made or missing, with the ancestors it needs. What a global Run changed covers.
+    Pending,
+    /// The whole workflow (#965): every generation and technique node on the canvas, fresh or
+    /// not, plus everything [`RunMode::Pending`] runs. Fresh actions keep their results.
+    Workflow,
 }
 
 /// Where one value for an input comes from.
@@ -248,8 +254,8 @@ pub const MAX_BLOCKERS: usize = 256;
 /// the upstream walk.
 ///
 /// Errors are for malformed requests (unknown node ids, nothing requested, a cyclic canvas); a
-/// well-formed request that can't run yet is [`Planned::Blocked`]. A field or "all stale" run
-/// with nothing in it is an empty plan.
+/// well-formed request that can't run yet is [`Planned::Blocked`]. A field, "all stale",
+/// pending or workflow run with nothing in it is an empty plan.
 ///
 /// Kinds' [`NodeKind::mode`](nodecraft_nodes::NodeKind::mode) is asked with the node's own
 /// connected input port types, in `node.inputs` order (list ports with `many: true`).
@@ -336,6 +342,8 @@ pub fn plan_settled(
         }
         RunMode::Field(field) => canvas.nodes().values().filter(|n| n.field == Some(*field)).map(|n| n.id).collect(),
         RunMode::AllStale => graph.with_upstream(&stale.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect(), stale),
+        RunMode::Pending => graph.with_upstream(&graph.work(false, stale), stale),
+        RunMode::Workflow => graph.with_upstream(&graph.work(true, stale), stale),
     };
     // Routers and batches never run: they are resolved into their consumers' inputs.
     let resolved_away = |id: &NodeId| crate::routing::is_router(canvas, *id) || is_batch(canvas, *id);
@@ -589,6 +597,24 @@ impl<'a> Graph<'a> {
 
     fn is_source(&self, node: &Node) -> bool {
         self.kinds.get(&node.kind).is_ok_and(|kind| kind.descriptor().category == Category::Source)
+    }
+
+    /// The nodes of the real canvas a [`RunMode::Pending`] run starts from (#965): generation,
+    /// action and technique nodes (and ones of a kind not installed, which block it) that need a
+    /// run. With `generative`, also every generation and technique node that is fresh, for
+    /// [`RunMode::Workflow`]. Notes, decks, routers, batches and sources have no work of their own.
+    fn work(&self, generative: bool, stale: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        self.canvas
+            .nodes()
+            .values()
+            .filter(|node| !self.inner.contains_key(&node.id))
+            .filter(|node| {
+                let category = self.kinds.get(&node.kind).map(|kind| kind.descriptor().category);
+                let makes = node.kind == technique::ID || matches!(category, Ok(Category::Generation) | Err(_));
+                (makes || matches!(category, Ok(Category::Action))) && ((generative && makes) || self.needs_run(node, stale))
+            })
+            .map(|node| node.id)
+            .collect()
     }
 
     /// The requested nodes plus ancestors that need a run, walking through ancestors that have

@@ -116,6 +116,8 @@ enum ModeParam {
     WithUpstream,
     Field,
     AllStale,
+    Pending,
+    Workflow,
 }
 
 #[derive(Deserialize)]
@@ -184,6 +186,8 @@ fn mode_of(p: &RunParams) -> Result<RunMode, Error> {
         ModeParam::Selected => RunMode::Selected,
         ModeParam::WithUpstream => RunMode::WithUpstream,
         ModeParam::AllStale => RunMode::AllStale,
+        ModeParam::Pending => RunMode::Pending,
+        ModeParam::Workflow => RunMode::Workflow,
         ModeParam::Field => RunMode::Field(p.field.ok_or_else(|| invalid("a field run needs `field`"))?),
     })
 }
@@ -277,6 +281,8 @@ fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -
         RunMode::WithUpstream => (1, None),
         RunMode::Field(id) => (2, Some(id)),
         RunMode::AllStale => (3, None),
+        RunMode::Pending => (4, None),
+        RunMode::Workflow => (5, None),
     };
     hash.update(&[tag]);
     if let Some(field) = field {
@@ -342,6 +348,12 @@ fn run_canvas(document: &nodecraft_graph::Project, id: nodecraft_types::CanvasId
     Ok(canvas)
 }
 
+/// Whether a run in `mode` reads the canvas's stale set: a plain selection or field doesn't pay
+/// to hash the canvas.
+fn looks_at_staleness(mode: &RunMode) -> bool {
+    matches!(mode, RunMode::WithUpstream | RunMode::AllStale | RunMode::Pending | RunMode::Workflow)
+}
+
 /// Plans `p` on `document`, leaving out the `settled` nodes, with the technique expansion it
 /// planned on.
 fn plan_on<'a>(
@@ -353,8 +365,7 @@ fn plan_on<'a>(
     let canvas = run_canvas(document, p.canvas)?;
     let mode = mode_of(p)?;
     let requested: BTreeSet<NodeId> = p.nodes.iter().copied().collect();
-    // Only these modes look at staleness; a plain selection shouldn't pay to hash the canvas.
-    let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, c.kinds)? } else { BTreeSet::new() };
+    let stale = if looks_at_staleness(&mode) { nodecraft_exec::staleness::stale(canvas, c.kinds)? } else { BTreeSet::new() };
     // Technique nodes run their versions' nodes, inlined for planning, quoting and admission.
     let expanded = nodecraft_exec::technique::expand(document.canvases(), canvas, c.kinds)?;
     // Planning consults the option lists the host has fetched, so a value off a known list is
@@ -911,7 +922,7 @@ fn enabled_export(c: &Context<'_>, value: &Value) -> Result<(), Error> {
 fn run_schema_properties() -> Value {
     json!({
         "canvas": {"type": "string", "format": "uuid"},
-        "mode": {"type": "string", "enum": ["selected", "with_upstream", "field", "all_stale"]},
+        "mode": {"type": "string", "enum": ["selected", "with_upstream", "field", "all_stale", "pending", "workflow"]},
         "nodes": {"type": "array", "maxItems": MAX_REQUESTED, "items": {"type": "string", "format": "uuid"}},
         "field": {"type": "string", "format": "uuid"}
     })
@@ -955,6 +966,7 @@ fn export_schema() -> Value {
 }
 
 pub fn specs() -> Vec<CommandSpec> {
+    let [run_changed, run_workflow] = whole::specs();
     vec![
         CommandSpec {
             id: "run.quote",
@@ -962,11 +974,13 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: quote_schema,
-            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, reused, alike, requests, requests_complete, blocked?, token}. `nodes` is used by selected and with_upstream. `reused` lists nodes with caching on (node.cache_set) whose identical result is already in the project: they aren't steps and cost nothing. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `alike` lists [{node, variations, seeds}] for nodes asking for several variations with a pinned seed: a deterministic model returns the same result each time, at the price of all of them. `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. `requests` lists, per node whose model calls are already known, its largest call counted against one call's limits (`values`, `inputs`, `bytes`, `media_bytes`, each with its `*_limit`) and why it would be `refused` (`jobs` of `total_jobs` checked; refused first, first 500); a refused call blocks the run. `requests_complete` is false when some known calls were left to runtime admission (at most 4,096 are checked, each node's first before any node's second). Read-only.",
+            params_doc: "{canvas, mode: selected|with_upstream|field|all_stale|pending|workflow, nodes?: [NodeId], field?: FieldId} -> {steps: [{node, jobs, models, price, unpriced}] (first 500), steps_total, totals: {CUR: {currency, micros, text}}, complete, allowed, blocks, provisional, estimated, resumable, quoted, reused, alike, requests, requests_complete, blocked?, token}. `nodes` is used by selected and with_upstream. `pending` covers every generation, action and technique node that is stale, part-made or has no result, with the upstream it needs (run.changed); `workflow` adds every other generation and technique node (run.workflow). `reused` lists nodes with caching on (node.cache_set) whose identical result is already in the project: they aren't steps and cost nothing. `quoted` lists by-usage nodes priced from their providers' quotes (run.estimate). `alike` lists [{node, variations, seeds}] for nodes asking for several variations with a pinned seed: a deterministic model returns the same result each time, at the price of all of them. `resumable` lists batch nodes priced for every item that may run only the items their partial result lacks. `requests` lists, per node whose model calls are already known, its largest call counted against one call's limits (`values`, `inputs`, `bytes`, `media_bytes`, each with its `*_limit`) and why it would be `refused` (`jobs` of `total_jobs` checked; refused first, first 500); a refused call blocks the run. `requests_complete` is false when some known calls were left to runtime admission (at most 4,096 are checked, each node's first before any node's second). Read-only.",
             enabled: enabled_quote,
             run: run_quote,
         },
         estimate::spec(),
+        run_changed,
+        run_workflow,
         CommandSpec {
             id: "run.start",
             label: "Run",
@@ -1005,8 +1019,10 @@ mod media_size;
 mod request_size;
 mod reuse;
 mod storage;
+mod whole;
 pub(crate) use estimate::jobs as estimate_jobs;
 pub use estimate::{EstimateJob, Estimating};
+pub use whole::{CHANGED_MODE, WORKFLOW_MODE};
 
 #[cfg(test)]
 mod tests;

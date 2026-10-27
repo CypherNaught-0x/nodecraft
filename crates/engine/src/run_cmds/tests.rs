@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 mod character673;
 mod reasons655;
+mod whole965;
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
 

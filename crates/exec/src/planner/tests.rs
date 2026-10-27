@@ -1034,3 +1034,50 @@ fn a_folder_run_on_its_own_gives_its_first_file_and_every_file() {
     assert_eq!(on("file"), texts(&["alpha"]));
     assert_eq!(on("names"), texts(&["c1.txt", "c2.txt", "c10.txt"]));
 }
+
+/// #965: a pending run starts from every node with work to do, a workflow run from every
+/// generative node too; notes and sources are never steps, and a fresh action keeps its result.
+#[test]
+fn pending_and_workflow_runs_choose_nodes_with_work() {
+    let mut kinds = kinds();
+    let action = NodeDescriptor {
+        id: "test.action".into(),
+        label: "Action".into(),
+        category: Category::Action,
+        ..kinds.get("test.relay").unwrap().descriptor().clone()
+    };
+    kinds.register(Box::new(Relay(action))).unwrap();
+    let note = kinds.get("structure.note").unwrap().descriptor().instantiate(id(5), &BTreeMap::new()).unwrap();
+    let action = |n: u8, result: Option<&str>| Node { kind: "test.action".into(), ..relay(n, result) };
+    // 1 (text) → 2 (relay, result) → 3 (relay, none) → 4 (relay, none); 2 → 6 (action, result);
+    // 3 → 7 (action, none); 5 is a note.
+    let p = project(
+        vec![text(1, "dawn"), relay(2, Some("forest")), relay(3, None), relay(4, None), note, action(6, Some("cut")), action(7, None)],
+        &[(1, 2), (2, 3), (3, 4), (2, 6), (3, 7)],
+    );
+    let canvas = p.canvases().get(&C).unwrap();
+    let none = BTreeSet::new();
+    let plan = ready(plan_run(canvas, &kinds, &RunMode::Pending, &none, &none).unwrap());
+    assert_eq!(order(&plan), vec![id(3), id(4), id(7)]);
+    // Stale 2 runs too, and so does what reads it; requested nodes are ignored.
+    let plan = ready(plan_run(canvas, &kinds, &RunMode::Pending, &ids(&[1]), &ids(&[2, 6])).unwrap());
+    assert_eq!(order(&plan), vec![id(2), id(3), id(4), id(6), id(7)]);
+    // The workflow regenerates fresh 2 as well, but leaves fresh action 6 alone.
+    let plan = ready(plan_run(canvas, &kinds, &RunMode::Workflow, &none, &none).unwrap());
+    assert_eq!(order(&plan), vec![id(2), id(3), id(4), id(7)]);
+    // Everything fresh: nothing pending is an empty plan, not an error; the workflow still runs
+    // every generative node.
+    let p = project(vec![text(1, "dawn"), relay(2, Some("a")), relay(3, Some("b")), action(6, Some("c"))], &[(1, 2), (2, 3), (2, 6)]);
+    let canvas = p.canvases().get(&C).unwrap();
+    assert!(ready(plan_run(canvas, &kinds, &RunMode::Pending, &none, &none).unwrap()).steps.is_empty());
+    assert_eq!(order(&ready(plan_run(canvas, &kinds, &RunMode::Workflow, &none, &none).unwrap())), vec![id(2), id(3)]);
+    // A kind that isn't installed has work it can't do: it blocks, rather than being skipped.
+    let mut missing = relay(8, None);
+    missing.kind = "test.not_installed".into();
+    let p = project(vec![text(1, "dawn"), missing], &[]);
+    let canvas = p.canvases().get(&C).unwrap();
+    for mode in [RunMode::Pending, RunMode::Workflow] {
+        let Planned::Blocked(blockers) = plan_run(canvas, &kinds, &mode, &none, &none).unwrap() else { panic!("{mode:?} must block") };
+        assert_eq!(blockers.first().map(|b| (b.node, &b.reason)), Some((id(8), &Reason::UnknownKind)));
+    }
+}
