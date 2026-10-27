@@ -251,9 +251,20 @@ fn glb(b: &[u8], l: Limits) -> Result<(), ProviderError> {
     }
     Ok(())
 }
+pub(super) fn vector(b: &[u8], l: Limits, pixels: &mut u64) -> Result<nodecraft_media::svg::Info, ProviderError> {
+    let info = nodecraft_media::svg::probe(b, &l.image(false)).map_err(|_| bad())?;
+    let count = u64::from(info.width).checked_mul(u64::from(info.height)).ok_or_else(bad)?;
+    *pixels = pixels.checked_add(count).filter(|n| *n <= l.total_pixels).ok_or_else(bad)?;
+    Ok(info)
+}
 pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Result<&'static str, ProviderError> {
     match r.model {
-        Model::Image
+        Model::RecraftVector => {
+            vector(b, l, pixels)?;
+            Ok(nodecraft_media::svg::MIME)
+        }
+        Model::RecraftImage
+        | Model::Image
         | Model::Styled
         | Model::Upscale
         | Model::Topaz
@@ -267,8 +278,10 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             let m = nodecraft_media::probe_image(b, &l.image(false)).map_err(|_| bad())?;
             if m.mime == "image/png" {
                 png_extent(b)?;
-            } else if !matches!(r.model, Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram)
-                || !matches!(m.mime, "image/jpeg" | "image/webp")
+            } else if !matches!(
+                r.model,
+                Model::RecraftImage | Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram
+            ) || !matches!(m.mime, "image/jpeg" | "image/webp")
             {
                 return Err(bad());
             }

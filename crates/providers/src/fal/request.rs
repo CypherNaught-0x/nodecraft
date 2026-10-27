@@ -7,6 +7,7 @@ mod hunyuan;
 mod ideogram;
 mod ltx;
 mod luma;
+mod recraft;
 mod rodin;
 mod topaz;
 #[derive(Serialize)]
@@ -202,6 +203,9 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     if model == Model::Topaz {
         return topaz::prepare(j, l);
     }
+    if model.recraft() {
+        return recraft::prepare(j, l, model);
+    }
     if model.rodin() {
         return rodin::prepare(j, l, model);
     }
@@ -280,7 +284,9 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             return Err(invalid("fal unsupported parameter value"));
         }
         let ok = match model {
-            Model::RodinText
+            Model::RecraftImage
+            | Model::RecraftVector
+            | Model::RodinText
             | Model::RodinImages
             | Model::RodinFastText
             | Model::RodinFastImages
@@ -362,7 +368,9 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         body.seed = Some(v.as_u64().filter(|n| *n <= u32::MAX as u64).ok_or_else(|| invalid("fal seed must fit u32"))?);
     }
     match model {
-        Model::RodinText
+        Model::RecraftImage
+        | Model::RecraftVector
+        | Model::RodinText
         | Model::RodinImages
         | Model::RodinFastText
         | Model::RodinFastImages

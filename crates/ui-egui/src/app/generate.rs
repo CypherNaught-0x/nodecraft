@@ -587,7 +587,7 @@ impl NodeCraftApp {
                                     }
                                 };
                             }
-                            if nodecraft_engine::split::image_of(node).is_some() {
+                            if nodecraft_engine::split::preview_image_of(node).is_some() {
                                 expand = ui.button("Expand").on_hover_text("Show this image larger").clicked();
                             }
                             match downloads {
@@ -665,7 +665,7 @@ impl NodeCraftApp {
             .canvases()
             .get(&self.canvas)
             .and_then(|canvas| canvas.nodes().get(&id))
-            .and_then(nodecraft_engine::split::image_of)
+            .and_then(nodecraft_engine::split::preview_image_of)
             .cloned()
         else {
             self.viewer = None;

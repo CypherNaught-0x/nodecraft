@@ -56,7 +56,7 @@ impl Metrics {
         });
         let composer = if composer { t.composer_body_height - t.card_padding * 2.0 } else { 0.0 };
         let parameters = (controls + composer).max(t.control_row_height / 2.0).min(t.card_max_height - t.card_padding * 2.0);
-        let shows = nodecraft_engine::split::image_of(node).is_some()
+        let shows = nodecraft_engine::split::preview_image_of(node).is_some()
             // A folder of images shows the images it gives.
             || node.kind == nodecraft_nodes::folder::ID && nodecraft_engine::split::image_rows(node).1 > 0
             // The app previews a PDF source's first page through the image renderer too.

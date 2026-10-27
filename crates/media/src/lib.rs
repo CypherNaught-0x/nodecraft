@@ -17,6 +17,8 @@ mod movie;
 mod sniff;
 mod sound;
 pub mod style;
+/// Bounded static SVG originals and resource-free raster previews.
+pub mod svg;
 mod thumb;
 
 pub use error::MediaError;

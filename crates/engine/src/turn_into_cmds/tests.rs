@@ -100,6 +100,7 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         "image.layers",
         "image.mask",
         "image.overlay",
+        "image.rasterize",
         "image.replace_color",
         "image.resize",
         "image.rotate",

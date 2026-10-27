@@ -57,6 +57,7 @@ pub(crate) struct VerifiedData {
     pub crc32: u32,
     pub sniffed: Option<nodecraft_media::Sniffed>,
     pub image: Option<nodecraft_media::ImageMeta>,
+    pub svg: Option<nodecraft_media::svg::Info>,
 }
 pub(crate) struct CacheRecord {
     pub identity: Weak<AssetIdentity>,

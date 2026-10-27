@@ -81,14 +81,22 @@ impl Limits {
         // Topaz can return a 4096² high-bit-depth PNG, larger than legacy image caps.
         let large_result = large_video || model.hunyuan() || model.rodin() || model == Model::Topaz;
         Self {
-            text_bytes: self.text_bytes.min(if model.alibaba() { Self::ALIBABA_HARD.text_bytes } else { Self::HARD.text_bytes }),
+            text_bytes: self.text_bytes.min(if model.alibaba() {
+                Self::ALIBABA_HARD.text_bytes
+            } else if model.recraft() {
+                64 * 1024
+            } else {
+                Self::HARD.text_bytes
+            }),
             request_bytes: self.request_bytes.min(if matches!(model, Model::GrokEdit | Model::QwenEdit | Model::RodinImages | Model::RodinFastImages) {
                 Self::GROK_HARD.request_bytes
             } else {
                 Self::HARD.request_bytes
             }),
             output_bytes: self.output_bytes.min(if large_result { Self::VIDEO_HARD.output_bytes } else { Self::HARD.output_bytes }),
-            total_output_bytes: self.total_output_bytes.min(if grok_images {
+            total_output_bytes: self.total_output_bytes.min(if model.recraft() {
+                Self::HARD.output_bytes
+            } else if grok_images {
                 10 * Self::HARD.output_bytes
             } else if qwen_images {
                 6 * Self::HARD.output_bytes
