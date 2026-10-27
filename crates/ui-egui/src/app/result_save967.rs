@@ -6,7 +6,7 @@ struct MenuTargets {
     session: Arc<()>,
     node: NodeId,
     frame: u64,
-    targets: Vec<crate::result_save::Target>,
+    targets: crate::result_save::Targets,
 }
 
 impl NodeCraftApp {

@@ -2,7 +2,7 @@
 //! This module only reports history intents; the app owns dialogs and background writers.
 use crate::{history::HistoryIntent, icons::Icon, theme::Tokens};
 use nodecraft_graph::Node;
-use nodecraft_types::{AssetRef, GenerationId, Value};
+use nodecraft_types::{AssetRef, Error, GenerationId, Value};
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,6 +13,8 @@ pub(crate) struct Target {
     pub label: String,
     pub name: String,
 }
+
+pub(crate) type Targets = Result<Vec<Target>, Error>;
 
 impl Target {
     pub fn file(&self) -> HistoryIntent {
@@ -37,7 +39,7 @@ pub(crate) enum Hit {
 struct PinnedTargets {
     owner: egui::Id,
     session: Arc<()>,
-    targets: Vec<Target>,
+    targets: Targets,
 }
 
 #[cfg(test)]
@@ -45,17 +47,15 @@ pub(crate) fn pinned_snapshot_count(ctx: &egui::Context) -> usize {
     ctx.data_mut(|data| data.count::<PinnedTargets>())
 }
 
-pub(crate) fn active(node: &Node) -> Vec<Target> {
-    let Some(generation) = node.history.iter().find(|generation| Some(generation.id) == node.active) else { return Vec::new() };
+pub(crate) fn active(node: &Node) -> Targets {
+    let Some(generation) = node.history.iter().find(|generation| Some(generation.id) == node.active) else { return Ok(Vec::new()) };
     crate::history::export_targets(node, generation)
-        .into_iter()
-        .map(|(label, port, item, name)| Target { generation: generation.id, label, port, item, name })
-        .collect()
+        .map(|targets| targets.into_iter().map(|(label, port, item, name)| Target { generation: generation.id, label, port, item, name }).collect())
 }
 
 /// Pin the menu to the result that was right-clicked, even if a running job finishes while
 /// the menu is open. A transient live-action preview has no saved result to export yet.
-pub(crate) fn pinned(ctx: &egui::Context, response: &egui::Response, node: &Node, hit: Option<Hit>, transient: bool, session: &Arc<()>) -> Vec<Target> {
+pub(crate) fn pinned(ctx: &egui::Context, response: &egui::Response, node: &Node, hit: Option<Hit>, transient: bool, session: &Arc<()>) -> Targets {
     // One aggregate slot for the active context menu, regardless of cards/projects visited.
     let key = egui::Id::new("result_save_context_targets");
     if !response.secondary_clicked()
@@ -63,10 +63,10 @@ pub(crate) fn pinned(ctx: &egui::Context, response: &egui::Response, node: &Node
         && let Some(pinned) = ctx.data_mut(|data| data.get_temp::<PinnedTargets>(key))
         && pinned.owner == response.id
     {
-        return if Arc::ptr_eq(session, &pinned.session) { pinned.targets } else { Vec::new() };
+        return if Arc::ptr_eq(session, &pinned.session) { pinned.targets } else { Ok(Vec::new()) };
     }
     let targets = match hit {
-        Some(_) if transient => Vec::new(),
+        Some(_) if transient => Ok(Vec::new()),
         Some(hit) => preview(node, hit),
         None => active(node),
     };
@@ -76,11 +76,11 @@ pub(crate) fn pinned(ctx: &egui::Context, response: &egui::Response, node: &Node
 
 /// Resolve the actual borrowed asset the preview paints back to its output/list position.
 /// Flattening matches `history.export`, including a batch's per-prompt nested lists.
-pub(crate) fn preview(node: &Node, hit: Hit) -> Vec<Target> {
+pub(crate) fn preview(node: &Node, hit: Hit) -> Targets {
     if node.kind.starts_with("source.") || node.kind == nodecraft_nodes::folder::ID {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let Some(generation) = node.history.iter().find(|generation| Some(generation.id) == node.active) else { return Vec::new() };
+    let Some(generation) = node.history.iter().find(|generation| Some(generation.id) == node.active) else { return Ok(Vec::new()) };
     let rows;
     let asset = match hit {
         Hit::Image(row, column) => {
@@ -91,34 +91,33 @@ pub(crate) fn preview(node: &Node, hit: Hit) -> Vec<Target> {
         Hit::Audio => crate::audio::audio_of(node),
         Hit::Mesh => crate::mesh_view::mesh_of(node),
     };
-    let Some(asset) = asset else { return Vec::new() };
+    let Some(asset) = asset else { return Ok(Vec::new()) };
     let matches = |value: &Value| matches!(value, Value::Media(candidate) if std::ptr::eq::<AssetRef>(candidate, asset));
+    let mut budget = nodecraft_engine::export_leaves::Budget::default();
     for (port, value) in node.outputs.iter().zip(&generation.outputs) {
-        let item = match value {
-            Value::List(items) => match nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty()).position(matches) {
-                Some(item) => Some(item),
-                None => continue,
-            },
-            value if matches(value) => None,
-            _ => continue,
-        };
-        return vec![Target {
-            generation: generation.id,
-            port: Some(port.name.clone()),
-            item,
-            label: port.name.clone(),
-            name: crate::history::suggested_name(asset.mime.essence()),
-        }];
+        for leaf in nodecraft_engine::export_leaves::iter(value, !generation.items.is_empty(), &mut budget) {
+            let leaf = leaf?;
+            if matches(leaf.value) {
+                return Ok(vec![Target {
+                    generation: generation.id,
+                    port: Some(port.name.clone()),
+                    item: leaf.item,
+                    label: port.name.clone(),
+                    name: crate::history::suggested_name(asset.mime.essence()),
+                }]);
+            }
+        }
     }
-    Vec::new()
+    Ok(Vec::new())
 }
 
 /// Draw on demand, never scan large histories/lists in every card frame.
-pub(crate) fn menu(ui: &mut egui::Ui, targets: &[Target], t: &Tokens) -> Option<HistoryIntent> {
+pub(crate) fn menu(ui: &mut egui::Ui, checked: &Targets, t: &Tokens) -> Option<HistoryIntent> {
+    let targets = checked.as_ref().map(Vec::as_slice).unwrap_or_default();
     if targets.is_empty() {
         ui.add_enabled(false, Icon::Save.button(ui, "Save as…", t));
         ui.add_enabled(false, Icon::Open.button(ui, "Save to folder…", t));
-        ui.label("No saved media result. Generate or select a media result first.");
+        ui.label(checked.as_ref().err().map_or("No saved media result. Generate or select a media result first.", |error| error.message.as_str()));
         return None;
     }
     let mut intent = None;

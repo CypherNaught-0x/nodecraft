@@ -219,6 +219,46 @@ fn save967_open_menu_keeps_its_historical_result_when_the_active_result_changes(
 }
 
 #[test]
+fn save967_nested_collection_card_menu_saves_one_exact_media_leaf() {
+    let _serial = export_tests::EXPORT_TESTS.lock().unwrap();
+    let second = nodecraft_media::encode_png(6, 8, &[220; 192], &Default::default()).unwrap();
+    let mut h = scene_with("video.frames", &[("image/png", image()), ("image/png", second.clone())], false, |node, media| {
+        let generation = node.history.first_mut().unwrap();
+        generation.outputs = vec![Value::List(vec![Value::List(vec![media[0].clone(), Value::Text("skip this non-media leaf".into()), media[1].clone()])])];
+        assert!(generation.items.is_empty(), "ordinary collections are not batch-fanned");
+    });
+    let port = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&NODE).unwrap().outputs.first().unwrap().name.clone();
+    let dir = tempfile::tempdir().unwrap();
+    h.state_mut().exports.answer = Some(dir.path().join("nested.png"));
+    let point = card_point(&h);
+    secondary(&mut h, point);
+    h.get_by_label_contains("Save as…").click();
+    h.run();
+    h.get_by_label(&format!("{port}: item 3 of 3")).click();
+    finish_file(&mut h);
+    assert_eq!(std::fs::read(dir.path().join("nested.png")).unwrap(), second);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn save967_gallery_after_a_nested_collection_uses_the_export_leaf_index() {
+    let _serial = export_tests::EXPORT_TESTS.lock().unwrap();
+    let second = nodecraft_media::encode_png(6, 8, &[220; 192], &Default::default()).unwrap();
+    let mut h = scene_with("generation.image", &[("image/png", image()), ("image/png", second.clone())], false, |node, media| {
+        node.outputs.first_mut().unwrap().port_type.many = true;
+        node.history.first_mut().unwrap().outputs = vec![Value::List(vec![Value::List(vec![media[0].clone(); 3]), media[1].clone()])];
+    });
+    wait(&mut h, "Image 6×8");
+    let dir = tempfile::tempdir().unwrap();
+    h.state_mut().exports.answer = Some(dir.path().join("visible.png"));
+    h.get_by_label("Image 6×8").click_secondary();
+    h.run();
+    h.get_by_label("Save as…").click();
+    finish_file(&mut h);
+    assert_eq!(std::fs::read(dir.path().join("visible.png")).unwrap(), second);
+}
+
+#[test]
 fn save967_replacing_a_project_revokes_an_open_result_menu() {
     let _serial = export_tests::EXPORT_TESTS.lock().unwrap();
     for (kind, toolbar) in [("generation.image", false), ("image.blur", true)] {
