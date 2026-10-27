@@ -422,6 +422,9 @@ pub(crate) mod updates;
 mod web_clipboard;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod web_files;
+mod wire_body;
+#[cfg(test)]
+mod wiring951_tests;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use web_files::pick_package;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -3186,6 +3189,7 @@ impl NodeCraftApp {
         };
         let world = self.view.to_world(origin, pointer);
         let reach = card::PORT_HIT / self.view.zoom + t.port_radius;
+        let on_canvas = self.viewport.contains(pointer) && ui.ctx().layer_id_at(pointer).is_none_or(|layer| layer == ui.layer_id());
         let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.id().with("wiring"))).with_clip_rect(self.viewport);
         // The nearest accepting input within reach wins; failing that, the nearest input explains why.
         let mut best: Option<(bool, f32, &Node, &nodecraft_graph::Port, Pos2)> = None;
@@ -3204,7 +3208,23 @@ impl NodeCraftApp {
                 }
             }
         }
-        let target = best.map(|(_, _, node, input, at)| (node, input, at));
+        let target = on_canvas
+            .then(|| {
+                best.map(|(_, _, node, input, at)| (node, input, at)).or_else(|| {
+                    wire_body::target(canvas, &self.painted, &self.input_ports, &self.selection, wiring, world, |node, input| accepts(node, input).is_ok())
+                })
+            })
+            .flatten();
+        if let Some((node, _, _)) = target.filter(|(node, input, _)| accepts(node, input).is_ok())
+            && let Some(rect) = self.painted.get(&node.id).filter(|rect| rect.contains(world))
+        {
+            painter.rect_stroke(
+                self.view.rect_to_screen(origin, *rect).expand(t.drop_ring_gap),
+                t.card_radius,
+                egui::Stroke::new(t.drop_ring_width, t.accent),
+                egui::StrokeKind::Outside,
+            );
+        }
         let end = target.filter(|(node, input, _)| accepts(node, input).is_ok()).map_or(world, |(_, _, at)| at);
         let points = noodle::bezier(start, end).map(|p| self.view.to_screen(origin, p));
         let stroke = egui::Stroke::new(t.wire_width, t.wire(wiring.port_type.modality));
@@ -3213,16 +3233,14 @@ impl NodeCraftApp {
             return (None, None, None);
         }
         let Some((node, input, _)) = target else {
+            let on_card = drop_targets(canvas, &self.painted).any(|(_, rect)| rect.contains(world));
+            if on_card || !on_canvas {
+                return (None, None, None);
+            }
             // Dropping a picked-up noodle on empty canvas disconnects it; a new one asks what
             // to turn into.
             if let Some(id) = wiring.moving {
                 return (Some(("edge.disconnect", json!({"canvas": self.canvas, "id": id}))), None, None);
-            }
-            // Only empty canvas: not on a card, and not under an overlay (minimap, search).
-            let on_card = drop_targets(canvas, &self.painted).any(|(_, rect)| rect.contains(world));
-            let on_canvas = self.viewport.contains(pointer) && ui.ctx().layer_id_at(pointer).is_none_or(|layer| layer == ui.layer_id());
-            if on_card || !on_canvas {
-                return (None, None, None);
             }
             return (None, None, Some(TurnInto::new(self.session.kinds(), wiring.anchor.clone(), wiring.port_type, world, pointer)));
         };
