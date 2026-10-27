@@ -2082,8 +2082,12 @@ factor, within 4096 pixels per axis and 16,777,216 pixels. Per-result and aggreg
 limits are 256 MiB, with separate decoder limits. These are NodeCraft limits, not a claimed
 vendor ceiling. Downloads use the exact documented `ai-statics.freepik.com` delivery host,
 carry no API key and follow no redirects. Original bytes are retained in history and saved
-projects. No paid live generation was used as validation; ordinary tests use authored media
-and mock HTTP, and a paid smoke test is explicitly opt-in.
+projects. Large originals are hashed and sealed by the shared result worker, then adopted
+without copying them on the UI thread. A local storage failure retains the paid original for
+retry. Storage admission follows executed catalog endpoints, including custom model ids and
+deferred Technique work; an unused Magnific card does not block another run. No paid live
+generation was used as validation; ordinary tests use authored media and mock HTTP, and a
+paid smoke test is explicitly opt-in.
 
 ## Rodin through fal
 

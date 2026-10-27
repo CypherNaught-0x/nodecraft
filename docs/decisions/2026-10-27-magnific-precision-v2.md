@@ -31,6 +31,12 @@ only its temporary URL. Require native streamed storage before a paid job; use t
 shared result-sealing worker and lightweight adoption path for large originals. Do not add
 a second synchronous large-file import path on the UI thread.
 
+Storage admission resolves executed quote model ids through the current catalog to the
+Magnific provider and Precision V2 endpoint, including custom ids and deferred Technique
+steps. Unused canvas nodes and reused/empty steps do not block other work. Small originals
+keep the shared small-asset path; large originals use the same worker hash/seal and receipt
+adoption pipeline as Topaz, with paid-result retention and local retry on storage failure.
+
 Primary sources checked 2026-10-27: [request schema](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/post-image-upscaler-precision-v2),
 [task status](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/get-%7Btask-id%7D-by-id),
 [pricing](https://docs.magnific.com/pricing), [authentication](https://docs.magnific.com/authentication)

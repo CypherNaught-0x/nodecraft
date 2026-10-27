@@ -159,8 +159,9 @@ fn run(lost: bool, streaming: bool, large: bool) {
     let mut request = json!({"canvas":C,"mode":"selected","nodes":[CARD]});
     if !streaming {
         let error = session.dispatch("run.quote", &request).unwrap_err();
-        assert!(error.message.contains("Magnific") && error.message.contains("desktop"), "{error}");
+        assert!(error.message.contains("Magnific Precision V2 needs a desktop project"), "{error}");
         assert!(wire.requests.lock().unwrap().is_empty());
+        assert!(budget.log.lock().unwrap().entries().next().is_none());
         return;
     }
     let quote = session.dispatch("run.quote", &request).unwrap();
@@ -244,5 +245,12 @@ fn magnific38_lost_paid_reply_never_replays_in_the_actual_host() {
     run(true, true, false);
 }
 
-// Large-result and Classic refusal fixtures are enabled with the shared Topaz worker/guard
-// integration, not a second implementation of those storage boundaries.
+#[test]
+fn magnific38_native_large_original_survives_worker_history_and_indexed_save_reopen() {
+    run(false, true, true);
+}
+
+#[test]
+fn magnific38_classic_storage_refuses_before_any_paid_http() {
+    run(false, false, false);
+}
