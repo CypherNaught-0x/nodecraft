@@ -1,5 +1,7 @@
 //! Bounded fal queue adapter for explicitly selected live model aliases.
 //! No remote deduplication guarantee; accepted handles resume, ambiguous creates never replay.
+#[cfg(test)]
+mod ideogram_tests;
 mod json;
 mod limits;
 #[cfg(test)]
@@ -27,6 +29,8 @@ pub const FLUX: &str = "fal-ai/flux/schnell";
 pub const LUMA_RAY: &str = "luma/agent/ray/v3.2/text-to-video";
 pub const LUMA_RAY_I2V: &str = "luma/agent/ray/v3.2/image-to-video";
 pub const LUMA_PHOTON: &str = "fal-ai/luma-photon";
+/// Ideogram V3 text-to-image, one Balanced image through fal's queue (#34).
+pub const IDEOGRAM: &str = "fal-ai/ideogram/v3";
 pub const WAN: &str = "fal-ai/wan/v2.2-a14b/text-to-video";
 /// Wan 2.2 from a first frame, with an optional last frame (#607).
 pub const WAN_I2V: &str = "fal-ai/wan/v2.2-a14b/image-to-video";
@@ -104,6 +108,7 @@ enum Model {
     RayText,
     RayFrames,
     Photon,
+    Ideogram,
     Image,
     Video,
     /// Image to video: a first frame and an optional last frame.
@@ -125,6 +130,7 @@ impl Model {
             LUMA_RAY => Ok(Self::RayText),
             LUMA_RAY_I2V => Ok(Self::RayFrames),
             LUMA_PHOTON => Ok(Self::Photon),
+            IDEOGRAM => Ok(Self::Ideogram),
             FLUX => Ok(Self::Image),
             WAN => Ok(Self::Video),
             WAN_I2V => Ok(Self::Frames),
@@ -143,6 +149,7 @@ impl Model {
             Self::RayText => LUMA_RAY,
             Self::RayFrames => LUMA_RAY_I2V,
             Self::Photon => LUMA_PHOTON,
+            Self::Ideogram => IDEOGRAM,
             Self::Image => FLUX,
             Self::Video => WAN,
             Self::Frames => WAN_I2V,
@@ -163,6 +170,7 @@ impl Model {
         match self {
             Self::RayText | Self::RayFrames => "luma/agent",
             Self::Photon => LUMA_PHOTON,
+            Self::Ideogram => "fal-ai/ideogram",
             Self::Image => "fal-ai/flux",
             Self::Video | Self::Frames | Self::Speech => "fal-ai/wan",
             Self::Audio => "fal-ai/kokoro",
@@ -175,7 +183,7 @@ impl Model {
     }
     /// Whether fal lists this model's images under `images`.
     fn images(self) -> bool {
-        matches!(self, Self::Image | Self::Styled | Self::Photon)
+        matches!(self, Self::Image | Self::Styled | Self::Photon | Self::Ideogram)
     }
 }
 #[derive(Clone, Copy)]
@@ -469,7 +477,7 @@ impl Fal {
             if f.mime.as_deref().is_some_and(|m| m != mime) {
                 return Err(malformed("fal output MIME disagrees with actual bytes"));
             }
-            if matches!(record.model, Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon)
+            if matches!(record.model, Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon | Model::Ideogram)
                 && (f.width.is_some() || f.height.is_some())
             {
                 let meta = nodecraft_media::probe_image(&reply.body, &limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;

@@ -1,6 +1,47 @@
 # Official fal model HTTP schemas and endpoint pricing checked 2026-10-18. Live aliases, no immutable weights.
 # https://fal.ai/models/fal-ai/trellis-2/api?platform=http
 
+# Ideogram V3 HTTP schema and Balanced price checked 2026-10-27:
+# https://fal.ai/models/fal-ai/ideogram/v3/api
+# https://fal.ai/models/fal-ai/ideogram/v3
+[[model]]
+id="fal.ideogram-v3"
+provider="fal"
+provider_model="fal-ai/ideogram/v3"
+label="Ideogram V3 Balanced (fal)"
+description="One text-to-image result, with MagicPrompt and optional negative prompt. Fixed Balanced rendering; dated 0.06 USD estimate. Live alias."
+latency_s=45
+quality=3
+pricing={type="per_call",price="0.06 USD"}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="negative_prompt",modality="text",min=0,max=1}]
+
+[[model.params.params]]
+name="image_size"
+label="Image size"
+control={type="choice",options=[{value="square_hd",label="Square HD"},{value="square",label="Square"},{value="portrait_4_3",label="Portrait 3:4"},{value="portrait_16_9",label="Portrait 9:16"},{value="landscape_4_3",label="Landscape 4:3"},{value="landscape_16_9",label="Landscape 16:9"}]}
+default={type="text",value="square_hd"}
+
+[[model.params.params]]
+name="style"
+label="Style"
+control={type="choice",options=[{value="AUTO",label="Auto"},{value="GENERAL",label="General"},{value="REALISTIC",label="Realistic"},{value="DESIGN",label="Design"}]}
+default={type="text",value="AUTO"}
+
+[[model.params.params]]
+name="expand_prompt"
+label="MagicPrompt"
+control={type="toggle"}
+default={type="bool",value=true}
+
+[[model.params.params]]
+name="seed"
+label="Seed (optional)"
+control={type="unsigned",min="0",max="2147483647",step="1"}
+
 [[model]]
 id="fal.flux-schnell"
 provider="fal"

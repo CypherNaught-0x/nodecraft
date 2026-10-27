@@ -65,6 +65,8 @@ mod held_fanout611;
 mod held_restart614;
 #[path = "held_results369.rs"]
 mod held_results369;
+#[path = "ideogram34.rs"]
+mod ideogram34;
 #[path = "image_modes500.rs"]
 mod image_modes500;
 #[path = "impact114.rs"]
