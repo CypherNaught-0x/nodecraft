@@ -512,3 +512,6 @@ fn azure45_render_key_setup_evidence() {
     h.run();
     h.render().unwrap().save(path).unwrap();
 }
+
+#[path = "magnific38_tests.rs"]
+mod magnific38_tests;
