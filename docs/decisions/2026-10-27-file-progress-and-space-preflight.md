@@ -29,8 +29,14 @@ out.
   archive in the private workspace, its staged destination and its new checkpoint (about 3× the
   archive); an open's private frozen copy and its checkpoint (about 2× the file). The workspace
   and journal share the recovery folder's volume; the destination is its folder's volume. When
-  both are one volume (same device on Unix, same drive root elsewhere) the needs add up. Each
-  extent carries 64 KiB of slack for blocks and metadata. The save's archive size comes from
+  both are one volume (same device on Unix, same drive root elsewhere) and both are written to,
+  the check uses that volume's peak by phase. Before the destination is published, the prepared
+  archive and the staged file coexist with the old file. The atomic rename that publishes the
+  new file frees the old one, so the checkpoint written afterwards is charged against that freed
+  space: re-saving a project of size A peaks near 2A, not 3A, and a new file (nothing to free)
+  near 3A. On separate volumes each is charged everything it holds. An open writes only to the
+  recovery volume, so only its free space is checked. Each extent carries 64 KiB of slack for
+  blocks and metadata. The save's archive size comes from
   `ArchivePlan::estimate_bytes`: asset descriptors plus the manifest's encoded length, exact to a
   few bytes and never below the prepared archive, without reading any asset.
 - **The preflight is advisory and never guesses.** `ProjectStorage::space_probe` is the platform
@@ -43,10 +49,14 @@ out.
   journal exactly as they were. The error (`busy`) gives the sizes and which drive, never a path,
   and says what to do (free space, or Save As to another drive). Other programs still use space
   after the check; a write that then runs out is handled where it happens, as before.
-- **Not counted:** history-only assets spilled before a save, imports already staged, and the
-  extra rewrite when opening an older-format file. The session's disk quota bounds those; the
-  inventory doesn't predict them. Space freed by replacing the old file or checkpoint is never
-  credited, since the old ones stay until the new ones are published.
+- **Not counted:** history-only assets spilled before a save, imports already staged, the pack
+  that output compaction writes in the recovery workspace when a store has 24 or more small
+  backing files (`compact_before_output`), and the extra rewrite when opening an older-format
+  file. The session's disk quota bounds those; the inventory doesn't predict them. The old
+  recovery checkpoint is never credited: it stays until the new one is published.
+- **Quitting during an open cancels it.** Closing the window while a background open runs asks
+  it to stop and then waits for the current step, so the window doesn't hang for the whole read
+  and the open project is kept. A save still in progress is waited for, as before.
 - **Rejected:** a byte-accurate progress bar (needs production stream counters; the phase is
   what can be shown truthfully today), refusing on unknown free space, and a hard reserve
   percentage (a guess that would refuse saves that fit).
