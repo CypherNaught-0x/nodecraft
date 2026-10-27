@@ -140,7 +140,7 @@ impl Scope {
     pub(super) fn is_busy(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            return self.busy.load(std::sync::atomic::Ordering::SeqCst) > 0;
+            self.busy.load(std::sync::atomic::Ordering::SeqCst) > 0
         }
         #[cfg(target_arch = "wasm32")]
         {

@@ -1,4 +1,5 @@
 //! Controlled worker stalls, actual pump/commands, cancellation and original large paid bytes.
+#![allow(clippy::unwrap_used, clippy::panic)] // Test fixture helpers, including the deliberately blocked writer.
 use super::*;
 use crate::{
     commands::Services,

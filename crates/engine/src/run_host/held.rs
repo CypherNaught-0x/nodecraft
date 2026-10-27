@@ -123,6 +123,9 @@ struct Entry {
 }
 
 /// The held results, shared by the run host and its service.
+#[cfg(not(target_arch = "wasm32"))]
+type Deferred = (Arc<dyn Runtime>, Weak<Mutex<Held>>);
+
 #[derive(Default)]
 pub(super) struct Held {
     next: u64,
@@ -133,7 +136,7 @@ pub(super) struct Held {
     /// The highest record number in the store, used or set aside.
     last_record: u64,
     #[cfg(not(target_arch = "wasm32"))]
-    deferred: Option<(Arc<dyn Runtime>, Weak<Mutex<Held>>)>,
+    deferred: Option<Deferred>,
     saving: usize,
     #[cfg(not(target_arch = "wasm32"))]
     large_queue: VecDeque<(u64, Arc<HeldResult>, Arc<dyn HeldStore>)>,
