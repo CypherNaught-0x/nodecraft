@@ -241,8 +241,15 @@ impl ModelDescriptor {
                 if fee.price.0.micros == 0 || Some(fee.price.0.currency) != self.pricing.currency() {
                     return Err(invalid(id, "input image fees are above zero and in the model's currency"));
                 }
-                if self.modes.iter().any(|mode| !mode.inputs.iter().any(|input| input.role == fee.role && input.modality == Modality::Image && input.min > 0)) {
-                    return Err(invalid(id, "input image fees name a required image role in every mode"));
+                let bounds = |mode: &ModeSpec| {
+                    mode.inputs
+                        .iter()
+                        .find(|input| input.role == fee.role && input.modality == Modality::Image && input.min > 0)
+                        .map(|input| (input.min, input.max))
+                };
+                let first = self.modes.first().and_then(bounds);
+                if first.is_none() || self.modes.iter().any(|mode| bounds(mode) != first) {
+                    return Err(invalid(id, "input image fees need the same required image role and count bounds in every mode"));
                 }
             }
         }

@@ -103,7 +103,9 @@ default = { type = "unsigned", value = "1" }
   planned input values, including lists and fanout, never an editable count setting. A role
   fixed to one frame is known before that frame is made; an unresolved variable reference list
   leaves the quote unknown. A fanout reserves the largest per-item reference count. Input fees
-  must be positive and in the same currency as the output rates.
+  must be positive and in the same currency as the output rates. Every mode uses the same
+  minimum/maximum count bounds for the charged role; use separate model descriptors when
+  modes need different bounds.
   `by_usage` describes composite measured usage without a reliable pre-submit amount. It always
   returns an unknown quote, never zero: finite caps refuse it; an uncapped authorized host must
   make the incomplete price explicit. Token counters are not an exact monetary invoice.

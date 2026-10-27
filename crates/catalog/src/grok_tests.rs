@@ -48,3 +48,14 @@ fn grok31_untrusted_input_fees_validate_role_currency_and_nonzero_price() {
         assert!(Catalog::from_toml(&changed).is_err());
     }
 }
+
+#[test]
+fn grok31_paid_image_roles_have_consistent_bounds_across_modes() {
+    let mut model = Catalog::builtin().unwrap().get("fal.grok-image2-edit").unwrap().clone();
+    let mut other = model.modes[0].clone();
+    other.id = "other-edit".into();
+    model.modes.push(other);
+    assert!(model.validate().is_ok());
+    model.modes[1].inputs.iter_mut().find(|input| input.role == "images").unwrap().max = 1;
+    assert!(model.validate().is_err(), "a shared fee cannot validate incompatible per-mode count bounds");
+}
