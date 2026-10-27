@@ -12,6 +12,7 @@ pub struct Limits {
     pub output_width: u32,
     pub output_height: u32,
     pub total_pixels: u64,
+    /// Decoder raster budget: RGBA16 plus a possible full EXIF orientation copy.
     pub codec_bytes: u64,
 }
 impl Default for Limits {
@@ -28,7 +29,7 @@ impl Limits {
         output_width: 4096,
         output_height: 4096,
         total_pixels: 16_777_216,
-        codec_bytes: 128 * 1024 * 1024,
+        codec_bytes: 256 * 1024 * 1024,
     };
     pub(super) fn validate(self) -> Result<Self, ProviderError> {
         let hard = Self::HARD;

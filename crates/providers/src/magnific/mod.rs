@@ -46,6 +46,10 @@ impl Contract {
     fn validate(self) -> Result<(), ProviderError> {
         let limits = self.limits.validate()?;
         let pixels = u64::from(self.width).checked_mul(u64::from(self.height)).ok_or_else(|| invalid("Magnific geometry overflow"))?;
+        // PNG/JPEG/WebP can decode to RGBA16 (8 bytes/pixel). The media decoder
+        // reserves one more full raster when EXIF orientation needs a transform.
+        // Admit both before buying an output, including with lowered host limits.
+        let decoded_bytes = pixels.checked_mul(16).ok_or_else(|| invalid("Magnific decoded output extent overflow"))?;
         if self.width == 0
             || self.height == 0
             || self.width > limits.output_width
@@ -53,7 +57,7 @@ impl Contract {
             || pixels > limits.total_pixels
             || limits.output_bytes == 0
             || limits.response_bytes == 0
-            || limits.codec_bytes == 0
+            || decoded_bytes > limits.codec_bytes
         {
             return Err(invalid("Magnific output exceeds this host's image limits"));
         }

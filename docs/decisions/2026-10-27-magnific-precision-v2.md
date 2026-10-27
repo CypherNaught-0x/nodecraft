@@ -12,6 +12,11 @@ to an integer in the wire request. Sharpen, smart grain and ultra detail are int
 with defaults 7/7/30. Fix NSFW filtering on. Do not send prompt/seed/count/output-format fields
 absent from this API. Keep expected geometry and lower-only payload/codec limits in saved
 handles; the single output must be a fully verified original raster within 4096²/256 MiB.
+Before payment, admit expected output pixels against a separate 256 MiB decoder raster
+budget, charging 16 bytes per pixel for the supported RGBA16 layout and a possible full
+EXIF orientation copy. Apply the same checked bound to lowered host limits and restored
+handles. This covers those raster owners, not codec-private workspace or process RSS;
+the larger allowance is scoped to Magnific rather than changing global media limits.
 
 Current pricing consumes organizational credits without a verified per-job currency rate.
 Use unknown/by-usage USD pricing and the shared unpriced-job consent/budget path, never an

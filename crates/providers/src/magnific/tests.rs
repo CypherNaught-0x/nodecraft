@@ -131,6 +131,30 @@ fn magnific38_exact_extent_and_host_geometry_precede_payment() {
     }
 }
 #[test]
+fn magnific38_output_decoder_budget_is_admitted_before_payment() {
+    let limits = Limits { codec_bytes: 128 * 1024, ..Limits::default() };
+    let input = png(128, 128);
+    // This is an output-admission failure, not an input that cannot be decoded.
+    assert!(nodecraft_media::decode_image(&input, &limits.image(true)).is_ok());
+    let mut j = job();
+    j.inputs = vec![crate::JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: input.into() }];
+    j.params.insert("scale_factor".into(), json!(4));
+    let wire = Arc::new(Wire::default());
+    let context = SubmitContext::new();
+    let error = block_on(Magnific::with_limits(key(), wire.clone(), limits).unwrap().submit_with_delivery(&j, &context)).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+    assert!(context.finish_error().is_some());
+    assert!(wire.requests.lock().unwrap().is_empty());
+
+    let needed = 512 * 512 * 16;
+    assert!(request::prepare(&j, Limits { codec_bytes: needed - 1, ..Limits::default() }).is_err());
+    assert!(request::prepare(&j, Limits { codec_bytes: needed, ..Limits::default() }).is_ok());
+    // The supported maximum geometry still fits the model-specific default.
+    j.inputs = vec![crate::JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: png(1024, 1024).into() }];
+    let (contract, _) = request::prepare(&j, Limits::default()).unwrap();
+    assert_eq!((contract.width, contract.height), (4096, 4096));
+}
+#[test]
 fn magnific38_queue_recreated_provider_keeps_exact_bytes_and_strips_cdn_credentials() {
     let image = png(4, 6);
     let w = Arc::new(Wire {

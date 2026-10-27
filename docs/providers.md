@@ -2079,7 +2079,10 @@ pays for a replacement.
 
 One actual PNG, JPEG or WebP result must match the input dimensions times the selected
 factor, within 4096 pixels per axis and 16,777,216 pixels. Per-result and aggregate byte
-limits are 256 MiB, with separate decoder limits. These are NodeCraft limits, not a claimed
+limits are 256 MiB. Before payment, expected geometry must also fit a separate 256 MiB
+decoder raster budget: 16 bytes per output pixel covers RGBA16 and a possible full EXIF
+orientation copy. Lowered host budgets apply to this check too. This bounds those raster
+owners, not codec-private workspace or process RSS. These are NodeCraft limits, not a claimed
 vendor ceiling. Downloads use the exact documented `ai-statics.freepik.com` delivery host,
 carry no API key and follow no redirects. Original bytes are retained in history and saved
 projects. Large originals are hashed and sealed by the shared result worker, then adopted
