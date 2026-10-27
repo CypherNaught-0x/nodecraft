@@ -78,7 +78,8 @@ impl Limits {
             model,
             Model::Wan3Text | Model::Wan3Frames | Model::GrokText | Model::GrokFrames | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames
         );
-        let large_result = large_video || model.hunyuan() || model.rodin();
+        // Topaz can return a 4096² high-bit-depth PNG, larger than legacy image caps.
+        let large_result = large_video || model.hunyuan() || model.rodin() || model == Model::Topaz;
         Self {
             text_bytes: self.text_bytes.min(if model.alibaba() { Self::ALIBABA_HARD.text_bytes } else { Self::HARD.text_bytes }),
             request_bytes: self.request_bytes.min(if matches!(model, Model::GrokEdit | Model::QwenEdit | Model::RodinImages | Model::RodinFastImages) {

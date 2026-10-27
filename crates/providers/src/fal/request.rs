@@ -8,6 +8,7 @@ mod ideogram;
 mod ltx;
 mod luma;
 mod rodin;
+mod topaz;
 #[derive(Serialize)]
 struct Size {
     width: u64,
@@ -192,6 +193,15 @@ fn choice<'a>(j: &'a ProviderJob, k: &str, d: &'a str, allowed: &[&str]) -> Resu
 pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), ProviderError> {
     let model = Model::read(&j.model)?;
     let l = l.for_model(model);
+    // Browser projects still use the classic 16 MiB asset store. Refuse before payment;
+    // a direct adapter caller has no engine AssetContext to enforce that boundary for it.
+    #[cfg(target_arch = "wasm32")]
+    if model == Model::Topaz {
+        return Err(invalid("Topaz Precision needs a desktop project so its large image results can be saved"));
+    }
+    if model == Model::Topaz {
+        return topaz::prepare(j, l);
+    }
     if model.rodin() {
         return rodin::prepare(j, l, model);
     }
@@ -290,7 +300,8 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             | Model::Photon
             | Model::Ideogram
             | Model::LtxText
-            | Model::LtxFrames => false,
+            | Model::LtxFrames
+            | Model::Topaz => false,
             Model::Image => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "seed"),
             Model::Styled => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "guidance_scale" | "lora_scale" | "seed"),
             Model::Train => matches!(k.as_str(), "steps" | "trigger_word"),
@@ -371,7 +382,8 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         | Model::Photon
         | Model::Ideogram
         | Model::LtxText
-        | Model::LtxFrames => {
+        | Model::LtxFrames
+        | Model::Topaz => {
             return Err(invalid("fal model requests require their own schema"));
         }
         Model::Image | Model::Styled => {
