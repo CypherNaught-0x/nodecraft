@@ -75,3 +75,54 @@ fn comfy_workflow9_visual() {
     h.run();
     h.render().unwrap().save(dir.join("comfy-workflow9-card.png")).unwrap();
 }
+
+fn template948_app(curated: bool) -> NodeCraftApp {
+    let mut app = app();
+    let mut catalog =
+        nodecraft_engine::comfy_workflow_cmds::NodeCatalog::parse(include_bytes!("../../../comfy/src/templates/fixtures/catalog-facts.json")).unwrap().0;
+    catalog.extend(
+        nodecraft_engine::comfy_workflow_cmds::NodeCatalog::parse(include_bytes!("../../../comfy/src/templates/fixtures/mock-core-nodes.json")).unwrap().0,
+    );
+    nodecraft_engine::comfy_workflow_cmds::finish(&mut app.session, 1, Ok(std::sync::Arc::new(catalog).into()));
+    let mut workflow: serde_json::Value = serde_json::from_str(include_str!("../../../comfy/src/templates/fixtures/image_sdxl_simple.json")).unwrap();
+    if !curated {
+        // An extra frontend-only note keeps the runnable graph identical while selecting
+        // ordinary discovery. The capture compares generic and curated import choices.
+        workflow["nodes"].as_array_mut().unwrap().push(json!({"id":100000,"type":"Note","widgets_values":[""]}));
+    }
+    app.session.dispatch("node.remove", &json!({"canvas":C,"id":CARD})).unwrap();
+    app.session
+        .dispatch(
+            "comfy.workflow.import",
+            &json!({"canvas":C,"id":CARD,"pos":{"x":130,"y":85},"title":"SDXL image workflow","workflow":serde_json::to_string(&workflow).unwrap()}),
+        )
+        .unwrap();
+    app.selection.only(CARD);
+    app
+}
+
+#[test]
+fn templates948_imported_template_card_uses_curated_prompt_and_size_labels() {
+    let mut h = Harness::builder().with_size(Vec2::new(1100.0, 950.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), template948_app(true));
+    h.run();
+    for label in ["Prompt", "Negative prompt", "Width", "Height", "Seed", "Steps", "Guidance"] {
+        assert!(h.query_all_by_label(label).next().is_some(), "curated card field {label}");
+    }
+}
+
+#[test]
+#[ignore = "manual public-safe generic/curated import capture; NODECRAFT_TEMPLATE948_CAPTURE"]
+fn templates948_visual_evidence() {
+    let root = std::path::PathBuf::from(std::env::var_os("NODECRAFT_TEMPLATE948_CAPTURE").unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    for (theme, name) in [(crate::theme::ThemeKind::Dark, "dark"), (crate::theme::ThemeKind::Light, "light")] {
+        for curated in [false, true] {
+            let mut app = template948_app(curated);
+            app.theme = theme;
+            let mut h = Harness::builder().wgpu().with_size(Vec2::new(1100.0, 950.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+            crate::theme::apply(&h.ctx, theme);
+            h.run();
+            h.render().unwrap().save(root.join(format!("{name}-{}.png", if curated { "curated" } else { "generic" }))).unwrap();
+        }
+    }
+}

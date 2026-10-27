@@ -51,6 +51,11 @@ pub enum InputRole {
     Denoise,
     Width,
     Height,
+    Frames,
+    FrameRate,
+    Duration,
+    Resolution,
+    AspectRatio,
     BatchSize,
     Checkpoint,
     Lora,
@@ -62,7 +67,22 @@ pub enum InputRole {
 impl InputRole {
     /// Pre-selected in the mapping editor.
     pub fn exposed_by_default(self) -> bool {
-        matches!(self, Self::MediaInput | Self::Prompt | Self::NegativePrompt | Self::Seed | Self::Steps | Self::Cfg | Self::Width | Self::Height)
+        matches!(
+            self,
+            Self::MediaInput
+                | Self::Prompt
+                | Self::NegativePrompt
+                | Self::Seed
+                | Self::Steps
+                | Self::Cfg
+                | Self::Width
+                | Self::Height
+                | Self::Frames
+                | Self::FrameRate
+                | Self::Duration
+                | Self::Resolution
+                | Self::AspectRatio
+        )
     }
 }
 
@@ -236,6 +256,29 @@ pub fn discover(workflow: &ApiWorkflow, catalog: &NodeCatalog) -> Result<Exposed
     Ok(out)
 }
 
+/// Apply the public labels and roles of promoted UI fields to their expanded API widgets.
+/// This changes discovery metadata only; values and connections remain untouched.
+pub fn annotate_promoted(exposed: &mut Exposed, fields: &[crate::PromotedInput]) {
+    // Borrow field targets, rather than cloning identifiers or scanning discovery once per
+    // alias. Reused definitions can promote many controls in a large imported workflow.
+    let targets = fields
+        .iter()
+        .flat_map(|field| field.targets.iter().map(move |(node, input)| ((node.as_str(), input.as_str()), field)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for input in &mut exposed.inputs {
+        let Some(field) = targets.get(&(input.node.as_str(), input.input.as_str())) else { continue };
+        let label_role = field.label.split_whitespace().collect::<Vec<_>>().join("_").to_ascii_lowercase();
+        let from_name = role_of(&field.name, &input.kind, false);
+        let from_label = role_of(&label_role, &input.kind, false);
+        if from_label != InputRole::Other {
+            input.role = from_label;
+        } else if from_name != InputRole::Other {
+            input.role = from_name;
+        }
+        input.label = field.label.clone();
+    }
+}
+
 /// Nodes whose output feeds an input named `negative` (the negative prompt's encoder).
 fn negative_encoders(workflow: &ApiWorkflow) -> HashSet<String> {
     workflow
@@ -257,8 +300,6 @@ fn role_of(name: &str, kind: &ExposedKind, negative: bool) -> InputRole {
         ("negative_prompt", ExposedKind::Text { .. }) => NegativePrompt,
         ("prompt" | "positive_prompt" | "text" | "caption" | "instruction" | "instructions", ExposedKind::Text { .. }) if negative => NegativePrompt,
         ("prompt" | "positive_prompt" | "text" | "caption" | "instruction" | "instructions", ExposedKind::Text { .. }) => Prompt,
-        (_, ExposedKind::Text { multiline: true }) if negative => NegativePrompt,
-        (_, ExposedKind::Text { multiline: true }) => Prompt,
         ("seed" | "noise_seed", _) => Seed,
         ("steps", _) => Steps,
         ("cfg", _) => Cfg,
@@ -267,6 +308,11 @@ fn role_of(name: &str, kind: &ExposedKind, negative: bool) -> InputRole {
         ("denoise", _) => Denoise,
         ("width", _) => Width,
         ("height", _) => Height,
+        ("length" | "frames" | "num_frames" | "frame_count", ExposedKind::Int { .. }) => Frames,
+        ("frame_rate" | "fps", ExposedKind::Int { .. } | ExposedKind::Float { .. }) => FrameRate,
+        ("duration" | "duration_seconds" | "seconds" | "audio_length", ExposedKind::Int { .. } | ExposedKind::Float { .. }) => Duration,
+        ("resolution" | "size", ExposedKind::Choice { .. } | ExposedKind::Int { .. }) => Resolution,
+        ("aspect_ratio", ExposedKind::Choice { .. }) => AspectRatio,
         ("batch_size", _) => BatchSize,
         ("ckpt_name", _) => Checkpoint,
         ("lora_name", _) => Lora,
@@ -413,5 +459,27 @@ mod tests {
         assert_eq!(output_media("SaveAudio"), Some(Media::Audio));
         assert_eq!(output_media("SaveGLB"), Some(Media::Mesh));
         assert_eq!(output_media("ShowText"), None);
+    }
+}
+
+#[cfg(test)]
+mod templates948_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn templates948_video_audio_and_api_sizes_are_default_fields_but_internal_strings_are_not() {
+        let catalog = NodeCatalog::parse(
+            br#"{"Settings":{"input":{"required":{
+            "length":["INT",{}],"frame_rate":["FLOAT",{}],"seconds":["FLOAT",{}],
+            "resolution":["COMBO",{"options":["720p","1080p"]}],"aspect_ratio":[["16:9","1:1"],{}],"filename_prefix":["STRING",{}],
+            "system_prompt":["STRING",{"multiline":true}],"reference_data":["STRING",{"multiline":true}]
+        }},"output":[]}}"#,
+        )
+        .unwrap()
+        .0;
+        let workflow=ApiWorkflow::parse(&serde_json::to_vec(&json!({"1":{"class_type":"Settings","inputs":{"length":49,"frame_rate":24.0,"seconds":2.5,"resolution":"1080p","aspect_ratio":"16:9","filename_prefix":"NodeCraft"}}})).unwrap(),None).unwrap();
+        let fields = discover(&workflow, &catalog).unwrap();
+        let selected = fields.inputs.iter().filter(|i| i.role.exposed_by_default()).map(|i| i.input.as_str()).collect::<Vec<_>>();
+        assert_eq!(selected, ["length", "frame_rate", "seconds", "resolution", "aspect_ratio"]);
     }
 }

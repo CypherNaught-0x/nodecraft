@@ -179,3 +179,35 @@ fn mapping947_noop_is_read_only_and_known_partner_evidence_cannot_be_hidden() {
     assert!(card::mapping(node(&s)).unwrap().partners.contains(&"FourViewModel".into()));
     assert!(s.kinds().get(card::ID).unwrap().unpriced(node(&s)).is_some());
 }
+
+#[test]
+fn templates948_hidden_nested_media_can_be_shown_again_with_a_valid_default_port_name() {
+    let mut s = ready();
+    let id = NodeId::from_bytes([42; 16]);
+    let workflow = json!({"nodes":[{"id":42,"type":"bundle"}],"links":[],"definitions":{"subgraphs":[{
+        "id":"bundle","inputNode":{"id":-10},"outputNode":{"id":-20},"inputs":[],"outputs":[],
+        "nodes":[{"id":1,"type":"LoadImage","outputs":[{"type":"IMAGE","links":[1]}],"widgets_values":["front.png","image"]},
+        {"id":2,"type":"SaveImage","inputs":[{"name":"images","type":"IMAGE","link":1}],"widgets_values":["NodeCraft"]}],
+        "links":[[1,1,0,2,0,"IMAGE"]]
+    }]}});
+    s.dispatch("comfy.workflow.import", &json!({"canvas":C,"id":id,"pos":{"x":500,"y":0},"workflow":workflow.to_string()})).unwrap();
+    let mut listed = s.dispatch("comfy.workflow.mapping", &json!({"canvas":C,"id":id})).unwrap();
+    let outputs = listed["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|o| o["selected"] == true)
+        .map(|o| json!({"node":o["node"],"label":o["label"]}))
+        .collect::<Vec<_>>();
+    s.dispatch("comfy.workflow.mapping_set", &json!({"canvas":C,"id":id,"binding":listed["binding"],"inputs":[],"outputs":outputs})).unwrap();
+    listed = s.dispatch("comfy.workflow.mapping", &json!({"canvas":C,"id":id})).unwrap();
+    let input = &listed["inputs"][0];
+    let name = input["name"].as_str().unwrap();
+    assert!(name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'));
+    s.dispatch(
+        "comfy.workflow.mapping_set",
+        &json!({"canvas":C,"id":id,"binding":listed["binding"],"inputs":[{"node":input["node"],"input":input["input"],"name":name}],"outputs":outputs}),
+    )
+    .unwrap();
+    assert_eq!(card::mapping(&s.document().canvases()[&C].nodes()[&id]).unwrap().inputs.len(), 1);
+}

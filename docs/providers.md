@@ -1401,12 +1401,19 @@ before disconnecting wires or clearing history after a change of result media ty
 cancel a card's run before editing its fields.
 
 New imports expose image/video/audio upload inputs, prompts (including single-line prompt
-widgets), seeds, steps, CFG and dimensions. Other scalar widgets, such as reference data,
+widgets), seeds, steps, CFG, dimensions, frame count/rate, duration, resolution and aspect ratio.
+Multiline system prompts and reference data are not selected just because they contain text.
+Other scalar widgets, such as reference data,
 model choices and custom settings, can be exposed in the editor. Internally linked inputs stay
 inside the workflow. Compatible core `PreviewImage` nodes become `SaveImage` nodes in the
 imported copy so PBR previews are retained as results; the source workflow file is untouched.
 This conversion requires the server to describe both core nodes with the expected image
 connection and filename widget. Custom or incompatible previews are left unchanged.
+
+Official-template curation is tracked in the [pinned survey](comfy-template-survey.md) (#948).
+That survey distinguishes tested field mappings from candidates still needing node-schema or
+dynamic-input verification. A structural match changes only default field choices; imported
+values, explicit parameter selections, saved mappings and partner-credit warnings remain intact.
 
 Results remain one list port per media type. Selected saver order is saved in the job handle,
 so a resumed local ComfyUI job keeps the same image order. Comfy Cloud also honors that order

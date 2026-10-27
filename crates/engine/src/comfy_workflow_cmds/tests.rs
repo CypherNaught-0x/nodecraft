@@ -5,6 +5,32 @@ use nodecraft_types::ProjectId;
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
 const CARD: NodeId = NodeId::from_bytes([5; 16]);
+
+#[test]
+fn templates948_curated_subgraph_import_keeps_values_explicit_overrides_and_saved_mapping() {
+    let mut catalog = NodeCatalog::parse(include_bytes!("../../../comfy/src/templates/fixtures/catalog-facts.json")).unwrap().0;
+    catalog.extend(NodeCatalog::parse(include_bytes!("../../../comfy/src/templates/fixtures/mock-core-nodes.json")).unwrap().0);
+    let raw = include_str!("../../../comfy/src/templates/fixtures/image_z_image_turbo.json");
+    let mut s = session();
+    finish(&mut s, 1, Ok(Arc::new(catalog).into()));
+    s.dispatch("comfy.workflow.import", &import_params(raw)).unwrap();
+    let mapped = comfy_workflow::card(card(&s)).unwrap();
+    assert_eq!(mapped.mapping.params.iter().map(|p| p.spec.label.as_str()).collect::<Vec<_>>(), ["Prompt", "Width", "Height", "Seed", "Steps"]);
+    let api: Value = serde_json::from_str(&mapped.workflow).unwrap();
+    assert_eq!(api["57:3"]["inputs"]["steps"], 8);
+    assert_eq!(api["57:27"]["inputs"]["text"], "Original NodeCraft test prompt.");
+    let snapshot = nodecraft_format::Snapshot { project: s.document().clone(), assets: s.assets().clone(), epoch: 0 };
+    let bytes = nodecraft_format::encode(&snapshot).unwrap();
+    let loaded = Session::with_storage(nodecraft_format::decode(&bytes).unwrap(), Box::new(nodecraft_format::MemoryStorage::default())).unwrap();
+    assert_eq!(comfy_workflow::card(card(&loaded)).unwrap(), mapped);
+    s.dispatch("edit.undo", &Value::Null).unwrap();
+    let mut request = import_params(raw);
+    request["params"] = json!(["57:3.cfg"]);
+    s.dispatch("comfy.workflow.import", &request).unwrap();
+    let explicit = comfy_workflow::mapping(card(&s)).unwrap();
+    assert_eq!(explicit.params.len(), 1);
+    assert_eq!((&*explicit.params[0].node, &*explicit.params[0].input), ("57:3", "cfg"));
+}
 const OBJECT_INFO: &str = r#"{
   "LoadImage": {"input": {"required": {"image": [["example.png"], {"image_upload": true}]}}, "output": ["IMAGE", "MASK"]},
   "CLIPTextEncode": {"input": {"required": {"text": ["STRING", {"multiline": true}]}}, "output": ["CONDITIONING"]},

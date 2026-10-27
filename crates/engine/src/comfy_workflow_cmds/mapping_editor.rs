@@ -105,7 +105,8 @@ fn list(c: &Context<'_>, json: &Value) -> Result<Effect, Error> {
     let fields = exposed
         .inputs
         .into_iter()
-        .map(|input| {
+        .enumerate()
+        .map(|(index, input)| {
             let port = old.inputs.iter().find(|i| i.node == input.node && i.input == input.input);
             let parameter = old.params.iter().find(|i| i.node == input.node && i.input == input.input);
             let (kind, media) = match input.kind {
@@ -116,9 +117,10 @@ fn list(c: &Context<'_>, json: &Value) -> Result<Effect, Error> {
                 ExposedKind::Bool => ("boolean", None),
                 ExposedKind::Choice { .. } => ("choice", None),
             };
-            let name = port.map(|i| i.port.clone()).or_else(|| parameter.map(|i| i.spec.label.clone())).unwrap_or_else(|| {
-                if media.is_some() { format!("input_{}_{}", input.node, input.input).to_ascii_lowercase() } else { bounded(&input.label, 256) }
-            });
+            let name = port
+                .map(|i| i.port.clone())
+                .or_else(|| parameter.map(|i| i.spec.label.clone()))
+                .unwrap_or_else(|| if media.is_some() { format!("input_{index}") } else { bounded(&input.label, 256) });
             Choice {
                 node: input.node,
                 input: input.input,
