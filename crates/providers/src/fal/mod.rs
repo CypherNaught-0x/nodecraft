@@ -1,6 +1,10 @@
 //! Bounded fal queue adapter for explicitly selected live model aliases.
 //! No remote deduplication guarantee; accepted handles resume, ambiguous creates never replay.
 #[cfg(test)]
+mod grok_tests;
+#[cfg(test)]
+mod hunyuan_tests;
+#[cfg(test)]
 mod ideogram_tests;
 mod json;
 mod limits;
@@ -26,6 +30,15 @@ pub use limits::Limits;
 use limits::reserve;
 use nodecraft_types::BillableUnits;
 use std::sync::Arc;
+/// xAI Grok Imagine through fal’s saved queue (#31).
+pub const GROK_IMAGE: &str = "xai/grok-imagine-image/v2.0/text-to-image";
+pub const GROK_EDIT: &str = "xai/grok-imagine-image/v2.0/edit";
+pub const GROK_VIDEO: &str = "xai/grok-imagine-video/v1.5/text-to-video";
+pub const GROK_I2V: &str = "xai/grok-imagine-video/v1.5/image-to-video";
+/// Hunyuan3D V3 through the same fal queue (#42).
+pub const HUNYUAN_TEXT: &str = "fal-ai/hunyuan3d-v3/text-to-3d";
+pub const HUNYUAN_IMAGE: &str = "fal-ai/hunyuan3d-v3/image-to-3d";
+pub const HUNYUAN_SKETCH: &str = "fal-ai/hunyuan3d-v3/sketch-to-3d";
 pub const FLUX: &str = "fal-ai/flux/schnell";
 /// Luma Ray 3.2 and Photon through fal's existing queue (#26).
 pub const LUMA_RAY: &str = "luma/agent/ray/v3.2/text-to-video";
@@ -110,6 +123,13 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Model {
+    HunyuanText,
+    HunyuanImage,
+    HunyuanSketch,
+    GrokImage,
+    GrokEdit,
+    GrokText,
+    GrokFrames,
     LtxText,
     LtxFrames,
     RayText,
@@ -134,6 +154,13 @@ enum Model {
 impl Model {
     fn read(s: &str) -> Result<Self, ProviderError> {
         match s {
+            HUNYUAN_TEXT => Ok(Self::HunyuanText),
+            HUNYUAN_IMAGE => Ok(Self::HunyuanImage),
+            HUNYUAN_SKETCH => Ok(Self::HunyuanSketch),
+            GROK_IMAGE => Ok(Self::GrokImage),
+            GROK_EDIT => Ok(Self::GrokEdit),
+            GROK_VIDEO => Ok(Self::GrokText),
+            GROK_I2V => Ok(Self::GrokFrames),
             LTX => Ok(Self::LtxText),
             LTX_I2V => Ok(Self::LtxFrames),
             LUMA_RAY => Ok(Self::RayText),
@@ -155,6 +182,13 @@ impl Model {
     }
     fn wire(self) -> &'static str {
         match self {
+            Self::HunyuanText => HUNYUAN_TEXT,
+            Self::HunyuanImage => HUNYUAN_IMAGE,
+            Self::HunyuanSketch => HUNYUAN_SKETCH,
+            Self::GrokImage => GROK_IMAGE,
+            Self::GrokEdit => GROK_EDIT,
+            Self::GrokText => GROK_VIDEO,
+            Self::GrokFrames => GROK_I2V,
             Self::LtxText => LTX,
             Self::LtxFrames => LTX_I2V,
             Self::RayText => LUMA_RAY,
@@ -175,10 +209,22 @@ impl Model {
     }
     /// Whether the model makes one MP4 clip.
     fn video(self) -> bool {
-        matches!(self, Self::Video | Self::Frames | Self::Speech | Self::RayText | Self::RayFrames | Self::LtxText | Self::LtxFrames)
+        matches!(
+            self,
+            Self::GrokText | Self::GrokFrames | Self::Video | Self::Frames | Self::Speech | Self::RayText | Self::RayFrames | Self::LtxText | Self::LtxFrames
+        )
+    }
+    fn grok(self) -> bool {
+        matches!(self, Self::GrokImage | Self::GrokEdit | Self::GrokText | Self::GrokFrames)
+    }
+    fn hunyuan(self) -> bool {
+        matches!(self, Self::HunyuanText | Self::HunyuanImage | Self::HunyuanSketch)
     }
     fn root(self) -> &'static str {
         match self {
+            Self::HunyuanText | Self::HunyuanImage | Self::HunyuanSketch => "fal-ai/hunyuan3d-v3",
+            Self::GrokImage | Self::GrokEdit => "xai/grok-imagine-image",
+            Self::GrokText | Self::GrokFrames => "xai/grok-imagine-video",
             Self::LtxText | Self::LtxFrames => "fal-ai/ltx-2.3",
             Self::RayText | Self::RayFrames => "luma/agent",
             Self::Photon => LUMA_PHOTON,
@@ -195,7 +241,7 @@ impl Model {
     }
     /// Whether fal lists this model's images under `images`.
     fn images(self) -> bool {
-        matches!(self, Self::Image | Self::Styled | Self::Photon | Self::Ideogram)
+        matches!(self, Self::GrokImage | Self::GrokEdit | Self::Image | Self::Styled | Self::Photon | Self::Ideogram)
     }
 }
 #[derive(Clone, Copy)]
@@ -265,7 +311,14 @@ impl Record {
             width: num("width")?,
             height: num("height")?,
         };
-        if !(1..=if matches!(model, Model::Image | Model::Styled) { 4 } else { 1 }).contains(&record.requested)
+        if !(1..=if matches!(model, Model::GrokImage | Model::GrokEdit) {
+            10
+        } else if matches!(model, Model::Image | Model::Styled) {
+            4
+        } else {
+            1
+        })
+            .contains(&record.requested)
             || (model == Model::Upscale
                 && (record.width == 0
                     || record.height == 0
@@ -489,8 +542,10 @@ impl Fal {
             if f.mime.as_deref().is_some_and(|m| m != mime) {
                 return Err(malformed("fal output MIME disagrees with actual bytes"));
             }
-            if matches!(record.model, Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon | Model::Ideogram)
-                && (f.width.is_some() || f.height.is_some())
+            if matches!(
+                record.model,
+                Model::GrokImage | Model::GrokEdit | Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon | Model::Ideogram
+            ) && (f.width.is_some() || f.height.is_some())
             {
                 let meta = nodecraft_media::probe_image(&reply.body, &limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
                 if f.width.is_some_and(|w| w != u64::from(meta.width)) || f.height.is_some_and(|h| h != u64::from(meta.height)) {

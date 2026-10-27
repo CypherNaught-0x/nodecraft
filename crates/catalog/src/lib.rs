@@ -30,6 +30,8 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("deepgram.toml", include_str!("../../../assets/catalog/deepgram.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("luma.toml", include_str!("../../../assets/catalog/luma.toml")),
+    ("hunyuan.toml", include_str!("../../../assets/catalog/hunyuan.toml")),
+    ("grok.toml", include_str!("../../../assets/catalog/grok.toml")),
     ("ltx.toml", include_str!("../../../assets/catalog/ltx.toml")),
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
     ("huggingface.toml", include_str!("../../../assets/catalog/huggingface.toml")),
@@ -400,3 +402,9 @@ mod tests;
 
 #[cfg(test)]
 mod comparison_tests;
+
+#[cfg(test)]
+mod grok_tests;
+
+#[cfg(test)]
+mod hunyuan_tests;

@@ -75,7 +75,7 @@ default = { type = "unsigned", value = "1" }
 - **Parameters** use the node parameter schema (`ParamControl` in `crates/types`): resolutions,
   aspect ratios and durations are `choice` or numeric controls. Integer values are written as
   strings (`"28"`) so 64-bit values survive JSON.
-- **Pricing** is `free`, `by_usage` (`currency`), `per_call` (`price`), `per_source_second` or `per_unit` (`unit` = `image`, `second`,
+- **Pricing** is `free`, `by_usage` (`currency`), `per_call` (`price`), `per_source_second` or `per_unit` (`unit` = `call`, `image`, `second`,
   `megapixel`, `thousand_tokens`, `thousand_characters` or `thousand_steps`; `price`; a `count`
   parameter and/or a `default_count` ≥ 1). The count is the parameter's value *after* schema
   defaults, so the quote matches what runs; `count` must be a numeric control (`unsigned`,
@@ -83,7 +83,8 @@ default = { type = "unsigned", value = "1" }
   1 (0 for `thousand_tokens` and `thousand_characters`), with a default or a `default_count`, and
   it must be the only parameter that scales the cost. `thousand_*` prices are per 1000 counted
   units; trainers use `thousand_steps`, counted from their steps setting. Prices are decimal strings with a currency,
-  at most six decimals, and quotes round up. Token-priced models without a `count` are quoted
+  at most six decimals, and quotes round up. `call` counts provider jobs, so a preset-priced 3D
+  generation uses `per_unit_by_choice`, `unit = "call"` and `default_count = 1`. Token-priced models without a `count` are quoted
   at run time. ElevenLabs character-priced models without a `count` or `default_count` are
   priced from the known jobs' trimmed prompt at run admission. Other adapters and text made
   by an upstream step stay unknown until their billed request shape can be counted exactly.
@@ -98,7 +99,14 @@ default = { type = "unsigned", value = "1" }
   `default_count` as for `per_unit`) is `per_unit` at the price `prices` lists for the chosen
   option of `param`, with the same rules for `param` as `per_source_second`: a Veo clip is priced
   per second by its resolution (`count = "duration_seconds"`), a Gemini image per image by its
-  size (`default_count = 1`).
+  size (`default_count = 1`). An optional `input_fee = { role = "images", price = "0.01 USD" }`
+  adds that price once per image supplied to the named required image role. Counts come from
+  planned input values, including lists and fanout, never an editable count setting. A role
+  fixed to one frame is known before that frame is made; an unresolved variable reference list
+  leaves the quote unknown. A fanout reserves the largest per-item reference count. Input fees
+  must be positive and in the same currency as the output rates. Every mode uses the same
+  minimum/maximum count bounds for the charged role; use separate model descriptors when
+  modes need different bounds.
   `by_usage` describes composite measured usage without a reliable pre-submit amount. It always
   returns an unknown quote, never zero: finite caps refuse it; an uncapped authorized host must
   make the incomplete price explicit. Token counters are not an exact monetary invoice.

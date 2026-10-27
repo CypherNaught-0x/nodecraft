@@ -42,11 +42,19 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         return Err(malformed("fal result contains an error instead of a complete output"));
     }
     let name = match r.model {
-        Model::Image | Model::Styled | Model::Photon | Model::Ideogram => "images",
+        Model::Image | Model::Styled | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => "images",
         Model::Train => "diffusers_lora_file",
-        Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames => "video",
+        Model::GrokText
+        | Model::GrokFrames
+        | Model::Video
+        | Model::Frames
+        | Model::Speech
+        | Model::RayText
+        | Model::RayFrames
+        | Model::LtxText
+        | Model::LtxFrames => "video",
         Model::Audio => "audio",
-        Model::Mesh => "model_glb",
+        Model::HunyuanText | Model::HunyuanImage | Model::HunyuanSketch | Model::Mesh => "model_glb",
         Model::Upscale | Model::RemoveBackground => "image",
     };
     // Multiple model envelopes or unexpected top-level media cannot be filtered away.
@@ -118,10 +126,18 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         }
         let allowed: &[&str] = match r.model {
             Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => &["image/png"],
-            Model::Photon | Model::Ideogram => &["image/png", "image/jpeg", "image/webp"],
-            Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames => &["video/mp4"],
+            Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => &["image/png", "image/jpeg", "image/webp"],
+            Model::GrokText
+            | Model::GrokFrames
+            | Model::Video
+            | Model::Frames
+            | Model::Speech
+            | Model::RayText
+            | Model::RayFrames
+            | Model::LtxText
+            | Model::LtxFrames => &["video/mp4"],
             Model::Audio => &["audio/wav"],
-            Model::Mesh => &["model/gltf-binary"],
+            Model::HunyuanText | Model::HunyuanImage | Model::HunyuanSketch | Model::Mesh => &["model/gltf-binary"],
             Model::Train => return Err(malformed("fal trained weights are never downloaded")),
         };
         if mime.as_deref().is_some_and(|s| !allowed.contains(&s)) {

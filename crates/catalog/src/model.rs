@@ -231,12 +231,27 @@ impl ModelDescriptor {
         if let Pricing::PerUnit { unit, count, default_count, .. } = &self.pricing {
             self.validate_count(*unit, count.as_deref(), *default_count)?;
         }
-        if let Pricing::PerUnitByChoice { unit, count, default_count, param, prices } = &self.pricing {
+        if let Pricing::PerUnitByChoice { unit, count, default_count, param, prices, input_fee } = &self.pricing {
             if unit.usage_based() {
                 return Err(invalid(id, "pricing by a setting counts units known before the run"));
             }
             self.validate_count(*unit, count.as_deref(), *default_count)?;
             self.validate_choice_prices(param, prices)?;
+            if let Some(fee) = input_fee {
+                if fee.price.0.micros == 0 || Some(fee.price.0.currency) != self.pricing.currency() {
+                    return Err(invalid(id, "input image fees are above zero and in the model's currency"));
+                }
+                let bounds = |mode: &ModeSpec| {
+                    mode.inputs
+                        .iter()
+                        .find(|input| input.role == fee.role && input.modality == Modality::Image && input.min > 0)
+                        .map(|input| (input.min, input.max))
+                };
+                let first = self.modes.first().and_then(bounds);
+                if first.is_none() || self.modes.iter().any(|mode| bounds(mode) != first) {
+                    return Err(invalid(id, "input image fees need the same required image role and count bounds in every mode"));
+                }
+            }
         }
         Ok(())
     }
@@ -358,11 +373,12 @@ impl ModelDescriptor {
         // file, or e.g. a zero `default_count` would quote a paid job as free.
         self.validate()?;
         if let Some(contract) = &self.parameter_contract {
-            return self.pricing.quote(&contract.resolve(params, false)?.submission()?, self.pricing.currency().unwrap_or(Currency::USD));
+            let values = contract.resolve(params, false)?.submission()?;
+            return self.pricing.quote_source_inputs(|name| values.get(name), None, self.fixed_fee_count(), self.pricing.currency().unwrap_or(Currency::USD));
         }
         let resolved = self.params.resolve(params, false)?;
         let visible: ParamValues = resolved.visible_values().map(|(k, v)| (k.clone(), v.clone())).collect();
-        self.pricing.quote(&visible, self.pricing.currency().unwrap_or(Currency::USD))
+        self.pricing.quote_source_inputs(|name| visible.get(name), None, self.fixed_fee_count(), self.pricing.currency().unwrap_or(Currency::USD))
     }
 
     /// [`Self::quote`] for a node's whole parameter map, borrowing it: parameters this model's
@@ -374,34 +390,78 @@ impl ModelDescriptor {
     pub fn quote_selected(&self, params: &ParamValues) -> Result<Option<Money>, Error> {
         self.validate()?;
         if let Some(contract) = &self.parameter_contract {
-            return self.pricing.quote(&contract.resolve_selected(params, false)?.submission()?, self.pricing.currency().unwrap_or(Currency::USD));
+            let values = contract.resolve_selected(params, false)?.submission()?;
+            return self.pricing.quote_source_inputs(|name| values.get(name), None, self.fixed_fee_count(), self.pricing.currency().unwrap_or(Currency::USD));
         }
         let resolved = self.params.resolve_view(params, false, true)?;
         let get = |name: &str| if resolved.visible.contains(name) { resolved.values.get(name).copied() } else { None };
-        self.pricing.quote_lookup(get, self.pricing.currency().unwrap_or(Currency::USD))
+        self.pricing.quote_source_inputs(get, None, self.fixed_fee_count(), self.pricing.currency().unwrap_or(Currency::USD))
     }
 
     /// [`Self::quote_selected`] for a job whose source video is `source_ms` long (#179): a model
     /// priced per source second counts the part of it the provider uses.
     pub fn quote_source(&self, params: &ParamValues, source_ms: Option<u64>) -> Result<Option<Money>, Error> {
-        let Pricing::PerSourceSecond { .. } = &self.pricing else { return self.quote_selected(params) };
+        self.quote_source_count(params, source_ms, self.fixed_fee_count())
+    }
+
+    fn quote_source_count(&self, params: &ParamValues, source_ms: Option<u64>, input_count: Option<u64>) -> Result<Option<Money>, Error> {
+        if !matches!(&self.pricing, Pricing::PerSourceSecond { .. } | Pricing::PerUnitByChoice { input_fee: Some(_), .. }) {
+            return self.quote_selected(params);
+        }
         self.validate()?;
         let used = source_ms.zip(self.edit()).map(|(ms, edit)| edit.used_ms(ms));
         let currency = self.pricing.currency().unwrap_or(Currency::USD);
         if let Some(contract) = &self.parameter_contract {
             let values = contract.resolve_selected(params, false)?.submission()?;
-            return self.pricing.quote_source(|name| values.get(name), used, currency);
+            return self.pricing.quote_source_inputs(|name| values.get(name), used, input_count, currency);
         }
         let resolved = self.params.resolve_view(params, false, true)?;
         let get = |name: &str| if resolved.visible.contains(name) { resolved.values.get(name).copied() } else { None };
-        self.pricing.quote_source(get, used, currency)
+        self.pricing.quote_source_inputs(get, used, input_count, currency)
+    }
+
+    /// The additional paid image role, when this model charges for its references.
+    pub fn input_fee_role(&self) -> Option<&str> {
+        match &self.pricing {
+            Pricing::PerUnitByChoice { input_fee: Some(fee), .. } => Some(&fee.role),
+            _ => None,
+        }
+    }
+
+    fn fixed_fee_count(&self) -> Option<u64> {
+        let role = self.input_fee_role()?;
+        let first = self.modes.first()?.inputs.iter().find(|input| input.role == role)?;
+        (first.min == first.max
+            && self.modes.iter().all(|mode| mode.inputs.iter().any(|input| input.role == role && input.min == first.min && input.max == first.max)))
+        .then_some(u64::from(first.min))
     }
 
     /// [`Self::quote_source`] plus `input_tokens` prompt tokens a request is known to send (a
     /// wired PDF's pages, #591) at the model's input rate; the rest of the prompt is billed on top,
     /// as before. A model priced only by usage stays unpriced.
     pub fn quote_inputs(&self, params: &ParamValues, source_ms: Option<u64>, input_tokens: u64) -> Result<Option<Money>, Error> {
-        let quote = self.quote_source(params, source_ms)?;
+        self.quote_inputs_count(params, source_ms, input_tokens, None)
+    }
+
+    /// [`Self::quote_inputs`] including a known number of paid reference images. A fixed role
+    /// count (one first frame, for example) is known even before its upstream job finishes.
+    pub fn quote_inputs_count(
+        &self,
+        params: &ParamValues,
+        source_ms: Option<u64>,
+        input_tokens: u64,
+        input_count: Option<u64>,
+    ) -> Result<Option<Money>, Error> {
+        if let Some(count) = input_count
+            && let Some(role) = self.input_fee_role()
+            && self
+                .modes
+                .iter()
+                .any(|mode| !mode.inputs.iter().any(|input| input.role == role && (u64::from(input.min)..=u64::from(input.max)).contains(&count)))
+        {
+            return Err(invalid(&self.id, "paid input count is outside its role bounds"));
+        }
+        let quote = self.quote_source_count(params, source_ms, input_count.or_else(|| self.fixed_fee_count()))?;
         let (Some(quote), Some(usage)) = (quote, &self.usage) else { return Ok(quote) };
         if input_tokens == 0 {
             return Ok(Some(quote));

@@ -253,11 +253,12 @@ fn glb(b: &[u8], l: Limits) -> Result<(), ProviderError> {
 }
 pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Result<&'static str, ProviderError> {
     match r.model {
-        Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon | Model::Ideogram => {
+        Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => {
             let m = nodecraft_media::probe_image(b, &l.image(false)).map_err(|_| bad())?;
             if m.mime == "image/png" {
                 png_extent(b)?;
-            } else if !matches!(r.model, Model::Photon | Model::Ideogram) || !matches!(m.mime, "image/jpeg" | "image/webp") {
+            } else if !matches!(r.model, Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram) || !matches!(m.mime, "image/jpeg" | "image/webp")
+            {
                 return Err(bad());
             }
             let n = u64::from(m.width).checked_mul(u64::from(m.height)).ok_or_else(bad)?;
@@ -270,7 +271,15 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             drop(decoded);
             Ok(m.mime)
         }
-        Model::Video | Model::Frames | Model::Speech | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames => {
+        Model::GrokText
+        | Model::GrokFrames
+        | Model::Video
+        | Model::Frames
+        | Model::Speech
+        | Model::RayText
+        | Model::RayFrames
+        | Model::LtxText
+        | Model::LtxFrames => {
             mp4(b)?;
             Ok("video/mp4")
         }
@@ -278,7 +287,7 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             wav(b)?;
             Ok("audio/wav")
         }
-        Model::Mesh => {
+        Model::HunyuanText | Model::HunyuanImage | Model::HunyuanSketch | Model::Mesh => {
             glb(b, l)?;
             Ok("model/gltf-binary")
         }
