@@ -1148,3 +1148,26 @@ fn an_uninstalled_kind_with_a_fresh_result_does_not_block_a_workflow() {
     let (planned, _) = whole_plan(&p, &kinds(), RunMode::Workflow, &[]);
     assert_eq!(order(&ready(planned)), vec![id(2)]);
 }
+
+/// #965 review: what waits for a batch pulls nothing into the run. 2 feeds a batch into 9, so 9
+/// waits; fresh action 6 between 2 and 9 then has no reason to run.
+#[test]
+fn nothing_joins_a_whole_canvas_run_only_for_a_node_that_waits() {
+    let mut kinds = kinds();
+    let action = NodeDescriptor {
+        id: "test.action".into(),
+        label: "Action".into(),
+        category: Category::Action,
+        ..kinds.get("test.relay").unwrap().descriptor().clone()
+    };
+    kinds.register(Box::new(Relay(action))).unwrap();
+    let action = Node { kind: "test.action".into(), ..relay(6, Some("cut")) };
+    let pair = kinds.get("test.pair").unwrap().descriptor().instantiate(id(9), &BTreeMap::new()).unwrap();
+    let p = wired(
+        vec![text(1, "dawn"), relay(2, None), action, batch(5, "b", "cross"), pair],
+        &[(1, "out", 2, "in"), (2, "out", 6, "in"), (6, "out", 9, "a"), (2, "out", 5, "in"), (5, "item", 9, "b")],
+    );
+    let (planned, waiting) = whole_plan(&p, &kinds, RunMode::Pending, &[]);
+    assert_eq!(order(&ready(planned)), vec![id(2)]);
+    assert_eq!(waiting, ids(&[9]));
+}

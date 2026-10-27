@@ -648,20 +648,19 @@ impl<'a> Graph<'a> {
             .collect()
     }
 
-    /// Every node reached from `from` along noodles of the real canvas, upstream or downstream
-    /// (`from` itself only if it is reached again). The canvas may hold cycles: a seen-set ends
-    /// the walk.
+    /// Every node of the real canvas reached from `from` along noodles, upstream or downstream
+    /// (`from` itself only if it is reached again). The walk goes through techniques' inlined
+    /// nodes and the outputs their technique nodes collect; an inlined node reached stands for
+    /// its technique node. The canvas may hold cycles: a seen-set ends the walk.
     fn reach(&self, from: &BTreeSet<NodeId>, down: bool) -> BTreeSet<NodeId> {
         let mut next: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
-        if down {
-            for (to, feeds) in &self.into {
-                for (_, up, _, _) in feeds {
-                    next.entry(*up).or_default().push(*to);
-                }
-            }
-        } else {
-            for (to, feeds) in &self.into {
-                next.insert(*to, feeds.iter().map(|(_, up, _, _)| *up).collect());
+        let collected = self.collects.iter().flat_map(|(owner, collects)| collects.iter().map(move |collect| (collect.node, *owner)));
+        let edges = self.into.iter().flat_map(|(to, feeds)| feeds.iter().map(move |(_, up, _, _)| (*up, *to))).chain(collected);
+        for (from, to) in edges {
+            if down {
+                next.entry(from).or_default().push(to);
+            } else {
+                next.entry(to).or_default().push(from);
             }
         }
         let mut seen = BTreeSet::new();
@@ -673,6 +672,8 @@ impl<'a> Graph<'a> {
                 }
             }
         }
+        let owners: Vec<NodeId> = seen.iter().filter_map(|id| self.inner.get(id).copied()).collect();
+        seen.extend(owners);
         seen.retain(|id| !self.inner.contains_key(id));
         seen
     }
@@ -683,22 +684,41 @@ impl<'a> Graph<'a> {
     /// earlier one's old result. Everything after a batch fed by the run waits, since a batch
     /// collects existing results only (#92).
     fn whole(&self, generative: bool, stale: &BTreeSet<NodeId>) -> (BTreeSet<NodeId>, BTreeSet<NodeId>) {
-        let mut run = self.with_upstream(&self.work(generative, stale), stale);
-        // Each round adds at least one node, so this ends within the canvas's node count.
+        // What the run is asked for: the starting nodes, then the nodes between them.
+        let mut wanted = self.work(generative, stale);
+        // Every node found waiting so far. It never joins the run again, so each node enters
+        // `wanted` at most once and leaves it at most once: the loop ends.
+        let mut waiting: BTreeSet<NodeId> = BTreeSet::new();
         loop {
+            let mut run = self.with_upstream(&wanted, stale);
+            waiting.extend(self.after_batches(&run));
+            // A technique node's inlined nodes wait with it (`inner` maps to the top-level owner).
+            let waits = |id: &NodeId| waiting.contains(id) || self.inner.get(id).is_some_and(|owner| waiting.contains(owner));
+            if wanted.iter().any(waits) {
+                // Asked for what waits: plan again without it, so nothing joins the run only to
+                // feed a node that waits.
+                wanted.retain(|id| !waits(id));
+                continue;
+            }
+            run.retain(|id| !waits(id));
             let after = self.reach(&run, true);
             let between: BTreeSet<NodeId> = self
                 .reach(&run, false)
                 .into_iter()
-                .filter(|id| after.contains(id) && !run.contains(id))
+                .filter(|id| after.contains(id) && !run.contains(id) && !waits(id))
                 .filter(|id| self.canvas.nodes().get(id).is_some_and(|node| self.has_work(node)))
                 .collect();
             if between.is_empty() {
-                break;
+                let waiting = waiting.into_iter().filter(|id| self.canvas.nodes().get(id).is_some_and(|node| self.has_work(node))).collect();
+                return (run, waiting);
             }
-            run.extend(between);
-            run = self.with_upstream(&run, stale);
+            wanted.extend(between);
         }
+    }
+
+    /// Everything after a batch that `run` feeds (#965), on the real canvas: a batch collects
+    /// existing results only (#92), so it waits for this run to make them.
+    fn after_batches(&self, run: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
         let batches: BTreeSet<NodeId> = self
             .canvas
             .nodes()
@@ -713,10 +733,7 @@ impl<'a> Graph<'a> {
             })
             .map(|node| node.id)
             .collect();
-        let waiting = if batches.is_empty() { BTreeSet::new() } else { self.reach(&batches, true) };
-        run.retain(|id| !waiting.contains(id));
-        let waiting = waiting.into_iter().filter(|id| self.canvas.nodes().get(id).is_some_and(|node| self.has_work(node))).collect();
-        (run, waiting)
+        if batches.is_empty() { BTreeSet::new() } else { self.reach(&batches, true) }
     }
 
     /// The requested nodes plus ancestors that need a run, walking through ancestors that have
