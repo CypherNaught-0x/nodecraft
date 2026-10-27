@@ -29,7 +29,12 @@ impl AssetStore {
     /// media probing or body allocation occur here. The existing image decoder cap applies.
     pub fn preview_read(&self, asset: &AssetRef) -> Result<PreviewAssetRead, PreviewReadError> {
         let entry = self.assets.get(&asset.hash).ok_or(PreviewReadError::Missing)?;
-        if entry.identity.bytes > nodecraft_media::Limits::default().max_input_bytes {
+        let maximum = if asset.mime.essence() == nodecraft_media::svg::MIME {
+            nodecraft_media::svg::MAX_BYTES
+        } else {
+            nodecraft_media::Limits::default().max_input_bytes
+        };
+        if entry.identity.bytes > maximum {
             return Err(PreviewReadError::TooLarge);
         }
         let essence = asset.mime.essence();
@@ -138,7 +143,9 @@ impl PreviewAssetRead {
     /// (AssetReader maps source errors to Other), global sealing, relocation or cache mutation.
     pub fn read_verified(&self, cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<Vec<u8>, PreviewReadError> {
         cancel.check().map_err(|_| PreviewReadError::Cancelled)?;
-        let cap = usize::try_from(nodecraft_media::Limits::default().max_input_bytes).map_err(|_| PreviewReadError::TooLarge)?;
+        let maximum =
+            if self.mime == nodecraft_media::svg::MIME { nodecraft_media::svg::MAX_BYTES } else { nodecraft_media::Limits::default().max_input_bytes };
+        let cap = usize::try_from(maximum).map_err(|_| PreviewReadError::TooLarge)?;
         let length = usize::try_from(self.byte_len()).map_err(|_| PreviewReadError::TooLarge)?;
         if length > cap {
             return Err(PreviewReadError::TooLarge);

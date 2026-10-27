@@ -288,3 +288,28 @@ fn a_video_with_a_size_reads_without_an_image_probe() {
     let request = store.preview_read(&asset).unwrap();
     assert_eq!(request.read_verified(&Default::default(), &Default::default()), Err(PreviewReadError::Corrupt));
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn recraft35_indexed_svg_preview_and_export_verify_full_original_without_resident_materialization() {
+    let bytes = br#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>"#.to_vec();
+    let (_temp, store, mut asset, calls, _) = fixture(bytes.clone(), false, None);
+    asset.mime = "image/svg+xml".parse().unwrap();
+    asset.meta.width = Some(40);
+    asset.meta.height = Some(20);
+    let request = store.preview_read(&asset).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "metadata-only UI capture");
+    assert_eq!(request.read_verified(&Default::default(), &Default::default()).unwrap(), bytes);
+    assert!(store.get(&asset.hash).is_none(), "indexed body stays nonresident");
+    let mut exported = Vec::new();
+    store.open_verified(&asset, &Default::default(), &Default::default()).unwrap().copy_to(&mut exported, &Default::default(), &Default::default()).unwrap();
+    assert_eq!(exported, bytes);
+    asset.meta.width = Some(41);
+    assert!(store.validate_reference(&asset).is_err());
+    assert_eq!(store.preview_read(&asset).unwrap().read_verified(&Default::default(), &Default::default()), Err(PreviewReadError::Corrupt));
+    let unsafe_svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><rect style="fill:image-set('//host/image' 1x)"/></svg>"#.to_vec();
+    let (_temp, store, mut asset, ..) = fixture(unsafe_svg, false, None);
+    asset.mime = "image/svg+xml".parse().unwrap();
+    assert!(store.validate_reference(&asset).is_err());
+    assert_eq!(store.preview_read(&asset).unwrap().read_verified(&Default::default(), &Default::default()), Err(PreviewReadError::Corrupt));
+}

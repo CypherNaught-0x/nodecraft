@@ -433,7 +433,8 @@ impl AssetStore {
             let info = match data.svg {
                 Some(info) => info,
                 None => {
-                    let bytes = data.range.read_small(nodecraft_media::svg::MAX_BYTES, metrics)?;
+                    let maximum = usize::try_from(nodecraft_media::svg::MAX_BYTES).map_err(|_| invalid("SVG byte limit is unavailable on this platform"))?;
+                    let bytes = data.range.read_small(maximum, metrics)?;
                     nodecraft_media::svg::probe(&bytes, &Default::default()).map_err(|_| invalid("SVG asset is unsafe or exceeds its limits"))?
                 }
             };

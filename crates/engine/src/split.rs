@@ -31,6 +31,15 @@ pub(crate) fn image(value: &Value) -> Option<&AssetRef> {
     }
 }
 
+/// Images that have a preview, including typed vector originals. This is deliberately separate
+/// from raster-only split/mask/layer admission.
+fn preview_image(value: &Value) -> Option<&AssetRef> {
+    image(value).or_else(|| match value {
+        Value::Media(asset) if asset.mime.essence() == nodecraft_media::svg::MIME => Some(asset),
+        _ => None,
+    })
+}
+
 /// Most rows of images a card shows, and most images in a row.
 pub const GALLERY_ROWS: usize = 4;
 pub const GALLERY_COLUMNS: usize = 4;
@@ -41,7 +50,7 @@ pub const GALLERY_COLUMNS: usize = 4;
 /// [`GALLERY_COLUMNS`]. The count is every such image, shown or not.
 pub fn image_rows(node: &Node) -> (Vec<Vec<&AssetRef>>, usize) {
     if node.kind == "source.image" {
-        let asset = node.params.get("asset").and_then(image);
+        let asset = node.params.get("asset").and_then(preview_image);
         return (asset.map(|a| vec![vec![a]]).unwrap_or_default(), usize::from(asset.is_some()));
     }
     // A folder of images shows the files it gives, after its filters and order.
@@ -67,9 +76,9 @@ pub fn result_rows(result: &Generation) -> (Vec<Vec<&AssetRef>>, usize) {
             Value::List(items) => vec![items.as_slice()],
             single => vec![std::slice::from_ref(single)],
         };
-        let count = rows.iter().map(|row| row.iter().filter_map(image).count()).sum();
+        let count = rows.iter().map(|row| row.iter().filter_map(preview_image).count()).sum();
         if count > 0 {
-            let shown = rows.iter().map(|row| row.iter().filter_map(image).take(GALLERY_COLUMNS).collect::<Vec<_>>()).filter(|row| !row.is_empty());
+            let shown = rows.iter().map(|row| row.iter().filter_map(preview_image).take(GALLERY_COLUMNS).collect::<Vec<_>>()).filter(|row| !row.is_empty());
             return (shown.take(GALLERY_ROWS).collect(), count);
         }
     }
@@ -80,23 +89,32 @@ pub fn result_rows(result: &Generation) -> (Vec<Vec<&AssetRef>>, usize) {
 /// image of its active result (inside a list too), of a type NodeCraft decodes: the first of
 /// [`image_rows`], found without walking the rest (cards ask for it every frame).
 pub fn image_of(node: &Node) -> Option<&AssetRef> {
+    first_image(node, image)
+}
+
+/// First previewable image; SVG originals remain unavailable to raster-only tools.
+pub fn preview_image_of(node: &Node) -> Option<&AssetRef> {
+    first_image(node, preview_image)
+}
+
+fn first_image(node: &Node, accept: fn(&Value) -> Option<&AssetRef>) -> Option<&AssetRef> {
     if node.kind == "source.image" {
-        return node.params.get("asset").and_then(image);
+        return node.params.get("asset").and_then(accept);
     }
     let result = node.history.iter().find(|g| Some(g.id) == node.active)?;
     let fanned = !result.items.is_empty();
     result.outputs.iter().find_map(|value| match value {
         Value::List(items) => items.iter().find_map(|item| match item {
-            Value::List(inner) if fanned => inner.iter().find_map(image),
-            single => image(single),
+            Value::List(inner) if fanned => inner.iter().find_map(accept),
+            single => accept(single),
         }),
-        single => image(single),
+        single => accept(single),
     })
 }
 
 /// The images a folder gives, in its order; none when its settings can't be read.
 fn folder_images(node: &Node) -> impl Iterator<Item = &AssetRef> {
-    nodecraft_nodes::folder::selected(node).unwrap_or_default().into_iter().filter_map(|entry| image(entry.value))
+    nodecraft_nodes::folder::selected(node).unwrap_or_default().into_iter().filter_map(|entry| preview_image(entry.value))
 }
 
 /// Where tile `index` of `count` starts along a side `length` long: edges are spread evenly, so

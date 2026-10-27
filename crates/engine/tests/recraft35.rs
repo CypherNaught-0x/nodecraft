@@ -182,6 +182,9 @@ fn recraft35_import_and_explicit_rasterize_action_preserve_original_and_reject_i
     .unwrap();
     assert_eq!(added.nodes, vec![N]);
     let node = session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap();
+    assert!(nodecraft_engine::split::preview_image_of(node).is_some());
+    assert!(nodecraft_engine::split::image_of(node).is_none(), "raster-only split/mask admission stays unchanged");
+    assert_eq!(nodecraft_engine::split::image_rows(node).1, 1);
     let source = node.params.get("asset").unwrap().clone();
     let actions = nodecraft_engine::action_exec::LocalActions::new(session.assets().clone());
     let params: ParamValues = [("edge".into(), Value::Unsigned(Unsigned(256)))].into();

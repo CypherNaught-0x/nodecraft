@@ -27,6 +27,10 @@ fn recraft35_bom_declaration_comments_and_prefixed_roots_are_recognized_without_
     assert!(recognizes(input));
     assert_eq!(probe(input, &Default::default()).unwrap().width, 8);
     assert!(!recognizes(b"<html><svg/></html>"));
+    let long_prologue = format!("<!--{}--><svg xmlns=\"{NS}\" width=\"8\" height=\"6\"/>", "x".repeat(70_000));
+    assert!(recognizes(long_prologue.as_bytes()));
+    assert_eq!(crate::sniff(long_prologue.as_bytes()).unwrap().mime, MIME);
+    assert!(probe(long_prologue.as_bytes(), &Default::default()).is_ok());
     assert!(probe(b"<svg width=\"8\" height=\"6\"/>", &Default::default()).is_err());
     assert_eq!(crate::sniff(b"a prompt mentioning <svg/> is prose").unwrap().mime, "text/plain");
 }
@@ -127,4 +131,55 @@ fn recraft35_all_truncations_and_small_adversarial_bytes_are_fallible_without_pa
             let _ = probe(&vec![byte; length], &Default::default());
         }
     }
+}
+
+#[test]
+fn recraft35_css_admission_covers_resource_functions_properties_and_browser_grammar() {
+    for style in [
+        "background-image:image-set('//host/image' 1x)",
+        "fill:image-set('//host/image' 1x)",
+        "fill:URL(//host/image)",
+        "fill:url(' #paint ')",
+        "fill:var(--remote)",
+        "src:'//host/font'",
+        "color-profile:remote",
+        "list-style-image:url(//host/image)",
+        "fill:rgb(1,2,3) image-set('image.png' 1x)",
+        "fill:cross-fade(url(#p),red,1)",
+        "font-family:foo;src:local(foo)",
+        "--custom:url(//host/image)",
+    ] {
+        let svg = document(&format!("<rect style=\"{style}\"/>"));
+        assert!(probe(&svg, &Default::default()).is_err(), "{style}");
+    }
+    for body in ["<font-face-uri href='#p'/>", "<feImage href='//host/image'/>", "<g src='//host/image'/>", "<rect color-profile='url(//host/profile)'/>"] {
+        assert!(probe(&document(body), &Default::default()).is_err(), "{body}");
+    }
+    let safe = document(
+        "<defs><linearGradient id='p'><stop stop-color='red'/></linearGradient></defs><rect width='50' height='50' style=\"fill:URL('#p') red;stroke:rgb(1, 2, 3);opacity:.5\"/>",
+    );
+    assert!(probe(&safe, &Default::default()).unwrap().preview_unavailable.is_none());
+    assert!(render(&safe, 128, &Default::default()).is_ok());
+    let safe_sheet = document("<style>.a > rect { fill:rgb(1, 2, 3);stroke-width:2 }</style><g class='a'><rect width='50' height='50'/></g>");
+    assert!(probe(&safe_sheet, &Default::default()).unwrap().preview_unavailable.is_some());
+}
+
+#[test]
+fn recraft35_expanded_segments_are_charged_before_normalization_and_safe_originals_survive_preview_caps() {
+    let path = format!("<defs><path id='p' d='M0 0 {}'/></defs>", "L1 1 ".repeat(1000));
+    let bounded = document(&format!("{path}{}", "<use href='#p'/>".repeat(33)));
+    let info = probe(&bounded, &Default::default()).unwrap();
+    assert!(info.preview_unavailable.is_some(), "source <32K segments but expanded paths exceed preview capacity");
+    assert!(matches!(render(&bounded, 128, &Default::default()), Err(MediaError::UnsupportedFeature(_))));
+    let excessive = document(&format!("{path}{}", "<use href='#p'/>".repeat(250)));
+    assert!(probe(&excessive, &Default::default()).is_err(), "hard retained expansion budget");
+    let clipped = document(&format!(
+        "<defs><clipPath id='c'><path d='M0 0 {}'/></clipPath></defs>{}",
+        "L1 1 ".repeat(1000),
+        "<rect width='1' height='1' clip-path='url(#c)'/>".repeat(33)
+    ));
+    assert!(probe(&clipped, &Default::default()).unwrap().preview_unavailable.is_some());
+    let dashed = document("<path d='M0 0 L100 100' stroke='black' stroke-dasharray='.0000000001 .0000000001'/>");
+    assert!(probe(&dashed, &Default::default()).unwrap().preview_unavailable.is_some());
+    assert!(render(&dashed, 128, &Default::default()).is_err());
 }

@@ -276,7 +276,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         let ok = match model {
             Model::RecraftImage
             | Model::RecraftVector
-            Model::RodinText
+            | Model::RodinText
             | Model::RodinImages
             | Model::RodinFastText
             | Model::RodinFastImages
@@ -359,7 +359,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     match model {
         Model::RecraftImage
         | Model::RecraftVector
-        Model::RodinText
+        | Model::RodinText
         | Model::RodinImages
         | Model::RodinFastText
         | Model::RodinFastImages

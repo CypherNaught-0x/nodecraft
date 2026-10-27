@@ -42,11 +42,13 @@ fn cap() -> MediaError {
 /// Recognition only. The full document must pass `probe` before use. Never search for an
 /// inner svg element inside an HTML document, nor trust a file extension or claimed MIME.
 pub fn recognizes(bytes: &[u8]) -> bool {
-    let mut reader = Reader::from_reader(bytes.get(..bytes.len().min(64 * 1024)).unwrap_or_default());
+    let maximum = usize::try_from(MAX_BYTES).unwrap_or(usize::MAX);
+    let mut reader = Reader::from_reader(bytes.get(..bytes.len().min(maximum)).unwrap_or_default());
     loop {
         match reader.read_event() {
             Ok(Event::Start(e) | Event::Empty(e)) => return e.local_name().as_ref() == b"svg",
-            Ok(Event::Decl(_) | Event::Comment(_) | Event::Text(_) | Event::DocType(_)) => {}
+            Ok(Event::Decl(_) | Event::Comment(_) | Event::DocType(_)) => {}
+            Ok(Event::Text(text)) if text.as_ref().iter().all(u8::is_ascii_whitespace) => {}
             _ => return false,
         }
     }
@@ -137,34 +139,7 @@ fn local_ref(text: &str) -> Result<&str, MediaError> {
     }
     Ok(id)
 }
-/// Strict CSS resource policy, evaluated after XML unescaping. Escape sequences, at-rules,
-/// comments and legacy executable CSS are refused rather than hidden in an exported original.
-fn css(text: &str) -> Result<Vec<&str>, MediaError> {
-    if text.len() > 1024 * 1024
-        || text.contains(['\\', '@'])
-        || text.contains("/*")
-        || text.bytes().any(|b| b.is_ascii_control() && !matches!(b, b'\t' | b'\n' | b'\r'))
-    {
-        return Err(bad());
-    }
-    let lower = text.to_ascii_lowercase();
-    if ["expression", "behavior", "-moz-binding", "javascript:", "data:", "file:", "http:", "https:"].iter().any(|s| lower.contains(s)) {
-        return Err(bad());
-    }
-    let mut refs = Vec::new();
-    let mut rest = text;
-    while let Some(at) = rest.to_ascii_lowercase().find("url") {
-        rest = rest.get(at + 3..).ok_or_else(bad)?.trim_start();
-        let body = rest.strip_prefix('(').ok_or_else(bad)?;
-        let (target, tail) = body.split_once(')').ok_or_else(bad)?;
-        refs.push(local_ref(target.trim().trim_matches(['\'', '"']))?);
-        if refs.len() > 64 {
-            return Err(cap());
-        }
-        rest = tail;
-    }
-    Ok(refs)
-}
+mod css;
 fn geometry(node: Node<'_, '_>, limits: &Limits) -> Result<(u32, u32), MediaError> {
     let view = node.attribute("viewBox").map(|s| s.parse::<svgtypes::ViewBox>().map_err(|_| bad())).transpose()?;
     if let Some(v) = view {
@@ -197,10 +172,70 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
     let mut segments = 0usize;
     let mut ids = BTreeMap::new();
     let mut references = BTreeMap::<_, Vec<&str>>::new();
+    let mut path_work = BTreeMap::new();
     for node in doc.descendants().filter(Node::is_element) {
         count = count.checked_add(1).ok_or_else(cap)?;
         let name = node.tag_name().name();
-        if node.tag_name().namespace() != Some(NS) || matches!(name, "script" | "foreignObject" | "set" | "discard" | "a") || name.starts_with("animate") {
+        let mut node_work = if matches!(name, "rect" | "circle" | "ellipse" | "line") { 8usize } else { 0 };
+        if node.tag_name().namespace() != Some(NS)
+            || !matches!(
+                name,
+                "svg"
+                    | "g"
+                    | "defs"
+                    | "symbol"
+                    | "use"
+                    | "switch"
+                    | "path"
+                    | "rect"
+                    | "circle"
+                    | "ellipse"
+                    | "line"
+                    | "polyline"
+                    | "polygon"
+                    | "linearGradient"
+                    | "radialGradient"
+                    | "stop"
+                    | "clipPath"
+                    | "mask"
+                    | "text"
+                    | "tspan"
+                    | "textPath"
+                    | "image"
+                    | "filter"
+                    | "pattern"
+                    | "marker"
+                    | "feBlend"
+                    | "feColorMatrix"
+                    | "feComponentTransfer"
+                    | "feComposite"
+                    | "feConvolveMatrix"
+                    | "feDiffuseLighting"
+                    | "feDisplacementMap"
+                    | "feDistantLight"
+                    | "feDropShadow"
+                    | "feFlood"
+                    | "feFuncA"
+                    | "feFuncB"
+                    | "feFuncG"
+                    | "feFuncR"
+                    | "feGaussianBlur"
+                    | "feImage"
+                    | "feMerge"
+                    | "feMergeNode"
+                    | "feMorphology"
+                    | "feOffset"
+                    | "fePointLight"
+                    | "feSpecularLighting"
+                    | "feSpotLight"
+                    | "feTile"
+                    | "feTurbulence"
+                    | "style"
+                    | "title"
+                    | "desc"
+                    | "metadata"
+            )
+        {
             return Err(bad());
         }
         if let Some(id) = node.attribute("id") {
@@ -214,7 +249,10 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
         for attr in node.attributes() {
             let key = attr.name();
             let value = attr.value();
-            if key.to_ascii_lowercase().starts_with("on") || key == "base" && attr.namespace() == Some("http://www.w3.org/XML/1998/namespace") {
+            if key.to_ascii_lowercase().starts_with("on")
+                || matches!(key, "base" | "src" | "color-profile")
+                || attr.namespace().is_some_and(|ns| ns != "http://www.w3.org/1999/xlink" && ns != "http://www.w3.org/XML/1998/namespace")
+            {
                 return Err(bad());
             }
             if key == "href" {
@@ -223,27 +261,39 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
             }
             if matches!(key, "style" | "fill" | "stroke" | "filter" | "mask" | "clip-path" | "cursor" | "marker" | "marker-start" | "marker-mid" | "marker-end")
             {
-                references.entry(node.id().get()).or_default().extend(css(value)?);
+                let (refs, unsupported) = if key == "style" { css::declarations(value)? } else { css::value(key, value)? };
+                references.entry(node.id().get()).or_default().extend(refs);
+                if unsupported {
+                    reason = Some("SVG original retained; this static CSS feature has no bounded preview");
+                }
             }
             if key == "d" {
                 for segment in svgtypes::PathParser::from(value) {
-                    path_numbers(segment.map_err(|_| bad())?)?;
+                    let segment = segment.map_err(|_| bad())?;
+                    path_numbers(segment)?;
+                    let cost = if matches!(segment, svgtypes::PathSegment::EllipticalArc { .. }) { 4 } else { 1 };
+                    node_work = node_work.checked_add(cost).ok_or_else(cap)?;
                     segments = segments.checked_add(1).filter(|n| *n <= MAX_SEGMENTS).ok_or_else(cap)?;
                 }
             }
             if matches!(key, "points" | "stroke-dasharray") && value != "none" {
                 for n in svgtypes::NumberListParser::from(value) {
                     finite(n.map_err(|_| bad())?)?;
+                    node_work = node_work.checked_add(1).ok_or_else(cap)?;
                     segments = segments.checked_add(1).filter(|n| *n <= MAX_SEGMENTS).ok_or_else(cap)?;
                 }
             }
-            if key == "transform" || key == "gradientTransform" {
+            if key == "stroke-dasharray" && value != "none" {
+                reason = Some("SVG original retained; dashed stroke preview is unavailable");
+            }
+            if key == "transform" || key == "gradientTransform" || key == "patternTransform" {
                 let t: svgtypes::Transform = value.parse().map_err(|_| bad())?;
                 for n in [t.a, t.b, t.c, t.d, t.e, t.f] {
                     finite(n)?;
                 }
             }
         }
+        path_work.insert(node.id().get(), node_work);
         if name == "style" {
             // Styles can redirect presentation to local definitions. Without a full selector
             // dependency graph they aren't sent to the renderer; originals stay available.
@@ -255,7 +305,7 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
                 }
                 sheet.push_str(text);
             }
-            let _ = css(&sheet)?;
+            let _ = css::sheet(&sheet)?;
             reason = Some("SVG original retained; stylesheet preview is unavailable");
         }
     }
@@ -264,24 +314,10 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
     }
     // References are admitted before usvg can expand them. Charge repeated subtrees, detect
     // cycles and cap both recursion and expansion; source XML size alone is insufficient.
-    let mut expanded = 0usize;
-    let mut stack = vec![(root, Vec::new())];
-    while let Some((node, mut seen)) = stack.pop() {
-        expanded = expanded.checked_add(1).filter(|n| *n <= MAX_NODES as usize).ok_or_else(cap)?;
-        if seen.contains(&node.id()) || seen.len() >= MAX_DEPTH {
-            return Err(cap());
-        }
-        seen.push(node.id());
-        for target in references.get(&node.id().get()).into_iter().flatten() {
-            if let Some(target) = ids.get(target) {
-                stack.push((*target, seen.clone()));
-            } else {
-                reason = Some("SVG original retained; a local preview resource is missing");
-            }
-        }
-        for child in node.children().filter(Node::is_element) {
-            stack.push((child, seen.clone()));
-        }
+    let mut expanded = Expansion::default();
+    expanded.visit(root, &ids, &references, &path_work, &mut Vec::new())?;
+    if expanded.missing {
+        reason = Some("SVG original retained; a local preview resource is missing");
     }
     let work = (bytes.len() as u64)
         .checked_mul(4)
@@ -291,10 +327,47 @@ fn admitted<'a>(bytes: &'a [u8], limits: &Limits) -> Result<(Document<'a>, Info)
     if work > limits.max_alloc.min(MAX_LOGICAL_BYTES) {
         return Err(cap());
     }
-    if count > 4096 || segments > 32_768 || expanded > 8192 {
+    if count > 4096 || expanded.segments > 32_768 || expanded.nodes > 8192 {
         reason = Some("SVG original retained; preview complexity exceeds its work limit");
     }
     Ok((doc, Info { width, height, preview_unavailable: reason }))
+}
+
+/// Bounded DFS uses only the active path, never a growing queue of cloned ancestor lists.
+#[derive(Default)]
+struct Expansion {
+    nodes: usize,
+    segments: usize,
+    missing: bool,
+}
+impl Expansion {
+    fn visit<'a, 'input>(
+        &mut self,
+        node: Node<'a, 'input>,
+        ids: &BTreeMap<&'input str, Node<'a, 'input>>,
+        references: &BTreeMap<u32, Vec<&str>>,
+        path_work: &BTreeMap<u32, usize>,
+        seen: &mut Vec<roxmltree::NodeId>,
+    ) -> Result<(), MediaError> {
+        self.nodes = self.nodes.checked_add(1).filter(|n| *n <= MAX_NODES as usize).ok_or_else(cap)?;
+        self.segments = self.segments.checked_add(path_work.get(&node.id().get()).copied().unwrap_or(0)).filter(|n| *n <= MAX_SEGMENTS).ok_or_else(cap)?;
+        if seen.contains(&node.id()) || seen.len() >= MAX_DEPTH {
+            return Err(cap());
+        }
+        seen.push(node.id());
+        for target in references.get(&node.id().get()).into_iter().flatten() {
+            if let Some(target) = ids.get(target) {
+                self.visit(*target, ids, references, path_work, seen)?;
+            } else {
+                self.missing = true;
+            }
+        }
+        for child in node.children().filter(Node::is_element) {
+            self.visit(child, ids, references, path_work, seen)?;
+        }
+        seen.pop();
+        Ok(())
+    }
 }
 
 /// Render directly at the requested bucket, never at an untrusted full-size canvas. All

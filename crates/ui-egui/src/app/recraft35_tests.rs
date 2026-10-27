@@ -28,7 +28,8 @@ fn scene(builder: egui_kittest::HarnessBuilder<NodeCraftApp>, theme: ThemeKind, 
             &[VECTOR],
         )
         .unwrap();
-        let asset = nodecraft_engine::split::image_of(session.document().canvases().get(&canvas).unwrap().nodes().get(&VECTOR).unwrap()).unwrap().clone();
+        let asset =
+            nodecraft_engine::split::preview_image_of(session.document().canvases().get(&canvas).unwrap().nodes().get(&VECTOR).unwrap()).unwrap().clone();
         let values =
             [("model".into(), Value::Text("fal.recraft41-vector".into())), ("prompt".into(), Value::Text("An authored geometric SVG illustration".into()))]
                 .into();
@@ -43,7 +44,15 @@ fn scene(builder: egui_kittest::HarnessBuilder<NodeCraftApp>, theme: ThemeKind, 
         let id = GenerationId::from_bytes([35; 16]);
         node.history.push(Generation::new(id, vec![Value::List(vec![Value::Media(asset)])]));
         node.active = Some(id);
-        session.dispatch("node.add", &json!({"canvas":canvas,"node":node})).unwrap();
+        let mut project = session.document().clone();
+        Change::AddNode { canvas, node }.apply(&mut project).unwrap();
+        let mut resources = nodecraft_engine::commands::Resources::default();
+        resources.insert(catalog.clone());
+        resources.insert(catalog.run_catalog());
+        session = Session::with_registries(project, nodecraft_engine::commands::Registry::builtins().unwrap(), catalog.registry().unwrap())
+            .unwrap()
+            .with_resources(resources);
+        session.import_asset(SVG).unwrap();
     } else {
         // Reproduce the previous importer: XML was sniffed as plain text and put on Text.
         let values = [("text".into(), Value::Text(std::str::from_utf8(SVG).unwrap().into()))].into();
@@ -81,7 +90,8 @@ fn recraft35_svg_source_and_history_previews_render_in_both_themes() {
         h.query_all_by_label("Image 320×200").next().unwrap().click();
         h.run();
         let asset =
-            nodecraft_engine::split::image_of(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&VECTOR).unwrap()).unwrap();
+            nodecraft_engine::split::preview_image_of(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&VECTOR).unwrap())
+                .unwrap();
         assert_eq!(asset.mime.essence(), "image/svg+xml");
     }
 }
