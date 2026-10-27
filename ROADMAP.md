@@ -141,7 +141,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   authenticated HTTP API with optional signed webhooks. Agents open and save projects only inside
   the folders the person allows with `--root`/`--read-root` (#423). See [`docs/mcp.md`](docs/mcp.md),
   [`docs/control.md`](docs/control.md) and [`docs/serve.md`](docs/serve.md).
-- **Headless**: the planner, scheduler, driver, run executor, cost quotes, budgets, usage ledger,
+- **Headless CLI**: named project/Technique inputs, isolated CSV rows with aggregate quotes and
+  spending limits, provider credential checks and ComfyUI workflow import (#97); see
+  [`docs/cli.md`](docs/cli.md). The planner, scheduler, driver, run executor, cost quotes, budgets, usage ledger,
   staleness hashing and router resolution exist and are tested end to end against the mock
   provider.
 

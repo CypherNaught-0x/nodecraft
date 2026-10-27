@@ -158,7 +158,11 @@ fn run_leaves_the_project_file_as_it_was() {
     let error = String::from_utf8_lossy(&out.stderr);
     assert!(error.contains("the run isn't allowed") && error.contains("not installed"), "{error}");
     assert_eq!(std::fs::read(&path).unwrap(), before, "the project is not written");
-    assert_eq!(names(dir.path()), vec!["fox.ncraft".to_owned()], "nothing is written beside it");
+    assert_eq!(
+        names(dir.path()),
+        vec![".nodecraft-assets-v1.lock".to_owned(), "fox.ncraft".to_owned()],
+        "only the shared native-storage admission lock remains"
+    );
 
     let missing = cli(&["run", "nowhere.ncraft"]);
     assert!(String::from_utf8_lossy(&missing.stderr).contains("no project file"));

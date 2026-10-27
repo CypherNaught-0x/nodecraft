@@ -189,6 +189,21 @@ impl Runner {
         self.host.install(session);
     }
 
+    /// Fresh command services for another isolated row, on this runner's budget/runtime.
+    pub fn services(&self) -> Result<Services, Error> {
+        let mut services = Services::default();
+        self.host.register(&mut services)?;
+        self.host.register_ownership(&mut services)?;
+        self.host.register_resolution(&mut services)?;
+        self.host.register_estimates(&mut services)?;
+        Ok(services)
+    }
+
+    pub fn key_test_host(&self, http: Arc<dyn nodecraft_providers::Http>) -> Result<nodecraft_engine::key_test::KeyTestHost, Error> {
+        let runtime = self.tokio.as_ref().ok_or_else(|| Error::new(ErrorKind::Unsupported, "provider checks need the CLI runtime"))?;
+        Ok(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::new(Tokio { handle: runtime.handle().clone(), start: Instant::now() }), http })
+    }
+
     /// Runs `targets` with their stale upstream (every stale card when empty) once `quote`'s
     /// price is agreed to, and waits until the run ends. Returns each step's outcome.
     pub fn run(&mut self, session: &mut Session, canvas: CanvasId, targets: &[NodeId], quote: &Value, consent: Consent) -> Result<Vec<Value>, Error> {
@@ -302,6 +317,10 @@ fn accept(quote: &Value, consent: Consent) -> Result<Value, Error> {
         accept["unpriced_jobs"] = json!(unpriced);
     }
     Ok(accept)
+}
+
+pub fn check_consent(quote: &Value, consent: Consent) -> Result<(), Error> {
+    accept(quote, consent).map(|_| ())
 }
 
 /// The `--out` folder, resolved; checked before anything runs, so a typo costs nothing.

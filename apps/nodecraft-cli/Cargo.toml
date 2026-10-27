@@ -27,6 +27,8 @@ nodecraft-nodes = { workspace = true }
 nodecraft-providers = { workspace = true }
 nodecraft-types = { workspace = true }
 serde_json = { workspace = true }
+# ComfyUI imports publish a new project atomically without replacing an existing file.
+tempfile = { workspace = true }
 # Relay (#119): rooms of shared projects, over WebSockets on std threads.
 nodecraft-sync = { workspace = true }
 tungstenite = { workspace = true }
@@ -46,7 +48,6 @@ nodecraft-catalog = { workspace = true }
 nodecraft-provider-testkit = { workspace = true }
 nodecraft-graph = { workspace = true }
 nodecraft-testkit = { workspace = true }
-tempfile = { workspace = true }
 
 # Integration tests: one binary, tests/it.rs, plus the ones that must run as their own binary.
 [[test]]
