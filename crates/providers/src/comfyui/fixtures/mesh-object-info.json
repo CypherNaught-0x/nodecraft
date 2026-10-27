@@ -1,0 +1,257 @@
+{
+  "ImageOnlyCheckpointLoader": {
+    "input": {
+      "required": {
+        "ckpt_name": [
+          [
+            "hunyuan3d-dit-v2.safetensors",
+            "hunyuan_3d_v2.1.safetensors"
+          ]
+        ]
+      }
+    },
+    "output": [
+      "MODEL",
+      "CLIP_VISION",
+      "VAE"
+    ],
+    "output_node": false
+  },
+  "LoadImage": {
+    "input": {
+      "required": {
+        "image": [
+          [
+            "nodecraft-input.png"
+          ],
+          {
+            "image_upload": true
+          }
+        ]
+      }
+    },
+    "output": [
+      "IMAGE",
+      "MASK"
+    ],
+    "output_node": false
+  },
+  "CLIPVisionEncode": {
+    "input": {
+      "required": {
+        "clip_vision": [
+          "CLIP_VISION"
+        ],
+        "image": [
+          "IMAGE"
+        ],
+        "crop": [
+          [
+            "center",
+            "none"
+          ]
+        ]
+      }
+    },
+    "output": [
+      "CLIP_VISION_OUTPUT"
+    ],
+    "output_node": false
+  },
+  "Hunyuan3Dv2Conditioning": {
+    "input": {
+      "required": {
+        "clip_vision_output": [
+          "CLIP_VISION_OUTPUT"
+        ]
+      }
+    },
+    "output": [
+      "CONDITIONING",
+      "CONDITIONING"
+    ],
+    "output_node": false
+  },
+  "EmptyLatentHunyuan3Dv2": {
+    "input": {
+      "required": {
+        "resolution": [
+          "INT",
+          {
+            "default": 3072,
+            "min": 1,
+            "max": 8192
+          }
+        ],
+        "batch_size": [
+          "INT",
+          {
+            "default": 1,
+            "min": 1,
+            "max": 4096
+          }
+        ]
+      }
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_node": false
+  },
+  "ModelSamplingAuraFlow": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ],
+        "shift": [
+          "FLOAT",
+          {
+            "default": 1.73,
+            "min": 0.0,
+            "max": 100.0
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_node": false
+  },
+  "KSampler": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL"
+        ],
+        "positive": [
+          "CONDITIONING"
+        ],
+        "negative": [
+          "CONDITIONING"
+        ],
+        "latent_image": [
+          "LATENT"
+        ],
+        "seed": [
+          "INT",
+          {
+            "min": 0
+          }
+        ],
+        "steps": [
+          "INT",
+          {
+            "min": 1,
+            "max": 10000
+          }
+        ],
+        "cfg": [
+          "FLOAT",
+          {
+            "min": 0.0,
+            "max": 100.0
+          }
+        ],
+        "sampler_name": [
+          [
+            "euler"
+          ]
+        ],
+        "scheduler": [
+          [
+            "normal"
+          ]
+        ],
+        "denoise": [
+          "FLOAT",
+          {
+            "min": 0.0,
+            "max": 1.0
+          }
+        ]
+      }
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_node": false
+  },
+  "VAEDecodeHunyuan3D": {
+    "input": {
+      "required": {
+        "samples": [
+          "LATENT"
+        ],
+        "vae": [
+          "VAE"
+        ],
+        "num_chunks": [
+          "INT",
+          {
+            "default": 8000,
+            "min": 1000,
+            "max": 500000
+          }
+        ],
+        "octree_resolution": [
+          "INT",
+          {
+            "default": 256,
+            "min": 16,
+            "max": 512
+          }
+        ]
+      }
+    },
+    "output": [
+      "VOXEL"
+    ],
+    "output_node": false
+  },
+  "VoxelToMesh": {
+    "input": {
+      "required": {
+        "voxel": [
+          "VOXEL"
+        ],
+        "algorithm": [
+          [
+            "surface net",
+            "basic"
+          ]
+        ],
+        "threshold": [
+          "FLOAT",
+          {
+            "default": 0.6,
+            "min": -1.0,
+            "max": 1.0
+          }
+        ]
+      }
+    },
+    "output": [
+      "MESH"
+    ],
+    "output_node": false
+  },
+  "SaveGLB": {
+    "input": {
+      "required": {
+        "mesh": [
+          "MESH"
+        ],
+        "filename_prefix": [
+          "STRING",
+          {
+            "default": "3d/ComfyUI"
+          }
+        ]
+      }
+    },
+    "output": [],
+    "output_node": true
+  }
+}

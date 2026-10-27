@@ -608,7 +608,7 @@ impl Provider for ComfyProvider {
                 Known::Finished(mut entry) => {
                     output_selection::arrange(&mut entry.outputs, order.as_deref(), |(id, _)| id.as_str());
                     match finished(&entry) {
-                        Ok(files) => Ok(JobProgress::Done(Completed::new(self.download(&files).await?))),
+                        Ok(files) => Ok(JobProgress::Done(Completed::new(template::mesh::outputs(&handle.data, self.download(&files).await?)?))),
                         Err(e) => Ok(JobProgress::Failed(e)),
                     }
                 }
@@ -1319,3 +1319,7 @@ mod tests {
 #[cfg(test)]
 #[path = "comfyui/mapping947_tests.rs"]
 mod mapping947_tests;
+
+#[cfg(test)]
+#[path = "comfyui/mesh24_tests.rs"]
+mod mesh24_tests;
