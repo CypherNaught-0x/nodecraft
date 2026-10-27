@@ -3457,8 +3457,12 @@ dependencies = [
  "craft-pdf",
  "image",
  "kurbo 0.13.1",
+ "quick-xml",
+ "resvg",
+ "roxmltree",
  "serde",
  "serde_json",
+ "svgtypes",
 ]
 
 [[package]]

@@ -112,6 +112,13 @@ impl PreviewAssetRead {
         if bytes.len() as u64 != self.byte_len() {
             return Err(PreviewReadError::Corrupt);
         }
+        if self.mime == nodecraft_media::svg::MIME {
+            let info = nodecraft_media::svg::probe(bytes, &Default::default()).map_err(|_| PreviewReadError::Corrupt)?;
+            if self.width.is_some_and(|n| n != info.width) || self.height.is_some_and(|n| n != info.height) {
+                return Err(PreviewReadError::Corrupt);
+            }
+            return Ok(());
+        }
         if let Some(sniffed) = nodecraft_media::sniff(bytes) {
             if sniffed.mime.split(';').next().unwrap_or_default() != self.mime {
                 return Err(PreviewReadError::Corrupt);

@@ -69,3 +69,6 @@ pub fn canonical_hash(hash: nodecraft_media::ContentHash) -> nodecraft_types::Bl
 pub fn media_hash(hash: nodecraft_types::Blake3) -> nodecraft_media::ContentHash {
     nodecraft_media::ContentHash(*hash.as_bytes())
 }
+
+#[cfg(test)]
+mod svg_tests;

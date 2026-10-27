@@ -3513,6 +3513,8 @@ mod prompt_overlay_tests;
 #[cfg(test)]
 mod reader_tests;
 #[cfg(test)]
+mod recraft35_tests;
+#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod runs_tests;
 #[cfg(test)]

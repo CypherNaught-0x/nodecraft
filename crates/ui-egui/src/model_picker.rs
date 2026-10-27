@@ -386,3 +386,6 @@ mod hunyuan42_tests;
 
 #[cfg(test)]
 mod alibaba32_tests;
+
+#[cfg(test)]
+mod recraft35_tests;

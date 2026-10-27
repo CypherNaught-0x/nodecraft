@@ -187,3 +187,6 @@ mod hunyuan42;
 
 #[path = "alibaba32.rs"]
 mod alibaba32;
+
+#[path = "recraft35.rs"]
+mod recraft35;

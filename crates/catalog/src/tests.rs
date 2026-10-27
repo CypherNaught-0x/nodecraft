@@ -72,6 +72,9 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 other => panic!("{other}: no verified Grok price"),
             };
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
+        } else if matches!(model.id.as_str(), "fal.recraft41" | "fal.recraft41-vector") {
+            let price = if model.id.ends_with("-vector") { 80_000 } else { 35_000 };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, price)));
         } else if model.id == "fal.bria-rmbg" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 18_000)));
@@ -249,6 +252,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.ideogram-v3", true),
             ("fal.luma-photon", true),
             ("fal.qwen-image3", true),
+            ("fal.recraft41-vector", true),
+            ("fal.recraft41", true),
             ("gemini-images.pro", true),
             ("gemini-images.nano-banana-2.1", true),
             ("gemini-images.flash-lite", true),

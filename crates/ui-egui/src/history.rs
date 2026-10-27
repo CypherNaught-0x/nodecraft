@@ -150,6 +150,7 @@ pub fn export_targets(node: &Node, generation: &Generation) -> Vec<(String, Opti
 pub fn suggested_name(mime: &str) -> String {
     let extension = match mime {
         "image/png" => "png",
+        "image/svg+xml" => "svg",
         "image/jpeg" => "jpg",
         "image/webp" => "webp",
         "image/gif" => "gif",

@@ -116,7 +116,7 @@ fn preview_crc_metadata_hash_and_cache_alias_refuse() {
         .cache
         .lock()
         .unwrap()
-        .insert(asset.hash, CacheRecord { identity: Arc::downgrade(&other), data: VerifiedData { range, crc32: 0, sniffed: None, image: None } });
+        .insert(asset.hash, CacheRecord { identity: Arc::downgrade(&other), data: VerifiedData { range, crc32: 0, sniffed: None, image: None, svg: None } });
     let before = calls.load(Ordering::SeqCst);
     assert_eq!(store.preview_read(&asset).unwrap().read_verified(&Default::default(), &Default::default()), Err(PreviewReadError::Corrupt));
     assert_eq!(calls.load(Ordering::SeqCst), before);

@@ -17,6 +17,8 @@ mod luma_tests;
 mod media;
 #[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
 mod native_tests;
+#[cfg(test)]
+mod recraft_tests;
 mod request;
 mod response;
 #[cfg(test)]
@@ -53,6 +55,9 @@ pub const LUMA_RAY_I2V: &str = "luma/agent/ray/v3.2/image-to-video";
 pub const LUMA_PHOTON: &str = "fal-ai/luma-photon";
 /// Ideogram V3 text-to-image, one Balanced image through fal's queue (#34).
 pub const IDEOGRAM: &str = "fal-ai/ideogram/v3";
+/// Recraft V4.1 raster and original SVG through fal (#35).
+pub const RECRAFT_IMAGE: &str = "fal-ai/recraft/v4.1/text-to-image";
+pub const RECRAFT_VECTOR: &str = "fal-ai/recraft/v4.1/text-to-vector";
 /// LTX 2.3 Pro through fal's saved queue (#30).
 pub const LTX: &str = "fal-ai/ltx-2.3/text-to-video";
 pub const LTX_I2V: &str = "fal-ai/ltx-2.3/image-to-video";
@@ -130,6 +135,8 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Model {
+    RecraftImage,
+    RecraftVector,
     QwenImage,
     QwenEdit,
     Wan3Text,
@@ -165,6 +172,8 @@ enum Model {
 impl Model {
     fn read(s: &str) -> Result<Self, ProviderError> {
         match s {
+            RECRAFT_IMAGE => Ok(Self::RecraftImage),
+            RECRAFT_VECTOR => Ok(Self::RecraftVector),
             QWEN_IMAGE => Ok(Self::QwenImage),
             QWEN_EDIT => Ok(Self::QwenEdit),
             WAN3_VIDEO => Ok(Self::Wan3Text),
@@ -197,6 +206,8 @@ impl Model {
     }
     fn wire(self) -> &'static str {
         match self {
+            Self::RecraftImage => RECRAFT_IMAGE,
+            Self::RecraftVector => RECRAFT_VECTOR,
             Self::QwenImage => QWEN_IMAGE,
             Self::QwenEdit => QWEN_EDIT,
             Self::Wan3Text => WAN3_VIDEO,
@@ -252,8 +263,12 @@ impl Model {
     fn hunyuan(self) -> bool {
         matches!(self, Self::HunyuanText | Self::HunyuanImage | Self::HunyuanSketch)
     }
+    fn recraft(self) -> bool {
+        matches!(self, Self::RecraftImage | Self::RecraftVector)
+    }
     fn root(self) -> &'static str {
         match self {
+            Self::RecraftImage | Self::RecraftVector => "fal-ai/recraft",
             Self::QwenImage | Self::QwenEdit => "alibaba/qwen-image-3",
             Self::Wan3Text | Self::Wan3Frames => "alibaba/wan-3.0",
             Self::HunyuanText | Self::HunyuanImage | Self::HunyuanSketch => "fal-ai/hunyuan3d-v3",
@@ -275,7 +290,19 @@ impl Model {
     }
     /// Whether fal lists this model's images under `images`.
     fn images(self) -> bool {
-        matches!(self, Self::QwenImage | Self::QwenEdit | Self::GrokImage | Self::GrokEdit | Self::Image | Self::Styled | Self::Photon | Self::Ideogram)
+        matches!(
+            self,
+            Self::RecraftImage
+                | Self::RecraftVector
+                | Self::QwenImage
+                | Self::QwenEdit
+                | Self::GrokImage
+                | Self::GrokEdit
+                | Self::Image
+                | Self::Styled
+                | Self::Photon
+                | Self::Ideogram
+        )
     }
 }
 #[derive(Clone, Copy)]
@@ -577,13 +604,29 @@ impl Fal {
             if reply.body.is_empty() || f.size.is_some_and(|n| usize::try_from(n).ok() != Some(reply.body.len())) {
                 return Err(malformed("fal output size disagrees with body"));
             }
-            let mime = media::validate(&reply.body, record, limits, &mut pixels)?;
+            // SVG admission and declared geometry share one complete probe. Its preview
+            // capability does not decide whether a safe paid original is retained.
+            let vector = (record.model == Model::RecraftVector).then(|| media::vector(&reply.body, limits, &mut pixels)).transpose()?;
+            let mime = if vector.is_some() { nodecraft_media::svg::MIME } else { media::validate(&reply.body, record, limits, &mut pixels)? };
             if f.mime.as_deref().is_some_and(|m| m != mime) {
                 return Err(malformed("fal output MIME disagrees with actual bytes"));
             }
+            if let Some(info) = vector
+                && (f.width.is_some_and(|w| w != u64::from(info.width)) || f.height.is_some_and(|h| h != u64::from(info.height)))
+            {
+                return Err(malformed("fal declared geometry disagrees with actual SVG"));
+            }
             if matches!(
                 record.model,
-                Model::GrokImage | Model::GrokEdit | Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon | Model::Ideogram
+                Model::RecraftImage
+                    | Model::GrokImage
+                    | Model::GrokEdit
+                    | Model::Image
+                    | Model::Styled
+                    | Model::Upscale
+                    | Model::RemoveBackground
+                    | Model::Photon
+                    | Model::Ideogram
             ) && (f.width.is_some() || f.height.is_some())
             {
                 let meta = nodecraft_media::probe_image(&reply.body, &limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
