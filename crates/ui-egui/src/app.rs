@@ -415,6 +415,7 @@ mod styles;
 mod tag_definitions;
 mod tags;
 mod technique_menu;
+mod template_fetch;
 mod timeline_editor;
 mod topbar;
 #[cfg(test)]
@@ -602,6 +603,7 @@ pub struct NodeCraftApp {
     runs: Option<runs::Runs>,
     /// Fetches the option lists `options.refresh` asks for (#529).
     option_fetch: Option<option_fetch::OptionFetcher>,
+    template_fetch: Option<template_fetch::TemplateFetcher>,
     /// Reads the ComfyUI server's nodes `comfy.nodes.refresh` asks for (#9).
     #[cfg(not(target_arch = "wasm32"))]
     comfy_nodes: Option<comfy_nodes::ComfyNodesFetcher>,
@@ -771,6 +773,13 @@ impl NodeCraftApp {
         }
         app.runs = runs;
         app.option_fetch = option_fetch;
+        app.template_fetch = template_fetch::TemplateFetcher::new()
+            .and_then(|mut fetcher| {
+                fetcher.bind(&mut app.session)?;
+                Ok(fetcher)
+            })
+            .inspect_err(|error| log::warn!("templates unavailable: {}", error.message))
+            .ok();
         app.comfy_nodes = comfy_nodes;
         // The technique library every project shares (#96), beside the plugins; in memory when
         // settings aren't kept on disk.
@@ -907,6 +916,13 @@ impl NodeCraftApp {
         app.runs = runs;
         app.key_changes = Some(changed);
         app.option_fetch = option_fetch;
+        app.template_fetch = template_fetch::TemplateFetcher::browser()
+            .and_then(|mut fetcher| {
+                fetcher.bind(&mut app.session)?;
+                Ok(fetcher)
+            })
+            .inspect_err(|error| log::warn!("templates unavailable: {}", error.message))
+            .ok();
         app.notice = provider_notice.clone();
         app.browser_providers = Some(browser_providers::BrowserProviders::new(providers, provider_notice));
         // Recovery is a safety net, not a save: leaving with unsaved work still asks first.
@@ -1203,6 +1219,7 @@ impl NodeCraftApp {
             key_changes: None,
             runs: None,
             option_fetch: None,
+            template_fetch: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_nodes: None,
             comfy_mapping: None,
@@ -3458,6 +3475,7 @@ impl eframe::App for NodeCraftApp {
         self.tick_browser_providers();
         self.tick_runs(ctx);
         self.tick_option_fetch(ctx);
+        self.tick_template_fetch(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_comfy_nodes(ctx);
         #[cfg(not(target_arch = "wasm32"))]

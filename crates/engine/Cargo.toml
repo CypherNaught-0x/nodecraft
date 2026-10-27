@@ -12,6 +12,7 @@ description = "NodeCraft: session, command registry, undo stack, event bus and s
 workspace = true
 
 [dependencies]
+nodecraft-template-data.workspace = true
 nodecraft-exec = { workspace = true }
 nodecraft-catalog = { workspace = true }
 # Plugin data packages (#172): the store behind the plugin.* commands.
@@ -87,3 +88,7 @@ path = "tests/panic_hunt.rs"
 [[test]]
 name = "physical_zip64147"
 path = "tests/physical_zip64147.rs"
+
+[[test]]
+name = "template_catalog"
+path = "tests/template_catalog.rs"
