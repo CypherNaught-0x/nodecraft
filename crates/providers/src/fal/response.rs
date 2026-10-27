@@ -6,11 +6,23 @@ pub(super) struct File {
     pub width: Option<u64>,
     pub height: Option<u64>,
 }
-fn delivery(s: &str, key: &Secret) -> Result<(), ProviderError> {
+fn delivery(s: &str, key: &Secret, model: Model) -> Result<(), ProviderError> {
     if s.contains(key.expose()) {
         return Err(malformed("fal output URL refused or redacted"));
     }
+    if model.recraft() && recraft_bucket(s) {
+        return Ok(());
+    }
     storage(s)
+}
+/// Recraft's formal raster example uses this exact fal-owned public GCS bucket.
+/// Keep this exception local to these models; URL normalization must not broaden it.
+fn recraft_bucket(s: &str) -> bool {
+    let Some(path) = s.strip_prefix("https://storage.googleapis.com/falserverless/") else { return false };
+    s.len() <= 4096
+        && !path.is_empty()
+        && path.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_'))
+        && path.split('/').all(|part| !part.is_empty() && !matches!(part, "." | ".."))
 }
 /// Whether `s` is a link to fal's file storage.
 pub(super) fn storage(s: &str) -> Result<(), ProviderError> {
@@ -42,7 +54,16 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         return Err(malformed("fal result contains an error instead of a complete output"));
     }
     let name = match r.model {
-        Model::Image | Model::Styled | Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => "images",
+        Model::RecraftImage
+        | Model::RecraftVector
+        | Model::Image
+        | Model::Styled
+        | Model::QwenImage
+        | Model::QwenEdit
+        | Model::GrokImage
+        | Model::GrokEdit
+        | Model::Photon
+        | Model::Ideogram => "images",
         Model::RodinText | Model::RodinImages | Model::RodinFastText | Model::RodinFastImages => "model_mesh",
         Model::Train => "diffusers_lora_file",
         Model::Wan3Text
@@ -87,7 +108,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
     for raw in records {
         let f = json::object(raw.get())?;
         let url = f.text("url")?;
-        delivery(&url, key)?;
+        delivery(&url, key, r.model)?;
         if r.model == Model::Train {
             // Only the link is kept, so the weights' size and type are fal's; the link must be
             // one a descriptor may hold.
@@ -129,7 +150,8 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         }
         let allowed: &[&str] = match r.model {
             Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => &["image/png"],
-            Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => {
+            Model::RecraftVector => &[nodecraft_media::svg::MIME],
+            Model::RecraftImage | Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => {
                 &["image/png", "image/jpeg", "image/webp"]
             }
             Model::Wan3Text
