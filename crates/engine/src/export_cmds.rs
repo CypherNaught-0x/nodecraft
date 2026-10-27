@@ -30,7 +30,8 @@ struct ExportParams {
 fn export(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: ExportParams = params(value)?;
     crate::export::check(&p.path)?;
-    let (value, _) = crate::history_cmds::result_value(c, p.canvas, p.id, p.generation, p.port.as_deref(), p.item)?;
+    let leaf = crate::export_leaves::result_value(c, p.canvas, p.id, p.generation, p.port.as_deref(), p.item, &mut Default::default())?;
+    let value = leaf.value;
     let Value::Media(asset) = value else {
         return Err(Error::new(ErrorKind::Unsupported, "only image, video, audio, 3D and document results export to a file; copy text instead"));
     };
@@ -51,7 +52,7 @@ fn schema() -> Json {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
         "required": ["canvas", "id", "generation", "path"],
         "properties": {"canvas": uuid, "id": uuid, "generation": uuid, "port": {"type": "string", "maxLength": 256},
-            "item": {"type": "integer", "minimum": 0},
+            "item": {"type": "integer", "minimum": 0, "maximum":crate::export_leaves::MAX_VISITED-1},
             "path": {"type": "string", "minLength": 1, "maxLength": crate::export::MAX_PATH_BYTES},
             "overwrite": {"type": "boolean"}, "background": {"type":"boolean"}}})
 }
@@ -64,7 +65,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: schema,
-            params_doc: "{canvas, id: NodeId, generation, port?: output name, item?: list index, path: absolute file path, overwrite?: bool, background?: bool} -> {bytes} or {pending: id}; background requires an export runner and verifies/copies off the UI thread. export.status retains the terminal result; export.cancel accepts cancellation before finishing atomic publication. Defaults are synchronous and no replacement. Desktop only.",
+            params_doc: "{canvas, id: NodeId, generation, port?: output name, item?: flattened export-leaf index (all non-list values count), path: absolute file path, overwrite?: bool, background?: bool} -> {bytes} or {pending: id}; background requires an export runner and verifies/copies off the UI thread. export.status retains the terminal result; export.cancel accepts cancellation before finishing atomic publication. Defaults are synchronous and no replacement. Desktop only.",
             enabled,
             run: export,
         },

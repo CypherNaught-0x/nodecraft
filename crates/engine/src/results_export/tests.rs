@@ -78,6 +78,73 @@ fn run(s: &mut Session, r: &Held, host: &ExportHost, p: &Json) -> Report {
     report
 }
 #[test]
+fn results966_nested_mixed_duplicates_use_exact_indices_and_original_fan_settings() {
+    let mut project = Project::new(ProjectId::from_bytes([81; 16]), "Nested results").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    let id = NodeId::from_bytes([81; 16]);
+    let gid = GenerationId::from_bytes([82; 16]);
+    let bytes_a = nodecraft_media::encode_png(1, 1, &[255, 0, 0, 255], &Default::default()).unwrap();
+    let bytes_b = nodecraft_media::encode_png(1, 1, &[0, 255, 0, 255], &Default::default()).unwrap();
+    let media = |bytes: &[u8]| {
+        Value::Media(AssetRef { hash: Blake3::from_bytes(*blake3::hash(bytes).as_bytes()), mime: "image/png".parse().unwrap(), meta: Default::default() })
+    };
+    let a = media(&bytes_a);
+    let b = media(&bytes_b);
+    let outputs = vec![Value::List(vec![
+        Value::List(vec![Value::Text("prompt zero".into()), a.clone(), Value::List(vec![b])]),
+        Value::List(vec![Value::Bool(false), media(b"unavailable"), a]),
+    ])];
+    let mut generation = Generation::new(gid, outputs);
+    generation.items = (1..=2).map(|i| vec![nodecraft_graph::ItemKey { batch: id, item: nodecraft_types::ItemId::from_bytes([i; 16]) }]).collect();
+    generation.settings = (0..=1)
+        .map(|i| JobSettings {
+            provider: "mock".into(),
+            instance: None,
+            model: format!("original-{i}"),
+            params: Default::default(),
+            inputs: vec![JobInput { role: "prompt".into(), value: Value::Text(format!("submitted-{i}")) }],
+            item: Some(i),
+            billable_units: None,
+            execution_ms: None,
+        })
+        .collect();
+    let mut node = Node::new(id, "test.media");
+    node.title = "Nested".into();
+    node.outputs = vec![Port { name: "out".into(), port_type: PortType { modality: Modality::Image, many: true } }];
+    node.history.push(generation);
+    node.active = Some(gid);
+    Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+    let mut session = Session::new(project).unwrap();
+    session.import_asset(&bytes_a).unwrap();
+    session.import_asset(&bytes_b).unwrap();
+    let runner = Arc::new(Held::default());
+    session.set_export_runner(runner.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let host = ExportHost::authorize(dir.path()).unwrap();
+    let request = request(dir.path());
+    assert_eq!(crate::local_export::dispatch_with_host(&mut session, &host, "export.results_plan", &request).unwrap()["total"], 4);
+    let report = run(&mut session, &runner, &host, &request);
+    assert_eq!((report.written(), report.failed()), (3, 1), "a missing middle source does not drop the later duplicate: {:?}", report.entries);
+    assert_eq!(report.entries.iter().map(|entry| entry.source.item).collect::<Vec<_>>(), vec![Some(1), Some(2), Some(4), Some(5)]);
+    let manifest: Json = serde_json::from_slice(&std::fs::read(dir.path().join(report.manifest.unwrap())).unwrap()).unwrap();
+    for (i, fan) in [0, 0, 1, 1].into_iter().enumerate() {
+        assert_eq!(manifest["entries"][i]["provenance"]["jobs"].as_array().unwrap().len(), 1);
+        assert_eq!(manifest["entries"][i]["provenance"]["jobs"][0]["model"], format!("original-{fan}"));
+    }
+    let mut exact = request.clone();
+    exact["targets"] = json!([{"node":id,"generation":gid,"port":"out","item":5}]);
+    let report = run(&mut session, &runner, &host, &exact);
+    assert_eq!(report.written(), 1);
+    assert_eq!(std::fs::read(dir.path().join(report.entries[0].file.as_ref().unwrap())).unwrap(), bytes_a);
+    let path = dir.path().join("single.png");
+    let args = json!({"canvas":C,"id":id,"generation":gid,"port":"out","item":2,"path":path,"background":true});
+    session.dispatch("history.export", &args).unwrap();
+    assert!(!path.exists());
+    runner.run();
+    assert_eq!(std::fs::read(path).unwrap(), bytes_b);
+    assert!(session.dispatch("history.export", &json!({"canvas":C,"id":id,"generation":gid,"item":0,"path":dir.path().join("text.png")})).is_err());
+}
+#[test]
 fn results966_mixed_history_atomic_names_provenance_and_scope() {
     let (mut s, r) = fixture();
     let dir = tempfile::tempdir().unwrap();

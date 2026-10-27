@@ -3628,3 +3628,5 @@ mod stale_tests;
 
 #[cfg(test)]
 mod router949_tests;
+#[cfg(test)]
+mod templates952_tests;

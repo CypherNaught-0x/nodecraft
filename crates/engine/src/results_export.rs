@@ -224,7 +224,7 @@ fn build(c: &Context<'_>, parameters: &Json, write: bool) -> Result<Plan, Error>
     if request.nodes.len() > 256 || targets.len() > MAX_ENTRIES {
         return Err(invalid("Select at most 256 nodes or explicit results"));
     }
-    if targets.iter().any(|t| t.port.as_ref().is_some_and(|p| p.len() > 256) || t.item.is_some_and(|i| i > 4095)) {
+    if targets.iter().any(|t| t.port.as_ref().is_some_and(|p| p.len() > 256) || t.item.is_some_and(|i| i >= crate::export_leaves::MAX_VISITED)) {
         return Err(invalid("The requested output or item is out of bounds"));
     }
     if !targets.is_empty() && !request.nodes.is_empty() {
@@ -239,38 +239,19 @@ fn build(c: &Context<'_>, parameters: &Json, write: bool) -> Result<Plan, Error>
         return Err(invalid("The selected nodes are duplicated or no longer available"));
     }
     let mut builder = Builder { context: c, template, entries: Vec::new(), remaining: MAX_MANIFEST - 256 * 1024, folder: &request.destination };
-    let mut visited = 0usize;
+    let mut budget = crate::export_leaves::Budget::default();
     if !targets.is_empty() {
         for target in targets {
             let node = canvas.nodes().get(&target.node).ok_or_else(|| invalid("The requested result node is unavailable"))?;
             let generation = node.history.iter().find(|g| g.id == target.generation).ok_or_else(|| invalid("The requested history result is unavailable"))?;
-            let (value, _) = crate::history_cmds::result_value(c, request.canvas, node.id, target.generation, target.port.as_deref(), target.item)?;
+            let leaf = crate::export_leaves::result_value(c, request.canvas, node.id, target.generation, target.port.as_deref(), target.item, &mut budget)?;
             let port = target.port.as_deref().or_else(|| node.outputs.first().map(|p| p.name.as_str())).ok_or_else(|| invalid("The result has no output"))?;
-            let fan = target.item.and_then(|item| {
-                if generation.items.is_empty() {
-                    return None;
-                }
-                let index = node.outputs.iter().position(|p| p.name == port)?;
-                let Value::List(outer) = generation.outputs.get(index)? else {
-                    return None;
-                };
-                let mut offset = 0usize;
-                outer.iter().enumerate().find_map(|(fan, value)| {
-                    let count = match value {
-                        Value::List(inner) => inner.len(),
-                        _ => 1,
-                    };
-                    let here = item >= offset && item < offset.saturating_add(count);
-                    offset = offset.saturating_add(count);
-                    here.then_some(fan)
-                })
-            });
-            builder.add(node, generation, port, target.item, fan, value)?;
+            builder.add(node, generation, port, leaf.item, leaf.fan, leaf.value)?;
         }
     } else {
         for node in canvas.nodes().values().filter(|n| selected.is_empty() || selected.contains(&n.id)) {
             for generation in &node.history {
-                visited = visited.checked_add(1).filter(|n| *n <= 65_536).ok_or_else(|| invalid("Too much history; select fewer nodes"))?;
+                budget.charge()?;
                 if matches!(request.history, History::Active) && Some(generation.id) != node.active {
                     continue;
                 }
@@ -281,30 +262,9 @@ fn build(c: &Context<'_>, parameters: &Json, write: bool) -> Result<Plan, Error>
                     } else {
                         &fallback
                     };
-                    visited = visited.checked_add(1).filter(|n| *n <= 65_536).ok_or_else(|| invalid("Too many history values; select fewer nodes"))?;
-                    match value {
-                        Value::List(items) => {
-                            let mut ordinal = 0usize;
-                            for (outer, value) in items.iter().enumerate() {
-                                let values = if !generation.items.is_empty() {
-                                    match value {
-                                        Value::List(inner) => inner.as_slice(),
-                                        _ => std::slice::from_ref(value),
-                                    }
-                                } else {
-                                    std::slice::from_ref(value)
-                                };
-                                for value in values {
-                                    visited = visited
-                                        .checked_add(1)
-                                        .filter(|n| *n <= 65_536)
-                                        .ok_or_else(|| invalid("Too many history values; select fewer nodes"))?;
-                                    builder.add(node, generation, port, Some(ordinal), (!generation.items.is_empty()).then_some(outer), value)?;
-                                    ordinal = ordinal.saturating_add(1);
-                                }
-                            }
-                        }
-                        value => builder.add(node, generation, port, None, None, value)?,
+                    for leaf in crate::export_leaves::iter(value, !generation.items.is_empty(), &mut budget) {
+                        let leaf = leaf?;
+                        builder.add(node, generation, port, leaf.item, leaf.fan, leaf.value)?;
                     }
                 }
             }
@@ -323,7 +283,7 @@ fn schema() -> Json {
     let uuid = json!({"type":"string","format":"uuid"});
     json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":["canvas","destination"],"properties":{
         "canvas":uuid,"nodes":{"type":"array","maxItems":256,"items":uuid},"history":{"enum":["all","active"]},"destination":{"type":"string","minLength":1,"maxLength":4096},"template":{"type":"string","minLength":1,"maxLength":128},
-        "targets":{"type":"array","maxItems":MAX_ENTRIES,"items":{"type":"object","additionalProperties":false,"required":["node","generation"],"properties":{"node":uuid,"generation":uuid,"port":{"type":"string","maxLength":256},"item":{"type":"integer","minimum":0,"maximum":4095}}}}}})
+        "targets":{"type":"array","maxItems":MAX_ENTRIES,"items":{"type":"object","additionalProperties":false,"required":["node","generation"],"properties":{"node":uuid,"generation":uuid,"port":{"type":"string","maxLength":256},"item":{"type":"integer","minimum":0,"maximum":crate::export_leaves::MAX_VISITED-1}}}}}})
 }
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -333,7 +293,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: schema,
-            params_doc: "{canvas,nodes?:NodeId[] (empty=all),history?:all|active (default all),targets?:[{node,generation,port?,item?}],destination:absolute authorized folder,template?:filename tokens} -> {total,ready,examples,manifest}. Preview only; explicit targets and nodes are mutually exclusive. Stored original extensions, never overwrite, historical settings only.",
+            params_doc: "{canvas,nodes?:NodeId[] (empty=all),history?:all|active (default all),targets?:[{node,generation,port?,item?}],destination:absolute authorized folder,template?:filename tokens} -> {total,ready,examples,manifest}. Preview only; explicit targets and nodes are mutually exclusive. item is the depth-first export-leaf index counting all non-list values. Stored original extensions, never overwrite, historical settings only.",
             enabled: |c, v| build(c, v, false).map(|_| ()),
             run: |c, v| build(c, v, false).map(|p| Effect::None { result: preview(&p) }),
         },

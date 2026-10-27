@@ -13,6 +13,15 @@ never open dialogs. A destination string is never permission: only a trusted hos
 ephemeral `ExportHost`. `local_export::dispatch_with_host` restores any previous grant after
 dispatch; an admitted worker retains its immutable grant and selection snapshot.
 
+Exports traverse nested collections in depth-first order. Every non-list leaf counts toward the
+stable `item` index, including text and numbers; media filtering never renumbers the selection.
+Scalar outputs retain `item: null`. This export-only contract is shared by `history.export`,
+folder plans and their UI menus; generic history extraction and clipboard operations keep
+their existing semantics. Top-level fan positions independently select the original job settings.
+Traversal visits at most 65,536 values/containers and 32 list levels with O(depth) storage;
+exhaustion refuses the selection explicitly. UI menus scan within those bounds before offering
+the first twelve media leaves per output, with their original indices.
+
 The existing descriptor-relative, no-follow folder authority is preserved. Secure folder
 writes currently work on Unix (macOS/Linux); Windows and the browser refuse before writing
 and the UI explains that individual result exports remain available. Windows needs an

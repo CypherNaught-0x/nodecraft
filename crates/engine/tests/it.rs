@@ -5,6 +5,9 @@
 // Shared helpers, compiled once; the test files reach them as `crate::common`.
 mod common;
 
+#[path = "results966.rs"]
+mod results966;
+
 #[path = "asset_imports147.rs"]
 mod asset_imports147;
 #[path = "audio_generation672.rs"]
@@ -192,3 +195,9 @@ mod alibaba32;
 
 #[path = "rodin41.rs"]
 mod rodin41;
+
+#[path = "templates952/author.rs"]
+mod templates952_author;
+
+#[path = "templates952.rs"]
+mod templates952;
