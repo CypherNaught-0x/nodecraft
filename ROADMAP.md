@@ -36,6 +36,11 @@ reimporting, including retained image previews for compatible core workflows (#9
 Runway Gen-4.5 text/first-frame video and Gen-4 Turbo first-frame video are available through
 priced catalog models and the direct task adapter (#25); paid live verification remains opt-in.
 
+Official workflow starters are maintained in the separate
+[nodecraft-templates](https://github.com/CypherNaught-0x/nodecraft-templates) repository. Native and
+browser builds embed a pinned offline set; the Techniques panel can refresh the versioned index
+and retrieve one verified version without importing or running it (#953).
+
 ## What works today
 
 Run it: `cargo run -p nodecraft`. What the window actually does:
