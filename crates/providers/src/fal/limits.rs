@@ -72,12 +72,13 @@ impl Limits {
     pub(super) fn for_model(self, model: Model) -> Self {
         let grok_images = matches!(model, Model::GrokImage | Model::GrokEdit);
         let large_video = matches!(model, Model::GrokText | Model::GrokFrames | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames);
+        let large_result = large_video || model.hunyuan();
         Self {
             request_bytes: self.request_bytes.min(if model == Model::GrokEdit { Self::GROK_HARD.request_bytes } else { Self::HARD.request_bytes }),
-            output_bytes: self.output_bytes.min(if large_video { Self::VIDEO_HARD.output_bytes } else { Self::HARD.output_bytes }),
+            output_bytes: self.output_bytes.min(if large_result { Self::VIDEO_HARD.output_bytes } else { Self::HARD.output_bytes }),
             total_output_bytes: self.total_output_bytes.min(if grok_images {
                 10 * Self::HARD.output_bytes
-            } else if large_video {
+            } else if large_result {
                 Self::VIDEO_HARD.total_output_bytes
             } else {
                 Self::HARD.total_output_bytes

@@ -54,7 +54,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         | Model::LtxText
         | Model::LtxFrames => "video",
         Model::Audio => "audio",
-        Model::Mesh => "model_glb",
+        Model::HunyuanText | Model::HunyuanImage | Model::HunyuanSketch | Model::Mesh => "model_glb",
         Model::Upscale | Model::RemoveBackground => "image",
     };
     // Multiple model envelopes or unexpected top-level media cannot be filtered away.
@@ -137,7 +137,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
             | Model::LtxText
             | Model::LtxFrames => &["video/mp4"],
             Model::Audio => &["audio/wav"],
-            Model::Mesh => &["model/gltf-binary"],
+            Model::HunyuanText | Model::HunyuanImage | Model::HunyuanSketch | Model::Mesh => &["model/gltf-binary"],
             Model::Train => return Err(malformed("fal trained weights are never downloaded")),
         };
         if mime.as_deref().is_some_and(|s| !allowed.contains(&s)) {

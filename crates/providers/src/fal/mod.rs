@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod grok_tests;
 #[cfg(test)]
+mod hunyuan_tests;
+#[cfg(test)]
 mod ideogram_tests;
 mod json;
 mod limits;
@@ -33,6 +35,10 @@ pub const GROK_IMAGE: &str = "xai/grok-imagine-image/v2.0/text-to-image";
 pub const GROK_EDIT: &str = "xai/grok-imagine-image/v2.0/edit";
 pub const GROK_VIDEO: &str = "xai/grok-imagine-video/v1.5/text-to-video";
 pub const GROK_I2V: &str = "xai/grok-imagine-video/v1.5/image-to-video";
+/// Hunyuan3D V3 through the same fal queue (#42).
+pub const HUNYUAN_TEXT: &str = "fal-ai/hunyuan3d-v3/text-to-3d";
+pub const HUNYUAN_IMAGE: &str = "fal-ai/hunyuan3d-v3/image-to-3d";
+pub const HUNYUAN_SKETCH: &str = "fal-ai/hunyuan3d-v3/sketch-to-3d";
 pub const FLUX: &str = "fal-ai/flux/schnell";
 /// Luma Ray 3.2 and Photon through fal's existing queue (#26).
 pub const LUMA_RAY: &str = "luma/agent/ray/v3.2/text-to-video";
@@ -117,6 +123,9 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Model {
+    HunyuanText,
+    HunyuanImage,
+    HunyuanSketch,
     GrokImage,
     GrokEdit,
     GrokText,
@@ -145,6 +154,9 @@ enum Model {
 impl Model {
     fn read(s: &str) -> Result<Self, ProviderError> {
         match s {
+            HUNYUAN_TEXT => Ok(Self::HunyuanText),
+            HUNYUAN_IMAGE => Ok(Self::HunyuanImage),
+            HUNYUAN_SKETCH => Ok(Self::HunyuanSketch),
             GROK_IMAGE => Ok(Self::GrokImage),
             GROK_EDIT => Ok(Self::GrokEdit),
             GROK_VIDEO => Ok(Self::GrokText),
@@ -170,6 +182,9 @@ impl Model {
     }
     fn wire(self) -> &'static str {
         match self {
+            Self::HunyuanText => HUNYUAN_TEXT,
+            Self::HunyuanImage => HUNYUAN_IMAGE,
+            Self::HunyuanSketch => HUNYUAN_SKETCH,
             Self::GrokImage => GROK_IMAGE,
             Self::GrokEdit => GROK_EDIT,
             Self::GrokText => GROK_VIDEO,
@@ -202,8 +217,12 @@ impl Model {
     fn grok(self) -> bool {
         matches!(self, Self::GrokImage | Self::GrokEdit | Self::GrokText | Self::GrokFrames)
     }
+    fn hunyuan(self) -> bool {
+        matches!(self, Self::HunyuanText | Self::HunyuanImage | Self::HunyuanSketch)
+    }
     fn root(self) -> &'static str {
         match self {
+            Self::HunyuanText | Self::HunyuanImage | Self::HunyuanSketch => "fal-ai/hunyuan3d-v3",
             Self::GrokImage | Self::GrokEdit => "xai/grok-imagine-image",
             Self::GrokText | Self::GrokFrames => "xai/grok-imagine-video",
             Self::LtxText | Self::LtxFrames => "fal-ai/ltx-2.3",

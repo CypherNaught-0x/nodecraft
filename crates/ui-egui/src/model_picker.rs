@@ -308,6 +308,7 @@ fn price_label(model: &ModelDescriptor) -> String {
 }
 fn unit_label(unit: Unit) -> &'static str {
     match unit {
+        Unit::Call => "call",
         Unit::Image => "image",
         Unit::Second => "second",
         Unit::Megapixel => "megapixel",
@@ -379,3 +380,6 @@ mod deepgram40_tests;
 
 #[cfg(test)]
 mod grok31_tests;
+
+#[cfg(test)]
+mod hunyuan42_tests;

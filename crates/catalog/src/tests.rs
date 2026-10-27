@@ -57,6 +57,8 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
         } else if matches!(model.id.as_str(), "fal.luma-ray32" | "fal.luma-ray32-i2v") {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 500_000)));
+        } else if model.id.starts_with("fal.hunyuan3d-v3") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 375_000)));
         } else if model.id.starts_with("fal.grok-") {
             let micros = match model.id.as_str() {
                 "fal.grok-image2" => Some(60_000),
@@ -276,6 +278,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.grok-image2-edit", false),
             ("fal.grok-video15", false),
             ("fal.grok-video15-i2v", false),
+            ("fal.hunyuan3d-v3-image", false),
+            ("fal.hunyuan3d-v3-sketch", false),
+            ("fal.hunyuan3d-v3", false),
             ("fal.kokoro", false),
             ("fal.luma-ray32", false),
             ("fal.luma-ray32-i2v", false),

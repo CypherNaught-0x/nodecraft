@@ -75,7 +75,7 @@ default = { type = "unsigned", value = "1" }
 - **Parameters** use the node parameter schema (`ParamControl` in `crates/types`): resolutions,
   aspect ratios and durations are `choice` or numeric controls. Integer values are written as
   strings (`"28"`) so 64-bit values survive JSON.
-- **Pricing** is `free`, `by_usage` (`currency`), `per_call` (`price`), `per_source_second` or `per_unit` (`unit` = `image`, `second`,
+- **Pricing** is `free`, `by_usage` (`currency`), `per_call` (`price`), `per_source_second` or `per_unit` (`unit` = `call`, `image`, `second`,
   `megapixel`, `thousand_tokens`, `thousand_characters` or `thousand_steps`; `price`; a `count`
   parameter and/or a `default_count` ≥ 1). The count is the parameter's value *after* schema
   defaults, so the quote matches what runs; `count` must be a numeric control (`unsigned`,
@@ -83,7 +83,8 @@ default = { type = "unsigned", value = "1" }
   1 (0 for `thousand_tokens` and `thousand_characters`), with a default or a `default_count`, and
   it must be the only parameter that scales the cost. `thousand_*` prices are per 1000 counted
   units; trainers use `thousand_steps`, counted from their steps setting. Prices are decimal strings with a currency,
-  at most six decimals, and quotes round up. Token-priced models without a `count` are quoted
+  at most six decimals, and quotes round up. `call` counts provider jobs, so a preset-priced 3D
+  generation uses `per_unit_by_choice`, `unit = "call"` and `default_count = 1`. Token-priced models without a `count` are quoted
   at run time. ElevenLabs character-priced models without a `count` or `default_count` are
   priced from the known jobs' trimmed prompt at run admission. Other adapters and text made
   by an upstream step stay unknown until their billed request shape can be counted exactly.

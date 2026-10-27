@@ -47,6 +47,8 @@ impl<'de> Deserialize<'de> for Price {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Unit {
+    /// One provider job, including a mesh generation with a priced preset.
+    Call,
     Image,
     Second,
     Megapixel,
@@ -64,7 +66,7 @@ impl Unit {
     fn per(self) -> u64 {
         match self {
             Self::ThousandTokens | Self::ThousandCharacters | Self::ThousandSteps => 1000,
-            Self::Image | Self::Second | Self::Megapixel => 1,
+            Self::Call | Self::Image | Self::Second | Self::Megapixel => 1,
         }
     }
     pub fn usage_based(self) -> bool {
