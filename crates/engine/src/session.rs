@@ -1146,7 +1146,7 @@ impl Session {
                 });
             }
             Effect::Place { media, changes, result } => return self.place(spec.id, media, changes, result),
-            Effect::TemplateAdd { id } => return self.add_template(spec.id, &id),
+            Effect::TemplateAdd { template } => return self.add_template(spec.id, *template),
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
                 return guard(|| {

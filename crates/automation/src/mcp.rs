@@ -119,6 +119,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     // Shipped data adds canvases/assets through the ordinary undoable project mutation path.
     "template.list",
     "template.add",
+    "template.refresh",
+    "template.retrieve",
     "node.describe",
     "node.options",
     "options.refresh",

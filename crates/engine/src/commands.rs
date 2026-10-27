@@ -169,7 +169,7 @@ impl Context<'_> {
 pub enum Effect {
     /// Add a verified shipped starter graph and its assets as one ordinary undoable edit.
     TemplateAdd {
-        id: String,
+        template: Box<crate::templates::PreparedTemplate>,
     },
     /// Read project PDF media only at dispatch, then stage one ordinary document edit.
     DocumentExtract {

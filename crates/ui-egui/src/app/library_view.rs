@@ -13,7 +13,9 @@ pub(super) struct LibraryView {
     pub(super) open: bool,
     /// The last `library.list` answer; `None` reads it again on the next frame it shows.
     listed: Option<Result<Vec<Kept>, String>>,
-    pub(super) templates: Option<Result<Vec<nodecraft_engine::templates::Entry>, String>>,
+    pub(super) templates: Option<Result<nodecraft_engine::templates::catalog::Listing, String>>,
+    template_owner: Option<std::sync::Arc<()>>,
+    template_stamp: Option<u64>,
     pub(super) template_query: String,
     /// The shader library's names and latest versions, read with the techniques.
     shaders: super::shader_editor::ShaderListing,
@@ -46,7 +48,9 @@ struct Listing {
 enum Action {
     /// Place the project's own version, by its canvas.
     Place(CanvasId),
-    AddTemplate(String),
+    AddTemplate(nodecraft_engine::templates::catalog::Identity),
+    RetrieveTemplate(nodecraft_engine::templates::catalog::Identity),
+    RefreshTemplates,
     /// Keep the project's version in the library.
     Add(CanvasId),
     /// Place a version from the library.
@@ -74,11 +78,22 @@ impl NodeCraftApp {
         if !self.library.open {
             return;
         }
-        if self.library.templates.is_none() {
-            self.library.templates = Some(self.session.dispatch("template.list", &json!({})).map_err(|e| e.message).and_then(|v| {
-                serde_json::from_value(v.get("templates").cloned().unwrap_or(Json::Null)).map_err(|_| "Starter templates could not be listed".into())
-            }));
+        let identity = self.session.view_identity();
+        let stamp = nodecraft_engine::templates::catalog::stamp(&self.session);
+        if self.library.template_stamp != Some(stamp) || !self.library.template_owner.as_ref().is_some_and(|old| std::sync::Arc::ptr_eq(old, &identity)) {
+            self.library.templates = None;
+            self.library.template_owner = Some(identity);
+            self.library.template_stamp = Some(stamp);
         }
+        if self.library.templates.is_none() {
+            self.library.templates = Some(
+                self.session
+                    .dispatch("template.list", &json!({}))
+                    .map_err(|e| e.message)
+                    .and_then(|value| serde_json::from_value(value).map_err(|_| "Starter templates could not be listed".into())),
+            );
+        }
+        let can_fetch_templates = self.session.enabled("template.refresh", &json!({})).is_ok();
         let library = self.has_library();
         if library && self.library.listed.is_none() {
             self.library.listed = Some(self.list_library());
@@ -203,27 +218,35 @@ impl NodeCraftApp {
                         }
                     }
                     match &self.library.templates {
-                        Some(Ok(templates)) if !templates.is_empty() => {
+                        Some(Ok(listing)) if !listing.templates.is_empty() => {
                             ui.separator();
-                            ui.label(egui::RichText::new("Starter templates").strong().color(t.text));
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Starter templates").strong().color(t.text));
+                                if ui.add_enabled(can_fetch_templates,egui::Button::new("Refresh templates")).clicked() {
+                                    ui.ctx().request_repaint();
+                                    action=Some(Action::RefreshTemplates);
+                                }
+                            });
+                            ui.add(egui::Label::new(egui::RichText::new("Bundled examples work offline. Downloads last for this project session; added examples can be saved with your project.").small().color(t.text_muted)).wrap());
                             ui.add(egui::TextEdit::singleline(&mut self.library.template_query).hint_text("Find a template"));
                             let query = self.library.template_query.to_lowercase();
-                            for entry in templates.iter().filter(|entry| {
+                            for entry in listing.templates.iter().filter(|entry| {
                                 query.is_empty() || entry.title.to_lowercase().contains(&query) || entry.features.iter().any(|feature| feature.contains(&query))
                             }) {
                                 let added = self.session.document().canvases().contains_key(&entry.canvas);
+                                let identity = nodecraft_engine::templates::catalog::Identity::from(entry);
+                                let available = listing.available(entry);
                                 ui.horizontal(|ui| {
-                                    ui.label(&entry.title);
-                                    if ui
-                                        .add_enabled(!added, egui::Button::new(if added { "In project" } else { "Add template" }))
-                                        .on_hover_text(if added {
-                                            "Open this canvas from Canvases; duplicate its nodes for another copy"
-                                        } else {
-                                            "Add a new canvas with its bundled examples; current work is preserved and the addition can be undone"
-                                        })
-                                        .clicked()
-                                    {
-                                        action = Some(Action::AddTemplate(entry.id.clone()));
+                                    ui.label(format!("{} · v{}",entry.title,entry.version));
+                                    let label = if added {"In project"} else if available {"Add template"} else {"Retrieve template"};
+                                    let enabled = !added && (available || can_fetch_templates);
+                                    if ui.add_enabled(enabled,egui::Button::new(label))
+                                        .on_hover_text(if added {"Open this canvas from Canvases; duplicate its nodes for another copy"}
+                                            else if available {"Add this exact version as a new canvas; save its assets with your project. Undo removes the addition."}
+                                            else {"Retrieve and verify this exact version without adding or running it. It stays available for this project session."})
+                                        .clicked() {
+                                        ui.ctx().request_repaint();
+                                        action = Some(if available {Action::AddTemplate(identity)} else {Action::RetrieveTemplate(identity)});
                                     }
                                 });
                                 ui.add(egui::Label::new(egui::RichText::new(&entry.description).small().color(t.text_muted)).wrap());
@@ -249,12 +272,18 @@ impl NodeCraftApp {
 
     fn library_action(&mut self, action: Action, t: &Tokens) {
         let result = match action {
-            Action::AddTemplate(ref id) => self.session.dispatch("template.add", &json!({"id":id})).and_then(|value| {
-                let canvas = serde_json::from_value(value.get("canvas").cloned().unwrap_or(Json::Null))
-                    .map_err(|_| Error::new(ErrorKind::Internal, "The template canvas could not be opened"))?;
-                self.open_canvas(canvas);
-                Ok(())
-            }),
+            Action::RefreshTemplates => self.session.dispatch("template.refresh", &json!({})).map(|_| ()),
+            Action::RetrieveTemplate(ref identity) => {
+                self.session.dispatch("template.retrieve", &json!({"id":identity.id,"version":identity.version,"blake3":identity.blake3})).map(|_| ())
+            }
+            Action::AddTemplate(ref identity) => {
+                self.session.dispatch("template.add", &json!({"id":identity.id,"version":identity.version,"blake3":identity.blake3})).and_then(|value| {
+                    let canvas = serde_json::from_value(value.get("canvas").cloned().unwrap_or(Json::Null))
+                        .map_err(|_| Error::new(ErrorKind::Internal, "The template canvas could not be opened"))?;
+                    self.open_canvas(canvas);
+                    Ok(())
+                })
+            }
             Action::Place(version) => self.place_technique(t, "technique.place", json!({"version": version})),
             Action::PlaceKept(technique, version) => ids::random_id(|bytes| self.session.document().canvases().contains_key(&CanvasId::from_bytes(*bytes)))
                 .map(CanvasId::from_bytes)
