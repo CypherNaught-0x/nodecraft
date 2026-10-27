@@ -131,8 +131,9 @@ impl ArchivePlan {
     }
     /// The byte length [`Self::prepare`] would produce for this snapshot, from the asset
     /// descriptors and the manifest's encoded length, without reading or writing any asset
-    /// (#367). It can exceed the prepared archive by a few bytes (it assumes the longer version
-    /// number), never fall short of it, so a space preflight built on it doesn't understate.
+    /// (#367). The manifest is measured with the higher of the two wire version numbers; both are
+    /// single digits today, so the estimate equals the prepared archive's length, and a test
+    /// checks it never falls short of it.
     pub fn estimate_bytes(project: &nodecraft_graph::Project, assets: &crate::AssetStore, epoch: u64, capability: StorageCapability) -> Result<u64, Error> {
         if capability == StorageCapability::SmallV1 {
             let snapshot = Snapshot { project: project.clone(), assets: assets.clone(), epoch };

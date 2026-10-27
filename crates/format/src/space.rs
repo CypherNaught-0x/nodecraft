@@ -7,11 +7,15 @@
 //! leave the previous file intact. What the check adds is an early, specific refusal for the
 //! common case (a save that plainly can't fit), before a large archive is half-written.
 //!
-//! The inventory counts the new extents an operation creates while the old ones still exist:
-//! the previous destination and recovery checkpoint are kept until their replacements are
-//! published, so their space is never credited. It does not count history-only assets spilled
-//! before a save, imports already staged, or an older-format file rewritten while opening; those
-//! are bounded by the session's own disk quota rather than predicted here.
+//! The inventory counts the new extents an operation creates while the old ones still exist,
+//! phase by phase. The previous recovery checkpoint stays until its replacement is published, so
+//! its space is never credited. The file a save replaces is credited only after the atomic
+//! rename that publishes the new one, which is when its space comes back: a save over an
+//! existing file peaks at the larger of "prepared archive + staged file" and "prepared archive +
+//! staged file - old file + checkpoint". It does not count history-only assets spilled before a
+//! save, imports already staged, the pack that compacting many small cached assets writes before
+//! an archive is sealed, or an older-format file rewritten while opening; those are bounded by
+//! the session's own disk quota rather than predicted here.
 use nodecraft_types::{Error, ErrorKind};
 
 /// The volume an extent lands on.
@@ -83,11 +87,14 @@ enum Operation {
 pub struct SpaceInventory {
     operation: Operation,
     items: Vec<SpaceItem>,
+    /// Bytes of the file a save replaces, freed when the new one is renamed over it.
+    replaced: Option<u64>,
 }
 impl SpaceInventory {
     /// A native save of an archive of `archive_bytes`: the sealed archive in the workspace, the
-    /// staged destination, then the checkpoint. All three exist at once before the old files go.
-    pub fn save(archive_bytes: u64) -> Result<Self, Error> {
+    /// staged destination, then the checkpoint. `replaced` is the size of the file already at the
+    /// destination, if any: publishing the new file frees it before the checkpoint is written.
+    pub fn save(archive_bytes: u64, replaced: Option<u64>) -> Result<Self, Error> {
         let checkpoint = archive_bytes.checked_add(CHECKPOINT_HEADER).ok_or_else(overflow)?;
         Ok(Self {
             operation: Operation::Save,
@@ -96,6 +103,7 @@ impl SpaceInventory {
                 SpaceItem { extent: Extent::DestinationStage, volume: Volume::Destination, bytes: archive_bytes },
                 SpaceItem { extent: Extent::Checkpoint, volume: Volume::Recovery, bytes: checkpoint },
             ],
+            replaced,
         })
     }
     /// A native open of a file of `file_bytes`: its private frozen copy, then the checkpoint.
@@ -107,17 +115,32 @@ impl SpaceInventory {
                 SpaceItem { extent: Extent::FrozenBase, volume: Volume::Recovery, bytes: file_bytes },
                 SpaceItem { extent: Extent::Checkpoint, volume: Volume::Recovery, bytes: checkpoint },
             ],
+            replaced: None,
         })
     }
     pub fn items(&self) -> &[SpaceItem] {
         &self.items
     }
-    /// Bytes needed on `volume`, slack included.
+    /// Bytes needed on `volume` at its peak, slack included. On separate volumes each one peaks
+    /// with everything it holds: freeing the replaced file only shrinks the destination's share
+    /// after its peak.
     pub fn needed(&self, volume: Volume) -> Result<u64, Error> {
+        self.sum(|item| item.volume == volume)
+    }
+    fn sum(&self, counted: impl Fn(&SpaceItem) -> bool) -> Result<u64, Error> {
         self.items
             .iter()
-            .filter(|item| item.volume == volume)
+            .filter(|item| counted(item))
             .try_fold(0u64, |total, item| total.checked_add(item.bytes).and_then(|n| n.checked_add(EXTENT_SLACK)).ok_or_else(overflow))
+    }
+    /// The peak when every extent shares one volume. Before publication the prepared archive and
+    /// the staged file coexist with the old file; after it the old file is gone and the
+    /// checkpoint is written beside the other two.
+    pub fn needed_on_one_volume(&self) -> Result<u64, Error> {
+        let all = self.sum(|_| true)?;
+        let Some(replaced) = self.replaced else { return Ok(all) };
+        let before = self.sum(|item| item.extent != Extent::Checkpoint)?;
+        Ok(before.max(all.saturating_sub(replaced)))
     }
     /// Refuses, before anything is written, when a known volume has less free space than the
     /// operation needs on it. A volume reporting no free space at all is treated as unknown:
@@ -127,12 +150,13 @@ impl SpaceInventory {
         let known = |free: Option<u64>| free.filter(|free| *free > 0);
         let destination = self.needed(Volume::Destination)?;
         let recovery = self.needed(Volume::Recovery)?;
-        if probe.shared {
+        // Sharing matters only when both volumes are written: an open writes only recovery.
+        if probe.shared && destination > 0 && recovery > 0 {
             let free = match (known(probe.destination_free), known(probe.recovery_free)) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
-            let needed = destination.checked_add(recovery).ok_or_else(overflow)?;
+            let needed = self.needed_on_one_volume()?;
             return match free {
                 Some(free) if free < needed => Err(self.short(Where::Both, needed, free)),
                 _ => Ok(()),
@@ -168,7 +192,8 @@ impl SpaceInventory {
             (Operation::Open, _) => "Free some space there, then open the project again.",
         };
         let unchanged = match self.operation {
-            Operation::Save => "Nothing was written; the file is unchanged.",
+            Operation::Save if self.replaced.is_some() => "Nothing was written; the file is unchanged.",
+            Operation::Save => "Nothing was written.",
             Operation::Open => "Nothing was written; the current project is unchanged.",
         };
         // Sizes, never paths: the message may be shown, logged or sent to an agent.
@@ -207,7 +232,7 @@ mod tests {
 
     #[test]
     fn a_save_counts_every_extent_that_exists_before_the_old_files_go() {
-        let save = SpaceInventory::save(GB).unwrap();
+        let save = SpaceInventory::save(GB, None).unwrap();
         assert_eq!(save.needed(Volume::Destination).unwrap(), GB + EXTENT_SLACK);
         assert_eq!(save.needed(Volume::Recovery).unwrap(), 2 * GB + 80 + 2 * EXTENT_SLACK);
         let open = SpaceInventory::open(GB).unwrap();
@@ -216,24 +241,57 @@ mod tests {
     }
 
     #[test]
-    fn one_shared_volume_must_hold_the_sum() {
-        let save = SpaceInventory::save(GB).unwrap();
-        let total = 3 * GB + 80 + 3 * EXTENT_SLACK;
+    fn one_shared_volume_must_hold_the_peak_of_each_phase() {
         let probe = |free| SpaceProbe { destination_free: Some(free), recovery_free: Some(free), shared: true, existing_bytes: None };
-        assert!(save.check(&probe(total)).is_ok());
-        let error = save.check(&probe(total - 1)).unwrap_err();
+        // A new file: nothing is freed, so the archive, the file and the checkpoint all coexist.
+        let new = SpaceInventory::save(GB, None).unwrap();
+        let total = 3 * GB + 80 + 3 * EXTENT_SLACK;
+        assert_eq!(new.needed_on_one_volume().unwrap(), total);
+        assert!(new.check(&probe(total)).is_ok());
+        let error = new.check(&probe(total - 1)).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Busy);
         assert!(error.message.contains("needs about 3.1 GB"), "{}", error.message);
-        assert!(error.message.contains("the file is unchanged"), "{}", error.message);
+        // No file was there, so none is claimed unchanged.
+        assert!(error.message.ends_with("Nothing was written."), "{}", error.message);
+        // Re-saving over a file: its space comes back at the rename, before the checkpoint.
+        let resave = SpaceInventory::save(GB, Some(GB)).unwrap();
+        let peak = 2 * GB + 80 + 3 * EXTENT_SLACK;
+        assert_eq!(resave.needed_on_one_volume().unwrap(), peak);
+        assert!(resave.check(&probe(peak)).is_ok());
+        assert!(resave.check(&probe(peak - 1)).unwrap_err().message.contains("the file is unchanged"));
+        // Before publication the old file still exists: a tiny old file credits almost nothing.
+        let small_old = SpaceInventory::save(GB, Some(1)).unwrap();
+        assert_eq!(small_old.needed_on_one_volume().unwrap(), total - 1);
+        // A replaced file larger than the new one can't make the pre-publication phase smaller.
+        let shrink = SpaceInventory::save(GB, Some(10 * GB)).unwrap();
+        assert_eq!(shrink.needed_on_one_volume().unwrap(), 2 * GB + 2 * EXTENT_SLACK);
         // Separate volumes are each checked for their own share only.
         let split =
             SpaceProbe { destination_free: Some(GB + EXTENT_SLACK), recovery_free: Some(2 * GB + 80 + 2 * EXTENT_SLACK), shared: false, existing_bytes: None };
-        assert!(save.check(&split).is_ok());
+        assert!(new.check(&split).is_ok());
+    }
+
+    #[test]
+    fn a_ten_gigabyte_resave_fits_in_twenty_five_free() {
+        // Regression: charging all three extents (30 GB) refused a save that fits (~20 GB peak).
+        let resave = SpaceInventory::save(10 * GB, Some(10 * GB)).unwrap();
+        let probe = SpaceProbe { destination_free: Some(25 * GB), recovery_free: Some(25 * GB), shared: true, existing_bytes: Some(10 * GB) };
+        assert!(resave.check(&probe).is_ok());
+    }
+
+    #[test]
+    fn an_open_is_never_refused_for_the_source_drive() {
+        // An open writes only to the recovery volume, even when the probe thinks they're shared.
+        let open = SpaceInventory::open(GB).unwrap();
+        let probe = SpaceProbe { destination_free: Some(1), recovery_free: Some(3 * GB), shared: true, existing_bytes: Some(GB) };
+        assert!(open.check(&probe).is_ok());
+        let short = SpaceProbe { recovery_free: Some(GB), ..probe };
+        assert!(open.check(&short).is_err());
     }
 
     #[test]
     fn a_short_destination_suggests_another_drive_and_names_no_path() {
-        let save = SpaceInventory::save(10 * GB).unwrap();
+        let save = SpaceInventory::save(10 * GB, None).unwrap();
         let probe = SpaceProbe { destination_free: Some(GB), recovery_free: None, shared: false, existing_bytes: None };
         let error = save.check(&probe).unwrap_err();
         assert!(error.message.contains("Save As"), "{}", error.message);
@@ -248,7 +306,7 @@ mod tests {
 
     #[test]
     fn unknown_or_zero_reports_are_not_refusals() {
-        let save = SpaceInventory::save(GB).unwrap();
+        let save = SpaceInventory::save(GB, None).unwrap();
         assert!(save.check(&SpaceProbe::default()).is_ok());
         let zero = SpaceProbe { destination_free: Some(0), recovery_free: Some(0), shared: true, existing_bytes: None };
         assert!(save.check(&zero).is_ok());
@@ -258,8 +316,8 @@ mod tests {
 
     #[test]
     fn hostile_sizes_overflow_into_errors_and_sizes_round_up() {
-        assert!(SpaceInventory::save(u64::MAX).is_err());
-        assert!(SpaceInventory::save(u64::MAX - 80).unwrap().needed(Volume::Recovery).is_err());
+        assert!(SpaceInventory::save(u64::MAX, None).is_err());
+        assert!(SpaceInventory::save(u64::MAX - 80, Some(u64::MAX)).unwrap().needed(Volume::Recovery).is_err());
         assert!(SpaceInventory::open(u64::MAX - 80).unwrap().check(&SpaceProbe { recovery_free: Some(1), ..Default::default() }).is_err());
         assert_eq!(size(999), "999 bytes");
         assert_eq!(size(1_000), "1.0 KB");

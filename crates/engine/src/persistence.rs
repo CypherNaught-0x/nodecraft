@@ -369,7 +369,8 @@ impl Persistence {
         }
         // An estimate that can't be made leaves the real error to the save itself.
         let Ok(bytes) = ArchivePlan::estimate_bytes(document, assets, epoch, self.capability) else { return Ok(()) };
-        SpaceInventory::save(bytes)?.check(&probe)
+        // Saving over an existing file frees it at publication, before the checkpoint.
+        SpaceInventory::save(bytes, probe.existing_bytes)?.check(&probe)
     }
     /// [`Self::preflight_save`] for an open: the file's private copy and its checkpoint.
     fn preflight_open(&mut self, location: &StorageLocation) -> Result<(), Error> {
