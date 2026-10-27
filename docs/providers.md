@@ -1991,3 +1991,55 @@ Offline fixtures exercise exact request fields, bounds, quotes, consent, typed o
 uncertain billing without API credit. Live generation has not been run. The ignored
 `alibaba32_live_smoke` requires explicit test opt-ins plus `FAL_KEY` and spends $0.04 on one
 1K Qwen image; it never runs in CI.
+
+
+## Rodin through fal
+
+Issue #41 reuses the stored **fal** connection for Hyper3D Rodin V2.5. Choose a **Rodin 2.5**
+model on a **Generate 3D** card. Direct Hyper3D credentials are not needed. These live aliases
+were checked on 2026-10-27 against their public contracts and model-specific prices:
+
+| Catalog model | Contract | Fixed output and estimated call price |
+|---|---|---|
+| `fal.rodin25` | [Standard text](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/api) | Gen-2.5-High, PBR, Auto mesh, GLB; $0.40 |
+| `fal.rodin25-images` | [Standard images](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/api) | Gen-2.5-High, PBR, Auto mesh, GLB; $0.40 |
+| `fal.rodin25-fast` | [Fast text](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/fast/api) | Gen-2.5-Extreme-Low, Shaded, Auto mesh, GLB; $0.10 |
+| `fal.rodin25-fast-images` | [Fast images](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/fast/api) | Gen-2.5-Extreme-Low, Shaded, Auto mesh, GLB; $0.10 |
+
+Published rates are [standard $0.40](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5)
+and [fast $0.10](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/fast) per generation.
+The standard default High tier uses 500K triangles with Auto mesh; the fast default uses
+20K triangles. The $0.80 HighPack surcharge and other tiers, custom mesh counts, formats,
+texture modes and bounding-box controls are not offered. Requests explicitly pin the tier,
+material, Auto mesh and GLB, omit add-ons, keep safety enabled, and disable advanced switches.
+The catalog price is an estimate; a billable-unit header is not a fabricated dollar invoice.
+
+Text models require a prompt of **1–1024 characters**. Image models take **one to five ordered
+`images`** and an optional prompt up to 1024 characters. An absent/empty prompt lets Rodin
+auto-describe the images. References must be actual PNG, JPEG or WebP, at most **1 MiB** and
+**1024 pixels per axis**. Image models optionally preserve original alpha. Both families accept
+an optional fixed numeric seed from **0 through 65535**; unset lets the provider choose, and a
+fixed seed may repeat across variations. Complete escaped JSON plus every base64 data URI is
+admitted before image codecs or encoding allocations; image requests have an 8 MiB allowance.
+Unsupported fields or input roles fail before paid HTTP.
+
+The queue uses the canonical `fal-ai/hyper3d/requests/<id>` status/result/cancel family.
+The [queue contract](https://fal.ai/docs/documentation/model-apis/inference/queue) uses only
+owner and app, even when generated endpoint schemas print a full alias in their path examples.
+Accepted handles persist for resume, best-effort cancellation keeps its actual disposition,
+and uncertain paid creates never replay.
+
+Only **`model_mesh`** is downloaded. `model_meshes`, `textures` and preview URLs are sidecars
+and are not fetched. Files must be on fal storage, without credentials or redirects. Rodin's
+generic application/octet-stream metadata is admitted without trusting it as a mesh type;
+actual bytes must pass packed-GLB validation, and the normal mesh decoder/viewer bounds remain.
+The original GLB is retained for export. Embedded base-colour textures appear through the
+existing viewer; external resource URIs remain refused. Standard examples exceed 30 MiB,
+so these four aliases allow **256 MiB per result/total**, including saved handles. Other fal
+models keep their original limits.
+
+Execution requires native HTTP or an audited custom transport. Libraries and the app still
+build for WebAssembly, but builtin browser HTTP refuses the no-redirect operation before
+fetch. No live paid Rodin generation has been run. The ignored `rodin41_live_smoke` requires
+`NODECRAFT_LIVE_RODIN=1`, `NODECRAFT_LIVE_RODIN_ACKNOWLEDGE_COST=1` and `FAL_KEY`; it would spend
+$0.10 on one fast text-to-GLB call. Ordinary tests use authored offline media only.

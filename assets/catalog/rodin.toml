@@ -1,0 +1,98 @@
+# Hyper3D Rodin V2.5 through fal; contracts/rates checked 2026-10-27.
+# https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/api
+# https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/api
+# https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/fast/api
+# https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/fast/api
+# Fixed published default tiers only. No HighPack, advanced textures or custom mesh fees.
+
+[[model]]
+id="fal.rodin25"
+provider="fal"
+provider_model="fal-ai/hyper3d/rodin/v2.5/text-to-3d"
+label="Rodin 2.5 text (fal)"
+description="Create a PBR GLB at Gen-2.5-High with Auto mesh. Prompt up to 1024 characters. Up to 256 MiB per model."
+latency_s=120
+quality=3
+pricing={type="per_call",price="0.40 USD"}
+
+[[model.modes]]
+id="text-to-mesh"
+output="mesh"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="seed"
+label="Fixed seed (optional)"
+control={type="unsigned",min="0",max="65535",step="1"}
+
+[[model]]
+id="fal.rodin25-images"
+provider="fal"
+provider_model="fal-ai/hyper3d/rodin/v2.5"
+label="Rodin 2.5 images (fal)"
+description="Create a PBR GLB at Gen-2.5-High with Auto mesh. One to five ordered references and an optional prompt. Up to 256 MiB per model."
+latency_s=120
+quality=3
+pricing={type="per_call",price="0.40 USD"}
+
+[[model.modes]]
+id="image-to-mesh"
+output="mesh"
+inputs=[{role="images",modality="image",min=1,max=5},{role="prompt",modality="text",min=0,max=1,inline=true}]
+
+[[model.params.params]]
+name="seed"
+label="Fixed seed (optional)"
+control={type="unsigned",min="0",max="65535",step="1"}
+
+[[model.params.params]]
+name="use_original_alpha"
+label="Preserve reference alpha"
+control={type="toggle"}
+default={type="bool",value=false}
+
+[[model]]
+id="fal.rodin25-fast"
+provider="fal"
+provider_model="fal-ai/hyper3d/rodin/v2.5/text-to-3d/fast"
+label="Rodin 2.5 fast text (fal)"
+description="Create a Shaded GLB at Extreme-Low with Auto mesh. Prompt up to 1024 characters. Up to 256 MiB per model."
+latency_s=60
+quality=3
+pricing={type="per_call",price="0.10 USD"}
+
+[[model.modes]]
+id="text-to-mesh"
+output="mesh"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="seed"
+label="Fixed seed (optional)"
+control={type="unsigned",min="0",max="65535",step="1"}
+
+[[model]]
+id="fal.rodin25-fast-images"
+provider="fal"
+provider_model="fal-ai/hyper3d/rodin/v2.5/fast"
+label="Rodin 2.5 fast images (fal)"
+description="Create a Shaded GLB at Extreme-Low with Auto mesh. One to five ordered references and an optional prompt. Up to 256 MiB per model."
+latency_s=60
+quality=3
+pricing={type="per_call",price="0.10 USD"}
+
+[[model.modes]]
+id="image-to-mesh"
+output="mesh"
+inputs=[{role="images",modality="image",min=1,max=5},{role="prompt",modality="text",min=0,max=1,inline=true}]
+
+[[model.params.params]]
+name="seed"
+label="Fixed seed (optional)"
+control={type="unsigned",min="0",max="65535",step="1"}
+
+[[model.params.params]]
+name="use_original_alpha"
+label="Preserve reference alpha"
+control={type="toggle"}
+default={type="bool",value=false}

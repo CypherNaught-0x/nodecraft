@@ -388,3 +388,6 @@ mod stability36_tests;
 
 #[cfg(test)]
 mod alibaba32_tests;
+
+#[cfg(test)]
+mod rodin41_tests;

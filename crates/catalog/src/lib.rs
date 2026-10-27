@@ -32,6 +32,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("luma.toml", include_str!("../../../assets/catalog/luma.toml")),
     ("hunyuan.toml", include_str!("../../../assets/catalog/hunyuan.toml")),
+    ("rodin.toml", include_str!("../../../assets/catalog/rodin.toml")),
     ("alibaba.toml", include_str!("../../../assets/catalog/alibaba.toml")),
     ("grok.toml", include_str!("../../../assets/catalog/grok.toml")),
     ("ltx.toml", include_str!("../../../assets/catalog/ltx.toml")),
@@ -413,3 +414,6 @@ mod hunyuan_tests;
 
 #[cfg(test)]
 mod alibaba_tests;
+
+#[cfg(test)]
+mod rodin_tests;
