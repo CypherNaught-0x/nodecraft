@@ -13,10 +13,10 @@
 //! write-ahead), so a full store never drops a result. Jobs already in flight may still add theirs.
 use super::lock;
 use crate::Session;
-use crate::generate;
 use crate::held_cmds::{HELD_SERVICE, MAX_HELD};
 use crate::held_store::{HeldRecord, HeldStore, MAX_HELD_STORE_BYTES};
 use crate::history_cmds::source_kind;
+use nodecraft_exec::driver::Runtime;
 use nodecraft_exec::run::ResumeRecipe;
 use nodecraft_graph::{Node, Position};
 use nodecraft_nodes::GenerateOutput;
@@ -25,6 +25,10 @@ use nodecraft_types::{CanvasId, Error, ErrorKind, Modality, NodeId, ParamValues,
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::VecDeque;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Weak;
 use std::sync::{Arc, Mutex};
 
 /// How far right of its node a placed result goes, and how far apart placed results stack.
@@ -113,7 +117,7 @@ struct Saved {
 
 struct Entry {
     id: u64,
-    result: HeldResult,
+    result: Arc<HeldResult>,
     pending: Option<HeldAction>,
     saved: Option<Saved>,
 }
@@ -128,6 +132,89 @@ pub(super) struct Held {
     stored: u64,
     /// The highest record number in the store, used or set aside.
     last_record: u64,
+    #[cfg(not(target_arch = "wasm32"))]
+    deferred: Option<(Arc<dyn Runtime>, Weak<Mutex<Held>>)>,
+    saving: usize,
+    #[cfg(not(target_arch = "wasm32"))]
+    large_queue: VecDeque<(u64, Arc<HeldResult>, Arc<dyn HeldStore>)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    writer_active: bool,
+}
+
+pub(super) fn new(runtime: Arc<dyn Runtime>) -> Arc<Mutex<Held>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Arc::new_cyclic(|owner| Mutex::new(Held { deferred: Some((runtime, owner.clone())), ..Held::default() }))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = runtime;
+        Arc::default()
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+struct Saving {
+    owner: Arc<Mutex<Held>>,
+    done: bool,
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for Saving {
+    fn drop(&mut self) {
+        if !self.done {
+            let mut held = lock(&self.owner);
+            held.large_queue.clear();
+            held.saving = 0;
+            held.writer_active = false;
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_queued(mut saving: Saving) {
+    loop {
+        let next = {
+            let mut held = lock(&saving.owner);
+            match held.large_queue.pop_front() {
+                Some(next) => Some(next),
+                None => {
+                    held.writer_active = false;
+                    saving.done = true;
+                    None
+                }
+            }
+        };
+        let Some((id, result, store)) = next else { return };
+        save_large(&saving.owner, id, &result, &store);
+        let mut held = lock(&saving.owner);
+        held.saving = held.saving.saturating_sub(1);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn save_large(held: &Arc<Mutex<Held>>, id: u64, result: &HeldResult, store: &Arc<dyn HeldStore>) {
+    let Some(bytes) = result.record().to_bytes().ok() else { return };
+    let Ok(length) = u64::try_from(bytes.len()) else { return };
+    let reserved = {
+        let mut held = lock(held);
+        if !held.entries.iter().any(|entry| entry.id == id) || !held.store.as_ref().is_some_and(|current| Arc::ptr_eq(current, store)) {
+            return;
+        }
+        held.reserve(length).map(|(_, saved)| saved)
+    };
+    let Some(saved) = reserved else { return };
+    let written = store.write(saved.record, &bytes);
+    let mut held = lock(held);
+    if !held.store.as_ref().is_some_and(|current| Arc::ptr_eq(current, store)) {
+        drop(held);
+        if written.is_ok() {
+            let _ = store.remove(saved.record);
+        }
+        return;
+    }
+    match written {
+        Ok(()) => held.saved(id, store.as_ref(), saved),
+        Err(_) => held.stored = held.stored.saturating_sub(saved.bytes),
+    }
 }
 
 #[derive(Deserialize)]
@@ -151,6 +238,34 @@ struct Request {
 /// kept by refusing new jobs instead. The record is encoded and written outside the lock, so a
 /// large one doesn't stall the runner.
 pub(super) fn hold(held: &Mutex<Held>, result: HeldResult) -> u64 {
+    if result
+        .completed
+        .outputs
+        .iter()
+        .any(|output| matches!(output,nodecraft_providers::Output::Bytes{bytes,..} if bytes.len()>nodecraft_format::MAX_ASSET_BYTES))
+    {
+        let result = Arc::new(result);
+        let mut held = lock(held);
+        let id = held.push_shared(Arc::clone(&result));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let job = held.deferred.as_ref().and_then(|(runtime, owner)| Some((Arc::clone(runtime), owner.upgrade()?, Arc::clone(held.store.as_ref()?))));
+            if let Some((runtime, owner, store)) = job {
+                held.saving = held.saving.saturating_add(1);
+                held.large_queue.push_back((id, result, store));
+                let start = !held.writer_active;
+                held.writer_active = true;
+                drop(held);
+                if start {
+                    let saving = Saving { owner, done: false };
+                    runtime.spawn(Box::pin(async move {
+                        save_queued(saving);
+                    }));
+                }
+            }
+        }
+        return id;
+    }
     let bytes = lock(held).store.is_some().then(|| result.record().to_bytes().ok()).flatten();
     let (id, reserved) = {
         let mut held = lock(held);
@@ -169,6 +284,9 @@ pub(super) fn hold(held: &Mutex<Held>, result: HeldResult) -> u64 {
 }
 
 impl Held {
+    pub(super) fn is_saving(&self) -> bool {
+        self.saving > 0
+    }
     /// Whether new jobs must wait until a held result is dealt with.
     pub(super) fn is_full(&self) -> bool {
         self.entries.len() >= MAX_HELD
@@ -176,6 +294,9 @@ impl Held {
 
     /// Holds `result` as a new entry, without saving it.
     fn push(&mut self, result: HeldResult) -> u64 {
+        self.push_shared(Arc::new(result))
+    }
+    fn push_shared(&mut self, result: Arc<HeldResult>) -> u64 {
         self.next = self.next.saturating_add(1);
         self.entries.push(Entry { id: self.next, result, pending: None, saved: None });
         self.next
@@ -279,7 +400,7 @@ impl Held {
     }
 
     /// The results waiting to be retried or placed, copied so they stay held until that works.
-    pub(super) fn pending(&self) -> Vec<(u64, HeldAction, HeldResult)> {
+    pub(super) fn pending(&self) -> Vec<(u64, HeldAction, Arc<HeldResult>)> {
         self.entries.iter().filter_map(|e| e.pending.map(|action| (e.id, action, e.result.clone()))).collect()
     }
 
@@ -363,7 +484,7 @@ pub(super) fn register(held: &Arc<Mutex<Held>>, services: &mut crate::commands::
 }
 
 /// One route per modality, so any output converts, each to the port named for its modality.
-fn every_modality() -> Vec<GenerateOutput> {
+pub(super) fn every_modality() -> Vec<GenerateOutput> {
     [Modality::Text, Modality::Image, Modality::Video, Modality::Audio, Modality::Mesh, Modality::Document, Modality::Style]
         .into_iter()
         .map(|modality| GenerateOutput { port: modality_port(modality).to_owned(), modality, style_family: None })
@@ -384,17 +505,18 @@ fn modality_port(modality: Modality) -> &'static str {
 
 /// Puts a held result's outputs on its canvas, in order, as source nodes stacked to the right of
 /// its node: one `canvas.paste`, so one undo step.
-pub(super) fn place(session: &mut Session, result: &HeldResult) -> Result<(), String> {
+pub(super) fn place_prepared(session: &mut Session, result: &HeldResult, prepared: Option<Result<super::assets::Prepared, String>>) -> Result<(), String> {
     if session.document().id() != result.project {
         return Err("its project isn't open".into());
     }
     let canvas = session.document().canvases().get(&result.canvas).ok_or("its canvas is gone")?;
     let origin = canvas.nodes().get(&result.node).map_or(Position::default(), |n| n.pos);
     let routes = every_modality();
-    let produced = generate::produced(&routes, &result.completed).map_err(|e| e.message)?;
+    let mut prepared = super::assets::ready(&routes, &result.completed, prepared)?;
+    let outputs = prepared.take_outputs();
     let mut nodes: Vec<Node> = Vec::new();
-    nodes.try_reserve_exact(produced.outputs.len()).map_err(|_| "too many outputs to place")?;
-    for (index, (port, value)) in produced.outputs.into_iter().enumerate() {
+    nodes.try_reserve_exact(outputs.len()).map_err(|_| "too many outputs to place")?;
+    for (index, (port, value)) in outputs.into_iter().enumerate() {
         let modality = routes.iter().find(|r| r.port == port).map(|r| r.modality).ok_or("an output has no modality")?;
         let (kind, parameter) = source_kind(modality).map_err(|e| e.message)?;
         let supplied: ParamValues = [(parameter.to_owned(), value)].into_iter().collect();
@@ -404,9 +526,7 @@ pub(super) fn place(session: &mut Session, result: &HeldResult) -> Result<(), St
         node.pos = Position { x: origin.x + PLACE_OFFSET.0, y: origin.y + row * PLACE_OFFSET.1 };
         nodes.push(node);
     }
-    for (hash, bytes) in produced.assets {
-        super::assets::import(session, hash, bytes)?;
-    }
+    prepared.adopt(session)?;
     let params = json!({"canvas": result.canvas, "nodes": nodes});
     session.dispatch("canvas.paste", &params).map(|_| ()).map_err(|e| e.message)
 }

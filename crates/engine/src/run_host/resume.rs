@@ -5,10 +5,9 @@
 //! settles like any other job's, and a finished one's result is recorded on its card when it can
 //! be (see [`super::RunHost::resume`]).
 use super::held::{self, Held, HeldResult};
-use super::{HELD_NOTE, RunNotice, lock};
+use super::{HELD_NOTE, RunNotice, assets, lock};
 use crate::Session;
-use crate::generate;
-use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, JobPrice, ProviderRunner, QueuedJob, Sent};
+use crate::jobs::{CompletionAccounting, JobBudget, JobPrice, ProviderRunner, QueuedJob, Sent};
 use crate::provider_routing::RegisteredProvider;
 use crate::run_jobs::{JobKey, JobState, JobView, Reports, RunJobs};
 use crate::run_journal::Submitted;
@@ -32,7 +31,7 @@ const BACKOFF_MS: u64 = 2_000;
 
 #[derive(Default)]
 struct Mailbox {
-    deliveries: BTreeMap<JobId, CompletionDelivery>,
+    deliveries: BTreeMap<JobId, assets::Delivery>,
     outcomes: Vec<(JobId, Outcome)>,
     reports: Reports,
     /// Handles a staged request sent again got back (#664).
@@ -43,6 +42,7 @@ struct Mailbox {
 pub(super) struct Resumes {
     runner: Option<Arc<ProviderRunner>>,
     mailbox: Arc<Mutex<Mailbox>>,
+    preparation: assets::Scope,
     next: u64,
     pub(super) live: BTreeMap<JobId, (Submitted, CancelToken)>,
     pub(super) jobs: RunJobs,
@@ -50,7 +50,7 @@ pub(super) struct Resumes {
 
 impl Default for Resumes {
     fn default() -> Self {
-        Self { runner: None, mailbox: Arc::default(), next: 1, live: BTreeMap::new(), jobs: RunJobs::default() }
+        Self { runner: None, mailbox: Arc::default(), preparation: assets::Scope::default(), next: 1, live: BTreeMap::new(), jobs: RunJobs::default() }
     }
 }
 
@@ -66,18 +66,31 @@ pub(super) enum Ended {
 }
 
 impl Resumes {
+    #[cfg(test)]
+    pub(super) fn preparation_hook(&mut self, hook: Option<assets::Hook>) {
+        self.preparation.hook = hook;
+    }
     fn runner(&mut self, runtime: &Arc<dyn Runtime>, budget: &JobBudget) -> Arc<ProviderRunner> {
         if let Some(runner) = &self.runner {
             return Arc::clone(runner);
         }
         let deliveries = Arc::clone(&self.mailbox);
         let reports = Arc::clone(&self.mailbox);
+        let prepare = self.preparation.worker();
         let runner = Arc::new(
             ProviderRunner::new(
                 Arc::clone(runtime),
                 nodecraft_providers::RunLimits::default(),
                 Arc::new(move |job, delivery| {
+                    let (delivery, work) = assets::Delivery::new(delivery);
                     lock(&deliveries).deliveries.insert(job, delivery);
+                    if let Some(completed) = work {
+                        let prepared = prepare.prepare(job, &completed);
+                        if let Some(delivery) = lock(&deliveries).deliveries.get_mut(&job) {
+                            delivery.prepared = Some(prepared);
+                            delivery.preparing = false;
+                        }
+                    }
                 }),
                 Arc::new(move |job, sent: Sent<'_>, update: RunUpdate| {
                     let mut mailbox = lock(&reports);
@@ -100,6 +113,7 @@ impl Resumes {
         binding: &RegisteredProvider,
         runtime: &Arc<dyn Runtime>,
         budget: &JobBudget,
+        store: Arc<nodecraft_format::AssetStore>,
     ) -> Result<(), Box<(Submitted, String)>> {
         let runner = self.runner(runtime, budget);
         let id = JobId(self.next);
@@ -122,6 +136,7 @@ impl Resumes {
         }
         self.next = self.next.saturating_add(1);
         let cancel = CancelToken::default();
+        self.preparation.register(id, store, entry.routes.clone());
         let view = JobView {
             key: JobKey { run: RESUMED_RUN, job: id },
             canvas: entry.canvas,
@@ -168,12 +183,19 @@ impl Resumes {
 
     /// Asks a restored job to stop; whether it was one.
     pub(super) fn cancel(&mut self, job: JobId) -> bool {
+        self.preparation.cancel(job);
         let Some((_, cancel)) = self.live.get(&job) else { return false };
         cancel.cancel();
         if let Some(view) = self.jobs.live.get_mut(&job) {
             view.cancel_requested = true;
         }
         true
+    }
+    pub(super) fn cancel_preparation(&self) {
+        self.preparation.cancel_all();
+    }
+    pub(super) fn is_preparing(&self) -> bool {
+        self.preparation.is_busy() || super::lock(&self.mailbox).deliveries.values().any(|delivery| delivery.preparing || delivery.prepared.is_some())
     }
 
     /// Absorbs what the restored jobs reported: records finished ones, settles every one that
@@ -196,6 +218,7 @@ impl Resumes {
         let mut ended = Vec::new();
         for (id, outcome) in outcomes {
             let Some((entry, _)) = self.live.remove(&id) else { continue };
+            self.preparation.forget(id);
             let delivery = lock(&self.mailbox).deliveries.remove(&id);
             let (canvas, node) = (entry.canvas, entry.node);
             let runner = self.runner.clone();
@@ -215,14 +238,14 @@ impl Resumes {
                 }
                 (Outcome::Done, Some(delivery)) => {
                     forget();
-                    let notice = record(session, &entry, &delivery, held);
+                    let notice = record(session, &entry, delivery, held);
                     self.jobs.end(id, if matches!(notice, RunNotice::Recorded { .. }) { JobState::Done } else { failed(&notice) });
                     notices.push(notice);
                     ended.push(Ended::Settled);
                 }
                 // The provider finished and billed; only writing the charge failed.
                 (Outcome::Failed { .. }, Some(mut delivery)) => {
-                    if let CompletionAccounting::Failed(failure) = &mut delivery.accounting {
+                    if let CompletionAccounting::Failed(failure) = &mut delivery.completion.accounting {
                         let charged = match failure.retry.as_mut() {
                             Some(retry) => retry.retry(budget).map_err(|error| format!("the charge couldn't be recorded: {error:?}")),
                             None => Err(format!("the charge couldn't be recorded: {}", failure.message)),
@@ -232,7 +255,7 @@ impl Resumes {
                         }
                     }
                     forget();
-                    let notice = record(session, &entry, &delivery, held);
+                    let notice = record(session, &entry, delivery, held);
                     self.jobs.end(id, if matches!(notice, RunNotice::Recorded { .. }) { JobState::Done } else { failed(&notice) });
                     notices.push(notice);
                     ended.push(Ended::Settled);
@@ -244,7 +267,27 @@ impl Resumes {
                     notices.push(RunNotice::Failed { canvas, node, reason });
                     ended.push(Ended::Kept(Box::new(entry)));
                 }
-                (Outcome::Cancelled, _) => {
+                (Outcome::Cancelled, Some(delivery)) => {
+                    forget();
+                    held::hold(
+                        held,
+                        HeldResult {
+                            project: entry.project,
+                            canvas,
+                            node,
+                            provider: entry.target.adapter().to_owned(),
+                            model: entry.model,
+                            reason: "cancelled while keeping a completed paid result".into(),
+                            completed: delivery.completion.completed,
+                            routes: entry.routes,
+                            recipe: entry.recipe,
+                        },
+                    );
+                    self.jobs.end(id, JobState::Cancelled);
+                    notices.push(RunNotice::Cancelled { canvas, node });
+                    ended.push(Ended::Settled);
+                }
+                (Outcome::Cancelled, None) => {
                     forget();
                     self.jobs.end(id, JobState::Cancelled);
                     notices.push(RunNotice::Cancelled { canvas, node });
@@ -280,11 +323,12 @@ fn failed(notice: &RunNotice) -> JobState {
 /// Records a restored job's result on its card, when its step can be assembled from it alone and
 /// the card is still there. A result that can't be recorded, its project's included when that
 /// isn't open, is held (#369); a held result is retried or placed only once its project is open.
-fn record(session: &mut Session, entry: &Submitted, delivery: &CompletionDelivery, held: &Mutex<Held>) -> RunNotice {
+fn record(session: &mut Session, entry: &Submitted, delivery: assets::Delivery, held: &Mutex<Held>) -> RunNotice {
+    let assets::Delivery { completion: delivery, prepared, .. } = delivery;
     let (canvas, node) = (entry.canvas, entry.node);
     let outcome = match &entry.recipe {
         _ if session.document().id() != entry.project => Err("it finished after a restart, but its project isn't open, so it wasn't recorded".into()),
-        Some(recipe) => record_alone(session, canvas, node, &entry.routes, recipe, &delivery.completed),
+        Some(recipe) => record_prepared(session, canvas, node, &entry.routes, recipe, &delivery.completed, prepared),
         None => Err("it finished after a restart, but its step needs other jobs' results too, so it wasn't recorded".into()),
     };
     match outcome {
@@ -297,7 +341,7 @@ fn record(session: &mut Session, entry: &Submitted, delivery: &CompletionDeliver
                 provider: entry.target.adapter().to_owned(),
                 model: entry.model.clone(),
                 reason: reason.clone(),
-                completed: delivery.completed.clone(),
+                completed: delivery.completed,
                 routes: entry.routes.clone(),
                 recipe: entry.recipe.clone(),
             };
@@ -310,19 +354,17 @@ fn record(session: &mut Session, entry: &Submitted, delivery: &CompletionDeliver
 /// Records `completed` as the whole result of the single-job step `recipe` describes, on
 /// `node` on `canvas`: converted by `routes`, its assets imported, assembled and recorded with
 /// `run.record`.
-pub(super) fn record_alone(
+pub(super) fn record_prepared(
     session: &mut Session,
     canvas: CanvasId,
     node: NodeId,
     routes: &[GenerateOutput],
     recipe: &ResumeRecipe,
     completed: &Completed,
+    prepared: Option<Result<assets::Prepared, String>>,
 ) -> Result<(), String> {
-    let produced = generate::produced(routes, completed).map_err(|e| e.message)?;
-    for (hash, bytes) in produced.assets {
-        super::assets::import(session, hash, bytes)?;
-    }
-    let generation = recipe.assemble(produced.outputs, completed.usage.billable_units, completed.usage.execution_ms)?;
+    let outputs = assets::ready(routes, completed, prepared)?.adopt(session)?;
+    let generation = recipe.assemble(outputs, completed.usage.billable_units, completed.usage.execution_ms)?;
     // A variation that isn't the last goes on its own card on a canvas that lays them out so (#808).
     let as_cards = session.document().canvases().get(&canvas).is_some_and(nodecraft_graph::Canvas::variation_cards);
     let entry = match as_cards && !recipe.later.is_empty() {

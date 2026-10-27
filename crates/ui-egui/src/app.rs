@@ -385,6 +385,8 @@ mod option_fetch;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
 mod ownership_panel;
+#[cfg(not(target_arch = "wasm32"))]
+mod paid_results;
 mod palette_navigation;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
@@ -3486,7 +3488,13 @@ impl eframe::App for NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.export_close_request(ctx);
         // Last, so the native quit respects the export's CancelClose decision.
-        craft_quit::on_close_request(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        let paid_results_waiting = self.paid_result_close_request(ctx);
+        #[cfg(target_arch = "wasm32")]
+        let paid_results_waiting = false;
+        if !paid_results_waiting {
+            craft_quit::on_close_request(ctx);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

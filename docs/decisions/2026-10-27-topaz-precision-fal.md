@@ -15,9 +15,12 @@
   final executed quote identities require streaming asset storage before consent or creation,
   including deferred/inlined work. Browser submissions also refuse locally. Shipping desktop
   and native CLI run storage already support streamed assets; no storage cap is widened here.
-- Native recording, resumed results and held-result placement use the existing stream-import
-  path for admitted outputs above 16 MiB, retaining the shared 256-MiB output bound and exact
-  hash checks. Small/classic imports retain their convenience limits. A real host regression
+- Native recording, resumed results and held-result placement convert, hash and seal outputs
+  above 16 MiB on the existing runtime workers. The frame only adopts sealed receipts; it
+  never falls back to a large synchronous import. Held-record encoding and writing also run
+  on a worker, retaining the old store identity and original bytes if persistence fails.
+  Pending local result work delays desktop close without blocking frames. The shared 256-MiB
+  output bound and exact hash checks remain; small/classic imports retain their limits. A real host regression
   exposed the former convenience call even on native storage; large results now reach history
   and can be retried from held state and saved/reopened without another paid request.
 - Contracts and price were checked 2026-10-27 against the primary
