@@ -27,6 +27,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file or pasting its JSON on the canvas does the same. Pasted workflow text is titled Pasted workflow because the text clipboard supplies no filename; a file drop keeps its filename. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
+| **Topaz Precision through fal** | `fal` | the existing fal key | one upright image → Standard V2 upscale PNG | Native streamed project storage required; integer 1–4× within one $0.08 output block. Existing queue/resume and no ambiguous paid replay; see below. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
@@ -2091,3 +2092,39 @@ build for WebAssembly, but builtin browser HTTP refuses the no-redirect operatio
 fetch. No live paid Rodin generation has been run. The ignored `rodin41_live_smoke` requires
 `NODECRAFT_LIVE_RODIN=1`, `NODECRAFT_LIVE_RODIN_ACKNOWLEDGE_COST=1` and `FAL_KEY`; it would spend
 $0.10 on one fast text-to-GLB call. Ordinary tests use authored offline media only.
+
+## Topaz Precision through fal
+
+Issue #37 reuses the `fal` adapter and stored fal key. On a Generate image card with one image
+connected, select **Topaz Precision Standard V2 (fal)** (`fal.topaz-precision`). Its only model
+control is **Upscale factor**, an integer 1–4, default two. The request fixes Standard V2, PNG,
+no crop and the safety checker on; optional enhancement settings use the service defaults.
+The card can retain text for switching models, but no prompt, seed or image-count field is sent.
+
+Contracts and price were checked **2026-10-27** against the primary
+[precision model page](https://fal.ai/models/topaz/upscale/image/precision),
+[API](https://fal.ai/models/topaz/upscale/image/precision/api), and
+[queue documentation](https://fal.ai/docs/documentation/model-apis/inference/queue).
+The published charge is **0.08 USD per started 24 megapixels of output**. NodeCraft admits
+one PNG/JPEG/WebP up to 1 MiB and 1024 pixels on each axis, so its largest result is 4096²
+(16,777,216 pixels), always one block. Every variation is another separately quoted call.
+Rotated/reflected EXIF inputs are refused; apply the orientation locally first. Other Topaz
+models, fractional scales, direct credentials and video upscaling are outside this adapter.
+
+Returned PNG geometry must equal the upright input geometry times the selected factor.
+Expected dimensions survive saved handles and resume. Topaz alone allows up to **256 MiB**
+for its single output; other fal aliases keep their existing limits. Complete original PNG
+bytes enter history and project storage. No returned download carries the fal key or follows
+a redirect. Ambiguous paid creates retain an unresolved charge and are never automatically
+replayed; known local refusals send no paid request.
+
+This model needs **native streaming asset storage**, as used by desktop projects and the
+native CLI run path. Classic in-memory/browser project storage has a 16-MiB asset limit, so
+those hosts refuse Topaz before submission rather than charge for an image they cannot save.
+Library clients that call the native provider directly own retention of its bounded output.
+The app and libraries still compile for WebAssembly; Topaz submission there is unavailable.
+
+No paid live generation was performed. Offline tests use original procedural raster data,
+including a result larger than 16 MiB through actual native RunHost history/save/reopen. The
+ignored Topaz live smoke requires explicit cost acknowledgement and the fal key; it is never
+run in CI.

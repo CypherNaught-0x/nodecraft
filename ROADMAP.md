@@ -142,6 +142,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
   Pixel-based credits remain an unknown monetary price and require consent. Image editing and
   other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
+- **Topaz**: desktop projects and the native CLI can enhance or upscale one image with
+  Precision Standard V2 through fal (#37). Integer 1×–4× scaling stays within one 0.08 USD
+  output block. Browser sessions refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a

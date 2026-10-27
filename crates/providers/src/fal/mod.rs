@@ -27,6 +27,8 @@ mod rodin_tests;
 mod style_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod topaz_tests;
 use crate::secrets::Secret;
 use crate::{
     BoxFuture, Completed, ErrorKind, Http, HttpMethod, HttpRequest, HttpResponse, JobHandle, JobProgress, Output, Provider, ProviderError, ProviderJob,
@@ -62,6 +64,8 @@ pub const LUMA_RAY_I2V: &str = "luma/agent/ray/v3.2/image-to-video";
 pub const LUMA_PHOTON: &str = "fal-ai/luma-photon";
 /// Ideogram V3 text-to-image, one Balanced image through fal's queue (#34).
 pub const IDEOGRAM: &str = "fal-ai/ideogram/v3";
+/// Topaz Precision Standard V2 image enhancement through fal (#37).
+pub const TOPAZ_IMAGE: &str = "topaz/upscale/image/precision";
 /// Recraft V4.1 raster and original SVG through fal (#35).
 pub const RECRAFT_IMAGE: &str = "fal-ai/recraft/v4.1/text-to-image";
 pub const RECRAFT_VECTOR: &str = "fal-ai/recraft/v4.1/text-to-vector";
@@ -165,6 +169,7 @@ enum Model {
     RayFrames,
     Photon,
     Ideogram,
+    Topaz,
     Image,
     Video,
     /// Image to video: a first frame and an optional last frame.
@@ -206,6 +211,7 @@ impl Model {
             LUMA_RAY_I2V => Ok(Self::RayFrames),
             LUMA_PHOTON => Ok(Self::Photon),
             IDEOGRAM => Ok(Self::Ideogram),
+            TOPAZ_IMAGE => Ok(Self::Topaz),
             FLUX => Ok(Self::Image),
             WAN => Ok(Self::Video),
             WAN_I2V => Ok(Self::Frames),
@@ -244,6 +250,7 @@ impl Model {
             Self::RayFrames => LUMA_RAY_I2V,
             Self::Photon => LUMA_PHOTON,
             Self::Ideogram => IDEOGRAM,
+            Self::Topaz => TOPAZ_IMAGE,
             Self::Image => FLUX,
             Self::Video => WAN,
             Self::Frames => WAN_I2V,
@@ -301,6 +308,7 @@ impl Model {
             Self::RayText | Self::RayFrames => "luma/agent",
             Self::Photon => LUMA_PHOTON,
             Self::Ideogram => "fal-ai/ideogram",
+            Self::Topaz => "topaz/upscale",
             Self::Image => "fal-ai/flux",
             Self::Video | Self::Frames | Self::Speech => "fal-ai/wan",
             Self::Audio => "fal-ai/kokoro",
@@ -413,7 +421,8 @@ impl Record {
                     || !record.width.is_multiple_of(2)
                     || !record.height.is_multiple_of(2)))
             || (model == Model::RemoveBackground && (record.width == 0 || record.height == 0 || record.width > 1024 || record.height > 1024))
-            || (!matches!(model, Model::Upscale | Model::RemoveBackground) && (record.width != 0 || record.height != 0))
+            || (model == Model::Topaz && (record.width == 0 || record.height == 0 || record.width > 4096 || record.height > 4096))
+            || (!matches!(model, Model::Upscale | Model::RemoveBackground | Model::Topaz) && (record.width != 0 || record.height != 0))
         {
             return Err(invalid("fal handle output contract refused"));
         }
@@ -650,6 +659,7 @@ impl Fal {
                     | Model::RemoveBackground
                     | Model::Photon
                     | Model::Ideogram
+                    | Model::Topaz
             ) && (f.width.is_some() || f.height.is_some())
             {
                 let meta = nodecraft_media::probe_image(&reply.body, &limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;

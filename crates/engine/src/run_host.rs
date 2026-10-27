@@ -9,7 +9,7 @@
 //!    from the session's assets, #502) on a [`ProviderRunner`] held to the shared [`JobBudget`],
 //!    sources and local actions on a [`SourceRunner`]. The driver runs on the host's [`Runtime`].
 //! 3. **Absorb** what the driver reports. A finished model job's outputs are converted
-//!    ([`generate::produced`]), its assets imported, and the step advanced. Every model job that
+//!    ([`crate::generate::produced`]), its assets imported, and the step advanced. Every model job that
 //!    ends, however it ends, is let go with `ProviderRunner::forget`, which settles its
 //!    reservation: charged as unresolved when it may have been billed, released when it provably
 //!    wasn't.
@@ -38,8 +38,7 @@
 use crate::Session;
 use crate::action_exec::LocalActions;
 use crate::commands::Services;
-use crate::generate;
-use crate::jobs::{CompletionAccounting, CompletionDelivery, JobBudget, ProviderRunner, Sent, Stage, WriteAhead};
+use crate::jobs::{CompletionAccounting, JobBudget, ProviderRunner, Sent, Stage, WriteAhead};
 use crate::ownership_cmds::{self, OWNERSHIP_SERVICE};
 use crate::provider_routing::RegisteredProvider;
 use crate::resolve_cmds::{self, RESOLUTION_SERVICE};
@@ -57,6 +56,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+mod assets;
 mod estimates;
 mod held;
 mod partial;
@@ -157,7 +157,7 @@ pub enum RunNotice {
 #[derive(Default)]
 struct Mailbox {
     events: VecDeque<Event>,
-    deliveries: BTreeMap<JobId, CompletionDelivery>,
+    deliveries: BTreeMap<JobId, assets::Delivery>,
     /// Jobs the scheduler refused to queue; they never start.
     rejected: Vec<(JobId, String)>,
     /// The provider's latest progress report for each job.
@@ -190,6 +190,8 @@ struct Active {
     /// The granted plugins' actions the run started with (#173).
     plugins: Option<Arc<crate::plugin_runtime::PluginSnapshot>>,
     mailbox: Arc<Mutex<Mailbox>>,
+    asset_source: Arc<nodecraft_format::AssetStore>,
+    preparation: assets::Scope,
     handle: Option<Handle>,
     /// Model jobs, which settle when they end without a result.
     provider_jobs: BTreeSet<JobId>,
@@ -256,6 +258,9 @@ pub struct RunHost {
     kept_handles: Arc<Mutex<crate::jobs::KeptHandles>>,
     /// Paid results that couldn't be kept, waiting for a decision (#369).
     results: Arc<Mutex<held::Held>>,
+    held_preparation: assets::Actions,
+    #[cfg(test)]
+    preparation_hook: Option<assets::Hook>,
     /// ffmpeg and ffprobe for timeline renders (#109), from the settings.
     video_tools: Option<(std::path::PathBuf, std::path::PathBuf)>,
     /// `run.estimate` requests (#663).
@@ -302,6 +307,7 @@ impl MappingEditGuard {
 impl RunHost {
     /// A host running jobs on `runtime`, charging paid jobs to `budget`.
     pub fn new(runtime: Arc<dyn Runtime>, budget: JobBudget) -> Self {
+        let results = held::new(Arc::clone(&runtime));
         Self {
             inbox: Arc::default(),
             mapping_running: Arc::default(),
@@ -323,7 +329,10 @@ impl RunHost {
             save_failed: None,
             checked_at: 0,
             kept_handles: Arc::default(),
-            results: Arc::default(),
+            results,
+            held_preparation: assets::Actions::default(),
+            #[cfg(test)]
+            preparation_hook: None,
             video_tools: None,
             estimates: estimates::Estimates::default(),
         }
@@ -426,12 +435,15 @@ impl RunHost {
     /// Follows the restored jobs of the open project that ran on `binding`'s endpoint. A job that
     /// can't be followed is reported and its charge settled as unresolved.
     pub fn resume(&mut self, session: &Session, binding: &RegisteredProvider) {
+        #[cfg(test)]
+        self.resumes.preparation_hook(self.preparation_hook.clone());
         let project = session.document().id();
         let (ready, waiting): (Vec<_>, Vec<_>) =
             std::mem::take(&mut self.parked).into_iter().partition(|entry| entry.project == project && entry.target == *binding.target());
         self.parked = waiting;
+        let source = Arc::new(session.assets().clone());
         for entry in ready {
-            if let Err(refused) = self.resumes.start(entry, binding, &self.runtime, &self.budget) {
+            if let Err(refused) = self.resumes.start(entry, binding, &self.runtime, &self.budget, Arc::clone(&source)) {
                 let (entry, reason) = *refused;
                 settle_unresolved(&self.budget, &entry);
                 self.held.push(RunNotice::Failed {
@@ -467,7 +479,10 @@ impl RunHost {
     /// left running at the provider, to be followed next launch; without one, it is cancelled.
     /// Jobs not yet sent are refused from here on, so none can be sent after the last save.
     pub fn shut_down(&mut self) {
+        self.held_preparation.cancel_all();
+        self.resumes.cancel_preparation();
         for run in &self.runs {
+            run.preparation.cancel_all();
             run.actions.cancel_captures();
         }
         let journaled = {
@@ -689,7 +704,21 @@ impl RunHost {
 
     /// Whether any run is waiting or running.
     pub fn is_busy(&self) -> bool {
-        !self.runs.is_empty() || !self.resumes.live.is_empty() || !lock(&self.inbox).waiting.is_empty()
+        !self.runs.is_empty()
+            || !self.resumes.live.is_empty()
+            || !lock(&self.inbox).waiting.is_empty()
+            || self.held_preparation.is_busy()
+            || lock(&self.results).is_saving()
+    }
+    /// Local paid-result work must finish before a normal window close drops its runtime.
+    /// Remote inference alone is resumable and does not require holding the window open.
+    pub fn is_preparing_results(&self) -> bool {
+        self.held_preparation.is_busy()
+            || lock(&self.results).is_saving()
+            || self.resumes.is_preparing()
+            || self.runs.iter().any(|active| {
+                active.preparation.is_busy() || lock(&active.mailbox).deliveries.values().any(|delivery| delivery.preparing || delivery.prepared.is_some())
+            })
     }
 
     /// Whether a `run.estimate` is waiting or being answered.
@@ -719,6 +748,7 @@ impl RunHost {
             return if self.resumes.cancel(key.job) { Ok(()) } else { Err(gone()) };
         }
         let active = self.runs.iter_mut().find(|active| active.seq == key.run).ok_or_else(gone)?;
+        active.preparation.cancel(key.job);
         let view = active.jobs.live.get_mut(&key.job).ok_or_else(gone)?;
         if view.cancel_requested {
             return Ok(());
@@ -793,7 +823,7 @@ impl RunHost {
             }
         }
         keep_recent(&mut self.recent, self.resumes.jobs.ended.drain(..));
-        act_on_held(session, &self.results, &mut notices);
+        act_on_held(session, &self.results, &mut notices, &self.runtime, &mut self.held_preparation);
         self.estimates.pump(session, &self.runtime, &mut notices);
         if settled {
             lock(&self.journal).reconciled = false;
@@ -821,13 +851,29 @@ impl RunHost {
         // Per run: a server's cap on jobs at once holds within each run (#864).
         let lane_limits = run.lane_limits().unwrap_or_default();
         let mailbox: Arc<Mutex<Mailbox>> = Arc::default();
+        let preparation = assets::Scope::default();
+        #[cfg(test)]
+        let preparation = {
+            let mut preparation = preparation;
+            preparation.hook = self.preparation_hook.clone();
+            preparation
+        };
+        let prepare = preparation.worker();
         let sink = Arc::clone(&mailbox);
         let reports = Arc::clone(&mailbox);
         let provider = ProviderRunner::new(
             Arc::clone(&self.runtime),
             self.limits,
             Arc::new(move |job, delivery| {
+                let (delivery, work) = assets::Delivery::new(delivery);
                 lock(&sink).deliveries.insert(job, delivery);
+                if let Some(completed) = work {
+                    let result = prepare.prepare(job, &completed);
+                    if let Some(delivery) = lock(&sink).deliveries.get_mut(&job) {
+                        delivery.prepared = Some(result);
+                        delivery.preparing = false;
+                    }
+                }
             }),
             Arc::new(move |job, sent: Sent<'_>, update: RunUpdate| {
                 // Hashed here, on the job's thread, not under the lock nor on the UI thread.
@@ -863,6 +909,8 @@ impl RunHost {
             actions,
             plugins,
             mailbox,
+            asset_source: Arc::new(session.assets().clone()),
+            preparation,
             handle: Some(handle),
             provider_jobs: BTreeSet::new(),
             live: BTreeMap::new(),
@@ -940,6 +988,7 @@ fn keep_recent(recent: &mut VecDeque<JobView>, ended: impl Iterator<Item = JobVi
 
 /// Cancels everything `active` has queued and stops it sending more.
 fn stop(active: &mut Active) {
+    active.preparation.cancel_all();
     active.cancelled = true;
     if let Some(handle) = &active.handle {
         // Control commands have reserved capacity; a closed driver has nothing left to cancel.
@@ -1111,6 +1160,7 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
                 staged: None,
             };
             lock(&active.templates).insert(spec.id, template);
+            active.preparation.register(spec.id, Arc::clone(&active.asset_source), outputs.clone());
             active.runner.provider.register(spec.id, queued);
             active.provider_jobs.insert(spec.id);
         }
@@ -1200,6 +1250,7 @@ fn absorb(
                     }
                 }
                 None => {
+                    hold_completed(active, job, held, "its result worker ended before recording");
                     if let Some(key) = active.provider_jobs.contains(&job).then(|| active.runner.provider.take_billed(job)).flatten() {
                         active.run.job_may_be_billed(job, &key);
                     }
@@ -1209,6 +1260,7 @@ fn absorb(
                 }
             },
             Event::Cancelled { job } => {
+                hold_completed(active, job, held, "cancelled while keeping a completed paid result");
                 settled |= finish(active, job);
                 active.jobs.end(job, JobState::Cancelled);
                 active.run.job_cancelled(session.kinds(), job, CANCELLED)
@@ -1271,7 +1323,7 @@ fn ended<T>(outputs: &Result<T, String>) -> JobState {
 fn unaccounted(active: &Active, job: JobId, budget: &JobBudget) -> Option<Result<(), String>> {
     let mut mailbox = lock(&active.mailbox);
     let delivery = mailbox.deliveries.get_mut(&job)?;
-    let CompletionAccounting::Failed(failure) = &mut delivery.accounting else { return None };
+    let CompletionAccounting::Failed(failure) = &mut delivery.completion.accounting else { return None };
     let charged = match failure.retry.as_mut() {
         Some(retry) => retry.retry(budget).map_err(|error| format!("the charge couldn't be recorded: {error:?}")),
         None => Err(format!("the charge couldn't be recorded: {}", failure.message)),
@@ -1282,6 +1334,7 @@ fn unaccounted(active: &Active, job: JobId, budget: &JobBudget) -> Option<Result
 /// Lets go of a job that ended. A model job's reservation is settled (charged as unresolved when
 /// it may have been billed, released when it provably wasn't); returns whether it was one.
 fn finish(active: &mut Active, job: JobId) -> bool {
+    active.preparation.forget(job);
     active.live.remove(&job);
     lock(&active.templates).remove(&job);
     active.journal_changed |= lock(&active.shared).staging.remove(&(active.seq, job)).is_some();
@@ -1336,10 +1389,10 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
         }
         return Ok((outputs, nodecraft_providers::Usage::default()));
     }
-    let delivery = lock(&active.mailbox).deliveries.remove(&job).ok_or("the model's result went missing")?;
+    let assets::Delivery { completion: delivery, prepared, .. } = lock(&active.mailbox).deliveries.remove(&job).ok_or("the model's result went missing")?;
     let Some(JobSpec::Generate { node: step, outputs: routes, .. }) = active.run.work(job) else { return Err("the job is not a model call".into()) };
     let step = *step;
-    let converted = convert(session, &active.run, job, routes, &delivery.completed);
+    let converted = convert(session, &active.run, job, routes, &delivery.completed, prepared);
     let Some(template) = lock(&active.templates).get(&job).cloned() else { return converted.map(|outputs| (outputs, delivery.completed.usage)) };
     let kept = |reason: String, completed: Completed| held::HeldResult {
         project: template.project,
@@ -1366,6 +1419,25 @@ fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<
             Err(format!("{reason}; {HELD_NOTE}"))
         }
     }
+}
+
+fn hold_completed(active: &mut Active, job: JobId, held: &Mutex<held::Held>, reason: &str) {
+    let Some(delivery) = lock(&active.mailbox).deliveries.remove(&job) else { return };
+    let Some(entry) = lock(&active.templates).get(&job).cloned() else { return };
+    held::hold(
+        held,
+        held::HeldResult {
+            project: entry.project,
+            canvas: entry.canvas,
+            node: entry.node,
+            provider: entry.target.adapter().to_owned(),
+            model: entry.model,
+            reason: reason.into(),
+            completed: delivery.completion.completed,
+            routes: entry.routes,
+            recipe: entry.recipe,
+        },
+    );
 }
 
 /// Holds `results`, one per step, each saying the `reason` for its step; whether there were any.
@@ -1435,29 +1507,43 @@ fn convert(
     job: JobId,
     routes: &[GenerateOutput],
     completed: &Completed,
+    prepared: Option<Result<assets::Prepared, String>>,
 ) -> Result<Vec<(String, nodecraft_types::Value)>, String> {
-    let produced = generate::produced(routes, completed).map_err(|e| e.message)?;
-    run.admit_outputs(job, &produced.outputs)?;
-    for (hash, bytes) in produced.assets {
-        let imported = session.import_asset(&bytes).map_err(|e| e.message)?;
-        if imported != hash {
-            return Err("a generated asset changed while it was imported".into());
-        }
-    }
-    Ok(produced.outputs)
+    let prepared = assets::ready(routes, completed, prepared)?;
+    run.admit_outputs(job, prepared.outputs())?;
+    prepared.adopt(session)
 }
 
 /// Retries or places the held results asked for since the last pump. A result is let go only
 /// once that worked; otherwise it stays held and the failure is reported.
-fn act_on_held(session: &mut Session, results: &Mutex<held::Held>, notices: &mut Vec<RunNotice>) {
+fn act_on_held(
+    session: &mut Session,
+    results: &Mutex<held::Held>,
+    notices: &mut Vec<RunNotice>,
+    runtime: &Arc<dyn Runtime>,
+    preparation: &mut assets::Actions,
+) {
     let pending = lock(results).pending();
     for (id, action, result) in pending {
         let (canvas, node) = (result.canvas, result.node);
+        let routes = match action {
+            HeldAction::Place => held::every_modality(),
+            HeldAction::Retry => result.routes.clone(),
+        };
+        let prepared = if session.document().id() == result.project {
+            match preparation.poll(id, session.assets(), &routes, Arc::clone(&result), runtime) {
+                std::task::Poll::Pending => continue,
+                std::task::Poll::Ready(result) => Some(result),
+            }
+        } else {
+            preparation.cancel(id);
+            None
+        };
         let outcome = match (action, &result.recipe) {
             _ if session.document().id() != result.project => Err("its project isn't open".to_owned()),
-            (HeldAction::Retry, Some(recipe)) => resume::record_alone(session, canvas, node, &result.routes, recipe, &result.completed),
+            (HeldAction::Retry, Some(recipe)) => resume::record_prepared(session, canvas, node, &result.routes, recipe, &result.completed, prepared),
             (HeldAction::Retry, None) => Err("its step needs other jobs' results too".to_owned()),
-            (HeldAction::Place, _) => held::place(session, &result),
+            (HeldAction::Place, _) => held::place_prepared(session, &result, prepared),
         };
         lock(results).settle(id, outcome.is_ok());
         notices.push(match (outcome, action) {
