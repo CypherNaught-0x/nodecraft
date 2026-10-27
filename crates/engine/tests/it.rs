@@ -209,3 +209,6 @@ mod templates952;
 
 #[path = "svg_template35.rs"]
 mod svg_template35;
+
+#[path = "minimax27.rs"]
+mod minimax27;

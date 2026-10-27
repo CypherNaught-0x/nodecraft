@@ -57,5 +57,5 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     let mut out = Vec::new();
     reserve(&mut out, counter.n)?;
     serde_json::to_writer(&mut out, &body).map_err(|_| invalid("Ideogram request encoding failed"))?;
-    Ok((Record { model: Model::Ideogram, requested: 1, width: 0, height: 0 }, out))
+    Ok((Record { model: Model::Ideogram, requested: 1, width: 0, height: 0, duration_ms: 0 }, out))
 }

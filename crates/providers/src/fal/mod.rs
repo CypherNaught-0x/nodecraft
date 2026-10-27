@@ -15,6 +15,8 @@ mod ltx_tests;
 #[cfg(test)]
 mod luma_tests;
 mod media;
+#[cfg(test)]
+mod minimax_tests;
 #[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
 mod native_tests;
 #[cfg(test)]
@@ -64,6 +66,11 @@ pub const LUMA_RAY_I2V: &str = "luma/agent/ray/v3.2/image-to-video";
 pub const LUMA_PHOTON: &str = "fal-ai/luma-photon";
 /// Ideogram V3 text-to-image, one Balanced image through fal's queue (#34).
 pub const IDEOGRAM: &str = "fal-ai/ideogram/v3";
+/// MiniMax video, speech and music through fal (#27).
+pub const MINIMAX_VIDEO: &str = "minimax/h3/text-to-video";
+pub const MINIMAX_I2V: &str = "minimax/h3/image-to-video";
+pub const MINIMAX_SPEECH: &str = "fal-ai/minimax/speech-2.8-hd";
+pub const MINIMAX_MUSIC: &str = "minimax/music-3";
 /// Topaz Precision Standard V2 image enhancement through fal (#37).
 pub const TOPAZ_IMAGE: &str = "topaz/upscale/image/precision";
 /// Recraft V4.1 raster and original SVG through fal (#35).
@@ -146,6 +153,10 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Model {
+    MiniMaxText,
+    MiniMaxFrames,
+    MiniMaxSpeech,
+    MiniMaxMusic,
     RecraftImage,
     RecraftVector,
     RodinText,
@@ -188,6 +199,10 @@ enum Model {
 impl Model {
     fn read(s: &str) -> Result<Self, ProviderError> {
         match s {
+            MINIMAX_VIDEO => Ok(Self::MiniMaxText),
+            MINIMAX_I2V => Ok(Self::MiniMaxFrames),
+            MINIMAX_SPEECH => Ok(Self::MiniMaxSpeech),
+            MINIMAX_MUSIC => Ok(Self::MiniMaxMusic),
             RECRAFT_IMAGE => Ok(Self::RecraftImage),
             RECRAFT_VECTOR => Ok(Self::RecraftVector),
             RODIN_TEXT => Ok(Self::RodinText),
@@ -227,6 +242,10 @@ impl Model {
     }
     fn wire(self) -> &'static str {
         match self {
+            Self::MiniMaxText => MINIMAX_VIDEO,
+            Self::MiniMaxFrames => MINIMAX_I2V,
+            Self::MiniMaxSpeech => MINIMAX_SPEECH,
+            Self::MiniMaxMusic => MINIMAX_MUSIC,
             Self::RecraftImage => RECRAFT_IMAGE,
             Self::RecraftVector => RECRAFT_VECTOR,
             Self::RodinText => RODIN_TEXT,
@@ -267,7 +286,9 @@ impl Model {
     fn video(self) -> bool {
         matches!(
             self,
-            Self::Wan3Text
+            Self::MiniMaxText
+                | Self::MiniMaxFrames
+                | Self::Wan3Text
                 | Self::Wan3Frames
                 | Self::GrokText
                 | Self::GrokFrames
@@ -279,6 +300,9 @@ impl Model {
                 | Self::LtxText
                 | Self::LtxFrames
         )
+    }
+    fn minimax(self) -> bool {
+        matches!(self, Self::MiniMaxText | Self::MiniMaxFrames | Self::MiniMaxSpeech | Self::MiniMaxMusic)
     }
     fn rodin(self) -> bool {
         matches!(self, Self::RodinText | Self::RodinImages | Self::RodinFastText | Self::RodinFastImages)
@@ -297,6 +321,9 @@ impl Model {
     }
     fn root(self) -> &'static str {
         match self {
+            Self::MiniMaxText | Self::MiniMaxFrames => "minimax/h3",
+            Self::MiniMaxSpeech => "fal-ai/minimax",
+            Self::MiniMaxMusic => "minimax/music-3",
             Self::RecraftImage | Self::RecraftVector => "fal-ai/recraft",
             Self::RodinText | Self::RodinImages | Self::RodinFastText | Self::RodinFastImages => "fal-ai/hyper3d",
             Self::QwenImage | Self::QwenEdit => "alibaba/qwen-image-3",
@@ -342,6 +369,8 @@ struct Record {
     requested: u8,
     width: u32,
     height: u32,
+    /// New MiniMax requests retain their admitted time bound across restart. Legacy handles omit it.
+    duration_ms: u32,
 }
 struct Routes<'a> {
     status: std::borrow::Cow<'a, str>,
@@ -380,6 +409,11 @@ impl Record {
     /// style descriptor needs.
     fn handle(self, id: &str, r: &Routes<'_>, trigger: &str) -> JobHandle {
         let mut data = serde_json::json!({"v":1,"model":self.model.wire(),"requested":self.requested,"width":self.width,"height":self.height,"status_url":r.status,"response_url":r.result,"cancel_url":r.cancel});
+        if self.model.minimax()
+            && let Some(o) = data.as_object_mut()
+        {
+            o.insert("duration_ms".into(), self.duration_ms.into());
+        }
         if self.model == Model::Train
             && let Some(o) = data.as_object_mut()
         {
@@ -390,7 +424,8 @@ impl Record {
     fn read<'a>(h: &'a JobHandle, key: &Secret) -> Result<(Self, Routes<'a>, &'a str), ProviderError> {
         id(&h.remote_id, key)?;
         let train = h.data.get("model").and_then(|v| v.as_str()) == Some(FLUX_LORA_TRAINER);
-        let o = h.data.as_object().filter(|o| o.len() == 8 + usize::from(train)).ok_or_else(|| invalid("fal invalid handle record"))?;
+        let minimax = h.data.get("model").and_then(|v| v.as_str()).and_then(|m| Model::read(m).ok()).is_some_and(Model::minimax);
+        let o = h.data.as_object().filter(|o| o.len() == 8 + usize::from(train) + usize::from(minimax)).ok_or_else(|| invalid("fal invalid handle record"))?;
         let text = |k: &str| o.get(k).and_then(|v| v.as_str()).ok_or_else(|| invalid("fal invalid handle field"));
         if o.get("v").and_then(|v| v.as_u64()) != Some(1) {
             return Err(invalid("fal unsupported handle version"));
@@ -402,6 +437,7 @@ impl Record {
             requested: u8::try_from(num("requested")?).map_err(|_| invalid("fal invalid handle count"))?,
             width: num("width")?,
             height: num("height")?,
+            duration_ms: if minimax { num("duration_ms")? } else { 0 },
         };
         if !(1..=if matches!(model, Model::GrokImage | Model::GrokEdit) {
             10
@@ -425,6 +461,9 @@ impl Record {
             || (!matches!(model, Model::Upscale | Model::RemoveBackground | Model::Topaz) && (record.width != 0 || record.height != 0))
         {
             return Err(invalid("fal handle output contract refused"));
+        }
+        if model.minimax() && !request::minimax::valid_duration(model, record.duration_ms) {
+            return Err(invalid("MiniMax saved duration contract refused"));
         }
         let r = Routes { status: text("status_url")?.into(), result: text("response_url")?.into(), cancel: text("cancel_url")?.into() };
         routes(model, &h.remote_id, &r, key)?;
@@ -639,7 +678,21 @@ impl Fal {
             // SVG admission and declared geometry share one complete probe. Its preview
             // capability does not decide whether a safe paid original is retained.
             let vector = (record.model == Model::RecraftVector).then(|| media::vector(&reply.body, limits, &mut pixels)).transpose()?;
-            let mime = if vector.is_some() { nodecraft_media::svg::MIME } else { media::validate(&reply.body, record, limits, &mut pixels)? };
+            let timed = record.model.minimax().then(|| media::minimax::validate(&reply.body, record, limits)).transpose()?;
+            if let Some(proof) = timed.as_ref()
+                && (f.duration_ms.is_some_and(|declared| declared.abs_diff(proof.duration_ms) > 1000)
+                    || f.width.is_some_and(|w| proof.width != Some(w))
+                    || f.height.is_some_and(|h| proof.height != Some(h)))
+            {
+                return Err(malformed("MiniMax result metadata disagrees with the complete media"));
+            }
+            let mime = if let Some(proof) = timed {
+                proof.mime
+            } else if vector.is_some() {
+                nodecraft_media::svg::MIME
+            } else {
+                media::validate(&reply.body, record, limits, &mut pixels)?
+            };
             if f.mime.as_deref().is_some_and(|m| m != mime) {
                 return Err(malformed("fal output MIME disagrees with actual bytes"));
             }

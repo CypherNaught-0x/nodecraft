@@ -148,3 +148,7 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `tripo.image-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.multiview-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.text-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
+
+MiniMax's current video, speech and music models reuse Fal (#27): H3 at explicit 480P/768P,
+Speech 2.8 HD MP3 and Music 3 stereo WAV. Their native streamed-storage requirement and exact
+scope/rates are in [provider bounds](providers.md#minimax-video-speech-and-music-through-fal-27).

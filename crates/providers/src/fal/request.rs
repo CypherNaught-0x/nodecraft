@@ -7,6 +7,7 @@ mod hunyuan;
 mod ideogram;
 mod ltx;
 mod luma;
+pub(super) mod minimax;
 mod recraft;
 mod rodin;
 mod topaz;
@@ -197,8 +198,11 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     // Browser projects still use the classic 16 MiB asset store. Refuse before payment;
     // a direct adapter caller has no engine AssetContext to enforce that boundary for it.
     #[cfg(target_arch = "wasm32")]
-    if model == Model::Topaz {
-        return Err(invalid("Topaz Precision needs a desktop project so its large image results can be saved"));
+    if model == Model::Topaz || model.minimax() {
+        return Err(invalid("This model needs a desktop project so its large results can be saved"));
+    }
+    if model.minimax() {
+        return minimax::prepare(j, l, model);
     }
     if model == Model::Topaz {
         return topaz::prepare(j, l);
@@ -284,7 +288,11 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             return Err(invalid("fal unsupported parameter value"));
         }
         let ok = match model {
-            Model::RecraftImage
+            Model::MiniMaxText
+            | Model::MiniMaxFrames
+            | Model::MiniMaxSpeech
+            | Model::MiniMaxMusic
+            | Model::RecraftImage
             | Model::RecraftVector
             | Model::RodinText
             | Model::RodinImages
@@ -363,12 +371,16 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     });
     let prompt = styled.as_deref().or(prompt);
     let mut body = Body { prompt, negative_prompt: negative, ..Default::default() };
-    let mut record = Record { model, requested: 1, width: 0, height: 0 };
+    let mut record = Record { model, requested: 1, width: 0, height: 0, duration_ms: 0 };
     if let Some(v) = j.params.get("seed") {
         body.seed = Some(v.as_u64().filter(|n| *n <= u32::MAX as u64).ok_or_else(|| invalid("fal seed must fit u32"))?);
     }
     match model {
-        Model::RecraftImage
+        Model::MiniMaxText
+        | Model::MiniMaxFrames
+        | Model::MiniMaxSpeech
+        | Model::MiniMaxMusic
+        | Model::RecraftImage
         | Model::RecraftVector
         | Model::RodinText
         | Model::RodinImages

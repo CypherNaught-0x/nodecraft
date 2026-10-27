@@ -18,6 +18,20 @@ pub(super) fn check(quote: &Quote, catalog: &Catalog, large_assets: bool) -> Res
     {
         return Err(Error::new(ErrorKind::Unsupported, "Topaz Precision needs a desktop project so its large image results can be saved."));
     }
+    if !large_assets
+        && quote.steps.iter().any(|step| {
+            !step.runs_nothing()
+                && step.models.iter().filter_map(|id| catalog.get(id)).any(|model| {
+                    model.provider == "fal"
+                        && matches!(
+                            model.provider_model.as_str(),
+                            "minimax/h3/text-to-video" | "minimax/h3/image-to-video" | "fal-ai/minimax/speech-2.8-hd" | "minimax/music-3"
+                        )
+                })
+        })
+    {
+        return Err(Error::new(ErrorKind::Unsupported, "MiniMax needs a desktop project with streamed asset storage before a paid run can start."));
+    }
     Ok(())
 }
 
@@ -62,5 +76,40 @@ mod tests {
         let catalog = Catalog::from_models([aliased, other]).unwrap();
         assert!(check(&quote("fixture.topaz37", false, 1), &catalog, false).is_err());
         assert!(check(&quote("fixture.other37", false, 1), &catalog, false).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod minimax27_tests {
+    use super::*;
+    use nodecraft_exec::cost::{StepQuote, Unpriced};
+    use nodecraft_types::NodeId;
+    #[test]
+    fn minimax27_storage_guard_uses_resolved_model_identity_for_all_modalities_and_deferred_work() {
+        let builtin = Catalog::builtin().unwrap();
+        for id in ["fal.minimax-h3", "fal.minimax-h3-i2v", "fal.minimax-speech28-hd", "fal.minimax-music3"] {
+            let mut model = builtin.get(id).unwrap().clone();
+            model.id = "custom.endpoint".into();
+            let catalog = Catalog::from_models([model]).unwrap();
+            for jobs_known in [true, false] {
+                let mut quote = Quote {
+                    steps: vec![StepQuote {
+                        node: NodeId::from_bytes([27; 16]),
+                        models: vec!["custom.endpoint".into()],
+                        jobs: 1,
+                        jobs_known,
+                        per_job: Err(Unpriced::ByUsage("custom.endpoint".into())),
+                    }],
+                    ..Default::default()
+                };
+                assert!(check(&quote, &catalog, false).unwrap_err().message.contains("MiniMax"));
+                assert!(check(&quote, &catalog, true).is_ok());
+                quote.steps[0].jobs = 0;
+                quote.steps[0].jobs_known = true;
+                assert!(check(&quote, &catalog, false).is_ok());
+            }
+        }
+        let quote = Quote::default();
+        assert!(check(&quote, &builtin, false).is_ok(), "unused models in a canvas do not require streaming");
     }
 }

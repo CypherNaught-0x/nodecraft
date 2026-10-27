@@ -2128,3 +2128,58 @@ No paid live generation was performed. Offline tests use original procedural ras
 including a result larger than 16 MiB through actual native RunHost history/save/reopen. The
 ignored Topaz live smoke requires explicit cost acknowledgement and the fal key; it is never
 run in CI.
+
+## MiniMax video, speech and music through fal (#27)
+
+Use the existing **fal** API key on a native desktop or CLI project with streamed asset
+storage. These four current entries share Fal's queue, strict canonical saved handles,
+no-redirect downloads and the rule that an ambiguous paid create never replays:
+
+| Catalog entry | Supported request | Dated budget estimate |
+|---|---|---|
+| `fal.minimax-h3` | H3 text video, 5–15 integer seconds, 480P or 768P, generated native audio | $0.05/s at 480P; $0.06/s at 768P |
+| `fal.minimax-h3-i2v` | H3 from one first frame and a prompt, same durations/resolutions | Same rates; no separate frame fee |
+| `fal.minimax-speech28-hd` | Plain speech, stock voice, speed 0.5–2 and pitch -12–12 | $0.10/1000 characters; quote conservatively counts complete UTF-8 bytes |
+| `fal.minimax-music3` | Music description plus editable lyrics, maximum 1–300 integer seconds | $0.002 per requested maximum second |
+
+Contracts and prices checked 2026-10-28: [H3 text](https://fal.ai/models/minimax/h3/text-to-video/api),
+[H3 first frame](https://fal.ai/models/minimax/h3/image-to-video/api),
+[Speech 2.8 HD](https://fal.ai/models/fal-ai/minimax/speech-2.8-hd/api), and
+[Music 3](https://fal.ai/models/minimax/music-3/api). Current H3 model-page rates supersede older
+blog prices. These are budget estimates, not an observed invoice. The optional Fal billable-units
+receipt remains separate evidence. Known speech text is conservatively priced at admission;
+unknown upstream text stays unpriced until materialized and needs the ordinary partial-quote consent.
+
+Video fixes safety on, prompt expansion off and URL delivery, and omits target audio, last frames,
+reference video, 2K/4K upscale modes and H3 Max promotional tiers. A first frame must be upright
+PNG/JPEG/WebP, 32–1024 pixels on each axis, at most 1 MiB and aspect ratio between 1:3 and 3:1.
+These are local admission bounds. Prompts are limited locally to 8192 UTF-8 bytes. Optional fixed
+seeds use a documented local u32 subset; the public schemas do not specify that as a vendor maximum.
+
+Speech fixes URL-delivered **MP3, 32 kHz, mono, 128 kbit/s**, volume one and safety on. The four
+stock voices are Wise Woman, Friendly Person, Deep Voice Man and Calm Woman. The 4096-byte plain
+speech slice refuses long-pause `<#...#>` directives before payment; voice cloning, custom
+pronunciation, normalization controls and native streaming speech are separate contracts. MP3
+admission checks every frame extent, rate, channels, tag extent and a one-hour duration bound;
+it does not promise to decode every audio sample or prove artistic quality.
+
+Music 3 fixes **44.1 kHz, 16-bit stereo WAV**, 30 inference steps, guidance 1.7 and safety on.
+Lyrics are a model-owned multiline setting, not an unsupported second connected text input.
+Section tags must occupy their own lines; same-line words would be dropped by the model and
+are refused locally. The initial tag is `[instrumental]`; users can replace it with lyrics.
+Music descriptions are at most 8192 UTF-8 bytes and lyrics 16 KiB. The chosen duration is an upper
+bound; the model may stop earlier. Returned duration/seed metadata is validated, and the complete
+WAV must match its promised PCM settings and requested time bound.
+
+All four entries allow one result up to **256 MiB**, also the aggregate cap. They require streamed
+storage before paid I/O, including catalog aliases and deferred/inlined Technique steps. Classic
+16 MiB browser/memory projects refuse locally rather than pay for a result they cannot retain;
+direct WebAssembly submissions also refuse. Native recording, held results and persistence reuse
+the existing worker conversion/sealing path. Legacy Fal model limits are unchanged. Authored
+media/HTTP fixtures demonstrate client behavior; no paid request was used for implementation.
+
+The ignored `minimax27_live_smoke` requires both `NODECRAFT_LIVE_MINIMAX=1` and
+`NODECRAFT_LIVE_MINIMAX_ACKNOWLEDGE_COST=1`, plus `FAL_KEY`. Optional mode is `video`, `frame`,
+`speech` or `music` (default): one eight-second music request estimates $0.016; one default
+480P video request estimates $0.25. It was not run. Separate ignored local FFmpeg fixture
+validation requires `NODECRAFT_MINIMAX27_FFMPEG`; that decoder check has no provider calls.
