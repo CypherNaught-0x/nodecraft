@@ -1,6 +1,7 @@
 use super::*;
 use base64::Engine;
 use serde::Serialize;
+mod alibaba;
 mod grok;
 mod hunyuan;
 mod ideogram;
@@ -190,6 +191,9 @@ fn choice<'a>(j: &'a ProviderJob, k: &str, d: &'a str, allowed: &[&str]) -> Resu
 pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), ProviderError> {
     let model = Model::read(&j.model)?;
     let l = l.for_model(model);
+    if model.alibaba() {
+        return alibaba::prepare(j, l, model);
+    }
     if model.hunyuan() {
         return hunyuan::prepare(j, l, model);
     }
@@ -262,7 +266,11 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             return Err(invalid("fal unsupported parameter value"));
         }
         let ok = match model {
-            Model::HunyuanText
+            Model::QwenImage
+            | Model::QwenEdit
+            | Model::Wan3Text
+            | Model::Wan3Frames
+            | Model::HunyuanText
             | Model::HunyuanImage
             | Model::HunyuanSketch
             | Model::GrokImage
@@ -335,7 +343,11 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         body.seed = Some(v.as_u64().filter(|n| *n <= u32::MAX as u64).ok_or_else(|| invalid("fal seed must fit u32"))?);
     }
     match model {
-        Model::HunyuanText
+        Model::QwenImage
+        | Model::QwenEdit
+        | Model::Wan3Text
+        | Model::Wan3Frames
+        | Model::HunyuanText
         | Model::HunyuanImage
         | Model::HunyuanSketch
         | Model::GrokImage

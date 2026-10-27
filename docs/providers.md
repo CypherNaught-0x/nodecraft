@@ -1869,3 +1869,61 @@ polling/cancellation, output authority and error mapping. Actual RunHost fixture
 unknown-price consent, imported first/last frames, verified output bytes and a lost paid reply
 with retries enabled. The ignored `ltx30_live_smoke` requires `NODECRAFT_LIVE_LTX=1` and `FAL_KEY`
 and may charge for one six-second 1080p clip; it is never run by CI.
+
+
+## Alibaba through fal
+
+Issue #32 reuses the **fal** connection and its stored key for Alibaba's current cloud
+models. Direct DashScope credentials are not needed. Choose **Qwen-Image 3** on an Image
+card or **Wan 3.0** on a Video card. Native HTTP or an audited custom transport is required;
+the builtin browser transport refuses the no-redirect operation before fetch. All library
+and app code still compiles for WebAssembly.
+
+Contracts and rates were checked on 2026-10-27 against these primary sources:
+
+| Catalog model | API contract | Supported inputs |
+|---|---|---|
+| `fal.qwen-image3` | [Text to image](https://fal.ai/models/alibaba/qwen-image-3/text-to-image/api) | One prompt, 1–5000 characters |
+| `fal.qwen-image3-edit` | [Image editing](https://fal.ai/models/alibaba/qwen-image-3/edit/api) | Prompt and one to three ordered `images`; refer to them as image 1, image 2, image 3 |
+| `fal.wan3` | [Text to video](https://fal.ai/models/alibaba/wan-3.0/text-to-video/api) | Prompt, 1–20,000 characters |
+| `fal.wan3-i2v` | [Frame animation](https://fal.ai/models/alibaba/wan-3.0/image-to-video/api) | Required `first_frame`, optional `last_frame`, optional prompt up to 20,000 characters |
+
+Qwen returns one to six PNG, JPEG or WebP images. Explicit **1K square (1024×1024)** and
+**2K square (2048×2048)** presets cost **$0.04** and **$0.075 per output**, respectively,
+for both [generation](https://fal.ai/models/alibaba/qwen-image-3/text-to-image) and
+[editing](https://fal.ai/models/alibaba/qwen-image-3/edit). The family overview's flat $0.075
+summary omits the model pages' 1K tier. Output count multiplies the chosen tier; no reference
+surcharge is published. Automatic dimensions and arbitrary aspect ratios are not offered.
+Negative prompts are limited to 500 characters. Prompt expansion is explicit and defaults on.
+
+Qwen edit references must be JPEG, PNG or WebP, at most **1 MiB** each and **384–1024 pixels
+on each axis**. PNG must have **no alpha channel**, even if every pixel is opaque. These
+limits are checked from the actual image before a paid request. The remote API allows
+larger inputs; NodeCraft deliberately keeps its bounded host image path. Three encoded
+references fit the edit-only 8 MiB request allowance.
+
+Wan returns one MP4 with an explicit duration of **2–30 seconds**. Published rates for both
+[text](https://fal.ai/models/alibaba/wan-3.0/text-to-video) and
+[frames](https://fal.ai/models/alibaba/wan-3.0/image-to-video) are **$0.05/s at 480p**,
+**$0.10/s at 720p** and **$0.20/s at 1080p**. The default is five seconds at 720p ($0.50).
+Both modes expose aspect ratio, audio (on), prompt expansion (on) and thinking (off).
+Frame inputs use PNG/JPEG/WebP, at most 1 MiB and 1024 pixels per axis. Smart duration and
+the separate reference-to-video mode are not offered.
+
+Both families accept an optional fixed seed from 0 through 2147483647. An unset seed lets
+the service choose; this control does not promise a new random seed for each variation.
+Safety remains enabled. Unknown parameters, inputs, counts and unsupported formats fail
+before HTTP. Quotes are dated estimates; provider billable-unit headers remain evidence
+rather than fabricated dollar invoices.
+
+The shared queue saves accepted handles, supports resume and best-effort cancellation,
+and never replays ambiguous paid creates. Canonical queue roots are `alibaba/qwen-image-3`
+and `alibaba/wan-3.0`. Only fal storage is downloaded, without credentials or redirects;
+actual image codecs or the MP4 container are checked. Qwen batches allow six images with
+16 MiB per file and 96 MiB total. Wan clips allow 256 MiB per file/total, including resumed
+handles. Other fal models keep their existing limits.
+
+Offline fixtures exercise exact request fields, bounds, quotes, consent, typed outputs and
+uncertain billing without API credit. Live generation has not been run. The ignored
+`alibaba32_live_smoke` requires explicit test opt-ins plus `FAL_KEY` and spends $0.04 on one
+1K Qwen image; it never runs in CI.
