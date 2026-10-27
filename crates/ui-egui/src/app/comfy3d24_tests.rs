@@ -111,12 +111,14 @@ fn comfy3d24_native_original_mesh_result_rotates_on_screen() {
         app.install_mesh_renderer(&render);
         let mut h = Harness::builder()
             .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(render))
-            .with_size(Vec2::new(1180., 850.))
+            .with_size(Vec2::new(1180., 1400.))
             .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
         crate::theme::apply(&h.ctx, theme);
         assert!(wait(&mut h, "3D model, 1 triangles, shaded view"));
         assert!(h.state().mesh_gpu);
-        let quiet = egui::pos2(1170., 835.);
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.minimap_toggle", &json!({})).unwrap();
+        let quiet = egui::pos2(1170., 1385.);
         h.hover_at(quiet);
         h.run_steps(3);
         let area = h.get_by_label("3D model, 1 triangles, shaded view").rect();
@@ -137,7 +139,7 @@ fn comfy3d24_native_original_mesh_result_rotates_on_screen() {
         assert_ne!(h.state().mesh_views.get(&CARD).unwrap().orbit, nodecraft_gpu::mesh::Orbit::default());
         assert_eq!(h.state().session.document().canvases().get(&C).unwrap().nodes().get(&CARD).unwrap().pos, Position { x: 150., y: 40. });
         let after = h.render().unwrap();
-        let changed = (area.min.y.max(0.) as u32 + 4..area.max.y.min(850.) as u32 - 4)
+        let changed = (area.min.y.max(0.) as u32 + 4..area.max.y.min(1400.) as u32 - 4)
             .flat_map(|y| (area.min.x.max(0.) as u32 + 4..area.max.x.min(1180.) as u32 - 4).map(move |x| (x, y)))
             .filter(|&(x, y)| before.get_pixel(x, y) != after.get_pixel(x, y))
             .count();
