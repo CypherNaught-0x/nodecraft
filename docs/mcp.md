@@ -172,7 +172,8 @@ server waits until the prompt is answered.
 **Whole-canvas runs (#965):** `run.changed` and `run.workflow` take `{canvas}` and return the
 `run.quote` result for mode `pending` (every card whose result is stale, part-made or missing,
 with the upstream it needs) or `workflow` (every generation and technique card as well), plus
-that `mode`. They start nothing; start the quoted run with `run.start {canvas, mode, accept}`.
+that `mode`. A node with work between two nodes of the run runs too; nodes after a batch the run
+feeds are listed in `waiting` for the next run. They start nothing; start the quoted run with `run.start {canvas, mode, accept}`.
 In the app they are **Run changed** (⌘/Ctrl+Enter) and **Run workflow**.
 
 **Provider prices:** Standalone `nodecraft-cli mcp` supports `command_run` with
