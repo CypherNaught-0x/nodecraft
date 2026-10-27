@@ -817,3 +817,26 @@ fn panel_track_overdue(panel: &mut KeysPanel, id: u64, account: &Account) {
         request.overdue = true;
     }
 }
+
+#[test]
+fn an_unlisted_row_found_to_have_no_key_is_dropped() {
+    let settings = KeySettings { accounts: vec!["fal".into()] };
+    let mut panel = KeysPanel::default();
+    panel.load(&settings);
+    let openai = Account::new("openai").unwrap();
+    // A late removal forgot openai while a newer check was pending; the check says no key.
+    panel.track(1, &openai, Op::Status);
+    panel.prune(&settings);
+    assert_eq!(panel.rows().len(), 2, "kept while its check is awaited");
+    let answer = KeyOutcome {
+        id: 1,
+        account: "openai".into(),
+        operation: nodecraft_engine::secrets::KeyOperation::Status,
+        result: Ok(serde_json::json!({"stored": false})),
+    };
+    let (changes, _) = panel.receive(vec![answer]);
+    assert!(changes.is_empty());
+    panel.set_status(&Account::new("fal").unwrap(), KeyStatus::Missing);
+    panel.prune(&settings);
+    assert_eq!(panel.rows(), &[(Account::new("fal").unwrap(), KeyStatus::Missing)], "a listed account with no key stays");
+}

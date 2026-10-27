@@ -57,7 +57,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   hidden card (#706); shared parameter editing with explicit Mixed
   values and atomic undo across compatible selected nodes (#71), and an API keys panel backed by
   the OS keychain, whose late keychain answers still update the remembered accounts and which
-  refuses a new account before writing when the list is full (#240). Shared model changes show per-target migration results before applying (#157).
+  refuses a new account before writing when the list is full (#240). Shared model changes show
+  per-target migration results before applying (#157).
   A mask editor paints brush masks over an image, expands its canvas and wires an inpaint or
   outpaint generation card from a prompt (#102).
   A Layer Editor card composites its wired images with text and shape layers into one frame;

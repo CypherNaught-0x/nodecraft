@@ -180,17 +180,19 @@ impl KeysPanel {
 
     /// New accounts with a save in flight or of unknown outcome: they keep a place in the
     /// remembered list until answered.
-    fn reserved(&self) -> Vec<Account> {
+    pub(crate) fn reserved(&self) -> Vec<Account> {
         let accounts: BTreeSet<&Account> = self.pending.values().filter(|request| request.op == Op::Set).map(|request| &request.account).collect();
         accounts.into_iter().cloned().collect()
     }
 
     /// Keeps the rows bounded: rows for accounts that are neither remembered nor awaiting an
     /// answer (a failed save, a key the full list couldn't take) are dropped, oldest first, once
-    /// there are more than [`KeySettings::MAX_ACCOUNTS`] rows.
+    /// there are more than [`KeySettings::MAX_ACCOUNTS`] rows. Such a row known to have no key
+    /// (a late removal, then a check) has nothing left to show and goes at once.
     fn prune(&mut self, settings: &KeySettings) {
         let remembered = settings.accounts();
         let busy: BTreeSet<Account> = self.pending.values().map(|request| request.account.clone()).collect();
+        self.rows.retain(|(account, status)| *status != KeyStatus::Missing || remembered.contains(account) || busy.contains(account));
         let mut extra = self.rows.len().saturating_sub(KeySettings::MAX_ACCOUNTS);
         if extra > 0 {
             self.rows.retain(|(account, _)| {

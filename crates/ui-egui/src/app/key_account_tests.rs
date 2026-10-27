@@ -10,12 +10,29 @@ use nodecraft_engine::settings::{KeySettings, Location};
 
 const KEY: &str = "sk-proj-abcdefghij1234";
 
-fn settings_dir() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "nodecraft-ui-keys-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
-    ))
+/// An app saving settings in `dir`, whose keychain is the returned fake.
+fn app_with_keychain(dir: &std::path::Path) -> (NodeCraftApp, Keychain) {
+    let (store, _) = nodecraft_engine::settings::open(Location::Dir(dir.to_path_buf()));
+    let mut app = NodeCraftApp::headless().unwrap();
+    app.store = Some(store);
+    let (keychain_store, keychain) = Keychain::new();
+    let (worker, results) = KeyWorker::spawn(keychain_store).unwrap();
+    let mut services = nodecraft_engine::commands::Services::default();
+    register_key_worker(&mut services, worker).unwrap();
+    app.session =
+        Session::new(nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([2; 16]), "Keys").unwrap()).unwrap().with_services(services);
+    app.key_results = Some(results);
+    (app, keychain)
+}
+
+/// Host frames until the panel has no request left to follow.
+fn settle(app: &mut NodeCraftApp, ctx: &egui::Context, time: f64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while app.keys.is_following() {
+        assert!(std::time::Instant::now() < deadline, "the keychain answer never arrived");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        frame(app, ctx, time);
+    }
 }
 
 /// One host frame at egui time `time`: the keychain's answers are taken and saved.
@@ -31,17 +48,9 @@ fn saved_accounts(dir: &std::path::Path) -> Vec<Account> {
 
 #[test]
 fn a_late_keychain_answer_reaches_saved_settings() {
-    let dir = settings_dir();
-    let (store, _) = nodecraft_engine::settings::open(Location::Dir(dir.clone()));
-    let mut app = NodeCraftApp::headless().unwrap();
-    app.store = Some(store);
-    let (keychain_store, keychain) = Keychain::new();
-    let (worker, results) = KeyWorker::spawn(keychain_store).unwrap();
-    let mut services = nodecraft_engine::commands::Services::default();
-    register_key_worker(&mut services, worker).unwrap();
-    app.session =
-        Session::new(nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([2; 16]), "Keys").unwrap()).unwrap().with_services(services);
-    app.key_results = Some(results);
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().to_path_buf();
+    let (mut app, keychain) = app_with_keychain(&dir);
     app.keys.timeout_s = 1.0;
     let ctx = egui::Context::default();
     let openai = Account::new("openai").unwrap();
@@ -55,12 +64,7 @@ fn a_late_keychain_answer_reaches_saved_settings() {
     assert!(app.key_accounts.accounts().is_empty());
     // The unlock prompt is accepted late.
     keychain.answer(Ok(()));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while app.keys.is_following() {
-        assert!(std::time::Instant::now() < deadline, "the late answer never arrived");
-        std::thread::sleep(std::time::Duration::from_millis(1));
-        frame(&mut app, &ctx, 6.0);
-    }
+    settle(&mut app, &ctx, 6.0);
     assert_eq!(app.key_accounts.accounts(), std::slice::from_ref(&openai));
     app.store.as_mut().unwrap().flush().unwrap();
     assert_eq!(saved_accounts(&dir), std::slice::from_ref(&openai), "the late save survives a restart");
@@ -82,5 +86,37 @@ fn a_late_keychain_answer_reaches_saved_settings() {
     assert!(!notice.contains("abcdefghij"));
     drop(app);
     keychain.closed();
-    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_key_found_by_a_check_never_takes_a_place_held_for_a_save_in_flight() {
+    let temp = tempfile::tempdir().unwrap();
+    let (mut app, keychain) = app_with_keychain(temp.path());
+    let ctx = egui::Context::default();
+    let listed = KeySettings { accounts: (0..KeySettings::MAX_ACCOUNTS - 1).map(|i| format!("p{i}")).collect() };
+    app.key_accounts = listed.clone();
+    app.store.as_mut().unwrap().update(|settings| settings.keys = listed.clone());
+    let (fal, found) = (Account::new("fal").unwrap(), Account::new("openai").unwrap());
+    // fal's save holds the last place while the keychain is busy.
+    assert_eq!(app.keys.save(&mut app.session, &app.key_accounts, "fal", KEY.into()), None);
+    keychain.entered(Call::Set);
+    // A check meanwhile finds a key for an unlisted account: it may not take fal's place.
+    app.save_accounts(vec![AccountChange::Found(found.clone())]);
+    assert!(!app.key_accounts.accounts().contains(&found));
+    let notice = app.keys.notice.clone().unwrap_or_default();
+    assert!(notice.contains("openai") && notice.contains("won't be listed"), "{notice}");
+    // fal's save succeeds and is remembered in the place it held.
+    keychain.answer(Ok(()));
+    settle(&mut app, &ctx, 1.0);
+    assert!(app.key_accounts.accounts().contains(&fal));
+    assert_eq!(app.key_accounts.accounts().len(), KeySettings::MAX_ACCOUNTS);
+    app.store.as_mut().unwrap().flush().unwrap();
+    let saved = saved_accounts(temp.path());
+    assert!(saved.contains(&fal) && !saved.contains(&found));
+    // Several accounts refused at once are all named.
+    app.save_accounts(vec![AccountChange::Found(Account::new("anthropic").unwrap()), AccountChange::Remember(Account::new("replicate").unwrap())]);
+    let notice = app.keys.notice.clone().unwrap_or_default();
+    assert!(notice.contains("anthropic, replicate are stored"), "{notice}");
+    drop(app);
+    keychain.closed();
 }

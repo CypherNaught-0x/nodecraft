@@ -2824,13 +2824,20 @@ impl NodeCraftApp {
         if changes.iter().any(|change| !matches!(change, AccountChange::Found(_))) {
             self.forget_key_adapters();
         }
+        // A key found by a check may not take a place held for a new account still being saved.
+        let reserved = self.keys.reserved();
         let apply = |keys: &mut nodecraft_engine::settings::KeySettings| {
-            let mut refused = None;
+            let mut refused: Vec<String> = Vec::new();
             for change in &changes {
                 match change {
-                    AccountChange::Remember(account) | AccountChange::Found(account) => {
+                    AccountChange::Remember(account) => {
                         if !keys.remember(account) {
-                            refused = Some(account.clone());
+                            refused.push(account.as_str().to_owned());
+                        }
+                    }
+                    AccountChange::Found(account) => {
+                        if !(keys.admits(account, &reserved) && keys.remember(account)) {
+                            refused.push(account.as_str().to_owned());
                         }
                     }
                     AccountChange::Forget(account) => keys.forget(account),
@@ -2850,10 +2857,12 @@ impl NodeCraftApp {
         }
         #[cfg(target_arch = "wasm32")]
         let _ = before;
-        if let Some(account) = refused {
+        if !refused.is_empty() {
+            let (keys, them) = if refused.len() == 1 { ("key", "it") } else { ("keys", "they") };
             self.keys.notice = Some(format!(
-                "The key for {} is stored, but NodeCraft can list at most {} accounts, so it won't be listed after a restart. Remove an account you no longer use.",
-                account.as_str(),
+                "The {keys} for {} {} stored, but NodeCraft can list at most {} accounts, so {them} won't be listed after a restart. Remove an account you no longer use.",
+                refused.join(", "),
+                if refused.len() == 1 { "is" } else { "are" },
                 nodecraft_engine::settings::KeySettings::MAX_ACCOUNTS
             ));
         }

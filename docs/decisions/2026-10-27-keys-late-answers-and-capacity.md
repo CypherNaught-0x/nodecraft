@@ -21,5 +21,6 @@ new account, `KeySettings::admits` counts the new accounts whose save is in flig
 outcome as taken. When the list is full the save is refused before any keychain call. Replacing a
 listed or reserved account's key is always allowed, and a failed save releases its place.
 `KeySettings::remember` returns whether the account is listed, and the host says so if a list changed
-underneath the panel couldn't take it. Rows for accounts that are neither remembered nor awaited are
-kept only while there are at most 64 rows, oldest dropped first.
+underneath the panel couldn't take it. A key found by a check is listed only if it doesn't take a
+place reserved for a save in flight. Unlisted, idle rows are dropped, oldest first, once there are
+more than 64 rows; an unlisted, idle row known to have no key is dropped at once.
