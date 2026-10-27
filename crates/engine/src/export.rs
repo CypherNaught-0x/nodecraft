@@ -14,6 +14,8 @@ pub enum Exported {
     Asset(AssetRef),
     /// An archive of a document and the media it names.
     Bundle(Box<Bundle>),
+    /// Metadata-only timeline input. Its XML is assembled on the export worker.
+    Timeline(Box<crate::interchange_job::Recipe>),
     /// A deck's slides drawn as a PNG or a PDF (`deck.export`, #692).
     Slides(Box<crate::deck_export::SlidesExport>),
 }
@@ -85,6 +87,14 @@ fn write_controlled(
         return Err(io_error(std::io::ErrorKind::AlreadyExists));
     }
     let cancel = control.map(|control| control.cancel.clone()).unwrap_or_default();
+    let timeline;
+    let what = if let Exported::Timeline(recipe) = what {
+        recipe.check(assets)?;
+        timeline = Exported::Bundle(Box::new(recipe.prepare(&mut || cancel.check())?.bundle()?));
+        &timeline
+    } else {
+        what
+    };
     // The verifier creates managed scratch only for uncached indexed bytes. It shares the
     // session's quota while leaving the live context and transfer gate available. The
     // pinned reader owns its scratch through cleanup; the process slot bounds workers.
@@ -110,13 +120,16 @@ fn write_controlled(
     match what {
         Exported::Asset(asset) if lease.is_none() => drop(assets.open_verified(asset, &cancel, &StreamMetrics::default())?),
         Exported::Asset(_) => {}
-        Exported::Bundle(bundle) => bundle.check()?,
+        Exported::Bundle(bundle) => {
+            bundle.check_assets(assets)?;
+        }
         Exported::Slides(_) => {}
+        Exported::Timeline(_) => return Err(Error::new(ErrorKind::Internal, "the timeline export wasn't prepared")),
     }
     // Slides are drawn before the file appears, so a slide that can't be drawn leaves nothing.
     let drawn = match what {
         Exported::Slides(slides) => Some(crate::deck_export::render(assets, slides)?),
-        Exported::Asset(_) | Exported::Bundle(_) => None,
+        Exported::Asset(_) | Exported::Bundle(_) | Exported::Timeline(_) => None,
     };
     if let Some(control) = control {
         control.phase(crate::export_job::ExportPhase::Writing)?;
@@ -132,7 +145,11 @@ fn write_controlled(
                 .and_then(|lease| lease.copy_to(&mut out, &cancel, &StreamMetrics::default())),
             Exported::Asset(asset) => assets.copy_verified_to(asset, &mut out, &cancel, &StreamMetrics::default()),
             Exported::Bundle(bundle) => bundle
-                .write_to(assets, &mut out, &cancel)
+                .write_controlled(assets, &mut out, &cancel, &mut |progress| {
+                    if let Some(control) = control {
+                        control.archive_progress(progress);
+                    }
+                })
                 .and_then(|out| out.stream_position().map_err(|_| Error::new(ErrorKind::Internal, "the archive couldn't be written"))),
             Exported::Slides(_) => {
                 let bytes = drawn.as_ref().map_or(&[][..], |drawn| &drawn.bytes);
@@ -140,6 +157,7 @@ fn write_controlled(
                     .map(|()| bytes.len() as u64)
                     .map_err(|_| Error::new(ErrorKind::Internal, "the file couldn't be written"))
             }
+            Exported::Timeline(_) => Err(Error::new(ErrorKind::Internal, "the timeline export wasn't prepared")),
         };
         if copied.is_ok()
             && let Some(control) = control

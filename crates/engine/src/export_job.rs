@@ -41,6 +41,8 @@ pub struct ExportStatus {
     pub result: Option<ExportResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<ExportProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive: Option<nodecraft_format::interchange::Progress>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -82,6 +84,12 @@ impl Control {
     }
     fn status(&self) -> ExportStatus {
         self.state.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn archive_progress(&self, progress: nodecraft_format::interchange::Progress) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.phase = if progress.verifying { ExportPhase::Checking } else { ExportPhase::Writing };
+        state.archive = Some(progress);
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn finish(&self, outcome: Result<u64, Error>) {
@@ -240,7 +248,7 @@ impl Exports {
             let id = self.next.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "too many exports; reopen the project"))?;
             let lease = Lease::acquire()?;
             let control = Arc::new(Control {
-                state: Mutex::new(ExportStatus { id, phase: ExportPhase::Queued, cancellable: true, result: None, progress: None }),
+                state: Mutex::new(ExportStatus { id, phase: ExportPhase::Queued, cancellable: true, result: None, progress: None, archive: None }),
                 cancel: TransferCancel::default(),
             });
             let snapshot = assets.clone();
@@ -276,7 +284,7 @@ impl Exports {
             let id = self.next.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "too many exports; reopen the project"))?;
             let lease = Lease::acquire()?;
             let control = Arc::new(Control {
-                state: Mutex::new(ExportStatus { id, phase: ExportPhase::Queued, cancellable: true, result: None, progress: None }),
+                state: Mutex::new(ExportStatus { id, phase: ExportPhase::Queued, cancellable: true, result: None, progress: None, archive: None }),
                 cancel: TransferCancel::default(),
             });
             let snapshot = assets.clone();

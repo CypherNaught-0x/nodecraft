@@ -90,6 +90,7 @@ pub mod field_cmds;
 pub mod folder_cmds;
 pub mod generation_catalog;
 pub mod interchange_cmds;
+mod interchange_job;
 pub mod run_ceiling;
 pub mod run_cmds;
 pub mod run_host;

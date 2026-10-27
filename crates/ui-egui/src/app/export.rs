@@ -222,8 +222,8 @@ impl NodeCraftApp {
                 params["path"] = json!(path);
                 // The dialog already asked before replacing a file.
                 params["overwrite"] = json!(true);
-                if command == "history.export" {
-                    self.exports.work = Some(work::Work::file(self, params, path));
+                if matches!(command, "history.export" | "timeline.export_interchange") {
+                    self.exports.work = Some(work::Work::file(self, command, params, path));
                     self.poll_export_work(ctx);
                     return;
                 }

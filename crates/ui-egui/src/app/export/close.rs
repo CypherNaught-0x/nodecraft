@@ -49,7 +49,7 @@ impl NodeCraftApp {
     }
 
     fn cancel_export_and_close(&mut self, ctx: &egui::Context) {
-        let watch = self.results_watch().or_else(|| self.session.export_watch());
+        let watch = self.results_watch().or_else(|| self.exports.work.as_ref().and_then(|work| work.watch())).or_else(|| self.session.export_watch());
         if let Some(watch) = &watch {
             let status = watch.status();
             if status.result.is_none()
