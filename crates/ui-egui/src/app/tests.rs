@@ -169,7 +169,7 @@ use egui_kittest::kittest::Queryable;
 use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx};
 use nodecraft_types::{Choice, Integer, Number, ParamControl, ParamSchema, ParamSpec, PortType, Unsigned, VisibleIf};
 
-struct TestKind(NodeDescriptor);
+pub(super) struct TestKind(pub(super) NodeDescriptor);
 impl NodeKind for TestKind {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.0
@@ -1151,7 +1151,8 @@ fn rerouting_an_input_end_moves_or_disconnects_the_noodle() {
     assert_eq!(h.state().session.document(), &before);
     // Dropping a picked-up end on empty canvas disconnects it.
     let from = port_point(&h, 3, noodle::Side::Input);
-    wire_drag(&mut h, from, Pos2::new(900.0, 600.0));
+    // The lower-right point is inside the minimap, which must preserve the wire.
+    wire_drag(&mut h, from, Pos2::new(40.0, 680.0));
     assert_eq!(links(&h), [link(1, 2)].into_iter().collect());
 }
 
