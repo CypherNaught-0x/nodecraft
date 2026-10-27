@@ -129,15 +129,12 @@ fn instance_info<'a>(
         // authority used by painting and marquee admission, including placeholders.
         let Some(admitted) = crate::app::admission::admit_uncached(session, node) else { return placeholder() };
         let descriptor = admitted.descriptor;
-        let rect = card::world_rect(node, Some(&descriptor), t);
+        let size = card::world_size_with_roles(node, Some(&descriptor), Some(&admitted.roles), t);
+        let rect = Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), size);
         if !valid_rect(rect) {
             return Err(Error::new(ErrorKind::InvalidInput, "node geometry is unavailable"));
         }
-        return Ok((
-            rect,
-            Some(card::world_size(node, Some(&descriptor), t)),
-            if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() },
-        ));
+        return Ok((rect, Some(size), if crate::search::fallback_label(node) { descriptor.label.clone() } else { String::new() }));
     }
     let Ok(descriptor) = kind.instance(node) else {
         return placeholder();

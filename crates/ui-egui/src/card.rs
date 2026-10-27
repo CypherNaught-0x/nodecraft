@@ -167,6 +167,17 @@ pub fn world_rect(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) 
     Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), world_size(node, descriptor, t))
 }
 
+/// Logical metrics for a descriptor and roles already admitted from the same node contract.
+/// This performs no contract lookup. Without roles the descriptor-only conservative budget
+/// is retained, including a possible count parameter row.
+pub fn world_size_with_roles(node: &Node, descriptor: Option<&NodeDescriptor>, roles: Option<&Roles>, t: &Tokens) -> Vec2 {
+    layout::Metrics::with_roles(node, descriptor, roles, t).size(t)
+}
+
+pub fn world_rect_with_roles(node: &Node, descriptor: Option<&NodeDescriptor>, roles: Option<&Roles>, t: &Tokens) -> Rect {
+    Rect::from_min_size(Pos2::new(node.pos.x, node.pos.y), world_size_with_roles(node, descriptor, roles, t))
+}
+
 pub struct CardView<'a> {
     pub descriptor: Option<&'a NodeDescriptor>,
     /// Saved inputs or a checked, warning-free additive migration preview.
@@ -272,7 +283,7 @@ pub fn show(
     // it is never hidden.
     let draw_composer = composer.filter(|_| prompt_overlay || !media_card(descriptor));
     let origin = parent.max_rect().min;
-    let mut rect = world_rect(node, descriptor, t);
+    let mut rect = world_rect_with_roles(node, descriptor, roles, t);
     if let Some(pos) = preview_pos {
         rect = rect.translate(Vec2::new(pos.x - node.pos.x, pos.y - node.pos.y));
     }
@@ -385,7 +396,7 @@ pub fn show(
     editor.hide_fields(visible);
     if view.zoom >= BODY_MIN_ZOOM {
         let mut inner = rect.shrink(t.card_padding);
-        let metrics = layout::Metrics::of(node, descriptor, t);
+        let metrics = layout::Metrics::with_roles(node, descriptor, roles, t);
         let strip = metrics.history;
         if strip > 0.0 {
             // The card reserves `strip`; the strip itself sits on the card's bottom edge.
@@ -477,7 +488,7 @@ pub fn show(
         }
         // Owned either way: with the overlay hidden these parameters are simply not shown, which
         // is the point of a clean board (#321).
-        let own = |name: &str| composer.is_some() && (name == nodecraft_nodes::generation::PROMPT || roles.and_then(|r| r.count.as_deref()) == Some(name));
+        let own = |name: &str| generate::owns_parameter(composer.is_some(), roles, name);
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
         egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height().min(metrics.parameters)).auto_shrink([false, false]).show(

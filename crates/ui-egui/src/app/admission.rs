@@ -177,7 +177,7 @@ impl GeometryCache {
             Err(i) => i,
         };
         let admitted = admit(session, node, None);
-        let rect = card::world_rect(node, admitted.as_ref().map(|a| a.descriptor.as_ref()), t);
+        let rect = card::world_rect_with_roles(node, admitted.as_ref().map(|a| a.descriptor.as_ref()), admitted.as_ref().map(|a| &a.roles), t);
         let placeholder = admitted.is_none();
         let entry_limit = MAX_ENTRIES.min(MAX_BYTES.saturating_sub(128) / std::mem::size_of::<(NodeId, Rect, bool)>());
         if self.entries.len() < entry_limit {

@@ -115,7 +115,11 @@ fn scene(model: &str) -> (Harness<'static, NodeCraftApp>, Runs) {
 /// `failing`: the host takes the run and then reports an error, as a host that lost its
 /// connection after submitting would.
 fn scene_with(model: &str, failing: bool) -> (Harness<'static, NodeCraftApp>, Runs) {
-    let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_IMAGE).unwrap();
+    scene_in_catalog(model, failing, MOCK_IMAGE)
+}
+
+fn scene_in_catalog(model: &str, failing: bool, document: &str) -> (Harness<'static, NodeCraftApp>, Runs) {
+    let catalog = nodecraft_catalog::Catalog::from_toml(document).unwrap();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([83; 16]), "Generate from a card").unwrap();
@@ -153,6 +157,126 @@ fn scene_with(model: &str, failing: bool) -> (Harness<'static, NodeCraftApp>, Ru
     let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
     h.run();
     (h, runs)
+}
+
+#[test]
+fn role_owned_count_does_not_reserve_a_second_parameter_row() {
+    let (h, _) = scene("mock-edit");
+    let app = h.state();
+    let node = app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap();
+    let admitted = admission::admit_uncached(&app.session, node).unwrap();
+    let count = admitted.roles.count.as_deref().unwrap();
+    let descriptor = admitted.descriptor.as_ref();
+    let mut without_duplicate = descriptor.clone();
+    without_duplicate.params.params.retain(|spec| spec.name != count);
+    let expected = card::world_size(node, Some(&without_duplicate), app.theme.tokens());
+    let conservative = card::world_size(node, Some(descriptor), app.theme.tokens());
+    assert!(conservative.y - expected.y >= 40.0, "this contract discriminates the duplicated count row");
+    let painted = app.painted.get(&N).unwrap().size();
+    assert_eq!(painted, expected, "the composer owns the admitted count parameter, so its row must not be reserved again");
+    assert_eq!(payload_rect(&app.session, node, app.theme.tokens()).size(), expected);
+}
+
+#[test]
+fn semantic_count_geometry_agrees_across_admission_navigation_and_import() {
+    // Ownership follows the admitted meaning, never the spelling of a provider parameter.
+    let document = MOCK_IMAGE.replace(r#"name = "n""#, r#"name = "unusual_batch_total""#).replace(r#"param = "n""#, r#"param = "unusual_batch_total""#);
+    let (mut h, runs) = scene_in_catalog("mock-edit", false, &document);
+    let app = h.state_mut();
+    let node = node(app).clone();
+    let admitted = admission::admit_uncached(&app.session, &node).unwrap();
+    assert_eq!(admitted.roles.count.as_deref(), Some("unusual_batch_total"));
+    let t = app.theme.tokens();
+    let expected = card::world_size_with_roles(&node, Some(&admitted.descriptor), Some(&admitted.roles), t);
+    let fallback = card::world_size(&node, Some(&admitted.descriptor), t);
+    assert!(fallback.y - expected.y >= 40.0);
+    assert_eq!(card::world_size_with_roles(&node, Some(&admitted.descriptor), None, t), fallback);
+    assert_eq!(card::world_size_with_roles(&node, Some(&admitted.descriptor), Some(&card::Roles::default()), t), fallback);
+    for value in ["1", "2", "4"] {
+        let mut changed = node.clone();
+        changed.params.insert("unusual_batch_total".into(), Value::Text(value.into()));
+        changed.pos = nodecraft_graph::Position { x: 1_000_000.0, y: -1_000_000.0 };
+        assert_eq!(
+            card::world_size_with_roles(&changed, Some(&admitted.descriptor), Some(&admitted.roles), t),
+            expected,
+            "count edits and positions cannot move logical port anchors"
+        );
+    }
+    drop(admitted);
+    assert_eq!(app.painted.get(&N).unwrap().size(), expected);
+    assert_eq!(payload_rect(&app.session, &node, t).size(), expected);
+    let mut cache = admission::GeometryCache::default();
+    cache.prepare(&mut app.session, C, app.theme);
+    assert_eq!(cache.rect(&app.session, &node, t).size(), expected);
+    app.navigation.geometry.refresh(&mut app.session, C, app.theme);
+    assert_eq!(app.navigation.geometry.rects.get(&N).unwrap().size(), expected);
+    assert_eq!(app.navigation.geometry.sizes.get(&N), Some(&expected), "formatting consumes this same logical size");
+    let position = NodeCraftApp::creation_position(&node, app.session.kinds(), t);
+    assert_eq!(position, nodecraft_graph::Position { x: node.pos.x - expected.x * 0.5, y: node.pos.y - expected.y * 0.5 });
+    assert!(runs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn same_contract_renderer_uses_optional_composer_ownership() {
+    let (app, _) = scene("mock-edit");
+    let node = node(app.state()).clone();
+    let admitted = admission::admit_uncached(&app.state().session, &node).unwrap();
+    let descriptor = admitted.descriptor.into_owned();
+    let roles = admitted.roles;
+    let mut heights = Vec::new();
+    for ownership in [None, Some(roles)] {
+        let node = node.clone();
+        let descriptor = descriptor.clone();
+        let mut editor = card::EditorState::default();
+        let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(
+            move |ui, body: &mut Rect| {
+                let card = card::CardView {
+                    descriptor: Some(&descriptor),
+                    inputs: &descriptor.inputs,
+                    visible: None,
+                    enabled: None,
+                    preview_pos: None,
+                    images: (vec![], 0),
+                    grid: None,
+                    roles: ownership.as_ref(),
+                    listed: None,
+                    lists: None,
+                    prompt_wired: false,
+                    elements: &BTreeMap::new(),
+                    mentions: &[],
+                    mention_blocked: None,
+                    partial: None,
+                    local_text: None,
+                    video: None,
+                    audio: None,
+                    mesh: None,
+                    outdated: false,
+                    prompt_overlay: true,
+                    variations: Default::default(),
+                };
+                *body = card::show(ui, &CanvasView::default(), &node, card, &mut editor, false, &theme::DARK).unwrap().response.rect;
+            },
+            Rect::NOTHING,
+        );
+        h.run();
+        heights.push(h.state().height());
+    }
+    assert!(heights[0] - heights[1] >= 40.0, "the same contract without ownership conservatively retains the raw count row");
+}
+
+#[test]
+#[ignore = "manual native GPU capture; requires NODECRAFT_ROLES907_RENDER_ROOT"]
+fn render_admitted_count_geometry() {
+    let root = std::path::PathBuf::from(std::env::var_os("NODECRAFT_ROLES907_RENDER_ROOT").unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    for kind in [ThemeKind::Dark, ThemeKind::Light] {
+        let (mut h, runs) = scene("mock-edit");
+        h.state_mut().theme = kind;
+        theme::apply(&h.ctx, kind);
+        h.run();
+        h.render().unwrap().save(root.join(format!("{kind:?}.png"))).unwrap();
+        assert!(runs.lock().unwrap().is_empty(), "capturing layout never submits a run");
+    }
 }
 
 fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {

@@ -72,9 +72,17 @@ fn passive_toolbar(ctx: &egui::Context) {
 impl NodeCraftApp {
     /// Measure a fully resolved import payload; no config defaults are copied into the UI.
     pub(super) fn creation_position(node: &Node, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> nodecraft_graph::Position {
-        let descriptor = kinds.get(&node.kind).ok().and_then(|kind| kind.resolve_instance(node).ok());
+        let kind = kinds.get(&node.kind).ok();
+        let descriptor = kind.and_then(|kind| kind.resolve_instance(node).ok());
         let descriptor = descriptor.as_deref().filter(|d| d.inputs == node.inputs && d.outputs == node.outputs);
-        let size = card::world_size(node, descriptor, t);
+        // This registry-only import callback has no admitted record to reuse. Resolve its
+        // generation contract once; all session-backed paths carry their existing roles.
+        let roles = if descriptor.is_some() && nodecraft_nodes::generation::is_generation(&node.kind) {
+            kind.and_then(|kind| kind.instance_contract(node).ok()).map(|contract| card::Roles::of(&contract))
+        } else {
+            None
+        };
+        let size = card::world_size_with_roles(node, descriptor, roles.as_ref(), t);
         nodecraft_graph::Position { x: node.pos.x - size.x * 0.5, y: node.pos.y - size.y * 0.5 }
     }
     /// Preview the command's pure construction, then publish once at the measured center.

@@ -23,6 +23,10 @@ fn port_minimum(count: usize, radius: f32, t: &Tokens) -> f32 {
 
 impl Metrics {
     pub fn of(node: &Node, descriptor: Option<&NodeDescriptor>, t: &Tokens) -> Self {
+        Self::with_roles(node, descriptor, None, t)
+    }
+
+    pub fn with_roles(node: &Node, descriptor: Option<&NodeDescriptor>, roles: Option<&Roles>, t: &Tokens) -> Self {
         let composer = descriptor.is_some_and(|d| generate::has_composer(node, d));
         // Reserve declared conditional controls too: changing a value must not move ports/wires.
         // Unlike the old per-field multiplier, each control pays only for the rows it uses.
@@ -31,7 +35,7 @@ impl Metrics {
                 .params
                 .iter()
                 .filter(|spec| {
-                    !(composer && spec.name == nodecraft_nodes::generation::PROMPT
+                    !(generate::owns_parameter(composer, roles, &spec.name)
                         || node.kind == nodecraft_nodes::comfy_workflow::ID && spec.name == nodecraft_nodes::comfy_workflow::MODEL)
                 })
                 .map(|spec| {
