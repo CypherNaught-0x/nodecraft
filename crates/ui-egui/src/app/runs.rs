@@ -802,6 +802,9 @@ impl Runs {
     pub(super) fn is_busy(&self) -> bool {
         self.host.is_busy() || self.host.is_estimating() || !self.asked.is_empty()
     }
+    pub(super) fn is_preparing_results(&self) -> bool {
+        self.host.is_preparing_results()
+    }
 
     pub(super) fn is_running(&self, canvas: CanvasId, node: NodeId) -> bool {
         self.running.contains(&(canvas, node))
