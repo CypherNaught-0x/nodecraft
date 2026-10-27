@@ -76,6 +76,10 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `fal.qwen-image3-edit` | [Documentation](https://fal.ai/models/alibaba/qwen-image-3/edit/api) | 2026-10-27 |
 | `fal.recraft41` | [Documentation](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image/api) | 2026-10-27 |
 | `fal.recraft41-vector` | [Documentation](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector/api) | 2026-10-27 |
+| `fal.rodin25` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/api) | 2026-10-27 |
+| `fal.rodin25-images` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/api) | 2026-10-27 |
+| `fal.rodin25-fast` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/fast/api) | 2026-10-27 |
+| `fal.rodin25-fast-images` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/fast/api) | 2026-10-27 |
 | `fal.trellis2` | [Documentation](https://fal.ai/models/fal-ai/trellis-2) | 2026-10-27 |
 | `fal.wan22` | [Documentation](https://fal.ai/models/fal-ai/wan/v2.2-a14b/text-to-video) | 2026-10-27 |
 | `fal.wan22-i2v` | [Documentation](https://fal.ai/models/fal-ai/wan/v2.2-a14b/image-to-video) | 2026-10-27 |
@@ -137,6 +141,9 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `seedance.2-0-mini` | [Documentation](https://docs.byteplus.com/en/docs/byteplus_las/video_gen_enhanced) | 2026-10-27 |
 | `seedance.2-5` | [Documentation](https://docs.byteplus.com/en/docs/byteplus_las/video_gen_enhanced) | 2026-10-27 |
 | `seedream.4_5` | [Documentation](https://docs.byteplus.com/en/docs/modelark/seedream-4-0-5-0?redirect=1) | 2026-10-27 |
+| `stability.audio3` | [Documentation](https://docs.stability.ai/api-reference/stable-audio/text-to-audio) | 2026-10-27 |
+| `stability.fast-3d` | [Documentation](https://docs.stability.ai/api-reference/3d/stable-fast-3d) | 2026-10-27 |
+| `stability.image-core` | [Documentation](https://docs.stability.ai/api-reference/generate/stable-image-core) | 2026-10-27 |
 | `tripo.image-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.multiview-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.text-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |

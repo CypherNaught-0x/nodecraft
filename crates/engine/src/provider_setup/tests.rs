@@ -118,6 +118,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "kling",
         "elevenlabs",
         "deepgram",
+        "stability",
         "comfyui:gpu-box:8188",
     ] {
         keys.set(&Account::new(account).unwrap(), &Secret::new("sk-test-not-a-real-key").unwrap()).unwrap();
@@ -153,6 +154,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "kling",
         "elevenlabs",
         "deepgram",
+        "stability",
         "bfl",
         "comfyui",
     ]

@@ -22,6 +22,8 @@ mod recraft_tests;
 mod request;
 mod response;
 #[cfg(test)]
+mod rodin_tests;
+#[cfg(test)]
 mod style_tests;
 #[cfg(test)]
 mod tests;
@@ -44,6 +46,11 @@ pub const QWEN_IMAGE: &str = "alibaba/qwen-image-3/text-to-image";
 pub const QWEN_EDIT: &str = "alibaba/qwen-image-3/edit";
 pub const WAN3_VIDEO: &str = "alibaba/wan-3.0/text-to-video";
 pub const WAN3_I2V: &str = "alibaba/wan-3.0/image-to-video";
+/// Hyper3D Rodin V2.5 through fal (#41).
+pub const RODIN_TEXT: &str = "fal-ai/hyper3d/rodin/v2.5/text-to-3d";
+pub const RODIN_IMAGES: &str = "fal-ai/hyper3d/rodin/v2.5";
+pub const RODIN_FAST_TEXT: &str = "fal-ai/hyper3d/rodin/v2.5/text-to-3d/fast";
+pub const RODIN_FAST_IMAGES: &str = "fal-ai/hyper3d/rodin/v2.5/fast";
 /// Hunyuan3D V3 through the same fal queue (#42).
 pub const HUNYUAN_TEXT: &str = "fal-ai/hunyuan3d-v3/text-to-3d";
 pub const HUNYUAN_IMAGE: &str = "fal-ai/hunyuan3d-v3/image-to-3d";
@@ -137,6 +144,10 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 enum Model {
     RecraftImage,
     RecraftVector,
+    RodinText,
+    RodinImages,
+    RodinFastText,
+    RodinFastImages,
     QwenImage,
     QwenEdit,
     Wan3Text,
@@ -174,6 +185,10 @@ impl Model {
         match s {
             RECRAFT_IMAGE => Ok(Self::RecraftImage),
             RECRAFT_VECTOR => Ok(Self::RecraftVector),
+            RODIN_TEXT => Ok(Self::RodinText),
+            RODIN_IMAGES => Ok(Self::RodinImages),
+            RODIN_FAST_TEXT => Ok(Self::RodinFastText),
+            RODIN_FAST_IMAGES => Ok(Self::RodinFastImages),
             QWEN_IMAGE => Ok(Self::QwenImage),
             QWEN_EDIT => Ok(Self::QwenEdit),
             WAN3_VIDEO => Ok(Self::Wan3Text),
@@ -208,6 +223,10 @@ impl Model {
         match self {
             Self::RecraftImage => RECRAFT_IMAGE,
             Self::RecraftVector => RECRAFT_VECTOR,
+            Self::RodinText => RODIN_TEXT,
+            Self::RodinImages => RODIN_IMAGES,
+            Self::RodinFastText => RODIN_FAST_TEXT,
+            Self::RodinFastImages => RODIN_FAST_IMAGES,
             Self::QwenImage => QWEN_IMAGE,
             Self::QwenEdit => QWEN_EDIT,
             Self::Wan3Text => WAN3_VIDEO,
@@ -254,6 +273,9 @@ impl Model {
                 | Self::LtxFrames
         )
     }
+    fn rodin(self) -> bool {
+        matches!(self, Self::RodinText | Self::RodinImages | Self::RodinFastText | Self::RodinFastImages)
+    }
     fn alibaba(self) -> bool {
         matches!(self, Self::QwenImage | Self::QwenEdit | Self::Wan3Text | Self::Wan3Frames)
     }
@@ -269,6 +291,7 @@ impl Model {
     fn root(self) -> &'static str {
         match self {
             Self::RecraftImage | Self::RecraftVector => "fal-ai/recraft",
+            Self::RodinText | Self::RodinImages | Self::RodinFastText | Self::RodinFastImages => "fal-ai/hyper3d",
             Self::QwenImage | Self::QwenEdit => "alibaba/qwen-image-3",
             Self::Wan3Text | Self::Wan3Frames => "alibaba/wan-3.0",
             Self::HunyuanText | Self::HunyuanImage | Self::HunyuanSketch => "fal-ai/hunyuan3d-v3",

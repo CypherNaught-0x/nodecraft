@@ -69,6 +69,8 @@ pub mod secrets;
 pub mod seedance;
 #[cfg(feature = "seedream")]
 pub mod seedream;
+#[cfg(feature = "stability")]
+pub mod stability;
 mod task;
 #[cfg(feature = "tripo")]
 pub mod tripo;

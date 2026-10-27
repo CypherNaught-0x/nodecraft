@@ -102,4 +102,25 @@ mod tests {
         assert!(stitch.mode(&[video, video, video]).is_some());
         assert!(stitch.mode(&[audio]).is_none());
     }
+
+    #[test]
+    fn templates952_stitch_plans_collection_items_in_order_and_keeps_scalar_feeds() {
+        use crate::{InputValue, JobSpec, PlanCtx};
+        use nodecraft_types::{AssetRef, Blake3, NodeId, Value};
+        let registry = crate::Registry::builtins().unwrap();
+        let kind = registry.get(STITCH).unwrap();
+        let node = kind.instantiate_instance(NodeId::from_bytes([95; 16]), Default::default(), &Default::default()).unwrap();
+        let value = |n| Value::Media(AssetRef { hash: Blake3::from_bytes([n; 32]), mime: "video/webm".parse().unwrap(), meta: Default::default() });
+        let input = |value, many| InputValue { port: "videos".into(), port_type: PortType { modality: Modality::Video, many }, value, origins: vec![] };
+        for (inputs, expected) in [
+            (vec![input(Value::List(vec![value(1), value(2)]), true)], vec![value(1), value(2)]),
+            (vec![input(value(1), false), input(value(2), false)], vec![value(1), value(2)]),
+            (vec![input(Value::List(vec![value(2), value(1)]), true), input(value(3), false)], vec![value(2), value(1), value(3)]),
+        ] {
+            let jobs = kind.plan(&PlanCtx { node: &node, inputs: &inputs, targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).unwrap();
+            let [JobSpec::Action { inputs, .. }] = jobs.as_slice() else { panic!("one local stitch job") };
+            assert_eq!(inputs, &expected);
+        }
+        assert!(kind.plan(&PlanCtx { node: &node, inputs: &[input(Value::List(vec![]), true)], targets: &nodecraft_types::EMPTY_TARGET_SELECTION }).is_err());
+    }
 }

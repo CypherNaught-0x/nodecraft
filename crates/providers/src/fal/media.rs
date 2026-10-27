@@ -312,7 +312,14 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             wav(b)?;
             Ok("audio/wav")
         }
-        Model::HunyuanText | Model::HunyuanImage | Model::HunyuanSketch | Model::Mesh => {
+        Model::RodinText
+        | Model::RodinImages
+        | Model::RodinFastText
+        | Model::RodinFastImages
+        | Model::HunyuanText
+        | Model::HunyuanImage
+        | Model::HunyuanSketch
+        | Model::Mesh => {
             glb(b, l)?;
             Ok("model/gltf-binary")
         }

@@ -64,6 +64,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         | Model::GrokEdit
         | Model::Photon
         | Model::Ideogram => "images",
+        Model::RodinText | Model::RodinImages | Model::RodinFastText | Model::RodinFastImages => "model_mesh",
         Model::Train => "diffusers_lora_file",
         Model::Wan3Text
         | Model::Wan3Frames
@@ -84,7 +85,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
     if matches!(r.model, Model::RayText | Model::RayFrames) && root.get("exr_file").is_some_and(|v| v.get() != "null") {
         return Err(malformed("Luma returned an unrequested EXR sidecar"));
     }
-    for k in ["images", "video", "audio", "model_glb", "image", "diffusers_lora_file"] {
+    for k in ["images", "video", "audio", "model_glb", "model_mesh", "image", "diffusers_lora_file"] {
         if k != name && root.get(k).is_some() {
             return Err(malformed("fal conflicting output envelopes"));
         }
@@ -119,7 +120,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         }
         // A clip's generic `application/octet-stream` declares nothing; its bytes are still
         // checked as MP4 after download.
-        let mime = f.optional_text("content_type")?.filter(|m| !(r.model.video() && m == "application/octet-stream"));
+        let mime = f.optional_text("content_type")?.filter(|m| !((r.model.video() || r.model.rodin()) && m == "application/octet-stream"));
         if mime.as_ref().is_some_and(|s| s.len() > 128) {
             return Err(malformed("fal MIME too long"));
         }
@@ -165,7 +166,14 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
             | Model::LtxText
             | Model::LtxFrames => &["video/mp4"],
             Model::Audio => &["audio/wav"],
-            Model::HunyuanText | Model::HunyuanImage | Model::HunyuanSketch | Model::Mesh => &["model/gltf-binary"],
+            Model::RodinText
+            | Model::RodinImages
+            | Model::RodinFastText
+            | Model::RodinFastImages
+            | Model::HunyuanText
+            | Model::HunyuanImage
+            | Model::HunyuanSketch
+            | Model::Mesh => &["model/gltf-binary"],
             Model::Train => return Err(malformed("fal trained weights are never downloaded")),
         };
         if mime.as_deref().is_some_and(|s| !allowed.contains(&s)) {

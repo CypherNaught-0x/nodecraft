@@ -28,9 +28,11 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("azure-openai.toml", include_str!("../../../assets/catalog/azure-openai.toml")),
     ("anthropic.toml", include_str!("../../../assets/catalog/anthropic.toml")),
     ("deepgram.toml", include_str!("../../../assets/catalog/deepgram.toml")),
+    ("stability.toml", include_str!("../../../assets/catalog/stability.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("luma.toml", include_str!("../../../assets/catalog/luma.toml")),
     ("hunyuan.toml", include_str!("../../../assets/catalog/hunyuan.toml")),
+    ("rodin.toml", include_str!("../../../assets/catalog/rodin.toml")),
     ("alibaba.toml", include_str!("../../../assets/catalog/alibaba.toml")),
     ("grok.toml", include_str!("../../../assets/catalog/grok.toml")),
     ("recraft.toml", include_str!("../../../assets/catalog/recraft.toml")),
@@ -416,3 +418,5 @@ mod alibaba_tests;
 
 #[cfg(test)]
 mod recraft_tests;
+#[cfg(test)]
+mod rodin_tests;

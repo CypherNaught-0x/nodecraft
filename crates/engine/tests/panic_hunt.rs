@@ -348,7 +348,15 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
-    if id.starts_with("export.local_") {
+    if matches!(id, "template.refresh" | "template.retrieve") {
+        session
+            .register_host_service(nodecraft_engine::templates::fetch::SERVICE, |request| {
+                let _: nodecraft_engine::templates::fetch::Request = serde_json::from_value(request.clone()).unwrap();
+                Ok(json!({"pending":1}))
+            })
+            .unwrap();
+    }
+    if id.starts_with("export.local_") || id.starts_with("export.results_") {
         // A real destination, so the hunt reaches name rendering and the write path rather than
         // stopping at the host check. It is in the system temporary folder, never the repository.
         session.swap_resource(Some(nodecraft_engine::local_export::ExportHost::authorize(&export_destination()).unwrap()));
@@ -559,6 +567,13 @@ fn template(id: &str) -> (Session, Value) {
             json!({"scope":"user","id":skill,"text":text,"origin":"a file"})
         }
         "library.list" => json!({}),
+        "template.list" => json!({}),
+        "template.add" => json!({"id":"generate-text"}),
+        "template.refresh" => json!({}),
+        "template.retrieve" => {
+            let entry = nodecraft_engine::templates::entries().unwrap().into_iter().find(|entry| entry.id == "generate-text").unwrap();
+            json!({"id":entry.id,"version":entry.version,"blake3":entry.blake3})
+        }
         "library.add" => json!({"canvas":technique_canvas}),
         "library.remove" => json!({"technique":technique,"version":1}),
         "library.place" => {
@@ -614,6 +629,10 @@ fn template(id: &str) -> (Session, Value) {
             "template":"{title}-{index}",
             "on_collision":"numbered",
             "format":{"mode":"original"}
+        }),
+        "export.results_plan" | "export.results_start" => json!({
+            "canvas":canvas(),"nodes":[node_id(1)],"history":"all",
+            "destination":export_destination().display().to_string(),"template":"{title}-{generation}-{index}"
         }),
         "perf.start" | "perf.clear" | "perf.report" => json!({}),
         // Stop needs a running capture; the hunt checks the refusal never panics.
@@ -1060,4 +1079,21 @@ fn reconciled_legacy() -> nodecraft_exec::cost::UsageLog {
     let token: String = log.ownership_group("a", nodecraft_types::Currency::USD).unwrap().token.iter().map(|b| format!("{b:02x}")).collect();
     nodecraft_engine::ownership_cmds::reconcile(&mut log, &json!({"session":"a","currency":"USD","token":token,"holder":"named"}), 0).unwrap();
     log
+}
+
+#[test]
+fn template_fetch_corpus_reaches_shared_commands_without_project_mutation() {
+    for id in ["template.refresh", "template.retrieve"] {
+        let (mut session, params) = template(id);
+        let before = session.document().clone();
+        let revision = session.revision();
+        let result = session.dispatch(id, &params).unwrap();
+        if id == "template.refresh" {
+            assert_eq!(result, json!({"pending":1}));
+        } else {
+            assert_eq!(result, json!({"available":true}));
+        }
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), revision);
+    }
 }

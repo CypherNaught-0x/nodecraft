@@ -35,6 +35,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Runway** | `runway` (feature `runway`) | API key (`Authorization: Bearer`, keychain account `runway`) | Gen-4.5 text or first frame → video; Gen-4 Turbo first frame → video | Standard MP4, 2–10 seconds. 0.12/0.05 USD per second before tax. No submission deduplication; uncertain creates are never replayed. See below. |
 | **Kling** | `kling` (feature `kling`) | API key (`Authorization: Bearer`), or access key and secret key stored as `ak:sk`, which sign a 30-minute HS256 token per request | Kling 2.5 Turbo, 2.1 Master and 1.6 text → video and start frame (+ end frame) → video; Kling 1.6 up to four references → video; Kling Image 2.1 text → image | Billed in prepaid Kling units, so no quote before the run. One create per job carrying an `external_task_id` from the idempotency key; never replayed automatically; no remote cancellation. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
+| **Stability AI** | `stability` (feature `stability`) | Bearer API key, keychain account `stability` | Core text → image, Audio 3 Large text → audio, Fast 3D image → GLB | Direct first-party APIs; dated fixed-call estimates. Audio polls/resumes one accepted id; no submission deduplication or confirmed cancellation. Desktop/CLI only. See [details](#stability-ai-direct). |
 
 ## Retired APIs
 
@@ -1871,6 +1872,69 @@ with retries enabled. The ignored `ltx30_live_smoke` requires `NODECRAFT_LIVE_LT
 and may charge for one six-second 1080p clip; it is never run by CI.
 
 
+## Stability AI direct
+
+The optional `stability` feature adds three first-party models on the existing cards:
+**Stable Image Core** (`stability.image-core`), **Stable Audio 3 Large** (`stability.audio3`)
+and **Stable Fast 3D** (`stability.fast-3d`). Add a Stability API key under the `stability`
+account in API keys. **Test** uses the free authenticated balance endpoint, never a generation.
+The adapter is available in the desktop app and CLI; the browser host refuses setup because its
+built-in transport cannot guarantee authenticated no-redirect requests. No live API or browser
+CORS behavior was tested for this change.
+
+These are distinct from the SD3.5 Large and Audio 3 Small models offered through
+[fal](https://fal.ai/models/fal-ai/stable-diffusion-v35-large) and
+[fal Audio 3 Small](https://fal.ai/models/fal-ai/stable-audio-3/small/music/text-to-audio).
+The aggregator inventory did not establish current official 3D coverage for the chosen model.
+Using the direct APIs gives all three chosen families one key and one origin; it does not add
+all Stability editors, older models or every available variant.
+
+Rates were checked on 2026-10-27 against the
+[current pricing reference](https://docs.stability.ai/pricing),
+[Core operation](https://docs.stability.ai/api-reference/generate/stable-image-core),
+[Audio 3 operation](https://docs.stability.ai/api-reference/stable-audio/text-to-audio),
+[Fast 3D operation](https://docs.stability.ai/api-reference/3d/stable-fast-3d) and
+[current OpenAPI](https://docs.stability.ai/openapi.json): one credit is 0.01 USD, with
+Core 3 credits, Audio 3 8 credits and Fast 3D 10 credits per successful generation. The
+[legacy pricing page](https://platform.stability.ai/pricing) still lists Audio 3 at 26 credits;
+the catalog follows the migrated reference, whose pricing, operation and OpenAPI agree on 8.
+These dated estimates are separate from an observed invoice and should be checked again when
+updating the adapter. No claim is made that the two pricing pages agree.
+
+Core sends one prompt (up to 10,000 characters), optional negative prompt, one of nine aspect
+ratios and PNG/JPEG/WebP output, with a seed from 0 to 4,294,967,294 (0 means random).
+The API returns a 1.5 MP image. The host admits up to 16 MiB and 4096 pixels per side, probes
+and decodes its actual format, and refuses a filtered finish reason. Fast 3D takes one wired
+JPEG/PNG/WebP image. Its host limits are 4 MiB and 64–2048 pixels per side, stricter than the
+API's total-pixel limit. Texture resolution, foreground ratio, remeshing and an optional positive
+vertex limit are exposed. It validates and keeps the original self-contained GLB up to 64 MiB;
+embedded texture colors are sampled by the existing viewer, and export retains original bytes.
+
+Audio 3 sends an explicit 1–380-second duration, 4–8 steps, prompt guidance and optional seed,
+requesting stereo 44.1 kHz WAV. Its 128 MiB result allowance covers long WAVs without the image
+adapter's smaller quota. A versioned handle persists the accepted generation id and duration.
+Polling resumes that id on the same authenticated API; pending responses must identify the same
+job, and WAV chunks, PCM/IEEE-float sample formats (including standard extensible headers),
+frame alignment, byte rate and actual data duration are checked before history is written. Results are
+available from Stability for 24 hours, according to its reference.
+
+No redirect or remote-supplied URL is followed. All three modes use normal cost consent and
+budgets. Parsed documented validation, auth, credit, moderation and rate-limit refusals release
+the reservation; unparsed replies, lost creates and server errors remain possibly billed and
+are not automatically submitted again. Transient audio poll failures retry the original id.
+Stability documents no cancellation endpoint or create idempotency guarantee, so cancellation
+cannot promise that a generation stops or is refunded. Keys and provider error bodies never
+enter the project or user-facing diagnostics.
+
+Offline contract and RunHost tests cover all three media families, cost consent, exact dated
+prices, refusal billing, lost replies and audio resume. The ignored `live_stability_one_chosen_family`
+smoke requires explicit spending authorization, `NODECRAFT_LIVE_STABILITY=1` and
+`STABILITY_API_KEY`. `NODECRAFT_LIVE_STABILITY_MODEL` selects `stable-image-core` (default,
+0.03 USD), `stable-audio-3` (0.08 USD, one second) or `stable-fast-3d` (0.10 USD, a public-safe
+fixture image). The adapter itself never reads these environment variables. Live tests are not
+run by CI. The API key check is documented in the official
+[v1 user reference](https://prod-nlb.stability.ai/docs).
+
 ## Alibaba through fal
 
 Issue #32 reuses the **fal** connection and its stored key for Alibaba's current cloud
@@ -1976,3 +2040,54 @@ Offline authored fixtures cover SVG admission, limits, actual previews, exact-by
 round trips and billing uncertainty. No paid generation was used. The ignored
 `recraft35_live_smoke` requires `NODECRAFT_LIVE_RECRAFT=1`, explicit cost acknowledgement
 and `FAL_KEY`; it spends $0.035 on one raster image and never runs in CI.
+
+## Rodin through fal
+
+Issue #41 reuses the stored **fal** connection for Hyper3D Rodin V2.5. Choose a **Rodin 2.5**
+model on a **Generate 3D** card. Direct Hyper3D credentials are not needed. These live aliases
+were checked on 2026-10-27 against their public contracts and model-specific prices:
+
+| Catalog model | Contract | Fixed output and estimated call price |
+|---|---|---|
+| `fal.rodin25` | [Standard text](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/api) | Gen-2.5-High, PBR, Auto mesh, GLB; $0.40 |
+| `fal.rodin25-images` | [Standard images](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/api) | Gen-2.5-High, PBR, Auto mesh, GLB; $0.40 |
+| `fal.rodin25-fast` | [Fast text](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/fast/api) | Gen-2.5-Extreme-Low, Shaded, Auto mesh, GLB; $0.10 |
+| `fal.rodin25-fast-images` | [Fast images](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/fast/api) | Gen-2.5-Extreme-Low, Shaded, Auto mesh, GLB; $0.10 |
+
+Published rates are [standard $0.40](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5)
+and [fast $0.10](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/fast) per generation.
+The standard default High tier uses 500K triangles with Auto mesh; the fast default uses
+20K triangles. The $0.80 HighPack surcharge and other tiers, custom mesh counts, formats,
+texture modes and bounding-box controls are not offered. Requests explicitly pin the tier,
+material, Auto mesh and GLB, omit add-ons, keep safety enabled, and disable advanced switches.
+The catalog price is an estimate; a billable-unit header is not a fabricated dollar invoice.
+
+Text models require a prompt of **1–1024 characters**. Image models take **one to five ordered
+`images`** and an optional prompt up to 1024 characters. An absent/empty prompt lets Rodin
+auto-describe the images. References must be actual PNG, JPEG or WebP, at most **1 MiB** and
+**1024 pixels per axis**. Image models optionally preserve original alpha. Both families accept
+an optional fixed numeric seed from **0 through 65535**; unset lets the provider choose, and a
+fixed seed may repeat across variations. Complete escaped JSON plus every base64 data URI is
+admitted before image codecs or encoding allocations; image requests have an 8 MiB allowance.
+Unsupported fields or input roles fail before paid HTTP.
+
+The queue uses the canonical `fal-ai/hyper3d/requests/<id>` status/result/cancel family.
+The [queue contract](https://fal.ai/docs/documentation/model-apis/inference/queue) uses only
+owner and app, even when generated endpoint schemas print a full alias in their path examples.
+Accepted handles persist for resume, best-effort cancellation keeps its actual disposition,
+and uncertain paid creates never replay.
+
+Only **`model_mesh`** is downloaded. `model_meshes`, `textures` and preview URLs are sidecars
+and are not fetched. Files must be on fal storage, without credentials or redirects. Rodin's
+generic application/octet-stream metadata is admitted without trusting it as a mesh type;
+actual bytes must pass packed-GLB validation, and the normal mesh decoder/viewer bounds remain.
+The original GLB is retained for export. Embedded base-colour textures appear through the
+existing viewer; external resource URIs remain refused. Standard examples exceed 30 MiB,
+so these four aliases allow **256 MiB per result/total**, including saved handles. Other fal
+models keep their original limits.
+
+Execution requires native HTTP or an audited custom transport. Libraries and the app still
+build for WebAssembly, but builtin browser HTTP refuses the no-redirect operation before
+fetch. No live paid Rodin generation has been run. The ignored `rodin41_live_smoke` requires
+`NODECRAFT_LIVE_RODIN=1`, `NODECRAFT_LIVE_RODIN_ACKNOWLEDGE_COST=1` and `FAL_KEY`; it would spend
+$0.10 on one fast text-to-GLB call. Ordinary tests use authored offline media only.

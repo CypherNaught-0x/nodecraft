@@ -8,6 +8,7 @@ mod ideogram;
 mod ltx;
 mod luma;
 mod recraft;
+mod rodin;
 #[derive(Serialize)]
 struct Size {
     width: u64,
@@ -195,6 +196,9 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     if model.recraft() {
         return recraft::prepare(j, l, model);
     }
+    if model.rodin() {
+        return rodin::prepare(j, l, model);
+    }
     if model.alibaba() {
         return alibaba::prepare(j, l, model);
     }
@@ -272,6 +276,10 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         let ok = match model {
             Model::RecraftImage
             | Model::RecraftVector
+            Model::RodinText
+            | Model::RodinImages
+            | Model::RodinFastText
+            | Model::RodinFastImages
             | Model::QwenImage
             | Model::QwenEdit
             | Model::Wan3Text
@@ -351,6 +359,10 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     match model {
         Model::RecraftImage
         | Model::RecraftVector
+        Model::RodinText
+        | Model::RodinImages
+        | Model::RodinFastText
+        | Model::RodinFastImages
         | Model::QwenImage
         | Model::QwenEdit
         | Model::Wan3Text

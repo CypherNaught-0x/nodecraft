@@ -123,6 +123,12 @@ width stays fixed and long rows truncate. Use default clears the stored override
 same undoable parameter edit, including when the old value is no longer listed. Unknown lists
 keep the editable text control and Refresh guidance. Reset is disabled without a stored override.
 
+Router connection menus keep their upstream output shape: a list stays a list through a chain
+of Routers, and several incoming values offer only consumers that accept a collection. A Router
+without a resolved source explains what to connect before offering downstream node kinds. Model
+choices and wired-mode controls follow the resolved sources too; inserting a Router does not
+make an incompatible model available. These menus do not fetch additional parameter options.
+
 ## Level of detail and performance
 
 - **Frame budget (#65).** `cargo test -p nodecraft-ui-egui --release perf -- --ignored --nocapture`
@@ -476,6 +482,22 @@ reserved left slot; Format selection reserves the next slot when present, with t
 below both controls. Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
 [layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
+
+## Saving results
+
+Generated media previews and their card menus offer **Save as…** and **Save to folder…**
+(#967). A gallery thumbnail targets that exact output and flattened batch item; a card with
+several outputs offers a choice. An open menu keeps the historical result that was clicked,
+even when a new run finishes. A transient live-action preview cannot be saved as a finished
+result. With no saved media, the disabled actions explain how to obtain one.
+
+The selected card's hover toolbar offers Save result; generation cards retain Download.
+These actions share the existing `history.export` background file writer and its native dialog,
+which suggests the stored media's extension. Saving one file writes no siblings or sidecar and
+does not edit the document or history selection. Save to folder passes the same exact historical
+selector to the workflow-result preview, manifest and worker (#966). Its existing secure folder
+writer currently supports macOS and Linux; other platforms explain the limitation before a
+folder can be chosen. Individual Save as remains available on desktop Windows.
 
 ## Control icons
 

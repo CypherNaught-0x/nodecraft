@@ -3375,6 +3375,7 @@ dependencies = [
  "nodecraft-provider-testkit",
  "nodecraft-providers",
  "nodecraft-sync",
+ "nodecraft-template-data",
  "nodecraft-types",
  "rustix 1.1.5",
  "serde",
@@ -3546,6 +3547,11 @@ dependencies = [
  "serde_json",
  "yrs",
 ]
+
+[[package]]
+name = "nodecraft-template-data"
+version = "0.1.0"
+source = "git+https://github.com/CypherNaught-0x/nodecraft-templates?rev=c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9#c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9"
 
 [[package]]
 name = "nodecraft-testkit"

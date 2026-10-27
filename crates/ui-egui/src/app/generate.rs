@@ -496,8 +496,10 @@ impl NodeCraftApp {
         let mut improve = false;
         // The shown result's media, for Download (#581).
         let shown_result = node.history.iter().find(|generation| Some(generation.id) == node.active);
-        let downloads = shown_result.map(|generation| crate::history::export_targets(node, generation)).unwrap_or_default();
-        let mut download = None;
+        let result = shown_result.map(|generation| crate::history::export_targets(node, generation)).transpose();
+        let downloads = result.as_ref().ok().and_then(Option::as_deref).unwrap_or_default();
+        let mut download_all = false;
+        let mut save_intent = None;
         egui::Area::new(egui::Id::new(("generation_toolbar", id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
             ui.add_enabled_ui(interactive, |ui| {
                 egui::Frame::new()
@@ -588,24 +590,26 @@ impl NodeCraftApp {
                             if nodecraft_engine::split::image_of(node).is_some() {
                                 expand = ui.button("Expand").on_hover_text("Show this image larger").clicked();
                             }
-                            match downloads.as_slice() {
-                                [] => {}
+                            match downloads {
+                                [] => {
+                                    if let Err(error) = &result {
+                                        ui.add_enabled(false, egui::Button::new("Download")).on_disabled_hover_text(&error.message);
+                                    }
+                                }
                                 [(_, port, item, name)] => {
                                     if ui.button("Download").on_hover_text("Save this result to a file").clicked() {
-                                        download = Some(Download::One(port.clone(), *item, name.clone()));
+                                        save_intent = shown_result.map(|generation| crate::result_save::Target {
+                                            generation: generation.id, port: port.clone(), item: *item, label: name.clone(), name: name.clone(),
+                                        }.file());
                                     }
                                 }
                                 many => {
                                     ui.menu_button("Download", |ui| {
-                                        for (label, port, item, name) in many {
-                                            if ui.button(label).clicked() {
-                                                download = Some(Download::One(port.clone(), *item, name.clone()));
-                                                ui.close();
-                                            }
-                                        }
+                                        let targets = crate::result_save::active(node);
+                                        save_intent = crate::result_save::menu(ui, &targets, t);
                                         ui.separator();
                                         if ui.button(format!("All {} to a folder…", many.len())).clicked() {
-                                            download = Some(Download::All);
+                                            download_all = true;
                                             ui.close();
                                         }
                                     });
@@ -618,14 +622,12 @@ impl NodeCraftApp {
         if expand && interactive {
             self.viewer = Some(id);
         }
-        if let (Some(download), Some(generation), true) = (download, node.active, interactive) {
-            match download {
-                Download::One(port, item, name) => self.start_export(self.canvas, id, generation, port, item, &name),
-                Download::All => {
-                    let targets = downloads.into_iter().map(|(_, port, item, name)| (port, item, name)).collect();
-                    self.start_export_all(self.canvas, id, generation, targets);
-                }
-            }
+        if let Some(intent) = save_intent.filter(|_| interactive) {
+            intents.push((id, Intent::History(intent)));
+        }
+        if let (true, Some(generation), true) = (download_all, node.active, interactive) {
+            let targets = downloads.iter().map(|(_, port, item, name)| (port.clone(), *item, name.clone())).collect();
+            self.start_export_all(self.canvas, id, generation, targets);
         }
         if improve && interactive {
             self.improve_prompt(id);
@@ -691,14 +693,6 @@ impl NodeCraftApp {
     }
 }
 
-/// What the toolbar's Download asked to save.
-enum Download {
-    /// One output (port, item) under its suggested file name.
-    One(Option<String>, Option<usize>, String),
-    /// Every media output of the shown result, into a folder.
-    All,
-}
-
 /// A multi-mode model's mode, as the toolbar names it.
 enum Mode {
     /// The mode the wired inputs choose, humanised; `references` when some mode reads media.
@@ -730,7 +724,10 @@ fn mode_of(session: &Session, canvas: &Canvas, node: &Node) -> Option<Mode> {
     if contract.modes.len() < 2 {
         return None;
     }
-    let counts = admission::wire_counts(canvas, &contract, node);
+    let counts = match admission::wire_counts(canvas, session.kinds(), &contract, node) {
+        Ok(counts) => counts,
+        Err(error) => return Some(Mode::NoFit(error.message)),
+    };
     let media = |port: &str| node.inputs.iter().any(|input| input.name == port && input.port_type.modality != nodecraft_types::Modality::Text);
     let references = contract.modes.iter().any(|mode| mode.inputs.iter().any(|input| media(&input.port)));
     match contract.resolve_mode(&counts, false) {

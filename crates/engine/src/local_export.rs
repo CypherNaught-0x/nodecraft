@@ -46,7 +46,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
-mod secure;
+pub(crate) mod secure;
 
 #[cfg(unix)]
 #[derive(Clone)]
@@ -152,7 +152,7 @@ impl ExportHost {
     }
 
     #[cfg(unix)]
-    fn pinned_destination<'a>(&'a self, destination: &'a Path) -> Result<secure::Destination<'a>, Error> {
+    pub(crate) fn pinned_destination<'a>(&'a self, destination: &'a Path) -> Result<secure::Destination<'a>, Error> {
         for root in &self.pinned {
             let relative = destination.strip_prefix(&root.original).or_else(|_| destination.strip_prefix(&root.resolved));
             if let Ok(relative) = relative {
@@ -162,7 +162,7 @@ impl ExportHost {
         Err(unsupported(reasons::UNSUPPORTED_TARGET))
     }
 
-    fn destination(&self, destination: &str, for_write: bool) -> Result<PathBuf, Error> {
+    pub(crate) fn destination(&self, destination: &str, for_write: bool) -> Result<PathBuf, Error> {
         #[cfg(unix)]
         let _ = for_write;
         if destination.is_empty() || destination.len() > MAX_DESTINATION_BYTES {
@@ -203,6 +203,19 @@ impl ExportHost {
             }
         }
     }
+}
+
+/// Scope a trusted host's ephemeral folder grant to one explicit export command. The grant
+/// never becomes document data; cancellation of a dialog/preview need not leave authority
+/// installed. An accepted background job retains its own typed grant until cleanup finishes.
+pub fn dispatch_with_host(session: &mut crate::Session, host: &ExportHost, command: &str, parameters: &Value) -> Result<Value, Error> {
+    if !matches!(command, "export.local_plan" | "export.local_run" | "export.results_plan" | "export.results_start") {
+        return Err(unsupported("folder authority is only available to explicit export commands"));
+    }
+    let previous = session.swap_resource(Some(host.clone()));
+    let result = session.dispatch(command, parameters);
+    session.swap_resource(previous);
+    result
 }
 
 fn unsupported(reason: &'static str) -> Error {
