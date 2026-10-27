@@ -6,7 +6,9 @@ GLB/OBJ triangles and PNG poster in tests are also authored locally, without ven
 `mesh-object-info.json` is an authored **documentation projection**, not a captured server
 response. It describes only the specific core interfaces used by the original single-view
 Hunyuan3D preset. The saver describes the MESH variant; newer documentation also describes
-FILE3D inputs. Public references (read 2026-10-27):
+FILE3D inputs. A second test projection exercises the `MESH,FILE3D` saver union through
+the existing connection checker. Neither projection is an observed live schema.
+Public references (read 2026-10-27):
 
 - https://docs.comfy.org/tutorials/3d/hunyuan3D-2
 - https://docs.comfy.org/built-in-nodes/ImageOnlyCheckpointLoader

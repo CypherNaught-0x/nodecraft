@@ -95,7 +95,13 @@ fn provider(wire: Arc<Wire>) -> ComfyProvider {
 #[test]
 fn comfy3d24_core_graphs_check_before_upload_and_durable_handles_keep_exact_meshes() {
     for model in ["hunyuan3d-2.0", "hunyuan3d-2.1"] {
-        let wire = Arc::new(Wire::new());
+        let mut wire = Wire::new();
+        if model == "hunyuan3d-2.1" {
+            // Current public docs also describe FILE3D on the saver. The existing Comfy
+            // connection checker supports the union; do not narrow it to the legacy MESH.
+            wire.info["SaveGLB"]["input"]["required"]["mesh"] = json!(["MESH,FILE3D"]);
+        }
+        let wire = Arc::new(wire);
         let job = job(model);
         let Submission::Queued(handle) = block_on(provider(wire.clone()).submit(&job)).unwrap() else { panic!("queued") };
         let restored = serde_json::from_slice::<JobHandle>(&serde_json::to_vec(&handle).unwrap()).unwrap();
