@@ -203,3 +203,6 @@ mod templates952_author;
 
 #[path = "templates952.rs"]
 mod templates952;
+
+#[path = "svg_template35.rs"]
+mod svg_template35;
