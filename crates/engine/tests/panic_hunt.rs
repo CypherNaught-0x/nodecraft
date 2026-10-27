@@ -468,11 +468,20 @@ fn template(id: &str) -> (Session, Value) {
             session.dispatch("technique.place", &place).unwrap();
         }
     }
-    if id == "comfy.workflow.import" {
+    if matches!(id, "comfy.workflow.import" | "comfy.workflow.mapping" | "comfy.workflow.mapping_set") {
         // The server's nodes as comfy.nodes.refresh installs them, so the import succeeds.
         let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {}]}}, "output": ["IMAGE"]}, "SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
         let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
         nodecraft_engine::comfy_workflow_cmds::finish(&mut session, 1, Ok(std::sync::Arc::new(catalog).into()));
+    }
+    if matches!(id, "comfy.workflow.mapping" | "comfy.workflow.mapping_set") {
+        session
+            .dispatch(
+                "comfy.workflow.import",
+                &json!({"canvas":canvas(),"id":node_id(0x69),"pos":{"x":0,"y":0},"workflow":
+            r#"{"1":{"class_type":"CLIPTextEncode","inputs":{"text":"a fox"}},"2":{"class_type":"SaveImage","inputs":{"images":["1",0]}}}"#}),
+            )
+            .unwrap();
     }
     let plugin_old =
         if id.starts_with("plugins.") && !matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register(&mut session)) } else { None };
@@ -567,6 +576,14 @@ fn template(id: &str) -> (Session, Value) {
         "comfy.server.use" => json!({"canvas":canvas(),"id":node_id(7),"server":"studio"}),
         "comfy.workflow.import" => json!({"canvas":canvas(),"id":node_id(0x69),"pos":{"x":0,"y":0},"workflow":
             r#"{"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a fox"}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}"#}),
+        "comfy.workflow.mapping" => json!({"canvas":canvas(),"id":node_id(0x69)}),
+        "comfy.workflow.mapping_set" => {
+            let fields = session.dispatch("comfy.workflow.mapping", &json!({"canvas":canvas(),"id":node_id(0x69)})).unwrap();
+            json!({"canvas":canvas(),"id":node_id(0x69),"binding":fields["binding"],
+                "inputs":[{"node":"1","input":"text","name":"Prompt renamed"}],
+                "outputs":[{"node":"2","label":"Image"}],
+                "output_names":[{"modality":"image","name":"images"}],"disconnect":false,"clear_history":false})
+        }
         "providers.settings_get" => json!({}),
         "providers.settings_set" => json!({"comfyui_url":"http://127.0.0.1:8188","litellm_url":"https://proxy.example"}),
         // The updates service isn't registered here: the check must be refused cleanly.

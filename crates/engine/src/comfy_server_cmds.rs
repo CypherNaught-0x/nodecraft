@@ -21,10 +21,22 @@ use std::collections::BTreeMap;
 /// Each server's last check, by name.
 #[derive(Default)]
 struct ServerReports(BTreeMap<String, Report>);
+/// At most one additional catalog: a named card can edit against the server last checked,
+/// without retaining every server's potentially large node list.
+struct LastCheckedCatalog {
+    name: String,
+    nodes: crate::comfy_workflow_cmds::NodeList,
+}
+pub(crate) fn catalog<'a>(c: &'a Context<'_>, name: &str) -> Option<&'a crate::comfy_workflow_cmds::NodeCatalog> {
+    c.resources.get::<LastCheckedCatalog>().filter(|kept| kept.name == name).map(|kept| kept.nodes.as_ref())
+}
 
 /// Records what fetch `id` of `server` brought back. The default server's fetch installs its node
 /// list too (as `comfy_workflow_cmds::finish`); every server's partner evidence prices its runs.
 pub fn finish(session: &mut Session, id: u64, server: &str, is_default: bool, fetched: Result<Fetched, Error>) -> Report {
+    if let Ok(fetched) = &fetched {
+        session.swap_resource(Some(LastCheckedCatalog { name: server.to_owned(), nodes: fetched.nodes.clone() }));
+    }
     if let Ok(fetched) = &fetched
         && let Some(instance) = crate::provider_setup::comfy_instance(server)
     {
@@ -54,6 +66,9 @@ pub fn report<'a>(session: &'a Session, server: &str) -> Option<&'a Report> {
 /// Forgets what was read from `server` after it changed or was removed; the node list too when it
 /// was the default's.
 pub fn forget(session: &mut Session, server: &str, was_default: bool) {
+    if session.resource::<LastCheckedCatalog>().is_some_and(|kept| kept.name == server) {
+        session.swap_resource::<LastCheckedCatalog>(None);
+    }
     if let Some(instance) = crate::provider_setup::comfy_instance(server) {
         crate::comfy_partner_quotes::forget(session, Some(instance));
     }

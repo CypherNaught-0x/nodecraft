@@ -196,7 +196,7 @@ catalog's models name (the checkpoints the ComfyUI server in settings has, #529)
 bridge to the desktop app it works, while the standalone CLI reports it unavailable.
 
 **ComfyUI workflows:** `comfy.workflow.import` places a ComfyUI workflow file (API or UI
-format, passed as text) as one card: its file inputs become ports, its prompts and seeds (or the
+format, passed as text) as one card: its file inputs become ports, its prompts, seeds, steps, CFG and dimensions (or the
 `node.input` names in `params`) become parameters, and its save nodes become results (#9). It
 reads the workflow against the ComfyUI server's node list, so call `comfy.nodes.refresh` first
 (`{pending: id}`) and check `comfy.nodes.status`, whose `last.server` also gives the server's
@@ -207,6 +207,25 @@ server's last check under `servers`; only the default's node list is used for im
 the default). As with option lists, only a host with a fetch
 service reads the list: the bridge to the desktop app does, the standalone CLI reports it
 unavailable.
+
+**Workflow fields:** `comfy.workflow.mapping {canvas,id}` lists the available fields,
+current selection and an opaque `binding`. Read this card's server nodes first. The default
+catalog and the last checked named server's catalog are kept; checking another named server
+may require checking this one again. No network request is made by the mapping commands.
+`comfy.workflow.mapping_set {canvas,id,binding,inputs:[{node,input,name}],outputs:[{node,label}]}`
+selects and orders those fields without reimporting. Input `name` is a media port identifier or
+a parameter's displayed label. Optional `output_names:[{modality,name}]` renames the media list
+ports; omitting it preserves current names, while `[]` restores defaults. Results of a given
+media type share one list port, in the selected output-node order. Media port identifiers use
+lowercase letters, digits and underscores in nonempty segments separated by periods (at most
+128 bytes total).
+
+Apply preserves the current parameter values, including values on controls being hidden.
+Renamed ports keep their wires. Hiding a wired port requires `disconnect:true`; changing the
+set of result media types with recorded history requires `clear_history:true`. Both changes
+are undoable. Editing a queued or running card is refused. A changed workflow, mapping or
+server invalidates `binding`; unrelated edits and parameter changes can continue. The desktop
+card menu exposes the same commands through **Edit workflow fields…** (#947).
 
 **Updates:** `app.check_updates` asks the desktop app to read NodeCraft's releases from GitHub
 and returns `{pending: id}`; `app.update_status` then reports this build's version and whether a

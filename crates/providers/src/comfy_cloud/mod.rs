@@ -167,6 +167,7 @@ impl ComfyCloud {
     }
 
     async fn create(&self, job: &ProviderJob, context: Option<&crate::SubmitContext>) -> Result<Submission, ProviderError> {
+        let handle_data = crate::comfyui::output_selection::save(serde_json::json!({"v":1}), job)?;
         let catalog = self.catalog().await?;
         let mut prepared = request::prepare(job, &catalog, self.limits)?;
         // Uploads are free and deduplicated by content: a failure here proves no job exists.
@@ -193,7 +194,7 @@ impl ComfyCloud {
         }
         let reply = self.send_with(submit, self.limits.response_bytes, true, context).await?;
         let created = response::job(&reply.body)?;
-        Ok(Submission::Queued(JobHandle { remote_id: created.id, data: serde_json::json!({"v": 1}) }))
+        Ok(Submission::Queued(JobHandle { remote_id: created.id, data: handle_data }))
     }
 
     async fn progress(&self, handle: &JobHandle) -> Result<JobProgress, ProviderError> {
@@ -201,6 +202,7 @@ impl ComfyCloud {
         if handle.data.get("v").and_then(serde_json::Value::as_u64) != Some(1) {
             return Err(invalid("Comfy Cloud handle record refused"));
         }
+        let order = crate::comfyui::output_selection::read(&handle.data)?;
         let request = self.bearer(HttpRequest::get(format!("{ORIGIN}/api/v2/jobs/{}", handle.remote_id))).timeout_ms(30_000);
         let reply = self.send(request, self.limits.response_bytes, false).await?;
         let job = response::job(&reply.body)?;
@@ -210,7 +212,10 @@ impl ComfyCloud {
         match job.state()? {
             response::State::Progress(progress) => Ok(progress),
             response::State::Failed(error) => Ok(JobProgress::Failed(error)),
-            response::State::Succeeded(outputs) => Ok(JobProgress::Done(Completed::new(self.download(&outputs).await?))),
+            response::State::Succeeded(mut outputs) => {
+                crate::comfyui::output_selection::arrange(&mut outputs, order.as_deref(), |o| o.node_id.as_str());
+                Ok(JobProgress::Done(Completed::new(self.download(&outputs).await?)))
+            }
         }
     }
 

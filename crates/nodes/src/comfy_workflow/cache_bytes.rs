@@ -52,6 +52,7 @@ pub(super) fn retained(text: &str, mapping: &Mapping, descriptor: &NodeDescripto
         bytes.saturating_add(output.node.capacity()).saturating_add(output.label.capacity())
     });
     bytes = mapping.partners.iter().fold(bytes.saturating_add(slots(&mapping.partners)), |bytes, class| bytes.saturating_add(class.capacity()));
+    bytes = mapping.output_names.iter().fold(bytes.saturating_add(slots(&mapping.output_names)), |bytes, port| bytes.saturating_add(port.name.capacity()));
     bytes = bytes
         .saturating_add(descriptor.id.capacity())
         .saturating_add(descriptor.label.capacity())

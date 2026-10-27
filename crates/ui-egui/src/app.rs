@@ -343,6 +343,7 @@ pub(crate) mod admission;
 mod app_mode;
 mod browser_providers;
 mod budget_caps;
+mod comfy_mapping;
 #[cfg(not(target_arch = "wasm32"))]
 mod comfy_nodes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -603,6 +604,8 @@ pub struct NodeCraftApp {
     /// Reads the ComfyUI server's nodes `comfy.nodes.refresh` asks for (#9).
     #[cfg(not(target_arch = "wasm32"))]
     comfy_nodes: Option<comfy_nodes::ComfyNodesFetcher>,
+    /// View-only draft of an existing workflow card's field selection (#947).
+    comfy_mapping: Option<comfy_mapping::Editor>,
     /// The ComfyUI server's address and its check (#9).
     #[cfg(not(target_arch = "wasm32"))]
     comfy_server: comfy_server::ComfyServerPanel,
@@ -1201,6 +1204,7 @@ impl NodeCraftApp {
             option_fetch: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_nodes: None,
+            comfy_mapping: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_server: comfy_server::ComfyServerPanel::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1650,6 +1654,7 @@ impl NodeCraftApp {
         let mut layers_request = None;
         let mut present_request = None;
         let mut reader_request = None;
+        let mut comfy_mapping_request = None;
         let mut timeline_request = None;
         // Element card menus offer saving to, or updating from, the library: know what it holds.
         self.element_library_listed();
@@ -2038,6 +2043,10 @@ impl NodeCraftApp {
                             if let Some(server) = comfy_server::card_menu(ui, node, self.session.generation_catalog().ok(), &comfy_choices) {
                                 comfy_server_request = Some((node.id, server));
                             }
+                            if node.kind == nodecraft_nodes::comfy_workflow::ID && ui.button("Edit workflow fields…").clicked() {
+                                comfy_mapping_request = Some(node.id);
+                                ui.close();
+                            }
                             if node.kind == nodecraft_nodes::document::SOURCE && ui.button("Read PDF…").clicked() {
                                 reader_request = Some(node.id);
                                 ui.close();
@@ -2362,6 +2371,9 @@ impl NodeCraftApp {
             self.notice = Some(error.message);
         }
         // Cards were painted before this frame's selection changes; show them without waiting for input.
+        if let Some(node) = comfy_mapping_request {
+            self.open_comfy_mapping(node);
+        }
         if self.selection != selected_before {
             ui.ctx().request_repaint();
         }
@@ -2596,6 +2608,7 @@ impl NodeCraftApp {
         self.browser_providers_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
         self.comfy_server_panel(ui.ctx(), t);
+        self.comfy_mapping_window(ui.ctx(), t);
         self.budgets_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);
         self.share_panel(ui.ctx(), t);

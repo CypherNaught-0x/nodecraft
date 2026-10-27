@@ -222,6 +222,8 @@ struct Awaiting {
 /// See the module docs.
 pub struct RunHost {
     inbox: Arc<Mutex<Inbox>>,
+    /// A bounded snapshot for commands that change a card's output contract (#947).
+    mapping_running: Arc<Mutex<BTreeSet<(CanvasId, NodeId)>>>,
     runs: Vec<Active>,
     runtime: Arc<dyn Runtime>,
     budget: JobBudget,
@@ -283,11 +285,26 @@ impl Shared {
     }
 }
 
+/// Mapping edits cannot change the ports of an accepted/running job. Unrelated active cards
+/// remain editable; only the brief not-yet-started inbox window guards its entire canvas.
+pub(crate) struct MappingEditGuard {
+    inbox: Arc<Mutex<Inbox>>,
+    running: Arc<Mutex<BTreeSet<(CanvasId, NodeId)>>>,
+}
+impl MappingEditGuard {
+    pub(crate) fn busy(&self, canvas: CanvasId, node: NodeId) -> bool {
+        let waiting = self.inbox.lock().map_or(true, |inbox| inbox.waiting.iter().any(|r| r.canvas_id() == canvas));
+        let running = self.running.lock().map_or(true, |running| running.contains(&(canvas, node)));
+        waiting || running
+    }
+}
+
 impl RunHost {
     /// A host running jobs on `runtime`, charging paid jobs to `budget`.
     pub fn new(runtime: Arc<dyn Runtime>, budget: JobBudget) -> Self {
         Self {
             inbox: Arc::default(),
+            mapping_running: Arc::default(),
             runs: Vec::new(),
             runtime,
             budget,
@@ -652,6 +669,8 @@ impl RunHost {
     /// Installs the budget resources quotes read, from the shared usage log; again after another
     /// project is opened, so its own spending is what its cap is checked against.
     pub fn install(&self, session: &mut Session) {
+        *lock(&self.mapping_running) = self.running();
+        session.swap_resource(Some(MappingEditGuard { inbox: self.inbox.clone(), running: self.mapping_running.clone() }));
         refresh(session, &self.budget);
     }
 
@@ -789,6 +808,7 @@ impl RunHost {
             self.checked_at = now;
             notices.extend(self.save(false));
         }
+        *lock(&self.mapping_running) = self.running();
         notices
     }
 
