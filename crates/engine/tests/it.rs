@@ -70,6 +70,7 @@ mod held_restart614;
 mod held_results369;
 #[path = "ideogram34.rs"]
 mod ideogram34;
+
 #[path = "image_modes500.rs"]
 mod image_modes500;
 #[path = "impact114.rs"]
@@ -168,6 +169,8 @@ mod timeline109;
 mod timeline574;
 #[path = "token_rates595.rs"]
 mod token_rates595;
+#[path = "topaz37.rs"]
+mod topaz37;
 #[path = "trained_styles167.rs"]
 mod trained_styles167;
 #[path = "video_generation559.rs"]

@@ -320,11 +320,7 @@ pub(super) fn record_alone(
 ) -> Result<(), String> {
     let produced = generate::produced(routes, completed).map_err(|e| e.message)?;
     for (hash, bytes) in produced.assets {
-        match session.import_asset(&bytes) {
-            Ok(imported) if imported == hash => {}
-            Ok(_) => return Err("a generated asset changed while it was imported".into()),
-            Err(error) => return Err(error.message),
-        }
+        super::assets::import(session, hash, bytes)?;
     }
     let generation = recipe.assemble(produced.outputs, completed.usage.billable_units, completed.usage.execution_ms)?;
     // A variation that isn't the last goes on its own card on a canvas that lays them out so (#808).

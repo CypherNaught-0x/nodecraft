@@ -391,3 +391,6 @@ mod alibaba32_tests;
 
 #[cfg(test)]
 mod rodin41_tests;
+
+#[cfg(test)]
+mod topaz37_tests;

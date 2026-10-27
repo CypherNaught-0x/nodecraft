@@ -57,6 +57,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
+mod assets;
 mod estimates;
 mod held;
 mod partial;
@@ -1439,10 +1440,7 @@ fn convert(
     let produced = generate::produced(routes, completed).map_err(|e| e.message)?;
     run.admit_outputs(job, &produced.outputs)?;
     for (hash, bytes) in produced.assets {
-        let imported = session.import_asset(&bytes).map_err(|e| e.message)?;
-        if imported != hash {
-            return Err("a generated asset changed while it was imported".into());
-        }
+        assets::import(session, hash, bytes)?;
     }
     Ok(produced.outputs)
 }

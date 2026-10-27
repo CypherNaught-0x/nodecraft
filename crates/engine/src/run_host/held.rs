@@ -405,11 +405,7 @@ pub(super) fn place(session: &mut Session, result: &HeldResult) -> Result<(), St
         nodes.push(node);
     }
     for (hash, bytes) in produced.assets {
-        match session.import_asset(&bytes) {
-            Ok(imported) if imported == hash => {}
-            Ok(_) => return Err("an asset changed while it was imported".into()),
-            Err(error) => return Err(error.message),
-        }
+        super::assets::import(session, hash, bytes)?;
     }
     let params = json!({"canvas": result.canvas, "nodes": nodes});
     session.dispatch("canvas.paste", &params).map(|_| ()).map_err(|e| e.message)
