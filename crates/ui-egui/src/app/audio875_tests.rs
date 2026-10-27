@@ -157,3 +157,34 @@ fn the_card_goes_from_the_preview_to_the_same_jobs_result() {
     assert_eq!(runs.finished_take(C, N, nodecraft_types::Blake3::from_bytes([5; 32])), None, "an earlier sound starts again");
     assert!(h.query_by_label(crate::audio::UNCONFIGURED).is_some(), "the card shows the result's sound");
 }
+
+#[test]
+fn save967_streaming_preview_never_saves_the_previous_finished_take() {
+    let _serial = super::export_tests::EXPORT_TESTS.lock().unwrap();
+    let mut h = scene(400);
+    generate(&mut h);
+    frames_until(&mut h, |h| node(h.state()).history.len() == 1);
+    let prior = node(h.state()).active;
+    assert!(crate::audio::audio_of(node(h.state())).is_some());
+    generate(&mut h);
+    frames_until(&mut h, |h| preview(h.state()).is_some());
+    assert_eq!(node(h.state()).active, prior, "the rerun is still streaming over the old take");
+    h.get_by_label(crate::audio::UNCONFIGURED).click_secondary();
+    h.run();
+    assert!(h.get_by_label("Save as…").accesskit_node().is_disabled(), "the painted streaming take has no finished asset yet");
+    assert!(h.get_by_label("Save to folder…").accesskit_node().is_disabled());
+    h.key_press(egui::Key::Escape);
+    h.run();
+    let app = h.state();
+    let rect = app.view.rect_to_screen(app.viewport.min, *app.painted.get(&N).unwrap());
+    let pos = rect.left_top() + Vec2::splat(3.0);
+    h.hover_at(pos);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
+        h.step();
+    }
+    h.run();
+    assert!(!h.get_by_label("Save as…").accesskit_node().is_disabled(), "the card body can still save its explicitly selected finished history");
+    let take = preview(h.state()).unwrap().take;
+    h.state_mut().runs.as_mut().unwrap().cancel(take.job).unwrap();
+}

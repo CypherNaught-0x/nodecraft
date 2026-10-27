@@ -483,6 +483,22 @@ below both controls. Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
 [layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
 
+## Saving results
+
+Generated media previews and their card menus offer **Save as…** and **Save to folder…**
+(#967). A gallery thumbnail targets that exact output and flattened batch item; a card with
+several outputs offers a choice. An open menu keeps the historical result that was clicked,
+even when a new run finishes. A transient live-action preview cannot be saved as a finished
+result. With no saved media, the disabled actions explain how to obtain one.
+
+The selected card's hover toolbar offers Save result; generation cards retain Download.
+These actions share the existing `history.export` background file writer and its native dialog,
+which suggests the stored media's extension. Saving one file writes no siblings or sidecar and
+does not edit the document or history selection. Save to folder passes the same exact historical
+selector to the workflow-result preview, manifest and worker (#966). Its existing secure folder
+writer currently supports macOS and Linux; other platforms explain the limitation before a
+folder can be chosen. Individual Save as remains available on desktop Windows.
+
 ## Control icons
 
 Controls use Tabler outline SVGs through `icons::Icon`, prepared by the pinned Craft SVG
