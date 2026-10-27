@@ -25,9 +25,10 @@ whose kind isn't installed and has no current result counts as work, so it block
 Any node with work that sits between two nodes of the run runs too, in order. Without that, a
 fresh action between two generators would feed the later one a result made from the earlier
 one's old output. A batch collects existing results only (#92), so everything after a batch
-that the run feeds waits: the quote lists it in `waiting`, the dialog says so, and the next
-Run changed picks it up once the results exist (it is then stale or missing). This keeps a
-canvas with a batch between generators runnable instead of blocked. The whole canvas is planned
+that the run feeds waits: the quote lists it in `waiting` (with `waiting_total`), the dialog says so, and the next
+Run changed picks it up once the results exist (it is then stale or missing). A technique node that waits
+takes its inlined nodes with it, and nothing joins the run only to feed a node that waits. This
+keeps a canvas with a batch between generators runnable instead of blocked. The whole canvas is planned
 together. One blocked card therefore
 blocks the run, and the dialog names it, the way ComfyUI refuses to queue a graph with an
 invalid node. Cached results (#91) are reused as in any other run.
@@ -50,7 +51,11 @@ panels, and to the recovery question at startup, whose answer may replace the do
 generates that card. When everything is up to date, the shortcut opens no dialog and says
 "Nothing to run". A card still running from an earlier run is not started again: the dialog
 names how many are still running and its start button stays off until they finish and the run
-is quoted again, so nothing is generated and charged twice.
+is quoted again, so nothing is generated and charged twice. Only the listed steps are
+checked; a quote with more steps than are listed can't be started from the dialog anyway. This
+guard is in the app only: the engine doesn't know which nodes are running, so `run.start` from
+MCP, the CLI or the control channel doesn't refuse a node that is already running, in any mode.
+That is a separate follow-up.
 
 Free actions keep recomputing by themselves without a quote (#88); that is covered by
 `app::live::tests::an_edit_recomputes_its_action_and_one_undo_takes_both_back`.
