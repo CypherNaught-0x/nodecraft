@@ -85,7 +85,7 @@ impl NodeCraftApp {
         let mut captures = Vec::new();
         captures.try_reserve_exact(exact_ids.len()).map_err(|_| allocation())?;
         for id in &exact_ids {
-            captures.push(snapshot.capture_wiring(live, *id)?);
+            captures.push(snapshot.capture_wiring(live, self.session.kinds(), *id)?);
         }
         let kind = kind.ok_or_else(|| invalid("selected model node is unavailable"))?;
         let picker = ModelPicker::for_targets(snapshot.run_catalog().catalog(), |model| {

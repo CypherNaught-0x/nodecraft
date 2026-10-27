@@ -162,3 +162,67 @@ fn unavailable_saved_model_card_uses_explicit_recovery_picker_not_raw_parameter_
     h.run();
     assert_eq!(h.state().session.document(), &before);
 }
+
+#[test]
+fn router949_model_picker_matches_all_direct_candidate_states_and_headless_checks() {
+    const MODELS: [&str; 3] = ["fal.grok-image2-edit", "fal.qwen-image3-edit", "fal.grok-image2"];
+    for theme in [ThemeKind::Dark, ThemeKind::Light] {
+        let mut expected = None;
+        for routed in [false, true] {
+            let builtin = nodecraft_catalog::Catalog::builtin().unwrap();
+            let catalog = nodecraft_catalog::Catalog::from_models(MODELS.iter().map(|id| builtin.get(id).unwrap().clone())).unwrap();
+            let snapshot = GenerationCatalog::new(nodecraft_engine::run_cmds::RunCatalog::new(catalog).unwrap()).unwrap();
+            let kinds = snapshot.registry().unwrap();
+            let mut project = Project::new(ProjectId::from_bytes([149; 16]), "Public Router model choices").unwrap();
+            Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+            let params = [("model".into(), Value::Text(MODELS[0].into())), ("prompt".into(), Value::Text("Public sample".into()))].into();
+            let node = kinds.get("generation.image").unwrap().instantiate_instance(A, Default::default(), &params).unwrap();
+            Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+            let mut resources = nodecraft_engine::commands::Resources::default();
+            resources.insert(snapshot.clone());
+            resources.insert(snapshot.run_catalog());
+            let mut session =
+                Session::with_registries(project, nodecraft_engine::commands::Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources);
+            let hub = NodeId::from_bytes([40; 16]);
+            if routed {
+                let node = session
+                    .kinds()
+                    .get(nodecraft_nodes::router::ID)
+                    .unwrap()
+                    .instantiate_instance(hub, nodecraft_nodes::router::config(nodecraft_types::Modality::Image), &Default::default())
+                    .unwrap();
+                session.dispatch("node.add", &json!({"canvas":C,"node":node})).unwrap();
+                session.dispatch("edge.connect",&json!({"canvas":C,"edge":{"id":EdgeId::from_bytes([40;16]),"from":{"node":hub,"port":"out"},"to":{"node":A,"port":"images"},"order":0}})).unwrap();
+            }
+            for n in 10..14 {
+                let id = NodeId::from_bytes([n; 16]);
+                session.dispatch("node.create", &json!({"canvas":C,"id":id,"kind":"source.image","pos":{"x":0,"y":0}})).unwrap();
+                session.dispatch("edge.connect",&json!({"canvas":C,"edge":{"id":EdgeId::from_bytes([n;16]),"from":{"node":id,"port":"out"},"to":{"node":if routed {hub}else{A},"port":if routed {"in"}else{"images"}},"order":n}})).unwrap();
+            }
+            let before = session.document().clone();
+            let refused = session.dispatch("node.model_preview", &json!({"canvas":C,"nodes":[A],"model":MODELS[1]}));
+            assert!(refused.is_err(), "four images cannot fit Qwen's three-image maximum through either path");
+            assert_eq!(session.document(), &before);
+            let mut app = NodeCraftApp::from_session(session, C).unwrap();
+            app.theme = theme;
+            let revision = app.session.revision();
+            app.open_model_picker(C, vec![A], revision).unwrap();
+            let mut h = Harness::builder().with_size(Vec2::new(1200.0, 900.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+            theme::apply(&h.ctx, theme);
+            h.run();
+            let states: Vec<_> = MODELS
+                .iter()
+                .map(|id| {
+                    let label = &builtin.get(id).unwrap().label;
+                    ((*id).to_owned(), h.get_by_label(label).accesskit_node().is_disabled())
+                })
+                .collect();
+            assert_eq!(states.iter().map(|s| s.1).collect::<Vec<_>>(), vec![false, true, true]);
+            if let Some(expected) = &expected {
+                assert_eq!(&states, expected);
+            } else {
+                expected = Some(states);
+            }
+        }
+    }
+}

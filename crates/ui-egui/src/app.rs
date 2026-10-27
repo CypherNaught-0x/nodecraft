@@ -2143,7 +2143,7 @@ impl NodeCraftApp {
                         if !r.drag_started_by(egui::PointerButton::Primary) {
                             continue;
                         }
-                        self.wiring = match side {
+                        let mut proposed = match side {
                             Side::Output => node.outputs.iter().find(|p| p.name == *port).map(|p| Wiring {
                                 anchor: Endpoint { node: node.id, port: port.clone() },
                                 side: Side::Output,
@@ -2171,6 +2171,18 @@ impl NodeCraftApp {
                                 }
                             }
                         };
+                        if let Some(wiring) = &mut proposed
+                            && wiring.side == Side::Output
+                        {
+                            match nodecraft_engine::turn_into_cmds::output_type(canvas, self.session.kinds(), &wiring.anchor) {
+                                Ok(port_type) => wiring.port_type = port_type,
+                                Err(error) => {
+                                    self.notice = Some(error.message);
+                                    proposed = None;
+                                }
+                            }
+                        }
+                        self.wiring = proposed;
                     }
                     // A Choice popup can close while producing its parameter intent over the
                     // overlay. Preserve its ownership from frame start, without admitting moves.
@@ -3085,7 +3097,20 @@ impl NodeCraftApp {
             };
             current
         } else {
-            menu.port_type
+            let current = self
+                .session
+                .document()
+                .canvases()
+                .get(&self.canvas)
+                .ok_or_else(|| Error::new(ErrorKind::NotFound, "the canvas is unavailable"))
+                .and_then(|canvas| nodecraft_engine::turn_into_cmds::output_type(canvas, self.session.kinds(), &menu.anchor));
+            match current {
+                Ok(port_type) => port_type,
+                Err(error) => {
+                    self.notice = Some(error.message);
+                    return;
+                }
+            }
         };
         let left = if menu.side == Side::Input { menu.world.x - t.card_width } else { menu.world.x };
         let pos = nodecraft_graph::Position { x: left, y: menu.world.y - t.card_min_height * 0.5 };
@@ -3576,3 +3601,6 @@ mod held_minimap_tests;
 mod held_restart_tests;
 #[cfg(test)]
 mod stale_tests;
+
+#[cfg(test)]
+mod router949_tests;
