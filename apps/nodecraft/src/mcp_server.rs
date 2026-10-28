@@ -134,18 +134,28 @@ impl Server {
     }
 }
 
-/// The token in the keychain, made (or replaced, when `fresh`) if needed. Without a keychain a
-/// new token lasts until the app closes, and the note says so.
+/// The token in the keychain, made (or replaced, when `fresh`) if needed. A stored token is
+/// replaced only when there is none or it can't be used: if the keychain can't be read right
+/// now, a token is made for this session and nothing is written, so a passing failure never
+/// overwrites the one clients have. The note says when a token lasts only until the app closes.
 fn token(secrets: &dyn SecretStore, fresh: bool) -> (Result<BearerToken, String>, Option<String>) {
     let account = match Account::new(MCP_TOKEN_ACCOUNT) {
         Ok(account) => account,
         Err(e) => return (Err(e.to_string()), None),
     };
-    if !fresh
-        && let Ok(Some(stored)) = secrets.get(&account)
-        && let Ok(token) = BearerToken::new(stored.expose())
-    {
-        return (Ok(token), None);
+    if !fresh {
+        match secrets.get(&account) {
+            Ok(Some(stored)) => {
+                if let Ok(token) = BearerToken::new(stored.expose()) {
+                    return (Ok(token), None);
+                }
+            }
+            Ok(None) => {}
+            Err(why) => {
+                let note = format!("The keychain couldn't be read ({why}); this token lasts until NodeCraft closes, and the stored one is kept.");
+                return (BearerToken::generate().map_err(|e| e.message), Some(note));
+            }
+        }
     }
     let token = match BearerToken::generate() {
         Ok(token) => token,

@@ -150,3 +150,49 @@ fn without_a_keychain_the_token_lasts_for_the_session_and_a_taken_port_is_report
     assert!(why.contains("can't listen"), "{why}");
     assert!(s.enabled(), "the choice stands; the next start tries again");
 }
+
+/// A keychain that holds a token but can't be read right now.
+#[derive(Default)]
+struct Locked {
+    writes: std::sync::Mutex<usize>,
+}
+impl SecretStore for Locked {
+    fn get(&self, _: &Account) -> Result<Option<Secret>, SecretError> {
+        Err(SecretError::Denied("unlock the keychain".into()))
+    }
+    fn set(&self, _: &Account, _: &Secret) -> Result<(), SecretError> {
+        *self.writes.lock().unwrap() += 1;
+        Ok(())
+    }
+    fn delete(&self, _: &Account) -> Result<bool, SecretError> {
+        Ok(false)
+    }
+}
+
+#[test]
+fn a_keychain_that_cant_be_read_keeps_its_stored_token() {
+    let locked = Arc::new(Locked::default());
+    let mut s = server(Arc::clone(&locked) as Arc<dyn SecretStore>);
+    s.set_enabled(true);
+    assert!(matches!(started(&mut s), McpState::Running { .. }));
+    assert_eq!(*locked.writes.lock().unwrap(), 0, "the stored token isn't overwritten");
+    let note = s.note().unwrap();
+    assert!(note.contains("couldn't be read") && note.contains("lasts until NodeCraft closes"), "{note}");
+    s.stop();
+}
+
+#[test]
+fn a_new_token_rebinds_the_same_port_at_once() {
+    let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = free.local_addr().unwrap().port();
+    drop(free);
+    let mut s = Server::new(port, Arc::new(MemoryStore::default()), Arc::new(|| {}));
+    s.set_enabled(true);
+    assert!(matches!(started(&mut s), McpState::Running { .. }));
+    for _ in 0..3 {
+        s.new_token();
+        let state = started(&mut s);
+        assert!(matches!(state, McpState::Running { .. }), "{state:?}");
+    }
+    s.stop();
+}

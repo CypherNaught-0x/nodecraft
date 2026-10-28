@@ -19,7 +19,12 @@ const MAX_PENDING_SHOTS: usize = 4;
 const SHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Marks the screenshots this module asks for, so others aren't taken as replies.
-struct ControlShot;
+/// Each [`CallPump`] tags its own, so the control channel's and the MCP server's never answer
+/// with each other's image.
+struct ControlShot(u64);
+
+/// Tags for [`CallPump`]s.
+static NEXT_PUMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The control channel's listener and what it is waiting on. The window's [`crate::shell::Shell`]
 /// pumps it each frame.
@@ -37,6 +42,8 @@ pub struct CallPump {
     shot_since: Option<std::time::Instant>,
     /// The folders clients may open projects from and save them to (`--root`, #423).
     roots: FileRoots,
+    /// This pump's [`ControlShot`] tag.
+    tag: u64,
 }
 
 impl Channel {
@@ -88,13 +95,14 @@ impl Channel {
 
 impl CallPump {
     pub fn new(roots: FileRoots) -> Self {
-        Self { shots: Vec::new(), shot_since: None, roots }
+        Self { shots: Vec::new(), shot_since: None, roots, tag: NEXT_PUMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
     }
 
     /// Answers `calls` (at most [`PER_FRAME`]; a full batch asks for another frame) and finished
     /// screenshots.
     pub fn pump(&mut self, calls: Vec<Call>, app: &mut NodeCraftApp, ctx: &egui::Context) {
-        let ours = |data: &egui::UserData| data.data.as_ref().is_some_and(|d| d.downcast_ref::<ControlShot>().is_some());
+        let tag = self.tag;
+        let ours = |data: &egui::UserData| data.data.as_ref().is_some_and(|d| d.downcast_ref::<ControlShot>().is_some_and(|shot| shot.0 == tag));
         let image = ctx.input(|i| {
             i.raw.events.iter().find_map(|e| match e {
                 egui::Event::Screenshot { image, user_data, .. } if ours(user_data) => Some(Arc::clone(image)),
@@ -142,7 +150,7 @@ impl CallPump {
                 Some(result) => call.reply(result),
                 None if call.request == Request::Screenshot && self.shots.len() < MAX_PENDING_SHOTS => {
                     if self.shots.is_empty() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(ControlShot)));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(ControlShot(self.tag))));
                         self.shot_since = Some(std::time::Instant::now());
                     }
                     self.shots.push(call);
