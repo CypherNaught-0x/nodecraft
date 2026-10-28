@@ -31,7 +31,8 @@ the second path, for billing uncertainty, kept separate from the ownership one (
   settles the charge itself when it finishes, and a charge released under it would leave that
   completion with nothing to settle, which hides a real bill. So the run host refuses a decision
   while any run is waiting or running, while any restored job is being followed, and for a charge
-  a parked, kept, saved or staged job still follows. The person finishes or stops runs first.
+  a parked, kept, saved or staged job still follows, or whose job's provider handle is kept for
+  a later run to send again under its key (#517). The person finishes or stops runs first.
 - **Never twice.** A decision moves the charge out of `unresolved`: settled is `actual` and
   final, released is gone from the log. A second confirmation of the same review finds nothing
   waiting and is refused with nothing changed. A released key a later job records again is a new
@@ -47,9 +48,13 @@ the second path, for billing uncertainty, kept separate from the ownership one (
 - **Audited.** Each decision is kept as an immutable `BillingResolution` record in the usage log
   (`billing_resolutions`): the charge's identity, session, node, model, project, when it was
   recorded, the amount it was open at, the outcome, the note and when it was decided. The newest
-  `MAX_BILLING_RESOLUTIONS` (10,000) are kept, like the bounded usage list; a settled charge also
-  stays in the list as an `actual` row. Loading checks each record's bounds, currency and status,
-  not the charge's current state (it may have been recorded again). The field is written only
+  `MAX_BILLING_RESOLUTIONS` (10,000) are kept, like the bounded usage list; past that the oldest
+  record leaves and `billing_resolutions_dropped` counts it, which `usage.unresolved` reports and
+  the panel shows. A dropped record's charge was already final, and a settled charge also stays in
+  the list as an `actual` row. Loading checks each record's bounds, currency and note (at most 256
+  bytes, no control or invisible formatting characters), not the charge's current state (it may
+  have been recorded again). Every record was decided from an `unresolved` charge, so none keeps
+  a status. The field is written only
   when there are records, so a log without them stays readable by older NodeCraft; one with them
   is refused by an older reader (unknown field) rather than silently dropping the audit trail.
 - **Known limits.** Hosts without a run host (the plain CLI MCP server) list nothing and can't
