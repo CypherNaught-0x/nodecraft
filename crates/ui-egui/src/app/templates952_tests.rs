@@ -8,7 +8,8 @@ fn app() -> NodeCraftApp {
     app
 }
 fn harness(app: NodeCraftApp) -> Harness<'static, NodeCraftApp> {
-    Harness::builder().with_size(Vec2::new(1100.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app)
+    // The full app advances bounded tag indexing across repaint frames.
+    Harness::builder().with_size(Vec2::new(1100.0, 800.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app)
 }
 #[test]
 fn templates952_library_shows_descriptions_and_pointer_add_preserves_work_and_undo() {
