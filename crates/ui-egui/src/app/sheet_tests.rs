@@ -414,3 +414,111 @@ fn sheet163_visual() {
         h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), shot.into_state());
     }
 }
+
+/// Focuses the text field labelled `label` (the `nth` of them), clears it and types `text`.
+fn retype(h: &mut Harness<'static, NodeCraftApp>, label: &str, nth: usize, text: &str) {
+    let field = h.query_all_by_label(label).filter(|node| matches!(node.accesskit_node().role(), Role::TextInput | Role::MultilineTextInput)).nth(nth).unwrap();
+    let at = field.rect().center();
+    click(h, at);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.key_press(egui::Key::Backspace);
+    h.run();
+    for (n, part) in text.split('\n').enumerate() {
+        if n > 0 {
+            h.key_press(egui::Key::Enter);
+        }
+        h.event(egui::Event::Text(part.into()));
+        h.run();
+    }
+    h.run();
+}
+
+fn open_template(h: &mut Harness<'static, NodeCraftApp>) {
+    let at = h.get_by_label("From template").rect().center();
+    click(h, at);
+    assert!(h.state().sheet.template.is_some(), "the template panel is open");
+}
+
+#[test]
+fn a_template_previews_its_count_then_expands_into_rows_as_one_undo_step() {
+    let mut h = on_sheet(&["a fox"]);
+    open_template(&mut h);
+    assert_eq!(h.state().sheet.template.as_ref().unwrap().text, "a fox", "it starts from the last row's prompt");
+    retype(&mut h, "Template", 0, "a {{colour}} fox at {{time}}");
+    retype(&mut h, "Variable", 0, "colour");
+    retype(&mut h, "Values", 0, "red\nblue");
+    // An undefined variable is reported before anything is made.
+    assert!(h.query_by_label_contains("which no variable defines").is_some());
+    assert!(h.get_by_role_and_label(Role::Button, "Expand").accesskit_node().is_disabled());
+    press(&mut h, Role::Button, "Add variable");
+    retype(&mut h, "Variable", 1, "time");
+    retype(&mut h, "Values", 1, "dawn\ndusk\nnight");
+    assert!(h.query_by_label_contains("6 new rows (2 colour × 3 time)").is_some(), "the count shows before the rows are made");
+    assert!(h.query_by_label("a red fox at dawn").is_some(), "and the first prompts");
+    assert_eq!(prompts(h.state(), S), ["a fox"], "a preview makes nothing");
+    press(&mut h, Role::Button, "Expand into 6 rows");
+    assert_eq!(
+        prompts(h.state(), S),
+        ["a fox", "a red fox at dawn", "a red fox at dusk", "a red fox at night", "a blue fox at dawn", "a blue fox at dusk", "a blue fox at night"]
+    );
+    assert!(h.state().sheet.template.is_none(), "the panel closes once the rows are made");
+    assert!(h.state().run_confirm.is_none(), "expanding runs nothing");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(prompts(h.state(), S), ["a fox"], "one undo removes them all");
+}
+
+#[test]
+fn a_template_too_big_to_expand_says_how_many_and_stays_disabled() {
+    let mut h = on_sheet(&["a fox"]);
+    open_template(&mut h);
+    retype(&mut h, "Template", 0, "{{n}}");
+    retype(&mut h, "Variable", 0, "n");
+    let values: Vec<String> = (0..11).map(|n| n.to_string()).collect();
+    retype(&mut h, "Values", 0, &values.join("\n"));
+    h.state_mut().sheet.template.as_mut().unwrap().copies = 10;
+    h.run();
+    h.run();
+    assert!(h.query_by_label_contains("makes 110 rows").is_some());
+    assert!(h.get_by_role_and_label(Role::Button, "Expand").accesskit_node().is_disabled());
+    // Copies without variables repeat the template.
+    retype(&mut h, "Template", 0, "an owl");
+    retype(&mut h, "Variable", 0, "");
+    retype(&mut h, "Values", 0, "");
+    h.state_mut().sheet.template.as_mut().unwrap().copies = 3;
+    h.run();
+    h.run();
+    press(&mut h, Role::Button, "Expand into 3 rows");
+    assert_eq!(prompts(h.state(), S), ["a fox", "an owl", "an owl", "an owl"]);
+}
+
+#[test]
+fn the_prompt_and_status_filters_narrow_the_table_and_select_what_they_show() {
+    let mut h = on_sheet(&["a red fox", "an owl", "a fox at dusk"]);
+    retype(&mut h, "Filter", 0, "FOX");
+    let shown: Vec<String> = h.query_all_by_role(Role::MultilineTextInput).filter_map(|node| node.value()).collect();
+    assert_eq!(shown, ["a red fox", "a fox at dusk"], "the filter ignores case");
+    assert!(h.query_by_label("Showing 2 of 3").is_some());
+    press(&mut h, Role::Button, "Select shown");
+    let rows = rows_of(&h.state().session);
+    assert!(h.state().selection.contains(rows[0]) && h.state().selection.contains(rows[2]) && !h.state().selection.contains(rows[1]));
+    assert!(h.query_by_label("Run 2 selected").is_some());
+    // Row numbers stay the sheet's own.
+    assert!(h.query_by_label("3").is_some());
+
+    retype(&mut h, "Filter", 0, "");
+    let combo = h.query_all_by_role(Role::ComboBox).next().unwrap().rect().center();
+    click(&mut h, combo);
+    let done = h.get_by_label("Done").rect().center();
+    click(&mut h, done);
+    assert_eq!(h.state().sheet.status, super::sheet_view::StatusFilter::Done);
+    assert!(h.query_by_label("No rows match the filter.").is_some(), "nothing has run yet");
+    h.state_mut().sheet.status = super::sheet_view::StatusFilter::NotRun;
+    h.run();
+    assert_eq!(h.query_all_by_role(Role::MultilineTextInput).count(), 3);
+
+    // Opening another canvas forgets the filter.
+    h.state_mut().sheet.filter = "owl".into();
+    h.state_mut().open_canvas(C);
+    assert!(h.state().sheet.filter.is_empty() && h.state().sheet.status == super::sheet_view::StatusFilter::All);
+}
