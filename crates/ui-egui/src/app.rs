@@ -1739,6 +1739,7 @@ impl NodeCraftApp {
             self.painted.clear();
             let prompt_wired: BTreeSet<NodeId> =
                 canvas.edges().values().filter(|edge| edge.to.port == nodecraft_nodes::generation::PROMPT).map(|edge| edge.to.node).collect();
+            let connected_wires = card::connected::incoming(canvas);
             let element_names = elements::names(canvas);
             self.mention_cache.refresh(self.session.revision(), self.canvas, canvas, kinds);
             let mention_cards = &self.mention_cache.cards;
@@ -1825,24 +1826,28 @@ impl NodeCraftApp {
                     }
                     _ => None,
                 };
-                // The media wired into a text card, as thumbnails above its answer (#84).
-                let connected = if node.kind == nodecraft_nodes::generation::TEXT_KIND && self.view.zoom >= card::BODY_MIN_ZOOM {
-                    let wired = card::connected::assets(canvas, node);
-                    let edge = t.connected_thumb * self.view.zoom * ui.ctx().pixels_per_point();
-                    let assets = self.session.assets();
-                    let previews = &mut self.previews;
-                    let thumbs = wired
-                        .iter()
-                        .take(card::connected::MAX_SHOWN)
-                        .map(|asset| {
-                            let kind = card::connected::MediaKind::of(asset);
-                            let preview = kind.previews().then(|| previews.request_asset(ui.ctx(), asset.hash, edge, || assets.preview_read(asset)));
-                            card::connected::Thumb { kind, preview }
-                        })
-                        .collect();
-                    (thumbs, wired.len())
-                } else {
-                    (Vec::new(), 0)
+                // The media wired into a text card, as thumbnails above its answer (#84). Only the
+                // squares the row draws ask for a preview.
+                let connected = match connected_wires.get(&node.id) {
+                    Some(wires) if self.view.zoom >= card::BODY_MIN_ZOOM => {
+                        let wired = card::connected::assets(canvas, kinds, node, wires);
+                        let shown = card::connected::shown(card::connected::row_width(t), wired.len(), t);
+                        let side = t.connected_thumb * self.view.zoom * ui.ctx().pixels_per_point();
+                        let assets = self.session.assets();
+                        let previews = &mut self.previews;
+                        let thumbs = wired
+                            .iter()
+                            .take(shown)
+                            .map(|asset| {
+                                let kind = card::connected::MediaKind::of(asset);
+                                let edge = card::connected::request_edge(asset, side);
+                                let preview = kind.previews().then(|| previews.request_asset(ui.ctx(), asset.hash, edge, || assets.preview_read(asset)));
+                                card::connected::Thumb { kind, preview }
+                            })
+                            .collect();
+                        (thumbs, wired.len())
+                    }
+                    _ => (Vec::new(), 0),
                 };
                 let rejected = self.marquee.is_some() && self.marquee_geometry.placeholder(node.id);
                 let schema = if rejected { None } else { cached_schema(&mut self.schemas, &self.session, node, self.cache_clock) };

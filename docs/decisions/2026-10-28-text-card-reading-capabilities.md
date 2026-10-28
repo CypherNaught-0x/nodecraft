@@ -2,8 +2,11 @@
 
 - **Connected media are shown, not inferred from the run.** A text card draws the media wired
   into its non-text inputs as a row of `connected_thumb` squares at the top of its answer area,
-  in port order then wire order. Each wire's value is the upstream card's usable active result
-  (same port layout, not partial), else a source card's own asset. The row is view state built
+  in port order then wire order. Each wire's value is what a run would read from it, through
+  the planner's own `exec::planner::value_without_running`: a source kind's (and an Element's)
+  current value, never its history, else the upstream card's usable active result (same port
+  layout, not partial). A batch's items exist only once a run plans them, so they aren't shown.
+  The row is view state built
   from the canvas each frame: it takes room from the answer, so wiring media never resizes the
   card or moves its ports. Thumbnails go through the shared preview cache's public request API.
 - **A context-window refusal is its own message, not a new error kind.** It stays

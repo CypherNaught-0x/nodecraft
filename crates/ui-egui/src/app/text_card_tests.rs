@@ -253,7 +253,8 @@ fn wired_images_show_as_thumbnails_above_the_answer_without_resizing_the_card() 
     assert_eq!(card::world_size(card(h.state()), None, t), card::world_size(card(plain.state()), None, t), "the row takes no extra room");
     // Connected text is in the prompt, not the row; the media are what the planner would read.
     let canvas = h.state().session.document().canvases().get(&C).unwrap();
-    let wired = crate::card::connected::assets(canvas, card(h.state()));
+    let wires = crate::card::connected::incoming(canvas);
+    let wired = crate::card::connected::assets(canvas, h.state().session.kinds(), card(h.state()), &wires[&N]);
     assert_eq!(wired.len(), 2);
     assert!(wired.iter().all(|asset| crate::card::connected::MediaKind::of(asset) == crate::card::connected::MediaKind::Image));
 }
@@ -272,7 +273,7 @@ fn more_wired_images_than_fit_end_in_a_count_of_the_rest() {
 }
 
 #[test]
-fn only_a_usable_result_or_a_source_asset_counts_as_connected() {
+fn a_source_counts_its_current_asset_and_other_cards_their_usable_result() {
     let asset =
         |n: u8| nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([n; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
     let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_VISION).unwrap();
@@ -299,20 +300,27 @@ fn only_a_usable_result_or_a_source_asset_counts_as_connected() {
         };
         Change::Connect { canvas: C, edge }.apply(&mut project).unwrap();
         let canvas = project.canvases().get(&C).unwrap();
-        crate::card::connected::assets(canvas, canvas.nodes().get(&N).unwrap()).into_iter().map(|a| a.hash.to_string()).collect::<Vec<_>>()
+        let wires = crate::card::connected::incoming(canvas);
+        crate::card::connected::assets(canvas, &kinds, canvas.nodes().get(&N).unwrap(), &wires[&N]).into_iter().map(|a| a.hash.to_string()).collect::<Vec<_>>()
     };
     let hash = |n: u8| nodecraft_types::Blake3::from_bytes([n; 32]).to_string();
     assert_eq!(wired(&source), vec![hash(5)], "a source that hasn't run gives its asset");
-    // One that has run gives its recorded result: list items in order, text left out.
+    // A source that ran with an earlier picture gives its current one, as the run sends it.
     let mut ran = source.clone();
     let id = nodecraft_types::GenerationId::from_bytes([93; 16]);
-    ran.history.push(Generation::new(id, vec![Value::List(vec![Value::Media(asset(7)), Value::Text("caption".into()), Value::Media(asset(8))])]));
+    ran.history.push(Generation::new(id, vec![Value::Media(asset(4))]));
     ran.active = Some(id);
-    assert_eq!(wired(&ran), vec![hash(7), hash(8)]);
-    // A result recorded for another port layout isn't used; the source's own asset is.
-    let mut stale = ran.clone();
+    assert_eq!(wired(&ran), vec![hash(5)]);
+    // Any other card gives its recorded result: list items in order, text left out.
+    let mut made = source.clone();
+    made.kind = "fixture.uninstalled".into();
+    made.history.push(Generation::new(id, vec![Value::List(vec![Value::Media(asset(7)), Value::Text("caption".into()), Value::Media(asset(8))])]));
+    made.active = Some(id);
+    assert_eq!(wired(&made), vec![hash(7), hash(8)]);
+    // A result recorded for another port layout isn't used.
+    let mut stale = made.clone();
     stale.history[0].outputs.push(Value::Media(asset(9)));
-    assert_eq!(wired(&stale), vec![hash(5)]);
+    assert!(wired(&stale).is_empty());
 }
 
 #[test]

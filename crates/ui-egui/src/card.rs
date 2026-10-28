@@ -488,7 +488,7 @@ pub fn show(
         } else if node.kind == nodecraft_nodes::generation::TEXT_KIND {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.answer);
             inner = rest;
-            let area = connected::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &connected_media.0, connected_media.1, t);
+            let area = connected::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &connected_media.0, connected_media.1, view.zoom, t);
             generate::answer(&mut ui, area, generate::answer_of(node), partial, &mut intents, t);
         }
         if let Some(d) = draw_composer {

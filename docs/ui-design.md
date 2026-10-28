@@ -51,7 +51,10 @@ composer; a long answer scrolls inside it and can be selected and copied. Media 
 card (images, a PDF's first page, clips and sounds) show along the top of that answer area as
 `connected_thumb` (40) squares, in port then wire order, `control_gap` apart; pictures fill the
 square from their middle, other media show their kind's name, and when they don't all fit the last
-square counts the rest (`+3`). The row takes room from the answer, so wiring media never changes
+square counts the rest (`+3`; past 256 assets it says "or more"). Each wire shows what a run would
+read from it: a source's (or an Element's) current value, else the upstream card's usable active
+result; a batch's items, which exist only once a run plans them, aren't shown. Only the squares
+drawn ask for a preview. The row takes room from the answer, so wiring media never changes
 the card's size. While a wire feeds a
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the
 label's own row, so the card keeps its size), and its hover text explains that nonempty connected
