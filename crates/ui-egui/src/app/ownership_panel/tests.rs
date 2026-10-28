@@ -261,6 +261,19 @@ fn left_open() -> nodecraft_exec::cost::UsageLog {
     log
 }
 
+/// Clicks the text field labelled `label` and types `text`, first selecting what it holds when
+/// `replace` is set.
+fn type_into(h: &mut Harness<'static, NodeCraftApp>, label: &str, text: &str, replace: bool) {
+    press(h, Role::TextInput, label);
+    if replace {
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run();
+    }
+    h.event(egui::Event::Text(text.to_owned()));
+    h.run();
+    h.run();
+}
+
 fn resolving_mut<'a>(h: &'a mut Harness<'static, NodeCraftApp>) -> &'a mut Resolving {
     h.state_mut().ownership.as_mut().unwrap().resolving.as_mut().unwrap()
 }
@@ -278,10 +291,17 @@ fn a_person_settles_a_charge_that_may_have_been_billed_at_the_billed_amount() {
     press(&mut h, Role::Button, "Resolve");
     h.get_by_label("What you checked (optional)");
     assert!(!confirm_enabled(&h), "confirming needs a preview first");
-    resolving_mut(&mut h).amount = "0.05".into();
-    resolving_mut(&mut h).note = "invoice line 3".into();
+    // Typed with real pointer and key events: replace the prefilled amount, then add a note.
+    type_into(&mut h, "Billed amount (USD)", "0.05", true);
+    assert_eq!(h.state().ownership.as_ref().unwrap().resolving.as_ref().unwrap().amount, "0.05");
     press(&mut h, Role::Button, "Preview");
     h.get_by_label_contains("Settles at 0.05 USD");
+    assert!(confirm_enabled(&h));
+    // Typing a note takes the preview away until the decision is previewed again.
+    type_into(&mut h, "What you checked (optional)", "invoice line 3", false);
+    assert!(h.state().ownership.as_ref().unwrap().resolving.as_ref().unwrap().preview.is_none());
+    assert!(!confirm_enabled(&h), "a changed note needs a fresh preview");
+    press(&mut h, Role::Button, "Preview");
     assert!(confirm_enabled(&h));
     press(&mut h, Role::Button, "Confirm");
     assert!(h.state().notice.as_deref().is_some_and(|notice| notice.starts_with("Settled the charge lost at 0.05 USD")), "{:?}", h.state().notice);

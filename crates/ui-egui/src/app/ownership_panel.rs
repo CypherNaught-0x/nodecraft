@@ -463,6 +463,15 @@ fn unsettled(ui: &mut egui::Ui, listing: &Value, t: &Tokens, action: &mut Option
 }
 
 fn unresolved(ui: &mut egui::Ui, listing: &Value, t: &Tokens, action: &mut Option<Action>) {
+    let dropped = count(listing, "/dropped");
+    if dropped > 0 {
+        // Their charges were already settled or released; only the record of the decision went.
+        let older = if dropped == 1 { "1 older decision is".to_owned() } else { format!("{dropped} older decisions are") };
+        ui.label(
+            egui::RichText::new(format!("{older} no longer kept in the usage log; the charges they decided were already settled or released."))
+                .color(t.text_muted),
+        );
+    }
     let rows = listing.get("charges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     if rows.is_empty() {
         return;
@@ -526,19 +535,19 @@ fn resolve_view(ui: &mut egui::Ui, resolving: &Resolving, t: &Tokens, action: &m
     });
     if resolving.billed {
         ui.horizontal(|ui| {
-            ui.label(format!("Billed amount ({})", text(c, "/amount/currency")));
+            let label = ui.label(format!("Billed amount ({})", text(c, "/amount/currency")));
             let mut amount = resolving.amount.clone();
-            if ui.add(egui::TextEdit::singleline(&mut amount).desired_width(t.card_width * 0.5)).changed() {
+            if ui.add(egui::TextEdit::singleline(&mut amount).desired_width(t.card_width * 0.5)).labelled_by(label.id).changed() {
                 *action = Some(Action::Amount(amount));
             }
         });
     }
     if resolving.path == Path::Unresolved {
         ui.horizontal(|ui| {
-            ui.label("What you checked (optional)");
+            let label = ui.label("What you checked (optional)");
             let mut note = resolving.note.clone();
             let field = egui::TextEdit::singleline(&mut note).char_limit(MAX_NOTE_CHARS).hint_text("e.g. invoice line").desired_width(t.card_width);
-            if ui.add(field).changed() {
+            if ui.add(field).labelled_by(label.id).changed() {
                 *action = Some(Action::Note(note));
             }
         });
