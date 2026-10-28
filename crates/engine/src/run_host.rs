@@ -693,6 +693,7 @@ impl RunHost {
         let shared = Arc::clone(&self.journal);
         let log = Arc::clone(&self.budget.log);
         let inbox = Arc::clone(&self.inbox);
+        let kept = Arc::clone(&self.kept_handles);
         let wall_clock_ms = Arc::clone(&self.budget.wall_clock_ms);
         services.register(BILLING_SERVICE, move |request| {
             let (provider, instance, key) = billing_cmds::requested_charge(request)?;
@@ -700,7 +701,16 @@ impl RunHost {
                 if !lock(&inbox).waiting.is_empty() {
                     return Err(Error::new(ErrorKind::Busy, "a run is about to start and may still settle this charge; decide it once it has finished"));
                 }
-                shared.unfollowed(&provider, instance, &key)
+                shared.unfollowed(&provider, instance, &key)?;
+                // The provider may still be working on it: a later run sends the job again under
+                // its key, follows the kept handle and settles the charge itself (#517).
+                if lock(&kept).holds(&provider, instance, &key) {
+                    return Err(Error::new(
+                        ErrorKind::Conflict,
+                        "the provider may still be working on this job; run it again to settle the charge, or decide it after restarting NodeCraft",
+                    ));
+                }
+                Ok(())
             };
             keep_decision(&shared, &log, wall_clock_ms(), unfollowed, |usage, at_ms| billing_cmds::resolve(usage, request, at_ms))
         })?;

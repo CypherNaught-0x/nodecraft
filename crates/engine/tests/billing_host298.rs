@@ -119,6 +119,10 @@ struct Fixture {
 fn fixture() -> Fixture {
     let mut failing = MockModel::new(MockOutput::Text);
     failing.fail = Some(MockFailure::Submit(nodecraft_providers::ErrorKind::Auth));
+    fixture_with(failing)
+}
+
+fn fixture_with(failing: MockModel) -> Fixture {
     let mock = MockProvider::new("mock", [("mock-text".to_owned(), failing)]);
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
@@ -328,4 +332,23 @@ fn a_charge_a_parked_run_still_follows_is_refused() {
     let decision = release_first(&mut session);
     assert_eq!(session.dispatch("usage.resolve_unresolved", &decision).unwrap_err().kind, ErrorKind::Conflict);
     assert_eq!(*budget.log.lock().unwrap(), before);
+}
+
+#[test]
+fn a_charge_whose_job_handle_is_kept_for_a_later_run_is_refused() {
+    // The provider accepts the job, then every poll fails: it may still be working on it, and
+    // its handle is kept so a later run under the same key follows it (#517).
+    let mut accepted = MockModel::new(MockOutput::Text);
+    accepted.polls = 1;
+    accepted.fail = Some(MockFailure::Poll(nodecraft_providers::ErrorKind::Auth));
+    let mut f = fixture_with(accepted);
+    start(&mut f);
+    drive(&mut f);
+    assert_eq!(f.budget.log.lock().unwrap().entries().map(|e| e.status).collect::<Vec<_>>(), [Charge::Unresolved]);
+    let decision = release_first(&mut f.session);
+    let before = f.budget.log.lock().unwrap().clone();
+    let refused = f.session.dispatch("usage.resolve_unresolved", &decision).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Conflict, "{refused:?}");
+    assert!(refused.message.contains("still be working"), "{refused:?}");
+    assert_eq!(*f.budget.log.lock().unwrap(), before);
 }

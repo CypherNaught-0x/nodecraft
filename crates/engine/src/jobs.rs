@@ -281,6 +281,11 @@ impl KeptHandles {
     fn find(&self, at: &(nodecraft_types::ProviderTarget, String)) -> Option<JobHandle> {
         self.0.iter().find(|(kept, _)| kept == at).map(|(_, handle)| handle.clone())
     }
+
+    /// Whether a handle is kept for the job sent under `key` on `provider`/`instance` (#298).
+    pub(crate) fn holds(&self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> bool {
+        self.0.iter().any(|((target, sent), _)| target.adapter() == provider && target.instance() == instance && sent == key)
+    }
 }
 
 /// Longest idempotency key sent to a provider.

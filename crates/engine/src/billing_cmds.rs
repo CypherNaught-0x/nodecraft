@@ -126,7 +126,8 @@ fn page(usage: &UsageLog, p: &PageParams) -> Result<Value, Error> {
     });
     let mut out = Vec::new();
     let next = fill(&mut out, rows, p.offset, charges.len(), limit, &mut budget)?;
-    Ok(json!({"charges": out, "total": charges.len(), "next_offset": next, "resolved": usage.billing_resolutions().len()}))
+    Ok(json!({"charges": out, "total": charges.len(), "next_offset": next, "resolved": usage.billing_resolutions().len(),
+        "dropped": usage.billing_resolutions_dropped()}))
 }
 
 fn page_params(value: &Value) -> Result<PageParams, Error> {
@@ -192,13 +193,15 @@ fn resolve_schema() -> Value {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
         "required": ["provider", "key", "token", "outcome"], "properties": {
             "provider": {"type": "string"},
-            "instance": {"type": "string", "format": "uuid"},
+            "instance": {"type": ["string", "null"], "format": "uuid"},
             "key": {"type": "string"},
             "token": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "outcome": {"type": "string", "enum": ["settled", "released"]},
             "currency": {"type": "string", "pattern": "^[A-Z]{3}$"},
             "micros": {"type": "integer", "minimum": 0},
-            "note": {"type": "string", "maxLength": MAX_BILLING_NOTE},
+            // At most MAX_BILLING_NOTE bytes of UTF-8, which JSON Schema's character count
+            // can't state; the command checks the bytes.
+            "note": {"type": "string", "description": "what was checked; at most 256 bytes of UTF-8, no control or invisible formatting characters"},
             "dry_run": {"type": "boolean"}}})
 }
 
@@ -210,7 +213,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: page_schema,
-            params_doc: "{offset?, limit? (≤ 500)} -> {charges: [{provider, instance, key, session, model, node, project, at_ms, amount, status, location, token}], total, next_offset, resolved}. Unresolved charges: jobs that may have been billed although their outcome isn't known (a lost reply, an error after sending, a run given up on), kept at their estimate so budgets hold. Read-only.",
+            params_doc: "{offset?, limit? (≤ 500)} -> {charges: [{provider, instance, key, session, model, node, project, at_ms, amount, status, location, token}], total, next_offset, resolved, dropped (older decisions no longer kept)}. Unresolved charges: jobs that may have been billed although their outcome isn't known (a lost reply, an error after sending, a run given up on), kept at their estimate so budgets hold. Read-only.",
             enabled: enabled_page,
             run: run_page,
         },
@@ -220,7 +223,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: resolve_schema,
-            params_doc: "{provider, instance?, key, token, outcome: settled|released, currency? and micros? (the billed amount; settled only), note? (what was checked, ≤ 256 bytes), dry_run?: bool} -> {provider, instance, key, session, was, outcome, cost, note, ...}; records what the provider's own records show for one charge from usage.unresolved, as confirmed by a person: settled at the billed amount, or released because it was never billed. Refused when the charge changed since `token` was returned, and while a run might still settle it. `dry_run` returns the record and the totals afterwards without changing anything. Human only.",
+            params_doc: "{provider, instance?, key, token, outcome: settled|released, currency? and micros? (the billed amount; settled only), note? (what was checked, ≤ 256 bytes of UTF-8), dry_run?: bool} -> {provider, instance, key, session, was, outcome, cost, note, ...}; records what the provider's own records show for one charge from usage.unresolved, as confirmed by a person: settled at the billed amount, or released because it was never billed. Refused when the charge changed since `token` was returned, and while a run might still settle it. `dry_run` returns the record and the totals afterwards without changing anything. Human only.",
             enabled: enabled_resolve,
             run: run_resolve,
         },
