@@ -1355,6 +1355,8 @@ impl NodeCraftApp {
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
         self.viewport = viewport;
+        // Panels drawn before the row (viewers) use this frame's area; republished below.
+        self.publish_floating_bounds(ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         let file_menu_owns_input = self.file_menu(ui, t);
         #[cfg(target_arch = "wasm32")]
