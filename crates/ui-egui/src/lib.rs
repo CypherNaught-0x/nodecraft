@@ -12,6 +12,7 @@ pub mod canvas;
 pub mod card;
 pub mod clipboard;
 pub mod comments;
+pub mod floating;
 pub mod history;
 pub mod icons;
 pub mod ids;

@@ -234,6 +234,8 @@ impl Panel {
         let text_owner = ui.ctx().memory(|memory| memory.focused()).filter(|id| egui::TextEdit::load_state(ui.ctx(), *id).is_some());
         let viewport = ui.max_rect();
         let mut request = None;
+        // Pinned under the row; floating panels that open over it keep its header in view (#957).
+        crate::floating::occupy(ui.ctx(), ui.id().with("bulk_parameters"));
         let shown = egui::Window::new("Shared parameters")
             .id(ui.id().with("bulk_parameters"))
             .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, t.control_row_height + t.navigation_margin])

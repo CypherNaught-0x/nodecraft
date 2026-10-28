@@ -40,40 +40,29 @@ impl NodeCraftApp {
         let held: Vec<HeldView> = runs.held().to_vec();
         let mut open = true;
         let mut action = None;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Queue")
-            .id(egui::Id::new("nodecraft.queue"))
-            .open(&mut open)
-            // Under its toggle and search; notices own the bottom-left corner, the map the bottom-right.
-            .constrain_to(self.viewport)
-            .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap])
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
-                if !held.is_empty() {
-                    self.held_section(ui, &held, t, &mut action);
-                }
-                if jobs.is_empty() && held.is_empty() {
-                    ui.label(egui::RichText::new("Nothing has run yet. Jobs appear here while they run.").color(t.text_muted));
-                    return;
-                }
-                if jobs.is_empty() {
-                    return;
-                }
-                egui::ScrollArea::vertical().max_height(t.minimap_height * 2.0).show(ui, |ui| {
-                    egui::Grid::new("queue_rows").num_columns(5).spacing([t.control_gap * 2.0, t.control_gap]).striped(true).show(ui, |ui| {
-                        for view in &jobs {
-                            self.queue_row(ui, view, t, &mut action);
-                            ui.end_row();
-                        }
-                    });
+        crate::floating::panel(ctx, "Queue", egui::Id::new("nodecraft.queue"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
+            if !held.is_empty() {
+                self.held_section(ui, &held, t, &mut action);
+            }
+            if jobs.is_empty() && held.is_empty() {
+                ui.label(egui::RichText::new("Nothing has run yet. Jobs appear here while they run.").color(t.text_muted));
+                return;
+            }
+            if jobs.is_empty() {
+                return;
+            }
+            egui::ScrollArea::vertical().max_height(t.minimap_height * 2.0).show(ui, |ui| {
+                egui::Grid::new("queue_rows").num_columns(5).spacing([t.control_gap * 2.0, t.control_gap]).striped(true).show(ui, |ui| {
+                    for view in &jobs {
+                        self.queue_row(ui, view, t, &mut action);
+                        ui.end_row();
+                    }
                 });
-                if jobs.iter().any(|view| view.state.is_final()) && ui.button("Clear finished").clicked() {
-                    action = Some(Action::Clear);
-                }
             });
+            if jobs.iter().any(|view| view.state.is_final()) && ui.button("Clear finished").clicked() {
+                action = Some(Action::Clear);
+            }
+        });
         self.queue_open = open;
         let result = match action {
             Some(Action::Cancel(key)) => self.runs.as_mut().map_or(Ok(()), |runs| runs.cancel(key)),

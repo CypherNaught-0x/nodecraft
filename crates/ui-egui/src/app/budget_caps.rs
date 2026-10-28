@@ -18,9 +18,7 @@ impl NodeCraftApp {
     /// Draws the Budgets panel and keeps what it saves; the browser keeps it for the page only.
     pub(super) fn budgets_panel(&mut self, ctx: &egui::Context, t: &Tokens) {
         let spent = self.runs.as_ref().map(|runs| runs.spent(&self.session));
-        // Under the toolbar's search, as the queue is; notices own the bottom-left corner.
-        let place = (self.viewport, egui::vec2(-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap));
-        let Some(caps) = self.budgets.show(ctx, place, &self.budget_caps, spent.as_ref(), t) else { return };
+        let Some(caps) = self.budgets.show(ctx, &self.budget_caps, spent.as_ref(), t) else { return };
         #[cfg(not(target_arch = "wasm32"))]
         let kept = if let Some(store) = &mut self.store {
             store.update(|settings| settings.budgets = caps.clone());

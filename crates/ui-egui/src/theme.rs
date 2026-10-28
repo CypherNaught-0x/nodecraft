@@ -121,6 +121,9 @@ pub struct Tokens {
     pub grid_dot_radius: f32,
     pub card_radius: u8,
     pub panel_radius: u8,
+    /// A floating panel's header band, title and close button included: how far a panel that
+    /// opens over another steps down so the one beneath keeps its header in view (#957).
+    pub panel_cascade: f32,
     /// Inner padding of a card.
     pub card_padding: f32,
     /// Gap between the label and the top of its card.
@@ -293,6 +296,7 @@ pub const DARK: Tokens = Tokens {
     grid_dot_radius: 1.0,
     card_radius: 14,
     panel_radius: 12,
+    panel_cascade: 44.0,
     card_padding: 16.0,
     label_gap: 6.0,
     label_size: 10.5,
