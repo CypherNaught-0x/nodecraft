@@ -21,7 +21,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done | 14/14 |
 | 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), variations (#81), cost and budget checks (#201) | 43/46 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done (close-out #375) | 13/14 |
-| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; batch node complete (#92), first signed release pending | 19/30 |
+| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; batch node complete (#92), first signed release pending | 25/33 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 10/13 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 28/31 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 9/13 |
@@ -363,4 +363,4 @@ The near-term order follows the remaining open issues, not an already-finished w
 - **2026-10-28** — the Batch node is complete (#92): a batch collecting another batch flattens
   its items into its own (bounded at 1,000 items and 16 batches per chain, every item quoted
   before the run), and "Review items…" on a fanned card steps through each item's result, with a
-  rows × columns grid for a Cross of two batches that marks failed and cancelled cells. M5 19/30.
+  rows × columns grid for a Cross of two batches that marks failed and cancelled cells. M5 25/33.
