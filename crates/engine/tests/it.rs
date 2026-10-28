@@ -217,3 +217,6 @@ mod svg_template35;
 mod minimax27;
 #[path = "pika29.rs"]
 mod pika29;
+
+#[path = "heygen43.rs"]
+mod heygen43;

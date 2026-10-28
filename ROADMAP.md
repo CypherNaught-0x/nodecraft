@@ -148,6 +148,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   current Pika 2.5 through fal (#29), at 720p for 5 or 10 seconds with explicit priced consent.
   Browser sessions refuse before payment. Text-to-video and keyframes are not included; see
   [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
+- **HeyGen**: desktop projects and the native CLI animate a photo or lip-sync an MP4 with
+  supplied speech through fal (#43). Monetary pricing remains unknown and requires consent;
+  see [`docs/providers.md`](docs/providers.md#heygen-through-fal-43) for client limits.
 - **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
   photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
   spending remains an unknown monetary quote and needs explicit consent. Browser and Classic

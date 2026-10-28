@@ -1,7 +1,9 @@
 //! Container envelope validation only for WAV/MP4/GLB; image payloads use actual codecs.
 use super::*;
+pub(super) mod heygen;
 pub(super) mod minimax;
 pub(super) mod pika;
+pub(super) mod video;
 fn bad() -> ProviderError {
     malformed("fal output is not a bounded valid supported media envelope")
 }
@@ -298,7 +300,10 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             drop(decoded);
             Ok(m.mime)
         }
-        Model::Pika
+        Model::HeygenAvatar
+        | Model::HeygenSpeed
+        | Model::HeygenPrecision
+        | Model::Pika
         | Model::Wan3Text
         | Model::Wan3Frames
         | Model::GrokText
@@ -311,6 +316,9 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
         | Model::LtxText
         | Model::LtxFrames => {
             mp4(b)?;
+            if r.model.heygen() {
+                heygen::output(b, l)?;
+            }
             if r.model == Model::Pika {
                 pika::probe(b, l)?;
             }

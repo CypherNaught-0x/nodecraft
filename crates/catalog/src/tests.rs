@@ -75,6 +75,8 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 other => panic!("{other}: no verified Grok price"),
             };
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
+        } else if model.id.starts_with("fal.heygen-") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
         } else if model.id.starts_with("fal.minimax-") {
             let micros = if model.id == "fal.minimax-music3" {
                 Some(120_000)
@@ -319,6 +321,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.grok-image2-edit", false),
             ("fal.grok-video15", false),
             ("fal.grok-video15-i2v", false),
+            ("fal.heygen-lipsync-precision", false),
+            ("fal.heygen-lipsync-speed", false),
+            ("fal.heygen-avatar4", false),
             ("fal.hunyuan3d-v3-image", false),
             ("fal.hunyuan3d-v3-sketch", false),
             ("fal.hunyuan3d-v3", false),
