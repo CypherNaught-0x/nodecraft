@@ -11,9 +11,13 @@ MAIN_STEM="${main[0]%_bg.wasm}"
 for expected in "$MAIN_STEM.js" "$SITE/nodecraft-mesh-worker.js" "$SITE/nodecraft-mesh-worker_loader.js"; do
   if [ ! -f "$expected" ]; then echo "error: missing generated loader/wrapper: $expected" >&2; exit 1; fi
 done
-if ! grep -Fq 'nodecraft-mesh-worker.js' "$SITE/nodecraft-mesh-worker_loader.js" ||
-   ! grep -Fq 'nodecraft-mesh-worker_bg.wasm' "$SITE/nodecraft-mesh-worker_loader.js"; then
-  echo "error: worker shim does not reference its adjacent wrapper and Wasm" >&2; exit 1
+if ! grep -Fq "from './nodecraft-mesh-worker.js'" "$SITE/nodecraft-mesh-worker_loader.js" ||
+   ! grep -Fq "new URL('nodecraft-mesh-worker_bg.wasm', import.meta.url)" "$SITE/nodecraft-mesh-worker.js"; then
+  echo "error: worker shim/wrapper do not resolve their adjacent generated artifacts" >&2; exit 1
+fi
+if ! grep -Fq "./${MAIN_STEM##*/}.js" "$SITE/index.html" ||
+   ! grep -Fq "./${main[0]##*/}" "$SITE/index.html"; then
+  echo "error: main HTML does not reference its generated wrapper and Wasm" >&2; exit 1
 fi
 if grep -Eq 'integrity[[:space:]]*=' "$SITE/index.html"; then
   echo "error: stale integrity attributes are incompatible with post-Trunk wasm-opt" >&2; exit 1
