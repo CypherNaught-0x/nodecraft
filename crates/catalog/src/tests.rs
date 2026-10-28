@@ -1128,3 +1128,53 @@ fn a_model_cards_dont_offer_is_kept_but_never_picked() {
     let unlisted = PRICED.replace("quality = 5", "quality = 5\ncards = false");
     assert!(!Catalog::from_toml(&unlisted).unwrap().models().next().unwrap().cards);
 }
+
+/// A text model whose one mode takes `inputs` and declares `reads` (#84).
+fn watcher(inputs: &str, reads: &str, output: &str) -> Result<Catalog, nodecraft_types::Error> {
+    Catalog::from_toml(&format!(
+        r#"
+[[model]]
+id = "test.watcher"
+provider = "test"
+provider_model = "watcher-v1"
+label = "Test Watcher"
+description = "Reads clips."
+latency_s = 10
+quality = 3
+pricing = {{ type = "per_call", price = "0.01 USD" }}
+
+[[model.modes]]
+id = "read"
+output = "{output}"
+inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }}{inputs}]
+{reads}
+"#
+    ))
+}
+
+#[test]
+fn reading_capabilities_are_explicit_and_need_the_inputs_they_describe() {
+    const VIDEO: &str = r#", { role = "clip", modality = "video", min = 1, max = 1 }"#;
+    const AUDIO: &str = r#", { role = "talk", modality = "audio", min = 1, max = 1 }"#;
+    let catalog = watcher(VIDEO, r#"reads = { context_tokens = 32000, frames = { every_ms = 1000, max = 64 }, timestamps = true }"#, "text").unwrap();
+    let reads = catalog.get("test.watcher").unwrap().mode("read").and_then(|mode| mode.reads.clone()).unwrap();
+    assert_eq!(reads.frames, Some(nodecraft_types::FrameSampling { every_ms: 1000, max: 64 }));
+    assert!(reads.timestamps && !reads.speakers, "only what is declared is promised");
+    assert!(watcher(AUDIO, "reads = { timestamps = true, speakers = true }", "text").is_ok());
+    assert!(watcher("", "reads = { context_tokens = 200000, max_output_tokens = 8000 }", "text").is_ok());
+    assert!(watcher("", "", "text").unwrap().get("test.watcher").unwrap().mode("read").unwrap().reads.is_none(), "declaring nothing is allowed");
+    for (inputs, reads, output, reason) in [
+        (VIDEO, "", "text", "says how it samples frames"),
+        (VIDEO, "reads = { context_tokens = 32000 }", "text", "exactly when the mode takes a video"),
+        ("", "reads = { frames = { every_ms = 1000, max = 64 } }", "text", "exactly when the mode takes a video"),
+        ("", "reads = { speakers = true }", "text", "need an audio or video input"),
+        ("", "reads = { context_tokens = 0 }", "text", "`context_tokens` is 1 to"),
+        (VIDEO, "reads = { frames = { every_ms = 0, max = 64 } }", "text", "`frames.every_ms`"),
+        ("", "reads = { context_tokens = 1000, max_output_tokens = 2000 }", "text", "can't be more than"),
+        ("", "reads = { context_tokens = 1000 }", "image", "describes a text answer"),
+        ("", "reads = { fps = 1 }", "text", ""),
+    ] {
+        let error = watcher(inputs, reads, output).unwrap_err();
+        assert!(error.message.contains(reason), "{reads}: {}", error.message);
+    }
+}

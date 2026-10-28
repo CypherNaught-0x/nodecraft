@@ -351,6 +351,9 @@ fn model_details(ui: &mut egui::Ui, model: &ModelDescriptor) {
         if let Some(document) = &mode.document {
             ui.label(document.summary());
         }
+        if let Some(line) = mode.reads.as_ref().map(nodecraft_types::ReadingUse::summary).filter(|line| !line.is_empty()) {
+            ui.label(line);
+        }
         if let Some(params) = &mode.params {
             ui.label(if params.is_empty() { "Sends no settings".to_owned() } else { format!("Sends only: {}", params.join(", ")) });
         }
