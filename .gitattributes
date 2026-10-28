@@ -5,3 +5,5 @@ crates/plugin/fixtures/** -text
 examples/plugins/** -text
 # PLY's golden layout is byte-exact; tests create CRLF/bare-CR variants explicitly.
 crates/media/src/mesh/fixtures/original-rgba.ply -text
+# Original USDA and its independent USDZ package have frozen byte digests (#1019).
+crates/media/src/mesh/fixtures/original-indexed.usda -text

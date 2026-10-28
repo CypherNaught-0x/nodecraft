@@ -108,6 +108,8 @@ can also be reordered. Numeric tuples and arrays accept ordinary whitespace, com
 line comments. Unknown/duplicate fields, nonvertex interpolation, polygons, subdivision,
 time samples, transforms, material/texture references, composition arcs and USDC are refused.
 Save a compatible static mesh with the required attributes before importing it here.
+LF, CRLF and CR input line endings are accepted; output uses LF. CRLF counts as one line
+for the metadata limit, and comments end at any supported line ending.
 
 RGB and alpha retain the existing Mesh's linear channel data without quantization or
 premultiplication, including fully transparent RGB. The viewer and existing GLB material
@@ -132,6 +134,13 @@ recursive scene traversal. Non-finite/unrepresentable numbers, zero normals, zer
 faces and unrepresentable preview spheres are errors. Bounds use f64 intermediates to avoid
 overflow when their final float32 sphere remains representable; other formats share that
 arithmetic improvement, without changing the renderer or their admission policy.
+
+A finite interchange mesh can still exceed the current preview camera's float32 numeric
+range. Such a model reports **3D preview unavailable at this coordinate range** before
+GPU upload. Its valid geometry, original coordinates and bytes remain available for saving
+and conversion; they are never rescaled to make a preview. The same check guards the current
+orbit before drawing, so Reset remains available if an extreme zoom makes a previously
+usable view unavailable. This capability check does not redesign the camera or shaders.
 
 The writer validates geometry and counts the complete formatted layer plus ZIP headers,
 alignment and footer before output allocation. Convert 3D retains its **16 MiB result cap**.

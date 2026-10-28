@@ -36,6 +36,7 @@ const GPU_MESH_FRAMES: u64 = 600;
 const RETRY_FRAMES: u64 = 30;
 /// Frames a card's offscreen image survives without being drawn.
 const TARGET_FRAMES: u64 = 120;
+const RANGE_UNAVAILABLE: &str = "3D preview unavailable at this coordinate range";
 
 /// The 3D model a node shows: a Source 3D node's asset, else the first model in its active result.
 pub fn mesh_of(node: &Node) -> Option<&AssetRef> {
@@ -75,6 +76,11 @@ impl Model {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mesh = decode_mesh(bytes, &MeshLimits::default()).map_err(|_| "Can't read this 3D model")?;
             let bounds = mesh.bounds().ok_or("This 3D model is empty")?;
+            let center = bounds.center();
+            let radius = bounds.radius();
+            if Orbit::default().checked_view_projection(center, radius, 1.0).is_none() {
+                return Err(RANGE_UNAVAILABLE);
+            }
             let edges = mesh.edges(MAX_EDGES);
             let bytes = mesh
                 .positions
@@ -82,16 +88,7 @@ impl Model {
                 .saturating_mul(40)
                 .saturating_add(mesh.indices.len().saturating_mul(4))
                 .saturating_add(edges.as_ref().map_or(0, |e| e.len().saturating_mul(4)));
-            Ok(Self {
-                center: bounds.center(),
-                radius: bounds.radius(),
-                positions: mesh.positions,
-                normals: mesh.normals,
-                colors: mesh.colors,
-                indices: mesh.indices,
-                edges,
-                bytes,
-            })
+            Ok(Self { center, radius, positions: mesh.positions, normals: mesh.normals, colors: mesh.colors, indices: mesh.indices, edges, bytes })
         }))
         .unwrap_or(Err("Can't read this 3D model"))
     }
@@ -417,7 +414,10 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
                 Style::Wireframe => "wireframe",
             };
             let triangles = model.triangles();
-            if gpu {
+            let available = view.orbit.checked_view_projection(model.center, model.radius, area.width() / area.height().max(1.0)).is_some();
+            if !available {
+                text(RANGE_UNAVAILABLE);
+            } else if gpu {
                 // Under the drawing: shows only if the GPU can't take the model.
                 text("Can't draw this 3D model here");
                 let ppp = ui.ctx().pixels_per_point();
@@ -453,7 +453,7 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
                 view.changed(response.dragged());
                 ui.ctx().request_repaint();
             }
-            format!("3D model, {triangles} triangles, {style} view")
+            if available { format!("3D model, {triangles} triangles, {style} view") } else { RANGE_UNAVAILABLE.to_owned() }
         }
         MeshPreview::Pending => {
             text("Loading 3D model…");
@@ -559,6 +559,13 @@ impl MeshResources {
     }
 
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, call: &MeshCallback) {
+        let [width, height] = call.size;
+        if call.view.orbit.checked_view_projection(call.view.center, call.view.radius, width as f32 / height.max(1) as f32).is_none() {
+            if let Some(slot) = self.targets.get_mut(&call.slot) {
+                slot.drawn = None;
+            }
+            return;
+        }
         if !self.mesh(device, queue, call.hash, &call.model, call.frame) {
             return;
         }
@@ -669,5 +676,7 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
     }
 }
 
+#[cfg(test)]
+mod range1019_tests;
 #[cfg(test)]
 mod tests;

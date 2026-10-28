@@ -84,6 +84,27 @@ fn usdz1019_rejects_unsupported_schema_and_full_body_before_geometry_allocation(
         refuse_layer(LAYER.get(..n).unwrap());
     }
 }
+
+#[test]
+fn usdz1019_metadata_line_limit_counts_cr_lf_and_crlf_and_comments() {
+    for ending in ["\n", "\r\n", "\r"] {
+        let exact = LAYER.replacen("(\n", &format!("(\n{}", ending.repeat(60)), 1);
+        assert_ne!(exact, LAYER, "the exact-boundary fixture must actually add metadata lines");
+        let bytes = usdz::package_layer(exact.as_bytes()).unwrap();
+        assert_eq!(decode_mesh(&bytes, &Default::default()).unwrap(), indexed(), "exact64 logical metadata lines {ending:?}");
+        let over = LAYER.replacen("(\n", &format!("(\n{}", ending.repeat(61)), 1);
+        assert_ne!(over, LAYER, "the over-limit fixture must actually add metadata lines");
+        let bytes = usdz::package_layer(over.as_bytes()).unwrap();
+        usdz::reset_allocations();
+        assert!(decode_mesh(&bytes, &Default::default()).is_err(), "65 logical metadata lines {ending:?}");
+        assert_eq!(usdz::allocations(), [0, 0]);
+        let with_comments = LAYER.replace("    int[] faceVertexCounts", "    # original comment\n    int[] faceVertexCounts");
+        assert_ne!(with_comments, LAYER, "the comment mutation must not silently become a no-op");
+        let comments = with_comments.replace('\n', ending);
+        let bytes = usdz::package_layer(comments.as_bytes()).unwrap();
+        assert_eq!(decode_mesh(&bytes, &Default::default()).unwrap(), indexed(), "line comments terminate at {ending:?}");
+    }
+}
 #[test]
 fn usdz1019_container_authorities_crc_alignment_and_extents_are_all_checked() {
     let bytes = encode_usdz(&indexed(), 1 << 20).unwrap();

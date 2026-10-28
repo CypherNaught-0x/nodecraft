@@ -38,6 +38,15 @@ of a nonfinite or float32-unrepresentable preview sphere; do not clamp an incorr
 redesign the renderer. Large finite representable bounds no longer overflow only because an
 intermediate f32 square/sum did. An extreme unrepresentable span remains refused by USDZ.
 
+Representable bounds do not imply the existing f32 camera can project them. Keep valid
+interchange geometry unchanged when that camera's actual matrix is nonfinite: the preview
+reports a coordinate-range unavailable reason before edge/buffer preparation or GPU upload.
+Check each current orbit before callbacks as well, retaining Reset for a recoverable zoom.
+Expose a small checked wrapper around the existing camera math so native and browser-worker
+preview consumers share admission without changing the pure codec or rescaling source data.
+Count CR, LF and CRLF metadata line endings consistently (CRLF once); comments terminate at
+each supported ending. The writer's deterministic LF bytes are unchanged.
+
 Primary references checked 2026-10-28: [USDZ specification](https://openusd.org/release/spec_usdz.html),
 [Mesh schema](https://openusd.org/release/api/class_usd_geom_mesh.html),
 [Gprim schema](https://openusd.org/release/api/class_usd_geom_gprim.html),

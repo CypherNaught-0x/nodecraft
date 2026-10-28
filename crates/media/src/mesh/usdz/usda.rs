@@ -18,7 +18,7 @@ impl<'a> Lexer<'a> {
             if b.is_ascii_whitespace() {
                 self.at += 1;
             } else if *b == b'#' {
-                while bytes.get(self.at).is_some_and(|b| *b != b'\n') {
+                while bytes.get(self.at).is_some_and(|b| !matches!(b, b'\r' | b'\n')) {
                     self.at += 1;
                 }
             } else {
@@ -126,10 +126,21 @@ pub(super) struct Counts {
     pub vertices: usize,
     pub triangles: usize,
 }
+fn line_breaks(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut count = 0usize;
+    for (at, &byte) in bytes.iter().enumerate() {
+        if byte == b'\n' || byte == b'\r' && bytes.get(at.saturating_add(1)) != Some(&b'\n') {
+            count += 1;
+        }
+    }
+    count
+}
 pub(super) fn parse(text: &str, limits: &MeshLimits, mut target: Option<&mut Mesh>) -> Result<Counts, MediaError> {
     let rest = text
         .strip_prefix("#usda 1.0\n")
         .or_else(|| text.strip_prefix("#usda 1.0\r\n"))
+        .or_else(|| text.strip_prefix("#usda 1.0\r"))
         .ok_or_else(|| invalid("USDZ profile requires a USDA 1.0 text layer"))?;
     let mut lex = Lexer { text: rest, at: 0 };
     lex.expect("(")?;
@@ -165,7 +176,7 @@ pub(super) fn parse(text: &str, limits: &MeshLimits, mut target: Option<&mut Mes
         metadata |= bit;
     }
     lex.expect(")")?;
-    if metadata != 7 || lex.at > 16 * 1024 || rest.get(..lex.at).is_none_or(|s| s.bytes().filter(|b| *b == b'\n').count() > 64) {
+    if metadata != 7 || lex.at > 16 * 1024 || rest.get(..lex.at).is_none_or(|s| line_breaks(s) > 64) {
         return Err(invalid("USDZ requires bounded defaultPrim, Y-up and unit metadata"));
     }
     lex.expect("def")?;
