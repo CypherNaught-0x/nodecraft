@@ -3,3 +3,5 @@ crates/testkit/tests/golden/*.json text eol=lf
 crates/plugin/fixtures/** -text
 # Example plugin packages are packed in tests with frozen digests (#175): never convert line endings.
 examples/plugins/** -text
+# PLY's golden layout is byte-exact; tests create CRLF/bare-CR variants explicitly.
+crates/media/src/mesh/fixtures/original-rgba.ply -text

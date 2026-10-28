@@ -1,6 +1,15 @@
 //! Independently authored ASCII bytes and adversarial admission cases, not vendor fixtures.
 use super::*;
 const FIXTURE: &[u8] = include_bytes!("fixtures/original-rgba.ply");
+fn fixture_text() -> &'static str {
+    assert!(!FIXTURE.contains(&b'\r'), "the byte-exact PLY fixture must retain its committed LF layout through .gitattributes");
+    std::str::from_utf8(FIXTURE).unwrap()
+}
+fn replace_case(text: &str, from: &str, to: &str) -> String {
+    let changed = text.replacen(from, to, 1);
+    assert_ne!(changed, text, "fixture mutation must change its input: {from:?}");
+    changed
+}
 fn triangle() -> Mesh {
     Mesh {
         positions: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]],
@@ -62,7 +71,8 @@ fn ply1011_exact_input_output_and_decoded_limits_precede_owned_allocations() {
 }
 #[test]
 fn ply1011_supported_line_endings_comments_aliases_and_normal_normalization() {
-    let text = std::str::from_utf8(FIXTURE).unwrap();
+    let text = fixture_text();
+    let lines = text.matches('\n').count() + 1;
     for ending in ["\n", "\r\n", "\r"] {
         let text = text
             .replace("format ascii 1.0\n", "format ascii 1.0\ncomment original profile test\n")
@@ -71,6 +81,8 @@ fn ply1011_supported_line_endings_comments_aliases_and_normal_normalization() {
             .replace("uint8 int vertex_indices", "uint8 int32 vertex_index")
             .replace(" 0 0 1 ", " 0 0 2 ")
             .replace('\n', ending);
+        assert_eq!(text.matches('\n').count(), if ending == "\r" { 0 } else { lines });
+        assert_eq!(text.matches('\r').count(), if ending == "\n" { 0 } else { lines });
         let m = decode(text.as_bytes()).unwrap();
         assert_eq!(m.normals, vec![[0., 0., 1.]; 3]);
     }
@@ -85,7 +97,7 @@ fn ply1011_supported_line_endings_comments_aliases_and_normal_normalization() {
 }
 #[test]
 fn ply1011_complete_body_and_all_header_fields_refuse_before_geometry_allocation() {
-    let text = std::str::from_utf8(FIXTURE).unwrap();
+    let text = fixture_text();
     let mut invalid = vec![];
     for (a, b) in [
         ("ascii 1.0", "binary_little_endian 1.0"),
@@ -112,16 +124,17 @@ fn ply1011_complete_body_and_all_header_fields_refuse_before_geometry_allocation
         ("0 0 0 0 0 1", "1e-99 0 0 0 0 1"),
         ("0 0 0 0 0 1", "1e-999 0 0 0 0 1"),
     ] {
-        invalid.push(text.replacen(a, b, 1).into_bytes());
+        invalid.push(replace_case(text, a, b).into_bytes());
     }
     invalid.push([FIXTURE, b"\n"].concat());
     invalid.push([FIXTURE, b"3 0 1 2\n"].concat());
-    invalid.push(text.replace("format ascii 1.0\n", &format!("format ascii 1.0\n{}", "comment x\n".repeat(65))).into_bytes());
-    invalid.push(text.replace("format ascii 1.0\n", &format!("format ascii 1.0\n{}", format!("comment {}\n", "x".repeat(1000)).repeat(17))).into_bytes());
-    invalid.push(text.replace("0 0 0 0 0 1", &format!("{} 0 0 0 0 1", "1".repeat(65))).into_bytes());
-    invalid.push(text.replace("0 0 0 0 0 1", &format!("{} 0 0 0 0 1", "1".repeat(1025))).into_bytes());
-    invalid.push(text.replace("end_header", "end_header\0").into_bytes());
+    invalid.push(replace_case(text, "format ascii 1.0\n", &format!("format ascii 1.0\n{}", "comment x\n".repeat(65))).into_bytes());
+    invalid.push(replace_case(text, "format ascii 1.0\n", &format!("format ascii 1.0\n{}", format!("comment {}\n", "x".repeat(1000)).repeat(17))).into_bytes());
+    invalid.push(replace_case(text, "0 0 0 0 0 1", &format!("{} 0 0 0 0 1", "1".repeat(65))).into_bytes());
+    invalid.push(replace_case(text, "0 0 0 0 0 1", &format!("{} 0 0 0 0 1", "1".repeat(1025))).into_bytes());
+    invalid.push(replace_case(text, "end_header", "end_header\0").into_bytes());
     for bytes in invalid {
+        assert_ne!(bytes.as_slice(), FIXTURE, "every hostile fixture must differ from the valid input");
         ply::reset_allocations();
         assert!(decode(&bytes).is_err(), "{}", String::from_utf8_lossy(&bytes));
         assert_eq!(ply::allocations(), [0, 0]);
@@ -174,9 +187,9 @@ fn ply1011_all_rgba_byte_values_survive_decode_encode_without_premultiplication(
 
 #[test]
 fn ply1011_exact_header_line_and_token_caps_are_admitted_and_one_over_refused() {
-    let text = std::str::from_utf8(FIXTURE).unwrap();
+    let text = fixture_text();
     let base_lines = text.split("end_header\n").next().unwrap().lines().count() + 1;
-    let with_lines = |n: usize| text.replace("format ascii 1.0\n", &format!("format ascii 1.0\n{}", "comment x\n".repeat(n - base_lines)));
+    let with_lines = |n: usize| replace_case(text, "format ascii 1.0\n", &format!("format ascii 1.0\n{}", "comment x\n".repeat(n - base_lines)));
     assert!(decode(with_lines(64).as_bytes()).is_ok());
     assert!(decode(with_lines(65).as_bytes()).is_err());
     let base_bytes = text.find("end_header\n").unwrap() + "end_header\n".len();
@@ -188,12 +201,12 @@ fn ply1011_exact_header_line_and_token_caps_are_admitted_and_one_over_refused() 
             remaining -= 1025;
         }
         comments.push_str(&format!("comment {}\n", "x".repeat(remaining - 9)));
-        text.replace("format ascii 1.0\n", &format!("format ascii 1.0\n{comments}"))
+        replace_case(text, "format ascii 1.0\n", &format!("format ascii 1.0\n{comments}"))
     };
     assert!(decode(with_bytes(16384).as_bytes()).is_ok());
     assert!(decode(with_bytes(16385).as_bytes()).is_err());
-    assert!(decode(text.replace("format ascii 1.0\n", &format!("format ascii 1.0\ncomment {}\n", "x".repeat(1016))).as_bytes()).is_ok());
-    assert!(decode(text.replace("format ascii 1.0\n", &format!("format ascii 1.0\ncomment {}\n", "x".repeat(1017))).as_bytes()).is_err());
-    assert!(decode(text.replace("0 0 0 0 0 1", &format!("0.{} 0 0 0 0 1", "0".repeat(62))).as_bytes()).is_ok());
-    assert!(decode(text.replace("0 0 0 0 0 1", &format!("0.{} 0 0 0 0 1", "0".repeat(63))).as_bytes()).is_err());
+    assert!(decode(replace_case(text, "format ascii 1.0\n", &format!("format ascii 1.0\ncomment {}\n", "x".repeat(1016))).as_bytes()).is_ok());
+    assert!(decode(replace_case(text, "format ascii 1.0\n", &format!("format ascii 1.0\ncomment {}\n", "x".repeat(1017))).as_bytes()).is_err());
+    assert!(decode(replace_case(text, "0 0 0 0 0 1", &format!("0.{} 0 0 0 0 1", "0".repeat(62))).as_bytes()).is_ok());
+    assert!(decode(replace_case(text, "0 0 0 0 0 1", &format!("0.{} 0 0 0 0 1", "0".repeat(63))).as_bytes()).is_err());
 }
