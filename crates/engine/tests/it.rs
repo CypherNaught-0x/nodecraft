@@ -220,3 +220,6 @@ mod pika29;
 
 #[path = "heygen43.rs"]
 mod heygen43;
+
+#[path = "stl569.rs"]
+mod stl569;
