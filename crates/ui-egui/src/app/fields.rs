@@ -440,7 +440,7 @@ impl NodeCraftApp {
         let Some((id, mut title)) = self.fields.rename.take() else { return };
         let mut keep = true;
         let mut save = false;
-        egui::Window::new("Rename field").collapsible(false).resizable(false).show(ctx, |ui| {
+        egui::Window::new("Rename field").order(egui::Order::Foreground).collapsible(false).resizable(false).show(ctx, |ui| {
             let label = ui.label("Field name");
             let edit = ui.add(egui::TextEdit::singleline(&mut title).char_limit(4096)).labelled_by(label.id);
             if !edit.has_focus() && !edit.lost_focus() && ctx.memory(|m| m.focused().is_none()) {
