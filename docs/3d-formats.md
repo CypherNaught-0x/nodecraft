@@ -87,3 +87,23 @@ the `PLY_FILES.txt` documentation in the original author's
 [PLY archive](https://sites.cc.gatech.edu/home/turk/ply.tar.gz), and the
 [IANA media-type registry](https://www.iana.org/assignments/media-types).
 Implementation and test geometry are original; no third-party decoder or assets are included.
+
+## Browser previews
+
+Browser 3D cards decode and prepare their GPU buffers on a dedicated Rust/Wasm worker. The
+original remains in the asset store for saving, history and export. Preview availability does
+not change what a conversion writes. The browser keeps its existing 16 MiB per-original and
+48 MiB total resident-storage limits, with independent preview bounds: 600,000 decoded
+vertices, 300,000 triangles and 900,000 unique wireframe edges. A file within 16 MiB can still
+exceed those decoded bounds. Extra edges omit wireframe, as on desktop.
+
+The browser profile admits up to four 1-megapixel base-color textures for vertex-color baking;
+large textures fall back to the material/vertex color under the existing decoder policy. This
+is a preview resource bound, not retained-texture or transparent-material rendering.
+
+A missing, incompatible or timed-out worker produces a named preview failure while the rest
+of the canvas remains editable. Reload retries the worker. Models no longer decode inline on
+the browser UI thread. Main-thread transfer/validation is chunked; the final admitted GPU
+upload still takes time proportional to model size. See the
+[browser worker decision](decisions/2026-10-28-browser-mesh-worker.md) for ownership and resource
+accounting, deployment and conformance coverage.

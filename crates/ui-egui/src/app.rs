@@ -1335,7 +1335,22 @@ impl NodeCraftApp {
         let file_owns_input = self.results_overlay(ui.ctx()) || self.export_overlay(ui.ctx()) || file_owns_input;
         self.videos.poll(ui.ctx());
         self.audios.poll(ui.ctx());
-        self.meshes.poll();
+        self.meshes.bind_session(
+            crate::navigation::Geometry::identity(&mut self.session),
+            self.session.document().id(),
+            self.canvas,
+            self.session.assets().context(),
+        );
+        if ui.ctx().current_pass_index() == 0 {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.meshes.poll();
+            #[cfg(target_arch = "wasm32")]
+            {
+                let canvas = self.session.document().canvases().get(&self.canvas);
+                self.meshes
+                    .poll_current(ui.ctx(), |owner| canvas.and_then(|c| c.nodes().get(&owner)).and_then(crate::mesh_view::mesh_of).map(|asset| asset.hash));
+            }
+        }
         if let Some(render) = &self.mesh_render {
             crate::mesh_view::prune(render, ui.ctx().cumulative_frame_nr());
         }
@@ -1818,7 +1833,7 @@ impl NodeCraftApp {
                 let mesh = match crate::mesh_view::mesh_of(node) {
                     Some(asset) if self.view.zoom >= card::BODY_MIN_ZOOM => {
                         let assets = self.session.assets();
-                        let preview = self.meshes.request(ui.ctx(), asset, || assets.preview_read(asset));
+                        let preview = self.meshes.request(ui.ctx(), node.id, asset, || assets.preview_read(asset));
                         let view = self.mesh_views.entry(node.id).or_default();
                         view.bind(self.session.document().id(), self.canvas, node);
                         Some(crate::mesh_view::CardMesh { preview, view, gpu: self.mesh_gpu })

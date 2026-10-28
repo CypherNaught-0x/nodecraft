@@ -13,7 +13,7 @@ fn a_model_decodes_with_its_bounds_and_edges() {
     assert_eq!(model.center, [0.5, 0.5, 0.0]);
     assert!(model.radius > 0.7 && model.radius < 0.71);
     // Four sides and the diagonal, each once.
-    assert_eq!(model.edges.as_ref().map(Vec::len), Some(10));
+    assert_eq!(model.prepared.layout().edge_words, 10);
     assert!(model.bytes > 0);
 }
 
@@ -81,4 +81,32 @@ fn ply1011_model_preview_decodes_authored_rgba_geometry() {
     let mut meshes = Meshes::default();
     meshes.inline(hash(11), bytes);
     assert!(matches!(meshes.entries.get(&hash(11)), Some(Entry::Ready { .. })));
+}
+
+#[test]
+fn worker1013_scope_changes_discard_models_but_ordinary_frame_binding_reuses_them() {
+    use nodecraft_types::{CanvasId, ProjectId};
+    let identity = Arc::new(crate::navigation::SessionIdentity);
+    let context = nodecraft_format::AssetContext::default();
+    let project = ProjectId::from_bytes([1; 16]);
+    let canvas = CanvasId::from_bytes([2; 16]);
+    let mut meshes = Meshes::default();
+    meshes.bind_session(identity.clone(), project, canvas, &context);
+    meshes.inline(hash(90), QUAD);
+    let size = meshes.bytes();
+    assert!(size > 0);
+    meshes.bind_session(identity.clone(), project, canvas, &context.clone());
+    assert_eq!(meshes.bytes(), size, "pan/zoom/orbit and unrelated edits do not replace session/context scope");
+    meshes.bind_session(identity.clone(), project, CanvasId::from_bytes([3; 16]), &context);
+    assert_eq!(meshes.bytes(), 0);
+    assert!(meshes.entries.is_empty());
+    meshes.inline(hash(90), QUAD);
+    meshes.bind_session(identity.clone(), project, CanvasId::from_bytes([3; 16]), &nodecraft_format::AssetContext::default());
+    assert_eq!(meshes.bytes(), 0, "same content identity in another asset context does not retain pending authority");
+    meshes.inline(hash(90), QUAD);
+    meshes.bind_session(identity.clone(), ProjectId::from_bytes([4; 16]), canvas, &context);
+    assert_eq!(meshes.bytes(), 0);
+    meshes.inline(hash(90), QUAD);
+    meshes.bind_session(Arc::new(crate::navigation::SessionIdentity), ProjectId::from_bytes([4; 16]), canvas, &context);
+    assert_eq!(meshes.bytes(), 0);
 }

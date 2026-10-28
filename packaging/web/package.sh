@@ -58,23 +58,19 @@ if [ ! -f "$SITE/index.html" ]; then
   exit 1
 fi
 
-shopt -s nullglob
-wasm=("$SITE"/*.wasm)
-shopt -u nullglob
-if [ "${#wasm[@]}" -ne 1 ]; then
-  echo "error: expected one .wasm in $SITE, found ${#wasm[@]}" >&2
-  exit 1
-fi
+. "$ROOT/packaging/web/inventory.sh"
 if [ "$SKIP_BUILD" = 1 ]; then
   echo "wasm-opt: skipped (--skip-build reuses the already optimised site)"
 elif command -v wasm-opt >/dev/null; then
-  before="$(wc -c <"${wasm[0]}" | tr -d ' ')"
+  for module in "${wasm[@]}"; do
+  before="$(wc -c <"$module" | tr -d ' ')"
   # The features rustc enables by default for wasm32, so wasm-opt accepts the module.
   wasm-opt -Oz --enable-bulk-memory --enable-mutable-globals --enable-nontrapping-float-to-int \
     --enable-sign-ext --enable-reference-types --enable-multivalue \
-    -o "${wasm[0]}.opt" "${wasm[0]}"
-  mv "${wasm[0]}.opt" "${wasm[0]}"
-  echo "wasm-opt: $before -> $(wc -c <"${wasm[0]}" | tr -d ' ') bytes"
+    -o "$module.opt" "$module"
+  mv "$module.opt" "$module"
+  echo "wasm-opt: ${module##*/}: $before -> $(wc -c <"$module" | tr -d ' ') bytes"
+  done
 else
   warn "wasm-opt (binaryen) not found: the .wasm ships unoptimised by it"
 fi

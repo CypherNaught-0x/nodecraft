@@ -89,6 +89,13 @@ pub struct MeshLimits {
     pub max_texture_pixels: u64,
     /// Most textures decoded for one mesh; the rest are left out.
     pub max_textures: usize,
+    /// Per-texture image decoder budget, including decoded pixels and orientation admission.
+    /// RGBA conversion, other retained textures and codec overhead are separate resource costs.
+    pub max_texture_alloc: u64,
+    /// JSON values admitted before typed glTF parsing, additionally capped by its hard ceiling.
+    pub max_json_values: usize,
+    /// JSON objects admitted before typed glTF parsing, additionally capped by its hard ceiling.
+    pub max_json_objects: usize,
 }
 
 impl Default for MeshLimits {
@@ -101,6 +108,9 @@ impl Default for MeshLimits {
             max_depth: 64,
             max_texture_pixels: 4096 * 4096,
             max_textures: 16,
+            max_texture_alloc: 512 * 1024 * 1024,
+            max_json_values: 4_000_000,
+            max_json_objects: 262_144,
         }
     }
 }
