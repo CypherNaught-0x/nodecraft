@@ -549,6 +549,9 @@ fn template(id: &str) -> (Session, Value) {
         "sheet.row_move" => json!({"canvas":sheet,"row":sheet_rows[1],"index":0}),
         "sheet.reference_wire" => json!({"canvas":sheet,"seed":node_id(0x54),"reference":node_id(0x53),"rows":[sheet_rows[1]]}),
         "sheet.reference_unwire" => json!({"canvas":sheet,"reference":node_id(0x53),"rows":[sheet_rows[0]]}),
+        "sheet.expand" => {
+            json!({"canvas":sheet,"seed":node_id(0x56),"template":"a {{colour}} fox","variables":[{"name":"colour","text":["red","blue"]}],"copies":2})
+        }
         "technique.check" => json!({"canvas":canvas(),"outputs":[{"node":node_id(0x63)}]}),
         "technique.publish" => {
             json!({"canvas":canvas(),"published":technique_canvas,"seed":node_id(0x64),"technique":technique,"name":"Note","outputs":[{"node":node_id(0x63)}]})

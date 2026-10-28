@@ -6,7 +6,7 @@
 //! Commands that add several nodes or wires take one caller-supplied `seed` and derive every new
 //! id from it, so replay stays deterministic without the caller listing hundreds of ids.
 use crate::commands::{CommandSpec, Context, Effect, Phase, invalid, params};
-use nodecraft_graph::{Canvas, CanvasKind, Change, Changeset, Edge, Endpoint, Node, NodePosition, Position};
+use nodecraft_graph::{Canvas, CanvasKind, Change, Changeset, Edge, Endpoint, Node, NodePosition, Port, Position};
 use nodecraft_nodes::generation;
 use nodecraft_types::{CanvasId, EdgeId, Error, ErrorKind, NodeId, ParamValues, Value};
 use serde::Deserialize;
@@ -148,6 +148,13 @@ fn text_param(node: &Node, name: &str) -> Json {
     }
 }
 
+/// The values and copy number a template expansion gave `row` (`sheet.expand`), if it made it.
+fn expansion(row: &Node) -> Json {
+    let Some(Value::Text(text)) = row.config.get(nodecraft_exec::staleness::PROVENANCE_CONFIG) else { return Json::Null };
+    let Ok(recorded) = serde_json::from_str::<Json>(text) else { return Json::Null };
+    json!({"values": recorded.get("values").cloned().unwrap_or(Json::Null), "copy": recorded.get("copy").cloned().unwrap_or(Json::Null)})
+}
+
 fn describe_rows(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: CanvasParams = params(value)?;
     let canvas = sheet(c, p.canvas)?;
@@ -182,6 +189,7 @@ fn describe_rows(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
                 "references": references,
                 "result": result,
                 "stale": stale.contains(&row.id),
+                "expansion": expansion(row),
             })
         })
         .collect();
@@ -217,6 +225,55 @@ fn blank_copy(row: &Node, id: NodeId) -> Node {
     copy
 }
 
+/// Where new rows go and what they copy: the row they follow (`after`, else the last row), or,
+/// on an empty sheet, a new card of `kind`.
+struct Base<'a> {
+    /// The first new row's place.
+    insert: usize,
+    /// What every new row is a blank copy of.
+    node: Node,
+    /// The template row's wires from the sheet's shared references, which new rows get too.
+    wires: Vec<&'a Edge>,
+}
+
+fn base<'a>(c: &Context<'_>, canvas: &'a Canvas, order: &[&'a Node], after: Option<NodeId>, kind: Option<&str>, seed: NodeId) -> Result<Base<'a>, Error> {
+    let at = match after {
+        Some(after) => order.iter().position(|row| row.id == after).ok_or_else(|| Error::new(ErrorKind::NotFound, "that row isn't on this sheet"))?,
+        None => order.len().saturating_sub(1),
+    };
+    let template = order.get(at).copied();
+    if template.is_some() && kind.is_some() {
+        return Err(invalid("`kind` only picks an empty sheet's first row; new rows copy the row they follow"));
+    }
+    let mut node = match template {
+        Some(row) => row.clone(),
+        None => {
+            let kind = kind.unwrap_or(generation::KIND);
+            if !generation::is_generation(kind) {
+                return Err(invalid("a sheet's rows are Generate cards"));
+            }
+            c.kinds.get(kind)?.instantiate_instance(NodeId::from_bytes(derive(seed, "base", 0)), BTreeMap::new(), &ParamValues::new())?
+        }
+    };
+    // A new row says nothing of the expansion the row it copies came from.
+    node.config.remove(nodecraft_exec::staleness::PROVENANCE_CONFIG);
+    // New rows take the template's place in the shared references.
+    let shared = shared(canvas, order);
+    let wires =
+        template.map(|row| canvas.edges().values().filter(|edge| edge.to.node == row.id && shared.contains(&edge.from.node)).collect()).unwrap_or_default();
+    let insert = if template.is_some() { at.saturating_add(1) } else { 0 };
+    Ok(Base { insert, node, wires })
+}
+
+/// The rows' ids top to bottom once `made` are placed at `insert`.
+fn slots_with(order: &[&Node], insert: usize, made: &[NodeId]) -> Vec<NodeId> {
+    let mut slots: Vec<NodeId> = order.iter().map(|row| row.id).collect();
+    let tail = slots.split_off(insert.min(slots.len()));
+    slots.extend(made.iter().copied());
+    slots.extend(tail);
+    slots
+}
+
 fn add(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: AddParams = params(value)?;
     let canvas = sheet(c, p.canvas)?;
@@ -225,38 +282,16 @@ fn add(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     }
     let order = rows(canvas);
     ensure_room(order.len(), p.prompts.len())?;
-    let at = match p.after {
-        Some(after) => order.iter().position(|row| row.id == after).ok_or_else(|| Error::new(ErrorKind::NotFound, "that row isn't on this sheet"))?,
-        None => order.len().saturating_sub(1),
-    };
-    let template = order.get(at).copied();
-    if template.is_some() && p.kind.is_some() {
-        return Err(invalid("`kind` only picks an empty sheet's first row; new rows copy the row they follow"));
-    }
-    let base = match template {
-        Some(row) => row.clone(),
-        None => {
-            let kind = p.kind.as_deref().unwrap_or(generation::KIND);
-            if !generation::is_generation(kind) {
-                return Err(invalid("a sheet's rows are Generate cards"));
-            }
-            c.kinds.get(kind)?.instantiate_instance(NodeId::from_bytes(derive(p.seed, "base", 0)), BTreeMap::new(), &ParamValues::new())?
-        }
-    };
-    // New rows take the template's place in the shared references.
-    let shared = shared(canvas, &order);
-    let template_wires: Vec<&Edge> =
-        template.map(|row| canvas.edges().values().filter(|edge| edge.to.node == row.id && shared.contains(&edge.from.node)).collect()).unwrap_or_default();
-    let insert = if template.is_some() { at.saturating_add(1) } else { 0 };
+    let base = base(c, canvas, &order, p.after, p.kind.as_deref(), p.seed)?;
     let mut changes = Vec::new();
     let mut made = Vec::with_capacity(p.prompts.len());
     for (n, prompt) in p.prompts.into_iter().enumerate() {
         let id = NodeId::from_bytes(derive(p.seed, "row", n));
-        let mut node = blank_copy(&base, id);
-        node.pos = row_pos(insert.saturating_add(n));
+        let mut node = blank_copy(&base.node, id);
+        node.pos = row_pos(base.insert.saturating_add(n));
         node.params.insert(generation::PROMPT.into(), Value::Text(prompt));
         changes.push(Change::AddNode { canvas: p.canvas, node });
-        for wire in &template_wires {
+        for wire in &base.wires {
             let edge = Edge {
                 id: EdgeId::from_bytes(derive(p.seed, "wire", changes.len())),
                 from: wire.from.clone(),
@@ -267,11 +302,7 @@ fn add(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         }
         made.push(id);
     }
-    let mut slots: Vec<NodeId> = order.iter().map(|row| row.id).collect();
-    let tail = slots.split_off(insert.min(slots.len()));
-    slots.extend(made.iter().copied());
-    slots.extend(tail);
-    changes.extend(reflow(p.canvas, canvas, &slots));
+    changes.extend(reflow(p.canvas, canvas, &slots_with(&order, base.insert, &made)));
     edit(c, changes, json!({"rows": made}))
 }
 
@@ -419,6 +450,19 @@ fn targets<'a>(order: &[&'a Node], rows: Option<&[NodeId]>) -> Result<Vec<&'a No
     }
 }
 
+/// `row`'s first free input for `output`: one of its modality that is a list, or a single one
+/// nothing feeds yet (`fed` says whether a port is).
+fn free_input<'a>(row: &'a Node, fed: impl Fn(&str) -> bool, output: &Port) -> Option<&'a Port> {
+    row.inputs.iter().find(|port| {
+        port.port_type.modality == output.port_type.modality && (port.port_type.many || !output.port_type.many) && (port.port_type.many || !fed(&port.name))
+    })
+}
+
+fn no_free_input(row: &Node, output: &Port) -> Error {
+    let name = if row.title.is_empty() { format!("row {}", row.id) } else { format!("\"{}\"", row.title) };
+    Error::new(ErrorKind::Unsupported, format!("{name} has no free {:?} input", output.port_type.modality))
+}
+
 fn wire(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: WireParams = params(value)?;
     let canvas = sheet(c, p.canvas)?;
@@ -436,17 +480,8 @@ fn wire(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         if canvas.edges().values().any(|edge| edge.from.node == reference.id && edge.to.node == row.id) {
             continue;
         }
-        // The first free input of its modality: a list input, or a single one nothing feeds yet.
-        let taken =
-            |port: &nodecraft_graph::Port| !port.port_type.many && canvas.edges().values().any(|edge| edge.to.node == row.id && edge.to.port == port.name);
-        let port = row
-            .inputs
-            .iter()
-            .find(|port| port.port_type.modality == output.port_type.modality && (port.port_type.many || !output.port_type.many) && !taken(port))
-            .ok_or_else(|| {
-                let name = if row.title.is_empty() { format!("row {}", row.id) } else { format!("\"{}\"", row.title) };
-                Error::new(ErrorKind::Unsupported, format!("{name} has no free {:?} input", output.port_type.modality))
-            })?;
+        let fed = |port: &str| canvas.edges().values().any(|edge| edge.to.node == row.id && edge.to.port == port);
+        let port = free_input(row, fed, output).ok_or_else(|| no_free_input(row, output))?;
         let order = canvas
             .edges()
             .values()
@@ -557,7 +592,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "sheet.rows",
             "List a sheet's rows",
             schema(&["canvas"], json!({"canvas": uuid()})),
-            "{canvas} -> {canvas, title, rows: [{id, kind, title, model, prompt, references: [{node, port, shared}], result: none|complete|partial, stale}], shared: [NodeId]}; rows top to bottom. A shared reference is wired into every row. Read-only.",
+            "{canvas} -> {canvas, title, rows: [{id, kind, title, model, prompt, references: [{node, port, shared}], result: none|complete|partial, stale, expansion: null|{values: {name: text|{node}}, copy}}], shared: [NodeId]}; rows top to bottom. A shared reference is wired into every row. Read-only.",
             describe_rows
         ),
         spec!(
@@ -609,8 +644,12 @@ pub fn specs() -> Vec<CommandSpec> {
             "{canvas, reference, rows?} -> {unwired}; removes the reference's wires into `rows`, or into every row.",
             unwire
         ),
+        expand::spec(),
     ]
 }
+
+mod expand;
+pub mod template;
 
 #[cfg(test)]
 mod tests;
