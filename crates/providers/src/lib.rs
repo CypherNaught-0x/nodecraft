@@ -48,6 +48,8 @@ pub mod huggingface;
 pub mod kling;
 #[cfg(feature = "llm")]
 pub mod llm;
+#[cfg(feature = "magnific")]
+pub mod magnific;
 #[cfg(feature = "meshy")]
 pub mod meshy;
 /// Deterministic testing tools, available locally in unit tests or with feature `testkit`.

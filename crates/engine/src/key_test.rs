@@ -220,9 +220,15 @@ mod tests {
     #[test]
     fn a_provider_without_a_free_check_is_unverifiable() {
         // Nothing is sent where there is nothing free to ask.
-        for (account, why) in
-            [("ollama", LOCAL), ("lmstudio", LOCAL), ("fal", NO_CHECK), ("kling", NO_CHECK), ("google-cloud", NO_CHECK), ("comfyui:gpu-box:8188", NO_CHECK)]
-        {
+        for (account, why) in [
+            ("ollama", LOCAL),
+            ("lmstudio", LOCAL),
+            ("fal", NO_CHECK),
+            ("magnific", NO_CHECK),
+            ("kling", NO_CHECK),
+            ("google-cloud", NO_CHECK),
+            ("comfyui:gpu-box:8188", NO_CHECK),
+        ] {
             let http = Fixture::status(500, "");
             assert_eq!(run(account, &http), Ok(KeyCheck::Unverifiable(why)), "{account}");
             assert!(http.sent.lock().unwrap().is_empty(), "{account}");
