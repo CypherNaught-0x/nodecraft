@@ -3,11 +3,13 @@ use base64::Engine;
 use serde::Serialize;
 mod alibaba;
 mod grok;
+mod heygen;
 mod hunyuan;
 mod ideogram;
 mod ltx;
 mod luma;
 mod pika;
+mod raster;
 mod recraft;
 mod rodin;
 mod topaz;
@@ -205,6 +207,13 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     if model == Model::Pika {
         return Err(invalid("Pika 2.5 needs a desktop project so its large video results can be saved"));
     }
+    #[cfg(target_arch = "wasm32")]
+    if model.heygen() {
+        return Err(invalid("HeyGen needs a desktop project so its large video results can be saved"));
+    }
+    if model.heygen() {
+        return heygen::prepare(j, l, model);
+    }
     if model == Model::Pika {
         return pika::prepare(j, l);
     }
@@ -315,6 +324,9 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             | Model::Ideogram
             | Model::LtxText
             | Model::LtxFrames
+            | Model::HeygenAvatar
+            | Model::HeygenSpeed
+            | Model::HeygenPrecision
             | Model::Pika
             | Model::Topaz => false,
             Model::Image => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "seed"),
@@ -400,6 +412,9 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         | Model::Ideogram
         | Model::LtxText
         | Model::LtxFrames
+        | Model::HeygenAvatar
+        | Model::HeygenSpeed
+        | Model::HeygenPrecision
         | Model::Pika
         | Model::Topaz => {
             return Err(invalid("fal model requests require their own schema"));

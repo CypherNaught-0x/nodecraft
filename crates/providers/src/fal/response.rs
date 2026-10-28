@@ -66,7 +66,10 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         | Model::Ideogram => "images",
         Model::RodinText | Model::RodinImages | Model::RodinFastText | Model::RodinFastImages => "model_mesh",
         Model::Train => "diffusers_lora_file",
-        Model::Pika
+        Model::HeygenAvatar
+        | Model::HeygenSpeed
+        | Model::HeygenPrecision
+        | Model::Pika
         | Model::Wan3Text
         | Model::Wan3Frames
         | Model::GrokText
@@ -155,7 +158,10 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
             Model::RecraftImage | Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => {
                 &["image/png", "image/jpeg", "image/webp"]
             }
-            Model::Pika
+            Model::HeygenAvatar
+            | Model::HeygenSpeed
+            | Model::HeygenPrecision
+            | Model::Pika
             | Model::Wan3Text
             | Model::Wan3Frames
             | Model::GrokText

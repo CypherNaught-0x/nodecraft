@@ -5,6 +5,8 @@ mod alibaba_tests;
 #[cfg(test)]
 mod grok_tests;
 #[cfg(test)]
+mod heygen_tests;
+#[cfg(test)]
 mod hunyuan_tests;
 #[cfg(test)]
 mod ideogram_tests;
@@ -68,6 +70,10 @@ pub const LUMA_PHOTON: &str = "fal-ai/luma-photon";
 pub const IDEOGRAM: &str = "fal-ai/ideogram/v3";
 /// Current Pika2.5 image-to-video through fal (#29).
 pub const PIKA_I2V: &str = "fal-ai/pika/v2.5/image-to-video";
+/// HeyGen supplied-audio Photo Avatar4 and video lip sync through fal (#43).
+pub const HEYGEN_AVATAR: &str = "fal-ai/heygen/avatar4/image-to-video";
+pub const HEYGEN_SPEED: &str = "fal-ai/heygen/v3/lipsync/speed";
+pub const HEYGEN_PRECISION: &str = "fal-ai/heygen/v3/lipsync/precision";
 /// Topaz Precision Standard V2 image enhancement through fal (#37).
 pub const TOPAZ_IMAGE: &str = "topaz/upscale/image/precision";
 /// Recraft V4.1 raster and original SVG through fal (#35).
@@ -175,6 +181,9 @@ enum Model {
     Ideogram,
     Topaz,
     Pika,
+    HeygenAvatar,
+    HeygenSpeed,
+    HeygenPrecision,
     Image,
     Video,
     /// Image to video: a first frame and an optional last frame.
@@ -218,6 +227,9 @@ impl Model {
             IDEOGRAM => Ok(Self::Ideogram),
             TOPAZ_IMAGE => Ok(Self::Topaz),
             PIKA_I2V => Ok(Self::Pika),
+            HEYGEN_AVATAR => Ok(Self::HeygenAvatar),
+            HEYGEN_SPEED => Ok(Self::HeygenSpeed),
+            HEYGEN_PRECISION => Ok(Self::HeygenPrecision),
             FLUX => Ok(Self::Image),
             WAN => Ok(Self::Video),
             WAN_I2V => Ok(Self::Frames),
@@ -258,6 +270,9 @@ impl Model {
             Self::Ideogram => IDEOGRAM,
             Self::Topaz => TOPAZ_IMAGE,
             Self::Pika => PIKA_I2V,
+            Self::HeygenAvatar => HEYGEN_AVATAR,
+            Self::HeygenSpeed => HEYGEN_SPEED,
+            Self::HeygenPrecision => HEYGEN_PRECISION,
             Self::Image => FLUX,
             Self::Video => WAN,
             Self::Frames => WAN_I2V,
@@ -274,7 +289,10 @@ impl Model {
     fn video(self) -> bool {
         matches!(
             self,
-            Self::Pika
+            Self::HeygenAvatar
+                | Self::HeygenSpeed
+                | Self::HeygenPrecision
+                | Self::Pika
                 | Self::Wan3Text
                 | Self::Wan3Frames
                 | Self::GrokText
@@ -287,6 +305,9 @@ impl Model {
                 | Self::LtxText
                 | Self::LtxFrames
         )
+    }
+    fn heygen(self) -> bool {
+        matches!(self, Self::HeygenAvatar | Self::HeygenSpeed | Self::HeygenPrecision)
     }
     fn rodin(self) -> bool {
         matches!(self, Self::RodinText | Self::RodinImages | Self::RodinFastText | Self::RodinFastImages)
@@ -318,6 +339,7 @@ impl Model {
             Self::Ideogram => "fal-ai/ideogram",
             Self::Topaz => "topaz/upscale",
             Self::Pika => "fal-ai/pika",
+            Self::HeygenAvatar | Self::HeygenSpeed | Self::HeygenPrecision => "fal-ai/heygen",
             Self::Image => "fal-ai/flux",
             Self::Video | Self::Frames | Self::Speech => "fal-ai/wan",
             Self::Audio => "fal-ai/kokoro",
@@ -674,6 +696,12 @@ impl Fal {
                 let meta = nodecraft_media::probe_image(&reply.body, &limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
                 if f.width.is_some_and(|w| w != u64::from(meta.width)) || f.height.is_some_and(|h| h != u64::from(meta.height)) {
                     return Err(malformed("fal declared geometry disagrees with actual image"));
+                }
+            }
+            if record.model.heygen() && (f.width.is_some() || f.height.is_some()) {
+                let info = media::heygen::output(&reply.body, limits)?;
+                if f.width.is_some_and(|n| n != u64::from(info.0)) || f.height.is_some_and(|n| n != u64::from(info.1)) {
+                    return Err(malformed("HeyGen declared geometry disagrees with actual video"));
                 }
             }
             if record.model == Model::Pika && (f.width.is_some() || f.height.is_some()) {

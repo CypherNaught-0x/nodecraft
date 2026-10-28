@@ -13,6 +13,9 @@ pub(super) fn check(quote: &Quote, catalog: &Catalog, large_assets: bool) -> Res
                     ("fal", "topaz/upscale/image/precision") => Some(("Topaz Precision", "image")),
                     ("magnific", "image-upscaler-precision-v2") => Some(("Magnific Precision V2", "image")),
                     ("fal", "fal-ai/pika/v2.5/image-to-video") => Some(("Pika 2.5", "video")),
+                    ("fal", "fal-ai/heygen/avatar4/image-to-video" | "fal-ai/heygen/v3/lipsync/speed" | "fal-ai/heygen/v3/lipsync/precision") => {
+                        Some(("HeyGen", "video"))
+                    }
                     _ => None,
                 }
             });
@@ -110,5 +113,26 @@ mod tests {
         for id in ["fixture.other-endpoint38", "fixture.other-provider38"] {
             assert!(check(&quote(id, false, 1), &catalog, false).is_ok());
         }
+    }
+
+    #[test]
+    fn heygen43_all_media_modes_resolve_native_storage_through_executed_catalog_identities() {
+        let builtin = Catalog::builtin().unwrap();
+        for id in ["fal.heygen-avatar4", "fal.heygen-lipsync-speed", "fal.heygen-lipsync-precision"] {
+            for known in [true, false] {
+                assert!(check(&quote(id, known, 1), &builtin, false).unwrap_err().message.contains("HeyGen needs a desktop project"));
+                assert!(check(&quote(id, known, 1), &builtin, true).is_ok());
+            }
+            assert!(check(&quote(id, true, 0), &builtin, false).is_ok());
+            let mut renamed = builtin.get(id).unwrap().clone();
+            renamed.id = "custom.heygen43".into();
+            let mut other = renamed.clone();
+            other.id = "custom.other43".into();
+            other.provider = "other".into();
+            let catalog = Catalog::from_models([renamed, other]).unwrap();
+            assert!(check(&quote("custom.heygen43", false, 1), &catalog, false).is_err());
+            assert!(check(&quote("custom.other43", false, 1), &catalog, false).is_ok());
+        }
+        assert!(check(&quote("fal.ideogram-v3", true, 1), &builtin, false).is_ok(), "unused HeyGen cards cannot block selected work");
     }
 }

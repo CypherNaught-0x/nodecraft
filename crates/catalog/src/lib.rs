@@ -30,6 +30,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("deepgram.toml", include_str!("../../../assets/catalog/deepgram.toml")),
     ("stability.toml", include_str!("../../../assets/catalog/stability.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
+    ("heygen.toml", include_str!("../../../assets/catalog/heygen.toml")),
     ("magnific.toml", include_str!("../../../assets/catalog/magnific.toml")),
     ("pika.toml", include_str!("../../../assets/catalog/pika.toml")),
     ("topaz.toml", include_str!("../../../assets/catalog/topaz.toml")),
@@ -432,3 +433,6 @@ mod topaz37_tests;
 
 #[cfg(test)]
 mod pika29_tests;
+
+#[cfg(test)]
+mod heygen43_tests;
