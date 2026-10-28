@@ -22,13 +22,18 @@ fn legacy() -> nodecraft_exec::cost::UsageLog {
 /// A run journal holding the legacy log, in a fresh directory the caller removes. The clock
 /// alone doesn't make it fresh: tests run in parallel, and macOS reads time to the microsecond.
 fn journal() -> std::path::PathBuf {
+    journal_holding(legacy())
+}
+
+/// A run journal holding `usage`, in a fresh directory the caller removes.
+fn journal_holding(usage: nodecraft_exec::cost::UsageLog) -> std::path::PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!("nodecraft-ownership-{}-{nanos}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("runs.json");
-    std::fs::write(&path, Journal { version: JOURNAL_VERSION, usage: legacy(), submitted: Vec::new() }.to_bytes().unwrap()).unwrap();
+    std::fs::write(&path, Journal { version: JOURNAL_VERSION, usage, submitted: Vec::new() }.to_bytes().unwrap()).unwrap();
     path
 }
 
@@ -232,6 +237,104 @@ fn resolve332_visual() {
     press(&mut shot, Role::Button, "Resolve");
     press(&mut shot, Role::Button, "Preview");
     shot.render().unwrap().save(dir.join("resolve332-preview.png")).unwrap();
+    drop(shot);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// A paid job the last launch left open with no handle back (its submit may have reached the
+/// provider): reopening the journal keeps its estimate as an unresolved charge (#298).
+fn left_open() -> nodecraft_exec::cost::UsageLog {
+    let mut log = nodecraft_exec::cost::UsageLog::default();
+    log.record(nodecraft_exec::cost::UsageEntry {
+        at_ms: 5,
+        session: "before".into(),
+        node: NodeId::from_bytes([3; 16]),
+        provider: "t".into(),
+        instance: None,
+        project: None,
+        model: "m".into(),
+        cost: nodecraft_types::Money::new(nodecraft_types::Currency::USD, 40_000),
+        idempotency_key: "lost".into(),
+        status: nodecraft_exec::cost::Charge::Estimate,
+    })
+    .unwrap();
+    log
+}
+
+fn resolving_mut<'a>(h: &'a mut Harness<'static, NodeCraftApp>) -> &'a mut Resolving {
+    h.state_mut().ownership.as_mut().unwrap().resolving.as_mut().unwrap()
+}
+
+#[test]
+fn a_person_settles_a_charge_that_may_have_been_billed_at_the_billed_amount() {
+    let path = journal_holding(left_open());
+    let mut h = scene(&path);
+    assert!(h.state().palette_entries().iter().any(|entry| entry.target == palette::Target::Command("usage.unresolved")));
+    h.state_mut().dispatch_palette_command("usage.unresolved");
+    h.run();
+    h.get_by_label("Charges that may have been billed");
+    h.get_by_label("No quarantined charges are waiting for review.");
+    h.get_by_label("0.04 USD held");
+    press(&mut h, Role::Button, "Resolve");
+    h.get_by_label("What you checked (optional)");
+    assert!(!confirm_enabled(&h), "confirming needs a preview first");
+    resolving_mut(&mut h).amount = "0.05".into();
+    resolving_mut(&mut h).note = "invoice line 3".into();
+    press(&mut h, Role::Button, "Preview");
+    h.get_by_label_contains("Settles at 0.05 USD");
+    assert!(confirm_enabled(&h));
+    press(&mut h, Role::Button, "Confirm");
+    assert!(h.state().notice.as_deref().is_some_and(|notice| notice.starts_with("Settled the charge lost at 0.05 USD")), "{:?}", h.state().notice);
+    assert!(h.query_by_label("Charges that may have been billed").is_none(), "nothing left to decide");
+    let saved = Journal::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    let records: Vec<_> = saved.usage.billing_resolutions().cloned().collect();
+    assert_eq!(records.len(), 1, "saved in the run journal");
+    assert_eq!(records[0].note.as_deref(), Some("invoice line 3"));
+    assert_eq!(saved.usage.charge("t", "lost").map(|e| e.status), Some(nodecraft_exec::cost::Charge::Actual));
+    drop(h);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_charge_released_elsewhere_meanwhile_is_refused_in_the_panel_and_released_once() {
+    let path = journal_holding(left_open());
+    let mut h = scene(&path);
+    h.state_mut().dispatch_palette_command("usage.unresolved");
+    h.run();
+    press(&mut h, Role::Button, "Resolve");
+    press(&mut h, Role::RadioButton, "Never billed");
+    press(&mut h, Role::Button, "Preview");
+    h.get_by_label_contains("Leaves the totals");
+    // Elsewhere (another review of the same charge), it is released first.
+    let decision = h.state().ownership.as_ref().unwrap().resolving.as_ref().unwrap().decision(false).unwrap();
+    h.state_mut().session.dispatch("usage.resolve_unresolved", &decision).unwrap();
+
+    press(&mut h, Role::Button, "Confirm");
+    let refused = h.state().ownership.as_ref().unwrap().resolving.as_ref().unwrap().refused.clone();
+    assert!(refused.is_some_and(|why| why.contains("waiting for a decision")), "a decided charge isn't decided again");
+    assert!(!confirm_enabled(&h));
+    let saved = Journal::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(saved.usage.billing_resolutions().len(), 1, "only the first decision was recorded");
+    assert!(saved.usage.charge("t", "lost").is_none(), "released: out of the totals");
+    drop(h);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+#[ignore = "manual public-safe capture; BILLING298_RENDER_DIR"]
+fn billing298_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("BILLING298_RENDER_DIR").unwrap());
+    let path = journal_holding(left_open());
+    let mut h = scene(&path);
+    h.state_mut().dispatch_palette_command("usage.unresolved");
+    h.run();
+    let mut shot = Harness::builder().wgpu().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), h.into_state());
+    shot.run();
+    shot.render().unwrap().save(dir.join("billing298-list.png")).unwrap();
+    press(&mut shot, Role::Button, "Resolve");
+    resolving_mut(&mut shot).note = "invoice line 3".into();
+    press(&mut shot, Role::Button, "Preview");
+    shot.render().unwrap().save(dir.join("billing298-preview.png")).unwrap();
     drop(shot);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
