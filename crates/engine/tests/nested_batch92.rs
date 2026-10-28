@@ -188,7 +188,10 @@ fn a_batch_collecting_a_batch_paints_every_item_and_quotes_each() {
     assert!(painted.items.iter().all(|tag| tag.len() == 1 && tag.first().unwrap().batch == SUBJECTS), "the collecting batch names the items");
 
     // Editing the collected batch makes the painter stale and changes what the next run sends.
+    let stale = |f: &mut Fixture| f.session.dispatch("canvas.stale", &json!({"canvas": C})).unwrap()["nodes"].clone();
+    assert_eq!(stale(&mut f), json!([]), "fresh after its run");
     f.session.dispatch("node.param_set", &json!({"canvas":C,"id":ANIMALS,"name":"text","value":{"type":"text","value":"a fox\nan owl\na bee"}})).unwrap();
+    assert_eq!(stale(&mut f), json!([PAINTER]), "an inner batch is part of the painter's recipe");
     let q = quote(&mut f);
     assert_eq!(q["totals"]["USD"]["micros"], 40_000, "{q}");
 
