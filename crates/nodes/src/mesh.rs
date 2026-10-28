@@ -34,7 +34,7 @@ pub fn convert_kind() -> ActionKind {
         "Convert 3D",
         vec![port("model", Modality::Mesh, false)],
         vec![port("out", Modality::Mesh, false)],
-        vec![choice("format", "Format", &[("glb", "GLB (binary glTF)"), ("obj", "OBJ"), ("stl", "STL (geometry only)")], "glb")],
+        vec![choice("format", "Format", &[("glb", "GLB (binary glTF)"), ("obj", "OBJ"), ("stl", "STL (geometry only)"), ("ply", "PLY (ASCII RGBA)")], "glb")],
     )
 }
 

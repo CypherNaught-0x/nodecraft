@@ -223,3 +223,6 @@ mod heygen43;
 
 #[path = "stl569.rs"]
 mod stl569;
+
+#[path = "ply1011.rs"]
+mod ply1011;
