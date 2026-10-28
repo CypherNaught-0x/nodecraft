@@ -9,8 +9,8 @@
 //!
 //! The mesh is what the viewer draws, not a full scene: positions and normals in one model space,
 //! a linear RGBA colour per vertex (the material's base colour, times vertex colours, times its
-//! base-colour texture sampled at that vertex) and triangle indices. Writing a mesh back out keeps
-//! exactly that, so converting a textured model bakes its texture into vertex colours.
+//! base-colour texture sampled at that vertex) and triangle indices. Fine texture detail is baked
+//! into those colours. Each writer documents the attributes its target format preserves.
 
 mod encode;
 mod gltf;
