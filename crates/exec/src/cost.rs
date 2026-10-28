@@ -22,8 +22,10 @@ pub use metadata::{LedgerIdentity, MAX_METADATA_SHELLS, MetadataFinalizeError, M
 mod ownership;
 use ownership::Ownership;
 pub use ownership::{ChargeOwnership, LegacyGroupEvidence, QuarantineLocation, QuarantinedCharge};
+mod billing;
 mod reconcile;
 mod resolve;
+pub use billing::{BillingDecision, BillingResolution, MAX_BILLING_NOTE, MAX_BILLING_RESOLUTIONS, UnresolvedCharge};
 pub use reconcile::{
     Holder, MAX_RECONCILE_EXCEPTIONS, MAX_STAGE_CHARGES, OwnershipDecision, OwnershipGroup, OwnershipPlan, OwnershipReconciliation, ReconciledCharge,
 };
@@ -392,6 +394,9 @@ pub struct UsageLog {
     session_clock: BTreeMap<String, u64>,
     clock: u64,
     ownership: Ownership,
+    /// A person's decisions for ordinary unresolved charges (#298), oldest first, at most
+    /// [`MAX_BILLING_RESOLUTIONS`].
+    billing: VecDeque<BillingResolution>,
     metadata: Metadata,
     entry_order: VecDeque<u64>,
     next_order: u64,
@@ -488,6 +493,7 @@ impl PartialEq for UsageLog {
             && self.provider_identity_version == other.provider_identity_version
             && self.pending == other.pending
             && self.ownership == other.ownership
+            && self.billing == other.billing
     }
 }
 impl Eq for UsageLog {}
@@ -514,6 +520,10 @@ pub struct UsageLogFile {
     pub ownership_reconciliations: Vec<OwnershipReconciliation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub charge_resolutions: Vec<ChargeResolution>,
+    /// A person's decisions for ordinary unresolved charges (#298). Written only when there are
+    /// some, so a log without them stays readable by older NodeCraft.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub billing_resolutions: Vec<BillingResolution>,
     pub entries: Vec<UsageEntry>,
     pub project: Totals,
     #[serde(default)]
@@ -1336,6 +1346,7 @@ impl From<UsageLog> for UsageLogFile {
             legacy_groups: log.ownership.groups.into_values().flat_map(|g| g.into_values()).collect(),
             ownership_reconciliations: log.ownership.records,
             charge_resolutions: log.ownership.resolutions,
+            billing_resolutions: log.billing.into(),
             entries,
             project,
             sessions,
@@ -1500,6 +1511,8 @@ impl TryFrom<UsageLogFile> for UsageLog {
             }
         }
         let ownership = Ownership::admit(&mut file)?;
+        billing::admit_billing(&file)?;
+        let billing = VecDeque::from(std::mem::take(&mut file.billing_resolutions));
         let mut session_clock = BTreeMap::new();
         let mut project_clock = BTreeMap::new();
         for (seq, entry) in file.entries.iter().enumerate() {
@@ -1544,6 +1557,7 @@ impl TryFrom<UsageLogFile> for UsageLog {
             session_clock,
             clock,
             ownership,
+            billing,
             metadata: Metadata::default(),
             entry_order,
             next_order: clock,

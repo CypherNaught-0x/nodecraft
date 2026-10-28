@@ -960,6 +960,7 @@ fn once_pending_is_full_an_open_charge_leaving_the_list_stays_charged_as_it_is()
 
 mod strict257;
 
+mod billing298;
 mod legacy255;
 mod project847;
 mod reconcile325;
