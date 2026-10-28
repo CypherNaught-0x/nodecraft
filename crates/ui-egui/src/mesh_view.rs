@@ -37,6 +37,10 @@ const GPU_MESH_FRAMES: u64 = 600;
 const RETRY_FRAMES: u64 = 30;
 /// Frames a card's offscreen image survives without being drawn.
 const TARGET_FRAMES: u64 = 120;
+#[cfg(any(target_arch = "wasm32", test))]
+const MAX_BROWSER_MODEL_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(any(target_arch = "wasm32", test))]
+const BUDGET_UNAVAILABLE: &str = "Move another 3D model offscreen to free preview space";
 
 /// The 3D model a node shows: a Source 3D node's asset, else the first model in its active result.
 pub fn mesh_of(node: &Node) -> Option<&AssetRef> {
@@ -98,6 +102,11 @@ enum Entry {
         used: u64,
     },
     Failed(&'static str),
+    /// Known exact result size; retry only after unused cache eviction reserves this headroom.
+    #[cfg(any(target_arch = "wasm32", test))]
+    Budget {
+        required: usize,
+    },
     /// A read that may work later (the store was busy): asked again from frame `at`.
     Retry {
         why: &'static str,
@@ -272,24 +281,13 @@ impl Meshes {
 
     fn finish(&mut self, hash: Blake3, result: Result<Model, Failure>) {
         #[cfg(target_arch = "wasm32")]
-        let result = result.and_then(|model| {
-            self.evict_to((64 * 1024 * 1024usize).saturating_sub(model.bytes));
-            if self.bytes.saturating_add(model.bytes) > 64 * 1024 * 1024 {
-                return Err(Failure::permanent("Too many 3D previews; hide another model"));
-            }
-            Ok(model)
-        });
-        #[cfg(target_arch = "wasm32")]
         while !self.entries.contains_key(&hash) && self.entries.len() >= 256 {
             let old = self.entries.iter().find_map(|(hash, entry)| matches!(entry, Entry::Failed(_) | Entry::Retry { .. }).then_some(*hash));
             let Some(old) = old else { break };
             self.entries.remove(&old);
         }
         let entry = match result {
-            Ok(model) => {
-                self.bytes = self.bytes.saturating_add(model.bytes);
-                Entry::Ready { model: Arc::new(model), used: self.clock }
-            }
+            Ok(model) => self.ready_entry(model),
             Err(Failure { why, retry: true }) => Entry::Retry { why, at: self.clock.saturating_add(RETRY_FRAMES) },
             Err(Failure { why, .. }) => Entry::Failed(why),
         };
@@ -297,6 +295,35 @@ impl Meshes {
             self.bytes = self.bytes.saturating_sub(model.bytes);
         }
         self.evict();
+    }
+
+    fn ready_entry(&mut self, model: Model) -> Entry {
+        #[cfg(target_arch = "wasm32")]
+        if !self.reserve_budget(model.bytes, MAX_BROWSER_MODEL_BYTES) {
+            return Entry::Budget { required: model.bytes };
+        }
+        self.bytes = self.bytes.saturating_add(model.bytes);
+        Entry::Ready { model: Arc::new(model), used: self.clock }
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn reserve_budget(&mut self, required: usize, limit: usize) -> bool {
+        let Some(headroom) = limit.checked_sub(required) else { return false };
+        self.evict_to(headroom);
+        self.bytes <= headroom
+    }
+
+    /// The browser has one active cache writer. Releasing this descriptor only after
+    /// reservation succeeds prevents repeat decodes under unchanged memory pressure.
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn retry_budget(&mut self, hash: Blake3, limit: usize) -> bool {
+        let Some(Entry::Budget { required }) = self.entries.get(&hash) else { return true };
+        let required = *required;
+        if !self.reserve_budget(required, limit) {
+            return false;
+        }
+        self.entries.remove(&hash);
+        true
     }
 
     /// Drops least recently used models until under budget. A model shown this frame or the last
@@ -333,12 +360,19 @@ impl Meshes {
         #[cfg(not(target_arch = "wasm32"))]
         let _ = owner;
         let hash = asset.hash;
+        #[cfg(target_arch = "wasm32")]
+        if matches!(self.entries.get(&hash), Some(Entry::Budget { .. })) && (self.browser.busy() || !self.retry_budget(hash, MAX_BROWSER_MODEL_BYTES)) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            return MeshPreview::Unavailable(BUDGET_UNAVAILABLE);
+        }
         match self.entries.get_mut(&hash) {
             Some(Entry::Ready { model, used }) => {
                 *used = self.clock;
                 return MeshPreview::Ready { hash, model: Arc::clone(model) };
             }
             Some(Entry::Failed(why)) => return MeshPreview::Unavailable(why),
+            #[cfg(any(target_arch = "wasm32", test))]
+            Some(Entry::Budget { .. }) => return MeshPreview::Unavailable(BUDGET_UNAVAILABLE),
             Some(Entry::Pending) => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(250));
                 return MeshPreview::Pending;
@@ -365,13 +399,13 @@ impl Meshes {
                 .entries
                 .iter()
                 .filter_map(|(key, entry)| match entry {
-                    Entry::Failed(_) | Entry::Retry { .. } => Some((0, *key)),
+                    Entry::Failed(_) | Entry::Retry { .. } | Entry::Budget { .. } => Some((0, *key)),
                     Entry::Ready { used, .. } if self.clock.saturating_sub(*used) > 1 => Some((*used, *key)),
                     _ => None,
                 })
                 .min();
             let Some((_, old)) = old else {
-                return MeshPreview::Unavailable("Too many 3D previews; hide another model");
+                return MeshPreview::Unavailable("Move another 3D model offscreen to free preview space");
             };
             if let Some(Entry::Ready { model, .. }) = self.entries.remove(&old) {
                 self.bytes = self.bytes.saturating_sub(model.bytes);

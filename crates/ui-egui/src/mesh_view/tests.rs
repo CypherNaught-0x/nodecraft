@@ -110,3 +110,30 @@ fn worker1013_scope_changes_discard_models_but_ordinary_frame_binding_reuses_the
     meshes.bind_session(Arc::new(crate::navigation::SessionIdentity), ProjectId::from_bytes([4; 16]), canvas, &context);
     assert_eq!(meshes.bytes(), 0);
 }
+
+#[test]
+fn worker1013_budget_refusal_retries_only_after_unused_capacity_is_reserved() {
+    assert_eq!(MAX_BROWSER_MODEL_BYTES, 64 * 1024 * 1024);
+    let mut meshes = Meshes::default();
+    meshes.inline(hash(1), QUAD);
+    let one = meshes.bytes();
+    meshes.entries.insert(hash(2), Entry::Budget { required: one });
+    meshes.entries.insert(hash(3), Entry::Failed("corrupt"));
+    for _ in 0..3 {
+        assert!(!meshes.retry_budget(hash(2), one));
+        assert!(matches!(meshes.entries.get(&hash(2)), Some(Entry::Budget { .. })));
+        assert_eq!(meshes.bytes(), one, "current model is retained; no decode or capacity changes");
+    }
+    meshes.poll();
+    meshes.poll();
+    assert!(meshes.retry_budget(hash(2), one), "offscreen old model can now be evicted before restarting");
+    assert_eq!(meshes.bytes(), 0);
+    assert!(!meshes.entries.contains_key(&hash(1)));
+    assert!(!meshes.entries.contains_key(&hash(2)), "one retry admitted with exclusive headroom");
+    assert!(matches!(meshes.entries.get(&hash(3)), Some(Entry::Failed("corrupt"))), "invalid data stays failed");
+    meshes.inline(hash(2), QUAD);
+    let Entry::Ready { model: first, .. } = meshes.entries.get(&hash(2)).unwrap() else { panic!("ready") };
+    let first = first.clone();
+    assert!(meshes.retry_budget(hash(2), one));
+    assert!(matches!(meshes.entries.get(&hash(2)), Some(Entry::Ready { model, .. }) if Arc::ptr_eq(&first, model)), "resident model is not restarted");
+}
