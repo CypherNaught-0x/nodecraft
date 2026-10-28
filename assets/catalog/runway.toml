@@ -1,0 +1,65 @@
+# Runway direct API, checked 2026-10-24.
+# https://docs.dev.runwayml.com/openapi.json
+# https://docs.dev.runwayml.com/guides/pricing/ (1 credit = 0.01 USD, excluding tax).
+# Gen-4.5: 12 credits/second; Turbo: 5 credits/second. Standard MP4 only.
+# Gen-4.5 offers the two ratios shared by its text and image modes. Turbo offers all six.
+
+[[model]]
+id = "runway.gen4-5"
+provider = "runway"
+provider_model = "gen4.5"
+label = "Runway Gen-4.5"
+description = "Generate video from text or a first frame with Gen-4.5. Per-second estimate."
+latency_s = 120
+quality = 5
+pricing = { type = "per_unit", unit = "second", count = "duration_seconds", price = "0.12 USD" }
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }]
+[[model.params.params]]
+name = "ratio"
+label = "Frame size"
+control = { type = "choice", options = [{ value = "1280:720", label = "1280 × 720" }, { value = "720:1280", label = "720 × 1280" }] }
+default = { type = "text", value = "1280:720" }
+[[model.params.params]]
+name = "duration_seconds"
+label = "Duration (s)"
+control = { type = "unsigned", min = "2", max = "10", step = "1" }
+default = { type = "unsigned", value = "5" }
+[[model.params.params]]
+name = "seed"
+label = "Seed (optional)"
+control = { type = "unsigned", min = "0", max = "4294967295", step = "1" }
+
+[[model]]
+id = "runway.gen4-turbo"
+provider = "runway"
+provider_model = "gen4_turbo"
+label = "Runway Gen-4 Turbo"
+description = "Fast image-to-video generation with Gen-4 Turbo. Per-second estimate."
+latency_s = 120
+quality = 4
+pricing = { type = "per_unit", unit = "second", count = "duration_seconds", price = "0.05 USD" }
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }]
+[[model.params.params]]
+name = "ratio"
+label = "Frame size"
+control = { type = "choice", options = [{ value = "1280:720", label = "1280 × 720" }, { value = "720:1280", label = "720 × 1280" }, { value = "1104:832", label = "1104 × 832" }, { value = "832:1104", label = "832 × 1104" }, { value = "960:960", label = "960 × 960" }, { value = "1584:672", label = "1584 × 672" }] }
+default = { type = "text", value = "1280:720" }
+[[model.params.params]]
+name = "duration_seconds"
+label = "Duration (s)"
+control = { type = "unsigned", min = "2", max = "10", step = "1" }
+default = { type = "unsigned", value = "5" }
+[[model.params.params]]
+name = "seed"
+label = "Seed (optional)"
+control = { type = "unsigned", min = "0", max = "4294967295", step = "1" }

@@ -82,7 +82,7 @@ fn a_proposed_card_takes_its_ports_and_parameters_from_the_workflow() {
     );
 
     let targets: Vec<_> = mapping.params.iter().map(|p| (p.node.as_str(), p.input.as_str())).collect();
-    assert_eq!(targets, vec![("2", "text"), ("3", "seed")]);
+    assert_eq!(targets, vec![("2", "text"), ("3", "seed"), ("3", "steps"), ("3", "cfg")]);
     let prompt = &mapping.params.first().unwrap().spec;
     assert!(matches!(prompt.control, ParamControl::Text { multiline: true, .. }));
     assert_eq!(node.params.get(&prompt.name), Some(&Value::Text("a red fox".into())), "defaults to the workflow's value");
@@ -131,7 +131,7 @@ fn its_plan_sends_the_workflow_values_and_files_to_comfyui() {
     assert_eq!(ApiWorkflow::parse(text.as_bytes(), None).unwrap().nodes.len(), 4);
     let Some(Value::Text(values)) = inputs.get(1).map(|i| &i.value) else { panic!("values text") };
     let values: serde_json::Value = serde_json::from_str(values).unwrap();
-    assert_eq!(values, serde_json::json!({"2.text": "a blue whale", "3.seed": 7}));
+    assert_eq!(values, serde_json::json!({"2.text": "a blue whale", "3.seed": 7, "3.steps":20, "3.cfg":3.5}));
     assert_eq!(inputs.get(2).map(|i| &i.value), Some(&image("image/png")));
 }
 
@@ -156,7 +156,7 @@ fn its_plan_refuses_wrong_files_models_and_routes() {
 fn a_missing_or_malformed_workflow_is_an_error() {
     assert!(place(BTreeMap::new()).is_err());
     let mut newer = config();
-    newer.insert(VERSION.into(), Value::Unsigned(Unsigned(2)));
+    newer.insert(VERSION.into(), Value::Unsigned(Unsigned(3)));
     assert_eq!(place(newer).unwrap_err().kind, ErrorKind::Unsupported);
     let mut extra = config();
     extra.insert(MAPPING.into(), Value::Text(r#"{"inputs":[],"params":[],"outputs":[],"extra":1}"#.into()));
@@ -287,4 +287,39 @@ fn instance_descriptors_are_reused_for_the_same_mapping_and_bounded() {
     edited.params.retain(|name, _| name == MODEL || changed.params.iter().any(|p| &p.spec.name == name));
     assert_eq!(kind.resolve_instance(&edited).unwrap().params.params.len(), 2);
     assert_eq!(kind.resolve_instance(&node).unwrap().into_owned(), first);
+}
+
+#[test]
+fn malformed_partner_names_warn_without_hiding_their_cost() {
+    let workflow = workflow(FOX);
+    let mut exposed = exposed(&workflow);
+    exposed.partners = vec![
+        nodecraft_comfy::PartnerNode { node: "3".into(), class_type: "Bad\nPartner".into() },
+        nodecraft_comfy::PartnerNode { node: "2".into(), class_type: "GoodPartner".into() },
+    ];
+    let proposal = propose(&workflow, &exposed).unwrap();
+    assert!(proposal.warnings.iter().any(|warning| warning.contains("invalid class name was omitted")));
+    assert!(proposal.warnings.iter().all(|warning| !warning.contains("Bad\nPartner")));
+    let node = place(proposal.config).unwrap();
+    assert_eq!(mapping(&node).unwrap().partners, ["GoodPartner", "Unidentified partner node"]);
+    assert!(kind().unpriced(&node).is_some());
+    exposed.partners.truncate(1);
+    assert!(kind().unpriced(&place(propose(&workflow, &exposed).unwrap().config).unwrap()).is_some(), "a sole malformed name still costs credits");
+}
+
+#[test]
+fn cache_budget_counts_both_parsed_mapping_and_descriptor_payloads() {
+    let kind = kind();
+    let workflow = workflow(FOX);
+    for n in 0..12 {
+        let mut exposed = exposed(&workflow);
+        let prompt = exposed.inputs.iter_mut().find(|input| input.node == "2").unwrap();
+        prompt.current = Some(serde_json::Value::String(format!("{n}{}", "x".repeat(200_000))));
+        let node = place(propose(&workflow, &exposed).unwrap().config).unwrap();
+        kind.resolve_instance(&node).unwrap();
+    }
+    let cache = kind.cache.lock().unwrap();
+    assert!(cache.len() < 12, "text-only accounting would retain all twelve mappings");
+    assert!(cache.iter().map(|entry| entry.bytes).sum::<usize>() <= MAX_CACHED_BYTES);
+    assert!(cache.iter().all(|entry| entry.bytes > entry.text.len() * 2), "both copies of large default text must count");
 }

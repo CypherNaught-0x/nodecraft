@@ -54,6 +54,7 @@ fn open(h: &mut Harness<'static, NodeCraftApp>) {
     // The top bar grows to fit the button, then settles.
     h.run();
     h.run();
+    crate::app::topbar_tests::reveal(h, "Open as app");
     h.get_by_label("Open as app").click();
     h.run();
     assert!(h.state().app_mode.is_some(), "{:?}", h.state().notice);

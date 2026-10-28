@@ -238,8 +238,13 @@ impl GenerationCatalog {
     }
     /// Capture only bounded incident port metadata once per target, borrowing the live canvas.
     /// This value is ephemeral; UI controllers retain stamp/IDs instead of this borrow.
-    pub fn capture_wiring<'a>(&self, canvas: &'a nodecraft_graph::Canvas, id: nodecraft_types::NodeId) -> Result<GenerationWiring<'a>, Error> {
-        GenerationWiring::capture(canvas, id)
+    pub fn capture_wiring<'a>(
+        &self,
+        canvas: &'a nodecraft_graph::Canvas,
+        kinds: &nodecraft_nodes::Registry,
+        id: nodecraft_types::NodeId,
+    ) -> Result<GenerationWiring<'a>, Error> {
+        GenerationWiring::capture(canvas, kinds, id)
     }
     /// Borrow destination metadata for picker filtering; no Node/params/history copies.
     pub fn validate_destination_wiring(&self, kind: &str, wiring: &GenerationWiring<'_>, destination: &str, ready: bool) -> Result<(), Error> {
@@ -248,12 +253,12 @@ impl GenerationCatalog {
         let contract = kind.model_contract(destination).ok_or_else(|| Error::new(ErrorKind::Unsupported, "destination model contract is unavailable"))?;
         wiring.validate(descriptor, contract, ready)
     }
-    pub fn validate_wiring(&self, canvas: &nodecraft_graph::Canvas, candidate: &Node, ready: bool) -> Result<(), Error> {
+    pub fn validate_wiring(&self, canvas: &nodecraft_graph::Canvas, kinds: &nodecraft_nodes::Registry, candidate: &Node, ready: bool) -> Result<(), Error> {
         let kind = self.kind(&candidate.kind)?;
         kind.validate_instance(candidate, ready)?;
         let contract = kind.instance_contract(candidate)?;
         let descriptor = kind.resolve_instance(candidate)?;
-        GenerationWiring::capture(canvas, candidate.id)?.validate(&descriptor, &contract, ready)
+        GenerationWiring::capture(canvas, kinds, candidate.id)?.validate(&descriptor, &contract, ready)
     }
     pub fn instance_contract(&self, node: &Node) -> Result<NodeContract, Error> {
         self.kind(&node.kind)?.instance_contract(node)
@@ -323,6 +328,20 @@ pub(crate) fn validate_plan(
             Some(nodecraft_types::Value::Text(id)) => id,
             _ => return Err(Error::new(ErrorKind::InvalidInput, "generation model selection is missing")),
         };
+        if let Some(definition) = catalog.model(&node.kind, model).filter(|model| model.provider == "azure-openai") {
+            // Resolve the same defaults, conditions and submission values as the generation
+            // job, including when upstream media defers planning that job until later.
+            let submitted = definition.parameters.resolve_selected(&node.params, true)?.submission()?;
+            let deployment = if definition.remote == "nodecraft-deployment" {
+                match submitted.get("deployment") {
+                    Some(nodecraft_types::Value::Text(name)) => name.as_str(),
+                    _ => "",
+                }
+            } else {
+                definition.remote.as_str()
+            };
+            nodecraft_providers::llm::validate_azure_deployment(deployment).map_err(|error| Error::new(ErrorKind::InvalidInput, error.message))?;
+        }
         let contract = catalog.kind(&node.kind)?.model_contract(model).ok_or_else(|| {
             Error::new(
                 ErrorKind::Unsupported,

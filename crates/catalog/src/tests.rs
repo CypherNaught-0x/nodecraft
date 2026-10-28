@@ -55,6 +55,44 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::zero(Currency::USD)));
         } else if model.id == "fal.trellis2" {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if matches!(model.id.as_str(), "fal.luma-ray32" | "fal.luma-ray32-i2v") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 500_000)));
+        } else if model.id.starts_with("fal.hunyuan3d-v3") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 375_000)));
+        } else if model.id.starts_with("fal.rodin25") {
+            let micros = if model.id.contains("-fast") { 100_000 } else { 400_000 };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)));
+        } else if model.id.starts_with("fal.qwen-image3") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
+        } else if model.id.starts_with("fal.wan3") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 500_000)));
+        } else if model.id.starts_with("fal.grok-") {
+            let micros = match model.id.as_str() {
+                "fal.grok-image2" => Some(60_000),
+                "fal.grok-image2-edit" => None,
+                "fal.grok-video15" => Some(840_000),
+                "fal.grok-video15-i2v" => Some(850_000),
+                other => panic!("{other}: no verified Grok price"),
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
+        } else if model.id.starts_with("fal.heygen-") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
+        } else if model.id.starts_with("fal.minimax-") {
+            let micros = if model.id == "fal.minimax-music3" {
+                Some(120_000)
+            } else if model.id == "fal.minimax-speech28-hd" {
+                None
+            } else {
+                Some(250_000)
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
+        } else if model.id == "fal.pika25-i2v" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if model.id == "fal.topaz-precision" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 80_000)));
+        } else if matches!(model.id.as_str(), "fal.recraft41" | "fal.recraft41-vector") {
+            let price = if model.id.ends_with("-vector") { 80_000 } else { 35_000 };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, price)));
         } else if model.id == "fal.bria-rmbg" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 18_000)));
@@ -126,6 +164,14 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 "elevenlabs.voice-changer" => assert_eq!(model.quote(&ParamValues::new()).unwrap(), None),
                 other => panic!("{other}: no verified price in this test"),
             }
+        } else if model.provider == "stability" {
+            let micros = match model.id.as_str() {
+                "stability.image-core" => 30_000,
+                "stability.audio3" => 80_000,
+                "stability.fast-3d" => 100_000,
+                other => panic!("{other}: no verified Stability price"),
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, micros)));
         } else if model.provider == "seedream" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 40_000)));
@@ -153,6 +199,14 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 assert_eq!(price.0, Money::new(Currency::USD, micros), "{}", model.id);
             }
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{}", model.id);
+        } else if model.provider == "runway" {
+            let rate = match model.id.as_str() {
+                "runway.gen4-5" => 120_000,
+                "runway.gen4-turbo" => 50_000,
+                other => panic!("{other}: no verified Runway price"),
+            };
+            assert!(matches!(&model.pricing, Pricing::PerUnit { unit: Unit::Second, .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, rate * 5)));
         } else if model.provider == "seedance" {
             // Per second by resolution (#18); quoted in seedance_is_quoted_per_second_at_its_largest_size.
             assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
@@ -165,6 +219,10 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             // Per second by resolution (#742); quoted in veo_on_google_cloud_is_quoted_by_length_and_resolution.
             assert!(matches!(&model.pricing, Pricing::PerUnitByChoice { unit: Unit::Second, .. }), "{}", model.id);
             assert!(model.quote(&ParamValues::new()).unwrap().is_some(), "{}", model.id);
+        } else if model.id == "fal.ideogram-v3" {
+            // Fixed Balanced rendering and one output (#34), checked 2026-10-27.
+            assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 60_000)));
         } else if model.id == "higgsfield.soul-id-trainer" {
             // Soul ID training's list price per request (#680), checked 2026-10-22.
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
@@ -212,9 +270,16 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     assert_eq!(
         order,
         vec![
+            ("bfl.flux-2-klein-4b", true),
             ("comfyui.flux-dev", true),
             ("comfyui.sdxl", true),
             ("fal.flux-schnell", true),
+            ("fal.grok-image2", true),
+            ("fal.ideogram-v3", true),
+            ("fal.luma-photon", true),
+            ("fal.qwen-image3", true),
+            ("fal.recraft41-vector", true),
+            ("fal.recraft41", true),
             ("gemini-images.pro", true),
             ("gemini-images.nano-banana-2.1", true),
             ("gemini-images.flash-lite", true),
@@ -229,9 +294,12 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("openai-images.sunburst", true),
             ("replicate.sdxl", true),
             ("seedream.4_5", true),
+            ("stability.image-core", true),
             ("anthropic.claude-opus-5-5", false),
             ("anthropic.claude-sonnet-5-5", false),
             ("anthropic.claude-haiku-5-5", false),
+            ("azure-openai.deployment", false),
+            ("deepgram.nova-3", false),
             ("elevenlabs.v3", false),
             ("elevenlabs.multilingual-v2", false),
             ("elevenlabs.music", false),
@@ -239,14 +307,41 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("elevenlabs.voice-changer", false),
             ("elevenlabs.flash-v2-5", false),
             ("fal.flux-lora", false),
+            ("fal.ltx23", false),
+            ("fal.ltx23-i2v", false),
+            ("fal.minimax-h3-i2v", false),
+            ("fal.minimax-h3", false),
+            ("fal.minimax-music3", false),
+            ("fal.minimax-speech28-hd", false),
+            ("fal.pika25-i2v", false),
+            ("fal.topaz-precision", false),
             ("fal.bria-rmbg", false),
             ("fal.esrgan", false),
             ("fal.flux-lora-trainer", false),
+            ("fal.grok-image2-edit", false),
+            ("fal.grok-video15", false),
+            ("fal.grok-video15-i2v", false),
+            ("fal.heygen-lipsync-precision", false),
+            ("fal.heygen-lipsync-speed", false),
+            ("fal.heygen-avatar4", false),
+            ("fal.hunyuan3d-v3-image", false),
+            ("fal.hunyuan3d-v3-sketch", false),
+            ("fal.hunyuan3d-v3", false),
             ("fal.kokoro", false),
+            ("fal.luma-ray32", false),
+            ("fal.luma-ray32-i2v", false),
+            ("fal.qwen-image3-edit", false),
+            ("fal.rodin25-fast-images", false),
+            ("fal.rodin25-fast", false),
+            ("fal.rodin25-images", false),
+            ("fal.rodin25", false),
             ("fal.trellis2", false),
             ("fal.wan22", false),
             ("fal.wan22-i2v", false),
             ("fal.wan22-s2v", false),
+            ("fal.wan3", false),
+            ("fal.wan3-i2v", false),
+            ("gemini-llm.3.8-flash", false),
             ("gemini-video.omni-flash", false),
             ("google-tts.gemini-2.5-pro", false),
             ("google-tts.chirp3-hd", false),
@@ -265,9 +360,11 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("higgsfield.genjutsu-restyle", false),
             ("higgsfield.soul-id-trainer", false),
             ("higgsfield.kling-2.5-turbo-i2v", false),
+            ("huggingface.gpt-oss-120b-groq", false),
             ("kling.v2_1_master", false),
             ("kling.v2_5_turbo", false),
             ("kling.v1_6", false),
+            ("magnific.precision-v2", false),
             ("meshy.image-to-3d", false),
             ("meshy.multi-image-to-3d", false),
             ("meshy.remesh", false),
@@ -277,11 +374,17 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("openai.gpt-6.1-sol", false),
             ("openai.gpt-6-luna", false),
             ("openai.gpt-4.1-mini", false),
+            ("openai-audio.transcribe", false),
+            ("openai-audio.mini-tts", false),
             ("replicate.hello", false),
+            ("runway.gen4-5", false),
+            ("runway.gen4-turbo", false),
             ("seedance.2-0", false),
             ("seedance.2-5", false),
             ("seedance.2-0-fast", false),
             ("seedance.2-0-mini", false),
+            ("stability.audio3", false),
+            ("stability.fast-3d", false),
             ("test.video", false),
             ("tripo.image-to-3d", false),
             ("tripo.multiview-to-3d", false),

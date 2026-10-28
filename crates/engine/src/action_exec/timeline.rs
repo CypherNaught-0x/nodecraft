@@ -4,7 +4,7 @@
 //! them all (#574), and stages it. The tools are the ones the settings name (`[media]`), never a project's.
 //! Natively only: browsers have no video service.
 use super::{LocalActions, whole, word};
-use nodecraft_nodes::timeline::{Input, Wire};
+use nodecraft_nodes::timeline::Wire;
 use nodecraft_types::{ParamValues, Value};
 
 /// Most bytes a rendered timeline may have: it is held in memory until the host imports it.
@@ -37,23 +37,10 @@ pub(crate) fn frame(params: &ParamValues) -> Result<Frame, String> {
     Ok(Frame { width: edge("width")?, height: edge("height")?, fps: (fps, 1), background: [r, g, b] })
 }
 
-fn texts(params: &ParamValues, name: &str) -> Vec<String> {
-    match params.get(name) {
-        Some(Value::List(items)) => items.iter().map(|v| if let Value::Text(t) = v { t.clone() } else { String::new() }).collect(),
-        _ => Vec::new(),
-    }
-}
-
 /// Each of `count` inputs' port and origin node, as planned: an origin that isn't known is
 /// empty, and a port that isn't (a job planned before #576) is `clips`.
 pub(crate) fn wires(params: &ParamValues, count: usize) -> Vec<Wire> {
-    let (origins, ports) = (texts(params, nodecraft_nodes::timeline::SOURCES_PARAM), texts(params, nodecraft_nodes::timeline::PORTS_PARAM));
-    (0..count)
-        .map(|i| {
-            let input = ports.get(i).and_then(|p| Input::from_port(p)).unwrap_or_default();
-            Wire::new(input, origins.get(i).cloned().unwrap_or_default())
-        })
-        .collect()
+    nodecraft_nodes::timeline::provenance::wires(params, count)
 }
 
 /// The clips a planned job carries, checked.
@@ -82,13 +69,13 @@ impl LocalActions {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) mod native {
-    use super::{Input, LocalActions, MAX_INPUT_BYTES, MAX_RENDER_BYTES, clips, frame, seconds, wires};
+    use super::{LocalActions, MAX_INPUT_BYTES, MAX_RENDER_BYTES, clips, frame, seconds, wires};
     use nodecraft_format::asset_source::TransferCancel;
     use nodecraft_media::video::{
         ColorPolicy, ComposeCaption, ComposeClip, ComposeSpec, MAX_CLIPS, Placement, Quality, RenderedVideo, ServiceConfig, Source, ToolPaths, VideoChunk,
         VideoError, VideoJob, VideoLimits, VideoService,
     };
-    use nodecraft_nodes::timeline::{Timeline, caption};
+    use nodecraft_nodes::timeline::{Input, Timeline, caption};
     use nodecraft_types::{AssetRef, Blake3, MediaMeta, ParamValues, Value};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex, PoisonError};

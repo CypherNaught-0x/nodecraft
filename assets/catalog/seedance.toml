@@ -14,7 +14,7 @@ id = "seedance.2-5"
 provider = "seedance"
 provider_model = "dreamina-seedance-2-5-260628"
 label = "Seedance 2.5"
-description = "ByteDance's newest Seedance: a 4 to 30 second clip with sound from a prompt, a first frame (and optionally a last one) or up to 30 reference images. At most 0.23 USD a second at 720p."
+description = "Create video with sound from text, frames or references with Seedance 2.5. Estimated pricing follows length and resolution."
 latency_s = 180
 quality = 5
 pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "480p" = "0.107471 USD", "720p" = "0.232577 USD", "1080p" = "0.572261 USD" } }
@@ -60,7 +60,7 @@ id = "seedance.2-0"
 provider = "seedance"
 provider_model = "dreamina-seedance-2-0-260128"
 label = "Seedance 2.0"
-description = "Seedance 2.0: a 4 to 15 second clip with sound from a prompt, frames or up to nine reference images, up to 4K. At most 0.15 USD a second at 720p."
+description = "Create video with sound from text, frames or references with Seedance 2.0. Estimated pricing follows length and resolution."
 latency_s = 150
 quality = 5
 pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "480p" = "0.070308 USD", "720p" = "0.152153 USD", "1080p" = "0.376616 USD", "4k" = "0.777661 USD" } }
@@ -106,7 +106,7 @@ id = "seedance.2-0-fast"
 provider = "seedance"
 provider_model = "dreamina-seedance-2-0-fast-260128"
 label = "Seedance 2.0 Fast"
-description = "A faster, cheaper Seedance 2.0: a 4 to 15 second clip with sound at 480p or 720p. At most 0.12 USD a second at 720p."
+description = "Faster Seedance 2.0 video generation with sound. Estimated pricing follows length and resolution."
 latency_s = 90
 quality = 4
 pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "480p" = "0.056247 USD", "720p" = "0.121723 USD" } }
@@ -152,7 +152,7 @@ id = "seedance.2-0-mini"
 provider = "seedance"
 provider_model = "dreamina-seedance-2-0-mini-260615"
 label = "Seedance 2.0 Mini"
-description = "The cheapest Seedance: a 4 to 15 second clip with sound at 480p or 720p. At most 0.08 USD a second at 720p."
+description = "Lower-priced Seedance 2.0 video generation with sound. Estimated pricing follows length and resolution."
 latency_s = 60
 quality = 3
 pricing = { type = "per_unit_by_choice", unit = "second", count = "duration_seconds", param = "resolution", prices = { "480p" = "0.035154 USD", "720p" = "0.076077 USD" } }

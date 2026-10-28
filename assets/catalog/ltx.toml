@@ -1,0 +1,95 @@
+# LTX 2.3 Pro through fal, checked 2026-10-27. These are live aliases.
+# https://fal.ai/models/fal-ai/ltx-2.3/text-to-video/api
+# https://fal.ai/models/fal-ai/ltx-2.3/image-to-video/api
+# Pricing page conflicts internally (0.08/s vs 0.06/s at 1080p); no reliable quote.
+# https://fal.ai/models/fal-ai/ltx-2.3/text-to-video
+
+[[model]]
+id = "fal.ltx23"
+provider = "fal"
+provider_model = "fal-ai/ltx-2.3/text-to-video"
+label = "LTX 2.3 Pro (fal)"
+description = "Generate video with optional sound from text with LTX 2.3 Pro. Usage pricing; time depends on the clip."
+latency_s = 120
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "text-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "duration_seconds"
+label = "Seconds"
+control = { type = "unsigned", min = "6", max = "10", step = "2" }
+default = { type = "unsigned", value = "6" }
+
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "1080p", label = "1080p" }, { value = "1440p", label = "1440p" }, { value = "2160p", label = "2160p" }] }
+default = { type = "text", value = "1080p" }
+
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "16:9", label = "16:9" }, { value = "9:16", label = "9:16" }] }
+default = { type = "text", value = "16:9" }
+
+[[model.params.params]]
+name = "fps"
+label = "Frames per second"
+control = { type = "choice", options = [{ value = "24", label = "24" }, { value = "25", label = "25" }, { value = "48", label = "48" }, { value = "50", label = "50" }] }
+default = { type = "text", value = "25" }
+
+[[model.params.params]]
+name = "generate_audio"
+label = "Generate sound"
+control = { type = "toggle" }
+default = { type = "bool", value = true }
+
+[[model]]
+id = "fal.ltx23-i2v"
+provider = "fal"
+provider_model = "fal-ai/ltx-2.3/image-to-video"
+label = "LTX 2.3 Pro frames (fal)"
+description = "Animate a first frame toward an optional last frame with LTX 2.3 Pro, with optional sound. Usage pricing; time depends on the clip."
+latency_s = 120
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }, { role = "last_frame", modality = "image", min = 0, max = 1 }]
+
+[[model.params.params]]
+name = "duration_seconds"
+label = "Seconds"
+control = { type = "unsigned", min = "6", max = "10", step = "2" }
+default = { type = "unsigned", value = "6" }
+
+[[model.params.params]]
+name = "resolution"
+label = "Resolution"
+control = { type = "choice", options = [{ value = "1080p", label = "1080p" }, { value = "1440p", label = "1440p" }, { value = "2160p", label = "2160p" }] }
+default = { type = "text", value = "1080p" }
+
+[[model.params.params]]
+name = "aspect_ratio"
+label = "Aspect ratio"
+control = { type = "choice", options = [{ value = "16:9", label = "16:9" }, { value = "9:16", label = "9:16" }] }
+default = { type = "text", value = "16:9" }
+
+[[model.params.params]]
+name = "fps"
+label = "Frames per second"
+control = { type = "choice", options = [{ value = "24", label = "24" }, { value = "25", label = "25" }, { value = "48", label = "48" }, { value = "50", label = "50" }] }
+default = { type = "text", value = "25" }
+
+[[model.params.params]]
+name = "generate_audio"
+label = "Generate sound"
+control = { type = "toggle" }
+default = { type = "bool", value = true }

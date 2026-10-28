@@ -36,6 +36,8 @@ fn every_action_kind_runs_with_its_defaults() {
     let image = Value::Media(AssetRef { hash, mime: "image/png".parse().unwrap(), meta: MediaMeta::default() });
     let model = Value::Media(AssetRef { hash: assets.insert(OBJ).unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
     let document = pdf_value(&mut assets, &[PAGE]);
+    let svg_bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"><rect width="8" height="6" fill="#aa44cc"/></svg>"##;
+    let svg = Value::Media(AssetRef { hash: assets.insert(svg_bytes).unwrap(), mime: "image/svg+xml".parse().unwrap(), meta: MediaMeta::default() });
     let actions = LocalActions::new(assets);
     let mut ran = 0;
     // The custom shader and 3D captures need a GPU, and the timeline and video actions ffmpeg:
@@ -56,7 +58,9 @@ fn every_action_kind_runs_with_its_defaults() {
             && !nodecraft_nodes::video_split::IDS.contains(&id)
     };
     for descriptor in kinds.descriptors().filter(|d| d.category == Category::Action && runs(&d.id)) {
-        let input = if descriptor.id.starts_with("image.") {
+        let input = if descriptor.id == nodecraft_nodes::svg::RASTERIZE {
+            svg.clone()
+        } else if descriptor.id.starts_with("image.") {
             image.clone()
         } else if descriptor.id.starts_with("mesh.") {
             model.clone()
@@ -81,7 +85,7 @@ fn every_action_kind_runs_with_its_defaults() {
         ran += 1;
     }
     // Duplicate only repeats its input, so it runs here too.
-    assert_eq!(ran, 24);
+    assert_eq!(ran, 25);
     // Every new image and model is staged for the host to import, and nothing else.
     let staged = actions.take_staged();
     assert!(!staged.is_empty());
@@ -395,10 +399,20 @@ fn convert_3d_writes_each_format_and_chains_from_staged_results() {
     let obj = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("obj"), &[glb]).unwrap();
     let Value::Media(obj_asset) = &obj else { panic!("a model") };
     assert_eq!(obj_asset.mime.essence(), "model/obj");
+    let stl = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("stl"), std::slice::from_ref(&model)).unwrap();
+    let Value::Media(stl_asset) = &stl else { panic!("a model") };
+    assert_eq!((stl_asset.mime.essence(), stl_asset.meta.vertices, stl_asset.meta.triangles), ("model/stl", Some(6), Some(2)));
+    let returned = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), std::slice::from_ref(&stl)).unwrap();
+    let Value::Media(returned_asset) = &returned else { panic!("a model") };
     let staged = actions.take_staged();
     let written = nodecraft_media::decode_mesh(staged.get(&obj_asset.hash).unwrap(), &Default::default()).unwrap();
     assert_eq!(written.triangle_count(), 2);
-    assert!(actions.execute(nodecraft_nodes::mesh::CONVERT, &format("stl"), std::slice::from_ref(&model)).unwrap_err().contains("stl"));
+    let stl_geometry = nodecraft_media::decode_mesh(staged.get(&stl_asset.hash).unwrap(), &Default::default()).unwrap();
+    assert_eq!((stl_geometry.vertex_count(), stl_geometry.triangle_count()), (6, 2));
+    let returned_geometry = nodecraft_media::decode_mesh(staged.get(&returned_asset.hash).unwrap(), &Default::default()).unwrap();
+    assert_eq!(returned_geometry.positions, stl_geometry.positions);
+    assert_eq!(actions.assets.get(&hash).unwrap(), OBJ, "STL conversion retains the original source");
+    assert!(actions.execute(nodecraft_nodes::mesh::CONVERT, &format("ply"), std::slice::from_ref(&model)).unwrap_err().contains("ply"));
     assert!(actions.execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), &[Value::Text("x".into())]).unwrap_err().contains("connect a 3D model"));
     let mut broken = AssetStore::default();
     let junk = Value::Media(AssetRef { hash: broken.insert(b"v 0 0\n").unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });

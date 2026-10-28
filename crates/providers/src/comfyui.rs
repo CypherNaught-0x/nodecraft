@@ -29,6 +29,7 @@
 use std::hash::BuildHasher;
 use std::sync::{Arc, Mutex, PoisonError};
 
+pub(crate) mod output_selection;
 pub mod progress;
 pub(crate) mod template;
 pub(crate) mod upload;
@@ -441,13 +442,13 @@ fn looks_textual(name: &str) -> bool {
 }
 
 /// Most bytes of a workflow card's workflow or values text: one text input's limit.
-const MAX_CARD_TEXT_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_CARD_TEXT_BYTES: usize = 1024 * 1024;
 /// Most values one workflow card sets.
 const MAX_CARD_VALUES: usize = 1024;
 
 /// A workflow card's values (#9): a JSON object of `"<node>.<input>"` to a string, number or
 /// boolean, bounded before it is parsed. No values input means none.
-fn card_values(job: &ProviderJob) -> Result<Map<String, Value>, ProviderError> {
+pub(crate) fn card_values(job: &ProviderJob) -> Result<Map<String, Value>, ProviderError> {
     let refused = |message: &str| ProviderError::new(ErrorKind::UnsupportedInput, format!("the card's ComfyUI values {message}"));
     let Some(text) = template::card_text(job, template::CARD_VALUES) else { return Ok(Map::new()) };
     if text.len() > MAX_CARD_TEXT_BYTES {
@@ -468,7 +469,7 @@ fn card_values(job: &ProviderJob) -> Result<Map<String, Value>, ProviderError> {
 /// node ids: the workflow's other output nodes are dropped before it is queued, so the server
 /// never runs them and no file comes back that the card has no port for. A node another node
 /// reads from is kept. No outputs input keeps every node.
-fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, catalog: &NodeCatalog) -> Result<(), ProviderError> {
+pub(crate) fn keep_card_outputs(workflow: &mut ApiWorkflow, job: &ProviderJob, catalog: &NodeCatalog) -> Result<(), ProviderError> {
     let refused = |message: String| ProviderError::new(ErrorKind::UnsupportedInput, format!("the card's ComfyUI outputs {message}"));
     let Some(text) = template::card_text(job, template::CARD_OUTPUTS) else { return Ok(()) };
     if text.len() > MAX_CARD_TEXT_BYTES {
@@ -550,9 +551,10 @@ impl Provider for ComfyProvider {
 
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
         Box::pin(async move {
+            let data = output_selection::save(Value::Null, job)?;
             let (prompt_id, already) = self.choose_prompt_id(&job.idempotency_key).await?;
             if already {
-                return Ok(Submission::Queued(handle_for(&prompt_id)));
+                return Ok(Submission::Queued(JobHandle { data, ..handle_for(&prompt_id) }));
             }
             let mut catalog = self.catalog().await?;
             let workflow = match self.prepare(job, &catalog).await {
@@ -576,12 +578,13 @@ impl Provider for ComfyProvider {
                 live.track(&queued.prompt_id, &request.workflow);
             }
             // Older servers ignore a client-chosen id: follow the one they assigned.
-            Ok(Submission::Queued(handle_for(&queued.prompt_id)))
+            Ok(Submission::Queued(JobHandle { data, ..handle_for(&queued.prompt_id) }))
         })
     }
 
     fn poll<'a>(&'a self, handle: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
         Box::pin(async move {
+            let order = output_selection::read(&handle.data)?;
             let id = &handle.remote_id;
             let known = self.locate(id).await?;
             let live = self.live.as_ref();
@@ -602,10 +605,13 @@ impl Provider for ComfyProvider {
                     let (fraction, message) = now.map_or((None, None), |(fraction, node)| (Some(fraction), node));
                     Ok(JobProgress::Running { fraction, message, partial: None })
                 }
-                Known::Finished(entry) => match finished(&entry) {
-                    Ok(files) => Ok(JobProgress::Done(Completed::new(self.download(&files).await?))),
-                    Err(e) => Ok(JobProgress::Failed(e)),
-                },
+                Known::Finished(mut entry) => {
+                    output_selection::arrange(&mut entry.outputs, order.as_deref(), |(id, _)| id.as_str());
+                    match finished(&entry) {
+                        Ok(files) => Ok(JobProgress::Done(Completed::new(self.download(&files).await?))),
+                        Err(e) => Ok(JobProgress::Failed(e)),
+                    }
+                }
                 // Not queued, running or in history: the server restarted (history is in memory).
                 Known::Unknown => Err(ProviderError::new(ErrorKind::NotFound, "the server no longer knows this prompt (was it restarted?)")),
             }
@@ -1308,4 +1314,22 @@ mod tests {
         assert!(!format!("{p:?}").contains("secret"));
         assert!(ComfyProvider::new("http://h:8188", None, " ", FakeServer::new(), Arc::new(|| 0)).is_err(), "a salt is required");
     }
+    #[test]
+    fn recraft35_svg_reference_is_refused_before_local_upload_and_prompt() {
+        let server = FakeServer::new();
+        let mut j = job();
+        j.inputs = vec![JobInput::Media {
+            role: "1.image".into(),
+            mime: nodecraft_media::svg::MIME.into(),
+            bytes: Arc::from(br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"/>"#.as_slice()),
+        }];
+        let error = block_on(provider(server.clone()).submit(&j)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+        assert!(error.message.contains("Rasterize SVG"));
+        assert!(server.seen.lock().unwrap().iter().all(|r| r.method == HttpMethod::Get), "no upload or prompt POST");
+    }
 }
+
+#[cfg(test)]
+#[path = "comfyui/mapping947_tests.rs"]
+mod mapping947_tests;

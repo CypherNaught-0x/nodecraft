@@ -258,7 +258,10 @@ The pending view polls a bounded result and offers Cancel; only a current Sessio
 project/canvas and revision can accept it through the existing synchronous `import_files` route.
 A blocked filesystem call cannot be interrupted portably: abandonment ends the pending view, but
 keeps the process slot busy until that call returns or the process restarts. No replacement worker
-is spawned. Browser file drops remain unsupported. See the
+is spawned. Browser drops use owned, abortable FileReaders with the same 16 MiB/file and
+48 MiB aggregate body limits, a ten-second deadline and Escape cancellation. Browser PNG paste
+starts Clipboard.read only after a user paste is admitted to the canvas; native copied file
+references reuse the native drop worker. Late results cannot mutate a replaced or edited document. See the
 [native drop decision](decisions/2026-10-18-bounded-native-drop-acquisition.md) for resource bounds
 and the distinction between acquisition and synchronous engine import.
 
@@ -282,6 +285,27 @@ and no retry is automatic. A callback error, invalid response or panic can occur
 side effect commits; hosts must reconcile it. The session guarantees only document/history/event
 preservation, not rollback of external effects. This seam does not itself implement settings persistence or job enqueue.
 `Effect::None` returns a bounded result without document, history, revision or event changes.
+`Effect::Export` writes one result's bytes to one path a person chose (`history.export`, #557).
+`Effect::LocalExport` is the batch (#98): the handler resolves each requested result against the
+immutable document and returns a bounded plan of names and references, and the session publishes
+each one into a folder the app authorized — through a pinned root descriptor and the same
+hash-verifying asset copy as `Effect::Export`, but not its path-based publisher. Existing files are
+replaced through a staged rename; new names use exclusive creation and may be visible during copy
+or left partial after a crash/failed cleanup (see the [batch decision](decisions/2026-10-21-batch-folder-export.md)).
+Like a save, neither changes a document,
+history, revision or event, so neither is an undo step. Writing there is authority the app grants by
+injecting `local_export::ExportHost` after a person chooses a folder — a destination named in a
+parameter is never authority — and without it `export.local_plan` and `export.local_run` return
+Unsupported. File → Save workflow results (#966) now scopes an ephemeral grant for
+`export.results_plan` / `export.results_start`; `media.export` remains #746. The new command
+snapshots all/active history or exact historical targets, uses the shared background export
+worker and quit watch, and atomically publishes complete new media plus a provenance manifest
+without replacement. See the [workflow save decision](decisions/2026-10-27-workflow-result-saves.md)
+for bounds, cancellation and current Unix-only secure folder writes.
+One entry failing reports that entry and lets the others run. Unlike `Effect::Export`,
+the batch does not bypass a pending file operation: it settles a pending save first and refuses to
+run while a project open is in flight. Both write stored bytes unchanged: conversion and
+vectorisation return Unsupported rather than approximating, and a text result is refused.
 Consecutive effective moves coalesce across redundant pointer samples and non-document effects.
 Selection deletion belongs to the canvas selection command; single-node removal has no Delete
 binding. Frontends can map redo's Ctrl+Y alternate in addition to its primary shortcut.
@@ -348,6 +372,17 @@ result contract. Native store operations hold a nonblocking, cooperative `.lock`
 through verification, index comparison/publication and cleanup. See the
 [worker, locking and placement decision](decisions/2026-10-19-plugin-store-worker.md).
 Future integration must preserve the existing layers, engine mutation path and wasm support.
+
+## Live action work
+
+`engine::live_actions` owns one cancel signal and cumulative work quota per live round.
+`action_exec::control` meters action/input costs, media reads, CPU reference work and PDF
+checkpoints using checked atomics, including WebAssembly. Action/media libraries accept
+synchronous callbacks and return errors on interruption; default callers retain their existing
+operation limits. The shell cancels obsolete session/revision/canvas/draft owners before waiting
+for a worker, and derived-result publication also refuses late cancellation. Quota failures
+carry input hashes so the same expensive input waits for an edit or an explicit run.
+See [the live-work policy](decisions/2026-10-27-live-action-work.md).
 
 ## CPU text actions
 
@@ -692,6 +727,18 @@ Generate uses (`request_runs`). A prompt still being typed is committed before t
 open keys act, and when a dialog takes the input; a project opens on its first plain canvas
 (`home_canvas`), and the view goes back to it if an undo removes the open sheet. The table lays
 out only the rows in view, so a full 1000-row sheet draws in about the time a screenful does.
+
+## Official workflow templates (#953)
+
+The authoritative catalog is external `CypherNaught-0x/nodecraft-templates`. A dependency-free data
+package at an immutable Git revision embeds the offline native/wasm snapshot; no network runs during
+builds. `engine::templates` shares one bounded schema/digest/archive/kind validator with external
+repository CI. A Session resource retains remote metadata and a bounded archive cache; the UI host
+queues at most one index or selected-content request. Catalog stamps and Session identities invalidate
+UI metadata, and late results cannot import into another Session. An opaque PreparedTemplate carries
+the admitted entry and graph into the existing PreparedImports/changeset boundary without resolving
+mutable latest metadata again. See [workflow starters](workflow-templates.md) and the
+[decision](decisions/2026-10-27-external-workflow-templates.md).
 
 ## Techniques (#93)
 

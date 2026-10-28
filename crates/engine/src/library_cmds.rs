@@ -83,6 +83,7 @@ fn copied(version: &Canvas, id: CanvasId) -> Result<Canvas, Error> {
         node.id = new(node.id)?;
         nodes.push(node);
     }
+    crate::deck_cmds::remap_sources(&mut nodes, &ids)?;
     let mut edges = Vec::with_capacity(version.edges().len());
     for (n, edge) in version.edges().values().enumerate() {
         edges.push(Edge {

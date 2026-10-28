@@ -1,6 +1,6 @@
 //! Comfy Cloud (#16): ComfyUI hosted by Comfy, run through its versioned v2 API. Jobs have the same
-//! shape as the local ComfyUI adapter's (the Workflow node's): `params.workflow` (API format),
-//! `params.values` overrides and media inputs whose role is `<node>.<input>`.
+//! shape as the local ComfyUI adapter's: the Workflow card's `comfy.*` text inputs or direct
+//! `params.workflow` / `params.values`, and media inputs whose role is `<node>.<input>`.
 //!
 //! - **Auth:** one Comfy API key (`comfyui-…`), sent as `Authorization: Bearer` to the v2 API and as
 //!   `X-API-Key` to `/api/object_info` (the v1 API Comfy documents for it). Both are secret headers
@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// The adapter id, the catalog's `provider`, and the keychain account of the key.
 pub const ID: &str = "comfy-cloud";
-const ORIGIN: &str = "https://cloud.comfy.org";
+pub const ORIGIN: &str = "https://cloud.comfy.org";
 const MIB: usize = 1024 * 1024;
 /// How long a fetched `/api/object_info` is reused.
 const CATALOG_TTL_MS: u64 = 5 * 60 * 1000;
@@ -40,7 +40,7 @@ const CATALOG_TTL_MS: u64 = 5 * 60 * 1000;
 /// Lower-only limits for one job.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Each uploaded input (Comfy expects single uploads of about 100 MB at most).
+    /// Each uploaded input (conservatively capped at the cloud's 50 MiB image limit).
     pub input_bytes: usize,
     /// JSON replies (assets, jobs).
     pub response_bytes: usize,
@@ -53,7 +53,7 @@ pub struct Limits {
 }
 
 impl Limits {
-    pub const HARD: Self = Self { input_bytes: 100 * MIB, response_bytes: 8 * MIB, output_bytes: 256 * MIB, total_output_bytes: 256 * MIB, output_files: 256 };
+    pub const HARD: Self = Self { input_bytes: 50 * MIB, response_bytes: 8 * MIB, output_bytes: 256 * MIB, total_output_bytes: 256 * MIB, output_files: 256 };
 
     fn validate(self) -> Result<Self, ProviderError> {
         let h = Self::HARD;
@@ -167,13 +167,14 @@ impl ComfyCloud {
     }
 
     async fn create(&self, job: &ProviderJob, context: Option<&crate::SubmitContext>) -> Result<Submission, ProviderError> {
+        let handle_data = crate::comfyui::output_selection::save(serde_json::json!({"v":1}), job)?;
         let catalog = self.catalog().await?;
         let mut prepared = request::prepare(job, &catalog, self.limits)?;
         // Uploads are free and deduplicated by content: a failure here proves no job exists.
         for upload in std::mem::take(&mut prepared.uploads) {
             let request = HttpRequest::post_multipart(
                 format!("{ORIGIN}/api/v2/assets"),
-                &[("content_type", upload.mime), ("file_path", &upload.file_name), ("tags", "input")],
+                &[("content_type", upload.mime), ("file_path", &upload.file_name), ("tags", r#"["input"]"#)],
                 &[("file", &upload.file_name, upload.mime, &upload.bytes)],
             )?
             .timeout_ms(600_000);
@@ -193,7 +194,7 @@ impl ComfyCloud {
         }
         let reply = self.send_with(submit, self.limits.response_bytes, true, context).await?;
         let created = response::job(&reply.body)?;
-        Ok(Submission::Queued(JobHandle { remote_id: created.id, data: serde_json::json!({"v": 1}) }))
+        Ok(Submission::Queued(JobHandle { remote_id: created.id, data: handle_data }))
     }
 
     async fn progress(&self, handle: &JobHandle) -> Result<JobProgress, ProviderError> {
@@ -201,6 +202,7 @@ impl ComfyCloud {
         if handle.data.get("v").and_then(serde_json::Value::as_u64) != Some(1) {
             return Err(invalid("Comfy Cloud handle record refused"));
         }
+        let order = crate::comfyui::output_selection::read(&handle.data)?;
         let request = self.bearer(HttpRequest::get(format!("{ORIGIN}/api/v2/jobs/{}", handle.remote_id))).timeout_ms(30_000);
         let reply = self.send(request, self.limits.response_bytes, false).await?;
         let job = response::job(&reply.body)?;
@@ -210,7 +212,10 @@ impl ComfyCloud {
         match job.state()? {
             response::State::Progress(progress) => Ok(progress),
             response::State::Failed(error) => Ok(JobProgress::Failed(error)),
-            response::State::Succeeded(outputs) => Ok(JobProgress::Done(Completed::new(self.download(&outputs).await?))),
+            response::State::Succeeded(mut outputs) => {
+                crate::comfyui::output_selection::arrange(&mut outputs, order.as_deref(), |o| o.node_id.as_str());
+                Ok(JobProgress::Done(Completed::new(self.download(&outputs).await?)))
+            }
         }
     }
 

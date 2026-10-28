@@ -1,6 +1,8 @@
 //! Tagging menus and scoped view-only filter host.
 use super::*;
-use crate::tags::{PALETTE, label};
+use crate::tags::PALETTE;
+#[cfg(test)]
+use crate::tags::label;
 use nodecraft_engine::tag_filter_cmds::TagFilterContext;
 use nodecraft_types::TagId;
 use serde_json::Value as Json;
@@ -40,35 +42,32 @@ pub(super) fn tag_menu(ui: &mut egui::Ui, canvas: &Canvas, selection: &Selection
         }
         // Sorted presentation retains IDs and at most 128 characters of each displayed title.
 
-        egui::ScrollArea::vertical().id_salt("assign_tags").max_height(t.tag_panel_height).show_rows(ui, t.tag_row_height, order.len(), |ui, range| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-            for (index, id) in order.get(range.clone()).unwrap_or(&[]).iter().enumerate() {
-                let Some(tag) = canvas.tags().get(id) else {
-                    continue;
-                };
-                let ordinal = range.start + index + 1;
-                let count = counts.get(&tag.id).copied().unwrap_or(0);
-                let state = if count == 0 {
-                    ""
-                } else if count == selection.len() {
-                    " ✓"
-                } else {
-                    " (mixed)"
-                };
-                let suffix = format!("#{ordinal}");
-                if ui
-                    .add_enabled(
-                        !selection.is_empty(),
-                        egui::Button::new(egui::RichText::new(format!("{}{} · {}", suffix, state, label(&tag.title))).color(t.tag_color(tag.color.as_deref())))
-                            .truncate(),
-                    )
-                    .clicked()
-                {
-                    action = Some(TagAction::Existing(tag.id));
-                    ui.close();
+        egui::ScrollArea::vertical().id_salt("assign_tags").max_height(t.tag_panel_height).show_rows(
+            ui,
+            t.tag_definition_row_height,
+            order.len(),
+            |ui, range| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                for id in order.get(range.clone()).unwrap_or(&[]) {
+                    let Some(tag) = canvas.tags().get(id) else {
+                        continue;
+                    };
+                    let count = counts.get(&tag.id).copied().unwrap_or(0);
+                    let state = if count == 0 {
+                        ""
+                    } else if count == selection.len() {
+                        " ✓"
+                    } else {
+                        " (mixed)"
+                    };
+                    let text = tag_definitions::row_text(ui, tag, state, t);
+                    if tag_definitions::row(ui, !selection.is_empty(), egui::Button::new(text).truncate(), t).clicked() {
+                        action = Some(TagAction::Existing(tag.id));
+                        ui.close();
+                    }
                 }
-            }
-        });
+            },
+        );
     });
     action
 }
@@ -121,24 +120,27 @@ impl NodeCraftApp {
     pub(super) fn tag_rect(&self) -> Rect {
         let t = self.theme.tokens();
         let available = (self.viewport.width() - 2.0 * t.navigation_margin).max(1.0);
-        let left = if self.tag_filter.open && self.comments.open {
-            let discussion_width = t.comments_width.min(((available - t.navigation_gap) / 2.0).max(1.0));
-            self.viewport.min.x + t.navigation_margin + discussion_width + t.navigation_gap
-        } else if self.tag_filter.open {
-            self.viewport.min.x + t.navigation_margin
-        } else {
-            (self.search_rect().left() - t.navigation_gap - t.search_button_width).max(self.viewport.min.x + t.navigation_margin)
-        };
-        let width =
-            if self.tag_filter.open { t.tag_panel_width } else { t.search_button_width }.min((self.viewport.max.x - t.navigation_margin - left).max(1.0));
-        let top = if self.search.open {
+        let left = self.viewport.min.x + t.navigation_margin;
+        let width_limit = if self.tag_filter.open && self.comments.open { ((available - t.navigation_gap) / 2.0).max(1.0) } else { available };
+        let width = if self.tag_filter.open { t.tag_panel_width } else { self.closed_tag_width() }
+            .min(width_limit)
+            .min((self.viewport.max.x - t.navigation_margin - left).max(1.0));
+        let top = if !self.tag_filter.open {
+            self.topbar_rect().top() + t.navigation_gap
+        } else if self.search.open {
             self.search_rect().bottom() + t.navigation_gap
         } else {
-            self.viewport.min.y + t.navigation_margin + if self.tag_filter.open { t.navigation_toolbar_height + t.navigation_gap } else { 0.0 }
+            self.topbar_rect().bottom() + t.navigation_gap
         };
         let height =
             if self.tag_filter.open { t.tag_panel_height } else { t.navigation_toolbar_height }.min((self.viewport.max.y - top - t.navigation_margin).max(1.0));
         Rect::from_min_size(Pos2::new(left, top), Vec2::new(width, height))
+    }
+    pub(super) fn closed_tag_width(&self) -> f32 {
+        let t = self.theme.tokens();
+        let available = self.viewport.width() - t.navigation_margin * 2.0;
+        let remaining = if self.selection.len() >= 2 { available - self.layout_toolbar_width() - t.navigation_gap * 3.0 } else { available - t.navigation_gap };
+        t.search_button_width.min((remaining * 0.5).max(1.0))
     }
     fn tag_context(&mut self, ctx: &egui::Context) -> TagFilterContext {
         self.sync_tag_session();
@@ -146,7 +148,8 @@ impl NodeCraftApp {
         TagFilterContext {
             canvas: self.canvas,
             viewport_available: canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0,
-            blocked: egui::Popup::is_any_open(ctx)
+            blocked: self.tag_definition.is_some()
+                || egui::Popup::is_any_open(ctx)
                 || canvas::text_input_focused(ctx)
                 || (self.text_focused && !self.tag_owns_focus(ctx))
                 || self.drag.is_some()
@@ -193,6 +196,8 @@ impl NodeCraftApp {
             Some("open") => {
                 self.tag_filter.open = true;
                 self.tag_focus_pending = true;
+                // A later explicit panel open owns focus even before either Area paints.
+                self.search_focus_pending = false;
             }
             Some("close") => {
                 let owned = self.tag_owns_focus(ctx);
@@ -251,6 +256,7 @@ impl NodeCraftApp {
         let steps = allowed && self.tag_filter.active() && (self.tag_filter.scanning || !self.tag_filter.results.is_empty());
         let mut action = None;
         let mut filter = None;
+        let mut definition = None;
         let mut focus_ids = Vec::new();
         let mut control_rects = Vec::new();
         if self.tag_filter.open && self.tag_owns_focus(&ctx) && allowed {
@@ -332,26 +338,38 @@ impl NodeCraftApp {
                         format!("{} tag matches", self.tag_filter.results.len())
                     };
                     ui.label(status);
+                    ui.label(egui::RichText::new("Right-click or Shift+F10: rename or delete").small().color(t.text_muted));
                     if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                         egui::ScrollArea::vertical()
                             .id_salt("filter_tags")
                             .max_height((rect.bottom() - ui.cursor().min.y - t.navigation_gap).max(1.0))
-                            .show_rows(ui, t.tag_row_height, self.tag_filter.presentation.len(), |ui, range| {
+                            .show_rows(ui, t.tag_definition_row_height, self.tag_filter.presentation.len(), |ui, range| {
                                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                                for (index, id) in self.tag_filter.presentation.get(range.clone()).unwrap_or(&[]).iter().enumerate() {
+                                for id in self.tag_filter.presentation.get(range.clone()).unwrap_or(&[]) {
                                     let Some(tag) = canvas.tags().get(id) else {
                                         continue;
                                     };
-                                    let ordinal = range.start + index + 1;
                                     let mut selected = self.tag_filter.tags.contains(&tag.id);
-                                    let suffix = format!("#{ordinal}");
-                                    let r = ui.add_enabled(
-                                        allowed,
-                                        egui::Checkbox::new(
-                                            &mut selected,
-                                            egui::RichText::new(format!("{} · {}", suffix, label(&tag.title))).color(t.tag_color(tag.color.as_deref())),
-                                        ),
-                                    );
+                                    let text = tag_definitions::row_text(ui, tag, "", t);
+                                    let r = tag_definitions::row(ui, allowed, egui::Checkbox::new(&mut selected, text), t);
+                                    let keyboard_menu = allowed && r.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
+                                    if keyboard_menu {
+                                        egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&r));
+                                    }
+                                    egui::Popup::context_menu(&r).anchor(&r).show(|ui| {
+                                        let rename = ui.button("Rename tag…");
+                                        if keyboard_menu {
+                                            rename.request_focus();
+                                        }
+                                        if rename.clicked() {
+                                            definition = Some((tag.clone(), false));
+                                            ui.close();
+                                        }
+                                        if ui.button("Delete tag…").clicked() {
+                                            definition = Some((tag.clone(), true));
+                                            ui.close();
+                                        }
+                                    });
                                     focus_ids.push(r.id);
                                     control_rects.push(r.rect);
                                     if r.changed() {
@@ -380,6 +398,9 @@ impl NodeCraftApp {
         {
             ctx.memory_mut(|m| m.request_focus(owner));
             ctx.options_mut(|o| o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
+        }
+        if let Some((tag, deleting)) = definition {
+            self.tag_definition = Some(tag_definitions::Editor::new(self.canvas, tag, deleting, self.session.view_identity()));
         }
         self.tag_focus_ids = focus_ids;
         if let Some((tags, untagged)) = filter
@@ -419,10 +440,11 @@ mod tests {
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_open", &json!({})).unwrap();
         h.run();
         for name in ["Comments", "Format selection"] {
-            let rect = h.get_by_role_and_label(Role::Button, name).rect();
+            let rect = if name == "Comments" { h.state().comments_toolbar_rect() } else { h.get_by_role_and_label(Role::Button, name).rect() };
             assert!(!h.state().tag_rect().intersects(rect), "{name}: {rect:?}");
         }
         assert!(h.state_mut().comments_enabled(&ctx, "canvas.comments_toggle", &json!({})).is_ok());
+        crate::app::topbar_tests::reveal(&mut h, "Comments");
         h.get_by_role_and_label(Role::Button, "Comments").click();
         h.run();
         assert!(h.state().comments.open && h.state().tag_filter.open);
@@ -669,7 +691,7 @@ mod tests {
         assert_eq!(h.state().tag_filter.frame_request, None);
     }
     #[test]
-    fn long_duplicate_labels_use_single_line_virtualized_rows_and_unique_visible_ordinals() {
+    fn long_duplicate_labels_use_virtualized_rows_and_stable_exact_ids() {
         let mut h = harness();
         let c = h.state().canvas;
         let mut p = h.state().session.document().clone();
@@ -686,11 +708,30 @@ mod tests {
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_open", &json!({})).unwrap();
         h.run();
         let prefix = label(&"Long\nTitle ".repeat(300));
-        let first = h.get_by_label(&format!("#1 · {prefix}")).rect();
-        let second = h.get_by_label(&format!("#2 · {prefix}")).rect();
-        assert!(first.height() <= h.state().theme.tokens().tag_row_height);
-        assert!(second.top() > first.top());
-        assert!(h.query_by_label(&format!("#100 · {prefix}")).is_none());
+        let first = h.get_by_label(&format!("{}\n{prefix}", TagId::from_bytes(1u128.to_be_bytes()))).rect();
+        let second = h.get_by_label(&format!("{}\n{prefix}", TagId::from_bytes(2u128.to_be_bytes()))).rect();
+        let row_height = h.state().theme.tokens().tag_row_height * 2.0;
+        assert!((first.height() - row_height).abs() < 0.1);
+        assert!(second.top() - first.top() >= row_height);
+        let last_id = TagId::from_bytes(100u128.to_be_bytes());
+        let last_label = format!("{last_id}\n{prefix}");
+        assert!(h.query_by_label(&last_label).is_none());
+        let revision = h.state().session.revision();
+        h.hover_at(first.center());
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: Vec2::new(0.0, -10_000.0),
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run();
+        let last = h.get_by_label(&last_label).rect();
+        assert!((last.height() - row_height).abs() < 0.1);
+        assert!(h.state().tag_rect().contains(last.center()));
+        h.get_by_label(&last_label).click();
+        h.run();
+        assert_eq!(h.state().tag_filter.tags, BTreeSet::from([last_id]));
+        assert_eq!(h.state().session.revision(), revision);
     }
     #[test]
     fn expanded_disabled_header_controls_and_background_preserve_dirty_editor() {
@@ -763,6 +804,7 @@ mod tests {
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":[],"untagged":true})).unwrap();
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_next", &json!({})).unwrap();
         h.run();
+        assert!(h.state().tag_owns_focus(&ctx), "the later panel open retains focus");
         let first = NodeId::from_bytes([3; 16]);
         assert!(
             h.state().selection.contains(first),

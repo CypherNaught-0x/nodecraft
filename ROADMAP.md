@@ -6,7 +6,7 @@ actions recompute as you edit, while milestone exit criteria for generation, reu
 still have open work. Details and exit criteria: [`docs/plan.md`](docs/plan.md) §7. Work is tracked as
 GitHub issues in milestones; comment `/claim` to take one.
 
-As of 2026-10-23, **Done** counts only issues closed as *completed* (not `not planned`); the
+As of 2026-10-24, **Done** counts only issues closed as *completed* (not `not planned`); the
 denominator is all filed issues, including open and declined issues. M1 is 36 completed and one
 `not planned` (#135). M2 closed with its documentation close-out (#373). M4's feature work is
 done, including result caching (#91), custom WGSL shaders (#90) and the plugin store (#172,
@@ -21,13 +21,25 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done | 14/14 |
 | 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), variations (#81), cost and budget checks (#201) | 43/46 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done (close-out #375) | 13/14 |
-| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 17/30 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 8/11 |
-| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 26/31 |
-| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 7/12 |
+| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 18/30 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 10/13 |
+| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 28/31 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 5/8 |
-| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 11/17 |
-| — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 2/29 |
+| 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 14/17 |
+| — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 3/29 |
+
+ComfyUI workflow cards expose prompts and common generation settings on import. Their
+**Edit workflow fields…** dialog saves custom field visibility, names and order without
+reimporting, including retained image previews for compatible core workflows (#947).
+
+Runway Gen-4.5 text/first-frame video and Gen-4 Turbo first-frame video are available through
+priced catalog models and the direct task adapter (#25); paid live verification remains opt-in.
+
+Official workflow starters are maintained in the separate
+[nodecraft-templates](https://github.com/CypherNaught-0x/nodecraft-templates) repository. Native and
+browser builds embed a pinned offline set; the Techniques panel can refresh the versioned index
+and retrieve one verified version without importing or running it (#953).
 
 ## What works today
 
@@ -60,9 +72,12 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   Element can be renamed, shared, or exported as a bundle file another person imports (#765).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
-  image as one undo step (#103). 3D models (glTF, GLB, OBJ) become 3D nodes whose cards show
+  image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL) become 3D nodes whose cards show
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
-  writes a GLB or OBJ copy (#111). A custom shader card runs WGSL with declared sliders; its editor
+  writes a GLB or OBJ copy (#111), or geometry-only binary STL with bounded read/reopen support
+  (part of #569; see `docs/3d-formats.md`). Built-in 3D cards save their viewer angle, elevation, zoom and
+  shading in the project; a viewer gesture is one undo step and never changes generation inputs
+  or existing captures (`mesh.view_set`, #928, part of #569). A custom shader card runs WGSL with declared sliders; its editor
   checks the code as it's typed, has a text model write or fix it through an ordinary, priced
   request card, and saves it to a versioned shader library every project shares, which places it
   on other canvases and moves cards to newer versions (#90). Typing `@` in a generation prompt mentions another card,
@@ -72,6 +87,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   list and edit them with revision checks (#122). Edit slides opens a slide sorter beside the
   Layer Editor's stage, to arrange each slide's text, shapes and sources (#694); its Export menu
   saves the slides as one PDF or as PNGs, drawn at the deck's size (`deck.export`, #692).
+  Each deck holds imported fonts shared by its editor, thumbnails, presenter and exports; unknown or
+  unreadable fonts visibly fall back to Lato, and `deck.list` resolves their references (#693).
+  Deck cards show their first three slides as cached live thumbnails. Copying a deck together
+  with its source cards makes those slides follow the copied sources (#695).
   A generation card's `− N× +` counter makes up to 20 variations a run, each its own request
   (quoted as such) and its own result in the node's history (#81).
   The viewer's Photo and Views buttons add a 3D photo or a
@@ -96,7 +115,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   are a fanned step's results, as one (#611). The desktop saves held results so they survive a
   restart (#614).
   A fal result's `X-Fal-Billable-Units` header is kept, exactly, with the job's settings in the
-  project as evidence of what was billed; it is never turned into money (#437). Run quotes also
+  project as evidence of what was billed; it is never turned into money (#437).
+  Luma Ray 3.2 text/frame video and Photon text-to-image reuse fal's queue and key (#26);
+  Ray is quoted by duration/resolution and Photon keeps an unknown upfront megapixel charge. Run quotes also
   surface aggregate admission feedback before confirmation (#307). Imported video and audio
   sources probe duration (#608); ComfyUI accepts video and audio workflows (#110). Plugin cards
   keep their package identity, migrate with their package, and survive uninstall (#173). Plugin
@@ -118,6 +139,26 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   package's actions become cards that stop running when the grant is revoked (#172, #173); in
   the browser, packages last only for the session and never run (#823). Built-in image actions
   run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
+- **Black Forest Labs**: desktop Generate image and the CLI can use the direct FLUX.2 klein 4B
+  text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
+  Pixel-based credits remain an unknown monetary price and require consent. Image editing and
+  other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
+- **MiniMax**: H3 text/first-frame video, Speech 2.8 HD and Music 3 share Fal's key and queue
+  (#27), with explicit priced settings and native streamed storage. See [provider limits](docs/providers.md#minimax-video-speech-and-music-through-fal-27).
+- **Pika**: desktop projects and the native CLI animate one first frame with a prompt using
+  current Pika 2.5 through fal (#29), at 720p for 5 or 10 seconds with explicit priced consent.
+  Browser sessions refuse before payment. Text-to-video and keyframes are not included; see
+  [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
+- **HeyGen**: desktop projects and the native CLI animate a photo or lip-sync an MP4 with
+  supplied speech through fal (#43). Monetary pricing remains unknown and requires consent;
+  see [`docs/providers.md`](docs/providers.md#heygen-through-fal-43) for client limits.
+- **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
+  photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
+  spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
+  in-memory storage refuse before payment; see [`docs/providers.md`](docs/providers.md).
+- **Topaz**: desktop projects and the native CLI can enhance or upscale one image with
+  Precision Standard V2 through fal (#37). Integer 1×–4× scaling stays within one 0.08 USD
+  output block. Browser sessions refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
@@ -126,7 +167,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   authenticated HTTP API with optional signed webhooks. Agents open and save projects only inside
   the folders the person allows with `--root`/`--read-root` (#423). See [`docs/mcp.md`](docs/mcp.md),
   [`docs/control.md`](docs/control.md) and [`docs/serve.md`](docs/serve.md).
-- **Headless**: the planner, scheduler, driver, run executor, cost quotes, budgets, usage ledger,
+- **Headless CLI**: named project/Technique inputs, isolated CSV rows with aggregate quotes and
+  spending limits, provider credential checks and ComfyUI workflow import (#97); see
+  [`docs/cli.md`](docs/cli.md). The planner, scheduler, driver, run executor, cost quotes, budgets, usage ledger,
   staleness hashing and router resolution exist and are tested end to end against the mock
   provider.
 
@@ -161,7 +204,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   option lists are desktop only for now (#721), and so is video. Unsaved work is kept in the
   site's storage and offered back after a crash or a closed tab (#717); leaving with unsaved work
   still asks first. Files dropped in a browser are read asynchronously and added as nodes (#319);
-  pasting a copied image works in the desktop app only.
+  clipboard media acquisition adds browser PNG paste and native copied-file references (#633).
 - **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
   and ffprobe discovered on `PATH`, set under `[media]` in settings, or overridden with
   `NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` (#411); it does not bundle them.
@@ -182,6 +225,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   and input paths stay short, keeping full timelines within Windows' command limit (#642).
   Export for another editor carries its captions as FCPXML titles and a SubRip companion,
   with style and placement differences listed in the report (#649).
+  Regenerated sources keep stored trims;
+  the editor warns when they no longer fit, records each rendered clip's source version and
+  reuses canvas stale badges for unrendered edits (#578).
 - **Live sharing works from the desktop app and the browser.** Sessions are shared through `nodecraft-cli relay`
   (#119), with every edit merged and images passed along. Share links let someone view, comment
   on or edit a shared project, with signed discussions and expiry and revocation (`share.link_*`,
@@ -205,7 +251,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   2.0 make video on BytePlus ModelArk (#18); Kling's own task API makes video and images with a
   Kling key (#19); most `future` adapters remain tracked separately. ElevenLabs speech (v3,
   Multilingual v2, Flash v2.5), effects, music and voice changer models (#20) have a Generate
-  audio card (#672); 3D has Tripo text/image/multiview and fal Trellis (#22), plus Meshy
+  audio card (#672), account voice choices (#670), and streaming speech playback on desktop
+  (#671, #875). The CLI and browser do not request streaming previews. 3D has Tripo
+  text/image/multiview and fal Trellis (#22), plus Meshy
   text/image/multi-image/retexture/remesh (#23). Consult [`docs/providers.md`](docs/providers.md)
   rather than inferring app support from a catalog entry. Published pre-releases are snapshots,
   not the current `main`.
@@ -284,11 +332,21 @@ The near-term order follows the remaining open issues, not an already-finished w
   work. The M2 close-out (#373) refreshed README, ROADMAP and `docs/plan.md`. M6 gained the
   Elements library (#552) and the Image tools menu (#103); providers gained Veo 3.1 on Google
   Cloud (#742) and Google TTS (#21).
+- **2026-10-24** — counts refreshed from GitHub's completed-only closures: M5 18/30, M6 10/13,
+  M7 28/31, M8 9/13, M10 14/17 and Future providers 3/29. The per-milestone close-outs (#374,
+  #376–#382) remain open: each stays open until its milestone's feature issues close.
 - **2026-10-23** — spending caps per call, session and project are settings the Budgets panel
   edits (#201); a run a cap blocks names it and its confirmation opens the panel. No command can
   raise a cap.
 - **2026-10-23** — the spending log records each charge's project, so the open project has its
   own cap beside the total (#847); the CSV export gains a `project` column.
+- **2026-10-24** — opening or recovering a located project with the old starter identity assigns
+  a stable identity in one undoable change (#879), separating future project spending. Save As
+  preserves identity; saved jobs under the ambiguous legacy identity remain parked with an
+  explicit explanation, and their charges stay attributed to that legacy identity.
+- **2026-10-24** — Replicate creation propagates a bounded server lifetime and successful results
+  retain reported execution milliseconds through saving, held results and restart recovery
+  (#339). Duration remains separate from money; restored handles do not reset the server limit.
 - **2026-10-23** — rendered videos and extracted sound share a per-run staging budget (#584):
   1 GiB and 4,096 results, including read-backs in flight. Failure and cancellation return their
   reservations; chained actions retain access to earlier completed outputs.

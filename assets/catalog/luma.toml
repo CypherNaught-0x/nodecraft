@@ -1,0 +1,96 @@
+# Luma through fal, checked 2026-10-24. Live aliases, not immutable weights.
+# https://fal.ai/models/luma/agent/ray/v3.2/text-to-video (and /api)
+# https://fal.ai/models/luma/agent/ray/v3.2/image-to-video/api
+# https://fal.ai/models/fal-ai/luma-photon (and /api)
+[[model]]
+id="fal.luma-ray32"
+provider="fal"
+provider_model="luma/agent/ray/v3.2/text-to-video"
+label="Luma Ray 3.2 (fal)"
+description = "Create an MP4 from text with Luma Ray 3.2. Per-second estimate by resolution; up to 256 MiB per result."
+latency_s=90
+quality=3
+pricing={type="per_unit_by_choice",unit="second",count="duration_seconds",param="resolution",prices={"540p"="0.10 USD","720p"="0.20 USD","1080p"="0.40 USD"}}
+
+[[model.modes]]
+id="text-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="3:4",label="3:4"},{value="4:3",label="4:3"},{value="1:1",label="1:1"},{value="9:16",label="9:16"},{value="16:9",label="16:9"},{value="21:9",label="21:9"}]}
+default={type="text",value="16:9"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="540p",label="540p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="540p"}
+
+[[model.params.params]]
+name="duration_seconds"
+label="Seconds"
+control={type="unsigned",min="5",max="10",step="5"}
+default={type="unsigned",value="5"}
+
+[[model.params.params]]
+name="loop"
+label="Loop (5 seconds only)"
+control={type="toggle"}
+default={type="bool",value=false}
+
+[[model]]
+id="fal.luma-ray32-i2v"
+provider="fal"
+provider_model="luma/agent/ray/v3.2/image-to-video"
+label="Luma Ray 3.2 frames (fal)"
+description = "Animate a first frame toward an optional last frame with Luma Ray 3.2. Per-second estimate; up to 256 MiB per result."
+latency_s=90
+quality=3
+pricing={type="per_unit_by_choice",unit="second",default_count=5,param="resolution",prices={"540p"="0.10 USD","720p"="0.20 USD","1080p"="0.40 USD"}}
+
+[[model.modes]]
+id="image-to-video"
+output="video"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="first_frame",modality="image",min=1,max=1},{role="last_frame",modality="image",min=0,max=1}]
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="3:4",label="3:4"},{value="4:3",label="4:3"},{value="1:1",label="1:1"},{value="9:16",label="9:16"},{value="16:9",label="16:9"},{value="21:9",label="21:9"}]}
+default={type="text",value="16:9"}
+
+[[model.params.params]]
+name="resolution"
+label="Resolution"
+control={type="choice",options=[{value="540p",label="540p"},{value="720p",label="720p"},{value="1080p",label="1080p"}]}
+default={type="text",value="540p"}
+
+[[model.params.params]]
+name="loop"
+label="Loop (without a last frame)"
+control={type="toggle"}
+default={type="bool",value=false}
+
+[[model]]
+id="fal.luma-photon"
+provider="fal"
+provider_model="fal-ai/luma-photon"
+label="Luma Photon (fal)"
+description = "Create one image from a text prompt with Luma Photon. Usage pricing; output size is chosen by the service."
+latency_s=30
+quality=3
+pricing={type="by_usage",currency="USD"}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="aspect_ratio"
+label="Aspect ratio"
+control={type="choice",options=[{value="16:9",label="16:9"},{value="9:16",label="9:16"},{value="1:1",label="1:1"},{value="4:3",label="4:3"},{value="3:4",label="3:4"},{value="21:9",label="21:9"},{value="9:21",label="9:21"}]}
+default={type="text",value="1:1"}

@@ -117,9 +117,8 @@ pub fn quote(path: &std::path::Path, options: &crate::Options) -> std::process::
     let result = guarded(|| {
         let mut services = nodecraft_engine::commands::Services::default();
         let mut runner = Runner::estimates_only(&mut services, "cli-estimate".into())?;
-        let mut session = crate::project::open_with_assets(path)?.with_services(services);
-        let canvas = crate::quote::canvas_of(&session, options.canvas.as_deref())?;
-        let targets = crate::quote::targets(&session, canvas, &options.nodes)?;
+        let (mut session, canvas, wanted) = crate::inputs::open_session(path, options, services)?;
+        let targets = crate::quote::targets(&session, canvas, &wanted)?;
         let mut maker = crate::providers::keychain_maker(nodecraft_engine::settings::peek().providers)?;
         crate::quote::prepare(&mut session, canvas, &targets, &mut maker)?;
         runner.install(&mut session);

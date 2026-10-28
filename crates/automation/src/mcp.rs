@@ -48,6 +48,7 @@ pub const LIVE_ONLY: &[&str] = &[
     "canvas.fit_all",
     "canvas.fit_selection",
     "canvas.minimap_toggle",
+    "canvas.prompt_overlays_toggle",
     "canvas.pan_to",
     "canvas.search_open",
     "canvas.search_query",
@@ -115,6 +116,11 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "app.input_set",
     "library.list",
     "library.place",
+    // Shipped data adds canvases/assets through the ordinary undoable project mutation path.
+    "template.list",
+    "template.add",
+    "template.refresh",
+    "template.retrieve",
     "node.describe",
     "node.options",
     "options.refresh",
@@ -122,6 +128,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "comfy.nodes.refresh",
     "comfy.nodes.status",
     "comfy.workflow.import",
+    "comfy.workflow.mapping",
+    "comfy.workflow.mapping_set",
     "comfy.server.use",
     "providers.settings_get",
     "app.check_updates",
@@ -132,9 +140,11 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "history.delete",
     "history.clear",
     "history.extract",
+    "export.status",
     "canvas.fit_all",
     "canvas.fit_selection",
     "canvas.minimap_toggle",
+    "canvas.prompt_overlays_toggle",
     "canvas.pan_to",
     "canvas.search_open",
     "canvas.search_query",
@@ -212,6 +222,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "mask.status",
     // A 3D capture only adds and wires a card; the card runs through run.start.
     "mesh.capture",
+    "mesh.view_set",
     // A page range is an ordinary, undoable parameter edit.
     "document.use_pages",
     // Project-owned media only; bounded extractions publish one undoable changeset, no dialog.
@@ -236,6 +247,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "deck.slide_remove",
     "deck.slide_move",
     "deck.layer_update",
+    "deck.font_add",
+    "deck.font_remove",
     // Clips only change the node's stored clips; the render runs (and is quoted) through run.start.
     "timeline.list",
     "timeline.interchange",
@@ -273,6 +286,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "skill.edit",
     "skill.delete",
     "skill.export",
+    // A local export preview resolves names from the document and writes nothing (#98). Running an
+    // export is `HUMAN_ONLY`: writing files into a folder is a person's decision.
+    "export.local_plan",
+    "export.results_plan",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
 /// pass through an agent's context, and `keys.remove` deletes a key with no undo. (The file
@@ -283,6 +300,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
 /// show a reconciled charge cost (#332). `plugins.*` changes read package files and
 /// decide what extends the app (#172): a person's decision, like installing software.
 pub const HUMAN_ONLY: &[&str] = &[
+    // Moving OS focus belongs to the person; the narrow desktop owner channel uses dispatch.
+    "file.focus_owner",
     // The library is shared by every project and outside undo, so only a person changes it.
     "library.add",
     "library.remove",
@@ -323,10 +342,15 @@ pub const HUMAN_ONLY: &[&str] = &[
     "providers.settings_set",
     // Writing files on this machine is the person's call, as saving the project is (#557).
     "history.export",
+    "export.cancel",
     "timeline.export_interchange",
     // What lands on the person's clipboard is what they paste next: theirs to put there (#831).
     "history.copy",
     "deck.export",
+    // Writing result files into a folder is a person's decision, for the same reason `file.save`
+    // is: the destination is outside the project and outside undo (#98).
+    "export.local_run",
+    "export.results_start",
     "run.record",
     "usage.reconcile_ownership",
     "usage.resolve_charge",

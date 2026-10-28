@@ -36,16 +36,22 @@ impl Impact {
     pub(crate) fn of(effect: &Effect) -> Result<Self, Error> {
         Ok(match effect {
             Effect::None { .. } | Effect::Elements { request: crate::element_library::Request::List } => Self::Read,
-            Effect::Edit { .. } | Effect::DocumentExtract { .. } | Effect::Undo | Effect::Redo | Effect::Place { .. } => Self::Edit,
+            Effect::TemplateAdd { .. } | Effect::Edit { .. } | Effect::DocumentExtract { .. } | Effect::Undo | Effect::Redo | Effect::Place { .. } => {
+                Self::Edit
+            }
             Effect::PreparedRun { prepared } => {
                 Self::Run(RunImpact { ceiling: prepared.ceiling()?, partial: prepared.partial(), unpriced_jobs: prepared.unpriced_jobs() })
             }
+            // A batch export is the same kind of host effect as `history.export`.
             Effect::Open { .. }
             | Effect::CancelFile
+            | Effect::CancelExport { .. }
             | Effect::Save { .. }
             | Effect::Service { .. }
             | Effect::Export { .. }
             | Effect::Copy { .. }
+            | Effect::LocalExport { .. }
+            | Effect::ResultsExport { .. }
             | Effect::Perf { .. }
             | Effect::Elements { .. } => Self::Host,
         })

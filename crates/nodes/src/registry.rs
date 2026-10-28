@@ -23,6 +23,7 @@ impl Registry {
             registry.register(Box::new(kind))?;
         }
         registry.register(Box::new(crate::router::kind()))?;
+        registry.register(Box::new(crate::svg::kind()))?;
         registry.register(Box::new(crate::batch::kind()))?;
         registry.register(Box::new(crate::folder::kind()))?;
         registry.register(Box::new(crate::note::kind()))?;
@@ -140,5 +141,20 @@ impl Registry {
     /// an empty canvas selection, never as a destination for an existing wire.
     pub fn compatible(&self, inputs: &[PortType]) -> impl Iterator<Item = &NodeDescriptor> {
         self.kinds.values().filter(move |kind| kind.mode(inputs).is_some()).map(|kind| kind.descriptor())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn builtins_leave_prompt_overlay_letter_unbound() {
+        let registry = super::Registry::builtins().unwrap();
+        for kind in registry.descriptors() {
+            assert!(
+                kind.quick_add.as_deref().is_none_or(|key| !matches!(super::shortcut_key(key).as_str(), "h" | "shift+h")),
+                "{} shadows the canvas overlay shortcut",
+                kind.id
+            );
+        }
     }
 }

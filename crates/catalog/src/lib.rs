@@ -25,18 +25,38 @@ pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Catalog files shipped with the app, embedded so they work offline and on the web.
 pub const BUILTIN: &[(&str, &str)] = &[
+    ("azure-openai.toml", include_str!("../../../assets/catalog/azure-openai.toml")),
     ("anthropic.toml", include_str!("../../../assets/catalog/anthropic.toml")),
+    ("deepgram.toml", include_str!("../../../assets/catalog/deepgram.toml")),
+    ("stability.toml", include_str!("../../../assets/catalog/stability.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
+    ("heygen.toml", include_str!("../../../assets/catalog/heygen.toml")),
+    ("magnific.toml", include_str!("../../../assets/catalog/magnific.toml")),
+    ("pika.toml", include_str!("../../../assets/catalog/pika.toml")),
+    ("minimax.toml", include_str!("../../../assets/catalog/minimax.toml")),
+    ("topaz.toml", include_str!("../../../assets/catalog/topaz.toml")),
+    ("luma.toml", include_str!("../../../assets/catalog/luma.toml")),
+    ("hunyuan.toml", include_str!("../../../assets/catalog/hunyuan.toml")),
+    ("rodin.toml", include_str!("../../../assets/catalog/rodin.toml")),
+    ("alibaba.toml", include_str!("../../../assets/catalog/alibaba.toml")),
+    ("grok.toml", include_str!("../../../assets/catalog/grok.toml")),
+    ("recraft.toml", include_str!("../../../assets/catalog/recraft.toml")),
+    ("ltx.toml", include_str!("../../../assets/catalog/ltx.toml")),
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
+    ("huggingface.toml", include_str!("../../../assets/catalog/huggingface.toml")),
+    ("gemini-llm.toml", include_str!("../../../assets/catalog/gemini-llm.toml")),
     ("gemini-images.toml", include_str!("../../../assets/catalog/gemini-images.toml")),
     ("gemini-video.toml", include_str!("../../../assets/catalog/gemini-video.toml")),
     ("google-gemini-images.toml", include_str!("../../../assets/catalog/google-gemini-images.toml")),
     ("google-veo.toml", include_str!("../../../assets/catalog/google-veo.toml")),
     ("google-tts.toml", include_str!("../../../assets/catalog/google-tts.toml")),
     ("openai.toml", include_str!("../../../assets/catalog/openai.toml")),
+    ("openai-audio.toml", include_str!("../../../assets/catalog/openai-audio.toml")),
     ("openai-images.toml", include_str!("../../../assets/catalog/openai-images.toml")),
     ("replicate.toml", include_str!("../../../assets/catalog/replicate.toml")),
+    ("runway.toml", include_str!("../../../assets/catalog/runway.toml")),
     ("seedream.toml", include_str!("../../../assets/catalog/seedream.toml")),
+    ("bfl.toml", include_str!("../../../assets/catalog/bfl.toml")),
     ("seedance.toml", include_str!("../../../assets/catalog/seedance.toml")),
     ("tripo.toml", include_str!("../../../assets/catalog/tripo.toml")),
     ("elevenlabs.toml", include_str!("../../../assets/catalog/elevenlabs.toml")),
@@ -129,7 +149,7 @@ impl Catalog {
         self.models.is_empty()
     }
 
-    /// Every model for the picker (but those cards don't offer): compatible ones first, then by provider, quality (best
+    /// Every model for the picker (but those cards don't offer): compatible ones first, then by provider, selection tier (highest
     /// first) and label. Incompatible models carry the reason they're disabled.
     pub fn candidates<'a>(&'a self, wiring: &Wiring) -> Vec<Candidate<'a>> {
         let mut all: Vec<Candidate<'a>> = self.card_models().map(|model| Candidate { model, fit: wiring.fit(model) }).collect();
@@ -388,3 +408,35 @@ pub fn migrate(params: &ParamValues, to: &ModelDescriptor) -> Result<Migration, 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod comparison_tests;
+
+#[cfg(test)]
+mod grok_tests;
+
+#[cfg(test)]
+mod hunyuan_tests;
+
+#[cfg(test)]
+mod alibaba_tests;
+
+#[cfg(test)]
+mod recraft_tests;
+#[cfg(test)]
+mod rodin_tests;
+
+#[cfg(test)]
+mod magnific38_tests;
+
+#[cfg(test)]
+mod topaz37_tests;
+
+#[cfg(test)]
+mod minimax27_tests;
+
+#[cfg(test)]
+mod pika29_tests;
+
+#[cfg(test)]
+mod heygen43_tests;

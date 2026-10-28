@@ -16,6 +16,7 @@
 use crate::Session;
 use crate::action_exec::LocalActions;
 use crate::plugin_runtime::{PluginAction, PluginSnapshot, Routed};
+use crate::session::DocumentLineage;
 use nodecraft_exec::planner::{Planned, RunMode, RunPlan, Step, plan_expanded, ready_alone_expanded};
 use nodecraft_exec::run::{Run, RunOptions};
 use nodecraft_exec::scheduler::RetryPolicy;
@@ -46,6 +47,7 @@ pub struct LiveJob {
     pub canvas: CanvasId,
     /// The revision it was planned from; results for another revision are dropped.
     pub base: u64,
+    lineage: DocumentLineage,
     /// Random per round, like any run's: generation ids derive from it, so a reopened project
     /// (whose revisions count from zero again) never makes ids its history already holds.
     id: [u8; 16],
@@ -85,6 +87,8 @@ pub struct LiveOutcome {
     hits: Vec<crate::cache::Hit>,
     staged: AssetStore,
     preview: bool,
+    cancel: LiveCancel,
+    lineage: DocumentLineage,
     /// The plugin actions it ran: nothing is recorded once one's grant is gone (#173).
     ran: Vec<Arc<PluginAction>>,
 }
@@ -99,6 +103,11 @@ pub struct LivePreview {
 }
 
 impl LiveOutcome {
+    /// Whether this owner was abandoned, including after computation finished.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
     /// Whether this is a drag preview's outcome: [`LiveOutcome::into_preview`], not [`apply`].
     pub fn is_preview(&self) -> bool {
         self.preview
@@ -106,7 +115,12 @@ impl LiveOutcome {
 
     /// The preview this outcome is, if it is one.
     pub fn into_preview(self) -> Option<LivePreview> {
-        self.preview.then(|| LivePreview { canvas: self.canvas, base: self.base, results: self.results.into_iter().collect(), staged: self.staged })
+        (self.preview && !self.is_cancelled()).then(|| LivePreview {
+            canvas: self.canvas,
+            base: self.base,
+            results: self.results.into_iter().collect(),
+            staged: self.staged,
+        })
     }
 }
 
@@ -249,6 +263,7 @@ fn plan(
         return Ok(Some(LiveJob {
             canvas,
             base: session.revision(),
+            lineage: session.document_lineage(),
             id: [0; 16],
             plan: None,
             hits,
@@ -285,6 +300,7 @@ fn plan(
     Ok(Some(LiveJob {
         canvas,
         base: session.revision(),
+        lineage: session.document_lineage(),
         id,
         plan: Some(plan),
         hits: Vec::new(),
@@ -372,6 +388,8 @@ pub fn compute(job: LiveJob) -> Result<LiveOutcome, Error> {
             hits: job.hits,
             staged: AssetStore::default(),
             preview: job.preview.is_some(),
+            cancel: job.cancel.clone(),
+            lineage: job.lineage.clone(),
             ran: Vec::new(),
         });
     };
@@ -382,7 +400,7 @@ pub fn compute(job: LiveJob) -> Result<LiveOutcome, Error> {
             Some(edge) => LocalActions::new(job.assets).with_preview_edge(edge),
             None => LocalActions::new(job.assets),
         })
-        .with_capture_cancel(Arc::clone(&job.cancel.0)),
+        .with_live_control(Arc::clone(&job.cancel.0), crate::action_exec::control::LIVE_WORK_UNITS),
     );
     let actions = Routed { local: local.clone(), plugins: job.plugins.clone() };
     let mut ran = Vec::new();
@@ -396,9 +414,13 @@ pub fn compute(job: LiveJob) -> Result<LiveOutcome, Error> {
             Some(JobSpec::Source { output, value, .. }) => run.job_done(kinds, scheduled.id, vec![(output, value)]),
             Some(JobSpec::Action { action, params, inputs, output, .. }) => {
                 ran.extend(job.plugins.as_ref().and_then(|p| p.get(&action)).cloned());
-                match nodecraft_exec::run::ActionExecutor::execute(&actions, &action, &params, &inputs) {
+                let result = local
+                    .admit_live_action(&params, &inputs)
+                    .and_then(|()| nodecraft_exec::run::ActionExecutor::execute_cancellable(&actions, &action, &params, &inputs, &|| local.live_interrupted()));
+                check_cancel()?;
+                match result {
                     Ok(value) => run.job_done(kinds, scheduled.id, vec![(output, value)]),
-                    Err(reason) => run.job_failed(kinds, scheduled.id, &reason),
+                    Err(reason) => run.job_failed(kinds, scheduled.id, &local.control_error(reason)),
                 }
             }
             _ => run.job_failed(kinds, scheduled.id, "live recompute runs only local work"),
@@ -407,12 +429,24 @@ pub fn compute(job: LiveJob) -> Result<LiveOutcome, Error> {
         finished.extend(progress.finished.into_iter().map(|r| (r.node, r.generation)));
         failed.extend(progress.failed.into_iter().map(|f| (f.node, f.reason)));
     }
+    check_cancel()?;
     // Sources re-emit their values: record only the action and technique nodes' results (the run
     // keeps inlined nodes' results to itself).
     let refreshed = |id: &NodeId| job.live.nodes().get(id).is_some_and(|n| refreshes(&n.kind, kinds));
     let results = finished.into_iter().filter(|(id, _)| refreshed(id)).collect();
     let failed = failed.into_iter().map(|(id, reason)| (id, reason, hash(&id))).collect();
-    Ok(LiveOutcome { canvas: job.canvas, base: job.base, results, failed, hits: Vec::new(), staged: local.take_staged(), preview: job.preview.is_some(), ran })
+    Ok(LiveOutcome {
+        canvas: job.canvas,
+        base: job.base,
+        results,
+        failed,
+        hits: Vec::new(),
+        staged: local.take_staged(),
+        preview: job.preview.is_some(),
+        cancel: job.cancel.clone(),
+        lineage: job.lineage.clone(),
+        ran,
+    })
 }
 
 /// Records `outcome` if the document is still the one it was computed from. `Ok(false)` when
@@ -421,7 +455,13 @@ pub fn apply(session: &mut Session, outcome: LiveOutcome) -> Result<bool, Error>
     // A preview was made from a draft, at a reduced size: it is never recorded.
     // A plugin whose grant went while it ran may not leave a result (#173).
     let revoked = outcome.ran.iter().any(|a| a.is_revoked());
-    if outcome.preview || revoked || (outcome.results.is_empty() && outcome.hits.is_empty()) || session.revision() != outcome.base {
+    if !session.is_current_document(&outcome.lineage)
+        || outcome.is_cancelled()
+        || outcome.preview
+        || revoked
+        || (outcome.results.is_empty() && outcome.hits.is_empty())
+        || session.revision() != outcome.base
+    {
         return Ok(false);
     }
     match session.record_derived_with(outcome.canvas, outcome.results, &outcome.hits, &outcome.staged, outcome.base) {

@@ -27,7 +27,7 @@ fn add_cube(h: &mut Harness<'static, NodeCraftApp>) -> NodeId {
 }
 
 #[test]
-fn a_3d_card_shows_its_model_and_turns_it_without_touching_the_document() {
+fn mesh928_a_3d_card_saves_one_drag_and_restores_it_after_undo_and_reopen() {
     let mut h = harness();
     let id = add_cube(&mut h);
     assert!(wait_for(&mut h, "3D model, 12 triangles, shaded view"), "the model is decoded and described");
@@ -36,6 +36,7 @@ fn a_3d_card_shows_its_model_and_turns_it_without_touching_the_document() {
     assert!(!h.state().mesh_gpu);
 
     let revision = h.state().session.revision();
+    let before = h.state().session.document().clone();
     let centre = h.get_by_label("3D model, 12 triangles, shaded view").rect().center();
     let start = egui::pos2(centre.x, centre.y - 20.0);
     h.hover_at(start);
@@ -45,13 +46,37 @@ fn a_3d_card_shows_its_model_and_turns_it_without_touching_the_document() {
     for i in 1..=8 {
         h.event(egui::Event::PointerMoved(start + egui::vec2(i as f32 * 6.0, i as f32 * 2.0)));
         h.step();
+        assert_eq!(h.state().session.revision(), revision, "the drag is a local preview until release");
     }
     let end = start + egui::vec2(48.0, 16.0);
     h.event(egui::Event::PointerButton { pos: end, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
     h.run_steps(3);
     let turned = h.state().mesh_views.get(&id).copied().unwrap_or_default();
     assert_ne!(turned.orbit, nodecraft_gpu::mesh::Orbit::default(), "dragging turns the model");
-    assert_eq!(h.state().session.revision(), revision, "turning is view state, not an edit");
+    assert_eq!(h.state().session.revision(), revision + 1, "one command commits the whole drag");
+    let after = h.state().session.document().clone();
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().mesh_views.get(&id).unwrap().orbit, nodecraft_gpu::mesh::Orbit::default());
+    h.state_mut().session.dispatch("edit.redo", &json!({})).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().session.document(), &after);
+    assert_eq!(h.state().mesh_views.get(&id).unwrap().orbit, turned.orbit);
+    // The same serialized project drives a fresh viewer after reopening; no renderer cache is authority.
+    let reopened: nodecraft_graph::Project = serde_json::from_slice(&serde_json::to_vec(&after).unwrap()).unwrap();
+    let saved_node = reopened.canvases().get(&h.state().canvas).unwrap().nodes().get(&id).unwrap();
+    let mut fresh = crate::mesh_view::MeshView::default();
+    fresh.bind(reopened.id(), h.state().canvas, saved_node);
+    assert_eq!(fresh.orbit, turned.orbit);
+    let archive =
+        nodecraft_format::encode(&nodecraft_format::Snapshot { project: after.clone(), assets: h.state().session.assets().clone(), epoch: 0 }).unwrap();
+    let snapshot = nodecraft_format::decode(&archive).unwrap();
+    let reopened_session = Session::with_storage(snapshot, Box::new(nodecraft_format::MemoryStorage::default())).unwrap();
+    let reopened_app = NodeCraftApp::from_session(reopened_session, h.state().canvas).unwrap();
+    let mut reopened = Harness::builder().with_size(Vec2::new(1000.0, 700.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), reopened_app);
+    assert!(wait_for(&mut reopened, "3D model, 12 triangles, shaded view"));
+    assert_eq!(reopened.state().mesh_views.get(&id).unwrap().orbit, turned.orbit, "a real .ncraft round trip restores the rendered camera");
     let node = h.state().session.document().canvases().get(&h.state().canvas).and_then(|c| c.nodes().get(&id)).map(|n| n.pos);
     assert_eq!(node, Some(nodecraft_graph::Position { x: 200.0, y: -110.0 }), "the drag turned the model instead of moving the card");
 
@@ -80,6 +105,76 @@ fn a_broken_model_says_why() {
 }
 
 #[test]
+fn mesh928_alt_scroll_is_one_edit_and_external_view_commands_replace_the_preview() {
+    let mut h = harness();
+    let id = add_cube(&mut h);
+    assert!(wait_for(&mut h, "3D model, 12 triangles, shaded view"));
+    let before = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    let at = h.get_by_label("3D model, 12 triangles, shaded view").rect().center();
+    h.hover_at(at);
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::ALT));
+    for _ in 0..4 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            phase: egui::TouchPhase::Move,
+            delta: Vec2::new(0.0, 8.0),
+            modifiers: egui::Modifiers::ALT,
+        });
+        h.step();
+        assert_eq!(h.state().session.revision(), revision);
+    }
+    h.run_steps(120);
+    assert!(h.state().mesh_views.get(&id).unwrap().orbit.zoom > 1.0);
+    assert_eq!(h.state().session.revision(), revision + 1);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().session.document(), &before);
+    let canvas = h.state().canvas;
+    h.state_mut().session.dispatch("mesh.view_set", &json!({"canvas":canvas,"id":id,"view":{"yaw":180,"pitch":0,"zoom":4,"style":"wireframe"}})).unwrap();
+    h.run_steps(2);
+    let view = h.state().mesh_views.get(&id).unwrap();
+    assert_eq!(view.orbit, nodecraft_gpu::mesh::Orbit { yaw: std::f32::consts::PI, pitch: 0.0, zoom: 4.0 });
+    assert_eq!(view.style, nodecraft_gpu::mesh::Style::Wireframe);
+}
+
+#[test]
+fn mesh928_a_file_snapshot_finishes_pending_scroll_and_stale_preview_loses_to_commands() {
+    let mut h = harness();
+    let id = add_cube(&mut h);
+    assert!(wait_for(&mut h, "3D model, 12 triangles, shaded view"));
+    let at = h.get_by_label("3D model, 12 triangles, shaded view").rect().center();
+    h.hover_at(at);
+    h.event(egui::Event::ModifiersChanged(egui::Modifiers::ALT));
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        phase: egui::TouchPhase::Move,
+        delta: Vec2::new(0.0, 12.0),
+        modifiers: egui::Modifiers::ALT,
+    });
+    h.step();
+    let ctx = h.ctx.clone();
+    assert!(h.state_mut().commit_mesh_views(&ctx, true));
+    let canvas = h.state().canvas;
+    let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap();
+    assert!(nodecraft_nodes::mesh::view::State::read(&node.params).unwrap().zoom > 1.0);
+    h.step();
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        phase: egui::TouchPhase::Move,
+        delta: Vec2::new(0.0, 12.0),
+        modifiers: egui::Modifiers::ALT,
+    });
+    h.step();
+    h.state_mut().session.dispatch("mesh.view_set", &json!({"canvas":canvas,"id":id,"view":{"yaw":90,"pitch":0,"zoom":2,"style":"unlit"}})).unwrap();
+    let authoritative = h.state().session.document().clone();
+    // Finish without painting the card: this is also how an off-screen pending view is checked.
+    assert!(h.state_mut().commit_mesh_views(&ctx, true));
+    assert_eq!(h.state().session.document(), &authoritative);
+    assert_eq!(h.state().mesh_views.get(&id).unwrap().orbit.zoom, 2.0);
+}
+
+#[test]
 #[ignore = "needs a GPU; manual public-safe capture with MESH111_RENDER_DIR"]
 fn mesh111_visual() {
     let dir = std::env::var_os("MESH111_RENDER_DIR").map(std::path::PathBuf::from);
@@ -93,12 +188,23 @@ fn mesh111_visual() {
         app.install_mesh_renderer(&render);
         let mut h = Harness::builder()
             .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(render))
-            .with_size(Vec2::new(1000.0, 700.0))
+            .with_size(Vec2::new(1400.0, 900.0))
             .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
         crate::theme::apply(&h.ctx, theme);
         let id = add_cube(&mut h);
         assert!(wait_for(&mut h, "3D model, 12 triangles, shaded view"));
-        h.state_mut().mesh_views.entry(id).or_default().style = style;
+        let canvas = h.state().canvas;
+        let mut view = nodecraft_nodes::mesh::view::State::default();
+        view.style = match style {
+            nodecraft_gpu::mesh::Style::Shaded => nodecraft_nodes::mesh::view::Style::Shaded,
+            nodecraft_gpu::mesh::Style::Unlit => nodecraft_nodes::mesh::view::Style::Unlit,
+            nodecraft_gpu::mesh::Style::Wireframe => nodecraft_nodes::mesh::view::Style::Wireframe,
+        };
+        h.state_mut().session.dispatch("mesh.view_set", &json!({"canvas":canvas,"id":id,"view":view})).unwrap();
+        h.run_steps(3);
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.minimap_toggle", &json!({})).unwrap();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
         h.run_steps(3);
         let area = h.get_by_role(egui::accesskit::Role::Image).rect();
         let image = h.render().unwrap();
@@ -248,5 +354,92 @@ fn turntable575_visual() {
     assert!(canvas.edges().values().any(|e| e.from.node == id));
     if let Some(dir) = std::env::var_os("NODECRAFT_TURNTABLE_RENDER_DIR") {
         h.render().unwrap().save(std::path::PathBuf::from(dir).join("turntable-after.png")).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "actual native GPU; public-safe STL format chooser evidence"]
+fn mesh569_visual_format_choices() {
+    let dir = std::path::PathBuf::from(std::env::var_os("NODECRAFT_MESH569_RENDER_DIR").expect("set evidence directory"));
+    let phase = std::env::var("NODECRAFT_MESH569_PHASE").unwrap_or_else(|_| "after".into());
+    assert!(matches!(phase.as_str(), "before" | "after"));
+    std::fs::create_dir_all(&dir).unwrap();
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let render = egui_kittest::wgpu::create_render_state(egui_kittest::wgpu::default_wgpu_setup(), Default::default());
+        let mut app = NodeCraftApp::headless().unwrap();
+        app.theme = theme;
+        app.install_mesh_renderer(&render);
+        let mut h = Harness::builder()
+            .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(render))
+            .with_size(Vec2::new(1400.0, 900.0))
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        crate::theme::apply(&h.ctx, theme);
+        let source = add_cube(&mut h);
+        let canvas = h.state().canvas;
+        let convert = NodeId::from_bytes([69; 16]);
+        let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+        let mut node = kinds.get(nodecraft_nodes::mesh::CONVERT).unwrap().instantiate_instance(convert, Default::default(), &Default::default()).unwrap();
+        node.pos = nodecraft_graph::Position { x: 650.0, y: -110.0 };
+        h.state_mut().session.dispatch("node.add", &json!({"canvas":canvas,"node":node})).unwrap();
+        h.state_mut().session.dispatch("edge.connect", &json!({"canvas":canvas,"edge":{"id":nodecraft_types::EdgeId::from_bytes([69;16]),"from":{"node":source,"port":"out"},"to":{"node":convert,"port":"model"},"order":0}})).unwrap();
+        let mut ready = false;
+        for _ in 0..200 {
+            h.run();
+            if h.query_all_by_label_contains("3D model, 12 triangles, shaded view").next().is_some() {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(ready, "the connected original is decoded for both cards");
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.minimap_toggle", &json!({})).unwrap();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+        h.run_steps(3);
+        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Format").click();
+        h.run_steps(3);
+        assert!(h.query_by_label("OBJ").is_some());
+        assert_eq!(h.query_by_label("STL (geometry only)").is_some(), phase == "after");
+        if phase == "after" {
+            h.get_by_label("STL (geometry only)").click();
+            h.run_steps(10);
+            assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("stl".into()));
+            h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Format").click();
+            h.run_steps(3);
+        }
+        h.render().unwrap().save(dir.join(format!("{theme:?}-format-{phase}.png"))).unwrap();
+    }
+}
+
+#[test]
+fn mesh569_real_format_control_selects_stl_and_undoes_in_both_themes() {
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let mut h = harness();
+        h.state_mut().theme = theme;
+        crate::theme::apply(&h.ctx, theme);
+        let source = add_cube(&mut h);
+        let canvas = h.state().canvas;
+        let convert = NodeId::from_bytes([69; 16]);
+        let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+        let mut node = kinds.get(nodecraft_nodes::mesh::CONVERT).unwrap().instantiate_instance(convert, Default::default(), &Default::default()).unwrap();
+        node.pos = nodecraft_graph::Position { x: 650.0, y: -110.0 };
+        h.state_mut().session.dispatch("node.add", &json!({"canvas":canvas,"node":node})).unwrap();
+        h.state_mut().session.dispatch("edge.connect", &json!({"canvas":canvas,"edge":{"id":nodecraft_types::EdgeId::from_bytes([69;16]),"from":{"node":source,"port":"out"},"to":{"node":convert,"port":"model"},"order":0}})).unwrap();
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+        h.run_steps(3);
+        let original = h.state().session.document().canvases()[&canvas].nodes()[&source].params["asset"].clone();
+        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Format").click();
+        h.run_steps(2);
+        h.get_by_label("STL (geometry only)").click();
+        h.run_steps(3);
+        assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("stl".into()));
+        assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&source].params["asset"], original);
+        h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+        h.run_steps(2);
+        assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("glb".into()));
+        h.state_mut().session.dispatch("edit.redo", &json!({})).unwrap();
+        h.run_steps(2);
+        assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("stl".into()));
     }
 }

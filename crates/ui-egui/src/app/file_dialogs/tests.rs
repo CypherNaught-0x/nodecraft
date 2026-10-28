@@ -517,7 +517,7 @@ fn file_chrome_is_separate_from_comments_at_narrow_and_regular_widths() {
             .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), dir.app("journal"));
         settle(&mut h);
         let file = h.get_by_label("File").rect();
-        assert!(!file.intersects(h.get_by_label("Comments").rect()));
+        assert!(!file.intersects(h.state().comments_toolbar_rect()));
         h.get_by_label("File").click();
         settle(&mut h);
         assert!(!file.intersects(h.get_by_label("Open project…").rect()));
@@ -1036,4 +1036,121 @@ fn file_completion_frame_cannot_publish_a_cached_bulk_reset_click() {
     assert_ne!(h.state().session.document(), &before, "a later unowned explicit click remains usable");
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     assert_eq!(h.state().session.document(), &before);
+}
+
+#[test]
+fn storage968_actual_journal_conflict_retains_startup_reason_and_focus_action() {
+    let dir = Scratch::new("storage968-lock");
+    let owner = dir.app("journal");
+    let setup = storage::StorageSetup { recovery: dir.file("journal"), open: None };
+    let (mut second, _, owns) = NodeCraftApp::from_storage_setup(Default::default(), Some(setup), "unused").unwrap();
+    assert!(!owns);
+    assert!(second.storage_owner_blocked());
+    let startup = second.notice.clone().unwrap();
+    assert!(startup.contains("recovery location is already in use"));
+    assert!(startup.contains("Another NodeCraft window"));
+    let focused = Rc::new(Cell::new(0));
+    let count = focused.clone();
+    second
+        .session
+        .register_host_service(nodecraft_engine::storage_window_cmds::SERVICE, move |_| {
+            count.set(count.get() + 1);
+            Ok(json!({"requested":true}))
+        })
+        .unwrap();
+    let calls = stub(&mut second, vec![]);
+    let mut h = harness(second);
+    settle(&mut h);
+    let ctx = h.ctx.clone();
+    h.state_mut().notice = None;
+    h.state_mut().begin_file("file.save", &ctx);
+    assert_eq!(h.state().notice.as_deref(), Some(startup.as_str()));
+    settle(&mut h);
+    h.get_by_label("Focus the other window").click();
+    settle(&mut h);
+    assert_eq!(focused.get(), 1);
+    assert_eq!(calls.get(), 0);
+    assert!(owner.session.file_status().available);
+    assert!(!h.state().session.file_status().available);
+}
+
+#[test]
+fn storage968_unreadable_project_still_has_storage_and_picker() {
+    let dir = Scratch::new("storage968-unreadable");
+    let path = dir.file("broken.ncraft");
+    std::fs::write(&path, b"not a NodeCraft project").unwrap();
+    let setup = storage::StorageSetup { recovery: dir.file("journal"), open: Some(path) };
+    let (mut app, _, owns) = NodeCraftApp::from_storage_setup(Default::default(), Some(setup), "unused").unwrap();
+    assert!(owns);
+    assert!(app.session.file_status().available);
+    assert!(!app.storage_owner_blocked());
+    assert!(app.notice.as_deref().unwrap().starts_with("That project couldn't be opened:"));
+    assert!(app.notice.as_deref().unwrap().contains("can still be saved"));
+    let calls = stub(&mut app, vec![None]);
+    let mut h = harness(app);
+    settle(&mut h);
+    let ctx = h.ctx.clone();
+    h.state_mut().begin_file("file.open", &ctx);
+    settle(&mut h);
+    assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn storage968_storage_failure_missing_configuration_and_closed_recovery_have_distinct_reasons() {
+    let dir = Scratch::new("storage968-failures");
+    let folder = dir.file("not-a-folder");
+    std::fs::write(&folder, b"occupied").unwrap();
+    let setup = storage::StorageSetup { recovery: folder.join("journal"), open: None };
+    let (mut failed, _, owns) = NodeCraftApp::from_storage_setup(Default::default(), Some(setup), "unused").unwrap();
+    assert!(!owns);
+    let startup = failed.notice.clone().unwrap();
+    assert!(startup.contains("recovery folder can't be created"));
+    assert!(!failed.storage_owner_blocked());
+    let ctx = egui::Context::default();
+    failed.begin_file("file.open", &ctx);
+    assert_eq!(failed.notice.as_deref(), Some(startup.as_str()));
+    let (mut missing, _, _) =
+        NodeCraftApp::from_storage_setup(Default::default(), None, "No settings folder is available. Restart after fixing access.").unwrap();
+    missing.begin_file("file.save_as", &ctx);
+    assert_eq!(missing.notice.as_deref(), Some("No settings folder is available. Restart after fixing access."));
+    let mut closed = dir.app("closed");
+    closed.session.close_recovery(true).unwrap();
+    assert!(!closed.session.file_status().available);
+    let reason = closed.session.file_status().unavailable_reason.unwrap();
+    assert!(reason.contains("Recovery was closed"));
+    assert!(reason.contains("reopen NodeCraft"));
+    closed.begin_file("file.open", &ctx);
+    assert_eq!(closed.notice.as_deref(), Some(reason));
+    assert_eq!(closed.session.dispatch("file.save", &json!({})).unwrap_err().message, reason);
+    let mut h = harness(closed);
+    settle(&mut h);
+    h.get_by_role_and_label(egui::accesskit::Role::Window, "Project files").get_by_label(reason);
+}
+
+#[test]
+fn storage968_replacement_does_not_reuse_an_old_failure_reason() {
+    let (mut app, _, _) = NodeCraftApp::from_storage_setup(Default::default(), None, "Old startup reason").unwrap();
+    let replacement = nodecraft_engine::Session::new(app.session.document().clone()).unwrap();
+    app.replace_session(replacement, app.canvas).unwrap();
+    app.begin_file("file.open", &egui::Context::default());
+    assert!(!app.notice.as_deref().unwrap().contains("Old startup reason"));
+    assert!(app.notice.as_deref().unwrap().contains("not configured"));
+}
+
+#[test]
+#[ignore = "manual public-safe storage968 before/after evidence"]
+fn render_storage968_evidence() {
+    let output = PathBuf::from(std::env::var_os("NODECRAFT_STORAGE968_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let dir = Scratch::new("storage968-evidence");
+    let mut app = dir.app("journal");
+    app.session.close_recovery(true).unwrap();
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    settle(&mut h);
+    h.run();
+    assert!(h.state().files.menu_open, "An unavailable save opens the File panel with its storage guidance");
+    h.get_by_label("Open project…");
+    h.render().unwrap().save(output.join("closed-recovery.png")).unwrap();
 }

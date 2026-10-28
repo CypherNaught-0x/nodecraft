@@ -73,6 +73,9 @@ pub struct Tokens {
     pub tag_panel_width: f32,
     pub tag_panel_height: f32,
     pub tag_row_height: f32,
+    /// Two-line tag definition rows and their exact identity text.
+    pub tag_definition_row_height: f32,
+    pub tag_identity_size: f32,
 
     /// Fields (#66): header band, padding round members, smallest resize, and fill alpha.
     pub field_header_height: f32,
@@ -128,7 +131,11 @@ pub struct Tokens {
     pub card_width: f32,
     /// Duplicate displacement in world points, independent of zoom.
     pub duplicate_offset: f32,
+    /// Legacy creation seed baseline; not a card geometry or placement budget.
     pub card_min_height: f32,
+    /// Generation composer body budget including card padding.
+    pub composer_body_height: f32,
+    /// Maximum parameter body, including padding; previews and history reserve separate space.
     pub card_max_height: f32,
     /// Height of the image preview at the top of a card that shows an image (#386).
     pub card_preview_height: f32,
@@ -136,6 +143,12 @@ pub struct Tokens {
     pub dialog_width: f32,
     pub control_row_height: f32,
     pub control_gap: f32,
+    /// Control icons in screen points; SVG strokes are in their 24-unit view box.
+    pub icon_size: f32,
+    pub icon_large_size: f32,
+    pub icon_stroke: &'static str,
+    /// Vertical button padding on cards, keeping native controls within the logical row budget.
+    pub control_vertical_padding: f32,
     pub title_min_screen_px: f32,
     pub handle_min_screen_radius: f32,
     pub handle_stroke: f32,
@@ -242,6 +255,8 @@ pub const DARK: Tokens = Tokens {
     tag_panel_width: 280.0,
     tag_panel_height: 320.0,
     tag_row_height: 24.0,
+    tag_definition_row_height: 48.0,
+    tag_identity_size: 7.875,
     field_header_height: 32.0,
     field_padding: 32.0,
     field_min_width: 160.0,
@@ -286,11 +301,16 @@ pub const DARK: Tokens = Tokens {
     card_width: 320.0,
     duplicate_offset: 40.0,
     card_min_height: 220.0,
+    composer_body_height: 220.0,
     card_max_height: 720.0,
     card_preview_height: 180.0,
     dialog_width: 440.0,
     control_row_height: 64.0,
     control_gap: 6.0,
+    icon_size: 16.0,
+    icon_large_size: 24.0,
+    icon_stroke: "2",
+    control_vertical_padding: 2.0,
     title_min_screen_px: 9.0,
     handle_min_screen_radius: 5.0,
     handle_stroke: 1.5,

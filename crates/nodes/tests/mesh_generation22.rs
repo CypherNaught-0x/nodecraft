@@ -123,3 +123,20 @@ fn the_image_card_plans_an_image_only_mode_too() {
     assert_eq!(outputs.first().map(|o| o.modality), Some(Modality::Image));
     assert!(kind.plan(&PlanCtx { node: &node, inputs: &[], targets: &targets }).is_err(), "without media there is nothing to send");
 }
+
+#[test]
+fn mesh928_model_changes_keep_the_saved_view_in_the_node_owned_contract() {
+    use nodecraft_nodes::mesh::view::{NAMES, State, Style};
+    let kind = kind();
+    let state = State { yaw: 12.5, pitch: -22.0, zoom: 2.0, style: Style::Wireframe };
+    let mut supplied = state.params().unwrap();
+    supplied.insert("model".into(), Value::Text("text".into()));
+    supplied.insert("prompt".into(), Value::Text("A blue cube".into()));
+    let original = kind.instantiate_instance(ID, Default::default(), &supplied).unwrap();
+    let changed = kind.prepare_instance(&original, "image", &ParamValues::new()).unwrap();
+    assert_eq!(State::read(&changed.params).unwrap(), state);
+    let contract = kind.instance_contract(&changed).unwrap();
+    assert!(contract.owned_groups.iter().all(|group| group.schema.params.iter().all(|p| !NAMES.contains(&p.name.as_str()))));
+    let resolved = kind.validate_instance(&changed, false).unwrap();
+    assert!(resolved.identity_values().all(|(name, _)| !NAMES.contains(&name.as_str())));
+}

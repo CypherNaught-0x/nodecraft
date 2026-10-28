@@ -200,6 +200,7 @@ pub fn place(
         }
         nodes.push(node);
     }
+    nodecraft_engine::deck_cmds::remap_sources(&mut nodes, &map).ok()?;
     let mut chosen_edges = BTreeSet::new();
     let mut edges = Vec::new();
     for mut edge in payload.edges {

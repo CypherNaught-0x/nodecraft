@@ -32,13 +32,14 @@ pub(super) struct ComfyServerPanel {
 struct Row {
     name: String,
     url: String,
+    cloud: bool,
     /// Jobs at once, as typed; empty for the scheduler's default.
     jobs: String,
 }
 
 impl Row {
     fn of(server: &ComfyServer) -> Self {
-        Self { name: server.name.clone(), url: server.url.clone(), jobs: server.max_jobs.map(|n| n.to_string()).unwrap_or_default() }
+        Self { name: server.name.clone(), url: server.url.clone(), cloud: server.is_cloud(), jobs: server.max_jobs.map(|n| n.to_string()).unwrap_or_default() }
     }
 }
 
@@ -49,21 +50,10 @@ enum Asked {
     Default(String),
     Remove(String),
     Add,
+    AddCloud,
 }
 
 impl NodeCraftApp {
-    /// The toolbar button that opens the panel, where the servers' nodes can be read.
-    pub(super) fn comfy_server_button(&mut self, ui: &mut egui::Ui, t: &Tokens) {
-        if self.comfy_nodes.is_some()
-            && ui
-                .add(egui::Button::new(egui::RichText::new("ComfyUI").color(t.text_muted)).frame(false))
-                .on_hover_text("Set up ComfyUI servers, check them and read their nodes")
-                .clicked()
-        {
-            self.comfy_server.open = !self.comfy_server.open;
-        }
-    }
-
     pub(super) fn comfy_server_panel(&mut self, ctx: &egui::Context, t: &Tokens) {
         if !self.comfy_server.open {
             self.comfy_server.loaded = false;
@@ -117,10 +107,16 @@ impl NodeCraftApp {
                             asked = Some(Asked::Remove(row.name.clone()));
                         }
                     });
-                    ui.horizontal(|ui| {
-                        let label = ui.label("Address");
-                        ui.add(egui::TextEdit::singleline(&mut row.url).hint_text(HINT).desired_width(f32::INFINITY)).labelled_by(label.id);
-                    });
+                    if row.cloud {
+                        ui.label(egui::RichText::new("Comfy Cloud · hosted GPU").color(t.text_muted));
+                        ui.label(&row.url);
+                        ui.label(egui::RichText::new("GPU usage is billed. The amount is unknown before a run; finite budgets block it.").color(t.text_muted));
+                    } else {
+                        ui.horizontal(|ui| {
+                            let label = ui.label("Address");
+                            ui.add(egui::TextEdit::singleline(&mut row.url).hint_text(HINT).desired_width(f32::INFINITY)).labelled_by(label.id);
+                        });
+                    }
                     ui.horizontal(|ui| {
                         let label = ui.label("Jobs at once");
                         ui.add(egui::TextEdit::singleline(&mut row.jobs).hint_text("4").desired_width(t.comfy_jobs_width))
@@ -140,7 +136,9 @@ impl NodeCraftApp {
                     });
                     let report = comfy_server_cmds::report(session, &row.name);
                     status(ui, t, report, is_default.then_some(nodes).flatten());
-                    if let Ok(account) = Account::server("comfyui", kept.url.trim()) {
+                    if kept.cloud {
+                        ui.label(egui::RichText::new("Add your Comfy API key in API keys, comfy-cloud.").color(t.text_muted));
+                    } else if let Ok(account) = Account::server("comfyui", kept.url.trim()) {
                         ui.label(egui::RichText::new(format!("A token, if it asks for one: API keys, {}.", account.as_str())).color(t.text_muted));
                     }
                 }
@@ -159,6 +157,13 @@ impl NodeCraftApp {
                             asked = Some(Asked::Add);
                         }
                     });
+                    if ui
+                        .button("Add Comfy Cloud")
+                        .on_hover_text("Hosted workflows with the comfy-cloud key; GPU usage has an unknown price before running")
+                        .clicked()
+                    {
+                        asked = Some(Asked::AddCloud);
+                    }
                 }
             });
         self.comfy_server.open &= open;
@@ -173,6 +178,11 @@ impl NodeCraftApp {
                 let name = if typed.is_empty() { server_name_for(&url) } else { typed };
                 self.add_comfy_server(&name, &url, "")
             }
+            Some(Asked::AddCloud) => {
+                let typed = self.comfy_server.new_name.trim();
+                let name = if typed.is_empty() { "Comfy Cloud".to_owned() } else { typed.to_owned() };
+                self.add_comfy_cloud(&name)
+            }
             None => Ok(()),
         };
         if let Err(error) = done {
@@ -183,7 +193,17 @@ impl NodeCraftApp {
     /// Adds the server `name` at `url`, taking `jobs` at once (empty for the default), and checks
     /// it. The first server added is the default.
     pub(super) fn add_comfy_server(&mut self, name: &str, url: &str, jobs: &str) -> Result<(), Error> {
-        let server = server_from(name, url, jobs)?;
+        self.add_comfy_profile(server_from(name, url, jobs)?)
+    }
+
+    pub(super) fn add_comfy_cloud(&mut self, name: &str) -> Result<(), Error> {
+        check_server_name(name).map_err(|why| Error::new(ErrorKind::InvalidInput, why))?;
+        self.add_comfy_profile(ComfyServer::cloud(name))
+    }
+
+    fn add_comfy_profile(&mut self, server: ComfyServer) -> Result<(), Error> {
+        let name = server.name.clone();
+        let name = name.as_str();
         let mut settings = self.provider_settings();
         if settings.comfy_server(name).is_some() || settings.comfyui.iter().any(|kept| kept.name == name) {
             return Err(Error::new(ErrorKind::Conflict, format!("there's already a ComfyUI server called “{name}”")));
@@ -205,12 +225,18 @@ impl NodeCraftApp {
     /// Saves a changed address or job cap for the server `name`, then checks it. Only its own
     /// adapter and what was read from it are dropped.
     pub(super) fn save_comfy_server(&mut self, name: &str, url: &str, jobs: &str) -> Result<(), Error> {
-        let server = server_from(name, url, jobs)?;
+        let mut server = server_from(name, url, jobs)?;
         let mut settings = self.provider_settings();
         let was_default = settings.default_comfy().is_some_and(|kept| kept.name == name);
         let Some(kept) = settings.comfyui.iter_mut().find(|kept| kept.name == name) else {
             return Err(Error::new(ErrorKind::NotFound, format!("there's no ComfyUI server called “{name}”")));
         };
+        if kept.is_cloud() {
+            if url.trim() != nodecraft_providers::comfy_cloud::ORIGIN {
+                return Err(Error::new(ErrorKind::InvalidInput, "the Comfy Cloud profile has a fixed address"));
+            }
+            server.backend = nodecraft_engine::settings::ComfyBackend::Cloud;
+        }
         *kept = server;
         self.keep_comfy_servers(&settings, name, was_default)?;
         self.followup_comfy_server(Some(name))

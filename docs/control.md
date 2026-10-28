@@ -44,6 +44,17 @@ Errors come back as `{"id", "error": {"kind", "message"}}`. Commands only a pers
 
 ## Limits
 
+`node.create_connected` accepts exactly one existing endpoint: `from` creates a node that consumes
+an output, while `to` creates a node that feeds an input. Both take fresh node/edge IDs and an
+explicit position, and add the node and wire in one undo step. `to` refuses an occupied single
+input and appends to a list input in order. `commands.list` exposes the complete parameter schema.
+
+`canvas.paste` accepts original node payloads with an optional `node_ids` object mapping every
+original node ID to a unique fresh ID. It rebases node IDs, wire endpoints and supported Deck
+source references together, as one undo step. Wire IDs must already be fresh. Omit `node_ids`
+when supplying nodes and endpoints that already use their final IDs. Deck sources outside the
+copied group stay unchanged; unknown, malformed and newer Deck data is preserved.
+
 The native client gives initial authentication and each replacement connection one five-second
 network-admission deadline. TCP connect, every partial hello write/read, and all six replacement
 attempts with backoff share that deadline. Hello replies are capped at 4 KiB separately from
@@ -72,8 +83,8 @@ connecting; this is not a bound on filesystem stalls.
 
 ### Live canvas commands
 
-`command.run` routes `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and
-`canvas.pan_to` through the app's scoped navigation bridge. A drawn viewport is required; active
+`command.run` routes `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle`,
+`canvas.prompt_overlays_toggle` and `canvas.pan_to` through the app's scoped navigation bridge. A drawn viewport is required; active
 editors, popups and gestures keep ownership and refuse navigation. `commands.list` reports fresh
 live availability for parameterless commands. `canvas.fit_selection` accepts an optional `nodes`
 list (2..=MAX_CHANGES unique IDs on the shown canvas); when supplied it frames those cards,

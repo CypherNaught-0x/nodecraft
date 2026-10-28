@@ -57,6 +57,11 @@ pub struct Generation {
     /// recorded before settings were kept, or one whose settings were too large to keep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<JobSettings>,
+    /// Content versions used by named parts of a local render (#578). A role is the clip's
+    /// stable id, not a filename. Hashes describe the source bytes without keeping them alive.
+    /// Empty on older results and kinds that do not record source provenance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_versions: Vec<SourceVersion>,
     /// A fanned result some of whose items have no value (#480): which, and why each is
     /// missing. `None` for a complete result. A partial result never stands in for a
     /// complete one: it is stale, and nothing downstream reads it.
@@ -64,10 +69,23 @@ pub struct Generation {
     pub incomplete: Option<Incomplete>,
 }
 
+/// One named part's source in a successful render. For a fanned result, `item` indexes `items`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceVersion {
+    pub role: String,
+    pub hash: Blake3,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<u32>,
+}
+
+/// Bounds source provenance independently of serialized node bytes (which also apply).
+pub const MAX_SOURCE_VERSIONS: usize = 65_536;
+
 impl Generation {
     /// A result with no recorded input hash.
     pub fn new(id: GenerationId, outputs: Vec<Value>) -> Self {
-        Self { id, outputs, input_hash: None, items: Vec::new(), settings: Vec::new(), incomplete: None }
+        Self { id, outputs, input_hash: None, items: Vec::new(), settings: Vec::new(), source_versions: Vec::new(), incomplete: None }
     }
 
     /// Whether some of its items have no value.
@@ -149,6 +167,10 @@ pub struct JobSettings {
     /// for `model`, so this is never read as money.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billable_units: Option<BillableUnits>,
+    /// Execution time reported by the provider in milliseconds, excluding queue time (#339).
+    /// Never interpreted as money; absent for old results or when the provider does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_ms: Option<u64>,
 }
 
 /// One input a provider job was given, in a role such as `prompt` or `image`.

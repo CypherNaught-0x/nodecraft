@@ -52,15 +52,16 @@ fn field_around_card(h: &mut Harness<'static, NodeCraftApp>) -> FieldId {
 
 #[test]
 fn f_makes_an_empty_field_at_the_pointer_in_one_undo_step() {
+    // Empty canvas below the application and tag-filter row.
     let mut h = harness();
     h.run();
     let before = h.state().session.document().clone();
-    h.hover_at(Pos2::new(40.0, 60.0));
+    h.hover_at(Pos2::new(40.0, 180.0));
     h.key_press(egui::Key::F);
     h.run();
     let id = only_field(&h);
     let field = canvas(&h).fields().get(&id).unwrap().clone();
-    let at = h.state().view.to_world(h.state().viewport.min, Pos2::new(40.0, 60.0));
+    let at = h.state().view.to_world(h.state().viewport.min, Pos2::new(40.0, 180.0));
     assert_eq!((field.rect.pos.x, field.rect.pos.y), (at.x, at.y));
     assert_eq!((field.rect.width, field.rect.height), (320.0, 240.0));
     assert_eq!(h.state().fields.selected, Some(id));
@@ -240,7 +241,7 @@ fn card_menu_moves_nodes_into_a_field_and_out_again() {
 fn rename_saves_through_the_dialog_and_oversized_titles_keep_the_draft() {
     let mut h = harness();
     h.run();
-    h.hover_at(Pos2::new(40.0, 60.0));
+    h.hover_at(Pos2::new(40.0, 180.0));
     h.key_press(egui::Key::F);
     h.run();
     let id = only_field(&h);
@@ -533,7 +534,9 @@ fn selected_card_in_distant_collapsed_field(h: &mut Harness<'static, NodeCraftAp
     let card = *h.state().navigation.geometry.rects.get(&node).unwrap();
     let canvas_id = h.state().canvas;
     let rect = json!({"pos": {"x": card.min.x - 40.0, "y": card.min.y - 3000.0}, "width": card.width() + 80.0, "height": 3000.0 + card.height() + 40.0});
-    let target = self::card(h).unwrap().min + Vec2::new(150.0, 30.0);
+    // Select background padding, not the compact card's generated text controls.
+    let screen = h.state().view.rect_to_screen(h.state().viewport.min, card);
+    let target = Pos2::new(screen.center().x, screen.top() + h.state().theme.tokens().card_padding * h.state().view.zoom * 0.5);
     press(h, target, egui::PointerButton::Primary, true);
     press(h, target, egui::PointerButton::Primary, false);
     assert!(h.state().selection.contains(node), "pointer selects the member card");

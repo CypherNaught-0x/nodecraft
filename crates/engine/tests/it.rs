@@ -5,6 +5,9 @@
 // Shared helpers, compiled once; the test files reach them as `crate::common`.
 mod common;
 
+#[path = "results966.rs"]
+mod results966;
+
 #[path = "asset_imports147.rs"]
 mod asset_imports147;
 #[path = "audio_generation672.rs"]
@@ -13,6 +16,8 @@ mod audio_generation672;
 mod audio_length608;
 #[path = "audio_previews875.rs"]
 mod audio_previews875;
+#[path = "azure45.rs"]
+mod azure45;
 #[path = "background749.rs"]
 mod background749;
 #[path = "background_open.rs"]
@@ -21,6 +26,8 @@ mod background_open;
 mod background_save;
 #[path = "batch_keys517.rs"]
 mod batch_keys517;
+#[path = "bfl33.rs"]
+mod bfl33;
 #[path = "browser_plugins866.rs"]
 mod browser_plugins866;
 #[path = "bulk_edits.rs"]
@@ -61,6 +68,9 @@ mod held_fanout611;
 mod held_restart614;
 #[path = "held_results369.rs"]
 mod held_results369;
+#[path = "ideogram34.rs"]
+mod ideogram34;
+
 #[path = "image_modes500.rs"]
 mod image_modes500;
 #[path = "impact114.rs"]
@@ -75,6 +85,8 @@ mod layers101;
 mod layout;
 #[path = "lazy_assets147.rs"]
 mod lazy_assets147;
+#[path = "ltx30.rs"]
+mod ltx30;
 #[path = "mask_edit102.rs"]
 mod mask_edit102;
 #[path = "media_fanout519.rs"]
@@ -105,6 +117,8 @@ mod paid_image_edit421;
 mod perf152;
 #[path = "perf_clock370.rs"]
 mod perf_clock370;
+#[path = "project_identity879.rs"]
+mod project_identity879;
 #[path = "prompt_assist582.rs"]
 mod prompt_assist582;
 #[path = "provider_mock.rs"]
@@ -135,6 +149,8 @@ mod share;
 mod soul_training680;
 #[path = "split_ownership342.rs"]
 mod split_ownership342;
+#[path = "stability36.rs"]
+mod stability36;
 #[path = "staged_replay664.rs"]
 mod staged_replay664;
 #[path = "staleness_budget.rs"]
@@ -153,7 +169,57 @@ mod timeline109;
 mod timeline574;
 #[path = "token_rates595.rs"]
 mod token_rates595;
+#[path = "topaz37.rs"]
+mod topaz37;
 #[path = "trained_styles167.rs"]
 mod trained_styles167;
 #[path = "video_generation559.rs"]
 mod video_generation559;
+
+#[path = "deepgram40.rs"]
+mod deepgram40;
+#[path = "huggingface48.rs"]
+mod huggingface48;
+
+#[path = "gemini44.rs"]
+mod gemini44;
+
+#[path = "openai_audio39.rs"]
+mod openai_audio39;
+
+#[path = "grok31.rs"]
+mod grok31;
+
+#[path = "hunyuan42.rs"]
+mod hunyuan42;
+
+#[path = "alibaba32.rs"]
+mod alibaba32;
+
+#[path = "recraft35.rs"]
+mod recraft35;
+#[path = "rodin41.rs"]
+mod rodin41;
+
+#[path = "templates952/author.rs"]
+mod templates952_author;
+
+#[path = "templates952.rs"]
+mod templates952;
+
+#[path = "magnific38.rs"]
+mod magnific38;
+
+#[path = "svg_template35.rs"]
+mod svg_template35;
+
+#[path = "minimax27.rs"]
+mod minimax27;
+#[path = "pika29.rs"]
+mod pika29;
+
+#[path = "heygen43.rs"]
+mod heygen43;
+
+#[path = "stl569.rs"]
+mod stl569;

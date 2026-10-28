@@ -4,7 +4,11 @@
 //! catalog snapshot, supplies role-specific compatibility, and previews/commits a choice through
 //! the engine's shared model-swap transaction. Catalog rates are metadata, not launch consent.
 use crate::theme::Tokens;
-use nodecraft_catalog::{Catalog, ModelDescriptor, Wiring, model::MAX_TEXT, pricing::Unit};
+use nodecraft_catalog::{
+    Catalog, ModelDescriptor, Wiring,
+    model::{MAX_TEXT, SELECTION_TIER_HELP},
+    pricing::Unit,
+};
 use nodecraft_types::{Error, ErrorKind, Modality, Money};
 
 const QUERY_CHARS: usize = 128;
@@ -191,10 +195,13 @@ impl ModelPicker {
                     self.move_highlight(true);
                 }
                 ui.label(egui::RichText::new("Model rates only. Run quotes and budgets are checked separately.").color(t.text_muted));
+                ui.label(egui::RichText::new(SELECTION_TIER_HELP).color(t.text_muted));
                 if self.filtered.is_empty() {
                     ui.label("No matching models");
                 }
-                let row_height = t.control_row_height * 2.0;
+                // One choice control and three bounded text lines, also at larger text sizes.
+                let row_height =
+                    t.control_row_height.max(ui.spacing().interact_size.y) + 3.0 * (ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y);
                 let mut scroll = egui::ScrollArea::vertical().max_height(t.comments_height);
                 if (up || down)
                     && let Some(row) = self.rows.iter().position(|row| matches!(row, Row::Model(index) if Some(*index) == self.highlighted))
@@ -218,10 +225,15 @@ impl ModelPicker {
                             }
                             let response = ui
                                 .add_enabled(choice.unavailable.is_none(), egui::Button::selectable(self.highlighted == Some(index), &model.label).truncate());
-                            ui.label(
-                                egui::RichText::new(format!("Quality {}/5 · typically {} s · {}", model.quality, model.latency_s, price_label(model)))
-                                    .color(t.text_muted),
-                            );
+                            ui.add(egui::Label::new(&model.description).truncate()).on_hover_text(&model.description);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("Selection tier {}/5 · Time hint {} s", model.quality, model.latency_s)).color(t.text_muted),
+                                )
+                                .truncate(),
+                            )
+                            .on_hover_text("The time hint is configured catalog metadata. Actual waiting time depends on the request and provider load.");
+                            ui.add(egui::Label::new(egui::RichText::new(price_label(model)).color(t.text_muted)).truncate());
                             if let Some(reason) = &choice.unavailable {
                                 response.on_disabled_hover_ui(|ui| {
                                     ui.label(reason);
@@ -266,16 +278,27 @@ fn amount(money: Money) -> String {
 }
 fn price_label(model: &ModelDescriptor) -> String {
     use nodecraft_catalog::Pricing;
+    // The picker describes a catalog rate, without a workflow's runtime server evidence.
+    // This model's Free rate covers local nodes only, never paid partner nodes (#872).
+    if model.id == nodecraft_nodes::comfy_workflow::MODEL_ID {
+        return "Workflow dependent; partner cost unknown".into();
+    }
     match &model.pricing {
         Pricing::Free => "Free".into(),
         Pricing::ByUsage { currency } => format!("Usage based ({})", String::from(*currency)),
         Pricing::PerCall { price } => format!("{} / call", amount(price.0)),
         Pricing::PerUnit { unit, price, .. } => format!("{} / {}", amount(price.0), unit_label(*unit)),
-        Pricing::PerUnitByChoice { unit, prices, .. } => match prices.values().map(|price| price.0).min_by_key(|money| money.micros) {
-            Some(cheapest) if prices.len() > 1 => format!("From {} / {}", amount(cheapest), unit_label(*unit)),
-            Some(price) => format!("{} / {}", amount(price), unit_label(*unit)),
-            None => format!("Priced per {}", unit_label(*unit)),
-        },
+        Pricing::PerUnitByChoice { unit, prices, input_fee, .. } => {
+            let mut label = match prices.values().map(|price| price.0).min_by_key(|money| money.micros) {
+                Some(cheapest) if prices.len() > 1 => format!("From {} / {}", amount(cheapest), unit_label(*unit)),
+                Some(price) => format!("{} / {}", amount(price), unit_label(*unit)),
+                None => format!("Priced per {}", unit_label(*unit)),
+            };
+            if let Some(fee) = input_fee {
+                label.push_str(&format!(" + {} / input image", amount(fee.price.0)));
+            }
+            label
+        }
         Pricing::PerSourceSecond { prices, .. } => match prices.values().map(|price| price.0).min_by_key(|money| money.micros) {
             Some(cheapest) if prices.len() > 1 => format!("From {} / second of source", amount(cheapest)),
             Some(price) => format!("{} / second of source", amount(price)),
@@ -285,6 +308,7 @@ fn price_label(model: &ModelDescriptor) -> String {
 }
 fn unit_label(unit: Unit) -> &'static str {
     match unit {
+        Unit::Call => "call",
         Unit::Image => "image",
         Unit::Second => "second",
         Unit::Megapixel => "megapixel",
@@ -335,3 +359,49 @@ fn model_details(ui: &mut egui::Ui, model: &ModelDescriptor) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod bfl33_tests;
+#[cfg(test)]
+mod catalog963_tests;
+#[cfg(test)]
+mod ideogram34_tests;
+#[cfg(test)]
+mod ltx30_tests;
+
+#[cfg(test)]
+mod huggingface48_tests;
+
+#[cfg(test)]
+mod gemini44_tests;
+
+#[cfg(test)]
+mod deepgram40_tests;
+
+#[cfg(test)]
+mod grok31_tests;
+
+#[cfg(test)]
+mod hunyuan42_tests;
+#[cfg(test)]
+mod stability36_tests;
+
+#[cfg(test)]
+mod alibaba32_tests;
+
+#[cfg(test)]
+mod recraft35_tests;
+#[cfg(test)]
+mod rodin41_tests;
+
+#[cfg(test)]
+mod magnific38_tests;
+
+#[cfg(test)]
+mod heygen43_tests;
+
+#[cfg(test)]
+mod topaz37_tests;
+
+#[cfg(test)]
+mod pika29_tests;

@@ -80,22 +80,30 @@ fn wired_mode<'c>(session: &Session, node: &Node, contract: &'c nodecraft_nodes:
         return None;
     }
     let canvas = session.document().canvases().values().find(|canvas| canvas.nodes().contains_key(&node.id))?;
-    let id = contract.resolve_mode(&wire_counts(canvas, contract, node), false).ok()??;
+    let id = contract.resolve_mode(&wire_counts(canvas, session.kinds(), contract, node).ok()?, false).ok()??;
     contract.modes.iter().find(|mode| mode.mode == *id)
 }
 
 /// How many items reach each of `node`'s inputs, counted as the planner counts them: the items
 /// each wired output holds now, or one for an output with no result yet.
-pub(super) fn wire_counts<'a>(canvas: &'a Canvas, contract: &nodecraft_nodes::NodeContract, node: &Node) -> BTreeMap<&'a str, usize> {
+pub(super) fn wire_counts<'a>(
+    canvas: &'a Canvas,
+    kinds: &nodecraft_nodes::Registry,
+    contract: &nodecraft_nodes::NodeContract,
+    node: &Node,
+) -> Result<BTreeMap<&'a str, usize>, Error> {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut routing = nodecraft_exec::routing::OutputResolver::new(canvas, kinds);
     for edge in canvas.edges().values().filter(|edge| edge.to.node == node.id) {
         if contract.inputs.iter().any(|input| input.port == edge.to.port) {
-            let items = canvas.nodes().get(&edge.from.node).and_then(|from| held(from, &edge.from.port)).unwrap_or(1);
-            let count = counts.entry(edge.to.port.as_str()).or_default();
-            *count = count.saturating_add(items);
+            for source in routing.sources(&edge.from)? {
+                let items = held(source.node, &source.port.name).unwrap_or(1);
+                let count = counts.entry(edge.to.port.as_str()).or_default();
+                *count = count.saturating_add(items);
+            }
         }
     }
-    counts
+    Ok(counts)
 }
 
 /// How many items `node`'s output `port` holds in its shown result, lists flattened.
@@ -177,7 +185,7 @@ impl GeometryCache {
             Err(i) => i,
         };
         let admitted = admit(session, node, None);
-        let rect = card::world_rect(node, admitted.as_ref().map(|a| a.descriptor.as_ref()), t);
+        let rect = card::world_rect_with_roles(node, admitted.as_ref().map(|a| a.descriptor.as_ref()), admitted.as_ref().map(|a| &a.roles), t);
         let placeholder = admitted.is_none();
         let entry_limit = MAX_ENTRIES.min(MAX_BYTES.saturating_sub(128) / std::mem::size_of::<(NodeId, Rect, bool)>());
         if self.entries.len() < entry_limit {

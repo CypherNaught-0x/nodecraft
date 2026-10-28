@@ -1,0 +1,15 @@
+# https://developers.deepgram.com/docs/pre-recorded-audio (checked 2026-10-24)
+# Account rates and model-improvement opt-out affect billing; no dollar receipt is returned.
+[[model]]
+id = "deepgram.nova-3"
+provider = "deepgram"
+provider_model = "nova-3"
+label = "Deepgram Nova-3 transcription"
+description = "Transcribe an English recording with readable smart formatting. Usage pricing; processing time follows the recording."
+latency_s = 15
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "audio-to-text"
+output = "text"
+inputs = [{ role = "audio", modality = "audio", min = 1, max = 1 }]

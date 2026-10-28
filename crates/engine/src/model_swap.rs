@@ -188,7 +188,7 @@ pub fn prepare(c: &Context<'_>, selection: &Selection) -> Result<PreparedSwap, E
         let node = canvas.nodes().get(id).ok_or_else(|| Error::new(ErrorKind::NotFound, "selected node does not exist"))?;
         node.validate_payload()?;
         selected_model(node)?;
-        let wiring = catalog.capture_wiring(canvas, *id)?;
+        let wiring = catalog.capture_wiring(canvas, c.kinds, *id)?;
         catalog.validate_destination_wiring(kind, &wiring, &selection.model, true)?;
         // Original plus an overestimate of replacement: old fields/history/config remain
         // intact, while destination defaults/ports may all be additional. No source Vec or
@@ -241,7 +241,7 @@ pub fn prepare(c: &Context<'_>, selection: &Selection) -> Result<PreparedSwap, E
             proposed.remove(name);
         }
         let candidate = catalog.prepare_instance(node, &selection.model, &proposed)?;
-        catalog.validate_wiring(canvas, &candidate, false)?;
+        catalog.validate_wiring(canvas, c.kinds, &candidate, false)?;
         // All definitions of one kind share one `out` port type. Thus every selected
         // candidate's incoming checks see unchanged opposite outputs, even in a bulk swap.
         // A future varying-output kind must validate a complete candidate endpoint overlay.

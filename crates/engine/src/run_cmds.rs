@@ -271,6 +271,7 @@ fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -
     c.routing.bind(&mut hash);
     // A quote a provider gave since (#663) can price the run differently.
     crate::provider_quotes::bind(c.resources, &mut hash);
+    crate::comfy_partner_quotes::bind(c.resources, c.routing.routing.targets(), &mut hash);
     let (tag, field) = match mode {
         RunMode::Selected => (0, None),
         RunMode::WithUpstream => (1, None),
@@ -462,7 +463,9 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
             });
         }
     };
+    storage::check(&priced, catalog, c.assets.context().supports_large_assets())?;
     // Prices providers quoted (#663) count against budgets like catalog prices.
+    crate::comfy_partner_quotes::apply(resources, &c.routing.routing, canvas, &mut priced)?;
     let found = crate::provider_quotes::found(&run_plan, resources, c.routing.nonce)?;
     let quoted = crate::provider_quotes::apply(&mut priced, &found)?;
     let admission = check(&priced, &budget.budgets, &admission_spent(c, budget))?;
@@ -655,6 +658,7 @@ pub(crate) fn authorize(
     options: nodecraft_exec::run::RunOptions,
 ) -> Result<(AuthorizedRun, nodecraft_exec::run::Progress), Error> {
     let catalog = c.resources.require::<RunCatalog>()?;
+    storage::check(&prepared.quote, catalog.catalog(), c.assets.context().supports_large_assets())?;
     if prepared.routing_nonce != c.routing.nonce || binding(c, catalog, &prepared.run, MAX_BINDING_BYTES)? != prepared.bound {
         return Err(invalid("the prepared run is stale; quote and prepare again"));
     }
@@ -743,6 +747,8 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         c.routing.routing.targets(),
     )
     .map_err(|error| Error::new(error.kind, admission_reason(&error)))?;
+    storage::check(&quote, catalog.catalog(), c.assets.context().supports_large_assets())?;
+    crate::comfy_partner_quotes::apply(c.resources, &c.routing.routing, admitted.canvas(), &mut quote)?;
     crate::provider_quotes::apply(&mut quote, &found)?;
     // Parsed request ownership is transferred, never cloned. Reserve all extra metadata
     // before Box/PreparedRun retention; quote ownership was pre-admitted inside exec.
@@ -998,6 +1004,7 @@ mod estimate;
 mod media_size;
 mod request_size;
 mod reuse;
+mod storage;
 pub(crate) use estimate::jobs as estimate_jobs;
 pub use estimate::{EstimateJob, Estimating};
 
@@ -1123,6 +1130,10 @@ impl AuthorizedRun {
     /// The units `job`'s provider said it billed (#437), recorded with its settings.
     pub fn job_billed(&mut self, job: nodecraft_exec::scheduler::JobId, units: nodecraft_types::BillableUnits) {
         self.run.job_billed(job, units)
+    }
+    /// Provider-reported execution time, retained independently of its monetary charge (#339).
+    pub fn job_execution_ms(&mut self, job: nodecraft_exec::scheduler::JobId, milliseconds: u64) {
+        self.run.job_execution_ms(job, milliseconds)
     }
     /// `job` may have been billed under `key` although it didn't finish (#517); call before
     /// [`Self::job_failed`].

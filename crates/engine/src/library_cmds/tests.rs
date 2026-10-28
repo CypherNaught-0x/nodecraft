@@ -120,6 +120,26 @@ fn a_version_added_in_one_project_is_placed_in_another() {
 }
 
 #[test]
+fn deck695_technique_versions_reject_nonexecuting_deck_annotations() {
+    let store = MemoryLibrary::default();
+    let a = publishing(&store);
+    let published = a.document().canvases().get(&V1).unwrap().clone();
+    let source = published.nodes().values().find(|node| node.kind == "source.text").unwrap().id;
+    let mut deck = a.kinds().get(nodecraft_nodes::deck::ID).unwrap().instantiate_instance(id(3), Default::default(), &Default::default()).unwrap();
+    let layer = nodecraft_actions::deck::source_layer(&source.to_string(), "Source", (50.0, 50.0), (100.0, 100.0));
+    deck.config.insert(nodecraft_nodes::deck::CONFIG.into(), Value::Text(json!({"version":1,"slides":[{"id":"intro","layers":[layer]}]}).to_string()));
+    let mut nodes: Vec<_> = published.nodes().values().cloned().collect();
+    nodes.push(deck);
+    let mut info = published.technique_info().unwrap().clone();
+    info.source = None;
+    // A Deck has no execution ports. Preserve the invariant that every node in a
+    // published version feeds an exposed output; never weaken it to make a copy test fit.
+    let error = Canvas::technique(V1, published.title(), info, nodes, published.edges().values().cloned().collect()).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert!(error.message.contains("feed any output"), "{error:?}");
+}
+
+#[test]
 fn a_project_that_has_the_version_uses_its_own() {
     let store = MemoryLibrary::default();
     let mut a = publishing(&store);

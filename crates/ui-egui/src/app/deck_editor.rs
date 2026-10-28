@@ -5,6 +5,7 @@
 //! than undoing someone else's work. Layers this version can't read are kept where they are.
 use super::NodeCraftApp;
 use super::layer_editor::{self, Art, Commands, FrameParams, LayerEditor, Listing, Rendered, Stage, draw_layer, render_scale, text_field, vector_art};
+use super::layer_fonts::{FontFiles, HeldFont};
 use crate::theme::Tokens;
 use egui::{Pos2, Rect, Sense, Vec2};
 use nodecraft_actions::deck::{self, Drawable, Shown, Slide};
@@ -27,6 +28,7 @@ pub(super) struct DeckEditor {
     listing: Option<(u64, Deck)>,
     /// Each slide thumbnail's rendered text and shape layers: by slide id, then layer id.
     thumbs: HashMap<String, HashMap<String, Rendered>>,
+    font_files: FontFiles,
     /// The slide name being typed: (field key, text).
     name: Option<(String, String)>,
     /// A thumbnail being dragged: its index, and the gap it would drop into.
@@ -35,7 +37,18 @@ pub(super) struct DeckEditor {
 
 impl DeckEditor {
     pub(super) fn new(canvas: CanvasId, node: NodeId) -> Self {
-        Self { canvas, node, slide: None, index: 0, layers: None, listing: None, thumbs: HashMap::new(), name: None, moving: None }
+        Self {
+            canvas,
+            node,
+            slide: None,
+            index: 0,
+            layers: None,
+            listing: None,
+            thumbs: HashMap::new(),
+            font_files: FontFiles::default(),
+            name: None,
+            moving: None,
+        }
     }
 
     /// The picked slide's id.
@@ -49,6 +62,11 @@ impl DeckEditor {
     pub(super) fn layers(&self) -> Option<&LayerEditor> {
         self.layers.as_ref()
     }
+
+    #[cfg(test)]
+    pub(super) fn layers_mut(&mut self) -> Option<&mut LayerEditor> {
+        self.layers.as_mut()
+    }
 }
 
 /// A deck as `deck.list` returns it.
@@ -59,6 +77,7 @@ struct Deck {
     frame: Frame,
     background: String,
     slides: Vec<Entry>,
+    fonts: Vec<HeldFont>,
 }
 
 struct Entry {
@@ -77,6 +96,8 @@ struct Listed {
     height: u32,
     background: String,
     slides: Vec<Json>,
+    #[serde(default)]
+    fonts: Vec<HeldFont>,
 }
 
 #[derive(Deserialize)]
@@ -116,6 +137,7 @@ fn listing(value: Json) -> Option<Deck> {
         frame: Frame { width: listed.width, height: listed.height, background },
         background: listed.background,
         slides,
+        fonts: listed.fonts,
     })
 }
 
@@ -178,10 +200,11 @@ impl NodeCraftApp {
         textures: &mut HashMap<String, Rendered>,
         scale: f64,
         dragged: &[String],
+        font: (&Fonts<'_>, u64),
     ) -> HashMap<String, Art> {
         let edge = (ctx.content_rect().size().max_elem() * ctx.pixels_per_point()).min(2048.0);
         let render_at = render_scale(scale * f64::from(ctx.pixels_per_point()));
-        let fonts = Fonts::default();
+        let (fonts, fonts_key) = font;
         let mut art = HashMap::new();
         for layer in &drawn.layers {
             let shown = match &layer.content {
@@ -197,7 +220,7 @@ impl NodeCraftApp {
                     Art::Image { texture, fit: *fit }
                 }
                 Content::Source { fit, .. } => Art::Image { texture: None, fit: *fit },
-                Content::Text { .. } | Content::Shape { .. } => vector_art(textures, ctx, layer, render_at, &fonts, 0, dragged),
+                Content::Text { .. } | Content::Shape { .. } => vector_art(textures, ctx, layer, render_at, fonts, fonts_key, dragged),
             };
             art.insert(layer.id.clone(), shown);
         }
@@ -253,8 +276,13 @@ impl NodeCraftApp {
         let t = *self.theme.tokens();
         let choices = self.deck_choices(editor.node);
         let frame = deck.frame;
-        let slide_listing = current.map(|e| Listing::slide(frame.width, frame.height, e.raw.clone(), choices));
+        let slide_listing = current.map(|e| Listing::slide(frame.width, frame.height, e.raw.clone(), choices, deck.fonts.clone()));
         let mut layers = editor.layers.take();
+        editor.font_files.load(self.session.assets(), &deck.fonts);
+        if let Some(ed) = &mut layers {
+            // Share validated Arc payloads with the properties panel, including across slides.
+            ed.font_files = editor.font_files.clone();
+        }
         if let Some(ed) = &mut layers
             && ed.begin(&ctx)
         {
@@ -262,11 +290,13 @@ impl NodeCraftApp {
         }
 
         // The stage's art, then every thumbnail's.
+        let fonts = editor.font_files.fonts(&deck.fonts);
+        let fonts_key = editor.font_files.render_key(&deck.fonts);
         let mut art = HashMap::new();
         if let (Some(ed), Some(entry), Some(listed)) = (&mut layers, current, &slide_listing) {
             let dragged = ed.dragged();
             let mut textures = std::mem::take(&mut ed.textures);
-            art = self.deck_art(&ctx, &drawn(entry, frame), &mut textures, ed.scale, &dragged);
+            art = self.deck_art(&ctx, &drawn(entry, frame), &mut textures, ed.scale, &dragged, (&fonts, fonts_key));
             ed.textures = textures;
             ed.keep(listed);
         }
@@ -279,10 +309,11 @@ impl NodeCraftApp {
         for entry in &deck.slides {
             let drawn = drawn(entry, frame);
             let textures = cache.entry(entry.slide.id.clone()).or_default();
-            let art = self.deck_art(&ctx, &drawn, textures, thumb_scale, &[]);
+            let art = self.deck_art(&ctx, &drawn, textures, thumb_scale, &[], (&fonts, fonts_key));
             thumbs.push((drawn, art));
         }
         editor.thumbs = cache;
+        drop(fonts);
 
         let mut commands: Commands = Vec::new();
         let mut close = false;
@@ -390,10 +421,40 @@ impl NodeCraftApp {
                 close |= i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             });
         }
+        // The sorter can select another slide without a command or revision. Do not poll the
+        // previous slide's ready font read in that same frame; its view state is discarded.
+        if current.map(|entry| entry.slide.id.as_str()) != editor.slide.as_deref() {
+            layers = None;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let cancelled_font = if commands.iter().any(|(command, _)| matches!(*command, "edit.undo" | "edit.redo"))
+            && let Some(ed) = &mut layers
+            && ed.picking.take().is_some()
+        {
+            ed.picking_lineage = None;
+            true
+        } else {
+            false
+        };
+        let mut listed = deck.revision;
+        // Do not overtake this frame's edits or a closing editor. Ordinary edits defer the
+        // pick until the next fresh listing; undo/redo above explicitly abandons it.
+        if !close
+            && !present
+            && commands.is_empty()
+            && let (Some(ed), Some(layer_listing)) = (&mut layers, &slide_listing)
+            && self.layer_font_pick(ed, &ctx, &mut commands, layer_listing)
+        {
+            editor.font_files.forget_missing();
+            listed = self.session.revision();
+        }
         editor.layers = layers;
-        let listed = deck.revision;
         editor.listing = Some((revision, deck));
         self.deck_run(listed, commands);
+        #[cfg(not(target_arch = "wasm32"))]
+        if cancelled_font && self.notice.is_none() {
+            self.notice = Some("The deck changed while choosing a font; choose the font file again.".into());
+        }
         if let Some((pdf, slides)) = export {
             let stem: String = node.title.chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).take(48).collect();
             let stem = if stem.trim().is_empty() { "Deck".to_owned() } else { stem.trim().to_owned() };

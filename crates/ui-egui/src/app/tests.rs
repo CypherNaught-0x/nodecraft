@@ -14,7 +14,7 @@ fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
     app.session.document().canvases().get(&app.canvas).unwrap().nodes().values().next().unwrap()
 }
 fn screen(app: &NodeCraftApp) -> Rect {
-    app.view.rect_to_screen(app.viewport.min, card::world_rect(node(app), None, app.theme.tokens()))
+    app.view.rect_to_screen(app.viewport.min, payload_rect(&app.session, node(app), app.theme.tokens()))
 }
 fn click(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
     h.hover_at(pos);
@@ -47,11 +47,11 @@ fn background_pan_and_right_drag_preserve_document() {
     let mut h = harness();
     let before = h.state().session.document().clone();
     let pan = h.state().view.pan;
-    h.drag_at(Pos2::new(50.0, 50.0));
+    h.drag_at(Pos2::new(50.0, 180.0));
     h.run();
-    h.hover_at(Pos2::new(150.0, 90.0));
+    h.hover_at(Pos2::new(150.0, 220.0));
     h.run();
-    h.drop_at(Pos2::new(150.0, 90.0));
+    h.drop_at(Pos2::new(150.0, 220.0));
     h.run();
     assert!((h.state().view.pan - pan - Vec2::new(100.0, 40.0)).length() < 1.0);
     let pan = h.state().view.pan;
@@ -169,7 +169,7 @@ use egui_kittest::kittest::Queryable;
 use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx};
 use nodecraft_types::{Choice, Integer, Number, ParamControl, ParamSchema, ParamSpec, PortType, Unsigned, VisibleIf};
 
-struct TestKind(NodeDescriptor);
+pub(super) struct TestKind(pub(super) NodeDescriptor);
 impl NodeKind for TestKind {
     fn descriptor(&self) -> &NodeDescriptor {
         &self.0
@@ -505,8 +505,9 @@ fn typing_slider_value_commits_once_after_enter() {
         Value::Number(Number::new(0.5).unwrap()),
     )]);
     let before = h.state().session.document().clone();
-    let rect = h.get_by_role_and_label(Role::Slider, "strength").rect();
-    double_click(&mut h, Pos2::new(rect.max.x + 25.0, rect.center().y as f32));
+    // Exact entry uses its own full-width row below the full-width slider track.
+    let rect = h.get_by_role_and_label(Role::TextInput, "strength").rect();
+    click(&mut h, Pos2::new(rect.center().x as f32, rect.center().y as f32));
     h.run();
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     for character in ["0", ".", "7", "5"] {
@@ -805,12 +806,12 @@ pub(super) fn chain_id(n: u8) -> NodeId {
 fn ids(ns: &[u8]) -> BTreeSet<NodeId> {
     ns.iter().map(|n| chain_id(*n)).collect()
 }
-/// Screen point just inside the top-left of card `n`.
+/// Card background point clear of edge-port hit targets, even on compact overview cards.
 fn card_point(h: &Harness<'static, NodeCraftApp>, n: u8) -> Pos2 {
     let app = h.state();
     let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&chain_id(n)).unwrap();
-    let descriptor = app.session.kinds().get(&node.kind).ok().map(|k| k.descriptor());
-    app.view.rect_to_screen(app.viewport.min, card::world_rect(node, descriptor, app.theme.tokens())).min + Vec2::splat(6.0)
+    let rect = app.view.rect_to_screen(app.viewport.min, payload_rect(&app.session, node, app.theme.tokens()));
+    Pos2::new(rect.center().x, rect.top() + 6.0_f32.min(rect.height() * 0.25))
 }
 fn press(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2, button: egui::PointerButton, modifiers: egui::Modifiers) {
     h.event(egui::Event::ModifiersChanged(modifiers));
@@ -1150,7 +1151,8 @@ fn rerouting_an_input_end_moves_or_disconnects_the_noodle() {
     assert_eq!(h.state().session.document(), &before);
     // Dropping a picked-up end on empty canvas disconnects it.
     let from = port_point(&h, 3, noodle::Side::Input);
-    wire_drag(&mut h, from, Pos2::new(900.0, 600.0));
+    // The lower-right point is inside the minimap, which must preserve the wire.
+    wire_drag(&mut h, from, Pos2::new(40.0, 680.0));
     assert_eq!(links(&h), [link(1, 2)].into_iter().collect());
 }
 
@@ -1322,7 +1324,9 @@ fn box_select_ignores_the_static_shape_of_an_undrawn_short_card() {
 fn the_keys_button_opens_the_keys_panel() {
     let mut h = harness();
     assert!(!h.state().keys.open);
+    crate::app::topbar_tests::reveal(&mut h, "API keys");
     assert!(h.query_by_label("API keys").is_some());
+    crate::app::topbar_tests::reveal(&mut h, "API keys");
     h.get_by_role_and_label(Role::Button, "API keys").click();
     h.run();
     assert!(h.state().keys.open);
@@ -1438,6 +1442,7 @@ fn secret_editor_owns_shifted_navigation_events_and_key_service_survives_navigat
     let ctx = h.ctx.clone();
     h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
     h.run();
+    crate::app::topbar_tests::reveal(&mut h, "API keys");
     h.get_by_role_and_label(Role::Button, "API keys").click();
     h.run();
     h.get_by_label("openai").click();
@@ -1492,9 +1497,13 @@ fn active_wire_gesture_crosses_minimap_without_navigation_and_commits_once() {
     h.run();
     assert!(h.state().wiring.is_some());
     let ctx = h.ctx.clone();
-    for (id, params) in
-        [("canvas.fit_all", json!({})), ("canvas.fit_selection", json!({})), ("canvas.minimap_toggle", json!({})), ("canvas.pan_to", json!({"x":0,"y":0}))]
-    {
+    for (id, params) in [
+        ("canvas.fit_all", json!({})),
+        ("canvas.fit_selection", json!({})),
+        ("canvas.minimap_toggle", json!({})),
+        ("canvas.prompt_overlays_toggle", json!({})),
+        ("canvas.pan_to", json!({"x":0,"y":0})),
+    ] {
         assert!(h.state_mut().navigation_enabled(&ctx, id, &params).is_err());
         assert!(h.state_mut().dispatch_navigation(&ctx, id, &params).is_err());
     }
@@ -1599,8 +1608,8 @@ fn quick_add_keys_create_kinds_under_the_pointer_as_one_step() {
     // Centred on the pointer, and selected.
     let world = h.state().view.to_world(h.state().viewport.min, at);
     let t = h.state().theme.tokens();
-    assert!((image.pos.x - (world.x - t.card_width * 0.5)).abs() < 0.5);
-    assert!((image.pos.y - (world.y - t.card_min_height * 0.5)).abs() < 0.5);
+    let actual = payload_rect(&h.state().session, image, t);
+    assert!((actual.center() - world).length() < 0.5);
     assert_eq!(h.state().selection.nodes(), &[image.id].into_iter().collect());
     // With a modifier held the key is not a quick-add.
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::T);
@@ -1686,7 +1695,7 @@ fn held_quick_add_keys_do_not_repeat() {
 }
 
 #[test]
-fn palette_keys_never_reach_the_canvas_and_it_closes_when_the_view_moves() {
+fn palette_keys_and_wheel_never_reach_the_canvas() {
     let mut h = harness();
     let id = node(h.state()).id;
     double_click(&mut h, Pos2::new(150.0, 600.0));
@@ -1706,7 +1715,8 @@ fn palette_keys_never_reach_the_canvas_and_it_closes_when_the_view_moves() {
     h.run();
     assert!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().contains_key(&id));
     assert_eq!(h.state().selection.nodes(), &[id].into_iter().collect());
-    // Scrolling the canvas moves the view, so the palette closes rather than create elsewhere.
+    // The palette retains the wheel even outside its list, preserving its insertion point.
+    let view = h.state().view;
     h.hover_at(Pos2::new(600.0, 100.0));
     h.event(egui::Event::MouseWheel {
         unit: egui::MouseWheelUnit::Point,
@@ -1715,7 +1725,8 @@ fn palette_keys_never_reach_the_canvas_and_it_closes_when_the_view_moves() {
         modifiers: egui::Modifiers::NONE,
     });
     h.run();
-    assert!(h.state().palette.is_none());
+    assert!(h.state().palette.is_some());
+    assert_eq!(h.state().view, view);
 }
 
 #[test]
@@ -1883,8 +1894,8 @@ fn paste_lands_centred_duplicate_offsets_and_unreadable_copies_explain() {
     let pasted = h.state().selection.nodes().iter().next().copied().unwrap();
     let node = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&pasted).unwrap().clone();
     let world = h.state().view.to_world(h.state().viewport.min, at);
-    assert!((node.pos.x + t.card_width / 2.0 - world.x).abs() < 0.5);
-    assert!((node.pos.y + t.card_min_height / 2.0 - world.y).abs() < 0.5);
+    let actual = payload_rect(&h.state().session, &node, &t);
+    assert!((actual.center() - world).length() < 0.5);
     // A NodeCraft copy this version can't read gives a notice, not a Text node full of JSON.
     let before = h.state().session.document().clone();
     h.event(egui::Event::Paste(text.replace("\"version\":1", "\"version\":9")));
@@ -1962,6 +1973,7 @@ fn oversized_and_missing_media_pastes_are_refused() {
 #[test]
 fn a_paste_while_the_keys_panel_is_open_never_reaches_the_document() {
     let mut h = harness();
+    crate::app::topbar_tests::reveal(&mut h, "API keys");
     h.get_by_role_and_label(Role::Button, "API keys").click();
     h.run();
     assert!(h.state().keys.open);
@@ -3838,6 +3850,7 @@ fn minimap_real_double_click_never_opens_palette() {
 #[test]
 fn quick_add_yields_over_actual_keys_window_without_text_focus() {
     let mut h = harness();
+    crate::app::topbar_tests::reveal(&mut h, "API keys");
     h.get_by_role_and_label(Role::Button, "API keys").click();
     h.run();
     let key_label = h.get_by_label("Account").rect();

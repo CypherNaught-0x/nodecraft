@@ -33,11 +33,12 @@ fn card() -> Card {
             params: vec![MappedParam { node: "2".into(), input: "text".into(), spec: prompt }],
             outputs: vec![MappedOutput { node: "3".into(), label: "Save Image".into(), modality: Modality::Image }],
             partners: Vec::new(),
+            output_names: Vec::new(),
         },
     }
 }
 
-fn app() -> NodeCraftApp {
+pub(super) fn app() -> NodeCraftApp {
     let snapshot = GenerationCatalog::builtin().unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([9; 16]), "Workflow").unwrap();

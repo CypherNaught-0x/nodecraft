@@ -16,6 +16,8 @@ mod preview_read;
 mod sealed;
 pub use preview_read::{PreviewAssetRead, PreviewReadError};
 pub use sealed::SealedAsset;
+#[cfg(not(target_arch = "wasm32"))]
+mod export_read;
 
 struct Entry {
     identity: Arc<AssetIdentity>,
@@ -86,6 +88,15 @@ impl VerifiedAsset {
     }
     pub fn read_small(&self, cap: usize, metrics: &StreamMetrics) -> Result<Vec<u8>, Error> {
         self.data.range.read_small(cap, metrics)
+    }
+    /// Stream this pinned immutable lease without consulting the live store's cache/gates.
+    /// An error may leave a partial writer; the caller must publish its output atomically.
+    pub fn copy_to(&self, output: &mut dyn std::io::Write, cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<u64, Error> {
+        let digest = crate::asset_source::copy_and_hash(&self.data.range, output, cancel, metrics)?;
+        if digest.hash != self.hash() || digest.bytes != self.byte_len() {
+            return Err(invalid("verified asset changed during output"));
+        }
+        Ok(digest.bytes)
     }
     pub(crate) fn range(&self) -> &AssetRange {
         &self.data.range
@@ -386,11 +397,7 @@ impl AssetStore {
     /// Output I/O/cancellation may leave a partial destination; hosts publish atomically.
     pub fn copy_verified_to(&self, asset: &AssetRef, output: &mut dyn std::io::Write, cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<u64, Error> {
         let lease = self.open_verified(asset, cancel, metrics)?;
-        let digest = crate::asset_source::copy_and_hash(lease.range(), output, cancel, metrics)?;
-        if digest.hash != lease.hash() || digest.bytes != lease.byte_len() {
-            return Err(invalid("verified asset changed during output"));
-        }
-        Ok(digest.bytes)
+        lease.copy_to(output, cancel, metrics)
     }
     pub fn open_verified(&self, asset: &AssetRef, cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<VerifiedAsset, Error> {
         let _operation = self.context.operation()?;
@@ -417,6 +424,24 @@ impl AssetStore {
             #[cfg(not(target_arch = "wasm32"))]
             stage,
         )?;
+        self.check_reference(asset, &mut data, metrics)?;
+        self.context.cache_verified(&entry.identity, data.clone())?;
+        Ok(VerifiedAsset { identity: entry.identity.clone(), data })
+    }
+    fn check_reference(&self, asset: &AssetRef, data: &mut VerifiedData, metrics: &StreamMetrics) -> Result<(), Error> {
+        if asset.mime.essence() == nodecraft_media::svg::MIME {
+            let info = match data.svg {
+                Some(info) => info,
+                None => {
+                    let maximum = usize::try_from(nodecraft_media::svg::MAX_BYTES).map_err(|_| invalid("SVG byte limit is unavailable on this platform"))?;
+                    let bytes = data.range.read_small(maximum, metrics)?;
+                    nodecraft_media::svg::probe(&bytes, &Default::default()).map_err(|_| invalid("SVG asset is unsafe or exceeds its limits"))?
+                }
+            };
+            crate::assets::check_svg_header(&asset.meta, info)?;
+            data.svg = Some(info);
+            return Ok(());
+        }
         if let Some(sniffed) = data.sniffed {
             let actual = sniffed.mime.split(';').next().unwrap_or_default();
             let expected = asset.mime.essence();
@@ -442,8 +467,7 @@ impl AssetStore {
                 data.image = Some(meta);
             }
         }
-        self.context.cache_verified(&entry.identity, data.clone())?;
-        Ok(VerifiedAsset { identity: entry.identity.clone(), data })
+        Ok(())
     }
     /// The bytes stored under `hash`, checked against it, without the MIME and header checks of
     /// [`Self::open_verified`]: for passing an asset on as it is (#700), not for reading it.
@@ -672,7 +696,7 @@ fn facts(range: AssetRange, crc32: u32, metrics: &StreamMetrics) -> Result<Verif
     let prefix = range.slice(0, range.byte_len().min(64 * 1024))?.read_small(64 * 1024, metrics)?;
     #[cfg(any(test, feature = "validation-metrics"))]
     crate::validation_metrics::record(|m| m.sniffs = m.sniffs.saturating_add(1));
-    Ok(VerifiedData { range, crc32, sniffed: nodecraft_media::sniff(&prefix), image: None })
+    Ok(VerifiedData { range, crc32, sniffed: nodecraft_media::sniff(&prefix), image: None, svg: None })
 }
 
 #[cfg(test)]

@@ -70,6 +70,30 @@ fn passive_toolbar(ctx: &egui::Context) {
     ctx.add_plugin(PassiveToolbarInput::default());
 }
 impl NodeCraftApp {
+    /// Measure a fully resolved import payload; no config defaults are copied into the UI.
+    pub(super) fn creation_position(node: &Node, kinds: &nodecraft_nodes::Registry, t: &Tokens) -> nodecraft_graph::Position {
+        let kind = kinds.get(&node.kind).ok();
+        let descriptor = kind.and_then(|kind| kind.resolve_instance(node).ok());
+        let descriptor = descriptor.as_deref().filter(|d| d.inputs == node.inputs && d.outputs == node.outputs);
+        // This registry-only import callback has no admitted record to reuse. Resolve its
+        // generation contract once; all session-backed paths carry their existing roles.
+        let roles = if descriptor.is_some() && nodecraft_nodes::generation::is_generation(&node.kind) {
+            kind.and_then(|kind| kind.instance_contract(node).ok()).map(|contract| card::Roles::of(&contract))
+        } else {
+            None
+        };
+        let size = card::world_size_with_roles(node, descriptor, roles.as_ref(), t);
+        nodecraft_graph::Position { x: node.pos.x - size.x * 0.5, y: node.pos.y - size.y * 0.5 }
+    }
+    /// Preview the command's pure construction, then publish once at the measured center.
+    pub(super) fn centered_command(&mut self, command: &str, params: &mut Json, id: NodeId) -> Result<Json, Error> {
+        let node = self.session.preview_created_node(command, params, id)?;
+        let size = payload_rect(&self.session, &node, self.theme.tokens()).size();
+        params["pos"] = json!({"x": node.pos.x - size.x * 0.5, "y": node.pos.y - size.y * 0.5});
+        self.session.dispatch(command, params)
+    }
+}
+impl NodeCraftApp {
     /// `nodes` names what to measure instead of the selection (an agent's explicit list, #360).
     fn layout_context(&mut self, ctx: &egui::Context, owner: Option<egui::Id>, nodes: Option<Vec<NodeId>>) -> LayoutContext {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
@@ -166,6 +190,10 @@ impl NodeCraftApp {
         // separately there, then checked again at scoped dispatch.
         !self.layout_busy(ctx) && host.selection.len() >= 2 && host.extents.len() == host.selection.len()
     }
+    pub(super) fn layout_toolbar_width(&self) -> f32 {
+        let t = self.theme.tokens();
+        t.layout_button_width.min((self.viewport.width() - t.navigation_margin * 2.0).max(1.0) * 0.4)
+    }
     pub(super) fn layout_overlay(&mut self, ui: &mut egui::Ui) -> bool {
         let ctx = ui.ctx().clone();
         passive_toolbar(&ctx);
@@ -181,10 +209,10 @@ impl NodeCraftApp {
         let area = egui::Area::new(egui::Id::new("selection_format_toolbar"))
             .order(egui::Order::Foreground)
             .movable(false)
-            .fixed_pos(self.viewport.left_top() + Vec2::new(t.navigation_margin + t.comments_button_width + t.navigation_gap, t.navigation_margin))
+            .fixed_pos(Pos2::new(self.viewport.left() + t.navigation_margin + self.closed_tag_width() + t.navigation_gap, self.topbar_rect().top() + t.navigation_gap))
             .show(&ctx, |ui| {
                 let button =
-                    ui.add_enabled(can_open, egui::Button::new("Format selection").min_size(Vec2::new(t.layout_button_width, t.navigation_toolbar_height)));
+                    ui.add_enabled(can_open, egui::Button::new("Format selection").min_size(Vec2::new(self.layout_toolbar_width(), t.navigation_toolbar_height)));
                 button.clone().on_hover_text("Arrange selected nodes in one undo step. Finish text editing or gestures first. Unselected cards stay fixed and may overlap the result. Dependency columns retain ranks through unselected nodes and can have uneven gaps.");
                 egui::Popup::menu(&button).id(popup).show(|ui| {
                     for (label, choice) in [("Grid", "grid"), ("Dependency order", "layered")] {
@@ -323,7 +351,7 @@ mod tests {
     #[test]
     fn comments_toolbar_does_not_overlap_format_and_cancelled_pin_blocks_layout() {
         let mut h = harness();
-        let comments = h.get_by_role_and_label(egui::accesskit::Role::Button, "Comments").rect();
+        let comments = h.state().comments_toolbar_rect();
         let format = h.get_by_role_and_label(egui::accesskit::Role::Button, "Format selection").rect();
         assert!(!comments.intersects(format));
         let ctx = egui::Context::default();
@@ -552,7 +580,10 @@ mod tests {
         assert!(h.query_by_role_and_label(egui::accesskit::Role::Button, "Format selection").is_none());
         h.run();
         assert!(h.ctx.data(|d| d.get_temp::<PassiveToolbar>(egui::Id::new("layout_passive_owner"))).is_none());
-        primary_click(&mut h, point);
+        // The application row can expand into Format's former slot. Exercise clear
+        // canvas after proving that the vanished passive owner was removed.
+        let clear = Pos2::new(point.x, h.state().topbar_rect().bottom() + h.state().theme.tokens().navigation_toolbar_height);
+        primary_click(&mut h, clear);
         assert!(!canvas::text_input_focused(&h.ctx));
         assert!(!h.ctx.input(|i| i.pointer.any_down()));
     }
@@ -720,13 +751,23 @@ mod tests {
         let ctx = h.ctx.clone();
         h.state_mut().schemas.clear(); // an evicted visible schema never controls layout
         h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid","columns":1})).unwrap();
+        let expected_height = |app: &NodeCraftApp| {
+            let node = app.session.document().canvases().get(&canvas).unwrap().nodes().get(&id(4)).unwrap();
+            let descriptor = app.session.kinds().get(&node.kind).unwrap().resolve_instance(node).unwrap();
+            card::world_size(node, Some(&descriptor), app.theme.tokens()).y
+        };
         let before = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id(3)).unwrap().pos.y;
-        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, h.state().theme.tokens().card_max_height);
+        let tall_height = expected_height(h.state());
+        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, tall_height);
         h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":id(4),"title":"Short"})).unwrap();
         h.state_mut().dispatch_layout(&ctx, &json!({"mode":"grid","columns":1})).unwrap();
         let after = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id(3)).unwrap().pos.y;
-        assert!(before - after > 400.0);
-        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, h.state().theme.tokens().card_min_height);
+        let short_height = expected_height(h.state());
+        assert!(tall_height > short_height * 4.0);
+        // Grid origins snap to eight world points; the full instance-height difference must move
+        // the following row, not just refresh the cached scalar without using it.
+        assert!((before - after - (tall_height - short_height)).abs() < 8.0);
+        assert_eq!(h.state().navigation.geometry.sizes.get(&id(4)).unwrap().y, short_height);
     }
     #[test]
     fn dirty_card_parameter_clicking_disabled_format_preserves_document_and_draft() {
@@ -891,7 +932,8 @@ mod tests {
             let mut app = app();
             let ctx = egui::Context::default();
             app.wiring = Some(Wiring {
-                from: nodecraft_graph::Endpoint { node: id(3), port: "out".into() },
+                side: crate::noodle::Side::Output,
+                anchor: nodecraft_graph::Endpoint { node: id(3), port: "out".into() },
                 port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: false },
                 moving: None,
             });

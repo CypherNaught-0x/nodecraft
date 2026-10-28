@@ -16,11 +16,15 @@
 //! `CancelToken` as a [`CancelSignal`] and the app's runtime as a [`Clock`]. A failed run that
 //! carries a handle ([`RunFailure::handle`]) must be resumed, never resubmitted.
 
+#[cfg(feature = "bfl")]
+pub mod bfl;
 pub mod broker;
 #[cfg(feature = "comfy-cloud")]
 pub mod comfy_cloud;
 #[cfg(feature = "comfyui")]
 pub mod comfyui;
+#[cfg(feature = "deepgram")]
+pub mod deepgram;
 mod delivery;
 #[cfg(feature = "elevenlabs")]
 pub mod elevenlabs;
@@ -29,6 +33,8 @@ mod error;
 pub mod fal;
 #[cfg(feature = "gemini-images")]
 pub mod gemini_images;
+#[cfg(feature = "gemini-llm")]
+pub mod gemini_llm;
 #[cfg(feature = "gemini-video")]
 pub mod gemini_video;
 #[cfg(feature = "google-cloud")]
@@ -36,10 +42,14 @@ pub mod google_cloud;
 #[cfg(feature = "higgsfield")]
 pub mod higgsfield;
 pub mod http;
+#[cfg(feature = "huggingface")]
+pub mod huggingface;
 #[cfg(feature = "kling")]
 pub mod kling;
 #[cfg(feature = "llm")]
 pub mod llm;
+#[cfg(feature = "magnific")]
+pub mod magnific;
 #[cfg(feature = "meshy")]
 pub mod meshy;
 /// Deterministic testing tools, available locally in unit tests or with feature `testkit`.
@@ -47,16 +57,22 @@ pub mod meshy;
 pub mod mock;
 #[cfg(any(feature = "tripo", feature = "meshy", feature = "higgsfield", feature = "seedance", feature = "kling"))]
 mod model_file;
+#[cfg(feature = "openai-audio")]
+pub mod openai_audio;
 #[cfg(feature = "openai-images")]
 pub mod openai_images;
 mod provider;
 #[cfg(feature = "replicate")]
 pub mod replicate;
+#[cfg(feature = "runway")]
+pub mod runway;
 pub mod secrets;
 #[cfg(feature = "seedance")]
 pub mod seedance;
 #[cfg(feature = "seedream")]
 pub mod seedream;
+#[cfg(feature = "stability")]
+pub mod stability;
 mod task;
 #[cfg(feature = "tripo")]
 pub mod tripo;

@@ -16,24 +16,25 @@ pub const VIEWS: &str = "mesh.views";
 /// A soundless video of a saved orbit around a model.
 pub const TURNTABLE: &str = "mesh.turntable";
 pub mod turntable;
+pub mod view;
 /// The longest side of a photo, and of one view on a sheet.
 pub const MAX_PHOTO_SIDE: u64 = 2048;
 pub const MAX_VIEW_SIDE: u64 = 1024;
 
-/// A 3D model (glTF, GLB or OBJ), shown in an orbit viewer on its card.
+/// A 3D model (glTF, GLB, OBJ or binary STL), shown in an orbit viewer on its card.
 pub fn kind_source() -> SourceKind {
     SourceKind::new(SOURCE, "3D", "3", Modality::Mesh)
 }
 
-/// Writes the connected model as GLB or OBJ. Both keep positions, normals and vertex colours;
-/// textures were already baked into vertex colours when the model was read.
+/// Writes GLB or OBJ with vertex colours, or geometry-only binary STL. Textures were already
+/// baked into vertex colours when the model was read; STL recomputes flat normals from winding.
 pub fn convert_kind() -> ActionKind {
     kind(
         CONVERT,
         "Convert 3D",
         vec![port("model", Modality::Mesh, false)],
         vec![port("out", Modality::Mesh, false)],
-        vec![choice("format", "Format", &[("glb", "GLB (binary glTF)"), ("obj", "OBJ")], "glb")],
+        vec![choice("format", "Format", &[("glb", "GLB (binary glTF)"), ("obj", "OBJ"), ("stl", "STL (geometry only)")], "glb")],
     )
 }
 

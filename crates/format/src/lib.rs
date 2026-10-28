@@ -14,6 +14,9 @@ pub mod backup;
 mod checkpoint_plan;
 mod compatibility;
 pub mod disk_quota;
+/// Local batch export (#98): names, collision policy and output-format capability. The write
+/// itself is `engine`'s, sharing `history.export`'s (#557) verifying atomic writer.
+pub mod export;
 mod frame_plan;
 pub mod interchange;
 pub mod journal;
@@ -66,3 +69,6 @@ pub fn canonical_hash(hash: nodecraft_media::ContentHash) -> nodecraft_types::Bl
 pub fn media_hash(hash: nodecraft_types::Blake3) -> nodecraft_media::ContentHash {
     nodecraft_media::ContentHash(*hash.as_bytes())
 }
+
+#[cfg(test)]
+mod svg_tests;

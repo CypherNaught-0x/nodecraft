@@ -82,6 +82,7 @@ fn answer(s: &mut Session, id: NodeId, text: &str) {
         items: Vec::new(),
         settings: Vec::new(),
         incomplete: None,
+        source_versions: Vec::new(),
     };
     card.active = Some(generation.id);
     card.history = vec![generation];

@@ -36,8 +36,7 @@ same structure with the values inverted.
 | `waveform` | `#5c5c66` | `#a8a8b2` | a sound card's waveform still to play (≥ 2:1 against the canvas); what has played is `wire_audio` |
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
-panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide, at least 220 high, with 64 points per
-additional schema row (720 maximum); control gaps are 6 points. Longer bodies scroll internally. The composer's submit button is 28
+panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide. Ordinary parameter bodies use deterministic, control-specific row metrics plus padding, rather than a 220-point minimum plus 64 points per schema field. Longer bodies scroll internally at the 720-point parameter-body cap. The separate `composer_body_height` token reserves 220 points for a generation composer; `card_min_height` remains only a legacy deterministic creation-ID seed, not a card geometry input. Previews and answers retain their separate 180-point regions. Conditional controls keep their declared space so changing a value does not move ports and wires. Composer prompts, admitted generated-image count controls and hidden workflow-model fields do not reserve duplicate rows. Renderer, payload admission, navigation, formatting and creation geometry share the admitted composer roles; descriptor-only callers retain conservative bounds. Count ownership follows the contract meaning, independent of provider parameter names, current count or composer visibility. Control gaps are 6 points; `control_vertical_padding` is 2 points so native button rows agree with the logical metrics. Image actions reserve their 180-point preview before the first live result, and PDF source previews reserve the same region. History uses two compact rows rather than an extra 64-point parameter row. Multi-port cards retain a port-spacing height floor without enlarging the parameter viewport; vertical hit cells keep adjacent ports independently selectable at overview zoom and during legacy-input previews. Sliders use the full content width, with an exact numeric input below; text inputs and choice buttons also fill that width. The composer's submit button is 28
 points across; the generation toolbar is 32 high, 10 above its card; the image viewer opens 720 wide. A sheet's table has 32-wide checkbox and number columns and
 120-wide model, references, result, status and button columns, the prompt taking the rest; the
 Sheets panel lists canvases 320 high, with a 250-wide title field. The Layer Editor's layers and
@@ -52,7 +51,10 @@ composer; a long answer scrolls inside it and can be selected and copied. While 
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the
 label's own row, so the card keeps its size), and its hover text explains that nonempty connected
 text is used instead; the typed prompt is kept and comes back when the wire is removed. A
-generation kind other than images is offered only when the catalog has a model for it.
+generation kind other than images is offered only when the catalog has a model for it. A media
+card's overlay — its prompt, its variation counter and its submit arrow — can be hidden for a
+clean board with `H`; that is view state, so the document, the card's size and its other
+parameters are untouched, and a text card's prompt is never hidden because there it is the editor.
 
 Tests in `theme.rs` keep body text ≥ 7:1 against cards, labels ≥ 4.5:1 against the canvas, and the
 selected border more visible than the resting one, in both themes.
@@ -71,20 +73,22 @@ selected border more visible than the resting one, in both themes.
 | Escape in search | close search and retain selection |
 | Shift+1 / Shift+2 outside editors and gestures | fit all / selected nodes |
 | Shift+M, or Hide map / Show map | toggle the minimap |
+| `H` outside text fields, popups, menus and gestures, and not a held-key repeat | hide or show the prompt overlays on media cards, for a clean board. Shift is allowed because that is how a capital is typed; any other modifier means another key. View state: the document, the revision and the undo history do not move, the card keeps its size, a text card's prompt stays because there it is the editor, and the letter stays with the field, menu or gesture that owns the keyboard |
 | Click or primary-drag the minimap | center the canvas on that world point |
 | Drag a card background | move through `node.move`, one undo step per gesture; click selects it |
 | Click a card / Shift-click | select only it / add or remove it from the selection |
 | Shift-drag empty canvas | box select: cards the box touches join the selection (live while dragging); Escape cancels the box |
 | Click empty canvas, or Escape outside text fields | clear the selection (Escape closes an open menu or cancels a box select first) |
 | ⌘/Ctrl+A outside text fields | select every node on the canvas |
-| Drag from a card's `+` output | draw a noodle; inputs that accept it get a ring. Drop on an input to connect (`edge.connect`); a single input that is already fed swaps its noodle in the same undo step (`edge.rewire`). One output fans out to any number of inputs |
+| Drag from a card's `+` output | draw a noodle; compatible inputs get rings and an accepting hovered card gets a theme outline. Precise port hits keep priority. Elsewhere inside a card, drop onto its first free compatible input (a list may append), or the nearest compatible occupied input if all are taken. Connect with `edge.connect`, or replace the old noodle atomically with `edge.rewire`. One undo restores the graph; one output can fan out to many inputs. Refused card/overlay drops preserve a picked-up wire; only empty canvas disconnects it. See the [slot rule](decisions/2026-10-27-body-drop-wiring.md) |
 | Drag from a connected input | pick up its (last) noodle: drop it on another input to reroute (`edge.rewire`), or on empty canvas to disconnect |
+| Drag from an unconnected input | compatible outputs get a ring. Drop on an output to connect, or on empty canvas to choose a compatible upstream node. Its output side lands at the drop point; creation and connection are one `node.create_connected` undo step. Escape cancels without editing |
 | Escape while dragging a noodle | drop it without changing anything |
 | Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses |
 | Delete or Backspace outside text fields | delete the selected nodes, noodles and field in one undo step (`canvas.delete`; a deleted field's cards stay) |
 | `T` / `I` / `V` / `A` / `R` (no modifier, outside text fields) | quick-add a Text / Image / Video / Audio / Router node centred under the pointer and select it (`node.create`, one undo step; a quick-added router carries text, since `node.create` sets no config). Keys come from each kind's `quick_add`, so new kinds bring their own |
-| Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, ↑↓ to move, ↵ to choose, Escape or a click elsewhere to close. A kind is created where you double-clicked |
-| ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; a copied image (desktop) pastes as an Image node at the pointer, read off the UI thread, encoded as PNG and held to 16384×16384 pixels and 16 MiB, one undo step (#319) |
+| Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked |
+| ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; recognized ComfyUI workflow JSON pastes as a workflow card after the server's nodes have been read, with the same validation as a file drop; a copied image pastes as an Image node at the pointer, with one undo step. Desktop pixels are read off the UI thread and encoded as PNG; browser PNG reads require clipboard permission. Copied native file references use the bounded file importer. Text editors keep ordinary paste; on the canvas typed native file references take precedence over their plain-text names (#319, #633) |
 | ⌘/Ctrl+D outside text fields | duplicate the selection, offset 40 points |
 | `F` (no modifier, outside text fields) | make a field: around the selected cards, which become its members, or an empty 320×240 zone at the pointer (`field.create`, one undo step). The zone takes in every selected card, including one added this frame. The new field is selected |
 | Drag a field's header / its lower-right corner | move the field and every member (`field.move`) / resize the zone alone (`field.update`); one undo step on release, Escape cancels. Double-click the header to collapse or expand it. Shift-drag from a header or corner draws a box select, as anywhere else on the canvas |
@@ -118,6 +122,12 @@ values without editing the document, and shows progress while scanning a large l
 width stays fixed and long rows truncate. Use default clears the stored override through the
 same undoable parameter edit, including when the old value is no longer listed. Unknown lists
 keep the editable text control and Refresh guidance. Reset is disabled without a stored override.
+
+Router connection menus keep their upstream output shape: a list stays a list through a chain
+of Routers, and several incoming values offer only consumers that accept a collection. A Router
+without a resolved source explains what to connect before offering downstream node kinds. Model
+choices and wired-mode controls follow the resolved sources too; inserting a Router does not
+make an incompatible model available. These menus do not fetch additional parameter options.
 
 ## Level of detail and performance
 
@@ -159,9 +169,17 @@ keep the editable text control and Refresh guidance. Reset is disabled without a
   the edit costs about 2× a move at 200 nodes and about 3× at 1,000. The gap grows with node count
   because the edit runs the O(nodes) `live_actions::pending` path that a move skips. The move half
   also lands on the #549 line above, 2.3 and 7.8 ms, within 0.2 ms, which is what makes the two
-  worth reading together. #203's frame after an edit was 1.82 and 6.21 ms; these loaded runs
-  cannot establish a comparable change from that quiet-machine baseline. A quiet re-measure is
-  tracked in #743. The spread matters as much as the figures: runs taken earlier the same day, while other builds held the load average at 40-55, came out up to 3× worse
+  worth reading together. #203's first 1-pixel-per-point replay run, 1.85 ms (200 nodes) and 6.21 ms
+  (1,000 nodes), is a set of **release-mode move frames**, not `node.param_set` frames: its 60-frame
+  "after an edit" loop dispatched `node.move` on successive nodes. Its grid shape, 10% zoom,
+  moving pointer, egui-plus-tessellation span and pixels-per-point settings match the present
+  move control, but the parameter-edit command and live-recompute work are different. Neither
+  a quiet parameter-edit result nor these loaded runs can be interpreted as a before/after
+  regression against #203's *parameter-edit* baseline, because #203 has no parameter-edit run. The #203
+  report also did not record its macOS version or 1/5/15-minute load averages, preventing a
+  load-matched historical comparison. A quiet re-measure is tracked in #743. The spread matters
+  as much as the figures: runs taken earlier the same day, while other builds held the load
+  average at 40-55, came out up to 3× worse
   (a 1,000-node pan read 9.4 ms in one and 27.7 ms in the other). Pass `--test-threads=1` when
   rerunning, or the ignored cases share the machine with each other on top of everything else.
 - Grid dots keep a fixed screen size. When zooming out would put them closer than 12 points, the
@@ -211,8 +229,7 @@ inset, 6-point corner radius and 12-point gap from node decorations. Open bubble
 as fill with canvas-colour count text; resolved bubbles use panel fill, a primary-text outline and
 checkmark. The active bubble adds a second outline. The local Show resolved checkbox explicitly
 uses the primary-text stroke for both its unchecked boundary and checked glyph in both themes.
-Initial node offsets include the bubble's ring and gap outside the actual card bounds. A selected
-marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed.
+The Comments entry shares the application row with Search; both move into More when the row does not fit. Its discussion panel opens below the row, or below the search panel when search is open. The panel stays clear of bottom navigation when there is room; in cramped viewports it may overlap, with foreground discussion clicks explicitly excluded from minimap-pan admission. Tags stay on the left; with both panels open their widths share the viewport. Node-attached markers overlapping a card or its output handle are displayed to the card's right with the bubble's ring and gap outside the actual bounds. At viewport edges, projected markers try the left, above or below the card while keeping their full ring reachable and clear of both port-hit strips. A viewport-filling card can use a safe interior position; if no safe position fits, protecting wire interaction takes priority over pin visibility. New node-attached anchors use zoom-independent world offsets, and markers follow live field-drag previews. Existing safe off-card offsets and free-canvas pins stay where placed. These display adjustments never rewrite stored anchors. Minimap admission uses the discussion panel's actual painted bounds, so unused space below a short panel remains interactive. A selected marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed. Pin dragging retains that display offset through the gesture, so release publishes only the actual world-space drag delta.
 
 ## Minimap and fit navigation
 
@@ -248,12 +265,18 @@ or discussion-pin gesture, or act through a popup or active text editor. A cance
 gesture keeps ownership until release. Admission refused before a same-frame cancellation stays
 refused until a fresh press.
 
-The new `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle` and `canvas.pan_to`
-commands use the engine service path. Live hosts use `NodeCraftApp::dispatch_navigation(ctx, id,
+The `canvas.fit_all`, `canvas.fit_selection`, `canvas.minimap_toggle`,
+`canvas.prompt_overlays_toggle` and `canvas.pan_to` commands use the engine service path. Live hosts use `NodeCraftApp::dispatch_navigation(ctx, id,
 params)` (and `navigation_enabled`) to compute current geometry, selection and focus, temporarily
 install the capability, dispatch, restore prior resources and apply the intent immediately. A raw
 headless Session has no live capability and returns Unsupported. Existing services/resources are
 preserved. The older 100% reset button and shortcut retain their existing view-only path.
+
+The quick-add palette also offers enabled navigation commands that need no parameters, including
+Fit all nodes, Fit selected nodes, Toggle minimap and Toggle prompt overlays. Its search field lends focus only to these palette
+choices; other editors, popups and active gestures still prevent navigation. Choosing a row
+releases the palette query and uses the same live command bridge, without editing the project or
+its undo history. Commands requiring coordinates, such as Pan to world point, remain absent.
 
 ## Canvas search
 
@@ -337,7 +360,7 @@ capability before widgets render; keyboard, scroll, other buttons and popup owne
 
 ### Colour tags
 
-Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_width`, `tag_panel_width`, `tag_panel_height` and `tag_row_height`. Dark and light colors are deliberately distinct; unknown/missing palette identifiers use `text_muted`. A marker identifies the tag independently of the selected border. Filter matches use the existing accent token, while nonmatches use the quiet panel stroke without fading text. Behavior, command inventory and persistence compatibility are specified in [color-tags.md](color-tags.md).
+Colour tags use `Tokens::tag_colors` (eight named palette entries), `tag_marker_width`, `tag_panel_width`, `tag_panel_height`, `tag_row_height`, `tag_definition_row_height` and `tag_identity_size`. Dark and light colors are deliberately distinct; unknown/missing palette identifiers use `text_muted`. A marker identifies the tag independently of the selected border. Filter matches use the existing accent token plus dashed inset corners, while nonmatches use the quiet panel stroke without fading text. Selected-card borders remain intact. Tag lists use themed two-line entries, with the exact stable ID above the bounded title; definition controls are on the row’s context menu. Behavior, command inventory and persistence compatibility are specified in [color-tags.md](color-tags.md).
 
 ### Presence
 
@@ -396,6 +419,15 @@ retain their target. No finite unobscured region means refusal. Both node groups
 use actual admitted instance body geometry, including renderer placeholder refusal. Duplicate
 uses the `duplicate_offset` theme token in world coordinates.
 
+Browser file acquisition expires after ten seconds on the next executing frame. Escape cancels
+an active browser drop when another editor or canvas gesture does not own it. Owned FileReaders
+are aborted on cancellation, document replacement or timeout; late permission results cannot add
+nodes. A still-open clipboard permission request remains the only request until it settles, so
+repeated paste does not accumulate prompts. A browser drop retains at most 32 files, 16 MiB per
+file and 48 MiB of Rust byte buffers. These bounds exclude browser-owned buffers and synchronous
+engine decoding. Clipboard and drop delivery capture session identity, revision, canvas and
+placement, then invoke the same engine importer once; one undo removes the batch.
+
 ## PDF reader
 
 The PDF reader (#590) is a window over one PDF: thumbnails `reader_thumb_width` (112 screen points)
@@ -410,3 +442,98 @@ takes the rest of the window. Its header shows the mode (Assist/Auto) and Clear,
 with the model and what auto mode has accepted of its budget; notices use `danger`. Steps waiting
 for approval show what they would do (read, change the project, run and its price) with Approve
 and Decline; Esc or Cancel stops the agent while it works.
+
+## Local text action previews
+
+Join text, Template, Split text, Replace text and other Action descriptors with only Text
+outputs show their computed output and connected inputs on the card. Each input names its port,
+ordered slot and source; routers retain the planner's feed ordering. The preview reads existing
+results, and refreshes its cached summaries only after document changes. An older result is
+labelled updating while the next live computation runs.
+
+The two sections together reserve twice `card_preview_height` (2 × 180 points), independent of
+result content. Each summary is limited to `preview_chars` (256 characters) and three displayed
+lines; a virtualized list scrolls longer input collections. Empty text/list placeholders differ
+from a missing output. Missing connections and action errors appear inline, with the input port
+and the theme's `danger` colour. Fixing a parameter or input removes its obsolete error.
+
+Each available value has an Expand action. Its modal lays out at most the first 64 KiB of text,
+cut at a Unicode character boundary. A notice gives the displayed and retained byte counts;
+Copy full text copies the retained value on demand, within the inspector's 8 MiB/16,384-value
+limit, without editing the project. Escape or
+Close text preview dismisses it; canvas shortcuts wait while it is open. Both themes use the
+existing prompt/text/spacing tokens, and local previews follow the ordinary small-zoom body
+threshold. Cache admission limits and rationale are in the
+[decision](decisions/2026-10-26-local-text-previews.md).
+
+## Application menu
+
+The application row (#956) uses one icon-and-label control style for Sheets, Techniques,
+Elements, Queue, Share, Budgets, API keys, ComfyUI, Plugins, Search and Comments. Navigation,
+activity and settings/services are separated by dividers, with Search and Comments on the right.
+Browser server settings add Providers, and a selected Technique adds Open as app. Every entry
+uses the same token-based height, padding, hover, active and disabled styling. Queue counts
+appear beside its label and remain in its accessible name; unavailable services stay disabled.
+
+If the measured row does not fit, one More menu contains the same entries, icons, states and
+order. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
+entries. More yields to active text editors and canvas gestures. The existing Tag filter has a
+reserved left slot; Format selection reserves the next slot when present, with the Tags panel
+below both controls. Sharing status is
+available on Share's tooltip and collaborator avatars are in its panel. See the
+[layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
+
+## Saving results
+
+Generated media previews and their card menus offer **Save as…** and **Save to folder…**
+(#967). A gallery thumbnail targets that exact output and flattened batch item; a card with
+several outputs offers a choice. An open menu keeps the historical result that was clicked,
+even when a new run finishes. A transient live-action preview cannot be saved as a finished
+result. With no saved media, the disabled actions explain how to obtain one.
+
+The selected card's hover toolbar offers Save result; generation cards retain Download.
+These actions share the existing `history.export` background file writer and its native dialog,
+which suggests the stored media's extension. Saving one file writes no siblings or sidecar and
+does not edit the document or history selection. Save to folder passes the same exact historical
+selector to the workflow-result preview, manifest and worker (#966). Its existing secure folder
+writer currently supports macOS and Linux; other platforms explain the limitation before a
+folder can be chosen. Individual Save as remains available on desktop Windows.
+
+## Control icons
+
+Controls use Tabler outline SVGs through `icons::Icon`, prepared by the pinned Craft SVG
+catalog and loaded by egui's SVG loader. The loader rasterizes at the requested display pixel
+size on desktop and WebAssembly. It loads only embedded bytes; no network or filesystem access
+is enabled. Source files stay unchanged under `assets/icons/tabler/`, with the MIT license beside
+them and one attribution row per file. See the [choice and comparison](decisions/2026-10-26-tabler-control-icons.md).
+
+| Icon variant | SVG | Initial use |
+| --- | --- | --- |
+| `Search` | `search.svg` | canvas Search button |
+| `Comments` | `message-circle.svg` | Comments button |
+| `Key` | `key.svg` | API keys button |
+| `Wallet` | `wallet.svg` | Budgets button |
+| `Open` | `folder-open.svg` | Open project and Import folder |
+| `Save` | `device-floppy.svg` | Save project and Save project as |
+| `Table` | `table.svg` | Sheets |
+| `Technique` | `affiliate.svg` | Techniques |
+| `Elements` | `components.svg` | Elements |
+| `Queue` | `list-details.svg` | Queue |
+| `Share` | `share.svg` | Share |
+| `Server` | `server.svg` | ComfyUI |
+| `Plugin` | `puzzle.svg` | Plugins |
+| `More` | `dots.svg` | application menu overflow |
+| `Apps` | `apps.svg` | Open as app |
+| `Cloud` | `cloud.svg` | browser Providers |
+
+Use `Icon::button` for an icon beside action text; it retains the ordinary Button label,
+keyboard behavior and disabled state. For an icon-only control use `Icon::icon_button`, which
+requires an action label and supplies both its screen-reader label and hover tooltip (an empty
+label falls back to the icon's action name). Standalone images also carry an alternative label.
+Buttons keep their existing enabled conditions, commands and action tooltips.
+
+The `icon_size` and `icon_large_size` tokens are 16 and 24 screen points. `icon_stroke` is `"2"`
+in the source SVG's 24-unit coordinates; it is textual because the shared SVG preparation API
+substitutes that exact attribute. Both themes share this stroke. The intermediate white mask
+is tinted with the theme's `text` colour at draw time, including inside disabled controls.
+Never add a coloured icon asset or bake a fixed-resolution icon bitmap into a control.

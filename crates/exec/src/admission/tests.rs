@@ -157,7 +157,8 @@ fn a_result_records_the_settings_its_job_was_submitted_with() {
             params: params.clone(),
             inputs,
             item: None,
-            billable_units: None
+            billable_units: None,
+            execution_ms: None
         }]
     );
     assert_eq!(params.get("count"), Some(&Value::Unsigned(Unsigned(2))));
@@ -705,4 +706,32 @@ fn known_character_inputs_are_priced_at_admission_and_allow_an_exact_budget() {
     let deferred = super::quote(&plan(None), &canvas, &kinds, &catalog).unwrap();
     assert!(!deferred.is_complete());
     assert!(!crate::cost::check(&deferred, &caps, &Default::default()).unwrap().allowed());
+}
+
+#[test]
+fn grok31_input_fees_count_lists_and_fanout_without_guessing_upstream_lists() {
+    use crate::planner::{Fanout, InputSource, PlannedInput};
+    let image = Value::Media(nodecraft_types::AssetRef {
+        hash: nodecraft_types::Blake3::from_bytes([31; 32]),
+        mime: "image/png".parse().unwrap(),
+        meta: Default::default(),
+    });
+    let input = |n: usize| PlannedInput {
+        port: "images".into(),
+        port_type: PortType { modality: Modality::Image, many: true },
+        from: vec![InputSource::Value(Value::List(vec![image.clone(); n]))],
+        origins: vec![],
+    };
+    let mut step = plan(None).steps.remove(0);
+    step.inputs = vec![input(3)];
+    let model = Catalog::builtin().unwrap().get("fal.grok-image2-edit").unwrap().clone();
+    let quote = |step: &Step| model.quote_inputs_count(&ParamValues::new(), None, 0, reference_count(step, "images")).unwrap();
+    assert_eq!(quote(&step), Some(Money::new(Currency::USD, 90_000)));
+    step.fanout = Some(Fanout { items: vec![], cells: vec![vec![input(1)], vec![input(5)]], jobs: vec![], resume: None });
+    assert_eq!(quote(&step), Some(Money::new(Currency::USD, 110_000)), "reserve the most expensive fanout cell");
+    step.fanout = None;
+    step.inputs[0].from = vec![InputSource::Step { node: id(2), port: "out".into(), list: true }];
+    assert_eq!(quote(&step), None, "an unresolved list never drops its paid input fee");
+    step.inputs[0].from = vec![InputSource::Value(Value::Text("not an image".into()))];
+    assert_eq!(quote(&step), None, "invalid media cannot certify a reference count");
 }

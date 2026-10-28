@@ -3,6 +3,8 @@
 //! receives the stored workflow with the card's values and the file wired into it, and runs only
 //! the output the card keeps; its saved image lands on the card. No network.
 #![cfg(not(target_arch = "wasm32"))]
+#[path = "comfy_workflow9/cloud.rs"]
+mod cloud;
 use nodecraft_engine::{
     Session,
     commands::{Registry, Resources, Services},
@@ -122,6 +124,7 @@ fn card() -> Card {
             ],
             outputs: vec![MappedOutput { node: "2".into(), label: "Save Image".into(), modality: Modality::Image }],
             partners: Vec::new(),
+            output_names: Vec::new(),
         },
     }
 }
@@ -233,3 +236,6 @@ fn a_workflow_with_partner_nodes_is_never_quoted_free() {
     assert_eq!(q["complete"], false, "{q}");
     assert!(q["steps"][0]["unpriced"].as_str().is_some_and(|why| why.contains("PartnerImage") && why.contains("comfy.org")), "{q}");
 }
+
+#[path = "comfy_workflow9/mapping947.rs"]
+mod mapping947;

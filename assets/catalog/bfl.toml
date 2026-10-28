@@ -1,0 +1,30 @@
+# Official direct API, verified 2026-10-24: https://docs.bfl.ai/quick_start/generating_images
+# https://api.bfl.ai/openapi.json ; https://bfl.ai/pricing?category=flux.2
+# Pixel-based credit pricing is not converted to a guaranteed monetary quote.
+[[model]]
+id="bfl.flux-2-klein-4b"
+provider="bfl"
+provider_model="flux-2-klein-4b"
+label="FLUX.2 klein 4B (BFL)"
+description = "Compact FLUX.2 image generation from a prompt. Usage pricing; requires a BFL account."
+latency_s=10
+quality=3
+pricing={type="by_usage",currency="USD"}
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+[[model.params.params]]
+name="width"
+label="Width"
+control={type="unsigned",min="64",max="1984",step="16"}
+default={type="unsigned",value="1024"}
+[[model.params.params]]
+name="height"
+label="Height"
+control={type="unsigned",min="64",max="1984",step="16"}
+default={type="unsigned",value="1024"}
+[[model.params.params]]
+name="seed"
+label="Seed"
+control={type="unsigned",min="0",max="4294967295",step="1"}

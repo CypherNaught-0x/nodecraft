@@ -176,6 +176,11 @@ impl TransferCancel {
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
+    /// Clears a cancel once the operation it stopped has finished, so the next operation sharing this
+    /// token is not stopped by it.
+    pub fn reset(&self) {
+        self.0.store(false, Ordering::Release);
+    }
     pub fn check(&self) -> Result<(), Error> {
         if self.0.load(Ordering::Acquire) { Err(Error::new(ErrorKind::Conflict, CANCELLED)) } else { Ok(()) }
     }

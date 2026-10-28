@@ -30,6 +30,7 @@ fn publishing(store: &MemoryLibrary) -> Harness<'static, NodeCraftApp> {
 }
 
 fn open_panel(h: &mut Harness<'static, NodeCraftApp>) {
+    crate::app::topbar_tests::reveal(h, "Techniques");
     h.get_by_label("Techniques").click();
     h.run();
     assert!(h.state().library.open);
@@ -48,11 +49,26 @@ fn a_project_version_is_placed_in_the_middle_of_the_view_and_selected() {
     assert!(h.query_by_label("Echo · v1").is_some());
     assert!(h.query_by_label_contains("The library is empty").is_some());
     let before = h.state().session.document().clone();
+    let expected = h.state().view.to_world(h.state().viewport.min, h.state().navigation.usable(h.state().viewport, h.state().theme.tokens()).center());
     h.get_by_label("Place").click();
     h.run();
     let nodes = placed(&h);
     assert_eq!(nodes.len(), 1, "{:?}", h.state().notice);
     assert!(h.state().selection.contains(nodes[0].id));
+    // Local evaluation may finish during the pointer-driven frame and append a history
+    // strip. Placement centers the fresh command payload, before that later graph edit.
+    let mut created = nodes[0].clone();
+    created.history.clear();
+    created.active = None;
+    let rect = payload_rect(&h.state().session, &created, h.state().theme.tokens());
+    assert!(
+        (rect.center() - expected).length() < 0.01,
+        "resolved library card geometry must center in view: actual {:?}, expected {:?}, viewport {:?}, view {:?}",
+        rect.center(),
+        expected,
+        h.state().viewport,
+        h.state().view
+    );
     assert_eq!(nodecraft_nodes::technique::interface(&nodes[0]).unwrap().canvas, V1);
     let app = h.state_mut();
     app.session.dispatch("edit.undo", &json!({})).unwrap();

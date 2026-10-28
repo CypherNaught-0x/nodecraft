@@ -82,6 +82,12 @@ impl Roles {
     }
 }
 
+/// Shared ownership for painting and logical metrics. Count names come from the admitted
+/// contract; an ordinary parameter called `n` is not a composer control by itself.
+pub(super) fn owns_parameter(composer: bool, roles: Option<&Roles>, name: &str) -> bool {
+    composer && (name == PROMPT || roles.and_then(|roles| roles.count.as_deref()) == Some(name))
+}
+
 /// `W:H` with small positive whole numbers on both sides.
 pub fn ratio(value: &str) -> Option<(u32, u32)> {
     let (w, h) = value.split_once(':')?;

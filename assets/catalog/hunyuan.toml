@@ -1,0 +1,69 @@
+# Hunyuan3D V3 through fal, public contracts and rates verified 2026-10-27.
+# https://fal.ai/models/fal-ai/hunyuan3d-v3/text-to-3d (and /api)
+# https://fal.ai/models/fal-ai/hunyuan3d-v3/image-to-3d (and /api)
+# https://fal.ai/models/fal-ai/hunyuan3d-v3/sketch-to-3d (and /api)
+# Standard 500K face target (omit custom face_count); safety on; one self-contained GLB.
+# Presets bind all price-changing type/PBR settings; multi-view/custom face counts not offered.
+
+[[model]]
+id="fal.hunyuan3d-v3"
+provider="fal"
+provider_model="fal-ai/hunyuan3d-v3/text-to-3d"
+label="Hunyuan3D V3 text (fal)"
+description="Create a GLB from text with Hunyuan3D V3. Standard 500K face target; priced mesh presets; up to 256 MiB per result."
+latency_s=90
+quality=3
+pricing={type="per_unit_by_choice",unit="call",default_count=1,param="mesh_preset",prices={"textured"="0.375 USD","pbr"="0.525 USD","low-poly-triangles"="0.45 USD","low-poly-quads"="0.45 USD","low-poly-triangles-pbr"="0.60 USD","low-poly-quads-pbr"="0.60 USD","geometry"="0.225 USD"}}
+
+[[model.modes]]
+id="text-to-mesh"
+output="mesh"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="mesh_preset"
+label="Mesh preset"
+control={type="choice",options=[{value="textured",label="Textured"},{value="pbr",label="PBR"},{value="low-poly-triangles",label="Low-poly triangles"},{value="low-poly-quads",label="Low-poly quads"},{value="low-poly-triangles-pbr",label="PBR low-poly triangles"},{value="low-poly-quads-pbr",label="PBR low-poly quads"},{value="geometry",label="Geometry only"}]}
+default={type="text",value="textured"}
+
+[[model]]
+id="fal.hunyuan3d-v3-image"
+provider="fal"
+provider_model="fal-ai/hunyuan3d-v3/image-to-3d"
+label="Hunyuan3D V3 photo (fal)"
+description="Turn one photo into a GLB with Hunyuan3D V3. Standard 500K face target; priced mesh presets; up to 256 MiB per result."
+latency_s=90
+quality=3
+pricing={type="per_unit_by_choice",unit="call",default_count=1,param="mesh_preset",prices={"textured"="0.375 USD","pbr"="0.525 USD","low-poly-triangles"="0.45 USD","low-poly-quads"="0.45 USD","low-poly-triangles-pbr"="0.60 USD","low-poly-quads-pbr"="0.60 USD","geometry"="0.225 USD"}}
+
+[[model.modes]]
+id="image-to-mesh"
+output="mesh"
+inputs=[{role="image",modality="image",min=1,max=1}]
+
+[[model.params.params]]
+name="mesh_preset"
+label="Mesh preset"
+control={type="choice",options=[{value="textured",label="Textured"},{value="pbr",label="PBR"},{value="low-poly-triangles",label="Low-poly triangles"},{value="low-poly-quads",label="Low-poly quads"},{value="low-poly-triangles-pbr",label="PBR low-poly triangles"},{value="low-poly-quads-pbr",label="PBR low-poly quads"},{value="geometry",label="Geometry only"}]}
+default={type="text",value="textured"}
+
+[[model]]
+id="fal.hunyuan3d-v3-sketch"
+provider="fal"
+provider_model="fal-ai/hunyuan3d-v3/sketch-to-3d"
+label="Hunyuan3D V3 sketch (fal)"
+description="Sketch input: 128–1024 pixels per axis. Create a GLB from a sketch and prompt. Standard 500K face target; priced mesh presets; up to 256 MiB per result."
+latency_s=90
+quality=3
+pricing={type="per_unit_by_choice",unit="call",default_count=1,param="mesh_preset",prices={"textured"="0.375 USD","pbr"="0.525 USD"}}
+
+[[model.modes]]
+id="sketch-to-mesh"
+output="mesh"
+inputs=[{role="image",modality="image",min=1,max=1},{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="mesh_preset"
+label="Mesh preset"
+control={type="choice",options=[{value="textured",label="Textured"},{value="pbr",label="PBR"}]}
+default={type="text",value="textured"}

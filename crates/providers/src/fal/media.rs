@@ -1,5 +1,9 @@
 //! Container envelope validation only for WAV/MP4/GLB; image payloads use actual codecs.
 use super::*;
+pub(super) mod heygen;
+pub(super) mod minimax;
+pub(super) mod pika;
+pub(super) mod video;
 fn bad() -> ProviderError {
     malformed("fal output is not a bounded valid supported media envelope")
 }
@@ -251,33 +255,87 @@ fn glb(b: &[u8], l: Limits) -> Result<(), ProviderError> {
     }
     Ok(())
 }
+pub(super) fn vector(b: &[u8], l: Limits, pixels: &mut u64) -> Result<nodecraft_media::svg::Info, ProviderError> {
+    let info = nodecraft_media::svg::probe(b, &l.image(false)).map_err(|_| bad())?;
+    let count = u64::from(info.width).checked_mul(u64::from(info.height)).ok_or_else(bad)?;
+    *pixels = pixels.checked_add(count).filter(|n| *n <= l.total_pixels).ok_or_else(bad)?;
+    Ok(info)
+}
 pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Result<&'static str, ProviderError> {
     match r.model {
-        Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground => {
-            png_extent(b)?;
+        Model::MiniMaxText | Model::MiniMaxFrames | Model::MiniMaxSpeech | Model::MiniMaxMusic => minimax::validate(b, r, l).map(|proof| proof.mime),
+        Model::RecraftVector => {
+            vector(b, l, pixels)?;
+            Ok(nodecraft_media::svg::MIME)
+        }
+        Model::RecraftImage
+        | Model::Image
+        | Model::Styled
+        | Model::Upscale
+        | Model::Topaz
+        | Model::RemoveBackground
+        | Model::QwenImage
+        | Model::QwenEdit
+        | Model::GrokImage
+        | Model::GrokEdit
+        | Model::Photon
+        | Model::Ideogram => {
             let m = nodecraft_media::probe_image(b, &l.image(false)).map_err(|_| bad())?;
-            if m.mime != "image/png" {
+            if m.mime == "image/png" {
+                png_extent(b)?;
+            } else if !matches!(
+                r.model,
+                Model::RecraftImage | Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram
+            ) || !matches!(m.mime, "image/jpeg" | "image/webp")
+            {
                 return Err(bad());
             }
             let n = u64::from(m.width).checked_mul(u64::from(m.height)).ok_or_else(bad)?;
             *pixels = pixels.checked_add(n).filter(|n| *n <= l.total_pixels).ok_or_else(bad)?;
-            if matches!(r.model, Model::Upscale | Model::RemoveBackground) && (m.width != r.width || m.height != r.height) {
+            if matches!(r.model, Model::Upscale | Model::RemoveBackground | Model::Topaz) && (m.width != r.width || m.height != r.height) {
                 return Err(bad());
             }
             observe(2);
             let decoded = nodecraft_media::decode_image(b, &l.image(false)).map_err(|_| bad())?;
             drop(decoded);
-            Ok("image/png")
+            Ok(m.mime)
         }
-        Model::Video | Model::Frames | Model::Speech => {
+        Model::HeygenAvatar
+        | Model::HeygenSpeed
+        | Model::HeygenPrecision
+        | Model::Pika
+        | Model::Wan3Text
+        | Model::Wan3Frames
+        | Model::GrokText
+        | Model::GrokFrames
+        | Model::Video
+        | Model::Frames
+        | Model::Speech
+        | Model::RayText
+        | Model::RayFrames
+        | Model::LtxText
+        | Model::LtxFrames => {
             mp4(b)?;
+            if r.model.heygen() {
+                heygen::output(b, l)?;
+            }
+            if r.model == Model::Pika {
+                pika::probe(b, l)?;
+            }
             Ok("video/mp4")
         }
         Model::Audio => {
             wav(b)?;
             Ok("audio/wav")
         }
-        Model::Mesh => {
+        Model::RodinText
+        | Model::RodinImages
+        | Model::RodinFastText
+        | Model::RodinFastImages
+        | Model::HunyuanText
+        | Model::HunyuanImage
+        | Model::HunyuanSketch
+        | Model::Mesh => {
             glb(b, l)?;
             Ok("model/gltf-binary")
         }

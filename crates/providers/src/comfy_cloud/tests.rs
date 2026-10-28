@@ -113,6 +113,7 @@ fn submit_checks_uploads_the_input_as_an_asset_and_creates_one_job_with_a_stable
     assert!(bearer(&requests[1]) && bearer(&requests[2]));
     let upload = String::from_utf8_lossy(&requests[1].body);
     assert!(upload.contains("name=\"file\"") && upload.contains("name=\"file_path\"") && upload.contains("image/png"), "{upload}");
+    assert!(upload.contains("name=\"tags\"\r\n\r\n[\"input\"]\r\n"), "tags is a JSON array field: {upload}");
     let body: Value = serde_json::from_slice(&requests[2].body).unwrap();
     assert_eq!(body["workflow"]["2"]["inputs"]["text"], "a red fox");
     let reference = &body["workflow"]["1"]["inputs"]["image"];
@@ -416,4 +417,90 @@ fn uploads_are_named_with_the_extension_comfy_s_loaders_expect() {
     {
         assert_eq!(request::extension(mime), ext, "{mime}");
     }
+}
+
+#[test]
+fn mapping947_bad_saved_result_selection_is_refused_before_catalog_or_upload() {
+    for outputs in ["[]".to_owned(), "null".into(), r#"["3","3"]"#.into(), " ".repeat(64 * 1024 + 1)] {
+        let http = Transport::new(vec![]);
+        let inputs = vec![JobInput::Text { role: "comfy.outputs".into(), text: outputs }];
+        let error = block_on(provider(http.clone()).submit(&job_with(json!({}), inputs))).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+        assert!(http.requests().is_empty(), "invalid result selection needs no server discovery");
+    }
+}
+
+#[test]
+fn hosted_workflow_card_rejects_conflicting_or_oversized_text_before_upload() {
+    let text = |role: &str, text: String| JobInput::Text { role: role.into(), text };
+    for inputs in [
+        vec![text("comfy.workflow", workflow().to_string())],
+        vec![text("comfy.values", r#"{"2.text":"fox"}"#.into())],
+        vec![text("comfy.outputs", r#"["3"]"#.into())],
+    ] {
+        let http = Transport::new(vec![object_info()]);
+        let error = block_on(provider(http.clone()).submit(&job_with(json!({"workflow":workflow()}), inputs))).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+        assert_eq!(http.paths(), ["/api/object_info"]);
+    }
+    for (values, outputs) in [("[]", r#"["3"]"#), (r#"{"2.text":{}}"#, r#"["3"]"#), ("{}", r#"["missing"]"#)] {
+        let http = Transport::new(vec![object_info()]);
+        let inputs = vec![text("comfy.workflow", workflow().to_string()), text("comfy.values", values.into()), text("comfy.outputs", outputs.into())];
+        assert!(block_on(provider(http.clone()).submit(&job_with(json!({}), inputs))).is_err());
+        assert_eq!(http.paths(), ["/api/object_info"]);
+    }
+    let http = Transport::new(vec![object_info()]);
+    let inputs = vec![text("comfy.workflow", " ".repeat(crate::comfyui::MAX_CARD_TEXT_BYTES + 1))];
+    assert!(block_on(provider(http.clone()).submit(&job_with(json!({}), inputs))).is_err());
+    assert_eq!(http.paths(), ["/api/object_info"]);
+}
+
+#[test]
+fn hosted_outputs_follow_workflow_node_order_and_preserve_each_nodes_file_order() {
+    let outputs = json!({"outputs":[
+        {"node_id":"20","id":"last","name":"last.txt","type":"text"},
+        {"node_id":"10","id":"first","name":"first.txt","type":"text"},
+        {"node_id":"10","id":"second","name":"second.txt","type":"text"}
+    ]});
+    let http = Transport::new(vec![job_reply("succeeded", outputs), file(b"first"), file(b"second"), file(b"last")]);
+    let JobProgress::Done(done) = block_on(provider(http.clone()).poll(&handle())).unwrap() else { panic!("not done") };
+    assert_eq!(
+        http.paths(),
+        [format!("/api/v2/jobs/{JOB}"), "/api/v2/assets/first/content".into(), "/api/v2/assets/second/content".into(), "/api/v2/assets/last/content".into()]
+    );
+    assert!(matches!(done.outputs.as_slice(),[Output::Text(a),Output::Text(b),Output::Text(c)] if a=="first"&&b=="second"&&c=="last"));
+}
+
+#[test]
+fn mapping947_cloud_honors_saved_result_order_when_the_api_reports_node_ids() {
+    let outputs = json!({"outputs":[{"node_id":"2","name":"first.png","type":"image","id":OUT},{"node_id":"3","name":"second.png","type":"image","id":ASSET}]});
+    let second = nodecraft_media::encode_png(2, 2, &[40; 16], &Default::default()).unwrap();
+    let http = Transport::new(vec![job_reply("succeeded", outputs), file(&second), file(&png())]);
+    let mut handle = handle();
+    handle.data = crate::comfyui::output_selection::save(
+        handle.data,
+        &job_with(json!({}), vec![JobInput::Text { role: crate::comfyui::template::CARD_OUTPUTS.into(), text: r#"["3","2"]"#.into() }]),
+    )
+    .unwrap();
+    let handle: JobHandle = serde_json::from_slice(&serde_json::to_vec(&handle).unwrap()).unwrap();
+    let JobProgress::Done(done) = block_on(provider(http.clone()).poll(&handle)).unwrap() else { panic!("done") };
+    assert!(matches!(&done.outputs[0],Output::Bytes { bytes,.. } if bytes.as_ref()==second));
+    assert_eq!(http.requests()[1].url, format!("{ORIGIN}/api/v2/assets/{ASSET}/content"));
+    assert_eq!(http.requests()[2].url, format!("{ORIGIN}/api/v2/assets/{OUT}/content"));
+}
+
+#[test]
+fn recraft35_svg_reference_is_refused_before_hosted_upload_and_paid_job() {
+    let http = Transport::new(vec![object_info()]);
+    let mut j = job();
+    j.inputs = vec![JobInput::Media {
+        role: "1.image".into(),
+        mime: nodecraft_media::svg::MIME.into(),
+        bytes: Arc::from(br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"/>"#.as_slice()),
+    }];
+    let scope = SubmitContext::new();
+    let error = block_on(provider(http.clone()).submit_with_delivery(&j, &scope)).unwrap_err();
+    assert!(error.message.contains("Rasterize SVG"));
+    assert_eq!(http.paths(), ["/api/object_info"], "no upload or paid job POST");
+    assert!(scope.finish_error().is_some(), "the rejected reference cannot be billed");
 }

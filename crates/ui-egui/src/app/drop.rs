@@ -55,7 +55,44 @@ impl Acquisition {
         Self { service: native::Service::global(), pending: None, rect: Rect::NOTHING, pointer_owned: false }
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) struct ClipboardFiles(native::Ticket);
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) struct ClipboardFileReader(native::Service);
+#[cfg(not(target_arch = "wasm32"))]
+impl ClipboardFileReader {
+    pub(super) fn read(&self, paths: &[std::path::PathBuf]) -> Result<ClipboardFiles, String> {
+        self.0.start_paths(paths).map(ClipboardFiles).map_err(|error| error.message().to_owned())
+    }
+}
 impl NodeCraftApp {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn clipboard_file_reader(&self) -> Result<ClipboardFileReader, String> {
+        self.drop_acquisition.service.as_ref().map(|service| ClipboardFileReader(service.clone())).map_err(|error| error.message().to_owned())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn adopt_clipboard_files(&mut self, files: ClipboardFiles, target: super::paste_media::Target) {
+        if !target.current(self) {
+            self.notice = Some("The document changed while reading the clipboard; nothing was added. Paste again.".into());
+            return;
+        }
+        if self.drop_acquisition.pending.is_some() || self.drop_pointer_owned() {
+            self.notice = Some("File reading is already in progress; paste again after it finishes.".into());
+            return;
+        }
+        self.drop_acquisition.pending = Some(Pending {
+            ticket: files.0,
+            probe: None,
+            identity: target.identity,
+            project: target.project,
+            canvas: target.canvas,
+            revision: target.revision,
+            position: target.position,
+            step: target.step,
+        });
+        self.notice = Some("Reading copied files…".into());
+    }
     pub(super) fn drop_pointer_owned(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -93,8 +130,17 @@ impl NodeCraftApp {
             self.notice = Some("The pending drop expired or changed document; nothing was added.".into());
             return;
         }
-        match nodecraft_engine::import::import_files_with_movies(&mut self.session, pending.canvas, pending.position, pending.step, &incoming, &new_ids, movies)
-        {
+        let t = self.theme.tokens();
+        match nodecraft_engine::import::import_files_positioned(
+            &mut self.session,
+            pending.canvas,
+            pending.position,
+            pending.step,
+            &incoming,
+            &new_ids,
+            movies,
+            &|node, kinds| Self::creation_position(node, kinds, t),
+        ) {
             Ok(imported) => {
                 if !imported.nodes.is_empty() {
                     self.selection.replace(imported.nodes.iter().copied().collect());
@@ -110,7 +156,7 @@ impl NodeCraftApp {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = t;
-            self.poll_web_drop();
+            self.poll_web_drop(ui.ctx());
             if self.web_drop.is_some() {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
             }
@@ -120,7 +166,7 @@ impl NodeCraftApp {
         {
             // Native tests drive the browser drop's import (#319).
             #[cfg(test)]
-            self.poll_web_drop();
+            self.poll_web_drop(ui.ctx());
             if self.drop_acquisition.pending.is_none() && !self.drop_acquisition.pointer_owned {
                 self.drop_acquisition.rect = Rect::NOTHING;
             }
@@ -259,7 +305,7 @@ impl NodeCraftApp {
         {
             let at = ui.input(|i| i.pointer.hover_pos()).filter(|p| viewport.contains(*p)).unwrap_or(viewport.center());
             let world = self.view.to_world(viewport.min, at);
-            let position = Position { x: world.x - t.card_width * 0.5, y: world.y - t.card_min_height * 0.5 };
+            let position = Position { x: world.x, y: world.y };
             let files = ui.input(|i| i.raw.dropped_files.clone());
             self.start_web_drop(ui.ctx(), &files, position, t.card_width + t.card_padding * 4.0);
             ui.ctx().request_repaint();
@@ -298,7 +344,7 @@ impl NodeCraftApp {
                 project: self.session.document().id(),
                 canvas: self.canvas,
                 revision: self.session.revision(),
-                position,
+                position: Position { x: world.x, y: world.y },
                 step: t.card_width + t.card_padding * 4.0,
             });
             self.notice = None;

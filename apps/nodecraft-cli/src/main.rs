@@ -5,11 +5,14 @@
 //! nodes and exports their results, leaving the project file as it was. `serve` offers a
 //! project's techniques as a local HTTP API, and `webhook-secret` keeps the secret its webhooks are
 //! signed with. `relay` passes projects shared live between peers. `plugin` packs, signs and lints plugin
-//! packages. `batch` and `comfy` arrive with their milestones
-//! (docs/plan.md §4.8).
+//! packages. `batch` runs isolated CSV rows; `comfy` checks configured servers and imports workflows.
 
+mod batch;
+mod comfy;
 mod control;
+mod csv;
 mod estimates;
+mod inputs;
 mod inspect;
 mod plugin;
 mod project;
@@ -42,16 +45,28 @@ commands:
                   list the engine's commands; --full adds their parameters
   inspect <project.ncraft>
                   list a project's canvases and nodes, with which are stale
-  quote <project.ncraft> [--canvas <id>] [--node <id>]... [--estimate]
+  quote <project.ncraft|technique:name[@version]> [--technique <name|id[@version]>]
+        [--input <name=value>]... [--canvas <id>] [--node <id>]... [--estimate]
                   price a run of the nodes and their upstream (default: every stale or never-run node);
                   nothing runs and nothing is charged
-  run <project.ncraft> [--canvas <id>] [--node <id>]... [--out <folder>] [--yes] [--estimate]
+  run <project.ncraft|technique:name[@version]> [--technique <name|id[@version]>]
+      [--input <name=value>]... [--canvas <id>] [--node <id>]... [--out <folder>] [--yes] [--estimate]
                   run the nodes and their stale upstream (default: every stale or never-run node)
                   and export their media results into the folder; a run that costs money, or
                   whose price isn't fully known, needs --yes (check it with `quote` first). The
                   project file is not changed. Stopping the CLI mid-run doesn't stop jobs a
                   provider already accepted; they may still be charged
-  --estimate      with quote/run, ask providers for by-usage prices first (up to 62 seconds).
+  --input         set a technique form input/parameter by its label or stable name, or set a
+                  source card by its unique title/id (other parameters use title.parameter).
+                  Media values are file paths; values follow the actual typed engine schema
+  batch <target> --csv <file> [--input <name=value>]... [--technique <name|id[@version]>]
+        [--out <existing folder>] [--quote] [--yes] [--estimate] [--keep-going]
+        [--max-cost <CUR=amount>]... [--max-total <CUR=amount>] [--run-timeout <seconds>]
+                  CSV headers name inputs. Validate every row and quote the aggregate before
+                  generation. Each row gets a fresh document and its own output folder. A
+                  failed row stops the batch unless --keep-going; --quote submits no generation
+  --estimate      with quote/run/batch, ask providers for by-usage prices first (up to 62 seconds
+                  per row).
                   This sends job inputs, including images, to their providers before run consent;
                   no generation is submitted or charged by the estimate
   serve <project.ncraft> [--listen <addr>] [--token-file <path>] [--max-cost <CUR=amount>]...
@@ -87,11 +102,22 @@ commands:
   plugin lint <file> [--trust <trust.json>]
                   check a package as installing, granting and enabling it would; only keys in
                   the trust file are trusted. Nothing is installed or run
-  providers       list the model providers and whether each can run (reads the keychain)
+  providers [list]
+                  list the model providers and whether each can run (reads the keychain)
+  providers test [all|provider-id]
+                  check credentials with the same free checks as the API keys dialog.
+                  Reports unsupported checks as unverifiable; never submits generation
+  comfy servers [name] [--test]
+                  list configured ComfyUI servers; --test reads node lists and server health
+  comfy import <workflow.json> --out <new.ncraft> [--project <source.ncraft>]
+        [--canvas <id>] [--server <name>] [--title <title>] [--param <node.input>]...
+                  import API/UI workflow JSON through the engine and save a new project;
+                  requires a configured server. Never replaces an existing output or source
   --version, -V   print the version, commit and build date
   --help, -h      print this help
 
-Add --json to commands, inspect, quote, run, plugin and providers for machine-readable output.
+Add --json to commands, inspect, quote, run, batch, comfy, plugin and providers for machine-readable output.
+See docs/cli.md for named values, CSV limits, spending policy and streaming storage.
 ";
 
 /// 16 random bytes from the standard library's per-process random hasher keys and a counter:
@@ -195,6 +221,9 @@ struct Options {
     out: Option<String>,
     yes: bool,
     estimate: bool,
+    inputs: Vec<String>,
+    technique: Option<String>,
+    native_assets: bool,
     positional: Vec<String>,
 }
 
@@ -217,6 +246,14 @@ fn options(args: &[String], allowed: &[&str]) -> Result<Options, String> {
             "--out" => out.out = Some(value()?),
             "--yes" => out.yes = true,
             "--estimate" => out.estimate = true,
+            "--technique" if out.technique.is_some() => return Err("`--technique` is given twice".into()),
+            "--technique" => out.technique = Some(value()?),
+            "--input" => {
+                if out.inputs.len() >= inputs::MAX_BINDINGS {
+                    return Err("at most 256 named inputs may be supplied".into());
+                }
+                out.inputs.push(value()?);
+            }
             "--node" => {
                 let id = value()?;
                 out.nodes.push(id.parse().map_err(|_| format!("`{id}` isn't a node id (see `inspect`)"))?);
@@ -259,14 +296,15 @@ fn project_arg(command: &str, options: &Options) -> Result<std::path::PathBuf, S
 fn read_only(command: &str, args: &[String]) -> ExitCode {
     let allowed: &[&str] = match command {
         "commands" => &["--json", "--full"],
-        "quote" => &["--json", "--canvas", "--node", "--estimate"],
-        "run" => &["--json", "--canvas", "--node", "--out", "--yes", "--estimate"],
+        "quote" => &["--json", "--canvas", "--node", "--estimate", "--input", "--technique"],
+        "run" => &["--json", "--canvas", "--node", "--out", "--yes", "--estimate", "--input", "--technique"],
         _ => &["--json"],
     };
-    let options = match options(args, allowed) {
+    let mut options = match options(args, allowed) {
         Ok(options) => options,
         Err(message) => return fail(&format!("{message}\n\n{USAGE}")),
     };
+    options.native_assets = command == "run";
     let mut new_id = random_bytes();
     match command {
         "commands" | "providers" => {
@@ -297,6 +335,9 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
             if command == "quote" && options.estimate {
                 return estimates::quote(&path, &options);
             }
+            if command == "quote" {
+                return quote_named(&path, &options);
+            }
             let mut session = match project::open(&path) {
                 Ok(session) => session,
                 Err(error) => return fail(&error.message),
@@ -308,16 +349,7 @@ fn read_only(command: &str, args: &[String]) -> ExitCode {
                     Err(error) => fail(&error.message),
                 };
             }
-            let quoted = quote::canvas_of(session, options.canvas.as_deref()).and_then(|canvas| {
-                let targets = quote::targets(session, canvas, &options.nodes)?;
-                let mut maker = providers::keychain_maker(nodecraft_engine::settings::peek().providers)?;
-                quote::prepare(session, canvas, &targets, &mut maker)?;
-                quote::quote(session, canvas, &targets).map(|quote| (canvas, quote))
-            });
-            match quoted {
-                Ok((canvas, value)) => print(options.json, &value, |value| quote::quote_text(session, canvas, value)),
-                Err(error) => fail(&error.message),
-            }
+            fail("unsupported project command")
         }
     }
 }
@@ -475,8 +507,8 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
         Ok(runner) => runner,
         Err(error) => return fail(&error.message),
     };
-    let mut session = match project::open_with_assets(path) {
-        Ok(session) => session.with_services(services),
+    let (mut session, canvas, wanted) = match inputs::open_session(path, options, services) {
+        Ok(opened) => opened,
         Err(error) => return fail(&error.message),
     };
     let session = &mut session;
@@ -485,8 +517,8 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
         Ok(out) => out,
         Err(error) => return fail(&error.message),
     };
-    let done = quote::canvas_of(session, options.canvas.as_deref()).and_then(|canvas| {
-        let targets = quote::targets(session, canvas, &options.nodes)?;
+    let done: Result<serde_json::Value, nodecraft_types::Error> = (|| {
+        let targets = quote::targets(session, canvas, &wanted)?;
         let mut maker = providers::keychain_maker(nodecraft_engine::settings::peek().providers)?;
         quote::prepare(session, canvas, &targets, &mut maker)?;
         runner.install(session);
@@ -506,7 +538,7 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
             report["estimate"] = estimate;
         }
         Ok(report)
-    });
+    })();
     match done {
         Ok(report) => {
             let listed = |key: &str| report[key].as_array().into_iter().flatten().cloned().collect::<Vec<_>>();
@@ -515,6 +547,22 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
             let printed = print(options.json, &report, run::report_text);
             if failed { ExitCode::FAILURE } else { printed }
         }
+        Err(error) => fail(&error.message),
+    }
+}
+
+/// Named values use the same preparation for pure quotes and actual runs.
+fn quote_named(path: &std::path::Path, options: &Options) -> ExitCode {
+    let result = (|| {
+        let (mut session, canvas, wanted) = inputs::open_session(path, options, Services::default())?;
+        let targets = quote::targets(&session, canvas, &wanted)?;
+        let mut maker = providers::keychain_maker(nodecraft_engine::settings::peek().providers)?;
+        quote::prepare(&mut session, canvas, &targets, &mut maker)?;
+        let quoted = quote::quote(&mut session, canvas, &targets)?;
+        Ok::<_, nodecraft_types::Error>(print(options.json, &quoted, |value| quote::quote_text(&session, canvas, value)))
+    })();
+    match result {
+        Ok(code) => code,
         Err(error) => fail(&error.message),
     }
 }
@@ -549,6 +597,8 @@ fn main() -> ExitCode {
             }
         },
         Some("serve") => serve_command(args.get(1..).unwrap_or_default()),
+        Some("batch") => batch::command(args.get(1..).unwrap_or_default()),
+        Some("comfy") => comfy::command(args.get(1..).unwrap_or_default()),
         Some("relay") => relay_command(args.get(1..).unwrap_or_default()),
         Some("webhook-secret") => webhook_secret(args.get(1..).unwrap_or_default()),
         Some("plugin") => match plugin::command(args.get(1..).unwrap_or_default()) {
@@ -558,7 +608,8 @@ fn main() -> ExitCode {
             }
             Err(message) => fail(&message),
         },
-        Some(command @ ("commands" | "inspect" | "quote" | "run" | "providers")) => read_only(command, args.get(1..).unwrap_or_default()),
+        Some("providers") => providers::command(args.get(1..).unwrap_or_default()),
+        Some(command @ ("commands" | "inspect" | "quote" | "run")) => read_only(command, args.get(1..).unwrap_or_default()),
         Some("--help" | "-h" | "help") | None => {
             print!("{USAGE}");
             ExitCode::SUCCESS

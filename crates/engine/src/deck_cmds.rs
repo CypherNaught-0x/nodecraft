@@ -4,6 +4,10 @@
 //! `expected_revision` and is refused with a conflict when the document has changed since, so an
 //! agent never overwrites a change it hasn't seen. A deck from a newer NodeCraft is listed but
 //! never changed. Nothing here runs.
+pub mod fonts;
+mod remap;
+pub use remap::remap_sources;
+
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use nodecraft_actions::deck::{self, Deck, Item, Shown, Slide};
 use nodecraft_actions::layers::{self, Content, Frame, Layer};
@@ -45,7 +49,12 @@ pub fn stored(node: &Node) -> Result<Deck, Error> {
 
 /// The frame a Deck card's slides are drawn into, from its parameters.
 pub fn frame(c: &Context<'_>, node: &Node) -> Result<Frame, Error> {
-    let values = c.kinds.get(ID)?.validate_instance(node, true)?.into_visible_values();
+    frame_for(c.kinds, node)
+}
+
+/// The same checked frame for read-only canvas previews that do not dispatch a command.
+pub fn frame_for(kinds: &nodecraft_nodes::Registry, node: &Node) -> Result<Frame, Error> {
+    let values = kinds.get(ID)?.validate_instance(node, true)?.into_visible_values();
     let edge = |name: &str| match values.get(name) {
         Some(Value::Unsigned(v)) => u32::try_from(v.0).ok().filter(|v| (layers::MIN_FRAME..=layers::MAX_FRAME).contains(v)),
         _ => None,
@@ -97,6 +106,10 @@ fn image(node: &Node, nth: u32) -> Option<AssetRef> {
         return (nth == 0).then(|| crate::split::image_of(node).cloned()).flatten();
     }
     let result = node.history.iter().find(|g| Some(g.id) == node.active)?;
+    result_image(result, nth)
+}
+
+fn result_image(result: &nodecraft_graph::Generation, nth: u32) -> Option<AssetRef> {
     let mut images = result.outputs.iter().flat_map(flatten).filter_map(crate::split::image);
     images.nth(usize::try_from(nth).ok()?).cloned()
 }
@@ -120,7 +133,25 @@ fn text(node: &Node) -> Option<&str> {
         };
     }
     let result = node.history.iter().find(|g| Some(g.id) == node.active)?;
+    result_text(result)
+}
+
+fn result_text(result: &nodecraft_graph::Generation) -> Option<&str> {
     result.outputs.iter().flat_map(flatten).find_map(|v| if let Value::Text(text) = v { Some(text.as_str()) } else { None })
+}
+
+/// A staged source result, using the same image ordering and bounded text as `shown`.
+pub fn shown_result(result: &nodecraft_graph::Generation, nth: u32) -> Shown<AssetRef> {
+    if nth > MAX_NTH {
+        return Shown::Missing;
+    }
+    if let Some(image) = result_image(result, nth) {
+        return Shown::Image(image);
+    }
+    match result_text(result).filter(|text| nth == 0 && !text.trim().is_empty()) {
+        Some(text) => Shown::Text(clip(text, MAX_SOURCE_TEXT).into()),
+        None => Shown::Missing,
+    }
 }
 
 fn clip(text: &str, limit: usize) -> &str {
@@ -155,7 +186,7 @@ fn source_json(layer: &str, origin: &str, nth: u32, shown: Shown<AssetRef>) -> J
     }
 }
 
-fn slide_json(on: &Canvas, slide: &Slide) -> Json {
+fn slide_json(on: &Canvas, slide: &Slide, fonts: &[(String, AssetRef)]) -> Json {
     let mut sources = Vec::new();
     let mut unsupported = Vec::new();
     for (index, item) in slide.layers.iter().enumerate() {
@@ -169,6 +200,7 @@ fn slide_json(on: &Canvas, slide: &Slide) -> Json {
     if let Json::Object(map) = &mut out {
         map.insert("sources".into(), Json::Array(sources));
         map.insert("unsupported".into(), json!(unsupported));
+        map.insert("font_resolutions".into(), fonts::resolutions(slide, fonts));
     }
     out
 }
@@ -195,9 +227,10 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let on = canvas(c, p.canvas)?;
     let deck = stored(node)?;
     let frame = frame(c, node)?;
+    let fonts = fonts::held(node);
     let slides: Vec<Json> = match &p.slide {
-        Some(id) => vec![slide_json(on, deck.slides.get(deck.index_of(id).ok_or_else(|| not_found("slide"))?).ok_or_else(|| not_found("slide"))?)],
-        None => deck.slides.iter().map(|s| slide_json(on, s)).collect(),
+        Some(id) => vec![slide_json(on, deck.slides.get(deck.index_of(id).ok_or_else(|| not_found("slide"))?).ok_or_else(|| not_found("slide"))?, &fonts)],
+        None => deck.slides.iter().map(|s| slide_json(on, s, &fonts)).collect(),
     };
     let [r, g, b, a] = frame.background;
     Ok(Effect::None {
@@ -210,6 +243,7 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             "background": format!("#{r:02x}{g:02x}{b:02x}{a:02x}"),
             "count": deck.slides.len(),
             "slides": slides,
+            "fonts": fonts::listed(node),
         }),
     })
 }
@@ -229,6 +263,8 @@ struct SlideInput {
     _sources: Json,
     #[serde(default, rename = "unsupported")]
     _unsupported: Json,
+    #[serde(default, rename = "font_resolutions")]
+    _font_resolutions: Json,
 }
 
 /// The unsupported layers a deck holds, by layer id, so matching an incoming layer compares it
@@ -655,7 +691,7 @@ fn create_schema() -> Json {
 }
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
+    let mut commands = vec![
         CommandSpec {
             id: "deck.create",
             label: "Make deck",
@@ -672,7 +708,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: list_schema,
-            params_doc: "{canvas, id: Deck NodeId, slide?: slide id} -> {revision, version, writable, width, height, background, count, slides}; every slide (or the one named), first to last, as {id, name, layers, sources, unsupported}. layers are bottom first, in layers.add's format; sources says what each source layer's node shows now ({layer, origin, nth, shows: \"image\" with image, \"text\" with text, or \"missing\"}); unsupported lists the indices of layers this version keeps but can't read or draw. Pass revision as expected_revision to the edits. A deck from a newer NodeCraft lists as writable false, with no slides.",
+            params_doc: "{canvas, id: Deck NodeId, slide?: slide id} -> {revision, version, writable, width, height, background, fonts, count, slides}; fonts lists this Deck's {name, font} assets. Every slide (or the one named), first to last, is {id, name, layers, sources, font_resolutions, unsupported}. layers are bottom first, in layers.add's format; sources says what each source layer's node shows now ({layer, origin, nth, shows: \"image\" with image, \"text\" with text, or \"missing\"}); font_resolutions gives each text layer's {layer, requested, resolved, font, fallback} from held font names (payload readability is checked by the renderer). unsupported lists the indices of layers this version keeps but can't read or draw. Pass revision as expected_revision to the edits. A deck from a newer NodeCraft lists as writable false, with no slides.",
             enabled: always,
             run: list,
         },
@@ -736,7 +772,9 @@ pub fn specs() -> Vec<CommandSpec> {
             enabled: always,
             run: layer_update,
         },
-    ]
+    ];
+    commands.extend(fonts::specs());
+    commands
 }
 
 #[cfg(test)]

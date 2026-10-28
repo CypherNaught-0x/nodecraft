@@ -140,6 +140,7 @@ fn all_edit_types_and_annotation_stubs_are_reversible() {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     };
     replacement.active = Some(generation.id);
@@ -395,6 +396,7 @@ fn arbitrary_change() -> impl Strategy<Value = Change> {
                     input_hash: None,
                     items: Vec::new(),
                     settings: Vec::new(),
+                    source_versions: Vec::new(),
                     incomplete: None,
                 },
             },
@@ -477,6 +479,7 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         });
     }
@@ -493,6 +496,7 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
             input_hash: None,
             items: Vec::new(),
             settings: Vec::new(),
+            source_versions: Vec::new(),
             incomplete: None,
         },
     };
@@ -521,6 +525,7 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             },
         },
@@ -534,6 +539,7 @@ fn generation_edits_preserve_middle_entry_order_and_keep_undo_small() {
                 input_hash: None,
                 items: Vec::new(),
                 settings: Vec::new(),
+                source_versions: Vec::new(),
                 incomplete: None,
             },
         },
@@ -613,6 +619,7 @@ fn aggregate_parameters_and_history_are_bounded_together() {
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     });
     assert!(Change::SetNode { canvas: canvas(), node: item }.apply(&mut project).is_err());

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 pub mod caption;
+pub mod provenance;
 pub use caption::{Caption, MAX_CAPTIONS};
 
 /// The kind's id.

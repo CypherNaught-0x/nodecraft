@@ -61,6 +61,47 @@ fn drop_harness() -> (Harness<'static, NodeCraftApp>, native::TestService) {
     (h, worker)
 }
 
+#[test]
+fn typed_clipboard_files_use_bounded_drop_acquisition_and_one_undo() {
+    let scratch = Scratch::new("clipboard633");
+    let png = nodecraft_media::encode_png(4, 4, &[90; 64], &Default::default()).unwrap();
+    let paths = vec![scratch.write("note.txt", b"Public copied text"), scratch.write("picture.png", &png)];
+    let (mut h, _worker) = drop_harness();
+    h.state_mut().image_paste.files_reader = Some(Arc::new(move || Ok(Some(paths.clone()))));
+    h.state_mut().image_paste.reader = Arc::new(|| Err("File-reference arbitration must never read image pixels".into()));
+    let before = h.state().session.document().clone();
+    h.hover_at(Pos2::new(600.0, 300.0));
+    h.run();
+    // Finder provides both typed references and a plain-text list of these names.
+    h.event(egui::Event::Paste("note.txt\npicture.png".into()));
+    h.event(egui::Event::Key { key: egui::Key::V, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::COMMAND });
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        h.step();
+        if !h.state().image_paste_pending() && !h.state().drop_pending() {
+            break;
+        }
+        assert!(std::time::Instant::now() < end, "bounded copied-file delivery");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let existing = before.canvases().get(&h.state().canvas).unwrap().nodes();
+    let added: Vec<_> = nodes(&h).into_iter().filter(|node| !existing.contains_key(&node.id)).collect();
+    assert_eq!(added.len(), 2, "{:?}", h.state().notice);
+    assert!(added.iter().any(|node| node.kind == "source.text"));
+    assert!(added.iter().any(|node| node.kind == "source.image"));
+    let world = h.state().view.to_world(h.state().viewport.min, Pos2::new(600.0, 300.0));
+    let tokens = h.state().theme.tokens();
+    for node in &added {
+        let expected = world + egui::vec2(if node.kind == "source.image" { tokens.card_width + tokens.card_padding * 4.0 } else { 0.0 }, 0.0);
+        let rect = super::super::payload_rect(&h.state().session, node, tokens);
+        assert!((rect.center() - expected).length() < 1.0, "copied files use the same payload centering as native drops");
+    }
+    assert!(h.state().notice.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
+}
+
 fn nodes(h: &Harness<'static, NodeCraftApp>) -> Vec<nodecraft_graph::Node> {
     h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().values().cloned().collect()
 }
@@ -82,7 +123,12 @@ fn dropped_files_become_nodes_at_the_pointer_as_one_undo_step() {
     assert!(added.iter().any(|n| n.kind == "source.image"));
     let world = h.state().view.to_world(h.state().viewport.min, at);
     let t = *h.state().theme.tokens();
-    assert!((text.pos.x + t.card_width * 0.5 - world.x).abs() < 1.0, "centred under the pointer");
+    for (index, kind) in ["source.text", "source.image"].into_iter().enumerate() {
+        let node = added.iter().find(|node| node.kind == kind).unwrap();
+        let rect = super::super::payload_rect(&h.state().session, node, &t);
+        let expected = world + egui::Vec2::new(index as f32 * (t.card_width + t.card_padding * 4.0), 0.0);
+        assert!((rect.center() - expected).length() < 1.0, "actual {kind} geometry must center under pointer/grid");
+    }
     assert_eq!(h.state().selection.nodes(), &added.iter().map(|n| n.id).collect());
     assert!(h.state().notice.is_none());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
@@ -279,4 +325,33 @@ fn a_dropped_comfyui_workflow_asks_for_the_servers_nodes_then_becomes_its_card()
     assert_eq!(card.title, "fox");
     h.run();
     h.get_by_label_contains("fox");
+}
+
+#[test]
+fn a_missing_file_acquisition_service_does_not_discard_plain_clipboard_text() {
+    let mut h = harness();
+    h.state_mut().drop_acquisition.service = Err(native::Failure::Allocation);
+    h.state_mut().image_paste.files_reader = Some(Arc::new(|| Ok(None)));
+    h.state_mut().image_paste.reader = Arc::new(|| panic!("text must not read clipboard pixels"));
+    let before = h.state().session.document().clone();
+    h.hover_at(Pos2::new(650.0, 180.0));
+    h.run();
+    h.event(egui::Event::Paste("Public text with no file service".into()));
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        h.step();
+        if !h.state().image_paste_pending() {
+            break;
+        }
+        assert!(std::time::Instant::now() < end);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let old = before.canvases().get(&h.state().canvas).unwrap().nodes();
+    let added: Vec<_> = nodes(&h).into_iter().filter(|n| !old.contains_key(&n.id)).collect();
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0].params.get("text"), Some(&nodecraft_types::Value::Text("Public text with no file service".into())));
+    assert!(h.state().notice.is_none());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(h.state().session.document(), &before);
 }

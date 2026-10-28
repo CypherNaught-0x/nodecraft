@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
@@ -38,11 +38,15 @@ craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614
 craft-settings = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
 craft-atomic = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
 craft-quit = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", features = ["menu"] }
-craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", features = ["raster"] }
+craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9", features = ["raster"] }
+
+# Original offline workflow data; refresh deliberately through a fully gated pin update.
+nodecraft-template-data = { git = "https://github.com/CypherNaught-0x/nodecraft-templates", rev = "5e7ed638fa75d4615701832184e5141cfe7cc293" }
 
 # external
 blake3 = { version = "1.8", default-features = false, features = ["std"] }
 egui = { version = "0.36", default-features = false }   # the version craft-ui builds against
+egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 eframe = { version = "0.36", default-features = false }
 egui_kittest = "0.36"
 futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
@@ -88,12 +92,15 @@ sha2 = { version = "0.11", default-features = false }
 # dependency's own [patch] section, so its consumers repeat it at the same rev (crates/pdf/README.md,
 # "Backend provenance and consumer pins"). Bump together with the craft-pdf pin.
 [patch.crates-io]
-hayro = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
-hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
-hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
-hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529" }
+hayro = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
+hayro-interpret = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
+hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
+# Keep the CMap/PostScript scanner on the same reviewed, stack-safe backend graph.
+hayro-cmap = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
+hayro-postscript = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
+hayro-jbig2 = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9" }
 # craft-pdf's writer (page extraction, #590) requires its unwind-safe Krilla patch.
-krilla = { git = "https://github.com/storytold/craft-libs", rev = "8f5a2831614e632f91ad367f7af2a6e5b61b9529", version = "=0.8.2" }
+krilla = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9", version = "=0.8.2" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
+mod mapping_editor;
 
 /// The host service that reads the ComfyUI server's node list.
 pub const NODES_SERVICE: &str = "comfy.nodes.fetch";
@@ -91,12 +92,15 @@ struct LastFetch(Report);
 /// it off the UI thread: it may read the server's token from the keychain and calls the server.
 /// Only the list must be read; a server that doesn't report its health still has its nodes.
 pub async fn fetch(env: &HostEnv<'_>) -> Result<Fetched, Error> {
-    let provider = crate::provider_setup::comfyui(env)
+    let provider = crate::provider_setup::comfy_profile::catalog_provider(env)
         .map_err(|readiness| Error::new(ErrorKind::Unsupported, readiness.message("ComfyUI").unwrap_or_else(|| "ComfyUI isn't set up".into())))?;
     let nodes = provider
         .catalog()
         .await
         .map_err(|error| Error::new(crate::option_fetch::provider_kind(error.kind), format!("ComfyUI's node list couldn't be read: {}", error.message)))?;
+    let crate::provider_setup::comfy_profile::CatalogProvider::Local(provider) = provider else {
+        return Ok(Fetched { nodes, health: None });
+    };
     let health = match provider.system_stats().await {
         Ok(stats) => {
             let queue = provider.queue_state().await.ok();
@@ -131,6 +135,7 @@ pub fn finish(session: &mut Session, id: u64, fetched: Result<Fetched, Error>) -
     let report = match fetched {
         Ok(Fetched { nodes, health }) => {
             let count = nodes.len();
+            crate::comfy_partner_quotes::keep(session, None, &nodes);
             session.swap_resource(Some(ComfyNodes(nodes)));
             Report { id, nodes: Some(count), error: None, server: health }
         }
@@ -143,6 +148,7 @@ pub fn finish(session: &mut Session, id: u64, fetched: Result<Fetched, Error>) -
 /// Drops the installed node list, the last outcome and the ComfyUI option lists (checkpoints,
 /// LoRAs, samplers), for when the server changes: they were another server's.
 pub fn forget(session: &mut Session) {
+    crate::comfy_partner_quotes::forget(session, None);
     session.swap_resource::<ComfyNodes>(None);
     session.swap_resource::<LastFetch>(None);
     if let Some(mut lists) = session.swap_resource::<OptionLists>(None) {
@@ -234,7 +240,7 @@ struct ImportParams {
     /// The card's title; the workflow's when absent.
     #[serde(default)]
     title: Option<String>,
-    /// The inputs to make parameters, as `node.input`; the prompts and seeds when absent. File
+    /// The inputs to make parameters, as `node.input`; prompts, seeds, steps, CFG and image dimensions when absent. File
     /// inputs are always ports.
     #[serde(default)]
     params: Option<Vec<String>>,
@@ -278,9 +284,9 @@ fn import(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     Ok(Effect::Edit { changes, result, gesture: None })
 }
 
-/// Whether dropped text is a ComfyUI workflow file, in either format: an editor save (`nodes` and
+/// Whether dropped or pasted text is a ComfyUI workflow file, in either format: an editor save (`nodes` and
 /// `links` lists) or an API export (an object of nodes, each with a `class_type`).
-pub(crate) fn is_workflow(text: &str) -> bool {
+pub fn is_workflow(text: &str) -> bool {
     let Ok(Value::Object(top)) = serde_json::from_str::<Value>(text) else {
         return false;
     };
@@ -313,7 +319,7 @@ pub(crate) fn dropped_card(session: &Session, id: NodeId, workflow: &str, name: 
 }
 
 /// A `comfy_workflow` card for `workflow` read with the server's `catalog`, exposing its media
-/// inputs and the named `params` (prompts and seeds when `None`), and the import's warnings.
+/// inputs and the named `params` (prompts, seeds, steps, CFG and image dimensions when `None`), and the import's warnings.
 fn card(
     catalog: &NodeCatalog,
     kinds: &nodecraft_nodes::Registry,
@@ -323,7 +329,8 @@ fn card(
 ) -> Result<(nodecraft_graph::Node, Vec<String>), Error> {
     let conversion = ApiWorkflow::convert(workflow.as_bytes(), Some(catalog))
         .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("this isn't a ComfyUI workflow NodeCraft can read: {e}")))?;
-    let workflow = conversion.workflow;
+    let mut workflow = conversion.workflow;
+    let retained_previews = comfy_workflow::save_image_previews(&mut workflow, catalog)?;
     let check = workflow.check(catalog);
     if !check.missing_nodes.is_empty() {
         let mut missing = check.missing_nodes.iter().take(MAX_WARNINGS).map(|n| bounded(n, 128)).collect::<Vec<_>>().join(", ");
@@ -363,6 +370,7 @@ fn card(
         .iter()
         .map(|w| bounded(w, 512))
         .chain(proposal.warnings.iter().map(|w| bounded(w, 512)))
+        .chain(retained_previews.iter().map(|w| bounded(w, 512)))
         .chain(modes)
         .chain(check.problems.iter().map(|problem| bounded(&format!("{}.{}: {}", problem.node, problem.input, problem.message), 512)))
         .collect();
@@ -409,7 +417,7 @@ fn import_schema() -> Value {
 }
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
+    let mut specs = vec![
         CommandSpec {
             id: "comfy.nodes.refresh",
             label: "Read ComfyUI server nodes",
@@ -436,11 +444,13 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: import_schema,
-            params_doc: "{canvas, id, pos: {x, y}, workflow: string, title?: string, params?: [\"node.input\"]} -> {id, ports, params, outputs, warnings, more_warnings}; places a ComfyUI workflow file (API or UI format) as one card, read against the server's nodes from comfy.nodes.refresh. Its file inputs become ports, the inputs named in `params` (by default its prompts and seeds) become parameters, and its save nodes become results. Refused when the nodes haven't been read, the server lacks a node the workflow uses, or the workflow saves nothing. The caller supplies a new id.",
+            params_doc: "{canvas, id, pos: {x, y}, workflow: string, title?: string, params?: [\"node.input\"]} -> {id, ports, params, outputs, warnings, more_warnings}; places a ComfyUI workflow file (API or UI format) as one card, read against the server's nodes from comfy.nodes.refresh. Its file inputs become ports, the inputs named in `params` (by default prompts, seeds, steps, CFG and image dimensions) become parameters, and its save nodes become results. Refused when the nodes haven't been read, the server lacks a node the workflow uses, or the workflow saves nothing. The caller supplies a new id.",
             enabled: enabled_import,
             run: import,
         },
-    ]
+    ];
+    specs.extend(mapping_editor::specs());
+    specs
 }
 
 #[cfg(test)]

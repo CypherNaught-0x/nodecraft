@@ -64,6 +64,8 @@ pub(super) struct LayerEditor {
     /// A font file being chosen or read.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) picking: Option<layer_fonts::Picking>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) picking_lineage: Option<nodecraft_engine::session::DocumentLineage>,
 }
 
 impl LayerEditor {
@@ -84,6 +86,8 @@ impl LayerEditor {
             add_font: None,
             #[cfg(not(target_arch = "wasm32"))]
             picking: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            picking_lineage: None,
         }
     }
 
@@ -158,9 +162,9 @@ pub(super) struct Listing {
 
 impl Listing {
     /// A slide of a `width` × `height` deck, its layers as `deck.list` gives them.
-    pub(super) fn slide(width: u32, height: u32, raw: Vec<Json>, choices: Vec<(String, String)>) -> Self {
+    pub(super) fn slide(width: u32, height: u32, raw: Vec<Json>, choices: Vec<(String, String)>, fonts: Vec<HeldFont>) -> Self {
         let layers = raw.iter().filter_map(|r| serde_json::from_value::<Item>(r.clone()).ok()).filter_map(|item| item.layer().cloned()).collect();
-        Self { width, height, layers, inputs: Vec::new(), fonts: Vec::new(), raw, choices }
+        Self { width, height, layers, inputs: Vec::new(), fonts, raw, choices }
     }
 
     /// Every layer id in use, those of layers this version can't read included.
@@ -615,7 +619,7 @@ impl NodeCraftApp {
         let scale = render_scale(editor.scale * f64::from(ctx.pixels_per_point()));
         editor.font_files.load(self.session.assets(), &listing.fonts);
         let fonts = editor.font_files.fonts(&listing.fonts);
-        let fonts_key = layer_fonts::key(&listing.fonts);
+        let fonts_key = editor.font_files.render_key(&listing.fonts);
         let mut art = HashMap::new();
         for layer in &listing.layers {
             let shown = match &layer.content {
@@ -692,7 +696,7 @@ impl NodeCraftApp {
         });
         close |= keys(ui, &mut editor, &listing, &mut commands);
         editor.end(&ctx);
-        self.layer_font_pick(&mut editor, &ctx, &mut commands);
+        self.layer_font_pick(&mut editor, &ctx, &mut commands, &listing);
         editor.listing = Some((revision, listing));
         for (command, params) in commands {
             if !self.layer_dispatch(command, &params) {
@@ -710,36 +714,61 @@ impl NodeCraftApp {
     /// Starts a font pick that was asked for and moves one along; a font read is added to the
     /// node, then set on the text layer it was picked for.
     #[cfg(not(target_arch = "wasm32"))]
-    fn layer_font_pick(&mut self, editor: &mut LayerEditor, ctx: &egui::Context, commands: &mut Commands) {
+    pub(super) fn layer_font_pick(&mut self, editor: &mut LayerEditor, ctx: &egui::Context, commands: &mut Commands, listing: &Listing) -> bool {
         use layer_fonts::{Picking, Polled};
         if let Some(layer) = editor.add_font.take()
             && editor.picking.is_none()
         {
             editor.picking = Some(Picking::start(layer));
+            editor.picking_lineage = Some(self.session.document_lineage());
         }
         let Some(picking) = editor.picking.take() else {
-            return;
+            return false;
         };
+        let lineage = editor.picking_lineage.take();
+        if !lineage.as_ref().is_some_and(|lineage| self.session.is_current_document(lineage)) {
+            self.notice = Some("Another project opened; choose the font file again.".into());
+            return false;
+        }
         match picking.poll(ctx) {
-            Polled::Waiting(picking) => editor.picking = Some(picking),
+            Polled::Waiting(picking) => {
+                editor.picking = Some(picking);
+                editor.picking_lineage = lineage;
+            }
             Polled::Cancelled => {}
             Polled::Failed(message) => self.notice = Some(message),
-            Polled::Read(layer, bytes) => match nodecraft_engine::layer_cmds::fonts::import(&mut self.session, editor.canvas, editor.node, &bytes) {
-                Ok(name) => {
-                    self.notice = None;
-                    if let Some(layer) = layer {
-                        commands.push(update(editor, &layer, json!({"content": {"font": name}})));
-                    }
+            Polled::Read(layer, bytes) => {
+                if layer.as_ref().is_some_and(|id| !listing.layers.iter().any(|layer| &layer.id == id && matches!(&layer.content, Content::Text { .. }))) {
+                    self.notice = Some("The text layer changed while the font was loading; choose the font file again.".into());
+                    return false;
                 }
-                Err(error) => self.notice = Some(error.message),
-            },
+                match match &editor.target {
+                    Target::Card => nodecraft_engine::layer_cmds::fonts::import(&mut self.session, editor.canvas, editor.node, &bytes),
+                    // Merge into the current deck. A global revision also changes for unrelated
+                    // edits and completed runs; it is not the lifetime of this font pick.
+                    Target::Slide(_) => nodecraft_engine::deck_cmds::fonts::import(&mut self.session, editor.canvas, editor.node, &bytes, None),
+                } {
+                    Ok(name) => {
+                        editor.font_files.forget_missing();
+                        self.deck_thumbnails.forget_missing_fonts();
+                        self.notice = None;
+                        if let Some(layer) = layer {
+                            commands.push(update(editor, &layer, json!({"content": {"font": name}})));
+                        }
+                        return true;
+                    }
+                    Err(error) => self.notice = Some(error.message),
+                }
+            }
         }
+        false
     }
 
     /// The browser has no font picker yet; fonts are added through `layers.font_add`.
     #[cfg(target_arch = "wasm32")]
-    fn layer_font_pick(&mut self, editor: &mut LayerEditor, _: &egui::Context, _: &mut Commands) {
+    pub(super) fn layer_font_pick(&mut self, editor: &mut LayerEditor, _: &egui::Context, _: &mut Commands, _: &Listing) -> bool {
         editor.add_font = None;
+        false
     }
 }
 
@@ -753,7 +782,7 @@ fn font_fallback(files: &FontFiles, listing: &Listing, font: &str) -> Option<Str
     } else if listing.fonts.iter().any(|f| same_name(&f.name, font)) {
         Some(format!("{font}'s file can't be read, so it draws as Lato. Add the font file again to use it."))
     } else {
-        Some(format!("{font} isn't in this project, so it draws as Lato. Add the font file to use it."))
+        Some(format!("{font} isn't held by this card, so it draws as Lato. Add the font file to use it."))
     }
 }
 
@@ -790,7 +819,8 @@ fn fonts_panel(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &Listing, t
             let remove = ui.small_button("Remove").on_hover_text("Text in this font draws as Lato until it is added again");
             remove.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Remove {}", font.name)));
             if remove.clicked() {
-                commands.push(("layers.font_remove", json!({"canvas": editor.canvas, "id": editor.node, "name": font.name})));
+                let command = if editor.target == Target::Card { "layers.font_remove" } else { "deck.font_remove" };
+                commands.push((command, json!({"canvas": editor.canvas, "id": editor.node, "name": font.name})));
             }
         });
     }
@@ -1094,9 +1124,7 @@ pub(super) fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &
     let [layer] = chosen.as_slice() else {
         if chosen.is_empty() {
             frame_properties(ui, editor, frame, t, commands);
-            if editor.target == Target::Card {
-                fonts_panel(ui, editor, listing, t, commands);
-            }
+            fonts_panel(ui, editor, listing, t, commands);
         } else {
             ui.label(egui::RichText::new(format!("{} layers selected", chosen.len())).color(t.text_muted));
         }
@@ -1154,18 +1182,14 @@ pub(super) fn properties(ui: &mut egui::Ui, editor: &mut LayerEditor, listing: &
             if let Some(v) = text_field(ui, draft, &key("text"), "Text", text, true) {
                 set.push(json!({"content": {"text": v}}));
             }
-            if editor.target == Target::Card {
-                if let Some(v) = font_choice(ui, &key("font"), font, listing) {
-                    set.push(json!({"content": {"font": v}}));
-                }
-                if let Some(why) = font_fallback(&editor.font_files, listing, font) {
-                    ui.label(egui::RichText::new(why).color(t.stale).small());
-                }
-                if PICKS_FONTS && ui.button("Add font file…").clicked() {
-                    editor.add_font = Some(Some(id.clone()));
-                }
-            } else if !same_name(font, "Lato") {
-                ui.label(egui::RichText::new(format!("{font}: decks draw text in Lato for now.")).color(t.stale).small());
+            if let Some(v) = font_choice(ui, &key("font"), font, listing) {
+                set.push(json!({"content": {"font": v}}));
+            }
+            if let Some(why) = font_fallback(&editor.font_files, listing, font) {
+                ui.label(egui::RichText::new(why).color(t.stale).small());
+            }
+            if PICKS_FONTS && ui.button("Add font file…").clicked() {
+                editor.add_font = Some(Some(id.clone()));
             }
             egui::Grid::new("layer_text").num_columns(2).show(ui, |ui| {
                 for (field, label, value, range, speed) in [

@@ -1,11 +1,11 @@
 //! The ComfyUI workflow card (#9): an imported ComfyUI workflow that runs as one node. The
 //! workflow (API format) and its mapping (which of its inputs are the card's ports and
 //! parameters, and which of its output nodes give results) are stored on the node's config, so
-//! its ports never change unless the workflow is imported again.
+//! its ports change only through an explicit mapping edit.
 //!
 //! A run sends the stored workflow to the `comfyui` provider with the card's parameter values
 //! and the media wired into its ports; the provider checks it against the server, uploads the
-//! media and queues it. It is free (it runs on your own server), so its catalog model
+//! media and queues it. Local nodes are free; partner nodes spend credits. Its catalog model
 //! [`MODEL_ID`] takes no parameters and is never offered on other cards.
 use crate::technique::slug;
 use crate::{Category, GenerateInput, GenerateOutput, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx, descriptor::invalid};
@@ -28,7 +28,7 @@ pub const MODEL_ID: &str = "comfyui.workflow";
 pub const REMOTE_MODEL: &str = "workflow";
 /// The card's model parameter; the run picker and admission read it like a generation card's.
 pub const MODEL: &str = "model";
-/// Config: the version of the entries below (`1`).
+/// Config: version 1, or version 2 when media list ports have custom names (#947).
 pub const VERSION: &str = "comfy.workflow.version";
 /// Config: the [`Mapping`], as JSON text.
 pub const MAPPING: &str = "comfy.workflow.v1.mapping";
@@ -52,7 +52,7 @@ const MAX_PARAMS: usize = 200;
 const MAX_OUTPUTS: usize = 64;
 /// Most partner node classes a mapping names.
 const MAX_PARTNERS: usize = 64;
-/// Most instance descriptors kept, and most mapping text they hold together.
+/// Most instance descriptors kept, and their retained text, mapping and descriptor storage.
 const CACHED: usize = 32;
 const MAX_CACHED_BYTES: usize = 4 * 1024 * 1024;
 /// Longest workflow node id or input name a mapping names.
@@ -60,6 +60,7 @@ const MAX_TARGET_BYTES: usize = 256;
 /// Longest text a text parameter holds.
 const MAX_PARAM_TEXT: usize = 256 * 1024;
 const VERSION_1: u64 = 1;
+const VERSION_2: u64 = 2;
 
 /// Which of a workflow's inputs and outputs the card exposes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +76,17 @@ pub struct Mapping {
     /// comfy.org credits; a card using any is never quoted as free.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub partners: Vec<String>,
+    /// Optional names for the media list ports (#947). Empty keeps the v1 port names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_names: Vec<OutputName>,
+}
+
+/// A named media list port. Results remain grouped by media type.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputName {
+    pub modality: Modality,
+    pub name: String,
 }
 
 /// One input port: what is wired into it is uploaded and set on `node`'s `input`.
@@ -160,6 +172,21 @@ impl Mapping {
         if self.outputs.is_empty() {
             return Err(invalid("a ComfyUI workflow card needs an output node"));
         }
+        if self.output_names.len() > 4 {
+            return Err(invalid("a workflow names at most four media list ports"));
+        }
+        let mut named = Vec::new();
+        let mut named_ports = BTreeSet::new();
+        for port in &self.output_names {
+            if !is_media(port.modality)
+                || !crate::descriptor::identifier(&port.name)
+                || named.contains(&port.modality)
+                || !named_ports.insert(port.name.as_str())
+            {
+                return Err(invalid("workflow output names must have unique media types and bounded port identifiers"));
+            }
+            named.push(port.modality);
+        }
         let mut targets = BTreeSet::new();
         let mut ports = BTreeSet::new();
         for input in &self.inputs {
@@ -216,7 +243,12 @@ impl Mapping {
                 seen.push(output.modality);
             }
         }
-        seen.into_iter().map(|modality| Port { name: output_port(modality).into(), port_type: PortType { modality, many: true } }).collect()
+        seen.into_iter()
+            .map(|modality| Port {
+                name: self.output_names.iter().find(|p| p.modality == modality).map_or_else(|| output_port(modality).into(), |p| p.name.clone()),
+                port_type: PortType { modality, many: true },
+            })
+            .collect()
     }
 }
 
@@ -232,7 +264,7 @@ impl Card {
             return Err(Error::new(ErrorKind::Overflow, "this ComfyUI workflow exposes too much to place as a card"));
         }
         Ok([
-            (VERSION.to_owned(), Value::Unsigned(Unsigned(VERSION_1))),
+            (VERSION.to_owned(), Value::Unsigned(Unsigned(if self.mapping.output_names.is_empty() { VERSION_1 } else { VERSION_2 }))),
             (MAPPING.to_owned(), Value::Text(mapping)),
             (WORKFLOW.to_owned(), Value::Text(self.workflow.clone())),
         ]
@@ -244,7 +276,7 @@ impl Card {
 /// The mapping a workflow card stores. The workflow text is not parsed here.
 pub fn mapping(node: &Node) -> Result<Mapping, Error> {
     match node.config.get(VERSION) {
-        Some(Value::Unsigned(Unsigned(VERSION_1))) => {}
+        Some(Value::Unsigned(Unsigned(VERSION_1 | VERSION_2))) => {}
         Some(_) => return Err(Error::new(ErrorKind::Unsupported, "this ComfyUI workflow card was made by a newer NodeCraft")),
         None => return Err(invalid("a ComfyUI workflow card needs an imported workflow")),
     }
@@ -353,7 +385,7 @@ pub fn propose(workflow: &ApiWorkflow, exposed: &Exposed) -> Result<Proposal, Er
     }
     let mut ports = BTreeSet::new();
     let mut names = BTreeSet::from([MODEL.to_owned()]);
-    let mut mapping = Mapping { inputs: Vec::new(), params: Vec::new(), outputs: Vec::new(), partners: Vec::new() };
+    let mut mapping = Mapping { inputs: Vec::new(), params: Vec::new(), outputs: Vec::new(), partners: Vec::new(), output_names: Vec::new() };
     let mut warnings = Vec::new();
     let skipped = |input: &ExposedInput| {
         format!("{}.{} can't be a card parameter, so the card keeps the workflow's value", bounded(&input.node, 64), bounded(&input.input, 64))
@@ -410,7 +442,23 @@ pub fn propose(workflow: &ApiWorkflow, exposed: &Exposed) -> Result<Proposal, Er
     if classes.len() > MAX_PARTNERS {
         return Err(Error::new(ErrorKind::Overflow, "this ComfyUI workflow uses too many kinds of partner node to place as a card"));
     }
-    mapping.partners = classes.into_iter().map(|class| bounded(class, MAX_TARGET_BYTES)).collect();
+    let mut unnamed = false;
+    mapping.partners = classes
+        .into_iter()
+        .filter_map(|class| {
+            if class.trim().is_empty() || class.chars().any(char::is_control) {
+                unnamed = true;
+                None
+            } else {
+                Some(bounded(class, MAX_TARGET_BYTES))
+            }
+        })
+        .collect();
+    if unnamed {
+        // Omit the malformed class name, never the evidence that this workflow costs credits.
+        mapping.partners.push("Unidentified partner node".into());
+        warnings.push("a partner node's invalid class name was omitted; its credit cost is still unknown".into());
+    }
     if let Some(list) = partner_list(&mapping.partners) {
         warnings.push(format!("this workflow uses ComfyUI partner nodes ({list}), which spend your comfy.org credits; NodeCraft can't price them"));
     }
@@ -471,6 +519,7 @@ struct Cached {
     text: Arc<str>,
     mapping: Arc<Mapping>,
     descriptor: Arc<NodeDescriptor>,
+    bytes: usize,
 }
 
 pub struct ComfyWorkflowKind {
@@ -487,7 +536,8 @@ pub fn kind() -> ComfyWorkflowKind {
 impl ComfyWorkflowKind {
     /// `node`'s mapping and instance descriptor, parsed once per distinct mapping text.
     fn resolved(&self, node: &Node) -> Result<(Arc<Mapping>, Arc<NodeDescriptor>), Error> {
-        let Some(Value::Text(text)) = node.config.get(MAPPING).filter(|_| matches!(node.config.get(VERSION), Some(Value::Unsigned(Unsigned(VERSION_1)))))
+        let Some(Value::Text(text)) =
+            node.config.get(MAPPING).filter(|_| matches!(node.config.get(VERSION), Some(Value::Unsigned(Unsigned(VERSION_1 | VERSION_2)))))
         else {
             let mapping = mapping(node)?;
             let descriptor = descriptor(Some(&mapping));
@@ -507,14 +557,21 @@ impl ComfyWorkflowKind {
         }
         let mapping = Arc::new(mapping(node)?);
         let descriptor = Arc::new(descriptor(Some(&mapping)));
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.insert(0, Cached { hash, text: Arc::from(text.as_str()), mapping: mapping.clone(), descriptor: descriptor.clone() });
+        descriptor.validate()?;
+        let bytes = cache_bytes::retained(text, &mapping, &descriptor);
+        if bytes <= MAX_CACHED_BYTES
+            && let Ok(mut cache) = self.cache.lock()
+        {
+            if cache.len() >= CACHED {
+                cache.pop();
+            }
+            cache.insert(0, Cached { hash, text: Arc::from(text.as_str()), mapping: mapping.clone(), descriptor: descriptor.clone(), bytes });
             let mut bytes = 0usize;
             let keep = cache.iter().take(CACHED).take_while(|c| {
-                bytes = bytes.saturating_add(c.text.len());
+                bytes = bytes.saturating_add(c.bytes);
                 bytes <= MAX_CACHED_BYTES
             });
-            let keep = keep.count().max(1);
+            let keep = keep.count();
             cache.truncate(keep);
         }
         Ok((mapping, descriptor))
@@ -616,6 +673,10 @@ impl NodeKind for ComfyWorkflowKind {
         }])
     }
 }
+
+mod cache_bytes;
+mod editing;
+pub use editing::{bake_values, save_image_previews};
 
 #[cfg(test)]
 mod tests;

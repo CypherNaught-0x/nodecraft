@@ -100,6 +100,7 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         "image.layers",
         "image.mask",
         "image.overlay",
+        "image.rasterize",
         "image.replace_color",
         "image.resize",
         "image.rotate",
@@ -173,4 +174,45 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     assert!(compatible(PortType { modality: Modality::Text, many: false }, PortType { modality: Modality::Text, many: true }));
     assert!(!compatible(PortType { modality: Modality::Text, many: true }, PortType { modality: Modality::Text, many: false }));
     assert!(!compatible(PortType { modality: Modality::Text, many: false }, PortType { modality: Modality::Image, many: false }));
+}
+
+#[test]
+fn router949_connected_creation_refuses_a_hidden_list() {
+    let mut s = session();
+    let split = NodeId::from_bytes([40; 16]);
+    let hub = NodeId::from_bytes([41; 16]);
+    s.dispatch("node.create", &json!({"canvas":C,"id":split,"kind":"text.split","pos":{"x":0,"y":0}})).unwrap();
+    s.dispatch(
+        "node.create_connected",
+        &json!({"canvas":C,"id":hub,"kind":router::ID,"pos":{"x":0,"y":0},"edge":EdgeId::from_bytes([40;16]),"from":{"node":split,"port":"out"}}),
+    )
+    .unwrap();
+    let before = s.document().clone();
+    let p = json!({"canvas":C,"id":NEW,"kind":"text.replace","pos":{"x":0,"y":0},"edge":EDGE,"from":{"node":hub,"port":"out"}});
+    assert!(s.dispatch("node.create_connected", &p).is_err(), "CLI/MCP creation must not bypass the original list shape through a Router");
+    assert_eq!(s.document(), &before);
+}
+
+#[test]
+fn router949_creation_candidates_match_direct_outputs_through_chains() {
+    for kind in ["source.text", "text.split"] {
+        let mut s = session();
+        let source = NodeId::from_bytes([40; 16]);
+        s.dispatch("node.create", &json!({"canvas":C,"id":source,"kind":kind,"pos":{"x":0,"y":0}})).unwrap();
+        let original = output_type(s.document().canvases().get(&C).unwrap(), s.kinds(), &Endpoint { node: source, port: "out".into() }).unwrap();
+        let direct: Vec<_> = kinds_accepting(s.kinds(), original).iter().map(|d| d.id.clone()).collect();
+        let mut prior = source;
+        for n in 41..=56 {
+            let id = NodeId::from_bytes([n; 16]);
+            s.dispatch(
+                "node.create_connected",
+                &json!({"canvas":C,"id":id,"kind":router::ID,"pos":{"x":0,"y":0},"edge":EdgeId::from_bytes([n;16]),"from":{"node":prior,"port":"out"}}),
+            )
+            .unwrap();
+            let shape = output_type(s.document().canvases().get(&C).unwrap(), s.kinds(), &Endpoint { node: id, port: "out".into() }).unwrap();
+            let routed: Vec<_> = kinds_accepting(s.kinds(), shape).iter().map(|d| d.id.clone()).collect();
+            assert_eq!(routed, direct, "{kind}, chain ending at {n}");
+            prior = id;
+        }
+    }
 }

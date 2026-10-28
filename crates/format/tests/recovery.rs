@@ -131,6 +131,7 @@ fn invalid_asset_frame_cannot_be_hidden_by_a_later_removal_in_any_asset_bearing_
         input_hash: None,
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     };
     let mut added_canvas = Canvas::new(CanvasId::from_bytes([6; 16]), "Incoming");

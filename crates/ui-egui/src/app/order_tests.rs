@@ -244,7 +244,8 @@ fn cancellation_precedence_keeps_lower_priority_owners_and_selection() {
     h.state_mut().selection.only(HUB);
     let selected = h.state().selection.clone();
     h.state_mut().wiring = Some(Wiring {
-        from: Endpoint { node: NodeId::from_bytes([1; 16]), port: "out".into() },
+        side: crate::noodle::Side::Output,
+        anchor: Endpoint { node: NodeId::from_bytes([1; 16]), port: "out".into() },
         port_type: PortType { modality: nodecraft_types::Modality::Text, many: false },
         moving: None,
     });

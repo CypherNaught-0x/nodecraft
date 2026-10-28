@@ -6,7 +6,11 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
+| **Deepgram** | `deepgram` | API key (`Authorization: Token`), keychain account `deepgram` | English audio file → text | Nova-3, smart formatting, unknown usage cost, no uncertain replay. See below. |
+| **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B text → PNG | Direct queued generation with resumable cluster polling, bounded downloads and unknown usage price; no automatic ambiguous submit replay or remote cancellation. See below. |
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
+| **OpenAI Audio** | `openai-audio` | existing `openai` API key (`Authorization: Bearer`) | text → MP3, audio file → text | Unknown upfront usage price; no automatic paid replay. Speech model shuts down January 6, 2027; Realtime is not supported. See below. |
+| **Hugging Face Inference Providers** | `huggingface` | HF token with Inference Providers permission, keychain account `huggingface` | text → text, streaming | GPT OSS 120B through the explicit Groq route; direct router with the existing chat client, unknown usage price, no ambiguous replay. See below. |
 | **OpenAI Images** | `openai-images` | supplied OpenAI API key (`Authorization: Bearer`) | generate, ordered references/edit, first-image alpha-mask inpaint, sizes/quality/transparency/N | Two dated GPT Image 2.5 models; usage price unknown; no ambiguous automatic submit replay, remote cancellation or builtin browser transport. See below. |
 | **Gemini Images** | `gemini-images` | supplied Gemini API key (`x-goog-api-key`) | generation and ordered reference editing | Three stable Gemini models, unknown usage price; bounded inline JPEG outputs. |
 | **Gemini Video** | `gemini-video` | supplied Gemini API key (`x-goog-api-key`), same `gemini` account | Omni Flash text, first/last frame and reference images → video with sound | Veo on the Gemini API is shut down; Veo now runs on Google Cloud (`google-veo`). Paid tier only; charged by measured tokens, no price before the run. See below. |
@@ -19,16 +23,32 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **vLLM / other gateways** | `llm` | optional bearer key | text, streaming | Any OpenAI-compatible base URL (`Endpoint::openai_compatible`). |
 | **OpenRouter** | `llm` | API key | text, vision, streaming | Model ids like `anthropic/claude-opus-5-5`. |
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
+| **Azure OpenAI** (v1 Chat Completions) | `llm` | resource API key (`Authorization: Bearer`) | text chat and streaming | Reuses `LlmClient` through `Endpoint::azure_openai`; the **Azure OpenAI deployment** card sends the configured deployment name as `model`. Unknown usage price requires explicit acceptance. No dated `api-version` or Azure SDK. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
-| **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file on the canvas does the same. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
-| **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Wan text/image/speech to video, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Ten explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Trellis, style training and image-only Bria; other quotes are by usage. |
+| **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file or pasting its JSON on the canvas does the same. Pasted workflow text is titled Pasted workflow because the text clipboard supplies no filename; a file drop keeps its filename. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
+| **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
+| **Magnific** | `magnific` | separate `magnific` key (`x-magnific-api-key`) | one image → Precision V2 photo enhancement, 2× or 4× | Native streamed project storage required. Credit-based monetary cost stays unknown and requires consent. Saved task polling, no ambiguous submit replay or remote cancellation; delivery links expire after 30 minutes. See below. |
+| **HeyGen through fal** | `fal` | the existing fal key | supplied speech and one photo → Photo Avatar4, or MP4 → Speed/Precision lip sync | Native streamed storage required. Unknown monetary price with explicit consent; supplied PCM WAV, no TTS/stock voices. See below. |
+| **Pika 2.5 through fal** | `fal` | the existing fal key | prompt and one first frame → 720p video, 5/10 seconds | Native streamed project storage required; $0.25/$0.50 estimates. Current image-to-video only; see below. |
+| **Topaz Precision through fal** | `fal` | the existing fal key | one upright image → Standard V2 upscale PNG | Native streamed project storage required; integer 1–4× within one $0.08 output block. Existing queue/resume and no ambiguous paid replay; see below. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
 | **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video); Soul ID training (images → identity) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
+| **Runway** | `runway` (feature `runway`) | API key (`Authorization: Bearer`, keychain account `runway`) | Gen-4.5 text or first frame → video; Gen-4 Turbo first frame → video | Standard MP4, 2–10 seconds. 0.12/0.05 USD per second before tax. No submission deduplication; uncertain creates are never replayed. See below. |
 | **Kling** | `kling` (feature `kling`) | API key (`Authorization: Bearer`), or access key and secret key stored as `ak:sk`, which sign a 30-minute HS256 token per request | Kling 2.5 Turbo, 2.1 Master and 1.6 text → video and start frame (+ end frame) → video; Kling 1.6 up to four references → video; Kling Image 2.1 text → image | Billed in prepaid Kling units, so no quote before the run. One create per job carrying an `external_task_id` from the idempotency key; never replayed automatically; no remote cancellation. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
+| **Stability AI** | `stability` (feature `stability`) | Bearer API key, keychain account `stability` | Core text → image, Audio 3 Large text → audio, Fast 3D image → GLB | Direct first-party APIs; dated fixed-call estimates. Audio polls/resumes one accepted id; no submission deduplication or confirmed cancellation. Desktop/CLI only. See [details](#stability-ai-direct). |
+
+## Retired APIs
+
+**OpenAI Sora (#28):** as verified on October 24, 2026, OpenAI's Videos API and Sora 2 models
+were shut down on September 24, 2026. The official
+[deprecation notice](https://developers.openai.com/api/docs/deprecations#2026-03-24-sora-2-video-generation-models-and-videos-api)
+lists no replacement. NodeCraft has no Sora adapter or catalog entry; this retired API is not
+an available generation option. Other video adapters retain their own documented models,
+credentials and pricing. Any future Sora integration needs a newly verified supported API.
 
 ## Image facts on inputs and outputs
 
@@ -51,6 +71,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 |---|---|---|
 | `openai` (chat) | `openai` | — |
 | `anthropic` (chat) | `anthropic` | — |
+| `azure-openai` (chat) | `azure-openai` | `[providers] azure_openai_url` with an HTTPS Azure resource root or its `/openai/v1` base |
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
@@ -72,11 +93,66 @@ proxy root (`[providers] litellm_url = "https://proxy.example"`, without `/v1`) 
 integration. Saving this address alone does not add models.
 The model-catalog integration decision is tracked in [#489](https://github.com/CypherNaught-0x/nodecraft/issues/489).
 
+Select **Azure OpenAI deployment** on a text generation card and enter your exact Azure
+deployment name in **Azure deployment name**. NodeCraft accepts 1–64 ASCII letters, digits,
+hyphens, underscores or dots and sends that value unchanged as `model`; the name need not
+match the underlying model. Blank or malformed names refuse before any request. The card
+offers text input/output and an output-token cap; the selected deployment must support v1
+Chat Completions. Its generic quality/latency values are discovery hints only.
+
+No universal Azure price is assumed. The catalog uses `ByUsage`, so the picker says
+**Usage based (USD)** and run confirmation requires explicit unknown-price acceptance.
+Azure returns token usage, not a monetary charge: this card cannot settle an exact dollar
+cost. An unknown-price acceptance is not a monetary ceiling. Custom hosts with a validated
+catalog can instead use actual rates and a literal deployment name as `provider_model`.
+NodeCraft does not load arbitrary catalog files at runtime. The browser has no Azure endpoint
+settings panel; native desktop/CLI configuration is supported below.
+
+For native desktop/CLI use, save the resource key through `keys.set` with account
+`azure-openai` (or the API keys panel), and set the non-secret endpoint in settings:
+
+```toml
+[providers]
+azure_openai_url = "https://YOUR-RESOURCE.openai.azure.com"
+```
+
+The preset also accepts `https://YOUR-RESOURCE.services.ai.azure.com/openai/v1/`. It refuses
+HTTP, embedded credentials, queries, fragments and legacy `/openai/deployments/...` paths.
+It sends the shared Chat Completions request to `/openai/v1/chat/completions`, with the
+output cap as `max_completion_tokens` (including reasoning tokens); omit `temperature` for
+deployments that reject it. API-key authentication is supported; Entra login/token refresh,
+Responses API, model discovery as deployment discovery and dated preview endpoints are not.
+This follows Microsoft's [v1 migration guide](https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle?tabs=key)
+and [Chat Completions reference](https://learn.microsoft.com/en-us/rest/api/microsoft-foundry/azureopenai/chat),
+checked 2026-10-24.
+
+Chat completes at submit; polling has no remote job and cancellation cannot undo an accepted
+request. Streaming text, token usage, bounded replies and error mapping reuse the shared
+adapter. No idempotency guarantee is advertised: Azure disables automatic retries of an
+uncertain submission, since manually retrying can cost again. Offline contract tests cover endpoint construction, deployment names,
+auth secrecy, usage, streaming, content filtering, errors and the synchronous lifecycle.
+The opt-in smoke test costs tokens and was not run for this addition:
+
+```sh
+NODECRAFT_LIVE_AZURE_OPENAI=1 AZURE_OPENAI_API_KEY=… \
+  AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com \
+  AZURE_OPENAI_DEPLOYMENT=YOUR-DEPLOYMENT \
+  cargo test -p nodecraft-providers --test live_llm live_azure_openai
+```
+
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
 adapters off the UI thread and only for the providers a run uses; each run gets a fresh routing
 from the adapters already built. ComfyUI's token is optional: a keychain that can't be opened or
 was refused means no token, not no ComfyUI. The app makes `install_salt` once and saves it at once;
 with read-only settings none is made and ComfyUI stays off.
+
+Older Workflow cards may lack stored partner-node names. In the desktop, refreshing their
+selected server installs runtime evidence from `/object_info`, so quotes and budget admission
+treat matching partner nodes as unknown paid work. Identical refreshes and checks of unrelated
+profiles preserve an open quote. This evidence is not persisted in the project: before a refresh
+in a new session, and in CLI, MCP or serve hosts that do not install the desktop refresh result,
+legacy cards retain their previous pricing behavior. Reimporting with a current server list
+stores partner names on the card and avoids that host/session limitation.
 
 In the browser, the same server addresses and installation salt persist only for this origin,
 separately from API keys. Open Providers to edit them; a failed save keeps the previous settings.
@@ -563,14 +639,24 @@ The ignored live smoke test requires both explicit environment opt-ins and fresh
 permission; ordinary tests use synthetic fixtures and local listeners only.
 
 Replicate asks for a 2-second queued/running poll interval, subject to the host's existing maximum
-interval and retry/backoff policy. `Cancel-After` can bound server lifetime from prediction creation
-(5 seconds to 24 hours); it is not the synchronous wait duration or a proof of nonbilling. This
-adapter does not add that header: `RunLimits::deadline_ms` is a local polling deadline that is not
-passed to Provider::submit, so equating those clocks would be misleading. The existing local
-deadline still requests best-effort cancellation when a handle exists. Provider-reported
-`metrics.predict_time` measures execution seconds, not tokens or money; current Usage has no
-duration field, so it remains ignored and cost stays unknown. Neither future deadline propagation
-nor a typed runtime-usage schema is supplied by this safety follow-up.
+interval and retry/backoff policy. Creation sends `Cancel-After` using the host's
+`RunLimits::deadline_ms` duration, rounded upward to whole seconds. Durations outside 5 seconds
+to 24 hours are rejected before sending a prediction. Direct `Provider::submit` uses the usual
+one-hour default. This is a server lifetime measured from prediction creation, whereas the local
+deadline begins when polling starts; they are separate clocks. Neither is proof of nonbilling.
+Polling, restored handles, output downloads and cancellation never reset the server lifetime.
+The local deadline still requests best-effort cancellation when a handle exists.
+
+On successful completion, `metrics.predict_time` becomes optional `Usage.execution_ms`, rounded
+to milliseconds. It measures execution rather than queue time, tokens or money. Missing or
+malformed optional metrics remain unknown without discarding valid outputs; negative, nonfinite
+or over-24-hour values are not retained. Failed/canceled predictions still report their failure,
+without a completed-result usage record. Cost stays unknown. The engine retains this evidence
+in result job settings, held results and resumed jobs; copying a cached result does not claim
+another execution. Older records without it remain readable.
+
+Contract checked 2026-10-24: [prediction deadlines](https://replicate.com/docs/topics/predictions/create-a-prediction)
+and [HTTP API metrics](https://replicate.com/docs/reference/http).
 
 
 ## Gemini Images (`gemini-images` feature)
@@ -678,7 +764,22 @@ Contract checked 2026-10-23: [Kling developer docs](https://app.klingai.com/glob
 
 ## fal.ai queue models
 
-The optional `fal` feature supports ten explicit live aliases, checked against official HTTP
+Ideogram V3 (#34) reuses this adapter and the `fal` keychain account: select
+**Ideogram V3 Balanced (fal)** on an Image card. `fal.ideogram-v3` sends one image request,
+fixed to Balanced rendering, with a prompt, optional negative prompt, six size presets,
+four styles, MagicPrompt and an optional seed (0–2,147,483,647). The dated estimate is
+0.06 USD per call, checked on 2026-10-27 against [fal pricing](https://fal.ai/models/fal-ai/ideogram/v3)
+and its [HTTP schema](https://fal.ai/models/fal-ai/ideogram/v3/api). The alias is live;
+the estimate is separate from any observed invoice. Other rendering speeds, multiple images,
+reference/edit inputs and custom palettes are not exposed by this entry.
+
+Ideogram uses the existing queue resume/cancel flow and no-redirect authentication. Its
+generic file result may omit dimensions; downloaded PNG/JPEG/WebP bytes are probed and
+decoded within the existing 16 MiB and 4,096-pixel bounds. No incomplete image is imported.
+The opt-in ignored smoke test needs `NODECRAFT_LIVE_IDEOGRAM=1` and `FAL_KEY` and spends
+one Balanced call; offline fixtures require neither. Direct Ideogram credentials are not used.
+
+The optional `fal` feature supports explicit live aliases, checked against official HTTP
 schemas on 2026-10-18 (the two Wan image and speech aliases and the two style models on
 2026-10-21, Bria on 2026-10-22): `fal-ai/flux/schnell`, `fal-ai/wan/v2.2-a14b/text-to-video`,
 `fal-ai/wan/v2.2-a14b/image-to-video`, `fal-ai/wan/v2.2-14b/speech-to-video`,
@@ -775,7 +876,7 @@ families compose official model HTTP roots and the generic contract, not observe
 
 No ambiguous create is automatically replayed. X-Fal-No-Retry and disabled fallback are sent,
 but these headers and local idempotency keys do not establish remote billing deduplication.
-NodeCraft treats only the matching HTTP/body pairs 202/CANCELLATION_REQUESTED,
+NodeCraft treats only the matching HTTP/body pairs 200/OK (removed while queued), 202/CANCELLATION_REQUESTED,
 400/ALREADY_COMPLETED and 404/NOT_FOUND as successful best-effort cancel dispositions. Malformed,
 contradictory, authentication and server replies remain errors. This is an explicit NodeCraft
 policy: fal's SDK documents raising on 400/404. No disposition establishes nonbilling proof. Local poll/result/download/validation failures retain an accepted handle and unfinished
@@ -791,7 +892,8 @@ before fetch; successful wasm compilation does not imply browser fal networking 
 
 Operation limits are lower-only: one PNG/JPEG/WebP input at most 1 MiB / 1024²; aggregate text and
 parameter strings 16 KiB; serialized request 2 MiB; API body 2 MiB; metadata 256 KiB; JSON depth 32 and
-4096 items. Four output files maximum, 16 MiB each / 48 MiB total; image axes 4096 and aggregate
+4096 items. Four output files maximum, 16 MiB each / 48 MiB total, except one Luma Ray clip may use
+256 MiB for both the file and total download; image axes 4096 and aggregate
 16,777,216 pixels. Every descriptor is admitted before downloads; actual HTTP body caps shrink
 with remaining aggregate capacity. Full image codecs and actual geometry are checked; WAV,
 MP4 and GLB2 receive bounded container-envelope validation, not complete audio/video/mesh codec
@@ -807,9 +909,9 @@ Known logical-payload worksheet (MiB), with phase overlap rather than a sum acro
 | Input inspection | Inspection 2 + combined decoded/orientation rasters 128 + scratch 1 | 131 |
 | Request/receipt | URI, request, native request clone, API reply, metadata and scratch | 12 |
 | Result metadata | Bounded descriptors and parsing payload | 6 |
-| Download validation | Validation 2 + metadata 1 + API reply 2 + outputs 48 + Vec-to-Arc live-byte overlap 16 + combined rasters 128 + scratch 1 | 198 |
+| Image download validation | Validation 2 + metadata 1 + API reply 2 + outputs 48 + Vec-to-Arc live-byte overlap 16 + combined rasters 128 + scratch 1 | 198 |
 
-A separate container/admin payload allowance of 4 gives a 202 MiB logical-payload worksheet,
+A separate container/admin payload allowance of 4 gives a 202 MiB image-path logical-payload worksheet,
 not an allocation or RSS ceiling. HTTP body **length** is bounded; transport `Vec` capacity may
 exceed that length through allocator growth and is additional, including its overlap with Arc
 conversion. The adapter must not reject already-paid valid bytes merely because capacity grew.
@@ -818,6 +920,10 @@ are included in known raster owners. Existing media preflight uses decoder.total
 orientation copy against 128 MiB; most codecs ignore their private allocation limit.
 Codec-private workspace, spare transport capacity, allocator overhead, transport/TLS/kernel
 buffering, caller graph/history and concurrent jobs are outside this worksheet.
+
+Ray instead admits one MP4 body up to 256 MiB and a possible 256 MiB Vec-to-Arc live-byte
+overlap. Its container-envelope check does not allocate image codec rasters. These payloads
+replace the image download/codec owners above; the 202 MiB image worksheet is not a Ray cap.
 
 HTTP errors preserve optional integer Retry-After seconds only when checked conversion fits
 within one hour. Optional `X-Fal-Billable-Units` evidence is tracked in #437; it is not tokens or
@@ -942,6 +1048,56 @@ spending authorization (Seedance 2.0 Mini, 480p, 4 s: at most about 0.15 USD). I
 NODECRAFT_LIVE_SEEDANCE=1 NODECRAFT_LIVE_SEEDANCE_ACKNOWLEDGE_COST=1 ARK_API_KEY=… \
   cargo test -p nodecraft-providers --features http,seedance --test live_seedance -- --ignored
 ```
+
+## Hunyuan3D through fal
+
+Issue #42 reuses the `fal` runtime and stored fal key for Tencent Hunyuan3D V3 cloud models.
+Pick a **Hunyuan3D V3** model on a **Generate 3D** card. Tencent SecretId/SecretKey credentials
+do not authenticate to fal. Native HTTP supports these requests; the builtin browser transport
+refuses the required no-redirect operation before fetch. The library and catalog build for
+WebAssembly and can use an audited host transport that supplies that guarantee.
+
+Public contracts and prices checked **2026-10-27**:
+
+| Model | Contract | Required inputs |
+| --- | --- | --- |
+| `fal.hunyuan3d-v3` | [Text to 3D](https://fal.ai/models/fal-ai/hunyuan3d-v3/text-to-3d/api) | One `prompt`, up to 1024 characters |
+| `fal.hunyuan3d-v3-image` | [Photo to 3D](https://fal.ai/models/fal-ai/hunyuan3d-v3/image-to-3d/api) | One `image`; no prompt |
+| `fal.hunyuan3d-v3-sketch` | [Sketch to 3D](https://fal.ai/models/fal-ai/hunyuan3d-v3/sketch-to-3d/api) | One `image` interpreted as a sketch, and a `prompt` up to 1024 characters |
+
+All three return one GLB. Photo and sketch inputs are verified PNG/JPEG/WebP, at most 1 MiB
+and 1024 pixels per axis, sent inline only after the complete escaped/base64 request fits the
+4 MiB cap. Sketches require at least 128 pixels on each axis, checked before any paid request.
+Empty/duplicate roles, unsupported fields and malformed images refuse before a paid
+request. Safety stays on, and the provider's standard **500K face target** is retained without
+requesting a custom count.
+
+The mesh preset includes every offered price-changing setting. Current fal rates for
+[text](https://fal.ai/models/fal-ai/hunyuan3d-v3/text-to-3d),
+[photo](https://fal.ai/models/fal-ai/hunyuan3d-v3/image-to-3d), and
+[sketch](https://fal.ai/models/fal-ai/hunyuan3d-v3/sketch-to-3d) generation are **$0.375 Normal**,
+**$0.45 LowPoly**, **$0.225 Geometry**, plus **$0.15 for PBR**. Text/photo models offer textured,
+PBR, low-poly triangles/quads with or without PBR, and geometry-only presets. Sketch offers
+textured/PBR only: its API has no generation-type or polygon-type inputs. These are per-call
+estimates, not provider-reported invoices. Custom face counts and multi-view images, which
+add further fees, are outside this integration and are never silently sent or ignored.
+
+Saved handles resume the same fal task without paying for another create. Ambiguous creates
+never replay; terminal failures retain possibly billed reservations. Cancellation does not
+promise a refund. Result downloads use fal storage without the key and never follow redirects.
+Only `model_glb` is consumed; unrequested thumbnails and alternate-format links are not fetched.
+
+Each GLB has a **256 MiB per-file/aggregate cap**, also on resume, so the documented 60+ MiB
+examples fit. Existing packed-GLB checks refuse external resource URIs. Mesh decoding keeps its
+256 MiB input, four-million vertex/triangle, depth and texture limits. Other fal aliases retain
+their earlier quotas. A returned model using an unsupported decoder extension can remain in
+history while its viewer reports that it cannot be read.
+
+Offline contract, RunHost and GPU picker tests cover prices, typed/viewable GLB outputs,
+failure accounting, saved tasks and a valid result larger than the old cap. Live provider
+output has not been verified. The ignored `hunyuan42_live_smoke` needs
+`NODECRAFT_LIVE_HUNYUAN=1`, `NODECRAFT_LIVE_HUNYUAN_ACKNOWLEDGE_COST=1` and `FAL_KEY`, plus explicit
+spending authorization; it requests one Geometry model for about **$0.225** and never runs in CI.
 
 ## Tripo 3D tasks
 
@@ -1196,6 +1352,21 @@ NODECRAFT_LIVE_HIGGSFIELD=1 NODECRAFT_LIVE_HIGGSFIELD_ACKNOWLEDGE_COST=1 HIGGSFI
 
 ## ElevenLabs speech, sound and music
 
+The adapter tracker [#20](https://github.com/CypherNaught-0x/nodecraft/issues/20) is implemented
+across the following merged changes. Generation works in the desktop app and headless CLI.
+The desktop app and browser preview request the account voice list; streamed previews are
+desktop-only. The CLI does not request either capability. The host limits below apply.
+
+| Tracker requirement | Implementation and offline coverage |
+|---|---|
+| Speech, effects, music and voice changing | [#667](https://github.com/CypherNaught-0x/nodecraft/pull/667); [adapter contract tests](../crates/providers/src/elevenlabs/tests.rs) and [catalog](../assets/catalog/elevenlabs.toml) |
+| Voices from the account | [#857](https://github.com/CypherNaught-0x/nodecraft/pull/857); [option-list integration tests](../crates/engine/tests/option_fetch529.rs) |
+| Streaming speech previews | [#876](https://github.com/CypherNaught-0x/nodecraft/pull/876) and [#884](https://github.com/CypherNaught-0x/nodecraft/pull/884); [stream contracts](../crates/providers/src/elevenlabs/stream_tests.rs), [engine delivery tests](../crates/engine/tests/audio_previews875.rs) and [card playback tests](../crates/ui-egui/src/app/audio875_tests.rs) |
+
+The [opt-in live tests](../crates/providers/tests/live_elevenlabs.rs) cover a short speech request
+and streamed speech. Their existence is not evidence of a live run; paid validation requires
+the explicit authorization described below. The tests linked above use fixture or mock data.
+
 The optional `elevenlabs` adapter calls the [ElevenLabs API](https://elevenlabs.io/docs/api-reference)
 at the fixed origin `https://api.elevenlabs.io` with the key in the `xi-api-key` header. Every
 request is synchronous: the reply body is the audio, always asked for as MP3 at 44.1 kHz and
@@ -1273,17 +1444,55 @@ NODECRAFT_LIVE_ELEVENLABS=1 ELEVENLABS_API_KEY=… \
   cargo test -p nodecraft-providers --features http,elevenlabs --test live_elevenlabs -- --ignored
 ```
 
+## Editing ComfyUI workflow cards
+
+The card menu's **Edit workflow fields…** (#947) opens media inputs, parameters and results.
+Show or hide fields, edit their names and use Up/Down to reorder them, then Apply fields.
+Cancel leaves the card untouched. Filter fields searches their names and workflow targets.
+Read server nodes, then Reload fields, when the editor has no catalog for the card's server.
+The saved mapping travels with the project and Techniques. Applying it is one Undo step;
+current values survive hiding, and renamed ports keep their wires. The editor asks explicitly
+before disconnecting wires or clearing history after a change of result media types. Finish or
+cancel a card's run before editing its fields.
+
+New imports expose image/video/audio upload inputs, prompts (including single-line prompt
+widgets), seeds, steps, CFG and dimensions. Other scalar widgets, such as reference data,
+model choices and custom settings, can be exposed in the editor. Internally linked inputs stay
+inside the workflow. Compatible core `PreviewImage` nodes become `SaveImage` nodes in the
+imported copy so PBR previews are retained as results; the source workflow file is untouched.
+This conversion requires the server to describe both core nodes with the expected image
+connection and filename widget. Custom or incompatible previews are left unchanged.
+
+Results remain one list port per media type. Selected saver order is saved in the job handle,
+so a resumed local ComfyUI job keeps the same image order. Comfy Cloud also honors that order
+when its response supplies node ids; results without node ids retain the server's order after
+identified results. Older saved handles retain their previous ordering. Renaming a media list
+port writes workflow config version 2, which older NodeCraft builds refuse as unsupported.
+For programmatic editing and explicit disconnection/history flags, see [MCP](mcp.md).
+
 ## Comfy Cloud workflows
 
-The optional `comfy-cloud` adapter (#16) runs ComfyUI workflows on Comfy's hosted GPUs through its
-versioned v2 API at the fixed base `https://cloud.comfy.org`. Its jobs have the same shape as the
-local ComfyUI adapter's: `params.workflow` in API format, `params.values` overrides keyed
-`<node>.<input>`, and media inputs whose role names an upload input such as `1.image`.
+The optional `comfy-cloud` adapter (#16, #865) runs ComfyUI workflows on Comfy's hosted GPUs through
+its versioned v2 API at the fixed base `https://cloud.comfy.org`. In **API keys**, save your Comfy
+API key under **comfy-cloud**. Open **ComfyUI**, choose **Add Comfy Cloud**, then **Make default**
+to import workflows against its node list. Existing Workflow cards can choose the named profile
+in their **ComfyUI server** menu. The same Workflow catalog entry, mapping, parameters, media
+ports and selected outputs work with either backend; no separate hosted model needs to be added.
+
+The profile is saved in settings with `backend = "cloud"`; the key stays in the OS keychain.
+Its address is fixed and cannot be edited. Older profiles without `backend` remain local.
+Serverless deployment URLs are not supported by this profile. Checking it reads the node list
+without submitting a job; local GPU statistics and queue health are not available for this API.
+
+At the adapter boundary, both the Workflow card's `comfy.workflow`, `comfy.values` and
+`comfy.outputs` text inputs and the direct API shape (`params.workflow`, `params.values`) are
+supported. Media roles name upload inputs such as `1.image`. Built-in ComfyUI presets use the
+same template expansion as local servers and still require their models to exist on the host.
 
 - **Checked first:** the workflow and its overrides are checked against the cloud's
   `/api/object_info` (cached for five minutes) before anything is uploaded, so a missing node or a
   value the cloud doesn't offer costs nothing.
-- **Inputs** are sniffed (HDR inputs are refused as for local ComfyUI), capped at 100 MiB each,
+- **Inputs** are sniffed (HDR inputs are refused as for local ComfyUI), conservatively capped at 50 MiB each,
   uploaded to `POST /api/v2/assets` under content-hash names, and referenced from the workflow as
   `core/ASSET` values. Uploads are free and deduplicated, so a failed upload proves no job exists.
 - **Submitting once:** `POST /api/v2/jobs` carries an `Idempotency-Key` derived from the run's own
@@ -1307,13 +1516,846 @@ local ComfyUI adapter's: `params.workflow` in API format, `params.values` overri
   quote covers, so a workflow using one (`api_node` in the cloud's node list) is refused before
   anything is uploaded or run.
 
-Comfy Cloud bills GPU time, which isn't known before a run. There are no catalog models for it
-yet: workflows reach it through the Workflow node and the servers panel (#9), which add it as a
-backend profile next to local servers.
+Comfy Cloud bills GPU time, which isn't known before a run. The physical provider binding marks
+this work **unpriced**, even when the reused catalog entry is free for a local server and no
+node-list check has completed. A finite budget refuses the run before any request. With no
+finite budget, the normal cost confirmation requires explicit acceptance of the unknown-priced
+jobs; it never presents hosted work as free. Changing profiles invalidates earlier quotes and
+prepared runs. Comfy's bill is not yet imported as a settled GPU usage charge in NodeCraft.
+
+The [official v2 API schema](https://github.com/Comfy-Org/docs/blob/main/openapi-v2.yaml) and
+[SDK contract](https://github.com/Comfy-Org/docs/blob/main/development/api-development/sdks.mdx)
+were checked on 2026-10-24. Upload tags are a JSON array; returned files are ordered by their
+workflow node id to preserve the Workflow card's output mapping.
 
 The live smoke test only reads the node list, so it spends no credits:
 
 ```sh
-NODECRAFT_LIVE_COMFY_CLOUD=1 COMFY_CLOUD_API_KEY=… \
+NODECRAFT_LIVE_COMFYUI_CLOUD=1 COMFY_CLOUD_API_KEY=… \
   cargo test -p nodecraft-providers --features http,comfy-cloud --test live_comfy_cloud -- --ignored
 ```
+
+The older `NODECRAFT_LIVE_COMFY_CLOUD` opt-in remains accepted. Neither test runs in CI.
+
+## Luma through fal (#26)
+
+Use the existing `fal` API key account. The Luma catalog entries reuse fal's shipping adapter,
+queue, cancellation and resumable handles; they do not need a separate Luma key. The aliases
+are live rather than pinned model versions:
+
+| Model | Admitted input | Standard output and quote |
+|---|---|---|
+| Luma Ray 3.2 | One prompt | 5 or 10-second MP4; 540p, 720p or 1080p at 0.10, 0.20 or 0.40 USD/second |
+| Luma Ray 3.2 frames | Prompt, first frame, optional last frame | 5-second MP4 at the same resolution rates |
+| Luma Photon | One prompt | One image; 0.019 USD/megapixel, but dimensions are service-selected, so the upfront quote is unknown |
+
+Prices and request contracts were checked 2026-10-24 against the official
+[Ray text](https://fal.ai/models/luma/agent/ray/v3.2/text-to-video),
+[Ray frames API](https://fal.ai/models/luma/agent/ray/v3.2/image-to-video/api), and
+[Photon](https://fal.ai/models/fal-ai/luma-photon) pages. Ray duration is sent explicitly.
+Loops require five seconds and no last frame. Ten-second frame animation requires the service's
+multi-keyframe API, which is not offered here. HDR, EXR, references and editing are also outside
+these modes. Safety screening keeps the service default.
+
+Ray prompts are 1–6,000 characters and Photon prompts 3–5,000, after surrounding whitespace is
+trimmed. The shared aggregate text-metadata limit is still 16 KiB. Frames must be PNG/JPEG/WebP,
+at most 1 MiB and 1024 pixels per side; they are decoded before payment. Results keep fal's
+16 MiB per-file cap for Photon. Ray text/frame clips instead have a 256 MiB per-file and
+aggregate cap, also when resumed from a saved handle. Application limits may lower either cap.
+Photon images are decoded under the 4096-pixel/16,777,216-total-pixel bounds,
+and may be PNG, JPEG or WebP. The generic Photon file schema need not report dimensions; actual
+bytes determine them. Ray uses the existing bounded MP4 container check, not a full video decode.
+
+Submissions use the full model path, while Ray's authenticated queue routes use `luma/agent`
+and Photon uses `fal-ai/luma-photon`, following the
+[queue contract](https://fal.ai/docs/inference-api/queue/submit-path).
+Downloads use the existing credential-free HTTPS `fal.media` allowlist and refuse redirects.
+An ambiguous paid submission is never replayed. Cancellation is best effort and does not prove
+a refund. Returned billable units remain evidence, not an invented monetary invoice. The builtin
+browser transport cannot provide no-redirect requests, so these modes require an audited native
+transport even though the library builds for wasm.
+
+No paid live calls were made for this change. Ignored `live_luma` tests require both
+`NODECRAFT_LIVE_LUMA=1` and `NODECRAFT_LIVE_LUMA_ACKNOWLEDGE_COST=1`, an explicit `FAL_KEY`, and
+spending authorization. The Ray smoke requests a 0.50 USD clip; Photon has no exact upfront
+total. They never run in CI.
+
+## Deepgram file transcription (`deepgram` feature)
+
+Only a bounded typed error envelope with a recognized matching status/code proves a refusal
+before transcription: auth (401/403), credits (402), invalid input (400/422) or rate limit (429).
+These release the reservation; a recognized rate limit can retry through the existing scheduler.
+Status alone, unknown codes, malformed/oversized bodies, transport loss and server errors keep
+possibly-billed evidence and never authorize an ambiguous retry. Provider error text is omitted.
+See the [documented error contracts](https://developers.deepgram.com/docs/errors).
+
+
+The Deepgram Nova-3 transcription card sends one audio file directly to
+`https://api.deepgram.com/v1/listen`. Save an API key under the `deepgram` account in
+API keys. The fixed-origin request uses secret `Authorization: Token` credentials and
+never follows redirects. This provider has native host setup; the browser has no builtin
+transport/key setup for it.
+
+The current card transcribes English with smart formatting. It accepts one WAV, MP3,
+FLAC or Ogg input, up to 25 MiB, with readable headers reporting 1–2 channels,
+8–192 kHz and a positive duration of at most 30 minutes. These are local limits,
+not Deepgram service limits. Header inspection is bounded; Deepgram validates the
+encoded audio. Stereo is mixed into one transcript. No prompt, URL input, callbacks,
+diarization, live streaming or optional analysis features are sent. Empty text is a
+valid result for silence. Responses are capped at 4 MiB and transcripts at 1 MiB.
+
+Every request uses `mip_opt_out=true` to exclude the recording from Deepgram's Model
+Improvement Program. Account rates and opt-out can affect pricing. The catalog is
+explicitly usage priced: a run needs unknown-price acceptance and neither duration
+metadata nor a missing monetary receipt is converted into an invented dollar charge.
+The adapter makes one synchronous request with a ten-minute transport timeout. A lost
+reply may have been billed, is not automatically retried and has no resumable handle.
+Local cancellation cannot confirm remote cancellation or a refund.
+
+Offline fixtures exercise request bounds, transcript parsing, error mapping, actual
+host recording, unknown-price admission, no replay after a lost reply and picker selection.
+The ignored live smoke requires explicit spending authorization, `NODECRAFT_LIVE_DEEPGRAM=1`
+and `DEEPGRAM_API_KEY`; it sends the repository's public tone fixture, never a private file.
+No paid live call was made while implementing this adapter.
+
+Sources checked 2026-10-24: [file transcription](https://developers.deepgram.com/docs/pre-recorded-audio),
+[request schema](https://developers.deepgram.com/reference/speech-to-text/listen-pre-recorded),
+[audio formats](https://developers.deepgram.com/docs/supported-audio-formats),
+[model-improvement opt-out](https://developers.deepgram.com/docs/the-deepgram-model-improvement-partnership-program)
+and [pricing](https://deepgram.com/pricing).
+## OpenAI speech and file transcription (`openai-audio`)
+
+Add an OpenAI key under **API keys → openai**. The native host binds it to the
+`openai-audio` catalog provider. Choose **OpenAI speech (ends Jan 6, 2027)** on a Generate audio
+card with a prompt, or connect a recording to a Generate text card and choose **OpenAI file
+transcription**. These use the same quote, acceptance, budget and result-history commands as
+other generated media. The adapter compiles for wasm, but a custom browser host must supply
+transport/routing; the shipping browser does not configure paid credentials here.
+
+Speech uses `gpt-4o-mini-tts-2025-12-15` at `/v1/audio/speech`, a built-in voice, speed from
+0.25 to 4 and an optional style instruction. Input is limited to 4,096 characters and output
+is MP3. The catalog identifies it as AI-generated speech; disclose that to listeners.
+**OpenAI has deprecated these speech models and will shut them down on January 6, 2027.**
+Migration is needed before that date. The suggested Realtime replacement is a separate API,
+not a model accepted by this endpoint, and is not implemented here. See the
+[speech guide](https://developers.openai.com/api/docs/guides/text-to-speech) and
+[deprecation notice](https://developers.openai.com/api/docs/deprecations), checked 2026-10-24.
+
+Transcription uses current `gpt-transcribe` at `/v1/audio/transcriptions`, uploading one MP3,
+WAV, FLAC, Ogg or M4A recording up to 25 MB, plus an optional context prompt. It returns plain
+text in the card history. This initial integration does not expose WebM/video containers,
+translation, diarization or realtime transcription. See the
+[file transcription guide](https://developers.openai.com/api/docs/guides/speech-to-text).
+
+Both entries show **Usage based (USD)**, requiring acceptance of one unpriced job; there is
+no guaranteed price ceiling. Speech does not return billable token counts here. Transcription
+records [the published $0.0045/minute rate](https://developers.openai.com/api/docs/models/gpt-transcribe)
+only if its response includes valid duration usage; otherwise the cost remains unknown.
+Requests never automatically replay after an uncertain paid submission, do not follow
+redirects, and cannot cancel a request already sent. Parsed authentication, validation, quota
+and rate-limit refusals release the reservation; documented transient rate-limit refusals can
+retry under the configured attempt limit. Unknown or oversized error bodies, server errors and
+lost replies remain possibly billed. For those uncertain failures, retry manually only after
+checking the provider account for any charge. See OpenAI's
+[error codes](https://developers.openai.com/api/docs/guides/error-codes).
+
+Offline fixtures cover request shapes, validation and size bounds, redacted errors, duration
+billing and actual canvas runs in both directions. The ignored `live_openai_audio` smoke makes
+two paid requests only with separately authorized spending, `OPENAI_API_KEY`, and both
+`NODECRAFT_LIVE_OPENAI_AUDIO=1` and `NODECRAFT_LIVE_OPENAI_AUDIO_ACKNOWLEDGE_COST=1`.
+No live service availability or quality claim follows from offline tests.
+
+## Black Forest Labs: direct FLUX.2 klein 4B (#33)
+
+In **API keys**, save your Black Forest Labs key under account `bfl`, then select
+**FLUX.2 klein 4B (BFL)** on an image generation card. This uses BFL directly, with no
+aggregator account. The built-in catalog supports one text prompt (up to 16 KiB), optional
+32-bit seed, and width/height from 64 to 1984 pixels in steps of 16. It requests one PNG.
+Image references, editing, webhooks and custom endpoints are not exposed by this adapter.
+
+The [official generation API](https://docs.bfl.ai/quick_start/generating_images) returns a
+job and its cluster polling URL. NodeCraft validates and saves those, polls the same task
+after restart, then downloads the signed result immediately. Only BFL API cluster hosts
+receive the key; image downloads use the documented `delivery.*.bfl.ai` service without
+credentials or redirects. Replies are capped at 64 KiB, image bytes at 32 MiB, decoded
+image allocation at 64 MiB, and output geometry must match the request. Native desktop
+transport is supported; the built-in browser transport returns an unsupported error.
+
+[BFL pricing](https://bfl.ai/pricing?category=flux.2) depends on pixels and credits.
+NodeCraft currently marks the cost as unknown usage pricing. Running requires explicit
+acceptance of an unpriced job; a finite budget cannot admit it. The API's credit fields
+are not recorded as dollars. Once the paid request is sent, lost replies are never retried
+automatically: BFL documents no idempotency key. Cancellation stops local waiting but
+cannot confirm a remote stop or prevent billing. A successful saved handle can be resumed
+without sending another create request.
+
+Offline fixtures exercise request bounds, queued/running/failure states, saved handles,
+credential isolation, corrupt/oversized output, ambiguous paid replies and the real RunHost.
+An ignored paid smoke test requires both explicit spending authorization and
+`NODECRAFT_LIVE_BFL=1` with `BFL_API_KEY` supplied privately. It is never run in CI.
+The current endpoint and statuses were verified against the
+[official OpenAPI](https://api.bfl.ai/openapi.json) on 2026-10-24.
+
+## Runway video (#25)
+
+Store a Runway developer API key under `runway` in API keys. The desktop, CLI and headless
+provider setup route the builtin `runway.gen4-5` and `runway.gen4-turbo` models to the same
+adapter. Gen-4.5 accepts a prompt alone or a prompt with one first-frame image; Turbo requires
+that image. Prompts are limited to 1,000 UTF-16 units. Inputs are PNG/JPEG/WebP, at most 3 MiB
+and 4096 pixels per side. These are NodeCraft's local bounds; larger inputs must be resized.
+The catalog offers Gen-4.5's shared landscape/portrait sizes and Turbo's six frame sizes.
+Video editing, reference sets, audio generation and premium output formats are not offered.
+
+Duration is sent explicitly (2–10 seconds) and the catalog quotes standard MP4 at 0.12 USD per
+second for Gen-4.5 and 0.05 USD per second for Turbo, excluding tax. Sources checked 2026-10-24:
+[Runway pricing](https://docs.dev.runwayml.com/guides/pricing/) and
+[the API schema](https://docs.dev.runwayml.com/openapi.json). The API's optional terminal
+nonnegative credit count is recorded as cost at 0.01 USD/credit when representable. Missing cost,
+negative credit adjustments or an overflowing conversion leave usage unknown and retain the
+conservative estimate; they do not discard a successful video. Turbo omits the unsupported
+`outputFormat` field and uses its standard MP4 default.
+Input safety refusals may be billed. No paid live verification was performed for this change.
+
+One paid create returns a resumable UUID. The shared runner polls at five-second intervals.
+A lost reply may hide a billed task: Runway has no documented submission deduplication, so an
+uncertain create is not retried. A failed result download resumes the task and obtains a fresh
+link. JSON replies are limited to 64 KiB; videos to 256 MiB. The downloaded MP4 must have readable
+headers, dimensions no greater than 4096 pixels and duration no greater than 60 seconds; this
+checks the container metadata, not every encoded frame. Only public CloudFront HTTPS result
+links are admitted. API credentials never accompany downloads and redirects are refused.
+The builtin browser transport cannot provide no-redirect requests, so it refuses this adapter;
+wasm compilation is supported for hosts with an audited transport.
+
+Cancellation reads the task first and refuses to delete an already completed video. Runway's
+DELETE can still race completion and remove that result; cancellation does not guarantee a
+refund. Already missing/cancelled tasks count as stopped. See
+[Runway task management](https://docs.dev.runwayml.com/api/).
+
+`live_runway` is ignored and requires `NODECRAFT_LIVE_RUNWAY=1`,
+`NODECRAFT_LIVE_RUNWAY_ACKNOWLEDGE_COST=1`, and `RUNWAYML_API_SECRET`; run it only with spending
+authorization. It requests one 2-second Gen-4.5 clip (0.24 USD before tax), never in CI.
+
+## Hugging Face text (`huggingface` feature)
+
+The builtin GPT OSS 120B (Groq) card calls
+`https://router.huggingface.co/v1/chat/completions` using the existing OpenAI-compatible
+chat client. Its explicit model id `openai/gpt-oss-120b:groq` selects Groq through the HF
+router; it does not select whichever provider is fastest or cheapest. The public router
+model listing reported this route live on 2026-10-24. Availability can still change.
+
+In the native app, save an HF token with Inference Providers permission in API keys under
+`huggingface`. It is sent only as a secret Authorization bearer header. Project files never
+contain the token. The browser has no builtin transport/key setup for this catalog provider.
+
+The card accepts text only: at most 64 turns and 1 MiB total text. Requested completion tokens
+are limited to 1–8,192, default 2,048; reasoning can consume part of the allowance. The existing
+client bounds responses and streaming, retains token usage, and maps payment-required to Budget,
+auth failures to Auth and ordinary 429s to RateLimited (quota-coded 429s to Budget).
+Pricing is explicitly ByUsage: account credits, changing rates and provider-specific usage mean
+this adapter does not claim a dollar quote or actual charge. Normal unknown-price acceptance is
+required. No ambiguous paid submit is replayed, no polling handle exists and local cancellation
+cannot confirm a remote stop or refund. Images, tools, embeddings and other HF tasks are outside
+this text adapter.
+
+Offline fixtures cover routing, request bounds, streaming, errors, real host admission and the
+lost-reply driver path. The opt-in smoke test requires `NODECRAFT_LIVE_HUGGINGFACE=1` and
+`HF_TOKEN`; ordinary tests do not make paid requests.
+
+Contract references: [router and provider selection](https://huggingface.co/docs/inference-providers/en/index),
+[chat request schema](https://huggingface.co/docs/inference-providers/tasks/chat-completion),
+[billing](https://huggingface.co/docs/inference-providers/pricing).
+
+## Gemini text (`gemini-llm` feature)
+
+The Gemini 3.8 Flash text card (#44) calls Google directly through its documented
+OpenAI-compatible chat endpoint. Add the API key to the existing `gemini` account in
+API keys, choose **Gemini 3.8 Flash** on a text generation card, and accept the usage-based
+price before running. No gateway or new SDK is needed. The native host is wired; browser
+provider settings do not expose this adapter yet.
+
+Only text is advertised: at most 64 input turns and 1 MiB total text, with a requested
+`max_tokens` between 1 and 65,536 (default 4,096). The host's usual streaming text path is
+supported. Images, PDFs, tools, thought-signature replay, grounding and Interactions state
+are outside this card's scope. Output uses the shared chat response/stream byte caps.
+
+Google returns token usage; this adapter does not infer an exact dollar cost across account
+tiers and thinking usage. Quotes therefore remain explicitly unknown, never free. Lost,
+malformed or interrupted replies are never automatically resubmitted. A sent synchronous
+request cannot confirm remote cancellation and has no resumable polling handle. Credentials
+use secret headers and the shared transport's redirect protections.
+
+Offline contract, real host-routing, unknown-price admission, lost-reply driver and actual
+picker tests run in CI. The opt-in smoke test makes one real request and may cost money:
+`NODECRAFT_LIVE_GEMINI_LLM=1 GEMINI_API_KEY=… cargo test -p nodecraft-providers --features
+http,gemini-llm --test live_llm live_gemini44`. It is disabled unless explicitly enabled.
+
+Contract checked 2026-10-24: [compatibility API](https://ai.google.dev/gemini-api/docs/openai),
+[model limits](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash),
+[pricing](https://ai.google.dev/gemini-api/docs/pricing). This implements #44 by adapter reuse,
+not a new native `generateContent` or Interactions dialect; #489 remains a separate discussion.
+
+
+## Grok Imagine through fal
+
+Issue #31 uses the existing `fal` provider and its stored fal key. Enable the existing fal
+runtime; pick **Grok Imagine Image 2.0**, **Image 2.0 edit**, **Video 1.5**, or **Video 1.5
+frame**. A direct xAI key is not a fal credential. The catalog and adapter build for WebAssembly,
+but the builtin browser HTTP transport refuses no-redirect requests before fetch. These models
+need the native fal runtime or an audited host transport that provides that guarantee.
+
+Contracts and prices checked **2026-10-27** against the official
+[image schema](https://fal.ai/models/xai/grok-imagine-image/v2.0/text-to-image/api),
+[edit schema](https://fal.ai/models/xai/grok-imagine-image/v2.0/edit/api),
+[video schema](https://fal.ai/models/xai/grok-imagine-video/v1.5/text-to-video/api),
+[first-frame schema](https://fal.ai/models/xai/grok-imagine-video/v1.5/image-to-video/api),
+[image rates](https://fal.ai/grok-imagine-image-2.0), and
+[video rates](https://fal.ai/grok-imagine-video-1.5).
+
+- Image 2.0 makes 1–10 outputs, with JPEG, PNG or WebP and the schema's aspect ratios. Choose
+  low/medium at 1K/2K: **$0.04/$0.06** per low-quality output and **$0.06/$0.08** per medium
+  output. Image editing takes 1–5 `images` and adds **$0.01 per reference image per request**.
+  The API schema supersedes older overview counts. The four presets avoid automatic quality
+  and 1.5K, whose fal price is not listed in the checked table.
+- Video 1.5 makes one 1–15 second MP4 with included native audio: **$0.08/$0.14/$0.25 per
+  second** at 480p/720p/1080p. Frame mode requires one `first_frame`, adds **$0.01**, and follows
+  its framing; it sends no aspect-ratio setting. Text mode offers seven explicit ratios.
+- References are verified PNG/JPEG/WebP, at most 1 MiB and 1024 pixels per axis each. Five
+  base64 edit references fit the model's 8 MiB request cap. Image results have a 16 MiB per-file,
+  160 MiB aggregate and 4096-pixel per-axis cap; ten results share 167,772,160 pixels. Video
+  results use the 256 MiB per-file/aggregate video cap, also when resuming saved tasks. Hosts
+  may lower all these bounds.
+- Quotes include reference fees from the wired values. A fixed first-frame count is known
+  even before the frame finishes. An unknown upstream reference list stays unpriced and needs
+  the existing explicit unpriced-job consent; finite budget caps refuse it. Fanout quotes are
+  conservative per-item upper bounds.
+
+Safety stays enabled. Native passthrough, synchronous data URLs, video reference/edit/extend
+modes and Lite/legacy aliases are outside this integration. Unknown fields and roles refuse
+before sending. Saved queue handles poll/cancel only canonical fal routes; output fetches use
+fal storage without the API key, and redirects remain refused.
+
+fal's [xAI model warning](https://fal.ai/models/xai/grok-imagine-image) says policy violations
+can still be charged. Generation/moderation failures therefore retain possibly billed
+reservations. A lost submit reply never triggers a new paid create; accepted handles resume.
+Cancellation does not promise a refund. Fixtures and RunHost tests are offline; the opt-in
+`grok31_live_smoke` needs `NODECRAFT_LIVE_GROK=1` and `FAL_KEY` and spends $0.04 for one image.
+
+## LTX video through fal
+
+Issue #30 uses the existing **fal** adapter and keychain account. Select **LTX 2.3 Pro (fal)**
+for text-to-video or **LTX 2.3 Pro frames (fal)** for a first frame and an optional last frame.
+Both require a prompt and offer optional generated sound. These are live Pro aliases,
+`fal-ai/ltx-2.3/text-to-video` and `fal-ai/ltx-2.3/image-to-video`, checked on 2026-10-27 against
+[fal's text schema](https://fal.ai/models/fal-ai/ltx-2.3/text-to-video/api) and
+[frame schema](https://fal.ai/models/fal-ai/ltx-2.3/image-to-video/api).
+
+The supported subset is 6/8/10 seconds, 1080p/1440p/2160p, 16:9 or 9:16 and 24/25/48/50 fps.
+The FPS choice is stored as text in the catalog and sent as a JSON integer. Frame inputs are
+PNG/JPEG/WebP, at most 1 MiB and 1024 pixels on either axis, fully decoded before submission.
+Unknown settings, extra roles, missing first frames, malformed images and requests exceeding
+configured geometry limits fail before HTTP. There is no seed, automatic aspect ratio, audio
+input, Fast variant or native LTX credential in this integration.
+
+[fal's model page](https://fal.ai/models/fal-ai/ltx-2.3/text-to-video) currently conflicts with
+itself: its request price says 0.08 USD/s at 1080p, while its explanatory table says 0.06 USD/s.
+NodeCraft therefore shows usage pricing with an **unknown total** and requires explicit
+acceptance of one unpriced job. It does not invent an invoice from these rates. Billable-unit
+headers remain optional observed evidence, separate from money. The configured time hint is
+editorial metadata and is not a measured latency.
+
+Accepted tasks retain fal's canonical `fal-ai/ltx-2.3/requests/<id>` status/result/cancel routes
+for saved-handle resume. An ambiguous submission is not replayed; cancellation is best effort.
+One MP4 result may be downloaded up to 256 MiB, with the same aggregate limit. Downloads use
+fal storage only, carry no API key, reject redirects and validate the actual MP4 container.
+The queue, transport and platform support remain those of the existing fal adapter.
+
+Offline contracts cover schemas, all advertised choices, input/refusal bounds, saved-handle
+polling/cancellation, output authority and error mapping. Actual RunHost fixtures cover
+unknown-price consent, imported first/last frames, verified output bytes and a lost paid reply
+with retries enabled. The ignored `ltx30_live_smoke` requires `NODECRAFT_LIVE_LTX=1` and `FAL_KEY`
+and may charge for one six-second 1080p clip; it is never run by CI.
+
+
+## Stability AI direct
+
+The optional `stability` feature adds three first-party models on the existing cards:
+**Stable Image Core** (`stability.image-core`), **Stable Audio 3 Large** (`stability.audio3`)
+and **Stable Fast 3D** (`stability.fast-3d`). Add a Stability API key under the `stability`
+account in API keys. **Test** uses the free authenticated balance endpoint, never a generation.
+The adapter is available in the desktop app and CLI; the browser host refuses setup because its
+built-in transport cannot guarantee authenticated no-redirect requests. No live API or browser
+CORS behavior was tested for this change.
+
+These are distinct from the SD3.5 Large and Audio 3 Small models offered through
+[fal](https://fal.ai/models/fal-ai/stable-diffusion-v35-large) and
+[fal Audio 3 Small](https://fal.ai/models/fal-ai/stable-audio-3/small/music/text-to-audio).
+The aggregator inventory did not establish current official 3D coverage for the chosen model.
+Using the direct APIs gives all three chosen families one key and one origin; it does not add
+all Stability editors, older models or every available variant.
+
+Rates were checked on 2026-10-27 against the
+[current pricing reference](https://docs.stability.ai/pricing),
+[Core operation](https://docs.stability.ai/api-reference/generate/stable-image-core),
+[Audio 3 operation](https://docs.stability.ai/api-reference/stable-audio/text-to-audio),
+[Fast 3D operation](https://docs.stability.ai/api-reference/3d/stable-fast-3d) and
+[current OpenAPI](https://docs.stability.ai/openapi.json): one credit is 0.01 USD, with
+Core 3 credits, Audio 3 8 credits and Fast 3D 10 credits per successful generation. The
+[legacy pricing page](https://platform.stability.ai/pricing) still lists Audio 3 at 26 credits;
+the catalog follows the migrated reference, whose pricing, operation and OpenAPI agree on 8.
+These dated estimates are separate from an observed invoice and should be checked again when
+updating the adapter. No claim is made that the two pricing pages agree.
+
+Core sends one prompt (up to 10,000 characters), optional negative prompt, one of nine aspect
+ratios and PNG/JPEG/WebP output, with a seed from 0 to 4,294,967,294 (0 means random).
+The API returns a 1.5 MP image. The host admits up to 16 MiB and 4096 pixels per side, probes
+and decodes its actual format, and refuses a filtered finish reason. Fast 3D takes one wired
+JPEG/PNG/WebP image. Its host limits are 4 MiB and 64–2048 pixels per side, stricter than the
+API's total-pixel limit. Texture resolution, foreground ratio, remeshing and an optional positive
+vertex limit are exposed. It validates and keeps the original self-contained GLB up to 64 MiB;
+embedded texture colors are sampled by the existing viewer, and export retains original bytes.
+
+Audio 3 sends an explicit 1–380-second duration, 4–8 steps, prompt guidance and optional seed,
+requesting stereo 44.1 kHz WAV. Its 128 MiB result allowance covers long WAVs without the image
+adapter's smaller quota. A versioned handle persists the accepted generation id and duration.
+Polling resumes that id on the same authenticated API; pending responses must identify the same
+job, and WAV chunks, PCM/IEEE-float sample formats (including standard extensible headers),
+frame alignment, byte rate and actual data duration are checked before history is written. Results are
+available from Stability for 24 hours, according to its reference.
+
+No redirect or remote-supplied URL is followed. All three modes use normal cost consent and
+budgets. Parsed documented validation, auth, credit, moderation and rate-limit refusals release
+the reservation; unparsed replies, lost creates and server errors remain possibly billed and
+are not automatically submitted again. Transient audio poll failures retry the original id.
+Stability documents no cancellation endpoint or create idempotency guarantee, so cancellation
+cannot promise that a generation stops or is refunded. Keys and provider error bodies never
+enter the project or user-facing diagnostics.
+
+Offline contract and RunHost tests cover all three media families, cost consent, exact dated
+prices, refusal billing, lost replies and audio resume. The ignored `live_stability_one_chosen_family`
+smoke requires explicit spending authorization, `NODECRAFT_LIVE_STABILITY=1` and
+`STABILITY_API_KEY`. `NODECRAFT_LIVE_STABILITY_MODEL` selects `stable-image-core` (default,
+0.03 USD), `stable-audio-3` (0.08 USD, one second) or `stable-fast-3d` (0.10 USD, a public-safe
+fixture image). The adapter itself never reads these environment variables. Live tests are not
+run by CI. The API key check is documented in the official
+[v1 user reference](https://prod-nlb.stability.ai/docs).
+
+## Alibaba through fal
+
+Issue #32 reuses the **fal** connection and its stored key for Alibaba's current cloud
+models. Direct DashScope credentials are not needed. Choose **Qwen-Image 3** on an Image
+card or **Wan 3.0** on a Video card. Native HTTP or an audited custom transport is required;
+the builtin browser transport refuses the no-redirect operation before fetch. All library
+and app code still compiles for WebAssembly.
+
+Contracts and rates were checked on 2026-10-27 against these primary sources:
+
+| Catalog model | API contract | Supported inputs |
+|---|---|---|
+| `fal.qwen-image3` | [Text to image](https://fal.ai/models/alibaba/qwen-image-3/text-to-image/api) | One prompt, 1–5000 characters |
+| `fal.qwen-image3-edit` | [Image editing](https://fal.ai/models/alibaba/qwen-image-3/edit/api) | Prompt and one to three ordered `images`; refer to them as image 1, image 2, image 3 |
+| `fal.wan3` | [Text to video](https://fal.ai/models/alibaba/wan-3.0/text-to-video/api) | Prompt, 1–20,000 characters |
+| `fal.wan3-i2v` | [Frame animation](https://fal.ai/models/alibaba/wan-3.0/image-to-video/api) | Required `first_frame`, optional `last_frame`, optional prompt up to 20,000 characters |
+
+Qwen returns one to six PNG, JPEG or WebP images. Explicit **1K square (1024×1024)** and
+**2K square (2048×2048)** presets cost **$0.04** and **$0.075 per output**, respectively,
+for both [generation](https://fal.ai/models/alibaba/qwen-image-3/text-to-image) and
+[editing](https://fal.ai/models/alibaba/qwen-image-3/edit). The family overview's flat $0.075
+summary omits the model pages' 1K tier. Output count multiplies the chosen tier; no reference
+surcharge is published. Automatic dimensions and arbitrary aspect ratios are not offered.
+Negative prompts are limited to 500 characters. Prompt expansion is explicit and defaults on.
+
+Qwen edit references must be JPEG, PNG or WebP, at most **1 MiB** each and **384–1024 pixels
+on each axis**. PNG must have **no alpha channel**, even if every pixel is opaque. These
+limits are checked from the actual image before a paid request. The remote API allows
+larger inputs; NodeCraft deliberately keeps its bounded host image path. Three encoded
+references fit the edit-only 8 MiB request allowance.
+
+Wan returns one MP4 with an explicit duration of **2–30 seconds**. Published rates for both
+[text](https://fal.ai/models/alibaba/wan-3.0/text-to-video) and
+[frames](https://fal.ai/models/alibaba/wan-3.0/image-to-video) are **$0.05/s at 480p**,
+**$0.10/s at 720p** and **$0.20/s at 1080p**. The default is five seconds at 720p ($0.50).
+Both modes expose aspect ratio, audio (on), prompt expansion (on) and thinking (off).
+Frame inputs use PNG/JPEG/WebP, at most 1 MiB and 1024 pixels per axis. Smart duration and
+the separate reference-to-video mode are not offered.
+
+Both families accept an optional fixed seed from 0 through 2147483647. An unset seed lets
+the service choose; this control does not promise a new random seed for each variation.
+Safety remains enabled. Unknown parameters, inputs, counts and unsupported formats fail
+before HTTP. Quotes are dated estimates; provider billable-unit headers remain evidence
+rather than fabricated dollar invoices.
+
+The shared queue saves accepted handles, supports resume and best-effort cancellation,
+and never replays ambiguous paid creates. Canonical queue roots are `alibaba/qwen-image-3`
+and `alibaba/wan-3.0`. Only fal storage is downloaded, without credentials or redirects;
+actual image codecs or the MP4 container are checked. Qwen batches allow six images with
+16 MiB per file and 96 MiB total. Wan clips allow 256 MiB per file/total, including resumed
+handles. Other fal models keep their existing limits.
+
+Offline fixtures exercise exact request fields, bounds, quotes, consent, typed outputs and
+uncertain billing without API credit. Live generation has not been run. The ignored
+`alibaba32_live_smoke` requires explicit test opt-ins plus `FAL_KEY` and spends $0.04 on one
+1K Qwen image; it never runs in CI.
+
+## Recraft through fal
+
+Choose **Recraft V4.1 raster (fal)** or **Recraft V4.1 SVG (fal)** on an Image card.
+Both use the existing **fal** connection and key, queue, saved task handles, cancellation
+and cost consent. The standard rates checked on 2026-10-27 are **$0.035 per raster image**
+and **$0.08 per SVG**, one image per job. They are dated estimates, not an invoice.
+
+Primary contracts: [raster API](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image/api)
+and [SVG API](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector/api); rates:
+[raster model](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image) and
+[vector model](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector).
+The [native Recraft API](https://www.recraft.ai/docs/api-reference/models/recraft-v4-1)
+offers additional variants/operations; this integration covers the two standard fal aliases.
+Native image-count and seed controls are not fields in these fal contracts and are not sent.
+
+Each job takes a prompt of 1–10,000 characters and one of the six fixed fal size presets.
+An optional palette is a comma-separated list of up to six `#RRGGBB` colours; optional
+background colour is one `#RRGGBB`. Safety stays enabled. Unknown fields, invalid colours,
+oversized prompts and unsupported inputs refuse before paid HTTP. The adapter never
+replays a lost or ambiguous paid POST. Downloads are bounded to 16 MiB per image and use
+no credential or redirects. Recraft additionally allows the exact documented falserverless
+Google Storage bucket; this does not widen other fal model or style-weight delivery hosts.
+
+SVG results retain their original **image/svg+xml** bytes through history, extraction,
+project save/reopen and original `.svg` export. SVG files can also be imported onto Image
+cards. Native card/history previews render cached rasters off the UI thread. Safe static
+content beyond the current preview renderer—text/fonts, stylesheets, filters, patterns or
+embedded images—keeps the original and shows an unavailable-preview explanation. This
+does not claim complete SVG 2 rendering or font substitution. Browser builds retain and
+export SVG but do not rasterize SVG on the frame thread.
+
+SVG originals have separate structural limits: 16 MiB encoded, 65,536 XML nodes, depth 64,
+250,000 path/point/dash entries, cycle-checked bounded references, intrinsic axes up to
+16,384 and 16,777,216 pixels. Lower provider/host limits also apply. Logical document work,
+preview nodes/paths, raster pixel passes and scratch are independently bounded. Scripts,
+event handlers, animation, DTD/entities, foreign content, external/network/file/font
+resources and unsafe CSS refuse. No system fonts/files are loaded.
+
+For raster-only image tools or provider references, add **Rasterize SVG**, connect the SVG
+Image output and choose the longest edge (1–2048 pixels). This deterministic local action
+runs through ordinary node/run commands, produces PNG, and leaves the original SVG intact.
+Unsupported preview features also refuse rasterization instead of silently disappearing.
+Raster consumers do not automatically convert SVGs before a paid request.
+
+Offline authored fixtures cover SVG admission, limits, actual previews, exact-byte export,
+round trips and billing uncertainty. No paid generation was used. The ignored
+`recraft35_live_smoke` requires `NODECRAFT_LIVE_RECRAFT=1`, explicit cost acknowledgement
+and `FAL_KEY`; it spends $0.035 on one raster image and never runs in CI.
+
+## Magnific Precision V2
+
+Add your current Magnific API key under **magnific** in API keys, then connect one Image
+source to a Generate image card and choose **Magnific Precision V2**
+(`magnific.precision-v2`). The API uses `https://api.magnific.com` and
+`x-magnific-api-key`; a fal key is a different account. The key's **Test** action reports
+that no free verification request is known and sends nothing. It never buys an upscale to
+test a key. This integration needs the desktop or native CLI host and streamed project
+storage; browser and Classic in-memory projects refuse before submission.
+
+The supported client subset is one upright, static PNG, JPEG or WebP, at most **1 MiB** and
+**1024 pixels per axis**. Choose **2×** or **4×**, with **Sharpen**, **Smart grain** and
+**Ultra detail** integer controls from 0 to 100 (defaults 7, 7 and 30). Flavor stays `photo`
+and NSFW filtering stays enabled. Apply EXIF rotation/reflection locally before submitting.
+Text retained on the card does not guide this model. No prompt, seed, image-count,
+output-format, webhook or deduplication field is invented. Other Magnific models and larger
+scales are outside this initial integration.
+
+The current [Precision V2 API](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/post-image-upscaler-precision-v2)
+and [overview](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/overview)
+were checked on **2026-10-27**. [API pricing](https://docs.magnific.com/pricing) consumes
+organizational credits even when a plan includes unlimited use in the web app. No verified
+current credit-to-currency rate is available, so the quote is **unknown**, never free or a
+fixed EUR amount. Running requires explicit acceptance of one unpriced job; finite monetary
+budgets cannot establish that an unknown price fits. The adapter does not invent an invoice.
+
+Submission stores a task UUID for polling after restart. Lost or ambiguous paid replies are
+never automatically replayed, and the API has no documented remote cancellation contract.
+Cancelling locally does not promise to stop the provider or avoid credit consumption. The
+[quickstart](https://docs.magnific.com/quickstart) says output links expire **30 minutes after
+generation** and cannot be recovered. NodeCraft downloads a completed result promptly;
+resuming a task after that interval cannot guarantee recovering its file and never silently
+pays for a replacement.
+
+One actual PNG, JPEG or WebP result must match the input dimensions times the selected
+factor, within 4096 pixels per axis and 16,777,216 pixels. Per-result and aggregate byte
+limits are 256 MiB. Before payment, expected geometry must also fit a separate 256 MiB
+decoder raster budget: 16 bytes per output pixel covers RGBA16 and a possible full EXIF
+orientation copy. Lowered host budgets apply to this check too. This bounds those raster
+owners, not codec-private workspace or process RSS. These are NodeCraft limits, not a claimed
+vendor ceiling. Downloads use the exact documented `ai-statics.freepik.com` delivery host,
+carry no API key and follow no redirects. Original bytes are retained in history and saved
+projects. Large originals are hashed and sealed by the shared result worker, then adopted
+without copying them on the UI thread. A local storage failure retains the paid original for
+retry. Storage admission follows executed catalog endpoints, including custom model ids and
+deferred Technique work; an unused Magnific card does not block another run. No paid live
+generation was used as validation; ordinary tests use authored media and mock HTTP, and a
+paid smoke test is explicitly opt-in.
+
+## Rodin through fal
+
+Issue #41 reuses the stored **fal** connection for Hyper3D Rodin V2.5. Choose a **Rodin 2.5**
+model on a **Generate 3D** card. Direct Hyper3D credentials are not needed. These live aliases
+were checked on 2026-10-27 against their public contracts and model-specific prices:
+
+| Catalog model | Contract | Fixed output and estimated call price |
+|---|---|---|
+| `fal.rodin25` | [Standard text](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/api) | Gen-2.5-High, PBR, Auto mesh, GLB; $0.40 |
+| `fal.rodin25-images` | [Standard images](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/api) | Gen-2.5-High, PBR, Auto mesh, GLB; $0.40 |
+| `fal.rodin25-fast` | [Fast text](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/fast/api) | Gen-2.5-Extreme-Low, Shaded, Auto mesh, GLB; $0.10 |
+| `fal.rodin25-fast-images` | [Fast images](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/fast/api) | Gen-2.5-Extreme-Low, Shaded, Auto mesh, GLB; $0.10 |
+
+Published rates are [standard $0.40](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5)
+and [fast $0.10](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/fast) per generation.
+The standard default High tier uses 500K triangles with Auto mesh; the fast default uses
+20K triangles. The $0.80 HighPack surcharge and other tiers, custom mesh counts, formats,
+texture modes and bounding-box controls are not offered. Requests explicitly pin the tier,
+material, Auto mesh and GLB, omit add-ons, keep safety enabled, and disable advanced switches.
+The catalog price is an estimate; a billable-unit header is not a fabricated dollar invoice.
+
+Text models require a prompt of **1–1024 characters**. Image models take **one to five ordered
+`images`** and an optional prompt up to 1024 characters. An absent/empty prompt lets Rodin
+auto-describe the images. References must be actual PNG, JPEG or WebP, at most **1 MiB** and
+**1024 pixels per axis**. Image models optionally preserve original alpha. Both families accept
+an optional fixed numeric seed from **0 through 65535**; unset lets the provider choose, and a
+fixed seed may repeat across variations. Complete escaped JSON plus every base64 data URI is
+admitted before image codecs or encoding allocations; image requests have an 8 MiB allowance.
+Unsupported fields or input roles fail before paid HTTP.
+
+The queue uses the canonical `fal-ai/hyper3d/requests/<id>` status/result/cancel family.
+The [queue contract](https://fal.ai/docs/documentation/model-apis/inference/queue) uses only
+owner and app, even when generated endpoint schemas print a full alias in their path examples.
+Accepted handles persist for resume, best-effort cancellation keeps its actual disposition,
+and uncertain paid creates never replay.
+
+Only **`model_mesh`** is downloaded. `model_meshes`, `textures` and preview URLs are sidecars
+and are not fetched. Files must be on fal storage, without credentials or redirects. Rodin's
+generic application/octet-stream metadata is admitted without trusting it as a mesh type;
+actual bytes must pass packed-GLB validation, and the normal mesh decoder/viewer bounds remain.
+The original GLB is retained for export. Embedded base-colour textures appear through the
+existing viewer; external resource URIs remain refused. Standard examples exceed 30 MiB,
+so these four aliases allow **256 MiB per result/total**, including saved handles. Other fal
+models keep their original limits.
+
+Execution requires native HTTP or an audited custom transport. Libraries and the app still
+build for WebAssembly, but builtin browser HTTP refuses the no-redirect operation before
+fetch. No live paid Rodin generation has been run. The ignored `rodin41_live_smoke` requires
+`NODECRAFT_LIVE_RODIN=1`, `NODECRAFT_LIVE_RODIN_ACKNOWLEDGE_COST=1` and `FAL_KEY`; it would spend
+$0.10 on one fast text-to-GLB call. Ordinary tests use authored offline media only.
+
+## Topaz Precision through fal
+
+Issue #37 reuses the `fal` adapter and stored fal key. On a Generate image card with one image
+connected, select **Topaz Precision Standard V2 (fal)** (`fal.topaz-precision`). Its only model
+control is **Upscale factor**, an integer 1–4, default two. The request fixes Standard V2, PNG,
+no crop and the safety checker on; optional enhancement settings use the service defaults.
+The card can retain text for switching models, but no prompt, seed or image-count field is sent.
+
+Contracts and price were checked **2026-10-27** against the primary
+[precision model page](https://fal.ai/models/topaz/upscale/image/precision),
+[API](https://fal.ai/models/topaz/upscale/image/precision/api), and
+[queue documentation](https://fal.ai/docs/documentation/model-apis/inference/queue).
+The published charge is **0.08 USD per started 24 megapixels of output**. NodeCraft admits
+one PNG/JPEG/WebP up to 1 MiB and 1024 pixels on each axis, so its largest result is 4096²
+(16,777,216 pixels), always one block. Every variation is another separately quoted call.
+Rotated/reflected EXIF inputs are refused; apply the orientation locally first. Other Topaz
+models, fractional scales, direct credentials and video upscaling are outside this adapter.
+
+Returned PNG geometry must equal the upright input geometry times the selected factor.
+Expected dimensions survive saved handles and resume. Topaz alone allows up to **256 MiB**
+for its single output; other fal aliases keep their existing limits. Complete original PNG
+bytes enter history and project storage. No returned download carries the fal key or follows
+a redirect. Ambiguous paid creates retain an unresolved charge and are never automatically
+replayed; known local refusals send no paid request.
+
+This model needs **native streaming asset storage**, as used by desktop projects and the
+native CLI run path. Classic in-memory/browser project storage has a 16-MiB asset limit, so
+those hosts refuse Topaz before submission rather than charge for an image they cannot save.
+Library clients that call the native provider directly own retention of its bounded output.
+The app and libraries still compile for WebAssembly; Topaz submission there is unavailable.
+
+No paid live generation was performed. Offline tests use original procedural raster data,
+including a result larger than 16 MiB through actual native RunHost history/save/reopen. The
+ignored Topaz live smoke requires explicit cost acknowledgement and the fal key; it is never
+run in CI.
+
+## MiniMax video, speech and music through fal (#27)
+
+Use the existing **fal** API key on a native desktop or CLI project with streamed asset
+storage. These four current entries share Fal's queue, strict canonical saved handles,
+no-redirect downloads and the rule that an ambiguous paid create never replays:
+
+| Catalog entry | Supported request | Dated budget estimate |
+|---|---|---|
+| `fal.minimax-h3` | H3 text video, 5–15 integer seconds, 480P or 768P, generated native audio | $0.05/s at 480P; $0.06/s at 768P |
+| `fal.minimax-h3-i2v` | H3 from one first frame and a prompt, same durations/resolutions | Same rates; no separate frame fee |
+| `fal.minimax-speech28-hd` | Plain speech, stock voice, speed 0.5–2 and pitch -12–12 | $0.10/1000 characters; quote conservatively counts complete UTF-8 bytes |
+| `fal.minimax-music3` | Music description plus editable lyrics, maximum 1–300 integer seconds | $0.002 per requested maximum second |
+
+Contracts and prices checked 2026-10-28: [H3 text](https://fal.ai/models/minimax/h3/text-to-video/api),
+[H3 first frame](https://fal.ai/models/minimax/h3/image-to-video/api),
+[Speech 2.8 HD](https://fal.ai/models/fal-ai/minimax/speech-2.8-hd/api), and
+[Music 3](https://fal.ai/models/minimax/music-3/api). Current H3 model-page rates supersede older
+blog prices. These are budget estimates, not an observed invoice. The optional Fal billable-units
+receipt remains separate evidence. Known speech text is conservatively priced at admission;
+unknown upstream text stays unpriced until materialized and needs the ordinary partial-quote consent.
+
+Video fixes safety on, prompt expansion off and URL delivery, and omits target audio, last frames,
+reference video, 2K/4K upscale modes and H3 Max promotional tiers. A first frame must be upright
+PNG/JPEG/WebP, 32–1024 pixels on each axis, at most 1 MiB and aspect ratio between 1:3 and 3:1.
+These are local admission bounds. Prompts are limited locally to 8192 UTF-8 bytes. Optional fixed
+seeds use a documented local u32 subset; the public schemas do not specify that as a vendor maximum.
+
+Speech fixes URL-delivered **MP3, 32 kHz, mono, 128 kbit/s**, volume one and safety on. The four
+stock voices are Wise Woman, Friendly Person, Deep Voice Man and Calm Woman. The 4096-byte plain
+speech slice refuses long-pause `<#...#>` directives before payment; voice cloning, custom
+pronunciation, normalization controls and native streaming speech are separate contracts. MP3
+admission checks every frame extent, rate, channels, tag extent and a one-hour duration bound;
+it does not promise to decode every audio sample or prove artistic quality.
+
+Music 3 fixes **44.1 kHz, 16-bit stereo WAV**, 30 inference steps, guidance 1.7 and safety on.
+Lyrics are a model-owned multiline setting, not an unsupported second connected text input.
+Section tags must occupy their own lines; same-line words would be dropped by the model and
+are refused locally. The initial tag is `[instrumental]`; users can replace it with lyrics.
+Music descriptions are at most 8192 UTF-8 bytes and lyrics 16 KiB. The chosen duration is an upper
+bound; the model may stop earlier. Returned duration/seed metadata is validated, and the complete
+WAV must match its promised PCM settings and requested time bound.
+
+All four entries allow one result up to **256 MiB**, also the aggregate cap. They require streamed
+storage before paid I/O, including catalog aliases and deferred/inlined Technique steps. Classic
+16 MiB browser/memory projects refuse locally rather than pay for a result they cannot retain;
+direct WebAssembly submissions also refuse. Native recording, held results and persistence reuse
+the existing worker conversion/sealing path. Legacy Fal model limits are unchanged. Authored
+media/HTTP fixtures demonstrate client behavior; no paid request was used for implementation.
+
+The ignored `minimax27_live_smoke` requires both `NODECRAFT_LIVE_MINIMAX=1` and
+`NODECRAFT_LIVE_MINIMAX_ACKNOWLEDGE_COST=1`, plus `FAL_KEY`. Optional mode is `video`, `frame`,
+`speech` or `music` (default): one eight-second music request estimates $0.016; one default
+480P video request estimates $0.25. It was not run. Separate ignored local FFmpeg fixture
+validation requires `NODECRAFT_MINIMAX27_FFMPEG`; that decoder check has no provider calls.
+
+## Pika 2.5 through fal (#29)
+
+Use the existing **fal** key and select **Pika 2.5 image to video (fal)**
+(`fal.pika25-i2v`) on a Generate video card with a prompt and one image wired to
+**first_frame**. Desktop projects and the native CLI support this model. Browser sessions and
+classic asset storage refuse before consent or paid HTTP, including a model renamed in a custom
+catalog and deferred/inlined Technique work. Unused canvas nodes do not block other runs.
+
+The current alias is `fal-ai/pika/v2.5/image-to-video`, checked **2026-10-28** against fal's
+[model/rates](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video),
+[API](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video/api), and
+[formal schema](https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/pika/v2.5/image-to-video).
+The catalog fixes **720p** and offers **5 or 10 seconds**. The published price is **$0.25 for
+5 seconds**, doubled for 10 seconds; the quote reserves **$0.05 per requested second**.
+A variation is another separately quoted request. This estimate is not a receipt: optional fal
+billable-unit evidence remains separate from money, and uncertain submissions retain their
+reservation. No live paid generation was performed for this change.
+
+The request has exactly `prompt`, `image_url`, `resolution="720p"` and integer `duration`.
+NodeCraft requires a nonempty prompt of at most **2048 characters** and exactly one upright,
+static **PNG/JPEG/WebP**, at most **1 MiB and 1024 pixels per side**. These are conservative local
+limits, not published Pika service limits. Original image bytes are checked with the actual
+codec before payment; EXIF rotation/reflection and animation refuse. Complete escaped JSON plus
+the encoded image is bounded before decoding or base64 allocation. Resolution, negative prompt,
+seed, frame rate, audio, safety and output-count controls are not exposed or sent. The service's
+other defaults apply; the absence of a safety field is not a claim about moderation.
+
+This initial integration covers **current image-to-video only**. Text-to-video, multiple
+keyframes, Pikaframes, effects, the separate native Pika API and Pika 2.2 are outside this scope.
+The native service uses a separate credential/protocol; it is not configured with a fal key.
+
+The [fal queue contract](https://fal.ai/docs/api-reference/inference-api/queue/submit-path)
+uses `fal-ai/pika/requests/<id>` for status, result and best-effort cancellation. Saved handles
+retain the full model alias and resume the same task without another paid POST. Ambiguous creates
+never replay. Result failures retain accepted handles; cancelling does not promise a refund.
+
+One MP4 result is admitted at **256 MiB per file and in total**, scoped to this alias. Existing
+fal aliases retain their limits. The shared structural MP4 checks remain, with Pika-only local
+limits on movie/track timing (positive and at most **11 seconds**, a conservative envelope for
+the longest offered request), positive display geometry within **4096 pixels per side and
+16,777,216 pixels**, at most **256 KiB movie metadata**, **4096 boxes** and **16 levels**.
+Declared MIME, byte size and dimensions must agree with the downloaded bytes. These are bounded
+container checks, not proof of full decoding or generated content quality.
+
+For a **new paid submission**, NodeCraft's lower-only `Limits` API must retain that complete
+output envelope: 4096×4096 axis budgets, 16,777,216 pixels, 256 MiB individual/aggregate and
+256 KiB metadata. Any reduction in those six output fields refuses locally, before codecs,
+HTTP or delivery uncertainty, even when the first frame fits. This conservative client policy
+avoids inventing an exact 720p aspect tuple or minimum encoded size the schema does not publish;
+it does not mean a video will use the whole budget. Input, request and text budgets may still
+be lowered. Existing saved handles continue to use the intersection with current limits while
+polling/downloading; this admission rule never widens a resumed result's budget.
+
+Downloads carry no API key and refuse redirects. They use the existing HTTPS fal.media
+allowlist, plus the exact public `https://storage.googleapis.com/falserverless/` bucket shown in
+the formal Pika schema. The latter exception is scoped to Pika and the existing Recraft models:
+no other bucket, credentials, query, port, encoded path or traversal is admitted.
+
+Large result conversion, hashing and sealing reuse the native runtime workers; the UI adopts
+sealed receipts. Held-result persistence/retry and journal resume retain complete original bytes.
+Offline tests drive the actual RunHost through consent, large MP4 history, held retry, restart
+resume and save/close/reopen with exactly one paid create. The procedural blue-and-gold fixture
+was authored locally with FFmpeg; it is **not Pika output**. The ignored `pika29_live_smoke` test
+requires `NODECRAFT_LIVE_PIKA=1`, `NODECRAFT_LIVE_PIKA_COST=0.25USD` and `FAL_KEY`; it is compiled
+but never run by ordinary CI.
+
+
+## HeyGen through fal (#43)
+
+Choose **HeyGen Photo Avatar 4 (fal)** (`fal.heygen-avatar4`) on a Generate video card
+and wire one photo to **portrait** and supplied PCM WAV to **speech**. The request fixes
+stable talking style,720p,16:9, captions off and the safety checker on. The photo should
+contain a clear face; NodeCraft does not perform face detection. Text retained on the card
+is not sent to TTS. Stock avatars, voice identifiers, background/expression controls and
+native direct HeyGen credentials are outside this integration.
+
+For existing video, choose **HeyGen Lip sync Speed (fal)** (`fal.heygen-lipsync-speed`)
+or **HeyGen Lip sync Precision (fal)** (`fal.heygen-lipsync-precision`). Wire **video** and
+**speech**. Dynamic duration and captions stay off. **Remove source music** and
+**Enhance replacement speech** are the two documented toggles, initially off. Title,
+partial timing and safety-checker fields are not invented. The provider's other defaults
+apply; no absence of a safety field promises unmoderated generation.
+
+The three current aliases are `fal-ai/heygen/avatar4/image-to-video`,
+`fal-ai/heygen/v3/lipsync/speed` and `fal-ai/heygen/v3/lipsync/precision`. Primary
+[photo](https://fal.ai/models/fal-ai/heygen/avatar4/image-to-video/api),
+[Speed](https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api) and
+[Precision](https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api) schemas and prices
+were checked **2026-10-28**. Published rates are **USD 0.10, USD 0.05 and USD 0.10 per output
+second**, respectively. They do not establish strict output-duration or rounding guarantees.
+Quotes therefore remain **unknown/by usage USD** and require explicit consent to one
+unpriced job. A measured input length is not a monetary ceiling; finite money budgets
+cannot establish that an unknown price fits. No currency invoice is invented.
+
+Client input limits are one upright static PNG/JPEG/WebP up to **1 MiB and 1024 pixels per
+axis**, supplied **PCM WAV up to 1 MiB and 10 seconds**, and for lip sync a complete
+**MP4 up to 16 MiB, 1280×720 and 10 seconds**. Missing clocks or movie/media clocks differing
+by more than 100 ms refuse. These are conservative client policies, not published service
+limits or full video-decoding guarantees. Complete escaped JSON plus both data URIs fits
+**32 MiB** before codecs/base64 allocations. Larger input/request quotas are scoped to
+HeyGen; existing fal models keep their original caps.
+
+One MP4 output must have positive clocks within **11 seconds**, positive display geometry
+within **4096 pixels per axis/16,777,216pixels**, at most **256 MiB per file and aggregate**,
+**256 KiB movie metadata**, 4096 boxes and 16 levels. Declared MIME, dimensions and size must
+agree with the downloaded original. New paid submissions require these complete default
+response/output budgets (including 2 MiB response metadata); reducing them refuses locally
+before codec work or HTTP. Input/request/text/codec budgets may still be lowered when
+inputs fit. Saved handles intersect current limits when polling; they never widen them.
+
+Use a desktop project or native CLI host with streamed asset storage. Browser and Classic
+in-memory sessions refuse before payment, including custom model ids and deferred Technique
+work. Unused cards do not block other runs. Queue routes stay at `fal-ai/heygen/requests/<id>`;
+accepted task handles resume without another paid POST. Ambiguous creates are never replayed.
+Downloads use credential-free, redirect-free HTTPS fal.media origins. Disabled-caption
+sidecars are ignored and never fetched. Cancellation remains best effort with no refund promise.
+
+Large originals use shared worker hashing/sealing and lightweight UI adoption. History,
+held retry, journal resume and save/close/reopen keep the original bytes. Ordinary tests use
+original procedural photos/audio and the existing authored blue-and-gold MP4 fixture;
+these are not HeyGen output or proof of live avatar quality. No paid generation or inference
+probe was performed. The ignored live smoke requires explicit acknowledgement of unknown
+cost, a fal key and user-supplied photo/video plus WAV paths; it never runs in ordinary CI.

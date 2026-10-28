@@ -78,7 +78,7 @@ impl Imported {
 }
 
 fn too_much_text() -> String {
-    format!("a drop adds at most {} KiB of text", MAX_DROP_TEXT_BYTES / 1024)
+    format!("at most {} KiB of text can be added at once", MAX_DROP_TEXT_BYTES / 1024)
 }
 
 /// Text from a file's bytes, at most `limit` bytes of UTF-8: UTF-8, or UTF-16 with a byte-order
@@ -173,12 +173,18 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     }
     let mut meta = MediaMeta::default();
     if sniffed.kind == MediaKind::Image {
-        match probe_image(file.bytes, &Limits::default()) {
-            // Everything the header proves travels with the asset (#393), and is checked again
-            // whenever the reference is written.
-            Ok(probed) => meta = nodecraft_format::image_header_meta(&probed),
-            Err(_) if decodes_later(&sniffed) => {}
-            Err(_) => return Err("the image can't be read".into()),
+        if sniffed.mime == nodecraft_media::svg::MIME {
+            let info = nodecraft_media::svg::probe(file.bytes, &Limits::default()).map_err(|_| "the SVG is unsafe or exceeds its limits".to_owned())?;
+            meta.width = Some(info.width);
+            meta.height = Some(info.height);
+        } else {
+            match probe_image(file.bytes, &Limits::default()) {
+                // Everything the header proves travels with the asset (#393), and is checked again
+                // whenever the reference is written.
+                Ok(probed) => meta = nodecraft_format::image_header_meta(&probed),
+                Err(_) if decodes_later(&sniffed) => {}
+                Err(_) => return Err("the image can't be read".into()),
+            }
         }
     }
     if matches!(sniffed.kind, MediaKind::Video | MediaKind::Audio) {
@@ -245,7 +251,23 @@ pub fn import_files_with_movies(
     ids: &[NodeId],
     movies: &[ProbedMovie],
 ) -> Result<Imported, Error> {
-    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies));
+    import_files_positioned(session, canvas, at, step, files, ids, movies, &|node, _| node.pos)
+}
+
+/// As [`import_files_with_movies`], with pure placement of each fully resolved payload before
+/// the existing single paste/import transaction. Headless callers retain top-left semantics.
+#[allow(clippy::too_many_arguments)]
+pub fn import_files_positioned(
+    session: &mut Session,
+    canvas: CanvasId,
+    at: Position,
+    step: f32,
+    files: &[Incoming<'_>],
+    ids: &[NodeId],
+    movies: &[ProbedMovie],
+    position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
+) -> Result<Imported, Error> {
+    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies, position));
     match result {
         Ok(imported) => Ok(imported),
         Err(mut error) => {

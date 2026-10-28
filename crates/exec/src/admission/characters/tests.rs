@@ -124,3 +124,23 @@ fn quote_work_and_nested_input_depth_are_bounded() {
     }
     assert!(price(&model, &step("elevenlabs", &[nested])).is_err());
 }
+
+#[test]
+fn minimax27_utf8_quote_never_counts_fewer_units_than_unicode_or_utf16_and_respects_identity() {
+    let model = Catalog::builtin().unwrap().get("fal.minimax-speech28-hd").unwrap().clone();
+    let text = " 雪é🙂 ";
+    let mut work = step("fal", &[Value::Text(text.into())]);
+    for job in work.jobs.as_mut().unwrap() {
+        if let JobSpec::Generate { model: remote, .. } = job {
+            *remote = model.provider_model.clone();
+        }
+    }
+    let count = text.len() as u64;
+    assert!(count >= text.chars().count() as u64 && count >= text.encode_utf16().count() as u64);
+    assert_eq!(price(&model, &work).unwrap().unwrap().micros, count * 100);
+    work.jobs = None;
+    assert!(price(&model, &work).unwrap().is_none());
+    let mut other = model.clone();
+    other.provider_model = "fal-ai/kokoro/american-english".into();
+    assert!(price(&other, &step("fal", &[Value::Text("hello".into())])).unwrap().is_none());
+}

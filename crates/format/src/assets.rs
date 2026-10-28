@@ -50,6 +50,18 @@ pub(crate) fn check_image_header(claim: &nodecraft_types::MediaMeta, probed: &no
     Ok(())
 }
 
+pub(crate) fn check_svg_header(claim: &nodecraft_types::MediaMeta, info: nodecraft_media::svg::Info) -> Result<(), Error> {
+    if claim.width.is_some_and(|n| n != info.width)
+        || claim.height.is_some_and(|n| n != info.height)
+        || claim.has_alpha.is_some()
+        || claim.bits_per_channel.is_some()
+        || claim.color_space.is_some()
+    {
+        return Err(crate::invalid("SVG geometry or vector metadata does not match its original"));
+    }
+    Ok(())
+}
+
 impl AssetStore {
     /// Authenticate destination content and supported reference metadata through an immutable
     /// lease. Indexed bytes remain streamed; unknown signatures and advisory metadata keep
@@ -63,6 +75,9 @@ impl AssetStore {
     fn validate_value_assets(&self, value: &Value) -> Result<(), Error> {
         match value {
             Value::Media(asset) => {
+                if asset.mime.essence() == nodecraft_media::svg::MIME {
+                    return self.validate_reference(asset);
+                }
                 let bytes = match self.get(&asset.hash) {
                     Some(bytes) => bytes,
                     None => {
@@ -183,6 +198,7 @@ impl AssetStore {
                     touched.entry(*canvas).or_default().insert(*id);
                 }
                 Change::SetProjectTitle { .. }
+                | Change::SetProjectId { .. }
                 | Change::RemoveCanvas { .. }
                 | Change::SetCanvasTitle { .. }
                 | Change::SetCanvasPrivate { .. }

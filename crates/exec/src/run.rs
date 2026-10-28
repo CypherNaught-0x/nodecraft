@@ -23,6 +23,8 @@ use nodecraft_types::{BillableUnits, CanvasId, Error, ErrorKind, GenerationId, N
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
+mod source_records;
+
 /// Most jobs one step may plan.
 pub const MAX_STEP_JOBS: usize = MAX_LIST_ITEMS;
 /// Most jobs one run may hand out.
@@ -145,6 +147,8 @@ struct JobState {
     outputs: Vec<(String, Value)>,
     /// The units its provider said it billed (#437), recorded with its settings.
     billable_units: Option<BillableUnits>,
+    /// Provider-reported execution duration in milliseconds; never a monetary charge.
+    execution_ms: Option<u64>,
     /// The key it may have been billed under without finishing (#517), kept with its item when
     /// the item fails.
     billed_key: Option<String>,
@@ -273,6 +277,10 @@ fn shed(generation: &mut Generation) -> bool {
         true
     } else if !generation.settings.is_empty() {
         generation.settings.clear();
+        true
+    } else if !generation.source_versions.is_empty() {
+        generation.source_versions.clear();
+        log::warn!("{}", source_records::OMITTED);
         true
     } else {
         false
@@ -486,6 +494,13 @@ impl Run {
     pub fn job_billed(&mut self, job: JobId, units: BillableUnits) {
         if let Some(state) = self.jobs.get_mut(&job).filter(|state| !state.done) {
             state.billable_units = Some(units);
+        }
+    }
+
+    /// Keeps the provider's execution-time evidence before the job finishes; never a charge.
+    pub fn job_execution_ms(&mut self, job: JobId, milliseconds: u64) {
+        if let Some(state) = self.jobs.get_mut(&job).filter(|state| !state.done) {
+            state.execution_ms = Some(milliseconds);
         }
     }
 
@@ -786,7 +801,20 @@ impl Run {
             self.next_job = next;
             // A key shared by two jobs would make them one charge: the second runs afresh.
             let key = reused.get(&n).filter(|key| self.sent_again.insert((*key).clone())).cloned();
-            self.jobs.insert(id, JobState { step: node, work, done: false, reported: false, outputs: Vec::new(), billable_units: None, billed_key: None, key });
+            self.jobs.insert(
+                id,
+                JobState {
+                    step: node,
+                    work,
+                    done: false,
+                    reported: false,
+                    outputs: Vec::new(),
+                    billable_units: None,
+                    execution_ms: None,
+                    billed_key: None,
+                    key,
+                },
+            );
             progress.jobs.push(scheduler::JobSpec { id, deps: Vec::new(), lane, retry: self.retry, idempotency_key: self.key(id) });
             ids.push(id);
         }
@@ -1196,10 +1224,21 @@ impl Run {
         let billed = self.billed_keys(&job_ids, &job_items);
         let mut per_cell: Vec<Vec<Vec<Value>>> = vec![vec![Vec::new(); target.outputs.len()]; cells];
         let mut settings: Vec<Vec<JobSettings>> = vec![Vec::new(); cells];
+        let mut source_versions = source_records::SourceRecords::new(cells);
         for (n, job) in job_ids.into_iter().enumerate() {
             let cell = if items.is_some() { *job_items.get(n).ok_or("a job's item is unknown")? } else { 0 };
             let per_port = per_cell.get_mut(cell).ok_or("a job's item is out of range")?;
-            if let Some(JobState { work: JobSpec::Generate { provider, instance, model, params, inputs, .. }, billable_units, .. }) = self.jobs.get(&job) {
+            if let Some(JobState { work: JobSpec::Action { action, params, inputs, .. }, .. }) = self.jobs.get(&job)
+                && action == nodecraft_nodes::timeline::ID
+                && !missing.contains_key(&cell)
+                && source_versions.available()
+            {
+                let item = items.as_ref().map(|_| u32::try_from(cell).map_err(|_| "a job's item is out of range")).transpose()?;
+                source_versions.append(cell, nodecraft_nodes::timeline::provenance::source_versions(params, inputs, item));
+            }
+            if let Some(JobState { work: JobSpec::Generate { provider, instance, model, params, inputs, .. }, billable_units, execution_ms, .. }) =
+                self.jobs.get(&job)
+            {
                 let item = if items.is_some() { Some(u32::try_from(cell).map_err(|_| "a job's item is out of range")?) } else { None };
                 let inputs = inputs.iter().map(|input| JobInput { role: input.role.clone(), value: input.value.clone() }).collect();
                 let cell_settings = settings.get_mut(cell).ok_or("a job's item is out of range")?;
@@ -1211,6 +1250,7 @@ impl Run {
                     inputs,
                     item,
                     billable_units: *billable_units,
+                    execution_ms: *execution_ms,
                 });
             }
             let outputs = self.jobs.get_mut(&job).map(|j| std::mem::take(&mut j.outputs)).unwrap_or_default();
@@ -1227,12 +1267,14 @@ impl Run {
         for (cell, per_port) in per_cell.into_iter().enumerate() {
             if missing.contains_key(&cell) {
                 settings.get_mut(cell).map(Vec::clear);
+                source_versions.clear(cell);
                 assembled.push(vec![Value::List(Vec::new()); target.outputs.len()]);
                 continue;
             }
             if resume.as_ref().is_some_and(|r| r.generation.is_none() && !r.runs(cell)) {
                 // Inside a technique (#536): its technique node keeps this item.
                 settings.get_mut(cell).map(Vec::clear);
+                source_versions.clear(cell);
                 assembled.push(vec![Value::List(Vec::new()); target.outputs.len()]);
                 continue;
             }
@@ -1247,6 +1289,12 @@ impl Run {
                 if let Some(cell_settings) = settings.get_mut(cell) {
                     let of_cell = |job: &&JobSettings| job.item.and_then(|item| usize::try_from(item).ok()) == Some(cell);
                     *cell_settings = kept.settings.iter().filter(of_cell).cloned().collect();
+                }
+                source_versions.clear(cell);
+                if source_versions.available() {
+                    let sources =
+                        kept.source_versions.iter().filter(|source| source.item.and_then(|i| usize::try_from(i).ok()) == Some(cell)).cloned().collect();
+                    source_versions.append(cell, Ok(sources));
                 }
                 continue;
             }
@@ -1307,8 +1355,16 @@ impl Run {
             Some(Incomplete { missing: items })
         };
         let settings = settings.into_iter().flatten().collect();
-        let generation =
-            Generation { id: self.generation_id(node, variant.unwrap_or(0)), outputs, input_hash, items: items.unwrap_or_default(), settings, incomplete };
+        let source_versions = source_versions.finish();
+        let generation = Generation {
+            id: self.generation_id(node, variant.unwrap_or(0)),
+            outputs,
+            input_hash,
+            items: items.unwrap_or_default(),
+            settings,
+            source_versions,
+            incomplete,
+        };
         let generation = recordable(generation)?;
         if generation.incomplete.is_none() {
             self.produced.insert(node, generation.outputs.clone());
@@ -1530,6 +1586,9 @@ mod seed;
 pub use resume::{RecipePort, ResumeRecipe};
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod timeline_source_tests;
 
 #[cfg(test)]
 mod partial_tests;

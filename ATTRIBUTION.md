@@ -5,6 +5,7 @@ the same change that adds it (CONTRIBUTING.md, "Clean-room").
 
 | Path | Title | Author | Source | License |
 |---|---|---|---|---|
+| `nodecraft-template-data` Git dependency, compiled workflow/fixture bytes | Original workflow templates moved from NodeCraft #952 with filtered history; immutable offline snapshot | NodeCraft contributors | [nodecraft-templates@5e7ed63](https://github.com/CypherNaught-0x/nodecraft-templates/tree/5e7ed638fa75d4615701832184e5141cfe7cc293) | MIT OR Apache-2.0 |
 | `scripts/claim/claim.js`, `scripts/claim/claim.test.js`, `.github/workflows/claim.yml` | `/claim` issue bot (adapted: NodeCraft paths, test fixtures; the workflow's comment filter uses `contains` so it matches the script's whitespace-tolerant parser) | SolidCraft contributors | [bherbruck/solidcraft@77b33ef](https://github.com/bherbruck/solidcraft/tree/77b33efd8f0e8498f4d0d00697419d0992150759/scripts/claim) | MIT OR Apache-2.0 |
 | `xtask/src/layers.rs`, `xtask/src/version.rs`, `xtask/src/main.rs` | Workspace tooling: layering check, version management, CI runner (adapted: NodeCraft's layer table, UI-crate allow-list instead of a UI layer, one batched wasm check) | PhotoCraft contributors | [storytold/photocraft@2a952f1](https://github.com/storytold/photocraft/tree/2a952f164c0b4cf936b1c6497db10dd095341c00) `xtask/` | MIT OR Apache-2.0 |
 | `crates/engine/src/build_info.rs` | Build provenance for `--version` and About (adapted: NodeCraft names, char-safe SHA shortening) | PhotoCraft contributors | [storytold/photocraft@2a952f1](https://github.com/storytold/photocraft/tree/2a952f164c0b4cf936b1c6497db10dd095341c00) `crates/engine/src/build_info.rs` | MIT OR Apache-2.0 |
@@ -17,3 +18,49 @@ the same change that adds it (CONTRIBUTING.md, "Clean-room").
 | Linked into the app and wasm build through `nodecraft-media`'s `pdf` feature (`craft-pdf`, [storytold/craft-libs@8f5a283](https://github.com/storytold/craft-libs/tree/8f5a2831) `vendor/hayro-interpret/assets/Foxit*.pfb`) | The PDF standard-14 substitute fonts, used to draw PDFs that don't embed their fonts (unmodified) | PDFium Authors; original fonts © 2014 Foxit Software Inc. | [PDFium](https://pdfium.googlesource.com/pdfium/), via [LaurenzV/hayro](https://github.com/LaurenzV/hayro) | BSD-3-Clause |
 | Linked in the same way (`hayro-cmap` 0.1.0, `assets/cmaps.brotli`) | Adobe's predefined CJK character maps, compressed, used to read the text of CJK PDFs (unmodified) | Adobe | [adobe-type-tools/cmap-resources](https://github.com/adobe-type-tools/cmap-resources), via [LaurenzV/cmap-resources](https://github.com/LaurenzV/cmap-resources/tree/hayro) | BSD-3-Clause |
 | Linked in the same way (`vendor/hayro-interpret/assets/CGATS001Compat-v2-micro.icc`) | Compact CMYK ICC profile, used to draw CMYK PDF content (unmodified) | Clinton Ingram | [saucecontrol/Compact-ICC-Profiles](https://github.com/saucecontrol/Compact-ICC-Profiles) | CC0-1.0 |
+| `assets/icons/tabler/search.svg` | Tabler outline search icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/search.svg) | MIT |
+| `assets/icons/tabler/message-circle.svg` | Tabler outline message-circle icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/message-circle.svg) | MIT |
+| `assets/icons/tabler/key.svg` | Tabler outline key icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/key.svg) | MIT |
+| `assets/icons/tabler/wallet.svg` | Tabler outline wallet icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/wallet.svg) | MIT |
+| `assets/icons/tabler/folder-open.svg` | Tabler outline folder-open icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/folder-open.svg) | MIT |
+| `assets/icons/tabler/device-floppy.svg` | Tabler outline device-floppy icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/device-floppy.svg) | MIT |
+| `assets/icons/tabler/LICENSE` | Tabler icon license (unmodified) | Paweł Kuna | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/LICENSE) | MIT |
+| `assets/icons/tabler/table.svg` | Tabler outline table icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/table.svg) | MIT |
+| `assets/icons/tabler/affiliate.svg` | Tabler outline affiliate icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/affiliate.svg) | MIT |
+| `assets/icons/tabler/components.svg` | Tabler outline components icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/components.svg) | MIT |
+| `assets/icons/tabler/list-details.svg` | Tabler outline list-details icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/list-details.svg) | MIT |
+| `assets/icons/tabler/share.svg` | Tabler outline share icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/share.svg) | MIT |
+| `assets/icons/tabler/server.svg` | Tabler outline server icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/server.svg) | MIT |
+| `assets/icons/tabler/puzzle.svg` | Tabler outline puzzle icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/puzzle.svg) | MIT |
+| `assets/icons/tabler/dots.svg` | Tabler outline dots icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/dots.svg) | MIT |
+| `assets/icons/tabler/apps.svg` | Tabler outline apps icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/apps.svg) | MIT |
+| `assets/icons/tabler/cloud.svg` | Tabler outline cloud icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/cloud.svg) | MIT |
+
+## Tabler icon license
+
+The notice below travels with the app in this attribution file, which every desktop package
+includes. The unchanged license is also beside the source SVGs.
+
+```text
+MIT License
+
+Copyright (c) 2020-2026 Paweł Kuna
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

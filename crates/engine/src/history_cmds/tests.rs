@@ -217,6 +217,7 @@ fn the_active_result_is_what_downstream_nodes_are_built_on() {
         input_hash: Some(hash),
         items: Vec::new(),
         settings: Vec::new(),
+        source_versions: Vec::new(),
         incomplete: None,
     };
     Change::AddGeneration { canvas: C, id: down, index: 0, generation: made }.apply(&mut project).unwrap();

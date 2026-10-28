@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 #[test]
 #[ignore = "adversarial command corpus; run explicitly when commands change"]
 fn panic_hunt() {
+    let _cleanup = RemoveExportFolder::hold();
     let original = common::project();
     let mut session = Session::new(original.clone()).unwrap();
     plugins::register(&mut session);
@@ -117,6 +118,46 @@ fn gen_id(n: u8) -> nodecraft_types::GenerationId {
     nodecraft_types::GenerationId::from_bytes([n; 16])
 }
 
+/// The folder `export.*` templates write into: one directory in the system temporary folder per
+/// test process, so a hunt that reaches the real write path stays out of the repository. It is
+/// left where a leaked `TempDir` would be, for the OS to sweep.
+fn export_destination() -> std::path::PathBuf {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let path = DIR
+        .get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("nodecraft-panic-hunt-export-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&path);
+            std::fs::canonicalize(&path).unwrap_or(path)
+        })
+        .clone();
+    // A hunt that finished may have removed the folder, so recreate it for the next user.
+    let _ = std::fs::create_dir_all(&path);
+    path
+}
+
+/// Hunts currently holding the shared export folder. The last one out removes it, even when an
+/// assertion fails. The count and the removal share one lock, so a hunt starting as the last one
+/// leaves cannot have the folder removed under it.
+static HUNTS_IN_FLIGHT: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
+
+struct RemoveExportFolder;
+impl RemoveExportFolder {
+    fn hold() -> Self {
+        let mut count = HUNTS_IN_FLIGHT.lock().unwrap_or_else(|poison| poison.into_inner());
+        *count += 1;
+        Self
+    }
+}
+impl Drop for RemoveExportFolder {
+    fn drop(&mut self) {
+        let mut count = HUNTS_IN_FLIGHT.lock().unwrap_or_else(|poison| poison.into_inner());
+        *count -= 1;
+        if *count == 0 {
+            let _ = std::fs::remove_dir_all(export_destination());
+        }
+    }
+}
+
 fn template(id: &str) -> (Session, Value) {
     use common::*;
     let mut document = project();
@@ -163,7 +204,7 @@ fn template(id: &str) -> (Session, Value) {
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(0x5a),"kind":"image.shader","pos":{"x":0,"y":0}})).unwrap();
         document = seed.document().clone();
     }
-    if id == "mesh.capture" {
+    if matches!(id, "mesh.capture" | "mesh.view_set") {
         let mut seed = Session::new(document.clone()).unwrap();
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"source.mesh","pos":{"x":0,"y":0}})).unwrap();
         document = seed.document().clone();
@@ -260,7 +301,10 @@ fn template(id: &str) -> (Session, Value) {
     } else {
         Session::new(document).unwrap()
     };
-    if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.pan_to") {
+    if id == "file.focus_owner" {
+        session.register_host_service(nodecraft_engine::storage_window_cmds::SERVICE, |_| Ok(json!({"requested":true}))).unwrap();
+    }
+    if matches!(id, "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" | "canvas.pan_to") {
         session.swap_resource(Some(nodecraft_engine::navigation_cmds::NavigationContext {
             canvas: canvas(),
             viewport_available: true,
@@ -303,6 +347,19 @@ fn template(id: &str) -> (Session, Value) {
             blocked: false,
         }));
         session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
+    }
+    if matches!(id, "template.refresh" | "template.retrieve") {
+        session
+            .register_host_service(nodecraft_engine::templates::fetch::SERVICE, |request| {
+                let _: nodecraft_engine::templates::fetch::Request = serde_json::from_value(request.clone()).unwrap();
+                Ok(json!({"pending":1}))
+            })
+            .unwrap();
+    }
+    if id.starts_with("export.local_") || id.starts_with("export.results_") {
+        // A real destination, so the hunt reaches name rendering and the write path rather than
+        // stopping at the host check. It is in the system temporary folder, never the repository.
+        session.swap_resource(Some(nodecraft_engine::local_export::ExportHost::authorize(&export_destination()).unwrap()));
     }
     if id.starts_with("run.") || id == "usage.export_csv" {
         use nodecraft_engine::run_cmds::*;
@@ -419,11 +476,20 @@ fn template(id: &str) -> (Session, Value) {
             session.dispatch("technique.place", &place).unwrap();
         }
     }
-    if id == "comfy.workflow.import" {
+    if matches!(id, "comfy.workflow.import" | "comfy.workflow.mapping" | "comfy.workflow.mapping_set") {
         // The server's nodes as comfy.nodes.refresh installs them, so the import succeeds.
         let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {}]}}, "output": ["IMAGE"]}, "SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
         let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
         nodecraft_engine::comfy_workflow_cmds::finish(&mut session, 1, Ok(std::sync::Arc::new(catalog).into()));
+    }
+    if matches!(id, "comfy.workflow.mapping" | "comfy.workflow.mapping_set") {
+        session
+            .dispatch(
+                "comfy.workflow.import",
+                &json!({"canvas":canvas(),"id":node_id(0x69),"pos":{"x":0,"y":0},"workflow":
+            r#"{"1":{"class_type":"CLIPTextEncode","inputs":{"text":"a fox"}},"2":{"class_type":"SaveImage","inputs":{"images":["1",0]}}}"#}),
+            )
+            .unwrap();
     }
     let plugin_old =
         if id.starts_with("plugins.") && !matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register(&mut session)) } else { None };
@@ -501,6 +567,13 @@ fn template(id: &str) -> (Session, Value) {
             json!({"scope":"user","id":skill,"text":text,"origin":"a file"})
         }
         "library.list" => json!({}),
+        "template.list" => json!({}),
+        "template.add" => json!({"id":"generate-text"}),
+        "template.refresh" => json!({}),
+        "template.retrieve" => {
+            let entry = nodecraft_engine::templates::entries().unwrap().into_iter().find(|entry| entry.id == "generate-text").unwrap();
+            json!({"id":entry.id,"version":entry.version,"blake3":entry.blake3})
+        }
         "library.add" => json!({"canvas":technique_canvas}),
         "library.remove" => json!({"technique":technique,"version":1}),
         "library.place" => {
@@ -518,6 +591,14 @@ fn template(id: &str) -> (Session, Value) {
         "comfy.server.use" => json!({"canvas":canvas(),"id":node_id(7),"server":"studio"}),
         "comfy.workflow.import" => json!({"canvas":canvas(),"id":node_id(0x69),"pos":{"x":0,"y":0},"workflow":
             r#"{"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a fox"}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}"#}),
+        "comfy.workflow.mapping" => json!({"canvas":canvas(),"id":node_id(0x69)}),
+        "comfy.workflow.mapping_set" => {
+            let fields = session.dispatch("comfy.workflow.mapping", &json!({"canvas":canvas(),"id":node_id(0x69)})).unwrap();
+            json!({"canvas":canvas(),"id":node_id(0x69),"binding":fields["binding"],
+                "inputs":[{"node":"1","input":"text","name":"Prompt renamed"}],
+                "outputs":[{"node":"2","label":"Image"}],
+                "output_names":[{"modality":"image","name":"images"}],"disconnect":false,"clear_history":false})
+        }
         "providers.settings_get" => json!({}),
         "providers.settings_set" => json!({"comfyui_url":"http://127.0.0.1:8188","litellm_url":"https://proxy.example"}),
         // The updates service isn't registered here: the check must be refused cleanly.
@@ -539,6 +620,20 @@ fn template(id: &str) -> (Session, Value) {
             json!({"canvas":canvas(),"results":[{"node":node_id(1),"generation":{"id":"0b0b0b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b","outputs":[{"type":"text","value":"x"}]}}]})
         }
         "usage.export_csv" => json!({}),
+        // A real folder plus the fixture's own node, so a hunt reaches name rendering, collision
+        // and per-entry failure rather than stopping at the host check.
+        "export.local_plan" | "export.local_run" => json!({
+            "canvas":canvas(),
+            "sources":[{"node":node_id(1),"port":"out"},{"node":node_id(2),"port":"out","item":0}],
+            "destination":export_destination().display().to_string(),
+            "template":"{title}-{index}",
+            "on_collision":"numbered",
+            "format":{"mode":"original"}
+        }),
+        "export.results_plan" | "export.results_start" => json!({
+            "canvas":canvas(),"nodes":[node_id(1)],"history":"all",
+            "destination":export_destination().display().to_string(),"template":"{title}-{generation}-{index}"
+        }),
         "perf.start" | "perf.clear" | "perf.report" => json!({}),
         // Stop needs a running capture; the hunt checks the refusal never panics.
         "perf.stop" => json!({}),
@@ -567,11 +662,13 @@ fn template(id: &str) -> (Session, Value) {
         "history.copy" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         // A text result never writes, so the hunt leaves no files behind.
         "history.export" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"path":"/nodecraft-panic-hunt/out.png"}),
+        "export.status" => json!({}),
+        "export.cancel" => json!({"id":1}),
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),
         "node.create_connected" => json!({"canvas":canvas(),"id":node_id(7),"kind":"structure.router","pos":{"x":1,"y":2},
             "from":{"node":node_id(1),"port":"out"},"edge":nodecraft_types::EdgeId::from_bytes([0x77; 16])}),
         "canvas.delete" => json!({"canvas":canvas(),"nodes":[node_id(1)],"edges":[edge().id]}),
-        "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" => json!({}),
+        "canvas.fit_all" | "canvas.fit_selection" | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle" => json!({}),
         "canvas.search_open" | "canvas.search_next" | "canvas.search_previous" | "canvas.search_close" => json!({}),
         "canvas.search_query" => json!({"query":"needle"}),
         "canvas.pan_to" => json!({"x":0,"y":0}),
@@ -590,7 +687,7 @@ fn template(id: &str) -> (Session, Value) {
         "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
         "file.save" => Value::Null,
         "file.save_as" => json!({"location":"new.ncraft"}),
-        "file.cancel" => json!({}),
+        "file.cancel" | "file.focus_owner" => json!({}),
         // Real memory store and private package files, never caller-selected filesystem paths.
         "plugins.list" | "plugins.prune" => json!({}),
         "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),
@@ -641,6 +738,8 @@ fn template(id: &str) -> (Session, Value) {
         "layers.align" => json!({"canvas":canvas(),"id":node_id(9),"layers":["t1"],"to":"center"}),
         "layers.font_add" => json!({"canvas":canvas(),"id":node_id(9),"font":{"hash":"00".repeat(32),"mime":"font/ttf"}}),
         "layers.font_remove" => json!({"canvas":canvas(),"id":node_id(9),"name":"Lato"}),
+        "deck.font_add" => json!({"canvas":canvas(),"id":node_id(9),"font":{"hash":"00".repeat(32),"mime":"font/ttf"}}),
+        "deck.font_remove" => json!({"canvas":canvas(),"id":node_id(9),"name":"Lato"}),
         "deck.create" => json!({"canvas":canvas(),"id":node_id(9),"pos":{"x":1,"y":2},"title":"Pitch","nodes":[node_id(1),node_id(2)]}),
         "deck.list" => json!({"canvas":canvas(),"id":node_id(9)}),
         "deck.set" => json!({"canvas":canvas(),"id":node_id(9),"slides":[{"id":"s1","name":"One","layers":[]},{"name":"Two"}]}),
@@ -695,18 +794,34 @@ fn template(id: &str) -> (Session, Value) {
         "document.extract_text" => json!({"canvas":canvas(),"node":node_id(5),"page":1,"region":[0.0,0.0,1.0,1.0],"id":node_id(7),"at":{"x":400,"y":20}}),
         "mesh.capture" => json!({"canvas":canvas(),"from":{"node":node_id(5),"port":"out"},"shot":"views","id":node_id(7),
             "edge":nodecraft_types::EdgeId::from_bytes([0x77; 16]),"pos":{"x":1,"y":2},"yaw":200.0,"pitch":95.0,"zoom":3.33,"style":"wireframe"}),
+        "mesh.view_set" => json!({"canvas":canvas(),"id":node_id(5),"view":{"yaw":200.0,"pitch":45.0,"zoom":3.33,"style":"wireframe"}}),
         _ => panic!("missing valid template for {id}"),
     };
+    (session, params)
+}
+
+fn connected_template(id: &str, feeding: bool) -> (Session, Value) {
+    let (mut session, mut params) = template(id);
+    if feeding {
+        assert_eq!(id, "node.create_connected");
+        let edge = common::edge();
+        session.dispatch("edge.disconnect", &json!({"canvas":common::canvas(),"id":edge.id})).unwrap();
+        params.as_object_mut().unwrap().remove("from");
+        params["to"] = json!(edge.to);
+        params["kind"] = json!("source.text");
+    }
     (session, params)
 }
 
 #[test]
 #[ignore = "valid command templates with individual field mutations"]
 fn typed_template_panic_hunt() {
-    let ids: Vec<_> = Session::new(common::project()).unwrap().registry().specs().map(|spec| spec.id).collect();
+    let _cleanup = RemoveExportFolder::hold();
+    let mut ids: Vec<_> = Session::new(common::project()).unwrap().registry().specs().map(|spec| (spec.id, false)).collect();
+    ids.push(("node.create_connected", true));
     let mut successes = 0;
-    for id in ids {
-        let (_, valid) = template(id);
+    for (id, feeding) in ids {
+        let (_, valid) = connected_template(id, feeding);
         let mut cases = vec![valid.clone()];
         if let Some(object) = valid.as_object() {
             for key in object.keys() {
@@ -734,6 +849,10 @@ fn typed_template_panic_hunt() {
             "/edge/from/port",
             "/edge/to/node",
             "/edge/order",
+            "/from/node",
+            "/from/port",
+            "/to/node",
+            "/to/port",
             "/tag/id",
             "/tag/title",
             "/tag/color",
@@ -754,7 +873,7 @@ fn typed_template_panic_hunt() {
             }
         }
         for mut params in cases {
-            let (mut session, fresh) = template(id);
+            let (mut session, fresh) = connected_template(id, feeding);
             // Keep the valid token bound to this exact template Session; preserve deliberately
             // mutated/missing tokens and all other mutations for the adversarial cases.
             if id == "run.start" && params.pointer("/accept/token") == valid.pointer("/accept/token") {
@@ -771,6 +890,9 @@ fn typed_template_panic_hunt() {
             let events = session.events_since(0).unwrap();
             let history = (session.can_undo(), session.can_redo());
             let result = session.dispatch(id, &params);
+            if feeding && params == valid {
+                assert!(result.is_ok(), "the valid upstream-creation template must reach the new command path: {result:?}");
+            }
             // The font commands need a font file the template's project doesn't hold; their own
             // tests cover a valid add and remove.
             let needs_font = matches!(id, "layers.font_add" | "layers.font_remove");
@@ -797,7 +919,7 @@ fn typed_template_panic_hunt() {
                         id,
                         "canvas.fit_all"
                             | "canvas.fit_selection"
-                            | "canvas.minimap_toggle"
+                            | "canvas.minimap_toggle" | "canvas.prompt_overlays_toggle"
                             | "canvas.pan_to"
                             | "canvas.tag_filter_open"
                             | "canvas.tag_filter_close"
@@ -861,7 +983,8 @@ fn typed_template_panic_hunt() {
                         assert_ne!(after, before, "a successful paste is a document edit");
                         assert_eq!(session.revision(), revision + 1);
                     }
-                    if id.starts_with("file.") {
+                    if id.starts_with("file.") || id.starts_with("export.") {
+                        // File and export commands write outside the project; neither edits it.
                         assert_eq!(after, before);
                         continue;
                     }
@@ -956,4 +1079,21 @@ fn reconciled_legacy() -> nodecraft_exec::cost::UsageLog {
     let token: String = log.ownership_group("a", nodecraft_types::Currency::USD).unwrap().token.iter().map(|b| format!("{b:02x}")).collect();
     nodecraft_engine::ownership_cmds::reconcile(&mut log, &json!({"session":"a","currency":"USD","token":token,"holder":"named"}), 0).unwrap();
     log
+}
+
+#[test]
+fn template_fetch_corpus_reaches_shared_commands_without_project_mutation() {
+    for id in ["template.refresh", "template.retrieve"] {
+        let (mut session, params) = template(id);
+        let before = session.document().clone();
+        let revision = session.revision();
+        let result = session.dispatch(id, &params).unwrap();
+        if id == "template.refresh" {
+            assert_eq!(result, json!({"pending":1}));
+        } else {
+            assert_eq!(result, json!({"available":true}));
+        }
+        assert_eq!(session.document(), &before);
+        assert_eq!(session.revision(), revision);
+    }
 }
