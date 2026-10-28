@@ -78,6 +78,10 @@ fn header_id(id: Id) -> Id {
     id.with("nodecraft.floating.header")
 }
 
+fn header_height_id(id: Id) -> Id {
+    id.with("nodecraft.floating.header_height")
+}
+
 fn moved_id(id: Id) -> Id {
     id.with("nodecraft.floating.moved")
 }
@@ -125,34 +129,44 @@ fn header_drag(ui: &mut egui::Ui, id: Id) {
     if !(height.is_finite() && height > 0.0 && area.is_finite()) {
         return;
     }
+    // Measured for the cascade: everything above the content is title and close button.
+    ui.ctx().data_mut(|data| data.insert_temp(header_height_id(id), height));
     // The close button sits at the right end of the title row, within one header height.
     let rect = Rect::from_min_max(area.min, Pos2::new((area.right() - height).max(area.left()), top));
     let response = ui.interact(rect, header_id(id), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
     let ctx = ui.ctx().clone();
-    if !response.dragged() {
+    let held = ctx.data(|data| data.get_temp::<Drag>(moved_id(id)));
+    let pointer = ctx.input(|i| i.pointer.interact_pos()).filter(|pos| pos.is_finite());
+    let drag = match (held, pointer) {
+        // The release pass still moves it to where the pointer let go.
+        (Some(drag), Some(pointer)) if response.dragged() || response.drag_stopped() => Some(Drag { to: drag.start + (pointer - drag.grab), ..drag }),
+        (None, Some(pointer)) if response.dragged() => {
+            // Pivot at the drag's start plus the drag so far: a pass egui repeats lands in the same place.
+            let start = egui::AreaState::load(&ctx, id).and_then(|state| state.pivot_pos).filter(|pos| pos.is_finite());
+            let grab = pointer - response.total_drag_delta().filter(|delta| delta.is_finite()).unwrap_or_default();
+            start.map(|start| Drag { start, grab, to: start + (pointer - grab) })
+        }
+        _ => None,
+    };
+    let Some(drag) = drag else {
         ctx.data_mut(|data| data.remove::<Drag>(moved_id(id)));
         return;
+    };
+    ctx.data_mut(|data| data.insert_temp(moved_id(id), drag));
+    if held.map(|held| held.to) != Some(drag.to) {
+        // The move is applied before the next pass lays the window out.
+        ctx.request_repaint();
     }
-    // Pivot at the drag's start plus the drag so far: a pass egui repeats lands in the same place.
-    let start = ctx.data(|data| data.get_temp::<Drag>(moved_id(id))).map(|drag| drag.start);
-    let Some(start) = start.or_else(|| egui::AreaState::load(&ctx, id).and_then(|state| state.pivot_pos)) else { return };
-    let delta = response.total_drag_delta().unwrap_or_default();
-    if start.is_finite() && delta.is_finite() {
-        let to = start + delta;
-        let before = ctx.data(|data| data.get_temp::<Drag>(moved_id(id))).map(|drag| drag.to);
-        ctx.data_mut(|data| data.insert_temp(moved_id(id), Drag { start, to }));
-        if before != Some(to) {
-            // The move is applied before the next pass lays the window out.
-            ctx.request_repaint();
-        }
+    if response.dragged() {
+        ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
     }
-    ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
 }
 
-/// A header drag in progress: the pivot where it started and where it is now.
+/// A header drag in progress: the pivot and pointer where it started, and where the pivot is now.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Drag {
     start: Pos2,
+    grab: Pos2,
     to: Pos2,
 }
 
@@ -170,22 +184,26 @@ pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, h
         .filter_map(|(other, _)| egui::AreaState::load(ctx, *other).map(|state| state.rect()))
         .filter(|rect| rect.is_finite() && rect.is_positive())
         .collect();
+    // Step past the tallest measured header among the open panels; the token is the floor.
+    let step = shown
+        .iter()
+        .filter(|(other, _)| *other != id)
+        .filter_map(|(other, _)| ctx.data(|data| data.get_temp::<f32>(header_height_id(*other))))
+        .filter(|height| height.is_finite())
+        .fold(t.panel_cascade, f32::max);
     shown.retain(|(shown, _)| *shown != id);
     shown.push((id, pass));
     ctx.data_mut(|data| data.insert_temp(shown_id(), shown));
     // A header drag in progress, applied before the window lays out (and is clamped).
     let moved = ctx.data(|data| data.get_temp::<Drag>(moved_id(id))).map(|drag| drag.to).filter(|to| to.is_finite());
 
-    let (pivot, anchor) = match home {
-        Home::RightTop => (Align2::RIGHT_TOP, bounds.home),
-        Home::CenterTop => (Align2::CENTER_TOP, Pos2::new(bounds.area.center().x, bounds.home.y)),
-    };
     let frame = egui::Frame::NONE
         .inner_margin(t.card_padding)
         .fill(t.panel_fill)
         .stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke))
         .corner_radius(t.panel_radius);
-    // egui's own window move is off: it would also claim drags that start in the body.
+    // egui's own window move is off: it would also claim drags that start in the body. The pivot
+    // is the top-left corner, so a non-movable window resizes from its right and bottom edges.
     let window = egui::Window::new(title)
         .id(id)
         .order(PANEL_ORDER)
@@ -193,26 +211,54 @@ pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, h
         .movable(false)
         .resizable(true)
         .constrain_to(bounds.area)
-        .pivot(pivot)
-        .default_pos(anchor)
+        .pivot(Align2::LEFT_TOP)
         .frame(frame);
     let remembered = egui::AreaState::load(ctx, id);
-    let pos = if opening {
-        // Start where it was left, or at home, then step down past any open panel's header it
-        // would cover, so every open panel keeps its title and close button in view.
-        let size = remembered.and_then(|state| state.size).filter(|size| size.is_finite() && size.x > 0.0 && size.y > 0.0);
-        let size = size.unwrap_or(Vec2::new(t.search_width, t.panel_cascade));
-        let start = remembered.map_or(anchor, |state| pivot.pos_in_rect(&state.rect()));
-        let pos = cascade(start, pivot, size, &others, bounds.area, t.panel_cascade);
-        (remembered.is_some() || pos != start).then_some(pos)
-    } else {
-        moved
+    let size = remembered.and_then(|state| state.size).filter(|size| size.is_finite() && size.x > 0.0 && size.y > 0.0);
+    let placing = ctx.data(|data| data.get_temp::<Placing>(placing_id(id)));
+    let start = match (opening, placing, size) {
+        // Its first pass has no size yet: egui measures it unseen, and the next pass places it.
+        (true, _, None) => {
+            let from = remembered.and_then(|state| state.pivot_pos).filter(|pos| pos.is_finite());
+            ctx.data_mut(|data| data.insert_temp(placing_id(id), Placing(from)));
+            let estimate = Vec2::new(t.search_width, t.panel_cascade);
+            return Panel { window: window.default_pos(from.unwrap_or_else(|| home_corner(home, &bounds, estimate))), id };
+        }
+        (true, _, Some(_)) => remembered.map(|state| state.rect().min),
+        (false, Some(Placing(from)), Some(size)) => Some(from.unwrap_or_else(|| home_corner(home, &bounds, size))),
+        (false, _, _) => None,
+    };
+    let pos = match (start, size) {
+        (Some(start), Some(size)) => {
+            ctx.data_mut(|data| data.remove::<Placing>(placing_id(id)));
+            // Step down past any open panel's header it would cover, so every open panel keeps
+            // its title and close button in view.
+            Some(cascade(start, Align2::LEFT_TOP, size, &others, bounds.area, step))
+        }
+        _ => moved,
     };
     let window = match pos {
         Some(pos) => window.current_pos(pos),
         None => window,
     };
     Panel { window, id }
+}
+
+/// A panel's top-left corner at its home, for a panel of `size`.
+fn home_corner(home: Home, bounds: &Bounds, size: Vec2) -> Pos2 {
+    match home {
+        Home::RightTop => Pos2::new(bounds.home.x - size.x, bounds.home.y),
+        Home::CenterTop => Pos2::new(bounds.area.center().x - size.x / 2.0, bounds.home.y),
+    }
+}
+
+/// A panel that opened without a size, waiting for egui's measuring pass: where it was left, or
+/// `None` to open at home.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Placing(Option<Pos2>);
+
+fn placing_id(id: Id) -> Id {
+    id.with("nodecraft.floating.placing")
 }
 
 /// Where a panel of `size` pivoted at `start` opens so it covers no header in `others`.

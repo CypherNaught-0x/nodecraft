@@ -168,3 +168,68 @@ fn reopening_a_panel_over_an_open_one_keeps_both_headers_in_view() {
     assert!(k.top() >= b.top() + t.panel_cascade - 1.0, "{k:?} reopened below the header of {b:?}");
     assert_eq!(on_top(&h, b.intersect(k).center()), Some(crate::floating::layer(keys())));
 }
+
+#[test]
+fn every_panel_resizes_from_its_bottom_right_corner_and_keeps_its_top_left() {
+    let mut h = harness(1600.0, 900.0);
+    for (label, id) in [("API keys", keys()), ("Budgets", budgets())] {
+        open(&mut h, label);
+        // Away from the window's right edge, so the clamp does not move it while it grows.
+        let from = header(&h, id);
+        drag(&mut h, from, Vec2::new(-400.0, 100.0));
+        let before = rect(&h, id);
+        drag(&mut h, before.max - Vec2::splat(1.0), Vec2::new(60.0, 80.0));
+        let after = rect(&h, id);
+        assert!((after.min - before.min).length() < 1.0, "{label}: resizing keeps the top-left {before:?} -> {after:?}");
+        assert!((after.width() - before.width() - 60.0).abs() < 2.0, "{label}: wider by the drag {before:?} -> {after:?}");
+        assert!(after.height() >= before.height() - 1.0, "{label}: never shorter after the drag {before:?} -> {after:?}");
+        let close = h.get_all_by_role_and_label(Role::Button, "Close window").map(|node| node.rect()).find(|close| after.contains_rect(*close)).unwrap();
+        click_at(&mut h, close.center());
+    }
+    // The left edge is no handle: dragging it neither resizes nor moves the panel.
+    open(&mut h, "API keys");
+    let before = rect(&h, keys());
+    drag(&mut h, Pos2::new(before.left() + 1.0, before.center().y), Vec2::new(-60.0, 0.0));
+    assert_eq!(rect(&h, keys()), before);
+}
+
+#[test]
+fn opening_search_moves_a_panel_out_from_under_it_with_its_close_button_reachable() {
+    let mut h = harness(1600.0, 900.0);
+    open(&mut h, "API keys");
+    let label = if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" };
+    open(&mut h, label);
+    assert!(h.state().search.open);
+    h.run();
+    let search = h.state().search_rect();
+    let panel = rect(&h, keys());
+    assert!(panel.top() >= search.bottom(), "{panel:?} moved below the open search {search:?}");
+    let close = h.get_by_role_and_label(Role::Button, "Close window").rect();
+    assert_eq!(on_top(&h, close.center()), Some(crate::floating::layer(keys())), "nothing covers the close button");
+    // The search input keeps keyboard focus while it is focused (its own ownership rule); with
+    // focus elsewhere, the pointer reaches the close button under the open search.
+    h.ctx.memory_mut(|m| m.surrender_focus(h.state().search_input_id()));
+    h.run();
+    assert!(h.state().search.open);
+    click_at(&mut h, close.center());
+    assert!(!h.state().keys.open, "and it still closes the panel");
+}
+
+#[test]
+fn a_first_opening_steps_below_a_moved_panels_header() {
+    let mut h = harness(1600.0, 900.0);
+    let t = *h.state().theme.tokens();
+    open(&mut h, "Budgets");
+    let from = header(&h, budgets());
+    drag(&mut h, from, Vec2::new(0.0, 150.0));
+    open(&mut h, "API keys");
+    let (b, k) = (rect(&h, budgets()), rect(&h, keys()));
+    let strip = Rect::from_min_max(b.min, Pos2::new(b.right(), b.top() + t.panel_cascade));
+    assert!(!k.intersect(strip).is_positive(), "{k:?} opened over the header of {b:?}");
+    let close = h
+        .get_all_by_role_and_label(Role::Button, "Close window")
+        .map(|node| node.rect())
+        .find(|close| b.contains_rect(*close) && close.top() < b.top() + t.panel_cascade)
+        .unwrap();
+    assert_eq!(on_top(&h, close.center()), Some(crate::floating::layer(budgets())), "{close:?} of {b:?} under {k:?}");
+}
