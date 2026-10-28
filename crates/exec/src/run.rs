@@ -43,11 +43,13 @@ pub struct RunLimits {
     /// known up front separately). Complete preflight precedes copying; admitted copies stay
     /// charged even if the kind subsequently rejects planning.
     pub run_bytes: usize,
+    /// JSON bytes of job outputs the run holds at once (#254); see [`MAX_HELD_OUTPUT_BYTES`].
+    pub held_bytes: usize,
 }
 
 impl Default for RunLimits {
     fn default() -> Self {
-        Self { list_items: MAX_LIST_ITEMS, step_bytes: MAX_STEP_INPUT_BYTES, run_bytes: MAX_PLAN_INPUT_BYTES }
+        Self { list_items: MAX_LIST_ITEMS, step_bytes: MAX_STEP_INPUT_BYTES, run_bytes: MAX_PLAN_INPUT_BYTES, held_bytes: MAX_HELD_OUTPUT_BYTES }
     }
 }
 
@@ -145,6 +147,8 @@ struct JobState {
     reported: bool,
     /// Its outputs, `(port, value)`, until the step assembles them.
     outputs: Vec<(String, Value)>,
+    /// The JSON bytes of `outputs`, counted in [`Run::held_bytes`] while they are kept.
+    output_bytes: usize,
     /// The units its provider said it billed (#437), recorded with its settings.
     billable_units: Option<BillableUnits>,
     /// Provider-reported execution duration in milliseconds; never a monetary charge.
@@ -182,6 +186,9 @@ pub struct Run {
     /// The keys of earlier runs this run sends jobs under again (#517), each at most once.
     sent_again: BTreeSet<String>,
     run_bytes: usize,
+    /// JSON bytes of the job outputs waiting for their step and of finished steps' outputs,
+    /// held to [`RunLimits::held_bytes`] (#254).
+    held_bytes: usize,
     #[cfg(test)]
     copied_input_bytes: std::cell::Cell<usize>,
     #[cfg(test)]
@@ -214,6 +221,16 @@ fn json_bytes(value: &impl serde::Serialize) -> usize {
     match serde_json::to_writer(&mut counter, value) {
         Ok(()) => counter.0,
         Err(_) => usize::MAX,
+    }
+}
+
+/// The copy of `canvas` a run is admitted and started on (#254): each node with only its active
+/// result, so a run doesn't carry the canvas's whole history. A borrowed canvas is copied once,
+/// without the rest; an owned one is cut down in place.
+pub fn snapshot(canvas: std::borrow::Cow<'_, Canvas>) -> Canvas {
+    match canvas {
+        std::borrow::Cow::Borrowed(canvas) => canvas.active_only(),
+        std::borrow::Cow::Owned(canvas) => canvas.into_active_only(),
     }
 }
 
@@ -316,7 +333,7 @@ impl Run {
     /// it). Input hashes share one byte budget for the run; once it is spent, later results are
     /// recorded without a hash (unknown, never stale).
     pub fn start(plan: &RunPlan, canvas_id: CanvasId, canvas: &Canvas, kinds: &Registry, options: RunOptions) -> Result<(Self, Progress), Error> {
-        Self::start_owned(plan.clone(), canvas_id, canvas.clone(), kinds, options, None)
+        Self::start_owned(plan.clone(), canvas_id, canvas.active_only(), kinds, options, None)
     }
 
     /// Consume the immutable catalog-admitted work; never clone its snapshot or re-plan it.
@@ -325,6 +342,7 @@ impl Run {
         options.limits.list_items = options.limits.list_items.min(usage.limits.list_items);
         options.limits.step_bytes = options.limits.step_bytes.min(usage.limits.step_bytes);
         options.limits.run_bytes = options.limits.run_bytes.min(usage.limits.run_bytes);
+        options.limits.held_bytes = options.limits.held_bytes.min(usage.limits.held_bytes);
         if usage.bytes > options.limits.run_bytes || usage.steps.values().any(|n| *n > options.limits.step_bytes) {
             return Err(crate::admission::cap());
         }
@@ -340,6 +358,8 @@ impl Run {
         options: RunOptions,
         admission: Option<(crate::admission::Witness, crate::admission::Usage)>,
     ) -> Result<(Self, Progress), Error> {
+        // The run reads only active results (#254): the rest of the history stays behind.
+        let canvas = canvas.into_active_only();
         let mut steps: BTreeMap<NodeId, StepState> = BTreeMap::new();
         let ready: Vec<NodeId> = plan.steps.iter().filter(|s| s.after.is_empty()).map(|s| s.node).collect();
         let inner = plan.inner;
@@ -397,6 +417,7 @@ impl Run {
             next_job: options.first_job,
             sent_again: BTreeSet::new(),
             run_bytes: 0,
+            held_bytes: 0,
             #[cfg(test)]
             copied_input_bytes: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -407,6 +428,15 @@ impl Run {
         let progress = run.start_ready(kinds, ready);
         let progress = run.outward(progress);
         Ok((run, progress))
+    }
+
+    /// Keeps a finished step's outputs for the steps after it, counted among the held bytes.
+    fn produce(&mut self, node: NodeId, outputs: Vec<Value>) {
+        let bytes = json_bytes(&outputs);
+        if let Some(old) = self.produced.insert(node, outputs) {
+            self.held_bytes = self.held_bytes.saturating_sub(json_bytes(&old));
+        }
+        self.held_bytes = self.held_bytes.saturating_add(bytes);
     }
 
     /// The work behind a scheduler job, for the host's runner.
@@ -579,11 +609,22 @@ impl Run {
         }
         state.done = true;
         let node = state.step;
-        let Some(StepState { status: Status::Running(left), .. }) = self.steps.get_mut(&node) else { return late };
-        // Keep outputs only while their step can still use them.
+        if !self.is_running(node) {
+            return late;
+        }
+        // Keep outputs only while their step can still use them, and only as many as a run
+        // holds (#254). Past that the step fails before it holds more; a host that paid for
+        // the result holds it rather than losing it.
+        let bytes = json_bytes(&outputs);
+        if self.held_bytes.checked_add(bytes).is_none_or(|held| held > self.limits.held_bytes) {
+            return self.fail(node, too_much_held(self.limits.held_bytes));
+        }
         if let Some(state) = self.jobs.get_mut(&job) {
             state.outputs = outputs;
+            state.output_bytes = bytes;
+            self.held_bytes = self.held_bytes.saturating_add(bytes);
         }
+        let Some(StepState { status: Status::Running(left), .. }) = self.steps.get_mut(&node) else { return late };
         *left = left.saturating_sub(1);
         if *left > 0 {
             return Progress::default();
@@ -663,13 +704,13 @@ impl Run {
         let ended = if let Some(variant) = position.and_then(|n| step.job_variants.get(n).copied()) {
             // Only this variation fails (#81): the others carry on.
             step.lost.entry(variant).or_insert_with(|| (why, error.to_owned()));
-            end_group(&mut self.jobs, &step.jobs, &step.job_variants, variant, job, &mut progress)
+            end_group(&mut self.jobs, &mut self.held_bytes, &step.jobs, &step.job_variants, variant, job, &mut progress)
         } else {
             let item = position.and_then(|n| step.job_items.get(n).copied());
             let (Some(item), Some(_)) = (item, &step.step.fanout) else { return self.fail(node, error.to_owned()) };
             step.missing.entry(item).or_insert_with(|| (why, error.to_owned()));
             // The item's other jobs can't make it whole any more.
-            end_group(&mut self.jobs, &step.jobs, &step.job_items, item, job, &mut progress)
+            end_group(&mut self.jobs, &mut self.held_bytes, &step.jobs, &step.job_items, item, job, &mut progress)
         };
         let Status::Running(left) = &mut step.status else { return progress };
         *left = left.saturating_sub(ended);
@@ -702,7 +743,7 @@ impl Run {
             let dependents = state.dependents.clone();
             for job in state.jobs.clone() {
                 if let Some(job_state) = self.jobs.get_mut(&job) {
-                    job_state.outputs = Vec::new();
+                    release(&mut self.held_bytes, job_state);
                     if !job_state.done {
                         job_state.done = true;
                         progress.cancel.push(job);
@@ -809,6 +850,7 @@ impl Run {
                     done: false,
                     reported: false,
                     outputs: Vec::new(),
+                    output_bytes: 0,
                     billable_units: None,
                     execution_ms: None,
                     billed_key: None,
@@ -1083,7 +1125,7 @@ impl Run {
         if !gaps.is_empty() && self.passes_items_on(node) {
             // Inside a technique the items it has carry on (#536): its technique node records
             // what they make as a partial result.
-            self.produced.insert(node, result.generation.outputs.clone());
+            self.produce(node, result.generation.outputs.clone());
             if let Some(state) = self.steps.get_mut(&node) {
                 state.gaps = gaps;
             }
@@ -1253,7 +1295,7 @@ impl Run {
                     execution_ms: *execution_ms,
                 });
             }
-            let outputs = self.jobs.get_mut(&job).map(|j| std::mem::take(&mut j.outputs)).unwrap_or_default();
+            let outputs = self.jobs.get_mut(&job).map(|j| release(&mut self.held_bytes, j)).unwrap_or_default();
             for (port, value) in outputs {
                 let index = target.outputs.iter().position(|p| p.name == port).ok_or_else(|| format!("a job produced an unknown output {port}"))?;
                 let slot = per_port.get_mut(index).ok_or("output index out of range")?;
@@ -1367,7 +1409,7 @@ impl Run {
         };
         let generation = recordable(generation)?;
         if generation.incomplete.is_none() {
-            self.produced.insert(node, generation.outputs.clone());
+            self.produce(node, generation.outputs.clone());
         }
         Ok(StepResult { node, generation })
     }
@@ -1393,14 +1435,23 @@ impl Run {
 /// Ends the jobs of `group` (a fanned item, or a variation) other than `job`, which just failed:
 /// they can't make it whole any more. Unfinished ones are cancelled, results already in are let
 /// go. Returns how many jobs ended, `job` included.
-fn end_group(states: &mut BTreeMap<JobId, JobState>, jobs: &[JobId], groups: &[usize], group: usize, job: JobId, progress: &mut Progress) -> usize {
+#[allow(clippy::too_many_arguments)]
+fn end_group(
+    states: &mut BTreeMap<JobId, JobState>,
+    held: &mut usize,
+    jobs: &[JobId],
+    groups: &[usize],
+    group: usize,
+    job: JobId,
+    progress: &mut Progress,
+) -> usize {
     let mut ended = 1usize;
     for (other, of) in jobs.iter().zip(groups) {
         if *of != group || *other == job {
             continue;
         }
         if let Some(state) = states.get_mut(other) {
-            if !std::mem::take(&mut state.outputs).is_empty() {
+            if !release(held, state).is_empty() {
                 progress.dropped.push(*other);
             }
             if !state.done {
@@ -1411,6 +1462,12 @@ fn end_group(states: &mut BTreeMap<JobId, JobState>, jobs: &[JobId], groups: &[u
         }
     }
     ended
+}
+
+/// Takes a job's kept outputs, no longer counting them among the run's held bytes.
+fn release(held: &mut usize, state: &mut JobState) -> Vec<(String, Value)> {
+    *held = held.saturating_sub(std::mem::take(&mut state.output_bytes));
+    std::mem::take(&mut state.outputs)
 }
 
 /// For a step completing a partial result (#517): by index into its planned jobs, the key each
@@ -1471,12 +1528,73 @@ fn lane(work: &JobSpec) -> Result<Lane, Error> {
     }
 }
 
-/// Outputs of finished jobs, by job, until the host hands them to [`Run::job_done`].
-pub type Outputs = Arc<Mutex<BTreeMap<JobId, Vec<(String, Value)>>>>;
+/// The most JSON bytes of job outputs a run holds at once (#254): those waiting for their step
+/// to assemble them, and finished steps' outputs kept for the steps after them. Media are held as
+/// asset references, so this counts text and data. Past it, the step whose result would go over
+/// fails with a reason saying so ([`too_much_held`]).
+pub const MAX_HELD_OUTPUT_BYTES: usize = MAX_PLAN_INPUT_BYTES;
+
+/// Why a result over `cap` held bytes is refused, with what to do about it.
+fn too_much_held(cap: usize) -> String {
+    format!("its results would make the run hold more than {} of results at once; run fewer nodes together, or make their results smaller", size(cap))
+}
+
+/// `bytes` for a person: whole MiB when it is at least one, else bytes.
+fn size(bytes: usize) -> String {
+    const MIB: usize = 1024 * 1024;
+    if bytes >= MIB { format!("{} MiB", bytes / MIB) } else { format!("{bytes} bytes") }
+}
+
+/// Outputs of finished jobs, by job, until the host hands them to [`Run::job_done`]. They are
+/// held to [`MAX_HELD_OUTPUT_BYTES`] in all (#254): a job whose outputs would go over fails
+/// instead of finishing, saying so. Only local jobs, which cost nothing, report here.
+#[derive(Clone, Default)]
+pub struct Outputs(Arc<Mutex<Pending>>);
+
+#[derive(Default)]
+struct Pending {
+    by_job: BTreeMap<JobId, (Vec<(String, Value)>, usize)>,
+    bytes: usize,
+}
+
+impl Outputs {
+    /// Keeps `job`'s outputs until they are taken, or says why not.
+    fn put(&self, job: JobId, outputs: Vec<(String, Value)>) -> Result<(), String> {
+        self.put_within(job, outputs, MAX_HELD_OUTPUT_BYTES)
+    }
+
+    fn put_within(&self, job: JobId, outputs: Vec<(String, Value)>, cap: usize) -> Result<(), String> {
+        let bytes = json_bytes(&outputs);
+        let mut pending = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let replaced = pending.by_job.get(&job).map_or(0, |(_, b)| *b);
+        let held = pending.bytes.saturating_sub(replaced);
+        if held.checked_add(bytes).is_none_or(|total| total > cap) {
+            return Err(format!(
+                "its result would make the run hold more than {} of results waiting to be recorded; run fewer nodes together, or make its result smaller",
+                size(cap)
+            ));
+        }
+        pending.bytes = held.saturating_add(bytes);
+        pending.by_job.insert(job, (outputs, bytes));
+        Ok(())
+    }
+
+    /// Bytes of outputs held now.
+    pub fn held_bytes(&self) -> usize {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).bytes
+    }
+}
 
 /// Takes a finished job's outputs.
 pub fn take_outputs(outputs: &Outputs, job: JobId) -> Vec<(String, Value)> {
-    outputs.lock().unwrap_or_else(PoisonError::into_inner).remove(&job).unwrap_or_default()
+    let mut pending = outputs.0.lock().unwrap_or_else(PoisonError::into_inner);
+    match pending.by_job.remove(&job) {
+        Some((values, bytes)) => {
+            pending.bytes = pending.bytes.saturating_sub(bytes);
+            values
+        }
+        None => Vec::new(),
+    }
 }
 
 /// Runs local actions (#410) for [`SourceRunner`]: the host implements it with access to the
@@ -1553,24 +1671,24 @@ impl SourceRunner {
 impl crate::driver::JobRunner for SourceRunner {
     fn run(&self, start: Start, cancel: crate::driver::CancelToken) -> crate::driver::TaskFuture<Outcome> {
         let work = self.work.lock().unwrap_or_else(PoisonError::into_inner).remove(&start.job);
-        let outputs = Arc::clone(&self.outputs);
+        let outputs = self.outputs.clone();
         let actions = self.actions.clone();
         Box::pin(async move {
             if cancel.is_cancelled() {
                 return Outcome::Cancelled;
             }
             match work {
-                Some(JobSpec::Source { output, value, .. }) => {
-                    outputs.lock().unwrap_or_else(PoisonError::into_inner).insert(start.job, vec![(output, value)]);
-                    Outcome::Done
-                }
+                Some(JobSpec::Source { output, value, .. }) => match outputs.put(start.job, vec![(output, value)]) {
+                    Ok(()) => Outcome::Done,
+                    Err(error) => Outcome::Failed { error, transient: false },
+                },
                 Some(JobSpec::Generate { .. }) => Outcome::Failed { error: format!("{} needs a provider runner", start.job), transient: false },
                 Some(JobSpec::Action { action, params, inputs, output, .. }) => match actions {
                     Some(actions) => match execute(actions, action, params, inputs, cancel.clone()).await {
-                        Ok(value) => {
-                            outputs.lock().unwrap_or_else(PoisonError::into_inner).insert(start.job, vec![(output, value)]);
-                            Outcome::Done
-                        }
+                        Ok(value) => match outputs.put(start.job, vec![(output, value)]) {
+                            Ok(()) => Outcome::Done,
+                            Err(error) => Outcome::Failed { error, transient: false },
+                        },
                         Err(error) => Outcome::Failed { error, transient: false },
                     },
                     None => Outcome::Failed { error: "this host can't run actions".into(), transient: false },
@@ -1595,6 +1713,9 @@ mod partial_tests;
 
 #[cfg(test)]
 mod variation_tests;
+
+#[cfg(test)]
+mod held_tests;
 
 #[cfg(test)]
 mod output_contract_tests;
