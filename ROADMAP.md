@@ -144,6 +144,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
 - **MiniMax**: H3 text/first-frame video, Speech 2.8 HD and Music 3 share Fal's key and queue
   (#27), with explicit priced settings and native streamed storage. See [provider limits](docs/providers.md#minimax-video-speech-and-music-through-fal-27).
+- **Pika**: desktop projects and the native CLI animate one first frame with a prompt using
+  current Pika 2.5 through fal (#29), at 720p for 5 or 10 seconds with explicit priced consent.
+  Browser sessions refuse before payment. Text-to-video and keyframes are not included; see
+  [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
 - **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
   photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
   spending remains an unknown monetary quote and needs explicit consent. Browser and Classic

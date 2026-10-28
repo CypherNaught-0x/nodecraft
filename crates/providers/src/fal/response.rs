@@ -11,12 +11,12 @@ fn delivery(s: &str, key: &Secret, model: Model) -> Result<(), ProviderError> {
     if s.contains(key.expose()) {
         return Err(malformed("fal output URL refused or redacted"));
     }
-    if model.recraft() && recraft_bucket(s) {
+    if (model.recraft() || model == Model::Pika) && recraft_bucket(s) {
         return Ok(());
     }
     storage(s)
 }
-/// Recraft's formal raster example uses this exact fal-owned public GCS bucket.
+/// Recraft and Pika formal examples use this exact fal-owned public GCS bucket.
 /// Keep this exception local to these models; URL normalization must not broaden it.
 fn recraft_bucket(s: &str) -> bool {
     let Some(path) = s.strip_prefix("https://storage.googleapis.com/falserverless/") else { return false };
@@ -90,7 +90,8 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         | Model::Ideogram => "images",
         Model::RodinText | Model::RodinImages | Model::RodinFastText | Model::RodinFastImages => "model_mesh",
         Model::Train => "diffusers_lora_file",
-        Model::Wan3Text
+        Model::Pika
+        | Model::Wan3Text
         | Model::Wan3Frames
         | Model::GrokText
         | Model::GrokFrames
@@ -181,7 +182,8 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
             Model::RecraftImage | Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => {
                 &["image/png", "image/jpeg", "image/webp"]
             }
-            Model::Wan3Text
+            Model::Pika
+            | Model::Wan3Text
             | Model::Wan3Frames
             | Model::GrokText
             | Model::GrokFrames

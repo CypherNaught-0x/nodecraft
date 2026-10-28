@@ -20,6 +20,8 @@ mod minimax_tests;
 #[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
 mod native_tests;
 #[cfg(test)]
+mod pika_tests;
+#[cfg(test)]
 mod recraft_tests;
 mod request;
 mod response;
@@ -71,6 +73,8 @@ pub const MINIMAX_VIDEO: &str = "minimax/h3/text-to-video";
 pub const MINIMAX_I2V: &str = "minimax/h3/image-to-video";
 pub const MINIMAX_SPEECH: &str = "fal-ai/minimax/speech-2.8-hd";
 pub const MINIMAX_MUSIC: &str = "minimax/music-3";
+/// Current Pika2.5 image-to-video through fal (#29).
+pub const PIKA_I2V: &str = "fal-ai/pika/v2.5/image-to-video";
 /// Topaz Precision Standard V2 image enhancement through fal (#37).
 pub const TOPAZ_IMAGE: &str = "topaz/upscale/image/precision";
 /// Recraft V4.1 raster and original SVG through fal (#35).
@@ -181,6 +185,7 @@ enum Model {
     Photon,
     Ideogram,
     Topaz,
+    Pika,
     Image,
     Video,
     /// Image to video: a first frame and an optional last frame.
@@ -227,6 +232,7 @@ impl Model {
             LUMA_PHOTON => Ok(Self::Photon),
             IDEOGRAM => Ok(Self::Ideogram),
             TOPAZ_IMAGE => Ok(Self::Topaz),
+            PIKA_I2V => Ok(Self::Pika),
             FLUX => Ok(Self::Image),
             WAN => Ok(Self::Video),
             WAN_I2V => Ok(Self::Frames),
@@ -270,6 +276,7 @@ impl Model {
             Self::Photon => LUMA_PHOTON,
             Self::Ideogram => IDEOGRAM,
             Self::Topaz => TOPAZ_IMAGE,
+            Self::Pika => PIKA_I2V,
             Self::Image => FLUX,
             Self::Video => WAN,
             Self::Frames => WAN_I2V,
@@ -288,6 +295,7 @@ impl Model {
             self,
             Self::MiniMaxText
                 | Self::MiniMaxFrames
+                | Self::Pika
                 | Self::Wan3Text
                 | Self::Wan3Frames
                 | Self::GrokText
@@ -336,6 +344,7 @@ impl Model {
             Self::Photon => LUMA_PHOTON,
             Self::Ideogram => "fal-ai/ideogram",
             Self::Topaz => "topaz/upscale",
+            Self::Pika => "fal-ai/pika",
             Self::Image => "fal-ai/flux",
             Self::Video | Self::Frames | Self::Speech => "fal-ai/wan",
             Self::Audio => "fal-ai/kokoro",
@@ -718,6 +727,12 @@ impl Fal {
                 let meta = nodecraft_media::probe_image(&reply.body, &limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
                 if f.width.is_some_and(|w| w != u64::from(meta.width)) || f.height.is_some_and(|h| h != u64::from(meta.height)) {
                     return Err(malformed("fal declared geometry disagrees with actual image"));
+                }
+            }
+            if record.model == Model::Pika && (f.width.is_some() || f.height.is_some()) {
+                let info = media::pika::probe(&reply.body, limits)?;
+                if f.width.is_some_and(|n| n != u64::from(info.0)) || f.height.is_some_and(|n| n != u64::from(info.1)) {
+                    return Err(malformed("Pika declared geometry disagrees with actual video"));
                 }
             }
             remaining = remaining.checked_sub(reply.body.len()).ok_or_else(|| malformed("fal output byte overflow"))?;

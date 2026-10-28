@@ -7,15 +7,17 @@ use nodecraft_types::{Error, ErrorKind};
 
 pub(super) fn check(quote: &Quote, catalog: &Catalog, large_assets: bool) -> Result<(), Error> {
     if !large_assets {
-        let model = quote.steps.iter().filter(|step| !step.runs_nothing()).flat_map(|step| &step.models).filter_map(|id| catalog.get(id)).find_map(|model| {
-            match (model.provider.as_str(), model.provider_model.as_str()) {
-                ("fal", "topaz/upscale/image/precision") => Some("Topaz Precision"),
-                ("magnific", "image-upscaler-precision-v2") => Some("Magnific Precision V2"),
-                _ => None,
-            }
-        });
-        if let Some(model) = model {
-            return Err(Error::new(ErrorKind::Unsupported, format!("{model} needs a desktop project so its large image results can be saved.")));
+        let endpoint =
+            quote.steps.iter().filter(|step| !step.runs_nothing()).flat_map(|step| &step.models).filter_map(|id| catalog.get(id)).find_map(|model| {
+                match (model.provider.as_str(), model.provider_model.as_str()) {
+                    ("fal", "topaz/upscale/image/precision") => Some(("Topaz Precision", "image")),
+                    ("fal", "fal-ai/pika/v2.5/image-to-video") => Some(("Pika 2.5", "video")),
+                    ("magnific", "image-upscaler-precision-v2") => Some(("Magnific Precision V2", "image")),
+                    _ => None,
+                }
+            });
+        if let Some((label, modality)) = endpoint {
+            return Err(Error::new(ErrorKind::Unsupported, format!("{label} needs a desktop project so its large {modality} results can be saved.")));
         }
     }
     if !large_assets
@@ -57,13 +59,28 @@ mod tests {
     fn topaz37_storage_guard_covers_deferred_and_inlined_quote_identities_without_canvas_scanning() {
         let catalog = Catalog::builtin().unwrap();
         for known in [true, false] {
+            assert!(check(&quote("fal.pika25-i2v", known, 1), &catalog, false).is_err());
+            assert!(check(&quote("fal.pika25-i2v", known, 1), &catalog, true).is_ok());
             let quoted = quote("fal.topaz-precision", known, 1);
             assert!(check(&quoted, &catalog, false).unwrap_err().message.contains("desktop project"));
             assert!(check(&quoted, &catalog, true).is_ok());
         }
         assert!(check(&quote("fal.ideogram-v3", true, 1), &catalog, false).is_ok(), "an unused Topaz canvas node cannot block another selected step");
         assert!(check(&quote("fal.topaz-precision", true, 0), &catalog, false).is_ok(), "reused/empty work does not spend or produce another asset");
+        assert!(check(&quote("fal.pika25-i2v", true, 0), &catalog, false).is_ok());
         assert!(check(&Quote::default(), &catalog, false).is_ok());
+    }
+    #[test]
+    fn pika29_storage_guard_resolves_actual_provider_and_alias_not_catalog_spelling() {
+        let builtin = Catalog::builtin().unwrap();
+        let mut aliased = builtin.get("fal.pika25-i2v").unwrap().clone();
+        aliased.id = "fixture.pika29".into();
+        let mut other = aliased.clone();
+        other.id = "fixture.other29".into();
+        other.provider = "another".into();
+        let catalog = Catalog::from_models([aliased, other]).unwrap();
+        assert!(check(&quote("fixture.pika29", false, 1), &catalog, false).is_err());
+        assert!(check(&quote("fixture.other29", false, 1), &catalog, false).is_ok());
     }
     #[test]
     fn topaz37_storage_guard_resolves_custom_catalog_ids_to_the_actual_provider_endpoint() {

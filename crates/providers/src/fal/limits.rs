@@ -76,7 +76,15 @@ impl Limits {
         let qwen_images = matches!(model, Model::QwenImage | Model::QwenEdit);
         let large_video = matches!(
             model,
-            Model::Wan3Text | Model::Wan3Frames | Model::GrokText | Model::GrokFrames | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames
+            Model::Pika
+                | Model::Wan3Text
+                | Model::Wan3Frames
+                | Model::GrokText
+                | Model::GrokFrames
+                | Model::RayText
+                | Model::RayFrames
+                | Model::LtxText
+                | Model::LtxFrames
         );
         // Topaz can return a 4096² high-bit-depth PNG, larger than legacy image caps.
         let large_result = large_video || model.hunyuan() || model.rodin() || model == Model::Topaz || model.minimax();
