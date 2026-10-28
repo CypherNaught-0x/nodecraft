@@ -144,6 +144,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
 - **MiniMax**: H3 text/first-frame video, Speech 2.8 HD and Music 3 share Fal's key and queue
   (#27), with explicit priced settings and native streamed storage. See [provider limits](docs/providers.md#minimax-video-speech-and-music-through-fal-27).
+- **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
+  photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
+  spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
+  in-memory storage refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Topaz**: desktop projects and the native CLI can enhance or upscale one image with
   Precision Standard V2 through fal (#37). Integer 1×–4× scaling stays within one 0.08 USD
   output block. Browser sessions refuse before payment; see [`docs/providers.md`](docs/providers.md).

@@ -356,6 +356,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("kling.v2_1_master", false),
             ("kling.v2_5_turbo", false),
             ("kling.v1_6", false),
+            ("magnific.precision-v2", false),
             ("meshy.image-to-3d", false),
             ("meshy.multi-image-to-3d", false),
             ("meshy.remesh", false),
