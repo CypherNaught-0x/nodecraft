@@ -246,6 +246,7 @@ fn same_contract_renderer_uses_optional_composer_ownership() {
                     mentions: &[],
                     mention_blocked: None,
                     partial: None,
+                    connected: (Vec::new(), 0),
                     local_text: None,
                     video: None,
                     audio: None,

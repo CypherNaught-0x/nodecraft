@@ -1825,6 +1825,25 @@ impl NodeCraftApp {
                     }
                     _ => None,
                 };
+                // The media wired into a text card, as thumbnails above its answer (#84).
+                let connected = if node.kind == nodecraft_nodes::generation::TEXT_KIND && self.view.zoom >= card::BODY_MIN_ZOOM {
+                    let wired = card::connected::assets(canvas, node);
+                    let edge = t.connected_thumb * self.view.zoom * ui.ctx().pixels_per_point();
+                    let assets = self.session.assets();
+                    let previews = &mut self.previews;
+                    let thumbs = wired
+                        .iter()
+                        .take(card::connected::MAX_SHOWN)
+                        .map(|asset| {
+                            let kind = card::connected::MediaKind::of(asset);
+                            let preview = kind.previews().then(|| previews.request_asset(ui.ctx(), asset.hash, edge, || assets.preview_read(asset)));
+                            card::connected::Thumb { kind, preview }
+                        })
+                        .collect();
+                    (thumbs, wired.len())
+                } else {
+                    (Vec::new(), 0)
+                };
                 let rejected = self.marquee.is_some() && self.marquee_geometry.placeholder(node.id);
                 let schema = if rejected { None } else { cached_schema(&mut self.schemas, &self.session, node, self.cache_clock) };
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
@@ -1864,6 +1883,7 @@ impl NodeCraftApp {
                         mentions: mention_cards,
                         mention_blocked: mention_blocked.get(&node.id).map(String::as_str),
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
+                        connected,
                         local_text: self.text_previews.rows(node.id),
                         video,
                         audio,

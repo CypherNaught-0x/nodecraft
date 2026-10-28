@@ -47,7 +47,12 @@ is 84 high under a 22-high time ruler, and a clip's edge trims within 6 points.
 The ComfyUI servers panel's jobs-at-once text field is `comfy_jobs_width` (48) wide,
 and its new-server name field is `comfy_name_width` (160) wide.
 A card's image preview, and a text card's answer, take `card_preview_height` (180) above the
-composer; a long answer scrolls inside it and can be selected and copied. While a wire feeds a
+composer; a long answer scrolls inside it and can be selected and copied. Media wired into a text
+card (images, a PDF's first page, clips and sounds) show along the top of that answer area as
+`connected_thumb` (40) squares, in port then wire order, `control_gap` apart; pictures fill the
+square from their middle, other media show their kind's name, and when they don't all fit the last
+square counts the rest (`+3`). The row takes room from the answer, so wiring media never changes
+the card's size. While a wire feeds a
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the
 label's own row, so the card keeps its size), and its hover text explains that nonempty connected
 text is used instead; the typed prompt is kept and comes back when the wire is removed. A

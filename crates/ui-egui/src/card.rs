@@ -15,6 +15,7 @@ use std::{
 };
 
 mod chips;
+pub(crate) mod connected;
 pub(crate) mod generate;
 mod layout;
 #[cfg(test)]
@@ -215,6 +216,9 @@ pub struct CardView<'a> {
     pub mention_blocked: Option<&'a str>,
     /// A text card's answer still arriving, or cut short (#504).
     pub partial: Option<generate::Partial<'a>>,
+    /// The media wired into a text card, shown above its answer (#84): the tiles the host
+    /// prepared, and how many assets are connected in all.
+    pub connected: (Vec<connected::Thumb>, usize),
     pub(crate) local_text: Option<&'a [crate::text_preview::Row]>,
     /// The node's video and its player, when it has one (#105).
     pub video: Option<crate::video::VideoView>,
@@ -268,6 +272,7 @@ pub fn show(
         mentions,
         mention_blocked,
         partial,
+        connected: connected_media,
         local_text,
         video,
         audio,
@@ -483,7 +488,8 @@ pub fn show(
         } else if node.kind == nodecraft_nodes::generation::TEXT_KIND {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.answer);
             inner = rest;
-            generate::answer(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), generate::answer_of(node), partial, &mut intents, t);
+            let area = connected::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &connected_media.0, connected_media.1, t);
+            generate::answer(&mut ui, area, generate::answer_of(node), partial, &mut intents, t);
         }
         if let Some(d) = draw_composer {
             inner = generate::show(
