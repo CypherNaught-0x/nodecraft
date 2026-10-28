@@ -4,7 +4,9 @@ This finishes two items that [`2026-10-19-batch-fanout.md`](2026-10-19-batch-fan
 "Not yet": a batch feeding another batch, and per-item result navigation with the Cross matrix
 review. A batch fed by a node in the same run still waits for that node's result (whole-canvas runs
 list what is after it as waiting, #965), and a fanned list output into a list input is still
-refused.
+refused. Batches inside a technique's own graph are still "not yet" (#93): a technique node blocks
+with "a batch inside its technique can't fan it out yet", nested or not; a batch on the canvas
+feeding a technique node fans it as before (#533).
 
 - **Flatten, not a nested product.** A batch's `in` is a list input, and a list input fed by a
   batch collects every item (#92). A batch wired into a batch does the same: its items join the

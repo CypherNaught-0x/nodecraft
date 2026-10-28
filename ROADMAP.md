@@ -363,4 +363,5 @@ The near-term order follows the remaining open issues, not an already-finished w
 - **2026-10-28** — the Batch node is complete (#92): a batch collecting another batch flattens
   its items into its own (bounded at 1,000 items and 16 batches per chain, every item quoted
   before the run), and "Review items…" on a fanned card steps through each item's result, with a
-  rows × columns grid for a Cross of two batches that marks failed and cancelled cells. M5 25/33.
+  rows × columns grid for a Cross of two batches that marks failed and cancelled cells. Batches
+  inside a technique's own graph are not yet supported (#93). M5 25/33.
