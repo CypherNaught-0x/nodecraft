@@ -1,0 +1,24 @@
+# Current Pika 2.5 fal schema and rates checked 2026-10-28:
+# https://fal.ai/models/fal-ai/pika/v2.5/image-to-video/api
+# https://fal.ai/models/fal-ai/pika/v2.5/image-to-video
+# 720p: $0.25 per5seconds;10seconds doubles. Resolution is fixed, so $0.05/second.
+[[model]]
+id = "fal.pika25-i2v"
+provider = "fal"
+provider_model = "fal-ai/pika/v2.5/image-to-video"
+label = "Pika 2.5 image to video (fal)"
+description = "Animate one first frame with a prompt at 720p for 5 or 10 seconds. Desktop project required to save video results. Upright static PNG/JPEG/WebP up to 1 MiB and 1024 px per edge."
+latency_s = 120
+quality = 4
+pricing = { type = "per_unit", unit = "second", price = "0.05 USD", count = "duration_seconds", default_count = 5 }
+
+[[model.modes]]
+id = "image-to-video"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "first_frame", modality = "image", min = 1, max = 1 }]
+
+[[model.params.params]]
+name = "duration_seconds"
+label = "Seconds"
+control = { type = "unsigned", min = "5", max = "10", step = "5" }
+default = { type = "unsigned", value = "5" }

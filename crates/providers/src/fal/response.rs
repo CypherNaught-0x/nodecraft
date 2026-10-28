@@ -5,17 +5,18 @@ pub(super) struct File {
     pub size: Option<u64>,
     pub width: Option<u64>,
     pub height: Option<u64>,
+    pub duration_ms: Option<u64>,
 }
 fn delivery(s: &str, key: &Secret, model: Model) -> Result<(), ProviderError> {
     if s.contains(key.expose()) {
         return Err(malformed("fal output URL refused or redacted"));
     }
-    if model.recraft() && recraft_bucket(s) {
+    if (model.recraft() || model == Model::Pika) && recraft_bucket(s) {
         return Ok(());
     }
     storage(s)
 }
-/// Recraft's formal raster example uses this exact fal-owned public GCS bucket.
+/// Recraft and Pika formal examples use this exact fal-owned public GCS bucket.
 /// Keep this exception local to these models; URL normalization must not broaden it.
 fn recraft_bucket(s: &str) -> bool {
     let Some(path) = s.strip_prefix("https://storage.googleapis.com/falserverless/") else { return false };
@@ -53,7 +54,30 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
     if root.get("error").is_some_and(|v| v.get() != "null") {
         return Err(malformed("fal result contains an error instead of a complete output"));
     }
+    let duration_ms = if r.model == Model::MiniMaxSpeech {
+        let n = root
+            .optional_u64("duration_ms")?
+            .filter(|n| *n > 0 && *n <= u64::from(r.duration_ms))
+            .ok_or_else(|| malformed("MiniMax speech duration missing or refused"))?;
+        Some(n)
+    } else if r.model == Model::MiniMaxMusic {
+        let seed: serde_json::Number = serde_json::from_str(root.get("seed").ok_or_else(|| malformed("MiniMax music seed missing"))?.get())
+            .map_err(|_| malformed("MiniMax music seed refused"))?;
+        if !seed.is_i64() && !seed.is_u64() {
+            return Err(malformed("MiniMax music seed must be an integer"));
+        }
+        let n: f64 = serde_json::from_str(root.get("duration").ok_or_else(|| malformed("MiniMax music duration missing"))?.get())
+            .map_err(|_| malformed("MiniMax music duration refused"))?;
+        if !n.is_finite() || n <= 0. || n > f64::from(r.duration_ms) / 1000. {
+            return Err(malformed("MiniMax music duration exceeds requested bound"));
+        }
+        Some((n * 1000.).ceil() as u64)
+    } else {
+        None
+    };
     let name = match r.model {
+        Model::MiniMaxText | Model::MiniMaxFrames => "video",
+        Model::MiniMaxSpeech | Model::MiniMaxMusic => "audio",
         Model::RecraftImage
         | Model::RecraftVector
         | Model::Image
@@ -66,7 +90,11 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         | Model::Ideogram => "images",
         Model::RodinText | Model::RodinImages | Model::RodinFastText | Model::RodinFastImages => "model_mesh",
         Model::Train => "diffusers_lora_file",
-        Model::Wan3Text
+        Model::HeygenAvatar
+        | Model::HeygenSpeed
+        | Model::HeygenPrecision
+        | Model::Pika
+        | Model::Wan3Text
         | Model::Wan3Frames
         | Model::GrokText
         | Model::GrokFrames
@@ -115,12 +143,12 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
             if !nodecraft_media::style::plain_https(&url) {
                 return Err(malformed("fal trained weights link carries a query or fragment"));
             }
-            out.push(File { url: url.into_owned(), mime: None, size: None, width: None, height: None });
+            out.push(File { url: url.into_owned(), mime: None, size: None, width: None, height: None, duration_ms: None });
             continue;
         }
         // A clip's generic `application/octet-stream` declares nothing; its bytes are still
         // checked as MP4 after download.
-        let mime = f.optional_text("content_type")?.filter(|m| !((r.model.video() || r.model.rodin()) && m == "application/octet-stream"));
+        let mime = f.optional_text("content_type")?.filter(|m| !((r.model.video() || r.model.rodin() || r.model.minimax()) && m == "application/octet-stream"));
         if mime.as_ref().is_some_and(|s| s.len() > 128) {
             return Err(malformed("fal MIME too long"));
         }
@@ -149,12 +177,19 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
                 .ok_or_else(|| malformed("fal declared aggregate geometry exceeds quota"))?;
         }
         let allowed: &[&str] = match r.model {
+            Model::MiniMaxText | Model::MiniMaxFrames => &["video/mp4"],
+            Model::MiniMaxSpeech => &["audio/mpeg"],
+            Model::MiniMaxMusic => &["audio/wav"],
             Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Topaz => &["image/png"],
             Model::RecraftVector => &[nodecraft_media::svg::MIME],
             Model::RecraftImage | Model::QwenImage | Model::QwenEdit | Model::GrokImage | Model::GrokEdit | Model::Photon | Model::Ideogram => {
                 &["image/png", "image/jpeg", "image/webp"]
             }
-            Model::Wan3Text
+            Model::HeygenAvatar
+            | Model::HeygenSpeed
+            | Model::HeygenPrecision
+            | Model::Pika
+            | Model::Wan3Text
             | Model::Wan3Frames
             | Model::GrokText
             | Model::GrokFrames
@@ -179,7 +214,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         if mime.as_deref().is_some_and(|s| !allowed.contains(&s)) {
             return Err(malformed("fal output category/MIME refused before download"));
         }
-        out.push(File { url: url.into_owned(), mime: mime.map(|s| s.into_owned()), size, width, height });
+        out.push(File { url: url.into_owned(), mime: mime.map(|s| s.into_owned()), size, width, height, duration_ms });
     }
     Ok(out)
 }

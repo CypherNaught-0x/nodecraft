@@ -213,5 +213,13 @@ mod magnific38;
 #[path = "svg_template35.rs"]
 mod svg_template35;
 
+#[path = "minimax27.rs"]
+mod minimax27;
+#[path = "pika29.rs"]
+mod pika29;
+
+#[path = "heygen43.rs"]
+mod heygen43;
+
 #[path = "stl569.rs"]
 mod stl569;

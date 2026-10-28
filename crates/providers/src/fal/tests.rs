@@ -12,10 +12,10 @@ pub(super) fn observe(n: usize) {
         }
     });
 }
-fn stages() -> [usize; 3] {
+pub(super) fn stages() -> [usize; 3] {
     STAGES.with(|s| *s.borrow())
 }
-fn reset() {
+pub(super) fn reset() {
     STAGES.with(|s| *s.borrow_mut() = [0; 3]);
 }
 const KEY: &str = "fal-fixture-key-not-real";
@@ -85,7 +85,7 @@ pub(super) fn handle(model: &str) -> JobHandle {
     } else {
         0
     };
-    Record { model: Model::read(model).unwrap(), requested: 1, width: side, height: side }.handle(
+    Record { model: Model::read(model).unwrap(), requested: 1, width: side, height: side, duration_ms: 0 }.handle(
         "r_1",
         &Routes {
             status: o["status_url"].as_str().unwrap().into(),
@@ -796,13 +796,13 @@ fn two_full_size_inputs_fit_the_request_and_the_extent_is_exact() {
 }
 #[test]
 fn a_declared_clip_type_that_isnt_mp4_or_generic_is_refused() {
-    let r = Record { model: Model::Frames, requested: 1, width: 0, height: 0 };
+    let r = Record { model: Model::Frames, requested: 1, width: 0, height: 0, duration_ms: 0 };
     for (mime, ok) in [("video/mp4", true), ("application/octet-stream", true), ("video/webm", false), ("image/png", false)] {
         let o = json!({"video":{"url":"https://v3.fal.media/files/fixture","content_type":mime,"file_size":null}});
         assert_eq!(response::outputs(&serde_json::to_vec(&o).unwrap(), r, Limits::HARD, &key()).is_ok(), ok, "{mime}");
     }
     // A generic type on a non-video output still has to match.
-    let r = Record { model: Model::Audio, requested: 1, width: 0, height: 0 };
+    let r = Record { model: Model::Audio, requested: 1, width: 0, height: 0, duration_ms: 0 };
     let o = json!({"audio":{"url":"https://v3.fal.media/files/fixture","content_type":"application/octet-stream","file_size":null}});
     assert!(response::outputs(&serde_json::to_vec(&o).unwrap(), r, Limits::HARD, &key()).is_err());
 }

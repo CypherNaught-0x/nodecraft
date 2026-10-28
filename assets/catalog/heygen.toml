@@ -1,0 +1,74 @@
+# Official schemas and published rates checked2026-10-28; USD0.10/0.05/0.10 per output second.
+# https://fal.ai/models/fal-ai/heygen/avatar4/image-to-video/api
+# https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api
+# https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api
+# Output duration/billing rounding is not a strict contract, so monetary quotes stay unknown.
+
+[[model]]
+id = "fal.heygen-avatar4"
+provider = "fal"
+provider_model = "fal-ai/heygen/avatar4/image-to-video"
+label = "HeyGen Photo Avatar 4 (fal)"
+description = "Animate one upright photo (1 MiB, 1024 px) with PCM WAV (1 MiB, 10 s). Stable 720p 16:9. Desktop project required. Monetary cost unknown; text does not guide this model."
+latency_s = 120
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "photo-avatar"
+output = "video"
+inputs = [{ role = "portrait", modality = "image", min = 1, max = 1 }, { role = "speech", modality = "audio", min = 1, max = 1 }]
+
+[[model]]
+id = "fal.heygen-lipsync-speed"
+provider = "fal"
+provider_model = "fal-ai/heygen/v3/lipsync/speed"
+label = "HeyGen Lip sync Speed (fal)"
+description = "Lip-sync an MP4 (16 MiB, 1280×720, 10 s) with PCM WAV (1 MiB, 10 s). Desktop project required. Monetary cost unknown; text does not guide this model."
+latency_s = 120
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "lip-sync"
+output = "video"
+inputs = [{ role = "video", modality = "video", min = 1, max = 1 }, { role = "speech", modality = "audio", min = 1, max = 1 }]
+
+[[model.params.params]]
+name = "disable_music_track"
+label = "Remove source music"
+control = { type = "toggle" }
+default = { type = "bool", value = false }
+
+[[model.params.params]]
+name = "enable_speech_enhancement"
+label = "Enhance replacement speech"
+control = { type = "toggle" }
+default = { type = "bool", value = false }
+
+[[model]]
+id = "fal.heygen-lipsync-precision"
+provider = "fal"
+provider_model = "fal-ai/heygen/v3/lipsync/precision"
+label = "HeyGen Lip sync Precision (fal)"
+description = "Lip-sync an MP4 (16 MiB, 1280×720, 10 s) with PCM WAV (1 MiB, 10 s). Desktop project required. Monetary cost unknown; text does not guide this model."
+latency_s = 120
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "lip-sync"
+output = "video"
+inputs = [{ role = "video", modality = "video", min = 1, max = 1 }, { role = "speech", modality = "audio", min = 1, max = 1 }]
+
+[[model.params.params]]
+name = "disable_music_track"
+label = "Remove source music"
+control = { type = "toggle" }
+default = { type = "bool", value = false }
+
+[[model.params.params]]
+name = "enable_speech_enhancement"
+label = "Enhance replacement speech"
+control = { type = "toggle" }
+default = { type = "bool", value = false }

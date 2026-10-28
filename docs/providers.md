@@ -28,6 +28,8 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file or pasting its JSON on the canvas does the same. Pasted workflow text is titled Pasted workflow because the text clipboard supplies no filename; a file drop keeps its filename. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
 | **Magnific** | `magnific` | separate `magnific` key (`x-magnific-api-key`) | one image → Precision V2 photo enhancement, 2× or 4× | Native streamed project storage required. Credit-based monetary cost stays unknown and requires consent. Saved task polling, no ambiguous submit replay or remote cancellation; delivery links expire after 30 minutes. See below. |
+| **HeyGen through fal** | `fal` | the existing fal key | supplied speech and one photo → Photo Avatar4, or MP4 → Speed/Precision lip sync | Native streamed storage required. Unknown monetary price with explicit consent; supplied PCM WAV, no TTS/stock voices. See below. |
+| **Pika 2.5 through fal** | `fal` | the existing fal key | prompt and one first frame → 720p video, 5/10 seconds | Native streamed project storage required; $0.25/$0.50 estimates. Current image-to-video only; see below. |
 | **Topaz Precision through fal** | `fal` | the existing fal key | one upright image → Standard V2 upscale PNG | Native streamed project storage required; integer 1–4× within one $0.08 output block. Existing queue/resume and no ambiguous paid replay; see below. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
@@ -2178,3 +2180,182 @@ No paid live generation was performed. Offline tests use original procedural ras
 including a result larger than 16 MiB through actual native RunHost history/save/reopen. The
 ignored Topaz live smoke requires explicit cost acknowledgement and the fal key; it is never
 run in CI.
+
+## MiniMax video, speech and music through fal (#27)
+
+Use the existing **fal** API key on a native desktop or CLI project with streamed asset
+storage. These four current entries share Fal's queue, strict canonical saved handles,
+no-redirect downloads and the rule that an ambiguous paid create never replays:
+
+| Catalog entry | Supported request | Dated budget estimate |
+|---|---|---|
+| `fal.minimax-h3` | H3 text video, 5–15 integer seconds, 480P or 768P, generated native audio | $0.05/s at 480P; $0.06/s at 768P |
+| `fal.minimax-h3-i2v` | H3 from one first frame and a prompt, same durations/resolutions | Same rates; no separate frame fee |
+| `fal.minimax-speech28-hd` | Plain speech, stock voice, speed 0.5–2 and pitch -12–12 | $0.10/1000 characters; quote conservatively counts complete UTF-8 bytes |
+| `fal.minimax-music3` | Music description plus editable lyrics, maximum 1–300 integer seconds | $0.002 per requested maximum second |
+
+Contracts and prices checked 2026-10-28: [H3 text](https://fal.ai/models/minimax/h3/text-to-video/api),
+[H3 first frame](https://fal.ai/models/minimax/h3/image-to-video/api),
+[Speech 2.8 HD](https://fal.ai/models/fal-ai/minimax/speech-2.8-hd/api), and
+[Music 3](https://fal.ai/models/minimax/music-3/api). Current H3 model-page rates supersede older
+blog prices. These are budget estimates, not an observed invoice. The optional Fal billable-units
+receipt remains separate evidence. Known speech text is conservatively priced at admission;
+unknown upstream text stays unpriced until materialized and needs the ordinary partial-quote consent.
+
+Video fixes safety on, prompt expansion off and URL delivery, and omits target audio, last frames,
+reference video, 2K/4K upscale modes and H3 Max promotional tiers. A first frame must be upright
+PNG/JPEG/WebP, 32–1024 pixels on each axis, at most 1 MiB and aspect ratio between 1:3 and 3:1.
+These are local admission bounds. Prompts are limited locally to 8192 UTF-8 bytes. Optional fixed
+seeds use a documented local u32 subset; the public schemas do not specify that as a vendor maximum.
+
+Speech fixes URL-delivered **MP3, 32 kHz, mono, 128 kbit/s**, volume one and safety on. The four
+stock voices are Wise Woman, Friendly Person, Deep Voice Man and Calm Woman. The 4096-byte plain
+speech slice refuses long-pause `<#...#>` directives before payment; voice cloning, custom
+pronunciation, normalization controls and native streaming speech are separate contracts. MP3
+admission checks every frame extent, rate, channels, tag extent and a one-hour duration bound;
+it does not promise to decode every audio sample or prove artistic quality.
+
+Music 3 fixes **44.1 kHz, 16-bit stereo WAV**, 30 inference steps, guidance 1.7 and safety on.
+Lyrics are a model-owned multiline setting, not an unsupported second connected text input.
+Section tags must occupy their own lines; same-line words would be dropped by the model and
+are refused locally. The initial tag is `[instrumental]`; users can replace it with lyrics.
+Music descriptions are at most 8192 UTF-8 bytes and lyrics 16 KiB. The chosen duration is an upper
+bound; the model may stop earlier. Returned duration/seed metadata is validated, and the complete
+WAV must match its promised PCM settings and requested time bound.
+
+All four entries allow one result up to **256 MiB**, also the aggregate cap. They require streamed
+storage before paid I/O, including catalog aliases and deferred/inlined Technique steps. Classic
+16 MiB browser/memory projects refuse locally rather than pay for a result they cannot retain;
+direct WebAssembly submissions also refuse. Native recording, held results and persistence reuse
+the existing worker conversion/sealing path. Legacy Fal model limits are unchanged. Authored
+media/HTTP fixtures demonstrate client behavior; no paid request was used for implementation.
+
+The ignored `minimax27_live_smoke` requires both `NODECRAFT_LIVE_MINIMAX=1` and
+`NODECRAFT_LIVE_MINIMAX_ACKNOWLEDGE_COST=1`, plus `FAL_KEY`. Optional mode is `video`, `frame`,
+`speech` or `music` (default): one eight-second music request estimates $0.016; one default
+480P video request estimates $0.25. It was not run. Separate ignored local FFmpeg fixture
+validation requires `NODECRAFT_MINIMAX27_FFMPEG`; that decoder check has no provider calls.
+
+## Pika 2.5 through fal (#29)
+
+Use the existing **fal** key and select **Pika 2.5 image to video (fal)**
+(`fal.pika25-i2v`) on a Generate video card with a prompt and one image wired to
+**first_frame**. Desktop projects and the native CLI support this model. Browser sessions and
+classic asset storage refuse before consent or paid HTTP, including a model renamed in a custom
+catalog and deferred/inlined Technique work. Unused canvas nodes do not block other runs.
+
+The current alias is `fal-ai/pika/v2.5/image-to-video`, checked **2026-10-28** against fal's
+[model/rates](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video),
+[API](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video/api), and
+[formal schema](https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/pika/v2.5/image-to-video).
+The catalog fixes **720p** and offers **5 or 10 seconds**. The published price is **$0.25 for
+5 seconds**, doubled for 10 seconds; the quote reserves **$0.05 per requested second**.
+A variation is another separately quoted request. This estimate is not a receipt: optional fal
+billable-unit evidence remains separate from money, and uncertain submissions retain their
+reservation. No live paid generation was performed for this change.
+
+The request has exactly `prompt`, `image_url`, `resolution="720p"` and integer `duration`.
+NodeCraft requires a nonempty prompt of at most **2048 characters** and exactly one upright,
+static **PNG/JPEG/WebP**, at most **1 MiB and 1024 pixels per side**. These are conservative local
+limits, not published Pika service limits. Original image bytes are checked with the actual
+codec before payment; EXIF rotation/reflection and animation refuse. Complete escaped JSON plus
+the encoded image is bounded before decoding or base64 allocation. Resolution, negative prompt,
+seed, frame rate, audio, safety and output-count controls are not exposed or sent. The service's
+other defaults apply; the absence of a safety field is not a claim about moderation.
+
+This initial integration covers **current image-to-video only**. Text-to-video, multiple
+keyframes, Pikaframes, effects, the separate native Pika API and Pika 2.2 are outside this scope.
+The native service uses a separate credential/protocol; it is not configured with a fal key.
+
+The [fal queue contract](https://fal.ai/docs/api-reference/inference-api/queue/submit-path)
+uses `fal-ai/pika/requests/<id>` for status, result and best-effort cancellation. Saved handles
+retain the full model alias and resume the same task without another paid POST. Ambiguous creates
+never replay. Result failures retain accepted handles; cancelling does not promise a refund.
+
+One MP4 result is admitted at **256 MiB per file and in total**, scoped to this alias. Existing
+fal aliases retain their limits. The shared structural MP4 checks remain, with Pika-only local
+limits on movie/track timing (positive and at most **11 seconds**, a conservative envelope for
+the longest offered request), positive display geometry within **4096 pixels per side and
+16,777,216 pixels**, at most **256 KiB movie metadata**, **4096 boxes** and **16 levels**.
+Declared MIME, byte size and dimensions must agree with the downloaded bytes. These are bounded
+container checks, not proof of full decoding or generated content quality.
+
+For a **new paid submission**, NodeCraft's lower-only `Limits` API must retain that complete
+output envelope: 4096×4096 axis budgets, 16,777,216 pixels, 256 MiB individual/aggregate and
+256 KiB metadata. Any reduction in those six output fields refuses locally, before codecs,
+HTTP or delivery uncertainty, even when the first frame fits. This conservative client policy
+avoids inventing an exact 720p aspect tuple or minimum encoded size the schema does not publish;
+it does not mean a video will use the whole budget. Input, request and text budgets may still
+be lowered. Existing saved handles continue to use the intersection with current limits while
+polling/downloading; this admission rule never widens a resumed result's budget.
+
+Downloads carry no API key and refuse redirects. They use the existing HTTPS fal.media
+allowlist, plus the exact public `https://storage.googleapis.com/falserverless/` bucket shown in
+the formal Pika schema. The latter exception is scoped to Pika and the existing Recraft models:
+no other bucket, credentials, query, port, encoded path or traversal is admitted.
+
+Large result conversion, hashing and sealing reuse the native runtime workers; the UI adopts
+sealed receipts. Held-result persistence/retry and journal resume retain complete original bytes.
+Offline tests drive the actual RunHost through consent, large MP4 history, held retry, restart
+resume and save/close/reopen with exactly one paid create. The procedural blue-and-gold fixture
+was authored locally with FFmpeg; it is **not Pika output**. The ignored `pika29_live_smoke` test
+requires `NODECRAFT_LIVE_PIKA=1`, `NODECRAFT_LIVE_PIKA_COST=0.25USD` and `FAL_KEY`; it is compiled
+but never run by ordinary CI.
+
+
+## HeyGen through fal (#43)
+
+Choose **HeyGen Photo Avatar 4 (fal)** (`fal.heygen-avatar4`) on a Generate video card
+and wire one photo to **portrait** and supplied PCM WAV to **speech**. The request fixes
+stable talking style,720p,16:9, captions off and the safety checker on. The photo should
+contain a clear face; NodeCraft does not perform face detection. Text retained on the card
+is not sent to TTS. Stock avatars, voice identifiers, background/expression controls and
+native direct HeyGen credentials are outside this integration.
+
+For existing video, choose **HeyGen Lip sync Speed (fal)** (`fal.heygen-lipsync-speed`)
+or **HeyGen Lip sync Precision (fal)** (`fal.heygen-lipsync-precision`). Wire **video** and
+**speech**. Dynamic duration and captions stay off. **Remove source music** and
+**Enhance replacement speech** are the two documented toggles, initially off. Title,
+partial timing and safety-checker fields are not invented. The provider's other defaults
+apply; no absence of a safety field promises unmoderated generation.
+
+The three current aliases are `fal-ai/heygen/avatar4/image-to-video`,
+`fal-ai/heygen/v3/lipsync/speed` and `fal-ai/heygen/v3/lipsync/precision`. Primary
+[photo](https://fal.ai/models/fal-ai/heygen/avatar4/image-to-video/api),
+[Speed](https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api) and
+[Precision](https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api) schemas and prices
+were checked **2026-10-28**. Published rates are **USD 0.10, USD 0.05 and USD 0.10 per output
+second**, respectively. They do not establish strict output-duration or rounding guarantees.
+Quotes therefore remain **unknown/by usage USD** and require explicit consent to one
+unpriced job. A measured input length is not a monetary ceiling; finite money budgets
+cannot establish that an unknown price fits. No currency invoice is invented.
+
+Client input limits are one upright static PNG/JPEG/WebP up to **1 MiB and 1024 pixels per
+axis**, supplied **PCM WAV up to 1 MiB and 10 seconds**, and for lip sync a complete
+**MP4 up to 16 MiB, 1280×720 and 10 seconds**. Missing clocks or movie/media clocks differing
+by more than 100 ms refuse. These are conservative client policies, not published service
+limits or full video-decoding guarantees. Complete escaped JSON plus both data URIs fits
+**32 MiB** before codecs/base64 allocations. Larger input/request quotas are scoped to
+HeyGen; existing fal models keep their original caps.
+
+One MP4 output must have positive clocks within **11 seconds**, positive display geometry
+within **4096 pixels per axis/16,777,216pixels**, at most **256 MiB per file and aggregate**,
+**256 KiB movie metadata**, 4096 boxes and 16 levels. Declared MIME, dimensions and size must
+agree with the downloaded original. New paid submissions require these complete default
+response/output budgets (including 2 MiB response metadata); reducing them refuses locally
+before codec work or HTTP. Input/request/text/codec budgets may still be lowered when
+inputs fit. Saved handles intersect current limits when polling; they never widen them.
+
+Use a desktop project or native CLI host with streamed asset storage. Browser and Classic
+in-memory sessions refuse before payment, including custom model ids and deferred Technique
+work. Unused cards do not block other runs. Queue routes stay at `fal-ai/heygen/requests/<id>`;
+accepted task handles resume without another paid POST. Ambiguous creates are never replayed.
+Downloads use credential-free, redirect-free HTTPS fal.media origins. Disabled-caption
+sidecars are ignored and never fetched. Cancellation remains best effort with no refund promise.
+
+Large originals use shared worker hashing/sealing and lightweight UI adoption. History,
+held retry, journal resume and save/close/reopen keep the original bytes. Ordinary tests use
+original procedural photos/audio and the existing authored blue-and-gold MP4 fixture;
+these are not HeyGen output or proof of live avatar quality. No paid generation or inference
+probe was performed. The ignored live smoke requires explicit acknowledgement of unknown
+cost, a fal key and user-supplied photo/video plus WAV paths; it never runs in ordinary CI.

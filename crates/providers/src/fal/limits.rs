@@ -21,7 +21,7 @@ pub struct Limits {
 }
 impl Default for Limits {
     fn default() -> Self {
-        Self::ALIBABA_HARD
+        Self::HEYGEN_HARD
     }
 }
 impl Limits {
@@ -51,8 +51,11 @@ impl Limits {
     pub const GROK_HARD: Self = Self { request_bytes: 8 * MIB, total_pixels: 10 * Self::HARD.total_pixels, ..Self::VIDEO_HARD };
     /// Wan prompts allow 20,000 UTF-8 characters; legacy aliases retain their text cap.
     pub const ALIBABA_HARD: Self = Self { text_bytes: 96 * 1024, ..Self::GROK_HARD };
+    /// HeyGen can take16MiB of source video plus1MiB WAV, both as data URIs.
+    /// Other models retain their original input/request bounds in `for_model`.
+    pub const HEYGEN_HARD: Self = Self { input_bytes: 16 * MIB, request_bytes: 32 * MIB, ..Self::ALIBABA_HARD };
     pub(super) fn validate(self) -> Result<Self, ProviderError> {
-        let h = Self::ALIBABA_HARD;
+        let h = Self::HEYGEN_HARD;
         if self.input_bytes > h.input_bytes
             || self.text_bytes > h.text_bytes
             || self.request_bytes > h.request_bytes
@@ -76,19 +79,35 @@ impl Limits {
         let qwen_images = matches!(model, Model::QwenImage | Model::QwenEdit);
         let large_video = matches!(
             model,
-            Model::Wan3Text | Model::Wan3Frames | Model::GrokText | Model::GrokFrames | Model::RayText | Model::RayFrames | Model::LtxText | Model::LtxFrames
+            Model::HeygenAvatar
+                | Model::HeygenSpeed
+                | Model::HeygenPrecision
+                | Model::Pika
+                | Model::Wan3Text
+                | Model::Wan3Frames
+                | Model::GrokText
+                | Model::GrokFrames
+                | Model::RayText
+                | Model::RayFrames
+                | Model::LtxText
+                | Model::LtxFrames
         );
         // Topaz can return a 4096² high-bit-depth PNG, larger than legacy image caps.
-        let large_result = large_video || model.hunyuan() || model.rodin() || model == Model::Topaz;
+        let large_result = large_video || model.hunyuan() || model.rodin() || model == Model::Topaz || model.minimax();
         Self {
+            input_bytes: self.input_bytes.min(if model.heygen() { Self::HEYGEN_HARD.input_bytes } else { Self::HARD.input_bytes }),
             text_bytes: self.text_bytes.min(if model.alibaba() {
                 Self::ALIBABA_HARD.text_bytes
+            } else if model.minimax() {
+                32 * 1024
             } else if model.recraft() {
                 64 * 1024
             } else {
                 Self::HARD.text_bytes
             }),
-            request_bytes: self.request_bytes.min(if matches!(model, Model::GrokEdit | Model::QwenEdit | Model::RodinImages | Model::RodinFastImages) {
+            request_bytes: self.request_bytes.min(if model.heygen() {
+                Self::HEYGEN_HARD.request_bytes
+            } else if matches!(model, Model::GrokEdit | Model::QwenEdit | Model::RodinImages | Model::RodinFastImages) {
                 Self::GROK_HARD.request_bytes
             } else {
                 Self::HARD.request_bytes
