@@ -710,6 +710,12 @@ Generate cards as its rows, listed top to bottom by position. The commands are:
   rows. Each is one changeset, and it moves the rows back into one column.
 - `sheet.reference_wire` and `sheet.reference_unwire` wire a source node into rows. A node wired
   into every row is a shared reference.
+- `sheet.expand` turns a prompt template with `{{name}}` variables into one row per combination
+  of the variables' values (their Cartesian product), each repeated `copies` times; image
+  variables wire one image source per row. `dry_run` returns the count and first prompts without
+  editing; a real expansion is one changeset, adds at most 100 rows, and records each row's
+  values under node config `nodecraft.sheet_expansion`, which the recipe hash leaves out. See
+  [the template decision](decisions/2026-10-28-sheet-templates.md).
 
 Commands that add nodes or wires take one `seed` and derive every new id from it with blake3, so
 replays are deterministic. Cells are card parameters, so bulk edits use
@@ -726,7 +732,11 @@ rows, whether selected, one or all, quotes them together in one price confirmati
 Generate uses (`request_runs`). A prompt still being typed is committed before the save and
 open keys act, and when a dialog takes the input; a project opens on its first plain canvas
 (`home_canvas`), and the view goes back to it if an undo removes the open sheet. The table lays
-out only the rows in view, so a full 1000-row sheet draws in about the time a screenful does.
+out only the rows in view, so a full 1000-row sheet draws in about the time a screenful does. "From template" opens a panel to write a template, its
+variables (one value per line) and copies, with a live dry-run count and the first prompts;
+Expand stays disabled until the expansion fits. A prompt filter (ignoring case) and a status
+filter (not run, running, done, out of date, partial, failed) narrow the rows shown, keep each
+row's own number, and "Select shown" selects exactly the rows a filter shows.
 
 ## Official workflow templates (#953)
 

@@ -20,6 +20,74 @@ pub(super) struct SheetView {
     rows: Option<(CanvasId, u64, Arc<Rows>)>,
     /// The open canvas, when it was last seen in the document.
     present: Option<CanvasId>,
+    /// Only rows whose prompt holds this text are shown (ignoring case).
+    pub(super) filter: String,
+    /// Only rows in this state are shown.
+    pub(super) status: StatusFilter,
+    /// The template being expanded into rows, while its panel is open.
+    pub(super) template: Option<TemplateDraft>,
+}
+
+/// Which rows the table shows by their state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum StatusFilter {
+    #[default]
+    All,
+    NotRun,
+    Running,
+    Done,
+    OutOfDate,
+    Partial,
+    Failed,
+}
+
+impl StatusFilter {
+    const ALL: [Self; 7] = [Self::All, Self::NotRun, Self::Running, Self::Done, Self::OutOfDate, Self::Partial, Self::Failed];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All statuses",
+            Self::NotRun => "Not run",
+            Self::Running => "Running",
+            Self::Done => "Done",
+            Self::OutOfDate => "Out of date",
+            Self::Partial => "Partial",
+            Self::Failed => "Failed",
+        }
+    }
+}
+
+/// A prompt template with its variables, expanded by `sheet.expand`.
+pub(super) struct TemplateDraft {
+    pub(super) text: String,
+    /// Each variable's name and its values, one per line.
+    pub(super) variables: Vec<(String, String)>,
+    pub(super) copies: u32,
+    /// The seed the expansion's ids derive from: the preview and the expansion use the same one.
+    seed: NodeId,
+    /// The last dry run: the params it was for, and its result or error.
+    preview: Option<(u64, String, Result<Json, String>)>,
+}
+
+impl TemplateDraft {
+    fn new(text: String, seed: NodeId) -> Self {
+        Self { text, variables: vec![(String::new(), String::new())], copies: 1, seed, preview: None }
+    }
+
+    /// The `sheet.expand` params this draft stands for. Blank lines are not values; a variable
+    /// with no name and no values is left out.
+    fn params(&self, canvas: CanvasId) -> Json {
+        let variables: Vec<Json> = self
+            .variables
+            .iter()
+            .filter(|(name, values)| !name.trim().is_empty() || !values.trim().is_empty())
+            .map(|(name, values)| {
+                let values: Vec<&str> = values.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+                json!({"name": name.trim(), "text": values})
+            })
+            .collect();
+        json!({"canvas": canvas, "seed": self.seed, "template": self.text, "variables": variables, "copies": self.copies})
+    }
 }
 
 /// One `sheet.rows` result, read into what the table shows.
@@ -97,6 +165,10 @@ enum Action {
     Move(NodeId, usize),
     Prompt(CanvasId, NodeId, String),
     Run(Vec<NodeId>),
+    /// Opens the template panel, or closes it.
+    Template,
+    Expand(Json),
+    Select(Vec<NodeId>),
 }
 
 impl NodeCraftApp {
@@ -116,6 +188,9 @@ impl NodeCraftApp {
         self.selection.clear();
         self.editors.clear();
         self.sheet.drafts.clear();
+        self.sheet.template = None;
+        self.sheet.filter.clear();
+        self.sheet.status = StatusFilter::All;
         self.palette = None;
         self.turn_into = None;
         self.centred = false;
@@ -322,7 +397,19 @@ impl NodeCraftApp {
                     if ui.add_enabled(!rows.rows.is_empty(), egui::Button::new("Run all")).on_hover_text("Quote every row, then run them").clicked() {
                         actions.push(Action::Run(rows.rows.iter().map(|row| row.id).collect()));
                     }
+                    let open = self.sheet.template.is_some();
+                    if ui
+                        .selectable_label(open, "From template")
+                        .on_hover_text("Write a prompt with {{variables}} and make one row per combination of their values")
+                        .clicked()
+                    {
+                        actions.push(Action::Template);
+                    }
                 });
+                if self.sheet.template.is_some() {
+                    ui.add_space(t.control_gap);
+                    self.template_panel(ui, t, rows.rows.len(), &mut actions);
+                }
                 if let Some(error) = &rows.error {
                     ui.colored_label(t.danger, error);
                 }
@@ -331,6 +418,29 @@ impl NodeCraftApp {
                     ui.label(egui::RichText::new("No rows yet. Add one, then type its prompt.").color(t.text_muted));
                     return;
                 }
+                let shown = self.shown_rows(&rows);
+                ui.horizontal(|ui| {
+                    let name = ui.label("Filter");
+                    ui.add(egui::TextEdit::singleline(&mut self.sheet.filter).hint_text("Filter prompts").desired_width(t.sheet_title_width))
+                        .labelled_by(name.id);
+                    egui::ComboBox::from_id_salt("sheet_status_filter").selected_text(self.sheet.status.label()).show_ui(ui, |ui| {
+                        for status in StatusFilter::ALL {
+                            ui.selectable_value(&mut self.sheet.status, status, status.label());
+                        }
+                    });
+                    if shown.len() != rows.rows.len() {
+                        ui.label(egui::RichText::new(format!("Showing {} of {}", shown.len(), rows.rows.len())).color(t.text_muted));
+                        let ids: Vec<NodeId> = shown.iter().filter_map(|index| rows.rows.get(*index)).map(|row| row.id).collect();
+                        if ui
+                            .add_enabled(!ids.is_empty(), egui::Button::new("Select shown"))
+                            .on_hover_text("Select exactly the rows the filter shows")
+                            .clicked()
+                        {
+                            actions.push(Action::Select(ids));
+                        }
+                    }
+                });
+                ui.add_space(t.control_gap);
                 let gap = t.control_gap * 2.0;
                 ui.spacing_mut().item_spacing = Vec2::new(gap, t.control_gap);
                 // The prompt takes what the other columns leave, but never less than a card.
@@ -351,9 +461,14 @@ impl NodeCraftApp {
                     }
                 });
                 let last = rows.rows.len().saturating_sub(1);
-                egui::ScrollArea::both().auto_shrink([false, false]).show_rows(ui, t.control_row_height, rows.rows.len(), |ui, shown| {
-                    for index in shown {
-                        if let Some(row) = rows.rows.get(index) {
+                if shown.is_empty() {
+                    ui.label(egui::RichText::new("No rows match the filter.").color(t.text_muted));
+                }
+                egui::ScrollArea::both().auto_shrink([false, false]).show_rows(ui, t.control_row_height, shown.len(), |ui, range| {
+                    for at in range {
+                        if let Some(index) = shown.get(at).copied()
+                            && let Some(row) = rows.rows.get(index)
+                        {
                             self.sheet_row(ui, t, widths, index, last, row, &mut actions);
                         }
                     }
@@ -428,6 +543,145 @@ impl NodeCraftApp {
         });
     }
 
+    /// The indices of the rows the filter shows, top to bottom.
+    fn shown_rows(&self, rows: &Rows) -> Vec<usize> {
+        let needle = self.sheet.filter.trim().to_lowercase();
+        rows.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| needle.is_empty() || row.prompt.to_lowercase().contains(&needle))
+            .filter(|(_, row)| self.sheet.status == StatusFilter::All || self.row_state(row) == self.sheet.status)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// The state the status filter sorts `row` by: a live run first, then its last failure, then
+    /// its result.
+    fn row_state(&self, row: &Row) -> StatusFilter {
+        if let Some(runs) = &self.runs {
+            if runs.card_status(self.canvas, row.id).is_some() {
+                return StatusFilter::Running;
+            }
+            if runs.failure(self.canvas, row.id).is_some() {
+                return StatusFilter::Failed;
+            }
+        }
+        match row.result.as_str() {
+            "complete" if row.stale => StatusFilter::OutOfDate,
+            "complete" => StatusFilter::Done,
+            "partial" => StatusFilter::Partial,
+            _ => StatusFilter::NotRun,
+        }
+    }
+
+    /// Opens the template panel on the last row's prompt, or closes it.
+    fn toggle_template(&mut self) -> Result<(), Error> {
+        if self.sheet.template.take().is_some() {
+            return Ok(());
+        }
+        let text = self.sheet_rows().rows.last().map(|row| row.prompt.clone()).unwrap_or_default();
+        self.sheet.template = Some(TemplateDraft::new(text, self.sheet_seed()?));
+        Ok(())
+    }
+
+    /// The template, its variables and copies, and a live count of the rows it would make.
+    fn template_panel(&mut self, ui: &mut egui::Ui, t: &Tokens, existing: usize, actions: &mut Vec<Action>) {
+        let canvas = self.canvas;
+        let revision = self.session.revision();
+        let Some(draft) = self.sheet.template.as_mut() else { return };
+        let frame =
+            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let name = ui.label("Template");
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.text)
+                        .hint_text("a {{colour}} mug on {{surface}}")
+                        .desired_width(t.sheet_title_width * 2.0)
+                        .id(egui::Id::new("sheet_template")),
+                )
+                .labelled_by(name.id)
+                .on_hover_text("{{name}} is a variable's value; {{{{ and }}}} are literal braces");
+                let copies = ui.label("Copies");
+                ui.add(egui::DragValue::new(&mut draft.copies).range(1..=100)).labelled_by(copies.id).on_hover_text("Rows made of each combination");
+            });
+            let mut remove = None;
+            for (n, (name, values)) in draft.variables.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    let label = ui.label("Variable");
+                    ui.add(egui::TextEdit::singleline(name).hint_text("colour").desired_width(t.sheet_column_width).id(egui::Id::new(("sheet_variable", n))))
+                        .labelled_by(label.id);
+                    let label = ui.label("Values");
+                    ui.add(
+                        egui::TextEdit::multiline(values)
+                            .hint_text("One value per line")
+                            .desired_rows(2)
+                            .desired_width(t.sheet_title_width)
+                            .id(egui::Id::new(("sheet_values", n))),
+                    )
+                    .labelled_by(label.id);
+                    if ui.button("Remove variable").clicked() {
+                        remove = Some(n);
+                    }
+                });
+            }
+            if let Some(n) = remove
+                && n < draft.variables.len()
+            {
+                draft.variables.remove(n);
+            }
+            let params = draft.params(canvas);
+            let key = params.to_string();
+            let fresh = draft.preview.as_ref().is_some_and(|(seen, params, _)| *seen == revision && *params == key);
+            if !fresh {
+                let mut dry = params.clone();
+                dry["dry_run"] = json!(true);
+                let result = self.session.dispatch("sheet.expand", &dry).map_err(|error| error.message);
+                draft.preview = Some((revision, key, result));
+            }
+            ui.horizontal(|ui| {
+                if ui.add_enabled(draft.variables.len() < 8, egui::Button::new("Add variable")).clicked() {
+                    draft.variables.push((String::new(), String::new()));
+                }
+                let preview = draft.preview.as_ref().map(|(_, _, result)| result);
+                let fits = matches!(preview, Some(Ok(result)) if result["fits"] == true);
+                let count = preview.and_then(|result| result.as_ref().ok()).and_then(|result| result["count"].as_u64()).unwrap_or(0);
+                let label = if fits { format!("Expand into {count} rows") } else { "Expand".to_owned() };
+                if ui
+                    .add_enabled(fits, egui::Button::new(label))
+                    .on_hover_text("Add the rows after the last, copying its model and settings; nothing runs")
+                    .clicked()
+                {
+                    actions.push(Action::Expand(params));
+                }
+                match preview {
+                    Some(Ok(result)) if fits => {
+                        let factors = result["factors"].as_str().unwrap_or_default();
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{count} new rows ({factors}); the sheet will have {}",
+                                existing.saturating_add(usize::try_from(count).unwrap_or(0))
+                            ))
+                            .color(t.text_muted),
+                        );
+                    }
+                    Some(Ok(result)) => {
+                        ui.colored_label(t.danger, line(result["problem"].as_str().unwrap_or_default()));
+                    }
+                    Some(Err(message)) => {
+                        ui.colored_label(t.danger, line(message));
+                    }
+                    None => {}
+                }
+            });
+            if let Some(Ok(result)) = draft.preview.as_ref().map(|(_, _, result)| result) {
+                for prompt in result["prompts"].as_array().into_iter().flatten().filter_map(Json::as_str) {
+                    ui.label(egui::RichText::new(line(prompt)).color(t.text_muted));
+                }
+            }
+        });
+    }
+
     /// The titles of a row's references, marking those wired into every row.
     fn references_label(&self, canvas: CanvasId, references: &[(NodeId, bool)]) -> String {
         if references.is_empty() {
@@ -496,6 +750,15 @@ impl NodeCraftApp {
                 self.dispatch_sheet("node.param_set", json!({"canvas": on, "id": row, "name": "prompt", "value": Value::Text(text)}))
             }
             Action::Run(rows) => self.request_runs(rows, super::generate::RunKind::Generate),
+            Action::Template => self.toggle_template(),
+            Action::Expand(params) => self.dispatch_sheet("sheet.expand", params).map(|()| self.sheet.template = None),
+            Action::Select(rows) => {
+                self.selection.clear();
+                for row in rows {
+                    self.selection.toggle(row);
+                }
+                Ok(())
+            }
         };
         match result {
             Ok(()) => true,
