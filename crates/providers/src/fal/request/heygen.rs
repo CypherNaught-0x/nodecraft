@@ -123,5 +123,5 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits, model: Model) -> Result<(Recor
     if out.len() != length {
         return Err(invalid("HeyGen request extent changed"));
     }
-    Ok((Record { model, requested: 1, width: 0, height: 0 }, out))
+    Ok((Record { model, requested: 1, width: 0, height: 0, duration_ms: 0 }, out))
 }

@@ -142,10 +142,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
   Pixel-based credits remain an unknown monetary price and require consent. Image editing and
   other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
-- **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
-  photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
-  spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
-  in-memory storage refuse before payment; see [`docs/providers.md`](docs/providers.md).
+- **MiniMax**: H3 text/first-frame video, Speech 2.8 HD and Music 3 share Fal's key and queue
+  (#27), with explicit priced settings and native streamed storage. See [provider limits](docs/providers.md#minimax-video-speech-and-music-through-fal-27).
 - **Pika**: desktop projects and the native CLI animate one first frame with a prompt using
   current Pika 2.5 through fal (#29), at 720p for 5 or 10 seconds with explicit priced consent.
   Browser sessions refuse before payment. Text-to-video and keyframes are not included; see
@@ -153,6 +151,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
 - **HeyGen**: desktop projects and the native CLI animate a photo or lip-sync an MP4 with
   supplied speech through fal (#43). Monetary pricing remains unknown and requires consent;
   see [`docs/providers.md`](docs/providers.md#heygen-through-fal-43) for client limits.
+- **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
+  photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
+  spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
+  in-memory storage refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Topaz**: desktop projects and the native CLI can enhance or upscale one image with
   Precision Standard V2 through fal (#37). Integer 1×–4× scaling stays within one 0.08 USD
   output block. Browser sessions refuse before payment; see [`docs/providers.md`](docs/providers.md).

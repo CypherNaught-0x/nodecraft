@@ -184,6 +184,26 @@ fn heygen43_larger_input_request_envelopes_are_isolated_from_every_legacy_model(
 }
 
 #[test]
+fn heygen43_combined_minimax_aliases_keep_their_prior_input_request_and_media_envelopes() {
+    let old = Limits::ALIBABA_HARD;
+    for model in [Model::MiniMaxText, Model::MiniMaxFrames, Model::MiniMaxSpeech, Model::MiniMaxMusic] {
+        let current = Limits::default().for_model(model);
+        let previous = old.for_model(model);
+        assert_eq!(current.input_bytes, 1024 * 1024);
+        assert_eq!(current.request_bytes, 4 * 1024 * 1024);
+        assert_eq!(current.text_bytes, 32 * 1024);
+        assert_eq!(current.output_bytes, previous.output_bytes);
+        assert_eq!(current.total_output_bytes, previous.total_output_bytes);
+        assert_eq!(current.output_width, previous.output_width);
+        assert_eq!(current.output_height, previous.output_height);
+        assert_eq!(current.total_pixels, previous.total_pixels);
+        assert_eq!(current.codec_bytes, previous.codec_bytes);
+        assert_eq!(current.metadata_bytes, previous.metadata_bytes);
+        assert_eq!(current.response_bytes, previous.response_bytes);
+    }
+}
+
+#[test]
 fn heygen43_missing_or_inconsistent_media_clocks_and_non_pcm_speech_refuse_locally() {
     let at = CLIP.windows(4).position(|s| s == b"mdhd").unwrap();
     let scale = u32::from_be_bytes(CLIP[at + 16..at + 20].try_into().unwrap());
@@ -205,7 +225,7 @@ fn heygen43_missing_or_inconsistent_media_clocks_and_non_pcm_speech_refuse_local
     speech[40..44].copy_from_slice(&32000u32.to_le_bytes());
     speech.resize(32044, 0);
     // A valid floating WAV passes the shared audio envelope but is outside PCM-only HeyGen.
-    media::validate(&speech, Record { model: Model::Audio, requested: 1, width: 0, height: 0 }, Limits::default(), &mut 0).unwrap();
+    media::validate(&speech, Record { model: Model::Audio, requested: 1, width: 0, height: 0, duration_ms: 0 }, Limits::default(), &mut 0).unwrap();
     let mut j = job(HEYGEN_AVATAR);
     j.inputs[1] = crate::JobInput::Media { role: "speech".into(), mime: "audio/wav".into(), bytes: speech.into() };
     let wire = Arc::new(Wire::default());

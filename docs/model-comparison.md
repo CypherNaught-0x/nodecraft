@@ -72,6 +72,10 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `fal.luma-photon` | [Documentation](https://fal.ai/models/fal-ai/luma-photon) | 2026-10-27 |
 | `fal.luma-ray32` | [Documentation](https://fal.ai/models/luma/agent/ray/v3.2/text-to-video) | 2026-10-27 |
 | `fal.luma-ray32-i2v` | [Documentation](https://fal.ai/models/luma/agent/ray/v3.2/image-to-video/api) | 2026-10-27 |
+| `fal.minimax-h3` | [Documentation](https://fal.ai/models/minimax/h3/text-to-video/api) | 2026-10-28 |
+| `fal.minimax-h3-i2v` | [Documentation](https://fal.ai/models/minimax/h3/image-to-video/api) | 2026-10-28 |
+| `fal.minimax-speech28-hd` | [Documentation](https://fal.ai/models/fal-ai/minimax/speech-2.8-hd/api) | 2026-10-28 |
+| `fal.minimax-music3` | [Documentation](https://fal.ai/models/minimax/music-3/api) | 2026-10-28 |
 | `fal.pika25-i2v` | [Documentation](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video/api) | 2026-10-28 |
 | `fal.heygen-avatar4` | [Documentation](https://fal.ai/models/fal-ai/heygen/avatar4/image-to-video/api) | 2026-10-28 |
 | `fal.heygen-lipsync-speed` | [Documentation](https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api) | 2026-10-28 |
@@ -153,3 +157,7 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `tripo.image-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.multiview-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.text-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
+
+MiniMax's current video, speech and music models reuse Fal (#27): H3 at explicit 480P/768P,
+Speech 2.8 HD MP3 and Music 3 stereo WAV. Their native streamed-storage requirement and exact
+scope/rates are in [provider bounds](providers.md#minimax-video-speech-and-music-through-fal-27).

@@ -82,5 +82,5 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits, model: Model) -> Result<(Recor
     if bytes.len() != counter.n {
         return Err(invalid("Recraft request extent changed"));
     }
-    Ok((Record { model, requested: 1, width: 0, height: 0 }, bytes))
+    Ok((Record { model, requested: 1, width: 0, height: 0, duration_ms: 0 }, bytes))
 }

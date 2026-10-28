@@ -77,6 +77,15 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
         } else if model.id.starts_with("fal.heygen-") {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
+        } else if model.id.starts_with("fal.minimax-") {
+            let micros = if model.id == "fal.minimax-music3" {
+                Some(120_000)
+            } else if model.id == "fal.minimax-speech28-hd" {
+                None
+            } else {
+                Some(250_000)
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
         } else if model.id == "fal.pika25-i2v" {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
         } else if model.id == "fal.topaz-precision" {
@@ -300,6 +309,10 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.flux-lora", false),
             ("fal.ltx23", false),
             ("fal.ltx23-i2v", false),
+            ("fal.minimax-h3-i2v", false),
+            ("fal.minimax-h3", false),
+            ("fal.minimax-music3", false),
+            ("fal.minimax-speech28-hd", false),
             ("fal.pika25-i2v", false),
             ("fal.topaz-precision", false),
             ("fal.bria-rmbg", false),

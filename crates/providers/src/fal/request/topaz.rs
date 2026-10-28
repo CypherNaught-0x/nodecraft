@@ -59,5 +59,5 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     if out.len() != length {
         return Err(invalid("Topaz request extent changed"));
     }
-    Ok((Record { model: Model::Topaz, requested: 1, width, height }, out))
+    Ok((Record { model: Model::Topaz, requested: 1, width, height, duration_ms: 0 }, out))
 }

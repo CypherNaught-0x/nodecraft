@@ -82,5 +82,5 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     if out.len() != length {
         return Err(invalid("Pika request extent changed"));
     }
-    Ok((Record { model: Model::Pika, requested: 1, width: 0, height: 0 }, out))
+    Ok((Record { model: Model::Pika, requested: 1, width: 0, height: 0, duration_ms: 0 }, out))
 }

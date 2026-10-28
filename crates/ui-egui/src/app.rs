@@ -3574,6 +3574,8 @@ mod mentions_tests;
 #[cfg(test)]
 mod mesh_tests;
 #[cfg(test)]
+mod minimax27_tests;
+#[cfg(test)]
 mod order_tests;
 #[cfg(test)]
 mod perf;
