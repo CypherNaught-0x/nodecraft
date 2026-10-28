@@ -932,9 +932,34 @@ fn nested_batches_are_bounded_before_anything_runs() {
     );
     let message = blocked(plan_of(&p, &[1, 3]));
     assert!(message.contains("run the nodes feeding it first"), "{message}");
-    // And its problems are the collecting batch's.
-    let p = wired(vec![batch(1, "a", "bogus"), batch(2, "b", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]);
-    assert!(blocked(plan_of(&p, &[3])).contains("Pairing"));
+    // And its problems block the collecting batch, naming the batch they are about.
+    let mut styles = batch(1, "a", "bogus");
+    styles.title = "Styles".into();
+    let p = wired(vec![styles, batch(2, "b", "cross"), batch(5, "c", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 5, "in"), (5, "item", 3, "in")]);
+    let message = blocked(plan_of(&p, &[3]));
+    assert!(message.contains("Pairing") && message.contains("(Styles)"), "{message}");
+    assert_eq!(message.matches("in the batch it collects").count(), 1, "named once: {message}");
+}
+
+#[test]
+fn a_batch_reached_again_counts_its_whole_chain_from_there() {
+    // 1 → … → 15: a chain of 15 batches. 50 collects 15 directly (16 batches: allowed), and
+    // then through 21 → … → 29 (nine more), whose chain through 15 is 25 batches long. 15 is
+    // resolved once, through the first wire; the second must still count all of it.
+    let mut nodes: Vec<Node> = (1..=15).map(|n| batch(n, &format!("l{n}"), "cross")).collect();
+    nodes.extend((21..=29).map(|n| batch(n, "", "cross")));
+    nodes.extend([batch(50, "top", "cross"), single(200)]);
+    let mut links: Vec<(u8, &str, u8, &str)> = (1..15).map(|n| (n, "item", n + 1, "in")).collect();
+    links.push((15, "item", 29, "in"));
+    links.extend((22..=29).rev().map(|n| (n, "item", n - 1, "in")));
+    links.extend([(15, "item", 50, "in"), (21, "item", 50, "in"), (50, "item", 200, "in")]);
+    let message = blocked(plan_of(&wired(nodes.clone(), &links), &[200]));
+    assert!(message.contains("in a chain"), "{message}");
+
+    // Without the long branch, the same batches plan.
+    let short: Vec<_> = links.into_iter().filter(|(from, _, to, _)| !(*from == 21 && *to == 50)).collect();
+    let step = ready(plan_of(&wired(nodes, &short), &[200])).steps.into_iter().next().unwrap();
+    assert_eq!(fanned_values(&step).len(), 16);
 }
 
 #[test]

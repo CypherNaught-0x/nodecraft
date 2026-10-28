@@ -1093,12 +1093,12 @@ impl<'a> Graph<'a> {
     /// bounded by [`MAX_BATCH_CHAIN`], loops are refused, and each batch in the chain is resolved
     /// once however many wires reach it.
     fn batch_items(&self, id: NodeId, port: &str, run: &BTreeSet<NodeId>) -> Items {
-        self.batch_items_in(id, port, run, &mut vec![id], &mut BTreeMap::new())
+        self.batch_items_in(id, port, run, &mut vec![id], &mut Resolved::default())
     }
 
     /// [`Self::batch_items`] with the batches collecting this one (`chain`, ending with `id`) and
     /// the batches already resolved under the first one.
-    fn batch_items_in(&self, id: NodeId, port: &str, run: &BTreeSet<NodeId>, chain: &mut Vec<NodeId>, resolved: &mut BTreeMap<NodeId, Items>) -> Items {
+    fn batch_items_in(&self, id: NodeId, port: &str, run: &BTreeSet<NodeId>, chain: &mut Vec<NodeId>, resolved: &mut Resolved) -> Items {
         let node = self.canvas.nodes().get(&id).ok_or(Reason::NoResult)?;
         let kind = self.kinds.get(&node.kind).map_err(|_| Reason::UnknownKind)?;
         kind.validate_instance(node, true).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
@@ -1114,28 +1114,36 @@ impl<'a> Graph<'a> {
             return Err(Reason::PublicInvalid(reason.into()));
         }
         let mut wired = Vec::new();
+        // The longest chain of batches ending here, this one included.
+        let mut height = 1usize;
         for (_, up, up_port, _) in self.into.get(&id).into_iter().flatten() {
             let upstream = self.canvas.nodes().get(up);
-            if upstream.is_some_and(|u| u.kind == batch::ID) {
-                if !resolved.contains_key(up) {
+            if let Some(inner) = upstream.filter(|u| u.kind == batch::ID) {
+                if !resolved.items.contains_key(up) {
                     if chain.contains(up) {
                         return Err(Reason::PublicInvalid("these batches collect each other in a loop; remove one of the wires between them".into()));
                     }
                     if chain.len() >= MAX_BATCH_CHAIN {
-                        return Err(Reason::PublicInvalid(format!(
-                            "at most {MAX_BATCH_CHAIN} batches can collect one another in a chain; wire the first ones' items into one batch"
-                        )));
+                        return Err(too_long_chain());
                     }
                     chain.push(*up);
                     let items = self.batch_items_in(*up, up_port, run, chain, resolved);
                     chain.pop();
-                    resolved.insert(*up, items);
+                    resolved.items.insert(*up, items);
                 }
-                match resolved.get(up) {
-                    Some(Ok((values, _, _))) => wired.extend(values.iter().cloned()),
-                    Some(Err(reason)) => return Err(reason.clone()),
+                let values = match resolved.items.get(up) {
+                    Some(Ok((values, _, _))) => values,
+                    Some(Err(reason)) => return Err(in_collected(inner, reason)),
                     None => return Err(Reason::NoResult),
+                };
+                // A batch resolved before, through another wire, still counts its whole chain
+                // from here.
+                let below = resolved.heights.get(up).copied().unwrap_or(1);
+                if chain.len().saturating_add(below) > MAX_BATCH_CHAIN {
+                    return Err(too_long_chain());
                 }
+                height = height.max(below.saturating_add(1));
+                wired.extend(values.iter().cloned());
                 if wired.len() > batch::MAX_ITEMS {
                     return Err(Reason::PublicInvalid(too_many_items()));
                 }
@@ -1160,6 +1168,7 @@ impl<'a> Graph<'a> {
         let values = batch::items(node, wired).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
         let tags = crate::fanout::batch_tags(id, &values);
         let size = values.iter().map(value_bytes).fold(0usize, usize::saturating_add);
+        resolved.heights.insert(id, height);
         Ok((values, tags, size))
     }
 
@@ -1211,6 +1220,32 @@ fn flatten(lists: &[Value]) -> impl Iterator<Item = &Value> {
         Value::List(values) => values.as_slice(),
         other => std::slice::from_ref(other),
     })
+}
+
+/// The batches resolved while resolving one batch (#92): their items, and the longest chain of
+/// batches ending at each that resolved.
+#[derive(Default)]
+struct Resolved {
+    items: BTreeMap<NodeId, Items>,
+    heights: BTreeMap<NodeId, usize>,
+}
+
+fn too_long_chain() -> Reason {
+    Reason::PublicInvalid(format!("at most {MAX_BATCH_CHAIN} batches can collect one another in a chain; wire the first ones' items into one batch"))
+}
+
+/// A collected batch's problem, naming that batch, once: a problem deeper in the chain keeps the
+/// name of the batch it is about.
+fn in_collected(inner: &Node, reason: &Reason) -> Reason {
+    const PREFIX: &str = "in the batch it collects";
+    match reason {
+        Reason::PublicInvalid(message) if !message.starts_with(PREFIX) => {
+            let name = inner.title.trim();
+            let name = if name.is_empty() { "untitled".to_owned() } else { name.chars().take(64).collect() };
+            Reason::PublicInvalid(format!("{PREFIX} ({name}): {message}"))
+        }
+        other => other.clone(),
+    }
 }
 
 /// Why a batch, with what is wired into it, holds too many items: before any is copied further.
