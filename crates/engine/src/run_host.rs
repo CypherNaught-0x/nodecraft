@@ -59,6 +59,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 mod assets;
 mod estimates;
 mod held;
+#[cfg(test)]
+mod local_output_tests;
 mod partial;
 mod resume;
 
@@ -231,6 +233,8 @@ pub struct RunHost {
     budget: JobBudget,
     limits: nodecraft_providers::RunLimits,
     retry: RetryPolicy,
+    /// Bounds on what each run copies and keeps (#254): the defaults unless the host sets others.
+    run_limits: nodecraft_exec::run::RunLimits,
     /// Notices raised outside `pump`, delivered by the next one.
     held: Vec<RunNotice>,
     /// The next run's number.
@@ -317,6 +321,7 @@ impl RunHost {
             // Text answers stream into their cards as they generate (#504).
             limits: nodecraft_providers::RunLimits { stream_text: true, ..Default::default() },
             retry: RetryPolicy::default(),
+            run_limits: nodecraft_exec::run::RunLimits::default(),
             held: Vec::new(),
             next_run: 1,
             recent: VecDeque::new(),
@@ -606,6 +611,14 @@ impl RunHost {
         self
     }
 
+    /// Runs with `limits` instead of the defaults, for instance a smaller
+    /// [`RunLimits::held_bytes`](nodecraft_exec::run::RunLimits::held_bytes). Admission still
+    /// caps each limit at its own maximum.
+    pub fn with_run_limits(mut self, limits: nodecraft_exec::run::RunLimits) -> Self {
+        self.run_limits = limits;
+        self
+    }
+
     /// Asks providers that can for previews of a sound while it arrives (#875), shown in
     /// [`JobView::preview`]. Off by default: only a runner that plays them should pay for them.
     pub fn with_previews(mut self, on: bool) -> Self {
@@ -845,7 +858,7 @@ impl RunHost {
     fn start(&mut self, session: &mut Session, prepared: PreparedRun, notices: &mut Vec<RunNotice>) -> Result<(), Error> {
         let mut id = [0u8; 16];
         getrandom::fill(&mut id).map_err(|_| Error::new(ErrorKind::Internal, "run identity entropy is unavailable"))?;
-        let options = RunOptions { id, first_job: 1, limits: Default::default(), retry: self.retry };
+        let options = RunOptions { id, first_job: 1, limits: self.run_limits, retry: self.retry };
         let (run, progress) = session.authorize_prepared_run(prepared, options)?;
         let canvas = run.canvas_id();
         // Per run: a server's cap on jobs at once holds within each run (#864).
@@ -1350,43 +1363,61 @@ fn finish(active: &mut Active, job: JobId) -> bool {
 /// A finished job's outputs and provider-reported usage evidence (#437, #339).
 type Finished = (Vec<(String, nodecraft_types::Value)>, nodecraft_providers::Usage);
 
+/// A local job's outputs, taken before `import` runs: one whose import fails still leaves
+/// nothing behind in the run's held outputs (#254). A local job costs nothing, so its result
+/// is let go with the error.
+fn local_outputs(
+    sources: &nodecraft_exec::run::Outputs,
+    job: JobId,
+    import: impl FnOnce() -> Result<(), String>,
+) -> Result<Vec<(String, nodecraft_types::Value)>, String> {
+    let outputs = take_outputs(sources, job);
+    import()?;
+    Ok(outputs)
+}
+
+/// Imports what a local job staged (images and rendered videos), and checks its plugin's grant.
+fn import_local(session: &mut Session, active: &Active, job: JobId) -> Result<(), String> {
+    // Staged images stay staged: a later action in the run may read them (chains).
+    let staged = active.actions.staged();
+    for (hash, bytes) in staged.iter() {
+        if session.assets().contains(hash) {
+            continue;
+        }
+        let imported = session.import_asset(bytes).map_err(|e| e.message)?;
+        if imported != *hash {
+            return Err("an action's image changed while it was imported".into());
+        }
+    }
+    // Rendered videos may be over the resident limit: they stream in.
+    for (hash, bytes) in active.actions.staged_videos() {
+        if session.assets().contains(&hash) {
+            continue;
+        }
+        let length = bytes.len() as u64;
+        let range = nodecraft_format::asset_source::AssetRange::new(Arc::new(nodecraft_format::asset_source::MemorySource::new(bytes)), 0, length)
+            .map_err(|e| e.message)?;
+        let imported = session.import_asset_from(&range, &Default::default(), &Default::default()).map_err(|e| e.message)?;
+        if imported != hash {
+            return Err("a rendered video changed while it was imported".into());
+        }
+    }
+    // A plugin's result is recorded only while the grant it ran under stands (#173).
+    if let Some(JobSpec::Action { action, .. }) = active.run.work(job)
+        && crate::plugin_runtime::is_plugin(action)
+        && !active.plugins.as_ref().and_then(|p| p.get(action)).is_some_and(|a| !a.is_revoked())
+    {
+        return Err("this plugin's grant was revoked; its result was dropped".into());
+    }
+    Ok(())
+}
+
 /// A finished job's outputs, with any assets it made imported into the project. A model job's
 /// result that can't be converted, imported or fitted to its node's ports is held (#369); one
 /// that converts waits in `awaiting` until its step is recorded.
 fn outputs(session: &mut Session, active: &mut Active, job: JobId, held: &Mutex<held::Held>) -> Result<Finished, String> {
     if !active.provider_jobs.contains(&job) {
-        // Staged images stay staged: a later action in the run may read them (chains).
-        let staged = active.actions.staged();
-        for (hash, bytes) in staged.iter() {
-            if session.assets().contains(hash) {
-                continue;
-            }
-            let imported = session.import_asset(bytes).map_err(|e| e.message)?;
-            if imported != *hash {
-                return Err("an action's image changed while it was imported".into());
-            }
-        }
-        // Rendered videos may be over the resident limit: they stream in.
-        for (hash, bytes) in active.actions.staged_videos() {
-            if session.assets().contains(&hash) {
-                continue;
-            }
-            let length = bytes.len() as u64;
-            let range = nodecraft_format::asset_source::AssetRange::new(Arc::new(nodecraft_format::asset_source::MemorySource::new(bytes)), 0, length)
-                .map_err(|e| e.message)?;
-            let imported = session.import_asset_from(&range, &Default::default(), &Default::default()).map_err(|e| e.message)?;
-            if imported != hash {
-                return Err("a rendered video changed while it was imported".into());
-            }
-        }
-        let outputs = take_outputs(&active.runner.sources.outputs, job);
-        // A plugin's result is recorded only while the grant it ran under stands (#173).
-        if let Some(JobSpec::Action { action, .. }) = active.run.work(job)
-            && crate::plugin_runtime::is_plugin(action)
-            && !active.plugins.as_ref().and_then(|p| p.get(action)).is_some_and(|a| !a.is_revoked())
-        {
-            return Err("this plugin's grant was revoked; its result was dropped".into());
-        }
+        let outputs = local_outputs(&active.runner.sources.outputs, job, || import_local(session, active, job))?;
         return Ok((outputs, nodecraft_providers::Usage::default()));
     }
     let assets::Delivery { completion: delivery, prepared, .. } = lock(&active.mailbox).deliveries.remove(&job).ok_or("the model's result went missing")?;
