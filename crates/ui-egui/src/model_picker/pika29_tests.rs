@@ -103,7 +103,10 @@ fn pika29_generated_duration_control_is_a_pointer_edit_and_one_undoable_command(
     use egui::accesskit::Role;
     use nodecraft_types::{Unsigned, Value};
     for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
-        let mut h = card_harness(Harness::builder(), theme);
+        // The app harness's step budget (app/tests.rs): a focused text field blinks its cursor
+        // and the source card's preview decodes on a worker thread, so how many 1/4 s default
+        // steps they need depends on the runner's speed (slow Windows/macOS CI ran out at 4).
+        let mut h = card_harness(Harness::builder().with_step_dt(1.0 / 60.0).with_max_steps(120), theme);
         let before = h.state().session.document().clone();
         h.get_by_role_and_label(Role::TextInput, "Seconds").click();
         h.run();
