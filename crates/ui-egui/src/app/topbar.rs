@@ -26,6 +26,7 @@ pub(super) enum Entry {
     #[cfg(not(target_arch = "wasm32"))]
     Comfy,
     Providers,
+    Automation,
     Plugins,
     Search,
     Comments,
@@ -45,6 +46,7 @@ impl Entry {
             #[cfg(not(target_arch = "wasm32"))]
             Self::Comfy => Icon::Server,
             Self::Providers => Icon::Cloud,
+            Self::Automation => Icon::Plug,
             Self::Plugins => Icon::Plugin,
             Self::Search => Icon::Search,
             Self::Comments => Icon::Comments,
@@ -64,6 +66,7 @@ impl Entry {
             #[cfg(not(target_arch = "wasm32"))]
             Self::Comfy => "ComfyUI",
             Self::Providers => "Providers",
+            Self::Automation => "Automation",
             Self::Plugins => "Plugins",
             Self::Search => "Search",
             Self::Comments => "Comments",
@@ -74,7 +77,7 @@ impl Entry {
         match self {
             Self::Sheets | Self::Techniques | Self::Elements | Self::OpenApp => 0,
             Self::Queue | Self::Share | Self::Budgets => 1,
-            Self::Keys | Self::Providers | Self::Plugins => 2,
+            Self::Keys | Self::Providers | Self::Automation | Self::Plugins => 2,
             #[cfg(not(target_arch = "wasm32"))]
             Self::Comfy => 2,
             Self::Search | Self::Comments => 3,
@@ -182,6 +185,9 @@ impl NodeCraftApp {
         entries.push((Comfy, self.comfy_nodes.is_some(), self.comfy_server.open, None, "Set up ComfyUI servers, check them and read their nodes".to_owned()));
         if let Some(providers) = &self.browser_providers {
             entries.push((Providers, true, providers.open, None, "ComfyUI and LiteLLM server addresses for this site".to_owned()));
+        }
+        if self.automation.installed() {
+            entries.push((Automation, true, self.automation.open, None, "Let AI agents on this computer connect over MCP".to_owned()));
         }
         entries.extend([
             (
@@ -346,6 +352,7 @@ impl NodeCraftApp {
                     providers.open = !providers.open;
                 }
             }
+            Entry::Automation => self.automation.open = !self.automation.open,
             Entry::Plugins => self.plugin_panel.open = !self.plugin_panel.open,
             Entry::Search => {
                 self.search_focus_pending = true;

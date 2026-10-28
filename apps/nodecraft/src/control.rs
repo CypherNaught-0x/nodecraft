@@ -12,7 +12,7 @@ use nodecraft_automation::roots::FileRoots;
 use nodecraft_ui_egui::NodeCraftApp;
 
 /// Requests answered per frame, so a busy client can't stall drawing.
-const PER_FRAME: usize = 16;
+pub const PER_FRAME: usize = 16;
 /// Screenshots waiting for their image at once.
 const MAX_PENDING_SHOTS: usize = 4;
 /// A screenshot whose image hasn't arrived by then (the window isn't drawing) fails.
@@ -25,10 +25,16 @@ struct ControlShot;
 /// pumps it each frame.
 pub struct Channel {
     listener: Listener,
+    pump: CallPump,
+    token_file: Option<(PathBuf, TokenFile)>,
+}
+
+/// Answers control [`Call`]s on the UI thread, whoever queued them: the control channel's
+/// connections, or the app's built-in MCP server (#116).
+pub struct CallPump {
     shots: Vec<Call>,
     /// When the pending screenshot was requested.
     shot_since: Option<std::time::Instant>,
-    token_file: Option<(PathBuf, TokenFile)>,
     /// The folders clients may open projects from and save them to (`--root`, #423).
     roots: FileRoots,
 }
@@ -37,7 +43,13 @@ impl Channel {
     /// Starts listening and writes the token file into `dir` (`control.json`).
     pub fn start(ctx: &egui::Context, dir: Option<PathBuf>, roots: FileRoots) -> Result<Self, nodecraft_types::Error> {
         let (listener, token_file) = Self::listen(ctx, dir)?;
-        Ok(Self { listener, shots: Vec::new(), shot_since: None, token_file, roots })
+        Ok(Self { listener, pump: CallPump::new(roots), token_file })
+    }
+
+    /// Answers waiting requests and finished screenshots.
+    pub fn pump(&mut self, app: &mut NodeCraftApp, ctx: &egui::Context) {
+        let calls = self.listener.calls.try_iter().take(PER_FRAME).collect();
+        self.pump.pump(calls, app, ctx);
     }
 
     /// Removes the token file, if this app wrote it.
@@ -72,9 +84,16 @@ impl Channel {
         };
         Ok((listener, token_file))
     }
+}
 
-    /// Answers waiting requests and finished screenshots.
-    pub fn pump(&mut self, app: &mut NodeCraftApp, ctx: &egui::Context) {
+impl CallPump {
+    pub fn new(roots: FileRoots) -> Self {
+        Self { shots: Vec::new(), shot_since: None, roots }
+    }
+
+    /// Answers `calls` (at most [`PER_FRAME`]; a full batch asks for another frame) and finished
+    /// screenshots.
+    pub fn pump(&mut self, calls: Vec<Call>, app: &mut NodeCraftApp, ctx: &egui::Context) {
         let ours = |data: &egui::UserData| data.data.as_ref().is_some_and(|d| d.downcast_ref::<ControlShot>().is_some());
         let image = ctx.input(|i| {
             i.raw.events.iter().find_map(|e| match e {
@@ -113,8 +132,7 @@ impl Channel {
             }
             self.shot_since = None;
         }
-        let calls: Vec<Call> = self.listener.calls.try_iter().take(PER_FRAME).collect();
-        let more = calls.len() == PER_FRAME;
+        let more = calls.len() >= PER_FRAME;
         for call in calls {
             // The client already gave up on it: running it now could apply a command twice.
             if call.expired() {

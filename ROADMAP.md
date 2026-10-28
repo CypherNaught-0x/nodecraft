@@ -157,8 +157,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   output block. Browser sessions refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
-- **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
-  running app, `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
+- **Automation**: `nodecraft-cli mcp` (MCP over stdio or, with `--listen`, Streamable HTTP on
+  loopback with a bearer token; 4 generic tools), `mcp --bridge` to drive a running app, the
+  desktop app's own MCP server (Automation › Enable MCP server, #116), `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
   screenshots), plus `nodecraft-cli serve` for a project's published Techniques over a local
   authenticated HTTP API with optional signed webhooks. Agents open and save projects only inside
   the folders the person allows with `--root`/`--read-root` (#423). See [`docs/mcp.md`](docs/mcp.md),

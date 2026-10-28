@@ -341,6 +341,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
 pub(crate) mod admission;
 
 mod app_mode;
+pub mod automation;
 mod browser_providers;
 mod budget_caps;
 mod comfy_mapping;
@@ -593,6 +594,8 @@ pub struct NodeCraftApp {
     pub key_accounts: nodecraft_engine::settings::KeySettings,
     /// The Budgets panel, and the caps runs are checked against (from settings, #201).
     pub budgets: crate::budgets::BudgetsPanel,
+    /// Settings › Automation: the desktop app's built-in MCP server, once it hands one over (#116).
+    pub automation: automation::AutomationPanel,
     budget_caps: nodecraft_engine::settings::BudgetSettings,
     browser_providers: Option<browser_providers::BrowserProviders>,
     /// Answers from the keychain thread (the app's `keys.store` service).
@@ -1213,6 +1216,7 @@ impl NodeCraftApp {
             plugin_panel: crate::plugins::PluginsPanel::default(),
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
             budgets: crate::budgets::BudgetsPanel::default(),
+            automation: automation::AutomationPanel::default(),
             budget_caps: nodecraft_engine::settings::BudgetSettings::default(),
             browser_providers: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2659,6 +2663,7 @@ impl NodeCraftApp {
         self.comfy_server_panel(ui.ctx(), t);
         self.comfy_mapping_window(ui.ctx(), t);
         self.budgets_panel(ui.ctx(), t);
+        self.automation_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);
         self.share_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
@@ -3461,6 +3466,7 @@ impl eframe::App for NodeCraftApp {
                 self.title = title;
             }
         }
+        self.sync_mcp_setting();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &mut self.store {
             let tick = store.tick(std::time::Instant::now());
