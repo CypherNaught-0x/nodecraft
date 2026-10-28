@@ -116,7 +116,9 @@ fn card_harness(
     theme: crate::theme::ThemeKind,
     photo: bool,
 ) -> Harness<'static, crate::app::NodeCraftApp> {
-    let mut h = builder.with_size(egui::vec2(1100., 900.)).build_ui_state(|ui, app: &mut crate::app::NodeCraftApp| app.show(ui), app(theme, photo));
+    // Native thumbnail completion can repaint after the default four settling frames.
+    let mut h =
+        builder.with_max_steps(120).with_size(egui::vec2(1100., 900.)).build_ui_state(|ui, app: &mut crate::app::NodeCraftApp| app.show(ui), app(theme, photo));
     crate::theme::apply(&h.ctx, theme);
     h.run();
     h.state_mut().view.zoom = 1.;
