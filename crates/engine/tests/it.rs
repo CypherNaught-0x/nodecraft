@@ -226,3 +226,5 @@ mod stl569;
 
 #[path = "ply1011.rs"]
 mod ply1011;
+#[path = "usdz1019.rs"]
+mod usdz1019;

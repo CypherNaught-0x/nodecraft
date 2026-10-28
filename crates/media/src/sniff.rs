@@ -86,6 +86,8 @@ pub fn sniff(bytes: &[u8]) -> Option<Sniffed> {
         Sniffed::new("model/stl", Model3d)
     } else if crate::mesh::recognizes_ply(bytes) {
         Sniffed::new("model/ply", Model3d)
+    } else if crate::mesh::recognizes_usdz(bytes) {
+        Sniffed::new("model/vnd.usdz+zip", Model3d)
     } else if at(0, crate::style::MAGIC) {
         Sniffed::new(crate::style::MIME, Style)
     } else if crate::svg::recognizes(bytes) {

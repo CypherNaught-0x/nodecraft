@@ -510,6 +510,7 @@ pub fn extension_for(mime: &str) -> Option<String> {
         "model/gltf-binary" => "glb",
         "model/stl" => "stl",
         "model/ply" => "ply",
+        "model/vnd.usdz+zip" => "usdz",
         _ => {
             let subtype = essence.rsplit('/').next().unwrap_or_default().split('+').next().unwrap_or_default();
             let usable = !subtype.is_empty() && subtype.len() <= MAX_EXTENSION_BYTES && subtype.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());

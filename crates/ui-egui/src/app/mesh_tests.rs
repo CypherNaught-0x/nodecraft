@@ -445,3 +445,4 @@ fn mesh569_real_format_control_selects_stl_and_undoes_in_both_themes() {
 }
 
 mod ply1011;
+mod usdz1019;
