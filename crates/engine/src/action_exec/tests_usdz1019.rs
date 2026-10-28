@@ -12,7 +12,7 @@ fn usdz1019_convert_action_keeps_its_actual_16mib_output_cap_and_source() {
     assert!(bytes.len() < nodecraft_format::MAX_ASSET_BYTES, "indexed source fits the existing input allowance");
     // Even before positions/attributes and ZIP overhead, these610k count/index rows need
     //610000*(11+17)>16MiB. The actual action must pass its cap to the counted writer.
-    assert!(610_000usize * (11 + 17) > nodecraft_format::MAX_ASSET_BYTES);
+    assert!(mesh.triangle_count() * (11 + 17) > nodecraft_format::MAX_ASSET_BYTES);
     let mut assets = AssetStore::default();
     let hash = assets.insert(&bytes).unwrap();
     let actions = LocalActions::new(assets);
