@@ -395,6 +395,9 @@ mod recraft35_tests;
 mod rodin41_tests;
 
 #[cfg(test)]
+mod magnific38_tests;
+
+#[cfg(test)]
 mod topaz37_tests;
 
 #[cfg(test)]

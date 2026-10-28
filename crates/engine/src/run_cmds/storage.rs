@@ -9,12 +9,10 @@ pub(super) fn check(quote: &Quote, catalog: &Catalog, large_assets: bool) -> Res
     if !large_assets {
         let endpoint =
             quote.steps.iter().filter(|step| !step.runs_nothing()).flat_map(|step| &step.models).filter_map(|id| catalog.get(id)).find_map(|model| {
-                if model.provider != "fal" {
-                    return None;
-                }
-                match model.provider_model.as_str() {
-                    "topaz/upscale/image/precision" => Some(("Topaz Precision", "image")),
-                    "fal-ai/pika/v2.5/image-to-video" => Some(("Pika 2.5", "video")),
+                match (model.provider.as_str(), model.provider_model.as_str()) {
+                    ("fal", "topaz/upscale/image/precision") => Some(("Topaz Precision", "image")),
+                    ("fal", "fal-ai/pika/v2.5/image-to-video") => Some(("Pika 2.5", "video")),
+                    ("magnific", "image-upscaler-precision-v2") => Some(("Magnific Precision V2", "image")),
                     _ => None,
                 }
             });
@@ -81,5 +79,36 @@ mod tests {
         let catalog = Catalog::from_models([aliased, other]).unwrap();
         assert!(check(&quote("fixture.topaz37", false, 1), &catalog, false).is_err());
         assert!(check(&quote("fixture.other37", false, 1), &catalog, false).is_ok());
+    }
+
+    #[test]
+    fn magnific38_storage_guard_covers_deferred_unused_and_empty_quote_steps() {
+        let catalog = Catalog::builtin().unwrap();
+        for known in [true, false] {
+            let quoted = quote("magnific.precision-v2", known, 1);
+            assert!(check(&quoted, &catalog, false).unwrap_err().message.contains("Magnific Precision V2 needs a desktop project"));
+            assert!(check(&quoted, &catalog, true).is_ok());
+        }
+        assert!(check(&quote("fal.ideogram-v3", true, 1), &catalog, false).is_ok(), "an unused Magnific canvas node cannot block selected work");
+        assert!(check(&quote("magnific.precision-v2", true, 0), &catalog, false).is_ok(), "reused work cannot produce another large asset");
+        assert!(check(&Quote::default(), &catalog, false).is_ok());
+    }
+
+    #[test]
+    fn magnific38_storage_guard_resolves_custom_ids_and_matches_both_provider_and_endpoint() {
+        let builtin = Catalog::builtin().unwrap();
+        let mut aliased = builtin.get("magnific.precision-v2").unwrap().clone();
+        aliased.id = "fixture.magnific38".into();
+        let mut other_endpoint = aliased.clone();
+        other_endpoint.id = "fixture.other-endpoint38".into();
+        other_endpoint.provider_model = "another-upscaler".into();
+        let mut other_provider = aliased.clone();
+        other_provider.id = "fixture.other-provider38".into();
+        other_provider.provider = "other".into();
+        let catalog = Catalog::from_models([aliased, other_endpoint, other_provider]).unwrap();
+        assert!(check(&quote("fixture.magnific38", false, 1), &catalog, false).is_err());
+        for id in ["fixture.other-endpoint38", "fixture.other-provider38"] {
+            assert!(check(&quote(id, false, 1), &catalog, false).is_ok());
+        }
     }
 }
