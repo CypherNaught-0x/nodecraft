@@ -3235,7 +3235,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "craft-quit",
  "eframe",
@@ -3257,7 +3257,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-actions"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "harfrust 0.13.3",
  "nodecraft-graph",
@@ -3274,7 +3274,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-agent"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "nodecraft-engine",
  "nodecraft-providers",
@@ -3284,7 +3284,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-automation"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "getrandom 0.3.4",
  "nodecraft-engine",
@@ -3300,7 +3300,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-catalog"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "nodecraft-graph",
  "nodecraft-types",
@@ -3311,7 +3311,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "blake3",
  "getrandom 0.3.4",
@@ -3341,7 +3341,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-comfy"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "nodecraft-types",
  "serde",
@@ -3351,7 +3351,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-engine"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "allocation-counter",
  "blake3",
@@ -3389,7 +3389,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-exec"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "allocation-counter",
  "blake3",
@@ -3408,7 +3408,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-format"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "argon2",
  "blake3",
@@ -3430,7 +3430,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-gpu"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "futures",
  "naga",
@@ -3441,7 +3441,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-graph"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "nodecraft-media",
  "nodecraft-types",
@@ -3452,7 +3452,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-media"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "blake3",
  "craft-pdf",
@@ -3468,7 +3468,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-nodes"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "nodecraft-comfy",
  "nodecraft-graph",
@@ -3480,7 +3480,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-plugin"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -3489,7 +3489,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-plugin-store"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ed25519-dalek",
  "nodecraft-plugin",
@@ -3501,7 +3501,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-provider-testkit"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "nodecraft-providers",
  "nodecraft-types",
@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-providers"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -3537,7 +3537,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-sync"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "blake3",
  "nodecraft-graph",
@@ -3555,7 +3555,7 @@ source = "git+https://github.com/CypherNaught-0x/nodecraft-templates?rev=5e7ed63
 
 [[package]]
 name = "nodecraft-testkit"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "futures",
  "nodecraft-catalog",
@@ -3571,7 +3571,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-types"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "mime",
  "proptest",
@@ -3582,7 +3582,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-ui-egui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "arboard",
  "blake3",
@@ -3629,7 +3629,7 @@ dependencies = [
 
 [[package]]
 name = "nodecraft-web"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "eframe",
  "log",
@@ -7199,7 +7199,7 @@ checksum = "9440ea3e5aeabb0ac63af70daf835274065238cdd0cec83418f417eae38bacee"
 
 [[package]]
 name = "xtask"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
