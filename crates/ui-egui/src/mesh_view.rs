@@ -448,7 +448,7 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
             } else {
                 text(&format!("3D model · {triangles} triangles"));
             }
-            controls(ui, area, view, t);
+            controls(ui, area, view, t, available);
             if before != (view.orbit, view.style) {
                 view.changed(response.dragged());
                 ui.ctx().request_repaint();
@@ -470,7 +470,7 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
 
 /// The style toggle and reset over the preview's bottom-left corner, the capture buttons over
 /// its bottom-right.
-fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens) {
+fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens, preview_available: bool) {
     let style = match view.style {
         Style::Shaded => "Shaded",
         Style::Unlit => "Unlit",
@@ -493,6 +493,11 @@ fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens) {
     }
     if ui.put(reset_rect, egui::Button::new(font("Reset")).small()).on_hover_text("Back to the starting view").clicked() {
         view.orbit = Orbit::default();
+    }
+    if !preview_available {
+        // Reset can recover a zoom outside the camera's range; don't offer captures from
+        // that unusable view while waiting for the next frame's valid projection.
+        return;
     }
     let capture_width = width * 0.8;
     let views_rect =

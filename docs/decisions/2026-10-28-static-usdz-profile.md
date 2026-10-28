@@ -44,6 +44,9 @@ reports a coordinate-range unavailable reason before edge/buffer preparation or 
 Check each current orbit before callbacks as well, retaining Reset for a recoverable zoom.
 Expose a small checked wrapper around the existing camera math so native and browser-worker
 preview consumers share admission without changing the pure codec or rescaling source data.
+Apply the same pure check to all planned photo/view-sheet/turntable cameras before GPU or
+encoder setup, and defensively at the shared capture renderer before uniforms/readback.
+Programmatic/CLI/MCP execution must return a coordinate-range error, not a blank capture.
 Count CR, LF and CRLF metadata line endings consistently (CRLF once); comments terminate at
 each supported ending. The writer's deterministic LF bytes are unchanged.
 

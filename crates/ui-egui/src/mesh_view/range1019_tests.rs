@@ -65,9 +65,11 @@ fn usdz1019_current_orbit_range_refusal_is_visible_and_reset_recovers_in_both_th
         crate::theme::apply(&h.ctx, theme);
         h.run();
         assert!(h.query_by_label(RANGE_REASON).is_some());
+        assert!(h.query_by_label("Photo").is_none(), "an unavailable view cannot offer captures");
         h.get_by_label("Reset").click();
         h.run_steps(3);
         assert!(h.query_by_label("3D model, 2 triangles, shaded view").is_some());
+        assert!(h.query_by_label("Photo").is_some());
         assert!(h.state().1.orbit.checked_view_projection(model.center, model.radius, 1.).is_some());
     }
     assert_eq!(decode_mesh(&bytes, &Default::default()).unwrap(), mesh, "presentation changes never rescale valid geometry");

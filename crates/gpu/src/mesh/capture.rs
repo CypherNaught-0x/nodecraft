@@ -17,6 +17,8 @@ pub const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(40);
 /// Why a capture failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureError {
+    /// Valid model coordinates exceed this camera's numeric projection range.
+    CoordinateRange,
     /// No GPU, or none that answered at once.
     Unavailable,
     /// The model can't be put on this GPU.
@@ -32,6 +34,7 @@ pub enum CaptureError {
 impl fmt::Display for CaptureError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CoordinateRange => f.write_str("this coordinate range exceeds the capture camera; save or convert the original model"),
             Self::Unavailable => f.write_str("no GPU is available"),
             Self::Model(why) => why.fmt(f),
             Self::Device => f.write_str("the GPU failed while drawing the model"),
@@ -42,6 +45,15 @@ impl fmt::Display for CaptureError {
 }
 
 impl std::error::Error for CaptureError {}
+
+/// Pure preflight for every capture surface, before GPU or encoder work is started.
+pub fn validate_view(view: &View, size: [u32; 2]) -> Result<(), CaptureError> {
+    let [width, height] = size;
+    if view.orbit.checked_view_projection(view.center, view.radius, width as f32 / height.max(1) as f32).is_none() {
+        return Err(CaptureError::CoordinateRange);
+    }
+    Ok(())
+}
 
 /// The output format the renderer is made for: captures never blit, so any will do.
 const OUTPUT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -113,6 +125,7 @@ impl MeshCapture {
     /// `target`'s size, RGBA8 rows top to bottom, sRGB, straight (not premultiplied) alpha.
     /// `view`'s background and line colours must be premultiplied by their alpha.
     pub fn render(&self, mesh: &GpuMesh, target: &Target, view: &View, timeout: std::time::Duration) -> Result<Vec<u8>, CaptureError> {
+        validate_view(view, target.size())?;
         if self.is_lost() {
             return Err(CaptureError::Device);
         }

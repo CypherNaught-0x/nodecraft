@@ -140,7 +140,11 @@ range. Such a model reports **3D preview unavailable at this coordinate range** 
 GPU upload. Its valid geometry, original coordinates and bytes remain available for saving
 and conversion; they are never rescaled to make a preview. The same check guards the current
 orbit before drawing, so Reset remains available if an extreme zoom makes a previously
-usable view unavailable. This capability check does not redesign the camera or shaders.
+usable view unavailable; capture buttons return when the view is usable again. This
+capability check does not redesign the camera or shaders.
+The shared photo, view-sheet and turntable executors also check their planned cameras before
+GPU/encoder work and return an actionable coordinate-range error. CLI/MCP callers receive
+that same refusal, rather than an empty image or video. Original 3D conversion stays available.
 
 The writer validates geometry and counts the complete formatted layer plus ZIP headers,
 alignment and footer before output allocation. Convert 3D retains its **16 MiB result cap**.
