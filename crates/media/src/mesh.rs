@@ -1,6 +1,6 @@
 //! 3D meshes (#111): reading glTF 2.0 (binary `.glb`, or `.gltf` JSON whose buffers are embedded)
 //! and Wavefront OBJ into one flat, triangulated [`Mesh`], and writing a mesh back out as GLB or
-//! OBJ.
+//! OBJ or geometry-only binary STL.
 //!
 //! Every reader takes untrusted bytes. Counts, offsets and strides come from the file, so each is
 //! checked against [`MeshLimits`] and the real data before anything is allocated; node hierarchies
@@ -15,10 +15,13 @@
 mod encode;
 mod gltf;
 mod obj;
+mod stl;
 
 use crate::MediaError;
 
 pub use encode::{encode_glb, encode_obj};
+pub use stl::encode_stl;
+pub(crate) use stl::recognizes as recognizes_stl;
 
 /// The 3D file formats NodeCraft reads and writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -29,6 +32,8 @@ pub enum MeshFormat {
     Gltf,
     /// Wavefront OBJ (geometry only; materials are not read).
     Obj,
+    /// Binary STL, with zero facet attributes and geometry only.
+    Stl,
 }
 
 impl MeshFormat {
@@ -38,12 +43,13 @@ impl MeshFormat {
             Self::Glb => "model/gltf-binary",
             Self::Gltf => "model/gltf+json",
             Self::Obj => "model/obj",
+            Self::Stl => "model/stl",
         }
     }
 
     /// The format for a MIME essence, if NodeCraft reads it.
     pub fn from_mime(essence: &str) -> Option<Self> {
-        [Self::Glb, Self::Gltf, Self::Obj].into_iter().find(|format| format.mime() == essence)
+        [Self::Glb, Self::Gltf, Self::Obj, Self::Stl].into_iter().find(|format| format.mime() == essence)
     }
 
     /// The usual file extension, without the dot.
@@ -52,6 +58,7 @@ impl MeshFormat {
             Self::Glb => "glb",
             Self::Gltf => "gltf",
             Self::Obj => "obj",
+            Self::Stl => "stl",
         }
     }
 }
@@ -209,6 +216,7 @@ pub fn decode_mesh_as(bytes: &[u8], format: MeshFormat, limits: &MeshLimits) -> 
         MeshFormat::Glb => gltf::decode_glb(bytes, limits)?,
         MeshFormat::Gltf => gltf::decode_gltf(bytes, limits)?,
         MeshFormat::Obj => obj::decode(bytes, limits)?,
+        MeshFormat::Stl => stl::decode(bytes, limits)?,
     };
     if mesh.indices.is_empty() {
         return Err(MediaError::Decode("the file has no triangles to show".into()));
@@ -317,5 +325,7 @@ pub(crate) fn normalize(v: [f32; 3]) -> Option<[f32; 3]> {
     (len.is_finite() && len > 1e-20).then(|| [v[0] / len, v[1] / len, v[2] / len])
 }
 
+#[cfg(test)]
+mod stl_tests;
 #[cfg(test)]
 mod tests;

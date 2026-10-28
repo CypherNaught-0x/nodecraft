@@ -212,3 +212,6 @@ mod magnific38;
 
 #[path = "svg_template35.rs"]
 mod svg_template35;
+
+#[path = "stl569.rs"]
+mod stl569;

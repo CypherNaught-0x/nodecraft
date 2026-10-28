@@ -400,6 +400,46 @@ fn mesh569_visual_format_choices() {
         h.run_steps(3);
         assert!(h.query_by_label("OBJ").is_some());
         assert_eq!(h.query_by_label("STL (geometry only)").is_some(), phase == "after");
+        if phase == "after" {
+            h.get_by_label("STL (geometry only)").click();
+            h.run_steps(10);
+            assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("stl".into()));
+            h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Format").click();
+            h.run_steps(3);
+        }
         h.render().unwrap().save(dir.join(format!("{theme:?}-format-{phase}.png"))).unwrap();
+    }
+}
+
+#[test]
+fn mesh569_real_format_control_selects_stl_and_undoes_in_both_themes() {
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let mut h = harness();
+        h.state_mut().theme = theme;
+        crate::theme::apply(&h.ctx, theme);
+        let source = add_cube(&mut h);
+        let canvas = h.state().canvas;
+        let convert = NodeId::from_bytes([69; 16]);
+        let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+        let mut node = kinds.get(nodecraft_nodes::mesh::CONVERT).unwrap().instantiate_instance(convert, Default::default(), &Default::default()).unwrap();
+        node.pos = nodecraft_graph::Position { x: 650.0, y: -110.0 };
+        h.state_mut().session.dispatch("node.add", &json!({"canvas":canvas,"node":node})).unwrap();
+        h.state_mut().session.dispatch("edge.connect", &json!({"canvas":canvas,"edge":{"id":nodecraft_types::EdgeId::from_bytes([69;16]),"from":{"node":source,"port":"out"},"to":{"node":convert,"port":"model"},"order":0}})).unwrap();
+        let ctx = h.ctx.clone();
+        h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
+        h.run_steps(3);
+        let original = h.state().session.document().canvases()[&canvas].nodes()[&source].params["asset"].clone();
+        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Format").click();
+        h.run_steps(2);
+        h.get_by_label("STL (geometry only)").click();
+        h.run_steps(3);
+        assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("stl".into()));
+        assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&source].params["asset"], original);
+        h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+        h.run_steps(2);
+        assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("glb".into()));
+        h.state_mut().session.dispatch("edit.redo", &json!({})).unwrap();
+        h.run_steps(2);
+        assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("stl".into()));
     }
 }
