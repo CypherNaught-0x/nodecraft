@@ -1125,17 +1125,8 @@ impl<'a> Graph<'a> {
             if folder::loops_over(node, port) {
                 return Err(Reason::PublicInvalid("a folder's looping File and Name outputs can't be used here; wire its Files or Names output".into()));
             }
-            let jobs = kind.plan(&PlanCtx { targets: self.targets, node, inputs: &[] }).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
-            let mut values = jobs.into_iter().filter_map(|job| match job {
-                JobSpec::Source { output, value, .. } if output == port => Some(value),
-                JobSpec::Source { .. } | JobSpec::Generate { .. } | JobSpec::Action { .. } => None,
-            });
-            // A list output gives one job per item, so its value is the list of them.
-            return if list {
-                Ok((Value::List(values.collect()), list, Vec::new()))
-            } else {
-                values.next().map(|value| (value, list, Vec::new())).ok_or(Reason::NoResult)
-            };
+            let value = source_value(kind, node, port, list, self.targets).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
+            return value.map(|value| (value, list, Vec::new())).ok_or(Reason::NoResult);
         }
         let generation = usable_generation(node).ok_or(Reason::NoResult)?;
         let value = generation.outputs.get(index).cloned().ok_or(Reason::NoResult)?;
@@ -1171,6 +1162,42 @@ fn fanned_list(port: &str) -> String {
 fn usable_generation(node: &Node) -> Option<&nodecraft_graph::Generation> {
     let active = node.active?;
     node.history.iter().find(|g| g.id == active).filter(|g| g.outputs.len() == node.outputs.len() && !g.is_partial())
+}
+
+/// A source card's value on `port`: what its own plan gives from its current settings, never
+/// its history. A list output gives one job per item, so its value is the list of them.
+fn source_value(
+    kind: &dyn nodecraft_nodes::NodeKind,
+    node: &Node,
+    port: &str,
+    list: bool,
+    targets: &nodecraft_types::TargetSelection,
+) -> Result<Option<Value>, Error> {
+    let jobs = kind.plan(&PlanCtx { targets, node, inputs: &[] })?;
+    let mut values = jobs.into_iter().filter_map(|job| match job {
+        JobSpec::Source { output, value, .. } if output == port => Some(value),
+        JobSpec::Source { .. } | JobSpec::Generate { .. } | JobSpec::Action { .. } => None,
+    });
+    Ok(if list { Some(Value::List(values.collect())) } else { values.next() })
+}
+
+/// The value `node` gives on `port` without running, as a run would read it (#84): a source
+/// kind's own value from its current settings (an Element's content included), else the node's
+/// usable active result. `None` when it has none yet, for a folder's looping outputs (only a
+/// fan-out reads those), and for a source whose settings don't plan. For views such as a text
+/// card's connected media; planning itself also checks items and sizes.
+pub fn value_without_running(kinds: &Registry, node: &Node, port: &str) -> Option<Value> {
+    let index = node.outputs.iter().position(|p| p.name == port)?;
+    if let Ok(kind) = kinds.get(&node.kind)
+        && kind.descriptor().category == Category::Source
+    {
+        if folder::loops_over(node, port) {
+            return None;
+        }
+        let list = node.outputs.get(index).is_some_and(|p| p.port_type.many);
+        return source_value(kind, node, port, list, &nodecraft_types::EMPTY_TARGET_SELECTION).ok().flatten();
+    }
+    usable_generation(node)?.outputs.get(index).cloned()
 }
 
 #[cfg(test)]
@@ -1230,3 +1257,5 @@ mod contract_tests;
 mod options_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod value_tests;
