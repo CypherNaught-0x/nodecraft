@@ -140,6 +140,7 @@ fn the_extension_follows_the_stored_type_and_invents_nothing() {
     assert_eq!(extension_for("image/svg+xml").as_deref(), Some("svg"));
     assert_eq!(extension_for("video/mp4").as_deref(), Some("mp4"));
     assert_eq!(extension_for("model/stl").as_deref(), Some("stl"));
+    assert_eq!(extension_for("model/ply").as_deref(), Some("ply"));
     assert_eq!(extension_for("model/stl; profile=binary").as_deref(), Some("stl"));
     assert_eq!(extension_for("text/plain").as_deref(), Some("txt"));
     assert_eq!(extension_for("text/plain; charset=utf-8").as_deref(), Some("txt"));

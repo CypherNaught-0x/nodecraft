@@ -24,7 +24,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 18/30 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 10/13 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 28/31 |
-| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 11/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 5/8 |
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 14/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 3/29 |
@@ -72,10 +72,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   Element can be renamed, shared, or exported as a bundle file another person imports (#765).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
-  image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL) become 3D nodes whose cards show
+  image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL, ASCII PLY) become 3D nodes whose cards show
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
   writes a GLB or OBJ copy (#111), or geometry-only binary STL with bounded read/reopen support
-  (part of #569; see `docs/3d-formats.md`). Built-in 3D cards save their viewer angle, elevation, zoom and
+  or bounded ASCII PLY with RGBA channel data (#1011; parts of #569; see `docs/3d-formats.md`). Built-in 3D cards save their viewer angle, elevation, zoom and
   shading in the project; a viewer gesture is one undo step and never changes generation inputs
   or existing captures (`mesh.view_set`, #928, part of #569). A custom shader card runs WGSL with declared sliders; its editor
   checks the code as it's typed, has a text model write or fix it through an ordinary, priced

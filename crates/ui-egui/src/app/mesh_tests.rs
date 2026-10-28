@@ -443,3 +443,5 @@ fn mesh569_real_format_control_selects_stl_and_undoes_in_both_themes() {
         assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("stl".into()));
     }
 }
+
+mod ply1011;
