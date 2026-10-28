@@ -219,3 +219,36 @@ fn saved_decisions_are_checked_on_load() {
     text["billing_resolutions"][0]["extra"] = serde_json::json!(1);
     assert!(serde_json::from_value::<UsageLog>(text).is_err());
 }
+
+#[test]
+fn notes_refuse_invisible_formatting() {
+    let log = unresolved();
+    for note in ["right\u{202E}left", "iso\u{2066}late", "zero\u{200B}width", "\u{FEFF}bom"] {
+        let decision = BillingDecision { note: Some(note.into()), ..decide(&log, "lost", Resolution::Released) };
+        assert_eq!(log.plan_billing_resolution(&decision, 1).unwrap_err().kind, ErrorKind::InvalidInput, "{note:?}");
+    }
+    let plain = BillingDecision { note: Some("Rechnung März, Zeile 4".into()), ..decide(&log, "lost", Resolution::Released) };
+    assert!(log.plan_billing_resolution(&plain, 1).is_ok());
+}
+
+#[test]
+fn past_the_kept_limit_the_oldest_decision_leaves_and_is_counted() {
+    let mut log = unresolved();
+    log.resolve_unresolved(&decide(&log, "lost", Resolution::Released), 1).unwrap();
+    let mut file: UsageLogFile = serde_json::from_str(&serde_json::to_string(&log).unwrap()).unwrap();
+    let first = file.billing_resolutions[0].clone();
+    file.billing_resolutions = vec![first; MAX_BILLING_RESOLUTIONS];
+    // Dropped records require a full list.
+    let mut short = file.clone();
+    short.billing_resolutions.pop();
+    short.billing_resolutions_dropped = 1;
+    assert!(UsageLog::try_from(short).is_err());
+    let mut log = UsageLog::try_from(file).unwrap();
+    assert_eq!(log.billing_resolutions_dropped(), 0);
+    log.record(UsageEntry { at_ms: 9, ..charge("again", 1, Charge::Estimate) }).unwrap();
+    log.settle("fal", "again", usd(1), Charge::Unresolved).unwrap();
+    let record = log.resolve_unresolved(&decide(&log, "again", Resolution::Released), 2).unwrap();
+    assert_eq!((log.billing_resolutions().len(), log.billing_resolutions_dropped()), (MAX_BILLING_RESOLUTIONS, 1));
+    assert_eq!(log.billing_resolutions().last(), Some(&record));
+    assert_eq!(reload(&log).billing_resolutions_dropped(), 1, "saved with the log");
+}

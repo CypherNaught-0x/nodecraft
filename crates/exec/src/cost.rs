@@ -397,6 +397,8 @@ pub struct UsageLog {
     /// A person's decisions for ordinary unresolved charges (#298), oldest first, at most
     /// [`MAX_BILLING_RESOLUTIONS`].
     billing: VecDeque<BillingResolution>,
+    /// Billing decisions dropped from the front of a full `billing`.
+    billing_dropped: u64,
     metadata: Metadata,
     entry_order: VecDeque<u64>,
     next_order: u64,
@@ -494,6 +496,7 @@ impl PartialEq for UsageLog {
             && self.pending == other.pending
             && self.ownership == other.ownership
             && self.billing == other.billing
+            && self.billing_dropped == other.billing_dropped
     }
 }
 impl Eq for UsageLog {}
@@ -524,6 +527,9 @@ pub struct UsageLogFile {
     /// some, so a log without them stays readable by older NodeCraft.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub billing_resolutions: Vec<BillingResolution>,
+    /// How many older billing decisions were dropped past the kept limit.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub billing_resolutions_dropped: u64,
     pub entries: Vec<UsageEntry>,
     pub project: Totals,
     #[serde(default)]
@@ -539,6 +545,10 @@ pub struct UsageLogFile {
     /// Open charges that left the list.
     #[serde(default)]
     pub pending: Vec<UsageEntry>,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// One tagged fixed digest. This is finite deduplication, never ownership proof.
@@ -1347,6 +1357,7 @@ impl From<UsageLog> for UsageLogFile {
             ownership_reconciliations: log.ownership.records,
             charge_resolutions: log.ownership.resolutions,
             billing_resolutions: log.billing.into(),
+            billing_resolutions_dropped: log.billing_dropped,
             entries,
             project,
             sessions,
@@ -1558,6 +1569,7 @@ impl TryFrom<UsageLogFile> for UsageLog {
             clock,
             ownership,
             billing,
+            billing_dropped: file.billing_resolutions_dropped,
             metadata: Metadata::default(),
             entry_order,
             next_order: clock,

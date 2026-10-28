@@ -94,11 +94,19 @@ fn token(entry: &UsageEntry, location: QuarantineLocation) -> [u8; 32] {
     *hash.finalize().as_bytes()
 }
 
-/// A note is optional, short and plain: no control characters.
+/// Invisible formatting characters that could make a note read differently than it is stored:
+/// bidirectional embeddings, overrides and isolates, zero-width characters and the byte-order
+/// mark (the Unicode `Cf` characters a note could plausibly carry).
+fn is_format(c: char) -> bool {
+    matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
+/// A note is optional, at most [`MAX_BILLING_NOTE`] bytes and plain: no control or invisible
+/// formatting characters.
 pub(super) fn check_note(note: Option<&str>) -> Result<(), Error> {
     match note {
         Some(text) if text.len() > MAX_BILLING_NOTE => Err(bad("the note is too long")),
-        Some(text) if text.chars().any(char::is_control) => Err(bad("the note can't hold control characters")),
+        Some(text) if text.chars().any(|c| c.is_control() || is_format(c)) => Err(bad("the note can't hold control or invisible formatting characters")),
         _ => Ok(()),
     }
 }
@@ -108,6 +116,10 @@ pub(super) fn check_note(note: Option<&str>) -> Result<(), Error> {
 pub(super) fn admit_billing(file: &UsageLogFile) -> Result<(), Error> {
     if file.billing_resolutions.len() > MAX_BILLING_RESOLUTIONS {
         return Err(bad("usage log: too many billing decisions"));
+    }
+    // Records are only dropped from a full list, which never shrinks again.
+    if file.billing_resolutions_dropped > 0 && file.billing_resolutions.len() != MAX_BILLING_RESOLUTIONS {
+        return Err(bad("usage log: dropped billing decisions without a full list"));
     }
     for r in &file.billing_resolutions {
         ownership::check_key(&r.provider, &r.idempotency_key)?;
@@ -146,6 +158,12 @@ impl UsageLog {
     /// The kept billing decisions, oldest first.
     pub fn billing_resolutions(&self) -> impl ExactSizeIterator<Item = &BillingResolution> {
         self.billing.iter()
+    }
+
+    /// How many older billing decisions were dropped past [`MAX_BILLING_RESOLUTIONS`]. Their
+    /// charges were already final (settled as actual or released).
+    pub fn billing_resolutions_dropped(&self) -> u64 {
+        self.billing_dropped
     }
 
     /// Checks a decision exactly as [`Self::resolve_unresolved`] does and returns the record it
@@ -197,8 +215,8 @@ impl UsageLog {
             Resolution::Settled { cost } => self.settle_identity(&record.provider, record.instance, &record.idempotency_key, cost, Charge::Actual)?,
             Resolution::Released => self.release_open(&record.provider, record.instance, &record.idempotency_key, true)?,
         }
-        if self.billing.len() >= MAX_BILLING_RESOLUTIONS {
-            self.billing.pop_front();
+        if self.billing.len() >= MAX_BILLING_RESOLUTIONS && self.billing.pop_front().is_some() {
+            self.billing_dropped = self.billing_dropped.saturating_add(1);
         }
         self.billing.push_back(record.clone());
         Ok(record)
