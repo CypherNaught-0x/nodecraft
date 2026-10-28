@@ -66,7 +66,7 @@ pub const LIVE_ONLY: &[&str] = &[
 ];
 const NEEDS_LIVE_APP: &str = "needs the running app's canvas: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`";
 const NEEDS_USAGE_LOG: &str = "needs the running app's usage log: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`; standalone `nodecraft-cli mcp` has no usage log";
-const USAGE_READ_COMMANDS: &[&str] = &["usage.export_csv", "usage.ownership", "usage.unsettled"];
+const USAGE_READ_COMMANDS: &[&str] = &["usage.export_csv", "usage.ownership", "usage.unsettled", "usage.unresolved"];
 
 /// Commands an agent may see and run.
 pub const AGENT_COMMANDS: &[&str] = &[
@@ -194,6 +194,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "perf.report",
     "usage.ownership",
     "usage.unsettled",
+    "usage.unresolved",
     "run.reuse",
     "node.cache_set",
     "node.variations_set",
@@ -297,7 +298,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
 /// [`crate::roots`].) `run.record` writes the results of a run the host executed: an agent must not
 /// fabricate them. `usage.reconcile_ownership` records a person's judgement about historical
 /// charges against their own provider records (#325), and `usage.resolve_charge` what those records
-/// show a reconciled charge cost (#332). `plugins.*` changes read package files and
+/// show a reconciled charge cost (#332), and `usage.resolve_unresolved` what they show an ordinary
+/// unresolved charge cost, or that it was never billed (#298). `plugins.*` changes read package files and
 /// decide what extends the app (#172): a person's decision, like installing software.
 pub const HUMAN_ONLY: &[&str] = &[
     // Moving OS focus belongs to the person; the narrow desktop owner channel uses dispatch.
@@ -354,6 +356,8 @@ pub const HUMAN_ONLY: &[&str] = &[
     "run.record",
     "usage.reconcile_ownership",
     "usage.resolve_charge",
+    // Only a person who checked their provider's records may settle or release it (#298).
+    "usage.resolve_unresolved",
     // Letting a paid result go can't be undone (#369).
     "run.held_discard",
     // A share link lets someone into the project: whom is the person's call (#121).

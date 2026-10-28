@@ -34,7 +34,7 @@ fn layout_is_listed_as_live_only_and_refused_headless_without_mutation() {
 fn headless_usage_readers_advertise_the_missing_real_log() {
     let session = blank_session(ProjectId::from_bytes([78; 16]), CanvasId::from_bytes([79; 16])).unwrap();
     let mut server = McpServer::new(session, Box::new(|| [80; 16]));
-    for id in ["usage.export_csv", "usage.ownership", "usage.unsettled"] {
+    for id in ["usage.export_csv", "usage.ownership", "usage.unsettled", "usage.unresolved"] {
         let listed = call(&mut server, "command_list", json!({"query":id}));
         let commands = listed["structuredContent"]["commands"].as_array().unwrap();
         assert_eq!(commands.len(), 1, "{id}");

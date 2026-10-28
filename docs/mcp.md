@@ -12,8 +12,8 @@ For other clients, configure a stdio server that runs `nodecraft-cli` with the a
 
 The server starts with a new, empty project with one canvas. It has no allowed folders, so the
 project file commands are listed but refused; use the bridge below to open and save projects.
-It does not load the desktop app's usage log: `usage.export_csv`, `usage.ownership` and
-`usage.unsettled` are listed as `ready: false` with bridge guidance, rather than reporting an
+It does not load the desktop app's usage log: `usage.export_csv`, `usage.ownership`,
+`usage.unsettled` and `usage.unresolved` are listed as `ready: false` with bridge guidance, rather than reporting an
 empty log as though it were billing evidence. Bridge to the running app to read its real log.
 Streamable HTTP and the in-app server setting are still to come (#116).
 
@@ -129,7 +129,9 @@ machine, so it is human-only for the same reason (#557), as are `timeline.export
 takes it from, so it is human-only too (#831). `run.record` writes results the host ran, and
 `usage.reconcile_ownership` records a person's judgement about historical charges against their
 own provider records (#325), as does `usage.resolve_charge` for what a reconciled charge was billed
-(#332); agents can still review those charges with `usage.ownership` and `usage.unsettled`. `run.held_discard` lets a held paid result go for good (#369); agents can list held
+(#332), and `usage.resolve_unresolved` for what an ordinary unresolved charge was billed (#298);
+agents can still review those charges with `usage.ownership`, `usage.unsettled` and
+`usage.unresolved`. `run.held_discard` lets a held paid result go for good (#369); agents can list held
 results with `run.held` and retry or place them with `run.held_retry` and `run.held_place`. The
 `plugins.*` changes (import, update, reload, enable, disable, rollback, uninstall, prune) read package files
 and decide what extends the app, like installing software, so only a person runs them; agents can
