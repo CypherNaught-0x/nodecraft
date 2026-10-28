@@ -70,37 +70,79 @@ fn press_at(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2, button: egui::Poi
     }
 }
 
+/// `session` with one of its batches changed directly, as a file could hold it.
+fn with_batch(session: &Session, canvas: CanvasId, id: NodeId, change: impl FnOnce(&mut Node)) -> Session {
+    let mut project = session.document().clone();
+    let mut node = project.canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().clone();
+    change(&mut node);
+    Change::SetNode { canvas, node }.apply(&mut project).unwrap();
+    Session::new(project).unwrap()
+}
+
+fn review_of(session: &Session, canvas: CanvasId) -> Option<super::batch_review::Review> {
+    let c = session.document().canvases().get(&canvas).unwrap();
+    review(c, session.kinds(), c.nodes().get(&CARD).unwrap())
+}
+
+/// Clicks the widget labelled `label` with a real pointer press and release at its centre,
+/// after hovering it for a frame.
+fn click(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
+    let pos = h.get_by_label(label).rect().center();
+    h.hover_at(pos);
+    h.step();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        h.step();
+    }
+    h.run();
+}
+
 #[test]
 fn a_crossed_result_reviews_as_a_grid_with_its_failed_cell() {
     let (session, canvas) = project(&CROSS, Some(3));
-    let node = session.document().canvases().get(&canvas).unwrap().nodes().get(&CARD).unwrap().clone();
-    let review = review(session.document().canvases().get(&canvas).unwrap(), session.kinds(), &node).unwrap();
+    let review = review_of(&session, canvas).unwrap();
     assert_eq!(review.axes.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), ["Subjects", "Times"]);
     assert_eq!(review.axes[0].labels, ["a fox", "an owl"]);
     assert_eq!(review.axes[1].labels, ["at dawn", "at night"]);
     assert_eq!(review.grid, Some(vec![vec![0, 1], vec![2, 3]]));
-    assert_eq!(review.items[1], (vec!["a fox".to_owned(), "at night".to_owned()], ItemState::Done(Value::Text("fox night".into()))));
+    assert_eq!(review.labels(1), ["a fox", "at night"]);
+    assert_eq!(review.items[1].1, ItemState::Done { label: "fox night".into(), image: None });
     assert_eq!(review.items[3].1, ItemState::Failed);
 }
 
 #[test]
 fn a_zip_or_a_changed_batch_has_no_grid_but_every_item_is_listed() {
-    // Zipped: item by item, so no grid of combinations.
+    // Item by item, so no grid of combinations.
     let (session, canvas) = project(&[(0, 0), (1, 1)], None);
-    let c = session.document().canvases().get(&canvas).unwrap();
-    let r = review(c, session.kinds(), c.nodes().get(&CARD).unwrap()).unwrap();
+    let r = review_of(&session, canvas).unwrap();
     assert_eq!(r.grid, None);
     assert_eq!(r.items.len(), 2);
+    // A 1×1 Zip fills a 1×1 grid, but it isn't a Cross: no grid either.
+    let (session, canvas) = project(&[(0, 0)], None);
+    let zip = |node: &mut Node| {
+        node.params.insert("pairing".into(), Value::Text("zip".into()));
+        node.params.insert("text".into(), Value::Text("only".into()));
+    };
+    let session = with_batch(&with_batch(&session, canvas, SUBJECTS, zip), canvas, TIMES, zip);
+    assert_eq!(review_of(&session, canvas).unwrap().grid, None);
 
     // An item the batch no longer holds is still listed, and says so.
     let (mut session, canvas) = project(&CROSS, None);
     session.dispatch("node.param_set", &json!({"canvas": canvas, "id": SUBJECTS, "name": "text", "value": {"type": "text", "value": "a fox\na bee"}})).unwrap();
-    let c = session.document().canvases().get(&canvas).unwrap();
-    let r = review(c, session.kinds(), c.nodes().get(&CARD).unwrap()).unwrap();
+    let r = review_of(&session, canvas).unwrap();
     assert_eq!(r.axes[0].labels, ["a fox", "Item no longer in the batch (1)"]);
     assert_eq!(r.grid.as_ref().map(Vec::len), Some(2), "still every combination of what it was made from");
 
+    // A batch that can't list its items says why, and its items are numbered.
+    let session = with_batch(&session, canvas, SUBJECTS, |node| {
+        node.params.insert("split".into(), Value::Text("bogus".into()));
+    });
+    let r = review_of(&session, canvas).unwrap();
+    assert!(r.axes[0].problem.as_deref().is_some_and(|why| why.to_lowercase().contains("split")), "{:?}", r.axes[0].problem);
+    assert_eq!(r.axes[0].labels, ["Item 1", "Item 2"]);
+
     // A result not made per item has nothing to review.
+    let c = session.document().canvases().get(&canvas).unwrap();
     let mut plain = c.nodes().get(&CARD).unwrap().clone();
     plain.history.iter_mut().for_each(|g| g.items.clear());
     assert!(!super::batch_review::reviewable(&plain));
@@ -116,30 +158,38 @@ fn review_items_steps_through_each_item_and_the_grid_picks_one() {
     // The card's own context menu opens the review.
     let point = h.state().view.rect_to_screen(h.state().viewport.min, h.state().painted[&CARD]).left_center() + Vec2::new(4.0, 0.0);
     press_at(&mut h, point, egui::PointerButton::Secondary);
-    h.get_by_label("Review items…").click();
-    h.run();
+    click(&mut h, "Review items…");
     assert!(h.query_by_label("Item 1 of 4").is_some());
     assert!(h.query_by_label("Subjects: a fox").is_some() && h.query_by_label("Times: at dawn").is_some());
+    // Built once, then reused frame after frame.
+    let built = h.state().batch_review.as_ref().and_then(|r| r.cached()).unwrap();
 
-    h.get_by_label("Next ▶").click();
-    h.run();
+    click(&mut h, "Next ▶");
     assert!(h.query_by_label("Item 2 of 4").is_some());
     assert!(h.query_by_label("Times: at night").is_some());
+    assert!(std::sync::Arc::ptr_eq(&built, &h.state().batch_review.as_ref().and_then(|r| r.cached()).unwrap()), "not rebuilt");
 
     // The grid has every combination, the failed one marked; picking it shows why.
     for cell in ["fox dawn", "fox night", "owl dawn"] {
         assert!(h.query_all_by_label(cell).next().is_some(), "{cell}");
     }
-    h.get_by_label("Failed").click();
-    h.run();
+    click(&mut h, "Failed");
     assert!(h.query_by_label("Item 4 of 4").is_some());
     assert!(h.query_by_label_contains("Run the card again").is_some());
     assert!(h.query_by_label("Next ▶").is_some_and(|next| next.accesskit_node().is_disabled()), "the last item");
 
-    h.get_by_label("◀ Previous").click();
-    h.run();
+    click(&mut h, "◀ Previous");
     assert!(h.query_by_label("Item 3 of 4").is_some());
     assert_eq!(h.state().batch_review.as_ref().map(|r| r.item), Some(2));
     // Nothing in the document changed.
     assert!(!h.state().session.can_undo());
+
+    // An edit to the document builds it again, with the batch as it is now.
+    let c = h.state().canvas;
+    h.state_mut()
+        .session
+        .dispatch("node.param_set", &json!({"canvas": c, "id": SUBJECTS, "name": "text", "value": {"type": "text", "value": "a fox\nan owl\na bee"}}))
+        .unwrap();
+    h.run();
+    assert!(!std::sync::Arc::ptr_eq(&built, &h.state().batch_review.as_ref().and_then(|r| r.cached()).unwrap()), "rebuilt");
 }

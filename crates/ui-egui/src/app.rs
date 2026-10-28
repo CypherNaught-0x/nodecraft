@@ -2376,7 +2376,7 @@ impl NodeCraftApp {
             reader_after = reader_request;
             timeline_after = timeline_request;
             if let Some(node) = review_request {
-                self.batch_review = Some(batch_review::BatchReview { node, item: 0 });
+                self.batch_review = Some(batch_review::BatchReview::new(node));
             }
             element_after = element_request;
             image_tool_after = image_tool_request;
