@@ -85,6 +85,9 @@ pub struct Tokens {
     pub field_fill_opacity: f32,
     /// ComfyUI servers panel's job-count and new-name text field widths (#874).
     pub comfy_jobs_width: f32,
+    /// The batch items review (#92): its width, and the edge of one result in its Cross grid.
+    pub batch_review_width: f32,
+    pub batch_review_cell: f32,
     pub comfy_name_width: f32,
     pub search_width: f32,
     pub search_height: f32,
@@ -263,6 +266,8 @@ pub const DARK: Tokens = Tokens {
     field_min_height: 96.0,
     field_fill_opacity: 0.10,
     comfy_jobs_width: 48.0,
+    batch_review_width: 520.0,
+    batch_review_cell: 96.0,
     comfy_name_width: 160.0,
     search_width: 420.0,
     search_height: 128.0,
