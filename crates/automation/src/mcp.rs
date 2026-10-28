@@ -14,6 +14,8 @@
 //! [`LIVE_ONLY`] agent commands act on the running window's view and run only through it.
 //! An unclassified command stays hidden, and a test fails until it is classified.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod http;
 mod overview;
 
 use std::collections::BTreeMap;
@@ -134,6 +136,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "providers.settings_get",
     "app.check_updates",
     "app.update_status",
+    // Where the desktop app's built-in server listens; never its token (#116).
+    "automation.mcp_server_status",
     "history.select",
     "history.previous",
     "history.next",
@@ -329,6 +333,8 @@ pub const HUMAN_ONLY: &[&str] = &[
     "plugins.grant",
     "plugins.revoke",
     "plugins.prune",
+    // Opening the app to local MCP clients, or closing it to them, is the person's call (#116).
+    "automation.mcp_server_set",
     // Replacing the app and restarting it stays the person's choice (#540).
     "app.install_update",
     "app.restart_to_update",
@@ -386,9 +392,10 @@ pub struct McpServer {
 enum Backend {
     /// A headless session of its own.
     Local(Box<dyn crate::commands::CommandHost>),
-    /// The running app's session, through its control channel (`nodecraft --control`).
+    /// The running app's session, through its control channel (`nodecraft --control`) or, for
+    /// the app's own server, straight to its UI thread.
     #[cfg(not(target_arch = "wasm32"))]
-    Bridge(crate::control::Client),
+    Bridge(crate::control::Bridge),
 }
 
 /// Whether automation may see and run the command `id`.
@@ -680,7 +687,14 @@ impl McpServer {
     /// agent edits the canvas the user sees, and can take screenshots of it.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn bridge(client: crate::control::Client, new_id: IdSource) -> Self {
-        Self { backend: Backend::Bridge(client), new_id }
+        Self { backend: Backend::Bridge(crate::control::Bridge::Remote(client)), new_id }
+    }
+
+    /// The app's own server (Settings › Automation, #116): the same tools as [`Self::bridge`],
+    /// answered on the app's UI thread through `client` instead of a control connection.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn in_app(client: crate::control::LocalClient, new_id: IdSource) -> Self {
+        Self { backend: Backend::Bridge(crate::control::Bridge::Local(client)), new_id }
     }
 
     /// The local session (`None` when bridged to the app).
@@ -706,10 +720,11 @@ impl McpServer {
             Ok(v) => v,
             Err(_) => return Some(rpc_error(Value::Null, PARSE_ERROR, "not valid JSON").to_string()),
         };
-        self.handle_value(parsed).map(|v| v.to_string())
+        self.handle_message(parsed).map(|v| v.to_string())
     }
 
-    fn handle_value(&mut self, message: Value) -> Option<Value> {
+    /// [`Self::handle`] for a message already parsed (the HTTP transport parses it to route it).
+    pub fn handle_message(&mut self, message: Value) -> Option<Value> {
         let Value::Object(mut obj) = message else {
             // JSON-RPC batches were removed from MCP in 2025-06-18.
             return Some(rpc_error(Value::Null, INVALID_REQUEST, "expected a single JSON-RPC message object"));
@@ -819,6 +834,26 @@ impl McpServer {
         }
         list
     }
+}
+
+/// Fresh ids from the operating system's random source, for native hosts. Should that source
+/// fail, ids come from the standard library's per-process random hasher keys and a counter.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn os_ids() -> IdSource {
+    use std::hash::{BuildHasher, RandomState};
+    let state = RandomState::new();
+    let mut counter = 0u64;
+    Box::new(move || {
+        let mut bytes = [0u8; 16];
+        if getrandom::fill(&mut bytes).is_err() {
+            counter = counter.wrapping_add(1);
+            let (a, b) = (state.hash_one((counter, 0u8)), state.hash_one((counter, 1u8)));
+            let (lo, hi) = bytes.split_at_mut(8);
+            lo.copy_from_slice(&a.to_le_bytes());
+            hi.copy_from_slice(&b.to_le_bytes());
+        }
+        bytes
+    })
 }
 
 /// Marks random bytes as a version-4 UUID.
