@@ -11,6 +11,7 @@ format; conversion results belong to the card's history and are saved in the pro
 | OBJ | Geometry and supported vertex colours | OBJ, with geometry, normals and vertex colours |
 | ASCII PLY | NodeCraft triangle profile, with normals and RGBA vertex colours | **PLY (ASCII RGBA)** |
 | Binary STL | Triangle geometry, shown with flat normals and a neutral colour | **STL (geometry only)** |
+| USDZ | NodeCraft static USDA triangle profile, with vertex normals and linear RGBA | **USDZ (static RGBA)** |
 
 Saving an original result keeps its original bytes. Conversion reads the supported mesh
 representation: embedded base-colour textures are sampled into vertex colours. Fine texture
@@ -40,7 +41,7 @@ Binary STL results can be previewed, converted back to GLB/OBJ, saved, reopened 
 as new 3D sources. Their filename extension is `.stl` and media type is `model/stl`.
 
 This implements the STL portion of [#569](https://github.com/CypherNaught-0x/nodecraft/issues/569).
-USDZ, the browser decode worker and retained material/UV rendering remain separate work.
+Broader USD profiles, the browser decode worker and retained material/UV rendering remain separate work.
 
 ## ASCII PLY
 
@@ -107,3 +108,73 @@ the browser UI thread. Main-thread transfer/validation is chunked; the final adm
 upload still takes time proportional to model size. See the
 [browser worker decision](decisions/2026-10-28-browser-mesh-worker.md) for ownership and resource
 accounting, deployment and conformance coverage.
+
+## Static USDZ
+
+**USDZ (static RGBA)** reads and writes one self-contained USDA 1.0 Mesh layer in a USDZ
+package. Shared vertices, triangle winding, float32 positions, normalized vertex normals
+and linear unassociated float32 RGBA are retained. The extension is `.usdz` and the registered
+media type is `model/vnd.usdz+zip`. Original imports and saved history results keep their
+exact original bytes. Conversion makes a separate result and leaves its source unchanged.
+
+This is a deliberately bounded profile, not a general USD scene loader. It requires one
+root Mesh matching `defaultPrim`, `upAxis = "Y"`, `metersPerUnit = 1`, right-handed winding
+and `subdivisionScheme = "none"`. The writer labels the existing unscaled coordinates with
+this convention; it does not infer the source's physical units or transform its axes. Every
+face must have exactly three indices. Required `points`, `faceVertexCounts`,
+`faceVertexIndices`, `normals`, `primvars:displayColor` and `primvars:displayOpacity` fields
+can appear in any order, with vertex interpolation for normals and colour/opacity. Metadata
+can also be reordered. Numeric tuples and arrays accept ordinary whitespace, commas and
+line comments. Unknown/duplicate fields, nonvertex interpolation, polygons, subdivision,
+time samples, transforms, material/texture references, composition arcs and USDC are refused.
+Save a compatible static mesh with the required attributes before importing it here.
+LF, CRLF and CR input line endings are accepted; output uses LF. CRLF counts as one line
+for the metadata limit, and comments end at any supported line ending.
+
+RGB and alpha retain the existing Mesh's linear channel data without quantization or
+premultiplication, including fully transparent RGB. The viewer and existing GLB material
+remain opaque; this profile does not add transparent-material rendering. OBJ conversion
+drops alpha, PLY rounds to its documented 8-bit convention, and STL drops colour. Retained
+UVs, materials, textures and general USD scenes remain separate work under #569.
+
+The package must contain exactly one safe root `.usda` entry, unencrypted and uncompressed
+(STORE), with its data aligned to 64 bytes. Local/central records must agree; sizes, names,
+offsets, CRC, padding and the exact archive end are validated. ZIP64, descriptors, additional
+entries, path traversal, symlinks, unknown extra fields, comments and trailing bytes are
+refused. No archive entry is extracted and no file/network reference is resolved.
+
+The reader checks the complete container and closed grammar with borrowed tokens before
+allocating geometry. Counts, numeric values, index ranges and derived bounds pass first;
+then four fallibly allocated indexed arrays are filled and every triangle's nonzero area
+is checked before adopting the mesh. Their total size is `40 × vertices + 12 × triangles`
+bytes, at most 208,000,000 bytes with the default four-million vertex/triangle limits. Input
+is at most 256 MiB; caller limits only lower these caps. Lines are at most 1024 ASCII bytes,
+tokens 64 bytes, and layer metadata 16 KiB / 64 lines. Grammar nesting is fixed, with no
+recursive scene traversal. Non-finite/unrepresentable numbers, zero normals, zero-area
+faces and unrepresentable preview spheres are errors. Bounds use f64 intermediates to avoid
+overflow when their final float32 sphere remains representable; other formats share that
+arithmetic improvement, without changing the renderer or their admission policy.
+
+A finite interchange mesh can still exceed the current preview camera's float32 numeric
+range. Such a model reports **3D preview unavailable at this coordinate range** before
+GPU upload. Its valid geometry, original coordinates and bytes remain available for saving
+and conversion; they are never rescaled to make a preview. The same check guards the current
+orbit before drawing, so Reset remains available if an extreme zoom makes a previously
+usable view unavailable; capture buttons return when the view is usable again. This
+capability check does not redesign the camera or shaders.
+The shared photo, view-sheet and turntable executors also check their planned cameras before
+GPU/encoder work and return an actionable coordinate-range error. CLI/MCP callers receive
+that same refusal, rather than an empty image or video. Original 3D conversion stays available.
+
+The writer validates geometry and counts the complete formatted layer plus ZIP headers,
+alignment and footer before output allocation. Convert 3D retains its **16 MiB result cap**.
+Larger original assets retain the existing project storage rules; USDZ adds no storage bypass.
+
+This implements [#1019](https://github.com/CypherNaught-0x/nodecraft/issues/1019), one part of
+[#569](https://github.com/CypherNaught-0x/nodecraft/issues/569). Primary sources checked
+2026-10-28: [OpenUSD USDZ specification](https://openusd.org/release/spec_usdz.html),
+[Mesh schema](https://openusd.org/release/api/class_usd_geom_mesh.html),
+[Gprim colour/opacity schema](https://openusd.org/release/api/class_usd_geom_gprim.html),
+and [IANA media type](https://www.iana.org/assignments/media-types/model/vnd.usdz+zip).
+Original indexed test input was packaged and checked by Apple USD Tools 0.25.11; fixture
+provenance is recorded beside it. General USD/USDC and retained material rendering remain open.

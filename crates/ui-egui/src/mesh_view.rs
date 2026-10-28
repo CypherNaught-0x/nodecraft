@@ -41,6 +41,7 @@ const TARGET_FRAMES: u64 = 120;
 const MAX_BROWSER_MODEL_BYTES: usize = 64 * 1024 * 1024;
 #[cfg(any(target_arch = "wasm32", test))]
 const BUDGET_UNAVAILABLE: &str = "Move another 3D model offscreen to free preview space";
+const RANGE_UNAVAILABLE: &str = "3D preview unavailable at this coordinate range";
 
 /// The 3D model a node shows: a Source 3D node's asset, else the first model in its active result.
 pub fn mesh_of(node: &Node) -> Option<&AssetRef> {
@@ -71,13 +72,20 @@ pub struct Model {
     bytes: usize,
 }
 impl Model {
-    fn prepared(prepared: Prepared) -> Self {
-        Self { center: prepared.center(), radius: prepared.radius(), bytes: prepared.bytes(), prepared }
+    fn prepared(prepared: Prepared) -> Result<Self, nodecraft_mesh_preview::Error> {
+        if Orbit::default().checked_view_projection(prepared.center(), prepared.radius(), 1.0).is_none() {
+            return Err(nodecraft_mesh_preview::Error::Coordinates);
+        }
+        Ok(Self { center: prepared.center(), radius: prepared.radius(), bytes: prepared.bytes(), prepared })
     }
     #[cfg(any(not(target_arch = "wasm32"), test))]
     fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            nodecraft_mesh_preview::prepare(bytes, nodecraft_mesh_preview::Profile::Native).map(Self::prepared).map_err(|e| e.message())
+            nodecraft_mesh_preview::prepare_checked(bytes, nodecraft_mesh_preview::Profile::Native, |center, radius| {
+                Orbit::default().checked_view_projection(center, radius, 1.0).is_some()
+            })
+            .and_then(Self::prepared)
+            .map_err(|e| e.message())
         }))
         .unwrap_or(Err("Can't read this 3D model"))
     }
@@ -251,7 +259,7 @@ impl Meshes {
         {
             if let Some(result) = self.browser.poll() {
                 if let Some((hash, _)) = self.browser_hash.take() {
-                    self.finish(hash, result.map(Model::prepared).map_err(|e| Failure::permanent(e.message())));
+                    self.finish(hash, result.and_then(Model::prepared).map_err(|e| Failure::permanent(e.message())));
                 }
             }
         }
@@ -526,7 +534,10 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
                 Style::Wireframe => "wireframe",
             };
             let triangles = model.triangles();
-            if gpu {
+            let available = view.orbit.checked_view_projection(model.center, model.radius, area.width() / area.height().max(1.0)).is_some();
+            if !available {
+                text(RANGE_UNAVAILABLE);
+            } else if gpu {
                 // Under the drawing: shows only if the GPU can't take the model.
                 text("Can't draw this 3D model here");
                 let ppp = ui.ctx().pixels_per_point();
@@ -557,12 +568,12 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
             } else {
                 text(&format!("3D model · {triangles} triangles"));
             }
-            controls(ui, area, view, t);
+            controls(ui, area, view, t, available);
             if before != (view.orbit, view.style) {
                 view.changed(response.dragged());
                 ui.ctx().request_repaint();
             }
-            format!("3D model, {triangles} triangles, {style} view")
+            if available { format!("3D model, {triangles} triangles, {style} view") } else { RANGE_UNAVAILABLE.to_owned() }
         }
         MeshPreview::Pending => {
             text("Loading 3D model…");
@@ -579,7 +590,7 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
 
 /// The style toggle and reset over the preview's bottom-left corner, the capture buttons over
 /// its bottom-right.
-fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens) {
+fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens, preview_available: bool) {
     let style = match view.style {
         Style::Shaded => "Shaded",
         Style::Unlit => "Unlit",
@@ -602,6 +613,11 @@ fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens) {
     }
     if ui.put(reset_rect, egui::Button::new(font("Reset")).small()).on_hover_text("Back to the starting view").clicked() {
         view.orbit = Orbit::default();
+    }
+    if !preview_available {
+        // Reset can recover a zoom outside the camera's range; don't offer captures from
+        // that unusable view while waiting for the next frame's valid projection.
+        return;
     }
     let capture_width = width * 0.8;
     let views_rect =
@@ -673,6 +689,13 @@ impl MeshResources {
     }
 
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, call: &MeshCallback) {
+        let [width, height] = call.size;
+        if call.view.orbit.checked_view_projection(call.view.center, call.view.radius, width as f32 / height.max(1) as f32).is_none() {
+            if let Some(slot) = self.targets.get_mut(&call.slot) {
+                slot.drawn = None;
+            }
+            return;
+        }
         if !self.mesh(device, queue, call.hash, &call.model, call.frame) {
             return;
         }
@@ -783,5 +806,7 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
     }
 }
 
+#[cfg(test)]
+mod range1019_tests;
 #[cfg(test)]
 mod tests;

@@ -1,7 +1,7 @@
 //! Convert 3D (#111): decodes the connected model within the media limits and writes it as GLB
-//! or OBJ, geometry-only binary STL, or ASCII PLY/RGBA, staged like any other action result.
+//! or OBJ, geometry-only binary STL, ASCII PLY/RGBA, or static USDZ, staged like any other result.
 use super::{LocalActions, word};
-use nodecraft_media::{MeshFormat, MeshLimits, decode_mesh, encode_glb, encode_obj, encode_ply, encode_stl};
+use nodecraft_media::{MeshFormat, MeshLimits, decode_mesh, encode_glb, encode_obj, encode_ply, encode_stl, encode_usdz};
 use nodecraft_types::{AssetRef, MediaMeta, ParamValues, Value};
 use std::sync::PoisonError;
 
@@ -40,6 +40,7 @@ impl LocalActions {
             "obj" => MeshFormat::Obj,
             "stl" => MeshFormat::Stl,
             "ply" => MeshFormat::Ply,
+            "usdz" => MeshFormat::Usdz,
             other => return Err(format!("{other} isn't a 3D format NodeCraft writes")),
         };
         let bytes = self.model_bytes(inputs.first())?;
@@ -48,6 +49,7 @@ impl LocalActions {
             MeshFormat::Obj => encode_obj(&mesh),
             MeshFormat::Stl => encode_stl(&mesh, nodecraft_format::MAX_ASSET_BYTES),
             MeshFormat::Ply => encode_ply(&mesh, nodecraft_format::MAX_ASSET_BYTES),
+            MeshFormat::Usdz => encode_usdz(&mesh, nodecraft_format::MAX_ASSET_BYTES),
             _ => encode_glb(&mesh),
         }
         .map_err(|e| format!("the model can't be written: {e}"))?;

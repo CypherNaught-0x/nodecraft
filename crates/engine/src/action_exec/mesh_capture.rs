@@ -4,7 +4,7 @@
 //! the viewer's own orbit is view state and only seeds them (`mesh.capture`).
 use super::{LocalActions, capture_state, color, number, whole, word};
 use nodecraft_actions::image::{ImageLimits, Raster};
-use nodecraft_gpu::mesh::capture::{CaptureError, MeshCapture, TIMEOUT};
+use nodecraft_gpu::mesh::capture::{CaptureError, MeshCapture, TIMEOUT, validate_view};
 use nodecraft_gpu::mesh::{MeshData, Orbit, Style, View};
 use nodecraft_media::{MeshLimits, decode_mesh};
 use nodecraft_nodes::mesh::{MAX_PHOTO_SIDE, MAX_VIEW_SIDE, PHOTO, VIEWS, sheet_grid};
@@ -109,6 +109,12 @@ impl LocalActions {
         let bytes = self.model_bytes(inputs.first())?;
         let mesh = decode_mesh(&bytes, &MeshLimits::default()).map_err(|e| format!("the input model can't be read: {e}"))?;
         let bounds = mesh.bounds().ok_or("the input model has nothing to draw")?;
+        let center = bounds.center();
+        let radius = bounds.radius();
+        for &yaw in &shot.yaws {
+            let orbit = Orbit { yaw: 0.0, pitch: 0.0, zoom: 1.0 }.turned(yaw, pitch).zoomed(zoom);
+            validate_view(&View { orbit, style, center, radius, background, line }, shot.size).map_err(message)?;
+        }
         let edges = if style == Style::Wireframe { mesh.edges(MAX_EDGES) } else { None };
         let data = MeshData { positions: &mesh.positions, normals: &mesh.normals, colors: &mesh.colors, indices: &mesh.indices, edges: edges.as_deref() };
         let (width, height, pixels) = {
@@ -140,7 +146,7 @@ impl LocalActions {
                     return Err("the 3D capture was cancelled".into());
                 }
                 let orbit = Orbit { yaw: 0.0, pitch: 0.0, zoom: 1.0 }.turned(*yaw, pitch).zoomed(zoom);
-                let view = View { orbit, style, center: bounds.center(), radius: bounds.radius(), background, line };
+                let view = View { orbit, style, center, radius, background, line };
                 let pixels = capture.render(&gpu, &target, &view, timeout).map_err(message)?;
                 let (x, y) = ((index % columns) as usize * row, (index / columns) as usize * usize::try_from(h).unwrap_or(0));
                 for (line, source) in pixels.chunks_exact(row).enumerate() {

@@ -226,6 +226,17 @@ impl Orbit {
         multiply(&perspective(FOV, aspect, near, far), &look_at(eye, center))
     }
 
+    /// The existing camera's projection for finite model bounds, if its matrix is finite.
+    /// This is a preview capability check, not a geometry transform or camera rescaling.
+    /// A valid interchange mesh can lie outside this renderer's current numeric range.
+    pub fn checked_view_projection(self, center: [f32; 3], radius: f32, aspect: f32) -> Option<[f32; 16]> {
+        if center.iter().any(|v| !v.is_finite()) || !radius.is_finite() {
+            return None;
+        }
+        let matrix = self.view_projection(center, radius, aspect);
+        matrix.iter().all(|v| v.is_finite()).then_some(matrix)
+    }
+
     /// The direction towards the light: above and to the left of the camera, so it follows the
     /// camera round the model.
     fn light(self) -> [f32; 3] {
