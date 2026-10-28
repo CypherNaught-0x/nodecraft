@@ -43,7 +43,7 @@ pub struct RunLimits {
     /// known up front separately). Complete preflight precedes copying; admitted copies stay
     /// charged even if the kind subsequently rejects planning.
     pub run_bytes: usize,
-    /// JSON bytes of job outputs the run holds at once (#254); see [`MAX_HELD_OUTPUT_BYTES`].
+    /// JSON bytes of job outputs the run keeps over its life (#254); see [`MAX_HELD_OUTPUT_BYTES`].
     pub held_bytes: usize,
 }
 
@@ -186,8 +186,8 @@ pub struct Run {
     /// The keys of earlier runs this run sends jobs under again (#517), each at most once.
     sent_again: BTreeSet<String>,
     run_bytes: usize,
-    /// JSON bytes of the job outputs waiting for their step and of finished steps' outputs,
-    /// held to [`RunLimits::held_bytes`] (#254).
+    /// JSON bytes of the job outputs waiting for their step and of every finished step's outputs
+    /// (kept until the run ends), held to [`RunLimits::held_bytes`] (#254).
     held_bytes: usize,
     #[cfg(test)]
     copied_input_bytes: std::cell::Cell<usize>,
@@ -347,7 +347,9 @@ impl Run {
             return Err(crate::admission::cap());
         }
         usage.limits = options.limits;
-        Self::start_owned(plan, canvas_id, canvas, kinds, options, Some((witness, usage)))
+        // The run reads only active results (#254): the rest of the history stays behind. The
+        // engine admits an already cut-down copy, which this leaves as it is.
+        Self::start_owned(plan, canvas_id, canvas.into_active_only(), kinds, options, Some((witness, usage)))
     }
 
     fn start_owned(
@@ -358,8 +360,6 @@ impl Run {
         options: RunOptions,
         admission: Option<(crate::admission::Witness, crate::admission::Usage)>,
     ) -> Result<(Self, Progress), Error> {
-        // The run reads only active results (#254): the rest of the history stays behind.
-        let canvas = canvas.into_active_only();
         let mut steps: BTreeMap<NodeId, StepState> = BTreeMap::new();
         let ready: Vec<NodeId> = plan.steps.iter().filter(|s| s.after.is_empty()).map(|s| s.node).collect();
         let inner = plan.inner;
@@ -1162,6 +1162,12 @@ impl Run {
             match self.assemble(kinds, node, &BTreeMap::new(), Some(variant)) {
                 Ok(result) => finished.push(result),
                 Err(reason) => {
+                    // It may have failed partway: the rest of its jobs' outputs are let go too.
+                    for job in self.variation_of(node, variant) {
+                        if let Some(state) = self.jobs.get_mut(&job) {
+                            release(&mut self.held_bytes, state);
+                        }
+                    }
                     lost.insert(variant, (Missing::Failed, reason));
                 }
             }
@@ -1528,15 +1534,16 @@ fn lane(work: &JobSpec) -> Result<Lane, Error> {
     }
 }
 
-/// The most JSON bytes of job outputs a run holds at once (#254): those waiting for their step
-/// to assemble them, and finished steps' outputs kept for the steps after them. Media are held as
-/// asset references, so this counts text and data. Past it, the step whose result would go over
-/// fails with a reason saying so ([`too_much_held`]).
+/// The most JSON bytes of job outputs a run keeps (#254): those waiting for their step to
+/// assemble them, plus every finished step's outputs, which stay until the run ends (later steps
+/// and their input hashes read them). So in effect it bounds what a whole run produces. Media are
+/// kept as asset references, so this counts text and data. Past it, the step whose result would
+/// go over fails with a reason saying so ([`too_much_held`]).
 pub const MAX_HELD_OUTPUT_BYTES: usize = MAX_PLAN_INPUT_BYTES;
 
 /// Why a result over `cap` held bytes is refused, with what to do about it.
 fn too_much_held(cap: usize) -> String {
-    format!("its results would make the run hold more than {} of results at once; run fewer nodes together, or make their results smaller", size(cap))
+    format!("its results would bring what the run keeps past {} of results; run fewer nodes together, or make their results smaller", size(cap))
 }
 
 /// `bytes` for a person: whole MiB when it is at least one, else bytes.
@@ -1551,21 +1558,31 @@ fn size(bytes: usize) -> String {
 #[derive(Clone, Default)]
 pub struct Outputs(Arc<Mutex<Pending>>);
 
-#[derive(Default)]
 struct Pending {
     by_job: BTreeMap<JobId, (Vec<(String, Value)>, usize)>,
     bytes: usize,
+    /// The most `bytes` may reach: [`MAX_HELD_OUTPUT_BYTES`], or less in tests.
+    cap: usize,
+}
+
+impl Default for Pending {
+    fn default() -> Self {
+        Self { by_job: BTreeMap::new(), bytes: 0, cap: MAX_HELD_OUTPUT_BYTES }
+    }
 }
 
 impl Outputs {
-    /// Keeps `job`'s outputs until they are taken, or says why not.
-    fn put(&self, job: JobId, outputs: Vec<(String, Value)>) -> Result<(), String> {
-        self.put_within(job, outputs, MAX_HELD_OUTPUT_BYTES)
+    /// Outputs held to `cap` bytes rather than [`MAX_HELD_OUTPUT_BYTES`].
+    #[cfg(test)]
+    pub(crate) fn capped(cap: usize) -> Self {
+        Self(Arc::new(Mutex::new(Pending { cap, ..Pending::default() })))
     }
 
-    fn put_within(&self, job: JobId, outputs: Vec<(String, Value)>, cap: usize) -> Result<(), String> {
+    /// Keeps `job`'s outputs until they are taken, or says why not.
+    fn put(&self, job: JobId, outputs: Vec<(String, Value)>) -> Result<(), String> {
         let bytes = json_bytes(&outputs);
         let mut pending = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let cap = pending.cap;
         let replaced = pending.by_job.get(&job).map_or(0, |(_, b)| *b);
         let held = pending.bytes.saturating_sub(replaced);
         if held.checked_add(bytes).is_none_or(|total| total > cap) {

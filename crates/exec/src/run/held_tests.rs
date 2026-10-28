@@ -85,7 +85,7 @@ fn a_result_past_the_held_byte_limit_fails_its_step_and_saying_so() {
         }
         assert!(progress.finished.is_empty());
         assert_eq!(progress.failed.iter().map(|f| f.node).collect::<Vec<_>>(), vec![id(2), id(3)]);
-        assert!(progress.failed[0].reason.contains(&format!("hold more than {cap} bytes of results")), "{}", progress.failed[0].reason);
+        assert!(progress.failed[0].reason.contains(&format!("past {cap} bytes of results")), "{}", progress.failed[0].reason);
         assert!(progress.failed[0].reason.contains("run fewer nodes together"), "the reason says what to do");
         // Not dropped: the failed step's own results are the host's to hold, as for any failure.
         assert!(progress.dropped.is_empty());
@@ -108,8 +108,9 @@ fn held_bytes_are_given_back_when_outputs_are_used_or_let_go() {
     assert_eq!(run.held_bytes, produced);
     assert!(run.jobs.values().all(|j| j.outputs.is_empty() && j.output_bytes == 0));
 
-    // A batch step, one job per item: the first item's outputs are held until the second's job
-    // fails, which fails the step, and they are let go with it.
+    // A step fanned out over a batch's two items, one job each: the first item's outputs are
+    // held until the second item's job fails. That fails the step (a failed item fails its step),
+    // and the first item's outputs are let go with it.
     let p = batched();
     let plan = plan_of(&p, &[2, 3]);
     let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
@@ -126,29 +127,91 @@ fn held_bytes_are_given_back_when_outputs_are_used_or_let_go() {
 
 #[test]
 fn local_outputs_waiting_to_be_taken_are_bounded() {
-    let outputs = Outputs::default();
     let value = |n: usize| vec![("out".to_owned(), Value::Text("z".repeat(n)))];
     let one = json_bytes(&value(100));
-    outputs.put_within(JobId(1), value(100), 2 * one).unwrap();
-    outputs.put_within(JobId(2), value(100), 2 * one).unwrap();
+    let outputs = Outputs::capped(2 * one);
+    outputs.put(JobId(1), value(100)).unwrap();
+    outputs.put(JobId(2), value(100)).unwrap();
     assert_eq!(outputs.held_bytes(), 2 * one);
-    let refused = outputs.put_within(JobId(3), value(100), 2 * one).unwrap_err();
+    let refused = outputs.put(JobId(3), value(100)).unwrap_err();
     assert!(refused.contains("run fewer nodes together"), "{refused}");
     // Replacing a job's outputs counts only the new ones.
-    outputs.put_within(JobId(2), value(100), 2 * one).unwrap();
+    outputs.put(JobId(2), value(100)).unwrap();
     assert_eq!(outputs.held_bytes(), 2 * one);
     assert_eq!(take_outputs(&outputs, JobId(1)), value(100));
     assert_eq!(outputs.held_bytes(), one);
     assert!(take_outputs(&outputs, JobId(1)).is_empty(), "taken once");
-    outputs.put_within(JobId(3), value(100), 2 * one).unwrap();
+    outputs.put(JobId(3), value(100)).unwrap();
     assert_eq!(outputs.held_bytes(), 2 * one);
+    assert_eq!(Outputs::default().0.lock().unwrap().cap, MAX_HELD_OUTPUT_BYTES);
 
     // The runner fails a local job whose output can't be held, rather than finishing it.
-    let runner = SourceRunner::default();
-    let job = JobSpec::Source { node: id(1), output: "out".into(), value: Value::Text("w".repeat(MAX_HELD_OUTPUT_BYTES)) };
-    runner.register(JobId(9), job);
-    let start = Start { job: JobId(9), lane: Lane::new(LOCAL_LANE), attempt: 1, idempotency_key: "k".into() };
-    let outcome = futures::executor::block_on(crate::driver::JobRunner::run(&runner, start, crate::driver::CancelToken::default()));
-    assert!(matches!(&outcome, Outcome::Failed { error, transient: false } if error.contains("MiB of results")), "{outcome:?}");
+    let runner = SourceRunner { outputs: Outputs::capped(one), ..SourceRunner::default() };
+    let run_one = |job: u64, text: String| {
+        runner.register(JobId(job), JobSpec::Source { node: id(1), output: "out".into(), value: Value::Text(text) });
+        let start = Start { job: JobId(job), lane: Lane::new(LOCAL_LANE), attempt: 1, idempotency_key: "k".into() };
+        futures::executor::block_on(crate::driver::JobRunner::run(&runner, start, crate::driver::CancelToken::default()))
+    };
+    let outcome = run_one(9, "w".repeat(101));
+    assert!(matches!(&outcome, Outcome::Failed { error, transient: false } if error.contains("bytes of results")), "{outcome:?}");
     assert_eq!(runner.outputs.held_bytes(), 0);
+    assert!(matches!(run_one(10, "w".repeat(100)), Outcome::Done), "exactly the cap is held");
+    assert_eq!(runner.outputs.held_bytes(), one);
+}
+
+/// Text in, list out, in three jobs: `a`, `b` and `c`.
+struct Trio(nodecraft_nodes::NodeDescriptor);
+impl nodecraft_nodes::NodeKind for Trio {
+    fn descriptor(&self) -> &nodecraft_nodes::NodeDescriptor {
+        &self.0
+    }
+    fn mode(&self, _: &[nodecraft_types::PortType]) -> Option<nodecraft_nodes::ModeId> {
+        nodecraft_nodes::ModeId::new("trio").ok()
+    }
+    fn plan(&self, ctx: &PlanCtx<'_>) -> Result<Vec<JobSpec>, Error> {
+        Ok(["a", "b", "c"].into_iter().map(|t| JobSpec::Source { node: ctx.node.id, output: "items".into(), value: Value::Text(t.into()) }).collect())
+    }
+}
+
+#[test]
+fn a_variation_that_fails_partway_through_assembling_lets_go_of_all_its_outputs() {
+    let mut kinds = kinds();
+    let split = kinds.get("test.split").unwrap().descriptor().clone();
+    kinds.register(Box::new(Trio(nodecraft_nodes::NodeDescriptor { id: "test.trio".into(), label: "Trio".into(), ..split }))).unwrap();
+    // `project` builds with the default kinds, which lack Trio: add it by hand.
+    let mut p = project(&[(1, "source.text", "fox")], &[]);
+    let node = kinds.get("test.trio").unwrap().descriptor().instantiate(id(2), &Default::default()).unwrap();
+    let edge = nodecraft_graph::Edge {
+        id: nodecraft_types::EdgeId::from_bytes([7; 16]),
+        from: nodecraft_graph::Endpoint { node: id(1), port: "out".into() },
+        to: nodecraft_graph::Endpoint { node: id(2), port: "in".into() },
+        order: 0,
+    };
+    Changeset::new(vec![Change::AddNode { canvas: C, node }, Change::Connect { canvas: C, edge }]).apply(&mut p).unwrap();
+    let mut node = p.canvases().get(&C).unwrap().nodes().get(&id(2)).unwrap().clone();
+    node.config.insert(crate::variations::VARIATIONS_CONFIG.into(), Value::Unsigned(nodecraft_types::Unsigned(2)));
+    Change::SetNode { canvas: C, node }.apply(&mut p).unwrap();
+    let canvas = p.canvases().get(&C).unwrap();
+    let crate::planner::Planned::Ready(plan) =
+        crate::planner::plan(canvas, &kinds, &crate::planner::RunMode::Selected, &[id(2)].into_iter().collect(), &BTreeSet::new()).unwrap()
+    else {
+        panic!("blocked")
+    };
+    let (mut run, first) = Run::start(&plan, C, canvas, &kinds, opts(RUN, 1, RunLimits::default())).unwrap();
+    assert_eq!(first.jobs.len(), 6, "three jobs for each of two variations");
+    // The first job of the first variation reports an output its node doesn't have, so that
+    // variation fails as it is assembled, before its other two jobs' outputs are read.
+    let mut finished = Vec::new();
+    let mut failed = Vec::new();
+    for (n, job) in first.jobs.iter().enumerate() {
+        let Some(JobSpec::Source { output, value, .. }) = run.work(job.id).cloned() else { panic!("a source job") };
+        let port = if n == 0 { "nope".to_owned() } else { output };
+        let progress = run.job_done(&kinds, job.id, vec![(port, value)]);
+        finished.extend(progress.finished);
+        failed.extend(progress.failed);
+    }
+    assert_eq!(finished.len(), 1, "the other variation is kept: {failed:?}");
+    assert!(failed.iter().any(|f| f.reason.contains("1 of 2 variations")), "{failed:?}");
+    assert!(run.jobs.values().all(|j| j.outputs.is_empty() && j.output_bytes == 0), "nothing waiting stays counted");
+    assert_eq!(run.held_bytes, json_bytes(&finished[0].generation.outputs), "only the kept variation's result is held");
 }

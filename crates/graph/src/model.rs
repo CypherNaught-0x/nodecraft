@@ -523,6 +523,7 @@ impl Canvas {
         for node in self.nodes.values_mut() {
             let active = node.active;
             node.history.retain(|g| Some(g.id) == active);
+            node.history.shrink_to_fit();
         }
         self
     }
