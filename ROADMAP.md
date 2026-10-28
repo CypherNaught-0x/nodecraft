@@ -146,6 +146,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
   spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
   in-memory storage refuse before payment; see [`docs/providers.md`](docs/providers.md).
+- **Pika**: desktop projects and the native CLI animate one first frame with a prompt using
+  current Pika 2.5 through fal (#29), at 720p for 5 or 10 seconds with explicit priced consent.
+  Browser sessions refuse before payment. Text-to-video and keyframes are not included; see
+  [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
 - **Topaz**: desktop projects and the native CLI can enhance or upscale one image with
   Precision Standard V2 through fal (#37). Integer 1×–4× scaling stays within one 0.08 USD
   output block. Browser sessions refuse before payment; see [`docs/providers.md`](docs/providers.md).
