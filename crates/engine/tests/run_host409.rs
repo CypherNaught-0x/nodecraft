@@ -13,7 +13,7 @@ use nodecraft_engine::{
     run_jobs::{JobState, JobView},
 };
 use nodecraft_exec::{
-    cost::{Budgets, UsageLog},
+    cost::{Budgets, Charge, UsageLog},
     driver::{Runtime, TaskFuture},
     scheduler::RetryPolicy,
 };
@@ -85,6 +85,10 @@ fn fixture(mock: MockProvider) -> Fixture {
 }
 
 fn fixture_with(mock: MockProvider, budgets: Budgets) -> Fixture {
+    fixture_retrying(mock, budgets, RetryPolicy { max_attempts: 1, ..Default::default() })
+}
+
+fn fixture_retrying(mock: MockProvider, budgets: Budgets, retry: RetryPolicy) -> Fixture {
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([41; 16]), "Run host").unwrap();
@@ -113,7 +117,7 @@ fn fixture_with(mock: MockProvider, budgets: Budgets) -> Fixture {
         session: "run-host".into(),
         wall_clock_ms: Arc::new(|| 0),
     };
-    let host = RunHost::new(Arc::new(Threads(Instant::now())), budget.clone()).with_retry(RetryPolicy { max_attempts: 1, ..Default::default() });
+    let host = RunHost::new(Arc::new(Threads(Instant::now())), budget.clone()).with_retry(retry);
     let mut services = Services::default();
     host.register(&mut services).unwrap();
     let mut routing = ProviderRouting::new();
@@ -416,6 +420,48 @@ fn the_queue_shows_each_job_with_its_provider_price_and_end() {
     assert_eq!(f.host.jobs().len(), 2, "one row per job, however many reports it had");
     f.host.clear_finished();
     assert!(f.host.jobs().is_empty());
+}
+
+/// #84: a prompt past the model's context window fails with what to do about it, is not
+/// retried, is billed nothing, leaves the card's history alone, and once shortened runs and is
+/// charged once.
+#[test]
+fn a_prompt_past_the_context_window_fails_with_advice_and_is_charged_once_after_shortening() {
+    use nodecraft_engine::run_jobs::{CONTEXT_LIMIT_HINT, failure_hint};
+    // The wired "Describe the sea" is sixteen bytes: four mock tokens, one past this window.
+    let window = MockModel { fail: Some(MockFailure::ContextLimit(3)), ..MockModel::new(MockOutput::Text) };
+    let mut f = fixture_retrying(MockProvider::new("mock", [("mock-text".to_owned(), window)]), Budgets::default(), RetryPolicy::default());
+    start(&mut f);
+    let notices = drive(&mut f);
+    let reason = notices
+        .iter()
+        .find_map(|n| match n {
+            RunNotice::Failed { node, reason, .. } if *node == WRITER => Some(reason.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the card's failure is reported: {notices:?}"));
+    assert!(nodecraft_providers::is_context_limit_text(&reason), "{reason}");
+    assert!(reason.contains(nodecraft_providers::CONTEXT_LIMIT_FIX) && reason.contains("context window is 3 tokens"), "says what to do: {reason}");
+    let writer = job(&f.host, WRITER);
+    assert_eq!(writer.status(), "Failed: too long for the model");
+    let JobState::Failed { cause: Some(cause), reason: failed } = &writer.state else { panic!("{writer:?}") };
+    assert_eq!((*cause, failure_hint(*cause, failed)), (ErrorKind::UnsupportedInput, CONTEXT_LIMIT_HINT));
+    assert_eq!(f.mock.requests().len(), 1, "a context refusal is not retried, even with retries allowed");
+    assert_eq!(f.mock.billed(), 0, "the provider billed nothing");
+    // The mock gives no audited proof that nothing was accepted, so the runner holds the quote
+    // once as unresolved, as for any refused submit; it is never held or charged again.
+    let held: Vec<Charge> = f.budget.log.lock().unwrap().entries().map(|e| e.status).collect();
+    assert_eq!(held, [Charge::Unresolved], "one hold, never a settled charge");
+    assert!(history(&f.session).is_empty(), "no answer, partial or otherwise, is recorded");
+    // Shortened, the next run fits and is the only charge.
+    f.session.dispatch("node.param_set", &json!({"canvas":C,"id":SOURCE,"name":"text","value":{"type":"text","value":"Sea"}})).unwrap();
+    start(&mut f);
+    let notices = drive(&mut f);
+    assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: WRITER }), "{notices:?}");
+    assert_eq!(history(&f.session).len(), 1);
+    let charges: Vec<Charge> = f.budget.log.lock().unwrap().entries().map(|e| e.status).collect();
+    assert_eq!((f.mock.requests().len(), f.mock.billed()), (2, 1));
+    assert_eq!(charges, [Charge::Unresolved, Charge::Actual], "the answer is charged once, and the refusal's hold is not charged again");
 }
 
 #[test]
