@@ -508,15 +508,18 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 
 - **Move** by dragging the header (title bar). Dragging inside the body never moves a panel.
 - **Resize** from the right or bottom edge or the bottom-right corner, never larger than the
-  panel area. The header and the top-left stay where they are while resizing.
+  panel area. Every panel is pivoted at its top-left corner, so the header and the top-left stay
+  where they are while resizing; the left and top edges are not handles.
 - **Dismiss** with the header's close button (AccessKit: "Close window", focusable by Tab) or the
   control that opened it.
-- **Panel area**: the window below the application row. A panel is clamped into it every frame,
-  so dragging, a smaller window or a resized panel can never put its header under the row or
-  out of reach, and it can never cover the control that opened it.
-- **Opening**: a panel opens where it was last left, or first at its home: the top-right corner
-  under the row and Search (`navigation_gap` below), left of an open Discussions panel; viewers
-  open centred at the same height. If it would cover an open panel's header, it steps down by
+- **Panel area**: the window below the application row, and below an open Search and left of
+  open Discussions, which are pinned chrome drawn above panels. A panel is clamped into it every
+  frame, so dragging, a smaller window, a resized panel or opening Search or Discussions can never
+  put its header under chrome or out of reach, and it can never cover the control that opened it.
+- **Opening**: a panel opens where it was last left, or first at its home: its top-right corner
+  at the panel area's top-right (`navigation_margin` in from the window edge); viewers open
+  centred at the same height. A first opening is measured by egui unseen and placed on the next
+  pass with its real size. If it would cover an open panel's header, it steps down by
   `panel_cascade` (44) until every open panel's title and close button stay visible.
 - Position, size and stacking are view state in egui memory, never document changes or undo steps.
 
@@ -529,7 +532,7 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 | Application row, Tag filter, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
 | Comment pins, generation toolbar, Save result toolbar | attached to their card or comment | with the canvas | no | deselect |
 | More menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
-| Model preview changed, Review model change, Model choice unavailable, Choose a model, Workflow fields, Rename field, Unsaved changes (browser) | dialog, above panels | header (Unsaved changes stays centred) | Workflow fields only | its buttons |
+| Model preview changed, Review model change, Model choice unavailable, Choose a model, Workflow fields, Rename field, Unsaved changes (browser) | dialog, above panels | header (Unsaved changes stays centred) | all but Rename field and Unsaved changes | its buttons |
 | Notice, update banner, pending drop, folder import, background export | notice | no | no | its own button |
 
 The generation and Save result toolbars draw in the panel order while their card is selected;

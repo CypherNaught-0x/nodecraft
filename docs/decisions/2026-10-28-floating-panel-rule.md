@@ -6,11 +6,15 @@ viewers) and content. The helper alone sets position, layer, movement, resizing 
 two panels cannot drift apart in behaviour. The rule and an inventory of every overlay are in
 [`ui-design.md`](../ui-design.md#overlays-and-stacking).
 
-Panels move only by their header and resize from their right and bottom edges and corner. The
-helper owns the header drag: egui's window move is turned off because its window-wide drag
+Panels move only by their header and resize from their right and bottom edges and corner. Every
+panel is pivoted at its top-left corner: egui only offers a non-movable window's resize edges away
+from its pivot, so this one pivot gives every panel the same handles. A panel's home is still its
+top-right corner, so the helper measures a first opening unseen and places it on the next pass
+from its real size. The helper owns the header drag: egui's window move is turned off because its window-wide drag
 sense also claims a press held on a button in the body, and that repaints every frame until
 release. Drags in the body stay with the body's own controls. The shell publishes one
-panel area per frame: the window below the application row. egui re-clamps each panel to it
+panel area per frame: the window below the application row, below an open Search and left of
+open Discussions, which are pinned chrome drawn above panels. egui re-clamps each panel to it
 every frame, so a smaller window pulls panels back in and a header never slides under the row.
 That clamp is what keeps a panel off the control that opened it, rather than a per-panel offset.
 
@@ -18,8 +22,7 @@ Panels share `Order::Middle`, and egui brings the opened or pressed panel to the
 gives a deterministic order: drawing order on the opening frame, then pointer presses. A panel
 reopens where it was left. If that, or its first home, would cover an open panel's header, it
 steps down by the `panel_cascade` token, so every open panel's title and close button stay
-visible. The fixed Shared parameters panel is counted as open for this. Home sits under Search
-and to the left of an open Discussions panel, because pinned chrome is drawn above panels.
+visible. The fixed Shared parameters panel is counted as open for this.
 
 Menus, popups and question dialogs are `Foreground`, above panels; Rename field and the browser's
 Unsaved changes prompt were raised to match. Notices stay `Foreground` in the bottom-left corner,
