@@ -398,4 +398,7 @@ mod rodin41_tests;
 mod magnific38_tests;
 
 #[cfg(test)]
+mod heygen43_tests;
+
+#[cfg(test)]
 mod topaz37_tests;
