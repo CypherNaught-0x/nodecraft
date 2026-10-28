@@ -824,10 +824,6 @@ fn batch_plans_that_cant_run_say_why() {
     let message = blocked(plan_of(&wired(vec![batch(1, "  \n", "cross"), single(2)], &[(1, "item", 2, "in")]), &[2]));
     assert!(message.contains("no items"), "{message}");
 
-    let message =
-        blocked(plan_of(&wired(vec![batch(1, "a", "cross"), batch(2, "b", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]), &[3]));
-    assert!(message.contains("another batch"), "{message}");
-
     let message = blocked(plan_of(
         &wired(vec![text(4, "a"), single(1), batch(2, "b", "cross"), single(3)], &[(4, "out", 1, "in"), (1, "out", 2, "in"), (2, "item", 3, "in")]),
         &[1, 3],
@@ -842,6 +838,161 @@ fn batch_plans_that_cant_run_say_why() {
 
     let message = blocked(plan_of(&wired(vec![batch(1, "a", "bogus"), single(2)], &[(1, "item", 2, "in")]), &[2]));
     assert!(message.contains("Pairing"), "{message}");
+}
+
+/// The batch a fanned step's items are tagged with, once each.
+fn tagged_by(step: &Step) -> BTreeSet<NodeId> {
+    step.fanout.as_ref().unwrap().items.iter().flatten().map(|key| key.batch).collect()
+}
+
+#[test]
+fn a_batch_collecting_a_batch_flattens_its_items_in_wire_order() {
+    // 1 (batch a, b) → 2 (batch c): 2's items are 1's, then its own, and they are 2's.
+    let p = wired(vec![batch(1, "a\nb", "cross"), batch(2, "c", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]);
+    let plan = ready(plan_of(&p, &[3]));
+    let step = plan.steps.first().unwrap();
+    assert_eq!(fanned_values(step), vec![texts(&["a"]), texts(&["b"]), texts(&["c"])]);
+    assert_eq!(tagged_by(step), BTreeSet::from([id(2)]), "the collecting batch names the items");
+    // Every item is quoted: one job each, all known before the run.
+    assert_eq!(step.fanout.as_ref().unwrap().jobs, vec![1, 1, 1]);
+    assert_eq!(step.jobs.as_ref().unwrap().len(), 3);
+    // Ids are stable from plan to plan.
+    assert_eq!(ready(plan_of(&p, &[3])).steps.first().unwrap().fanout.as_ref().unwrap().items, step.fanout.as_ref().unwrap().items);
+
+    // Wired twice, a batch's items come twice, each a distinct item; a text wired between them
+    // keeps its place.
+    let p = wired(
+        vec![batch(1, "a\nb", "cross"), text(4, "mid"), batch(2, "", "cross"), single(3)],
+        &[(1, "item", 2, "in"), (4, "out", 2, "in"), (1, "item", 2, "in"), (2, "item", 3, "in")],
+    );
+    let step = ready(plan_of(&p, &[3])).steps.into_iter().next().unwrap();
+    assert_eq!(fanned_values(&step), ["a", "b", "mid", "a", "b"].map(|t| texts(&[t])).to_vec());
+    assert_eq!(step.fanout.as_ref().unwrap().items.iter().collect::<BTreeSet<_>>().len(), 5);
+
+    // A chain flattens all the way down.
+    let p = wired(
+        vec![batch(1, "a", "cross"), batch(2, "b", "cross"), batch(5, "c", "cross"), single(3)],
+        &[(1, "item", 2, "in"), (2, "item", 5, "in"), (5, "item", 3, "in")],
+    );
+    let step = ready(plan_of(&p, &[3])).steps.into_iter().next().unwrap();
+    assert_eq!(fanned_values(&step), vec![texts(&["a"]), texts(&["b"]), texts(&["c"])]);
+}
+
+#[test]
+fn a_collected_batch_and_the_batch_it_feeds_are_different_batches() {
+    // 1 → 2 (collects 1), and both reach 3: every combination of the two, as for any two
+    // batches; Zip pairs item by item.
+    for (pairing, runs) in [("cross", 6), ("zip", 3)] {
+        let pair = of_kind(3, "test.pair", None);
+        let mut b = batch(2, "c", pairing);
+        if pairing == "zip" {
+            b.params.insert("text".into(), Value::Text(String::new()));
+        }
+        let mut a = batch(1, "a\nb", pairing);
+        if pairing == "zip" {
+            a.params.insert("text".into(), Value::Text("a\nb\nc".into()));
+        }
+        let p = wired(vec![a, b, pair], &[(1, "item", 2, "in"), (1, "item", 3, "a"), (2, "item", 3, "b")]);
+        let step = ready(plan_of(&p, &[3])).steps.into_iter().next().unwrap();
+        assert_eq!(fanned_values(&step).len(), runs, "{pairing}");
+        assert_eq!(tagged_by(&step), BTreeSet::from([id(1), id(2)]), "{pairing}");
+    }
+}
+
+#[test]
+fn nested_batches_are_bounded_before_anything_runs() {
+    // Too many items over the chain: refused with what to do, before anything is copied on.
+    let many: String = (0..600).map(|n| format!("{n}\n")).collect();
+    let more: String = (0..500).map(|n| format!("m{n}\n")).collect();
+    let p = wired(vec![batch(1, &many, "cross"), batch(2, &more, "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]);
+    let message = blocked(plan_of(&p, &[3]));
+    assert!(message.contains("at most 1000 items") && message.contains("split them"), "{message}");
+    // Wired twice, a batch can go over on its own.
+    let p = wired(vec![batch(1, &many, "cross"), batch(2, "", "cross"), single(3)], &[(1, "item", 2, "in"), (1, "item", 2, "in"), (2, "item", 3, "in")]);
+    assert!(blocked(plan_of(&p, &[3])).contains("at most 1000 items"));
+
+    // The longest chain plans; one batch more is refused.
+    let chain = |length: u8| {
+        let mut nodes: Vec<Node> = (1..=length).map(|n| batch(n, &format!("i{n}"), "cross")).collect();
+        nodes.push(single(200));
+        let mut links: Vec<(u8, &str, u8, &str)> = (1..length).map(|n| (n, "item", n + 1, "in")).collect();
+        links.push((length, "item", 200, "in"));
+        wired(nodes, &links)
+    };
+    let longest = u8::try_from(MAX_BATCH_CHAIN).unwrap();
+    let step = ready(plan_of(&chain(longest), &[200])).steps.into_iter().next().unwrap();
+    assert_eq!(fanned_values(&step).len(), MAX_BATCH_CHAIN);
+    let message = blocked(plan_of(&chain(longest + 1), &[200]));
+    assert!(message.contains("in a chain"), "{message}");
+
+    // A batch deep in the chain still collects existing results only.
+    let p = wired(
+        vec![text(4, "a"), single(1), batch(2, "b", "cross"), batch(5, "c", "cross"), single(3)],
+        &[(4, "out", 1, "in"), (1, "out", 2, "in"), (2, "item", 5, "in"), (5, "item", 3, "in")],
+    );
+    let message = blocked(plan_of(&p, &[1, 3]));
+    assert!(message.contains("run the nodes feeding it first"), "{message}");
+    // And its problems are the collecting batch's.
+    let p = wired(vec![batch(1, "a", "bogus"), batch(2, "b", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]);
+    assert!(blocked(plan_of(&p, &[3])).contains("Pairing"));
+}
+
+#[test]
+fn a_batchs_items_are_listed_with_the_ids_its_results_carry() {
+    let p = wired(vec![batch(1, "a\nb", "cross"), batch(2, "c", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]);
+    let canvas = p.canvases().get(&C).unwrap();
+    let listed = super::batch_items(canvas, &kinds(), id(2)).unwrap();
+    let step = ready(plan_of(&p, &[3])).steps.into_iter().next().unwrap();
+    let tagged: Vec<_> = step.fanout.unwrap().items.iter().map(|tag| tag.first().unwrap().item).collect();
+    assert_eq!(listed.iter().map(|(item, _)| *item).collect::<Vec<_>>(), tagged);
+    assert_eq!(listed.into_iter().map(|(_, value)| value).collect::<Vec<_>>(), texts(&["a", "b", "c"]));
+    assert!(super::batch_items(canvas, &kinds(), id(3)).is_err(), "not a batch");
+    assert!(super::batch_items(canvas, &kinds(), id(9)).is_err(), "not on the canvas");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    /// A chain of batches, each collecting the one before and adding its own items, fans its
+    /// consumer out over every item in order, each once, or refuses when it has none.
+    #[test]
+    fn a_chain_of_batches_fans_out_over_every_item_in_order(own in proptest::collection::vec(0usize..4, 1..6), wires in 1usize..3) {
+        let length = u8::try_from(own.len()).unwrap();
+        let items = |n: usize| (0..own[n]).map(|i| format!("b{n}-{i}")).collect::<Vec<_>>();
+        let mut nodes: Vec<Node> = (0..own.len()).map(|n| batch(u8::try_from(n + 1).unwrap(), &items(n).join("\n"), "cross")).collect();
+        nodes.push(single(200));
+        let mut links: Vec<(u8, &str, u8, &str)> = Vec::new();
+        for n in 1..length {
+            // The first batch may be wired more than once into the second.
+            for _ in 0..if n == 1 { wires } else { 1 } {
+                links.push((n, "item", n + 1, "in"));
+            }
+        }
+        links.push((length, "item", 200, "in"));
+        let p = wired(nodes, &links);
+        // What the last batch holds: the first one's items as often as it is wired, then each
+        // later batch's own.
+        let mut expected: Vec<String> = Vec::new();
+        for n in 0..own.len() {
+            if n == 1 {
+                expected = vec![expected.clone(); wires].concat();
+            }
+            expected.extend(items(n));
+        }
+        match plan_of(&p, &[200]) {
+            Planned::Ready(plan) => {
+                let step = plan.steps.first().unwrap();
+                let got: Vec<Vec<Value>> = fanned_values(step);
+                let want: Vec<Vec<Value>> = expected.iter().map(|t| texts(&[t.as_str()])).collect();
+                prop_assert_eq!(got, want);
+                let fanout = step.fanout.as_ref().unwrap();
+                prop_assert_eq!(fanout.items.iter().collect::<BTreeSet<_>>().len(), expected.len());
+                prop_assert!(fanout.items.iter().all(|tag| tag.len() == 1 && tag.first().unwrap().batch == id(length)));
+                prop_assert_eq!(fanout.jobs.iter().sum::<usize>(), expected.len());
+            }
+            Planned::Blocked(_) => prop_assert!(expected.is_empty(), "blocked with items {:?}", expected),
+        }
+    }
 }
 
 #[test]

@@ -241,6 +241,9 @@ pub const MAX_STEP_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PLAN_INPUT_BYTES: usize = 256 * 1024 * 1024;
 /// Most blockers reported for one request; the first ones are what the user acts on.
 pub const MAX_BLOCKERS: usize = 256;
+/// Most batches one chain of batches collecting batches holds (#92), counting the last one.
+/// Staleness hashes deeper chains, so this is what bounds them.
+pub const MAX_BATCH_CHAIN: usize = 16;
 
 /// Plan a run. `requested` is used by [`RunMode::Selected`] and [`RunMode::WithUpstream`] and
 /// ignored otherwise. `stale` holds the nodes whose results no longer match their inputs (#75);
@@ -494,6 +497,23 @@ struct State {
 /// Whether `id` is a batch.
 pub fn is_batch(canvas: &Canvas, id: NodeId) -> bool {
     canvas.nodes().get(&id).is_some_and(|node| node.kind == batch::ID)
+}
+
+/// A batch's current items (#92), each with its id, as a run would fan them out: what review
+/// views label a fanned result's items with. Nothing counts as part of a run, so a batch fed by
+/// a node without a result gives the reason it can't resolve.
+pub fn batch_items(canvas: &Canvas, kinds: &Registry, batch: NodeId) -> Result<Vec<(nodecraft_types::ItemId, Value)>, Reason> {
+    let node = canvas.nodes().get(&batch).ok_or(Reason::NoResult)?;
+    // A folder's items are labelled by their names; they share the files' ids.
+    let port = if node.kind == folder::ID { folder::NAME.to_owned() } else { node.outputs.first().map(|port| port.name.clone()).ok_or(Reason::NoResult)? };
+    if !gives_items(node, &port) {
+        return Err(Reason::PublicInvalid("not a batch".into()));
+    }
+    let (collects, inner) = (BTreeMap::new(), BTreeMap::new());
+    let graph = Graph::new(canvas, kinds, &nodecraft_types::EMPTY_TARGET_SELECTION, &collects, &inner, &nodecraft_types::NoOptions)
+        .map_err(|error| Reason::Invalid(error.message))?;
+    let (values, tags, _) = graph.batch_items(batch, &port, &BTreeSet::new())?;
+    Ok(tags.into_iter().zip(values).filter_map(|(tag, value)| Some((tag.first()?.item, value))).collect())
 }
 
 /// Whether `node`'s output `port` gives items, one per run of what it feeds: a batch's, or a
@@ -1067,7 +1087,18 @@ impl<'a> Graph<'a> {
     /// A batch's items (#92): what is wired into it, which must already exist, then its own.
     /// A folder's looping output gives its selected files or their names; both outputs share
     /// the files' item ids, so a node fed by a file and its name runs once per file.
+    ///
+    /// A batch wired into a batch is flattened: its items join the collecting batch's at that
+    /// wire's place, as a list input collects any batch, and take new ids under it. Chains are
+    /// bounded by [`MAX_BATCH_CHAIN`], loops are refused, and each batch in the chain is resolved
+    /// once however many wires reach it.
     fn batch_items(&self, id: NodeId, port: &str, run: &BTreeSet<NodeId>) -> Items {
+        self.batch_items_in(id, port, run, &mut vec![id], &mut BTreeMap::new())
+    }
+
+    /// [`Self::batch_items`] with the batches collecting this one (`chain`, ending with `id`) and
+    /// the batches already resolved under the first one.
+    fn batch_items_in(&self, id: NodeId, port: &str, run: &BTreeSet<NodeId>, chain: &mut Vec<NodeId>, resolved: &mut BTreeMap<NodeId, Items>) -> Items {
         let node = self.canvas.nodes().get(&id).ok_or(Reason::NoResult)?;
         let kind = self.kinds.get(&node.kind).map_err(|_| Reason::UnknownKind)?;
         kind.validate_instance(node, true).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
@@ -1086,7 +1117,29 @@ impl<'a> Graph<'a> {
         for (_, up, up_port, _) in self.into.get(&id).into_iter().flatten() {
             let upstream = self.canvas.nodes().get(up);
             if upstream.is_some_and(|u| u.kind == batch::ID) {
-                return Err(Reason::PublicInvalid("a batch can't collect another batch yet".into()));
+                if !resolved.contains_key(up) {
+                    if chain.contains(up) {
+                        return Err(Reason::PublicInvalid("these batches collect each other in a loop; remove one of the wires between them".into()));
+                    }
+                    if chain.len() >= MAX_BATCH_CHAIN {
+                        return Err(Reason::PublicInvalid(format!(
+                            "at most {MAX_BATCH_CHAIN} batches can collect one another in a chain; wire the first ones' items into one batch"
+                        )));
+                    }
+                    chain.push(*up);
+                    let items = self.batch_items_in(*up, up_port, run, chain, resolved);
+                    chain.pop();
+                    resolved.insert(*up, items);
+                }
+                match resolved.get(up) {
+                    Some(Ok((values, _, _))) => wired.extend(values.iter().cloned()),
+                    Some(Err(reason)) => return Err(reason.clone()),
+                    None => return Err(Reason::NoResult),
+                }
+                if wired.len() > batch::MAX_ITEMS {
+                    return Err(Reason::PublicInvalid(too_many_items()));
+                }
+                continue;
             }
             if upstream.is_some_and(|u| folder::loops_over(u, up_port)) {
                 return Err(Reason::PublicInvalid("a batch collects a folder's Files or Names output, not its looping File or Name".into()));
@@ -1101,7 +1154,7 @@ impl<'a> Graph<'a> {
                 value => wired.push(value),
             }
             if wired.len() > batch::MAX_ITEMS {
-                return Err(Reason::PublicInvalid(format!("a batch holds at most {} items", batch::MAX_ITEMS)));
+                return Err(Reason::PublicInvalid(too_many_items()));
             }
         }
         let values = batch::items(node, wired).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
@@ -1158,6 +1211,11 @@ fn flatten(lists: &[Value]) -> impl Iterator<Item = &Value> {
         Value::List(values) => values.as_slice(),
         other => std::slice::from_ref(other),
     })
+}
+
+/// Why a batch, with what is wired into it, holds too many items: before any is copied further.
+fn too_many_items() -> String {
+    format!("a batch holds at most {} items; remove some, or split them across batches", batch::MAX_ITEMS)
 }
 
 fn fanned_list(port: &str) -> String {
