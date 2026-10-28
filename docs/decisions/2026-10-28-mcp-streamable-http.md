@@ -14,8 +14,10 @@ built into the desktop app (Automation › Enable MCP server). Choices others wi
   wanted, needs its own decision (TLS, accounts).
 - **One server, many sessions.** Session ids are protocol bookkeeping; every session shares the one
   `McpServer` (one project or one bridged app), and messages are handled one at a time on the
-  thread that owns it, as stdio does. A message still queued when its connection gives up is
-  dropped, never run late, so a client retry can't run a command twice.
+  thread that owns it, as stdio does. A message that hasn't started within 30 s (shorter than
+  common client timeouts), or whose client disconnects while it waits, is dropped and never run
+  late, so a client retry doesn't run a queued command a second time. A message that has started
+  always runs to the end: a client answered `503` after 120 s can't tell whether it finished.
 - **The app's server is a bridge without a socket.** It runs `McpServer::in_app` over
   `control::LocalClient`, which queues the same `control::Call`s a control connection does; the
   window answers them through the same `CallPump`. So classification, live-only commands, file

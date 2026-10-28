@@ -24,9 +24,9 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use nodecraft_types::{Error, ErrorKind};
@@ -53,7 +53,8 @@ pub const MAX_TOKEN_BYTES: usize = 256;
 /// How long each part of an exchange may take (tests shorten them).
 #[derive(Debug, Clone, Copy)]
 pub struct Timeouts {
-    /// Reading a request's line and headers, from its first byte.
+    /// Reading a request's line and headers: from its first byte, or from connecting for a
+    /// connection's first request.
     pub head: Duration,
     /// Reading its body.
     pub body: Duration,
@@ -61,8 +62,13 @@ pub struct Timeouts {
     pub idle: Duration,
     /// Sending a reply.
     pub write: Duration,
-    /// The serving thread answering a message. A message still queued by then is dropped
-    /// unanswered, never run late, so a client's retry can't run a command twice.
+    /// A message waiting for the serving thread to start it. One not started by then is dropped
+    /// and answered `503`, never run late; so is one whose client disconnected while it waited.
+    /// Shorter than common client timeouts (60 s), so a client's retry finds the first attempt
+    /// already refused rather than still queued.
+    pub queue: Duration,
+    /// The serving thread finishing a message it started. A command that is still running when
+    /// this passes is answered `503` but may still finish.
     pub answer: Duration,
 }
 
@@ -73,6 +79,7 @@ impl Default for Timeouts {
             body: Duration::from_secs(30),
             idle: Duration::from_secs(60),
             write: Duration::from_secs(30),
+            queue: Duration::from_secs(30),
             // Longer than the bridge's 30 s and a provider estimate's 62 s, so those report
             // their own timeouts first.
             answer: Duration::from_secs(120),
@@ -145,11 +152,24 @@ impl Config {
     }
 }
 
+/// A [`Job`]'s progress, settled once: the serving thread starts it, or its connection gives up
+/// on it first, never both.
+const QUEUED: u8 = 0;
+const STARTED: u8 = 1;
+const ABANDONED: u8 = 2;
+
 /// One message waiting for the serving thread.
 struct Job {
     message: Value,
     reply: SyncSender<Option<Value>>,
-    deadline: Instant,
+    /// When it must have started.
+    start_by: Instant,
+    state: Arc<AtomicU8>,
+}
+
+/// Moves `state` from queued to `to`; `false` when it had already left the queue.
+fn settle(state: &AtomicU8, to: u8) -> bool {
+    state.compare_exchange(QUEUED, to, Ordering::SeqCst, Ordering::SeqCst).is_ok()
 }
 
 /// The sessions `initialize` opened, least recently used first.
@@ -200,14 +220,23 @@ struct Shared {
 pub struct Stopper {
     stopped: Arc<AtomicBool>,
     addr: SocketAddr,
+    /// Set once the accept thread has closed the listening socket.
+    released: Arc<(Mutex<bool>, Condvar)>,
 }
 
+/// How long [`Stopper::stop`] waits for the port to be let go.
+const RELEASE_WAIT: Duration = Duration::from_secs(2);
+
 impl Stopper {
+    /// Stops the server and waits (briefly) until its port is free, so it can be bound again.
     pub fn stop(&self) {
         if !self.stopped.swap(true, Ordering::SeqCst) {
             // Wake the accept loop so it sees the flag and lets the port go.
             let _ = TcpStream::connect_timeout(&self.addr, Duration::from_secs(1));
         }
+        let (lock, signal) = &*self.released;
+        let released = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let _ = signal.wait_timeout_while(released, RELEASE_WAIT, |released| !*released);
     }
 
     pub fn is_stopped(&self) -> bool {
@@ -241,6 +270,8 @@ pub fn bind(config: Config) -> Result<HttpServer, Error> {
         stopped: Arc::clone(&stopped),
     });
     let open = Arc::new(AtomicUsize::new(0));
+    let released = Arc::new((Mutex::new(false), Condvar::new()));
+    let release = Arc::clone(&released);
     std::thread::Builder::new()
         .name("nodecraft-mcp-http".into())
         .spawn(move || {
@@ -248,7 +279,14 @@ pub fn bind(config: Config) -> Result<HttpServer, Error> {
                 if shared.stopped.load(Ordering::SeqCst) {
                     break;
                 }
-                let Ok(stream) = stream else { continue };
+                let stream = match stream {
+                    Ok(stream) => stream,
+                    Err(_) => {
+                        // Out of file descriptors and the like: don't spin while it lasts.
+                        std::thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+                };
                 if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
                     open.fetch_sub(1, Ordering::SeqCst);
                     let mut stream = stream;
@@ -265,9 +303,13 @@ pub fn bind(config: Config) -> Result<HttpServer, Error> {
                     open.fetch_sub(1, Ordering::SeqCst);
                 }
             }
+            drop(socket);
+            let (lock, signal) = &*release;
+            *lock.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            signal.notify_all();
         })
         .map_err(|e| Error::new(ErrorKind::Unsupported, format!("can't start the MCP server: {e}")))?;
-    Ok(HttpServer { addr, jobs, stopper: Stopper { stopped, addr } })
+    Ok(HttpServer { addr, jobs, stopper: Stopper { stopped, addr, released } })
 }
 
 impl HttpServer {
@@ -293,8 +335,13 @@ impl HttpServer {
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => return,
             };
-            // Its connection gave up on it (and said so): running it now could run it twice.
-            if Instant::now() >= job.deadline {
+            // Too late, or its connection gave up on it (and said so): running it now could run
+            // it twice once the client retries.
+            if Instant::now() >= job.start_by {
+                settle(&job.state, ABANDONED);
+                continue;
+            }
+            if !settle(&job.state, STARTED) {
                 continue;
             }
             let reply = handle(job.message);
@@ -367,6 +414,7 @@ fn reason(status: u16) -> &'static str {
         411 => "Length Required",
         413 => "Content Too Large",
         415 => "Unsupported Media Type",
+        417 => "Expectation Failed",
         431 => "Request Header Fields Too Large",
         501 => "Not Implemented",
         505 => "HTTP Version Not Supported",
@@ -432,10 +480,13 @@ enum HeadError {
 }
 
 /// Reads one request head into `buf` (bytes after it stay in `buf` for the body). Waits for its
-/// first byte up to the idle timeout, then for the rest up to the head timeout, checking `stopped`
+/// first byte up to the idle timeout (the head timeout for a connection's first request), then for
+/// the rest up to the head timeout, checking `stopped`
 /// at least every second.
-fn read_head(stream: &mut TcpStream, buf: &mut Vec<u8>, shared: &Shared) -> Result<Head, HeadError> {
-    let idle_until = Instant::now().checked_add(shared.timeouts.idle).unwrap_or_else(Instant::now);
+fn read_head(stream: &mut TcpStream, buf: &mut Vec<u8>, shared: &Shared, first: bool) -> Result<Head, HeadError> {
+    // A new connection must send its first request promptly; a kept-alive one may idle.
+    let wait = if first { shared.timeouts.head } else { shared.timeouts.idle };
+    let idle_until = Instant::now().checked_add(wait).unwrap_or_else(Instant::now);
     let mut head_until: Option<Instant> = None;
     let mut chunk = [0u8; 4096];
     loop {
@@ -525,10 +576,15 @@ fn loopback_authority(authority: &str, port: Option<u16>) -> bool {
             None => return false,
         }
     } else {
-        match authority.rsplit_once(':') {
+        let (name, port) = match authority.rsplit_once(':') {
             Some((name, p)) => (name, Some(p)),
             None => (authority, None),
+        };
+        // An IPv6 address must be bracketed (`[::1]:41116`); `::1:41116` is ambiguous.
+        if name.contains(':') {
+            return false;
         }
+        (name, port)
     };
     let name_ok = name.eq_ignore_ascii_case("localhost") || name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
     let port_ok = match (given, port) {
@@ -593,8 +649,9 @@ fn serve_connection(mut stream: TcpStream, shared: &Shared) {
         return;
     }
     let mut buf = Vec::new();
+    let mut first = true;
     loop {
-        let head = match read_head(&mut stream, &mut buf, shared) {
+        let head = match read_head(&mut stream, &mut buf, shared, first) {
             Ok(head) => head,
             Err(HeadError::Gone) => return,
             Err(HeadError::Refuse(response)) => {
@@ -604,6 +661,7 @@ fn serve_connection(mut stream: TcpStream, shared: &Shared) {
                 return;
             }
         };
+        first = false;
         let keep = head.keep_alive();
         let mut response = exchange(&mut stream, &mut buf, &head, shared);
         if !keep {
@@ -638,6 +696,12 @@ fn close_gently(stream: &mut TcpStream) {
 fn exchange(stream: &mut TcpStream, buf: &mut Vec<u8>, head: &Head, shared: &Shared) -> Response {
     if let Some(refusal) = admit(head, shared) {
         return refusal;
+    }
+    // Only POST bodies are read: a request of another method that carries one would leave it in
+    // the connection, to be taken for the next request.
+    let has_body = head.headers.iter().any(|(n, v)| n == "transfer-encoding" || (n == "content-length" && v.trim() != "0"));
+    if head.method != "POST" && has_body {
+        return Response::error(400, "only POST requests carry a body").closing();
     }
     match head.method.as_str() {
         "POST" => post(stream, buf, head, shared),
@@ -681,6 +745,16 @@ fn post(stream: &mut TcpStream, buf: &mut Vec<u8>, head: &Head, shared: &Shared)
         Ok(None) => return Response::error(411, "send Content-Length").closing(),
         _ => return Response::error(400, "malformed Content-Length").closing(),
     };
+    match head.one("expect") {
+        Ok(None) => {}
+        // The client waits for a go-ahead before sending the body; all checks have passed.
+        Ok(Some(expect)) if expect.eq_ignore_ascii_case("100-continue") => {
+            if stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").and_then(|()| stream.flush()).is_err() {
+                return Response::error(400, "the connection failed").closing();
+            }
+        }
+        _ => return Response::error(417, "only `Expect: 100-continue` is understood").closing(),
+    }
     let body = match read_body(stream, buf, length, shared.timeouts.body) {
         Ok(body) => body,
         Err(response) => return response,
@@ -699,7 +773,7 @@ fn post(stream: &mut TcpStream, buf: &mut Vec<u8>, head: &Head, shared: &Shared)
             Some(_) => {}
         }
     }
-    let reply = match ask(shared, message) {
+    let reply = match ask(shared, stream, message) {
         Ok(reply) => reply,
         Err(response) => return response,
     };
@@ -741,21 +815,66 @@ fn read_body(stream: &mut TcpStream, buf: &mut Vec<u8>, length: usize, timeout: 
     Ok(body)
 }
 
-/// Hands `message` to the serving thread and waits for its reply.
-fn ask(shared: &Shared, message: Value) -> Result<Option<Value>, Response> {
+/// Hands `message` to the serving thread and waits for its reply, watching `stream`: if the
+/// client disconnects, or the message isn't started within the queue timeout, it is withdrawn
+/// and never runs. Once started it runs to the end, even if nobody is left to read the reply.
+fn ask(shared: &Shared, stream: &TcpStream, message: Value) -> Result<Option<Value>, Response> {
     if shared.stopped.load(Ordering::SeqCst) {
         return Err(Response::error(503, "the MCP server is stopping").closing());
     }
     let (reply, answer) = sync_channel(1);
-    let deadline = Instant::now().checked_add(shared.timeouts.answer).unwrap_or_else(Instant::now);
-    if shared.to_server.try_send(Job { message, reply, deadline }).is_err() {
+    let now = Instant::now();
+    let start_by = now.checked_add(shared.timeouts.queue).unwrap_or(now);
+    let finish_by = now.checked_add(shared.timeouts.answer).unwrap_or(now);
+    let state = Arc::new(AtomicU8::new(QUEUED));
+    if shared.to_server.try_send(Job { message, reply, start_by, state: Arc::clone(&state) }).is_err() {
         return Err(Response::error(503, "the server is still answering earlier messages; try again"));
     }
-    match answer.recv_timeout(shared.timeouts.answer) {
-        Ok(reply) => Ok(reply),
-        Err(RecvTimeoutError::Timeout) => Err(Response::error(503, "the server didn't answer in time")),
-        Err(RecvTimeoutError::Disconnected) => Err(Response::error(503, "the MCP server stopped").closing()),
+    loop {
+        match answer.recv_timeout(Duration::from_millis(100)) {
+            Ok(reply) => return Ok(reply),
+            Err(RecvTimeoutError::Disconnected) => {
+                // Dropped unstarted (too late, or stopping) or the server went away.
+                return Err(if state.load(Ordering::SeqCst) == ABANDONED {
+                    Response::error(503, NOT_STARTED)
+                } else {
+                    Response::error(503, "the MCP server stopped").closing()
+                });
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        if peer_closed(stream) {
+            settle(&state, ABANDONED);
+            return Err(Response::error(400, "the client went away").closing());
+        }
+        let now = Instant::now();
+        if now >= start_by && settle(&state, ABANDONED) {
+            return Err(Response::error(503, NOT_STARTED));
+        }
+        if now >= finish_by {
+            return Err(Response::error(503, "the server didn't answer in time; the message started and may still finish").closing());
+        }
     }
+}
+
+const NOT_STARTED: &str = "the server was busy and didn't start this message; nothing ran, try again";
+
+/// Whether the client has closed its side (or the connection broke), without consuming anything
+/// it sent.
+fn peer_closed(stream: &TcpStream) -> bool {
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let mut probe = [0u8; 1];
+    let closed = match stream.peek(&mut probe) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(e) => !matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted),
+    };
+    if stream.set_nonblocking(false).is_err() {
+        return true;
+    }
+    closed
 }
 
 #[cfg(test)]
@@ -779,6 +898,8 @@ mod tests {
             ":4000",
             "0.0.0.0:4000",
             "127.0.0.1:99999",
+            "::1:4000",
+            "::1",
         ] {
             assert!(!loopback_authority(bad, Some(4000)), "{bad}");
         }

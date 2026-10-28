@@ -351,3 +351,113 @@ fn the_in_app_server_answers_on_the_apps_thread_with_the_bridge_tools() {
     serving.join().unwrap();
     assert_eq!(ui.join().unwrap(), 1, "the app's own session holds the edit");
 }
+
+/// A server whose handler records each message id it runs and takes `slow` long over the id
+/// "slow"; every request gets an empty result.
+fn start_recording(timeouts: Timeouts, slow: Duration) -> (SocketAddr, Stopper, std::thread::JoinHandle<()>, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+    let mut config = Config::new("127.0.0.1:0".parse().unwrap(), token());
+    config.timeouts = timeouts;
+    let listening = http::bind(config).unwrap();
+    let (addr, stopper) = (listening.addr(), listening.stopper());
+    let handled = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = std::sync::Arc::clone(&handled);
+    let serving = std::thread::spawn(move || {
+        listening.serve(&mut |m| {
+            let id = m.get("id").cloned()?;
+            seen.lock().unwrap().push(id.clone());
+            if id == "slow" {
+                std::thread::sleep(slow);
+            }
+            Some(json!({"jsonrpc": "2.0", "id": id, "result": {}}))
+        });
+    });
+    (addr, stopper, serving, handled)
+}
+
+fn ping(id: &str) -> String {
+    json!({"jsonrpc": "2.0", "id": id, "method": "ping"}).to_string()
+}
+
+#[test]
+fn queued_messages_whose_client_left_or_that_waited_too_long_never_run() {
+    let timeouts = Timeouts { queue: Duration::from_millis(400), ..Timeouts::default() };
+    let (addr, stopper, serving, handled) = start_recording(timeouts, Duration::from_millis(1500));
+    let mut setup = Client::new(addr);
+    setup.initialize();
+    let session = setup.session.clone();
+    // Occupies the serving thread.
+    let busy = std::thread::spawn(move || {
+        let mut c = Client::new(addr);
+        c.session = session;
+        c.post(&ping("slow"), "").status
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    // Queued behind it, then its client gives up and disconnects.
+    {
+        let mut gone = Client::new(addr);
+        gone.session = setup.session.clone();
+        let body = ping("gone");
+        let request = format!(
+            "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nMcp-Session-Id: {}\r\nContent-Length: {}\r\n\r\n{body}",
+            token().expose(),
+            gone.session.as_deref().unwrap(),
+            body.len()
+        );
+        gone.stream.write_all(request.as_bytes()).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    // Queued behind it too, and still waiting when the queue timeout passes: refused, not run.
+    let late = setup.post(&ping("late"), "");
+    assert_eq!(late.status, 503);
+    assert!(late.json()["error"]["message"].as_str().unwrap().contains("nothing ran"));
+    assert_eq!(busy.join().unwrap(), 200);
+    // The thread is free again: a new message runs.
+    assert_eq!(setup.post(&ping("after"), "").status, 200);
+    let ran: Vec<Value> = handled.lock().unwrap().clone();
+    assert_eq!(ran, [json!(0), json!("slow"), json!("after")], "neither the abandoned nor the late message ran");
+    stopper.stop();
+    serving.join().unwrap();
+}
+
+#[test]
+fn bodies_expectations_and_hosts_are_strict() {
+    let timeouts = Timeouts { head: Duration::from_millis(300), ..Timeouts::default() };
+    let (addr, stopper, serving) = start_with(timeouts);
+    let auth = format!("Host: {addr}\r\nAuthorization: Bearer {}\r\n", token().expose());
+    // DELETE carries no body: one is refused rather than taken for the next request.
+    let mut c = Client::new(addr);
+    let reply = c.raw(format!("DELETE /mcp HTTP/1.1\r\n{auth}Mcp-Session-Id: x\r\nContent-Length: 5\r\n\r\nhello").as_bytes());
+    assert_eq!((reply.status, reply.header("connection")), (400, Some("close")));
+    // Expect: 100-continue gets the go-ahead before the body; anything else is refused.
+    let body = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {}}).to_string();
+    let mut c = Client::new(addr);
+    c.stream
+        .write_all(
+            format!("POST /mcp HTTP/1.1\r\n{auth}Content-Type: application/json\r\nExpect: 100-continue\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes(),
+        )
+        .unwrap();
+    let mut interim = [0u8; 25];
+    c.stream.read_exact(&mut interim).unwrap();
+    assert_eq!(&interim, b"HTTP/1.1 100 Continue\r\n\r\n");
+    c.stream.write_all(body.as_bytes()).unwrap();
+    assert_eq!(read_reply(&mut c.stream).status, 200);
+    let mut c = Client::new(addr);
+    assert_eq!(
+        c.raw(format!("POST /mcp HTTP/1.1\r\n{auth}Content-Type: application/json\r\nExpect: magic\r\nContent-Length: 2\r\n\r\n").as_bytes()).status,
+        417
+    );
+    // An IPv6 host must be bracketed.
+    let mut c = Client::new(addr);
+    let bare =
+        c.raw(format!("POST /mcp HTTP/1.1\r\nHost: ::1:{}\r\nAuthorization: Bearer {}\r\nContent-Length: 0\r\n\r\n", addr.port(), token().expose()).as_bytes());
+    assert_eq!(bare.status, 403);
+    // A new connection that sends nothing is closed after the head timeout, not the idle one.
+    let mut silent = TcpStream::connect(addr).unwrap();
+    silent.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let began = std::time::Instant::now();
+    let mut buf = Vec::new();
+    let _ = silent.read_to_end(&mut buf);
+    assert!(began.elapsed() < Duration::from_secs(3), "closed after {:?}", began.elapsed());
+    stopper.stop();
+    serving.join().unwrap();
+}

@@ -49,10 +49,17 @@ server's port, and an `Origin`, when sent, must be a loopback one (`http://local
 `http://evil.example` and `null` don't). This stops a web page that rebinds its own name to
 127.0.0.1 (DNS rebinding). No CORS headers are ever sent, so browsers can't read replies from
 other origins. A wrong or missing token is `401` with `WWW-Authenticate: Bearer`. Limits: request
-heads at most 16 KiB and 64 headers, messages at most 4 MiB (`413`), 10 s for a head, 30 s for a
-body, 60 s idle between requests on a kept-alive connection, and 16 connections at once (`503`
-beyond). Messages are handled one at a time in arrival order; one still queued after 120 s is
-answered `503` and dropped, never run late. Tools, command classification, quotes, budgets and
+heads at most 16 KiB and 64 headers, messages at most 4 MiB (`413`), 10 s for a head (a new
+connection must send its first request within 10 s), 30 s for a body, 60 s idle between requests
+on a kept-alive connection, and 16 connections at once (`503` beyond). Only `POST` carries a body,
+and `Expect: 100-continue` is answered before it is read (other expectations get `417`).
+
+Messages are handled one at a time in arrival order. A message that hasn't started within 30 s is
+answered `503` ("nothing ran") and dropped, never run late, so a client that retries after its own
+60 s timeout doesn't find the first attempt still queued; one whose client disconnects while it
+waits is dropped the same way. A message that has started runs to the end: if it takes longer
+than 120 s the client is answered `503`, but the command may still finish, so check (for example
+with `canvas_inspect` or `run.held`) before repeating something that costs money. Tools, command classification, quotes, budgets and
 human-only commands are exactly those of the stdio server.
 
 ## In the desktop app
