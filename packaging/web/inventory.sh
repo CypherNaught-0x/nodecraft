@@ -19,7 +19,23 @@ if ! grep -Fq "./${MAIN_STEM##*/}.js" "$SITE/index.html" ||
    ! grep -Fq "./${main[0]##*/}" "$SITE/index.html"; then
   echo "error: main HTML does not reference its generated wrapper and Wasm" >&2; exit 1
 fi
-if grep -Eq 'integrity[[:space:]]*=' "$SITE/index.html"; then
+# The icon is unchanged by packaging: preserve and verify its generated SRI. Only the
+# generated main/worker Wasm are rewritten, so every other integrity attribute is refused.
+html="$(cat "$SITE/index.html")"
+icon_tag="$(grep -oE '<link[[:space:]][^>]*rel="icon"[^>]*>' "$SITE/index.html" || true)"
+case "$icon_tag" in ''|*$'\n'*) echo "error: expected one generated icon reference" >&2; exit 1 ;; esac
+icon_path_pattern='href="\./([[:alnum:]_.-]+\.png)"'
+icon_hash_pattern='integrity="sha384-([A-Za-z0-9+/]{64})"'
+if [[ ! "$icon_tag" =~ $icon_path_pattern ]]; then echo "error: icon must reference an adjacent PNG" >&2; exit 1; fi
+icon_name="${BASH_REMATCH[1]}"
+if [[ ! "$icon_tag" =~ $icon_hash_pattern ]]; then echo "error: icon integrity is missing or unsupported" >&2; exit 1; fi
+icon_expected="${BASH_REMATCH[1]}"
+if [ ! -f "$SITE/$icon_name" ]; then echo "error: referenced icon is missing" >&2; exit 1; fi
+if ! command -v openssl >/dev/null 2>&1; then echo "error: openssl is required to verify unchanged icon integrity" >&2; exit 1; fi
+icon_actual="$(openssl dgst -sha384 -binary "$SITE/$icon_name" | openssl base64 -A)"
+if [ "$icon_actual" != "$icon_expected" ]; then echo "error: icon integrity does not match its referenced asset" >&2; exit 1; fi
+without_icon="${html/"$icon_tag"/}"
+if grep -Eq 'integrity[[:space:]]*=' <<< "$without_icon"; then
   echo "error: stale integrity attributes are incompatible with post-Trunk wasm-opt" >&2; exit 1
 fi
 while IFS= read -r -d '' f; do

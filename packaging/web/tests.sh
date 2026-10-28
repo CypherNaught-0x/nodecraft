@@ -8,7 +8,9 @@ trap 'rm -rf "$TEMP"' EXIT
 SITE="$TEMP/site"
 fixture() {
   rm -rf "$SITE"; mkdir -p "$SITE"
-  printf '<html>./nodecraft-web-abcdef.js ./nodecraft-web-abcdef_bg.wasm</html>' > "$SITE/index.html"
+  printf 'original icon fixture' > "$SITE/icon.png"
+  digest="$(openssl dgst -sha384 -binary "$SITE/icon.png" | openssl base64 -A)"
+  printf '<html>./nodecraft-web-abcdef.js ./nodecraft-web-abcdef_bg.wasm<link rel="icon" href="./icon.png" integrity="sha384-%s"/></html>' "$digest" > "$SITE/index.html"
   for name in nodecraft-web-abcdef_bg.wasm nodecraft-web-abcdef.js nodecraft-mesh-worker_bg.wasm nodecraft-mesh-worker.js; do printf 'fixture' > "$SITE/$name"; done
   printf "import init from './nodecraft-mesh-worker.js';await init();" > "$SITE/nodecraft-mesh-worker_loader.js"
   printf "new URL('nodecraft-mesh-worker_bg.wasm', import.meta.url)" > "$SITE/nodecraft-mesh-worker.js"
@@ -25,5 +27,8 @@ fixture; printf './workers/workers/other.js' > "$SITE/nodecraft-mesh-worker_load
 fixture; printf '<script integrity="old" src="x"></script>' > "$SITE/index.html"; reject 'stale integrity'
 fixture; printf "new URL('workers/worker.wasm', import.meta.url)" > "$SITE/nodecraft-mesh-worker.js"; reject 'broken generated Wasm URL'
 fixture; printf '<html>old.js old.wasm</html>' > "$SITE/index.html"; reject 'stale main HTML references'
+fixture; printf 'changed icon' > "$SITE/icon.png"; reject 'corrupt unchanged icon bytes'
+fixture; rm "$SITE/icon.png"; reject 'missing referenced icon'
+fixture; sed 's/sha384-/sha256-/' "$SITE/index.html" > "$SITE/changed.html"; mv "$SITE/changed.html" "$SITE/index.html"; reject 'wrong icon integrity algorithm'
 fixture; mkdir -p "$SITE/snippets/valid"; printf 'generated' > "$SITE/snippets/valid/example.js"; accept
-printf 'web generated-inventory tests: 11 passed\n'
+printf 'web generated-inventory tests: 14 passed\n'

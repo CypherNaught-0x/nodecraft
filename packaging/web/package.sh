@@ -8,7 +8,7 @@
 # Usage: packaging/web/package.sh [--skip-build] [--serve]
 #
 # Needs: the wasm32-unknown-unknown target, trunk and wasm-bindgen-cli at the version in
-# Cargo.lock (trunk runs offline, so it never downloads tools), zip. Optional: wasm-opt
+# Cargo.lock (trunk runs offline, so it never downloads tools), zip and openssl (icon SRI). Optional: wasm-opt
 # (binaryen) shrinks the .wasm further; without it the script warns and ships it as built.
 # --serve instead runs `trunk serve` on http://127.0.0.1:8080: a debug-profile development
 # build (no wasm-opt, no zip) that rebuilds on change; --skip-build does not apply to it.
