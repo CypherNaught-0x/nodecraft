@@ -142,6 +142,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
   Pixel-based credits remain an unknown monetary price and require consent. Image editing and
   other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
+- **Pika**: desktop projects and the native CLI animate one first frame with a prompt using
+  current Pika 2.5 through fal (#29), at 720p for 5 or 10 seconds with explicit priced consent.
+  Browser sessions refuse before payment. Text-to-video and keyframes are not included; see
+  [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
 - **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
   photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
   spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
