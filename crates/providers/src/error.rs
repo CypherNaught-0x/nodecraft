@@ -88,6 +88,18 @@ impl ErrorKind {
     }
 }
 
+/// What a context-window refusal's message starts with (#84), so hosts that keep only the text can
+/// still tell it from other unsupported inputs.
+pub const CONTEXT_LIMIT: &str = "the prompt and its inputs are longer than the model's context window";
+/// What to do about a context-window refusal.
+pub const CONTEXT_LIMIT_FIX: &str = "shorten the prompt, connect fewer or smaller inputs, or pick a model with a larger context";
+
+/// Whether a failure's text tells of a context-window refusal: it carries
+/// [`ProviderError::context_limit`]'s message, whatever a host put before it.
+pub fn is_context_limit_text(text: &str) -> bool {
+    text.contains(CONTEXT_LIMIT)
+}
+
 /// A provider failure. The message is safe to show: it never contains keys or auth headers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderError {
@@ -104,6 +116,17 @@ impl ProviderError {
 
     pub fn is_transient(&self) -> bool {
         self.kind.is_transient()
+    }
+
+    /// A refusal because the prompt and its inputs don't fit the model's context window (#84):
+    /// unsupported input, never retried, with what to do about it and the provider's own words.
+    pub fn context_limit(detail: &str) -> Self {
+        Self::new(ErrorKind::UnsupportedInput, format!("{CONTEXT_LIMIT}; {CONTEXT_LIMIT_FIX} (the provider said: {})", excerpt(detail.as_bytes())))
+    }
+
+    /// Whether this is a [`Self::context_limit`] refusal.
+    pub fn is_context_limit(&self) -> bool {
+        self.kind == ErrorKind::UnsupportedInput && self.message.starts_with(CONTEXT_LIMIT)
     }
 
     /// The error for an HTTP status from a provider API, with a short excerpt of the body.
@@ -152,6 +175,21 @@ mod tests {
         }
         assert_eq!(ErrorKind::from_error_text("cancelledness"), None);
         assert_eq!(ErrorKind::from_error_text(""), None);
+    }
+
+    #[test]
+    fn a_context_limit_says_what_to_do_and_is_never_retried() {
+        let e = ProviderError::context_limit("maximum context length is 8192 tokens\nyou sent 9000");
+        assert_eq!(e.kind, ErrorKind::UnsupportedInput);
+        assert!(!e.is_transient(), "running it again unchanged would fail the same way");
+        assert!(e.is_context_limit());
+        let shown = e.to_string();
+        assert!(shown.starts_with("input not supported: the prompt and its inputs are longer"), "{shown}");
+        assert!(shown.contains(CONTEXT_LIMIT_FIX) && shown.contains("8192 tokens you sent 9000"), "{shown}");
+        assert!(is_context_limit_text(&shown) && is_context_limit_text(&format!("the model failed: {shown}")));
+        assert!(!ProviderError::new(ErrorKind::UnsupportedInput, "bad format").is_context_limit());
+        assert!(!is_context_limit_text("input not supported: bad format"));
+        assert!(ProviderError::context_limit(&"x".repeat(10_000)).message.len() < 600, "the provider's words are capped");
     }
 
     #[test]
