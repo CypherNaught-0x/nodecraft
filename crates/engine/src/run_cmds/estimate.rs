@@ -3,7 +3,7 @@
 use super::{RunCatalog, RunParams, check_requested, invalid, mode_of, run_canvas};
 use crate::commands::{CommandSpec, Context, Effect, Phase, params};
 use crate::provider_quotes::{ESTIMATE_SERVICE, MAX_ESTIMATED, QuoteKey};
-use nodecraft_exec::planner::{Planned, RunMode, plan_expanded};
+use nodecraft_exec::planner::{Planned, plan_expanded};
 use nodecraft_nodes::JobSpec;
 use nodecraft_providers::{Provider, ProviderJob};
 use nodecraft_types::{Error, ErrorKind, NodeId};
@@ -42,7 +42,7 @@ pub(crate) fn jobs(c: &Context<'_>, value: &Value) -> Result<Estimating, Error> 
     nodecraft_exec::admission::measure::canvas(&expanded.canvas)?;
     let mode = mode_of(&p)?;
     let requested = p.nodes.iter().copied().collect();
-    let stale = if matches!(mode, RunMode::WithUpstream | RunMode::AllStale) { nodecraft_exec::staleness::stale(canvas, c.kinds)? } else { BTreeSet::new() };
+    let stale = if super::looks_at_staleness(&mode) { nodecraft_exec::staleness::stale(canvas, c.kinds)? } else { BTreeSet::new() };
     let targets = c.routing.routing.targets();
     let plan = match plan_expanded(&expanded, c.kinds, &mode, &requested, &stale, targets, crate::option_cmds::lookup(c.resources))? {
         Planned::Ready(plan) => plan,

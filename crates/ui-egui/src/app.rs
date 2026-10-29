@@ -1491,6 +1491,33 @@ impl NodeCraftApp {
                     // Invalid drafts remain view state across unrelated undo/redo.
                 }
             }
+            // ⌘/Ctrl+Enter quotes a run of everything that changed or hasn't run (#965); nothing
+            // starts until the person confirms the price. A focused text field keeps its own
+            // ⌘/Ctrl+Enter (a prompt quotes its card, a multiline value commits), and so do a
+            // gesture in flight and an open menu or panel. Not while the recovery question is open
+            // either: its answer may replace the document the run would be quoted on.
+            #[cfg(not(target_arch = "wasm32"))]
+            let recovering = recovery_owns_input || self.recovery.is_some();
+            #[cfg(target_arch = "wasm32")]
+            let recovering = recovery_owns_input || self.web_recovery_owns_input();
+            let blocked = self.canvas_letter_keys_blocked(ui, minimap_held, model_blocks, bulk_blocks)
+                || recovering
+                || self.keys.open
+                || self.browser_providers.as_ref().is_some_and(|providers| providers.open);
+            if !blocked {
+                let whole = ui.input_mut(|input| {
+                    self.session.registry().specs().filter(|spec| matches!(spec.id, "run.changed" | "run.workflow")).find_map(|spec| {
+                        spec.shortcut
+                            .into_iter()
+                            .chain(spec.alternate_shortcuts.iter().copied())
+                            .any(|shortcut| consume_shortcut(input, shortcut))
+                            .then_some(spec.id)
+                    })
+                });
+                if let Some(id) = whole {
+                    self.run_whole_command(id);
+                }
+            }
             // `H` hides prompt overlays on media cards (#321). It is a plan §2.1 canvas letter, so
             // it yields to exactly what the quick-add letters yield to — a focused text field, the
             // palette, the "Turn into" menu, an open popup, a panel that owns canvas input and a

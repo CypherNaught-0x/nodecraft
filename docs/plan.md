@@ -162,7 +162,9 @@ lacks: staleness tracking, optional caching, and live deterministic nodes.
   node count and **total estimated cost** before you confirm.
 - **Run modes:** *Run selected* (upstream must already have results; otherwise "can't run yet"
   with the missing input highlighted), *Run with upstream* (also runs stale or empty
-  ancestors), *Run field*, *Run all stale*.
+  ancestors), *Run field*, *Run all stale*, *Run changed* (⌘/Ctrl+Enter: stale, part-made or
+  never-run cards with what they need) and *Run workflow* (every generative card). Each is
+  quoted and confirmed before it starts (#965).
 - **Staleness instead of silent drift.** Each generation records the content hash of the
   inputs it consumed. When an upstream result or parameter changes, downstream nodes are not
   re-run (it costs money) but get a **stale badge** and can be refreshed in one click.

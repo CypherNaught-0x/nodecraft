@@ -35,6 +35,12 @@ pub enum RunMode {
     Field(FieldId),
     /// Every stale node on the canvas, with the ancestors it needs (as [`RunMode::WithUpstream`]).
     AllStale,
+    /// Every node with work to do (#965): a generation, action or technique node whose result is
+    /// stale, part-made or missing, with the ancestors it needs. What a global Run changed covers.
+    Pending,
+    /// The whole workflow (#965): every generation and technique node on the canvas, fresh or
+    /// not, plus everything [`RunMode::Pending`] runs. Fresh actions keep their results.
+    Workflow,
 }
 
 /// Where one value for an input comes from.
@@ -248,8 +254,8 @@ pub const MAX_BLOCKERS: usize = 256;
 /// the upstream walk.
 ///
 /// Errors are for malformed requests (unknown node ids, nothing requested, a cyclic canvas); a
-/// well-formed request that can't run yet is [`Planned::Blocked`]. A field or "all stale" run
-/// with nothing in it is an empty plan.
+/// well-formed request that can't run yet is [`Planned::Blocked`]. A field, "all stale",
+/// pending or workflow run with nothing in it is an empty plan.
 ///
 /// Kinds' [`NodeKind::mode`](nodecraft_nodes::NodeKind::mode) is asked with the node's own
 /// connected input port types, in `node.inputs` order (list ports with `many: true`).
@@ -322,8 +328,27 @@ pub fn plan_settled(
     targets: &nodecraft_types::TargetSelection,
     options: &dyn nodecraft_types::OptionLookup,
 ) -> Result<Planned, Error> {
+    plan_waiting(expanded, kinds, mode, requested, settled, stale, targets, options).map(|(planned, _)| planned)
+}
+
+/// [`plan_settled`], with the nodes a [`RunMode::Pending`] or [`RunMode::Workflow`] run leaves
+/// for a later run (#965): everything after a batch that collects a result this run makes. A
+/// batch collects existing results only (#92), so what follows it runs once those exist; it is
+/// then stale or missing, and the next Run changed picks it up. Other modes leave nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_waiting(
+    expanded: &Expanded<'_>,
+    kinds: &Registry,
+    mode: &RunMode,
+    requested: &BTreeSet<NodeId>,
+    settled: &BTreeSet<NodeId>,
+    stale: &BTreeSet<NodeId>,
+    targets: &nodecraft_types::TargetSelection,
+    options: &dyn nodecraft_types::OptionLookup,
+) -> Result<(Planned, BTreeSet<NodeId>), Error> {
     let canvas: &Canvas = &expanded.canvas;
     let graph = Graph::new(canvas, kinds, targets, &expanded.collects, &expanded.inner, options)?;
+    let mut waiting = BTreeSet::new();
     let run: BTreeSet<NodeId> = match mode {
         RunMode::Selected | RunMode::WithUpstream => {
             if let Some(missing) = requested.iter().find(|id| !canvas.nodes().contains_key(id) || expanded.inner.contains_key(id)) {
@@ -336,6 +361,11 @@ pub fn plan_settled(
         }
         RunMode::Field(field) => canvas.nodes().values().filter(|n| n.field == Some(*field)).map(|n| n.id).collect(),
         RunMode::AllStale => graph.with_upstream(&stale.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect(), stale),
+        RunMode::Pending | RunMode::Workflow => {
+            let (run, after) = graph.whole(*mode == RunMode::Workflow, stale);
+            waiting = after;
+            run
+        }
     };
     // Routers and batches never run: they are resolved into their consumers' inputs.
     let resolved_away = |id: &NodeId| crate::routing::is_router(canvas, *id) || is_batch(canvas, *id);
@@ -380,12 +410,12 @@ pub fn plan_settled(
         }
     }
     if !blockers.is_empty() {
-        return Ok(Planned::Blocked(blockers.into_iter().map(|blocker| owned(blocker, expanded)).collect()));
+        return Ok((Planned::Blocked(blockers.into_iter().map(|blocker| owned(blocker, expanded)).collect()), waiting));
     }
     crate::partial::resume_partials(canvas, kinds, &mut steps);
     let inner = steps.iter().filter_map(|step| Some((step.node, *expanded.inner.get(&step.node)?))).collect();
     crate::partial::resume_techniques(canvas, kinds, &mut steps, &inner);
-    Ok(Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect(), inner }))
+    Ok((Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect(), inner }), waiting))
 }
 
 /// The `requested` nodes that would each plan [`Planned::Ready`] on their own with
@@ -589,6 +619,121 @@ impl<'a> Graph<'a> {
 
     fn is_source(&self, node: &Node) -> bool {
         self.kinds.get(&node.kind).is_ok_and(|kind| kind.descriptor().category == Category::Source)
+    }
+
+    /// Whether `node` has work of its own (#965): a generation, action or technique node, or one
+    /// of a kind not installed (which blocks a run it is in). Notes, decks, routers, batches and
+    /// sources have none.
+    fn has_work(&self, node: &Node) -> bool {
+        node.kind == technique::ID
+            || matches!(self.kinds.get(&node.kind).map(|kind| kind.descriptor().category), Ok(Category::Generation | Category::Action) | Err(_))
+    }
+
+    /// Whether `node` makes model work regenerated by a [`RunMode::Workflow`] run even when
+    /// fresh: a generation or technique node.
+    fn generative(&self, node: &Node) -> bool {
+        node.kind == technique::ID || matches!(self.kinds.get(&node.kind).map(|kind| kind.descriptor().category), Ok(Category::Generation))
+    }
+
+    /// The nodes of the real canvas a [`RunMode::Pending`] run starts from (#965): nodes with
+    /// work that need a run. With `generative`, also every fresh generation and technique node,
+    /// for [`RunMode::Workflow`].
+    fn work(&self, generative: bool, stale: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        self.canvas
+            .nodes()
+            .values()
+            .filter(|node| !self.inner.contains_key(&node.id) && self.has_work(node))
+            .filter(|node| (generative && self.generative(node)) || self.needs_run(node, stale))
+            .map(|node| node.id)
+            .collect()
+    }
+
+    /// Every node of the real canvas reached from `from` along noodles, upstream or downstream
+    /// (`from` itself only if it is reached again). The walk goes through techniques' inlined
+    /// nodes and the outputs their technique nodes collect; an inlined node reached stands for
+    /// its technique node. The canvas may hold cycles: a seen-set ends the walk.
+    fn reach(&self, from: &BTreeSet<NodeId>, down: bool) -> BTreeSet<NodeId> {
+        let mut next: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+        let collected = self.collects.iter().flat_map(|(owner, collects)| collects.iter().map(move |collect| (collect.node, *owner)));
+        let edges = self.into.iter().flat_map(|(to, feeds)| feeds.iter().map(move |(_, up, _, _)| (*up, *to))).chain(collected);
+        for (from, to) in edges {
+            if down {
+                next.entry(from).or_default().push(to);
+            } else {
+                next.entry(to).or_default().push(from);
+            }
+        }
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<NodeId> = from.iter().copied().collect();
+        while let Some(id) = stack.pop() {
+            for to in next.get(&id).into_iter().flatten() {
+                if seen.insert(*to) {
+                    stack.push(*to);
+                }
+            }
+        }
+        let owners: Vec<NodeId> = seen.iter().filter_map(|id| self.inner.get(id).copied()).collect();
+        seen.extend(owners);
+        seen.retain(|id| !self.inner.contains_key(id));
+        seen
+    }
+
+    /// A [`RunMode::Pending`] or [`RunMode::Workflow`] run (#965) and the nodes it leaves for a
+    /// later run. A node with work between two nodes of the run runs too, in order: a fresh
+    /// action between two generators would otherwise feed the later one a result made from the
+    /// earlier one's old result. Everything after a batch fed by the run waits, since a batch
+    /// collects existing results only (#92).
+    fn whole(&self, generative: bool, stale: &BTreeSet<NodeId>) -> (BTreeSet<NodeId>, BTreeSet<NodeId>) {
+        // What the run is asked for: the starting nodes, then the nodes between them.
+        let mut wanted = self.work(generative, stale);
+        // Every node found waiting so far. It never joins the run again, so each node enters
+        // `wanted` at most once and leaves it at most once: the loop ends.
+        let mut waiting: BTreeSet<NodeId> = BTreeSet::new();
+        loop {
+            let mut run = self.with_upstream(&wanted, stale);
+            waiting.extend(self.after_batches(&run));
+            // A technique node's inlined nodes wait with it (`inner` maps to the top-level owner).
+            let waits = |id: &NodeId| waiting.contains(id) || self.inner.get(id).is_some_and(|owner| waiting.contains(owner));
+            if wanted.iter().any(waits) {
+                // Asked for what waits: plan again without it, so nothing joins the run only to
+                // feed a node that waits.
+                wanted.retain(|id| !waits(id));
+                continue;
+            }
+            run.retain(|id| !waits(id));
+            let after = self.reach(&run, true);
+            let between: BTreeSet<NodeId> = self
+                .reach(&run, false)
+                .into_iter()
+                .filter(|id| after.contains(id) && !run.contains(id) && !waits(id))
+                .filter(|id| self.canvas.nodes().get(id).is_some_and(|node| self.has_work(node)))
+                .collect();
+            if between.is_empty() {
+                let waiting = waiting.into_iter().filter(|id| self.canvas.nodes().get(id).is_some_and(|node| self.has_work(node))).collect();
+                return (run, waiting);
+            }
+            wanted.extend(between);
+        }
+    }
+
+    /// Everything after a batch that `run` feeds (#965), on the real canvas: a batch collects
+    /// existing results only (#92), so it waits for this run to make them.
+    fn after_batches(&self, run: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        let batches: BTreeSet<NodeId> = self
+            .canvas
+            .nodes()
+            .values()
+            .filter(|node| node.kind == batch::ID)
+            .filter(|node| {
+                self.into
+                    .get(&node.id)
+                    .into_iter()
+                    .flatten()
+                    .any(|(_, up, _, _)| run.contains(up) && !self.canvas.nodes().get(up).is_some_and(|u| self.is_source(u)))
+            })
+            .map(|node| node.id)
+            .collect();
+        if batches.is_empty() { BTreeSet::new() } else { self.reach(&batches, true) }
     }
 
     /// The requested nodes plus ancestors that need a run, walking through ancestors that have

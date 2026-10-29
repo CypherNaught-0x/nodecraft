@@ -177,6 +177,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "comment.remove",
     "keys.status",
     "run.quote",
+    // Quotes of the whole canvas (#965): read-only, started through run.start.
+    "run.changed",
+    "run.workflow",
     // Free, and refused by a host that can't ask (the CLI's).
     "run.estimate",
     "run.start",
