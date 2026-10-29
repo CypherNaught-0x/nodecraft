@@ -113,7 +113,7 @@ fn read_value<'a>(
         return Some(node.params.get("text").map(Cow::Borrowed).unwrap_or_else(|| Cow::Owned(Value::Text(String::new()))));
     }
     if node.kind == nodecraft_nodes::batch::ID {
-        if seen.len() >= 32 || !seen.insert(node.id) {
+        if seen.len() >= nodecraft_exec::planner::MAX_BATCH_CHAIN || !seen.insert(node.id) {
             return None;
         }
         kinds.get(&node.kind).ok()?.validate_instance(node, true).ok()?;

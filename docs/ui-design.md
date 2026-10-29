@@ -46,6 +46,9 @@ thumbnails 120 across. The Timeline editor shares the Layer Editor's panel width
 is 84 high under a 22-high time ruler, and a clip's edge trims within 6 points.
 The ComfyUI servers panel's jobs-at-once text field is `comfy_jobs_width` (48) wide,
 and its new-server name field is `comfy_name_width` (160) wide.
+The batch items review (#92) opens `batch_review_width` (520) wide; its Cross grid draws each
+result `batch_review_cell` (96) across, with the first batch's items as rows and the second's as
+columns.
 A card's image preview, and a text card's answer, take `card_preview_height` (180) above the
 composer; a long answer scrolls inside it and can be selected and copied. While a wire feeds a
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the

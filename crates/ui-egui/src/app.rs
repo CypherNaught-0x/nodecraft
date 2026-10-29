@@ -341,6 +341,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
 pub(crate) mod admission;
 
 mod app_mode;
+mod batch_review;
 mod browser_providers;
 mod budget_caps;
 mod comfy_mapping;
@@ -624,6 +625,8 @@ pub struct NodeCraftApp {
     plugins: Option<(Arc<nodecraft_engine::plugin_cmds::PluginWorker>, Option<u64>)>,
     /// The queue panel is open (#82).
     queue_open: bool,
+    /// The batch items review, when open (#92).
+    batch_review: Option<batch_review::BatchReview>,
     /// The quarantined-charge review, when open (#362).
     #[cfg(not(target_arch = "wasm32"))]
     ownership: Option<ownership_panel::OwnershipReview>,
@@ -1233,6 +1236,7 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             plugins: None,
             queue_open: false,
+            batch_review: None,
             #[cfg(not(target_arch = "wasm32"))]
             ownership: None,
             sheet: sheet_view::SheetView::default(),
@@ -1676,6 +1680,7 @@ impl NodeCraftApp {
         let mut reader_request = None;
         let mut comfy_mapping_request = None;
         let mut timeline_request = None;
+        let mut review_request = None;
         // Element card menus offer saving to, or updating from, the library: know what it holds.
         self.element_library_listed();
         let mut element_request = false;
@@ -2155,6 +2160,12 @@ impl NodeCraftApp {
                             if let Some(action) = technique_menu::menu(ui, self.session.document(), node) {
                                 technique_request = Some(action);
                             }
+                            if batch_review::reviewable(node)
+                                && ui.button("Review items…").on_hover_text("Step through each batch item's result, or see every combination").clicked()
+                            {
+                                review_request = Some(node.id);
+                                ui.close();
+                            }
                         });
                     }
                     if !canvas_blocks && r.drag_started_by(egui::PointerButton::Primary) {
@@ -2364,6 +2375,9 @@ impl NodeCraftApp {
             present_after = present_request;
             reader_after = reader_request;
             timeline_after = timeline_request;
+            if let Some(node) = review_request {
+                self.batch_review = Some(batch_review::BatchReview::new(node));
+            }
             element_after = element_request;
             image_tool_after = image_tool_request;
             element_library_after = element_library_request;
@@ -2660,6 +2674,7 @@ impl NodeCraftApp {
         self.comfy_mapping_window(ui.ctx(), t);
         self.budgets_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);
+        self.batch_review_window(ui.ctx(), t);
         self.share_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
         self.ownership_panel(ui.ctx(), t);
@@ -3531,6 +3546,8 @@ mod audio672_tests;
 mod audio875_tests;
 #[cfg(test)]
 mod audio_tests;
+#[cfg(test)]
+mod batch_review_tests;
 #[cfg(test)]
 mod comfy_workflow9_tests;
 #[cfg(test)]
