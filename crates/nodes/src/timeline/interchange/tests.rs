@@ -140,16 +140,11 @@ fn what_the_document_cannot_carry_is_listed() {
     seq.background = [255, 255, 255];
     let out = fcpxml(&seq).unwrap();
     let features: Vec<(&str, Option<&str>)> = out.losses.iter().map(|l| (l.feature, l.clip.as_deref())).collect();
-    for expected in [
-        ("disabled clip", Some("off")),
-        ("unconnected clip", Some("gone")),
-        ("sub-frame timing", Some("fox")),
-        ("fade", Some("fox")),
-        ("background colour", None),
-    ] {
+    for expected in [("disabled clip", Some("off")), ("unconnected clip", Some("gone")), ("sub-frame timing", Some("fox")), ("background colour", None)] {
         assert!(features.contains(&expected), "{expected:?} in {features:?}");
     }
-    assert!(out.xml.contains(r#"<adjust-volume amount="-96.00dB"/>"#), "a muted clip is silent: {}", out.xml);
+    assert!(out.xml.contains(r#"<adjust-volume amount="-96.00dB">"#), "a muted faded clip is silent: {}", out.xml);
+    assert!(!features.iter().any(|(feature, _)| *feature == "fade"));
 }
 
 #[test]

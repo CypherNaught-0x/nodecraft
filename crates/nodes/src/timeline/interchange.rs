@@ -14,6 +14,8 @@ use nodecraft_types::{Error, ErrorKind};
 use serde::Serialize;
 use std::fmt::Write as _;
 
+mod fades;
+
 /// The format's name, as commands and the archive say it.
 pub const FORMAT: &str = "fcpxml";
 /// The FCPXML version written.
@@ -163,7 +165,7 @@ struct Placed<'a> {
     kind: MediaKind,
     in_f: u64,
     len_f: u64,
-    volume: Option<f64>,
+    envelope: fades::Envelope,
 }
 
 /// An item on the main track, as written: where it starts on the sequence, where in its media,
@@ -229,18 +231,18 @@ fn untranslated_clip_settings(clip: &Clip, losses: &mut Vec<Loss>) {
             detail: "not written: the clip exports upright; rotate it in the other editor".into(),
         });
     }
-    if clip.opacity != UNIT {
-        losses.push(Loss {
-            clip: id(),
-            caption: None,
-            feature: "opacity",
-            detail: "not written: the clip exports fully opaque; set its opacity in the other editor".into(),
-        });
-    }
 }
 
 /// Describes `sequence` as an FCPXML document.
 pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
+    fcpxml_controlled(sequence, &mut || Ok(()))
+}
+
+/// The same pure writer with a host-supplied cancellation check. No platform dependency or
+/// thread is introduced into node descriptions; background exporters own the callback.
+pub fn fcpxml_controlled(sequence: &Sequence<'_>, check: &mut dyn FnMut() -> Result<(), Error>) -> Result<Interchange, Error> {
+    let mut budget = fades::Budget::new(check);
+    budget.check()?;
     let fps = sequence.fps;
     if fps == 0 {
         return Err(invalid("the timeline's frame rate is 0".into()));
@@ -261,6 +263,7 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
     let (mut main, mut layers) = (Vec::new(), Vec::new());
     let resolved = timeline.resolve(sequence.wires);
     for (n, (input, clip)) in resolved.iter().enumerate() {
+        budget.check()?;
         let number = listed.clips.iter().position(|c| c.id == clip.id).unwrap_or(n).saturating_add(1);
         let source_index = sequence
             .media
@@ -296,27 +299,31 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
         if len_f == 0 {
             return Err(invalid(format!("clip {number} is shorter than a frame")));
         }
-        if !(in_exact && out_exact && at_exact && transition_exact) {
+        let (envelope, fades_exact) = fades::Envelope::new(clip, source.kind, source.sound, fps, in_f, len_f)?;
+        if envelope.audio_sampled() {
+            losses.push(Loss {
+                clip: Some(clip.id.clone()),
+                caption: None,
+                feature: "audio fade interpolation",
+                detail: "linear amplitude sampled on sequence frames; destination dB interpolation between frames can differ from the native audio ramp".into(),
+            });
+        }
+        if !(in_exact && out_exact && at_exact && transition_exact && fades_exact) {
             losses.push(Loss {
                 clip: Some(clip.id.clone()),
                 caption: None,
                 feature: "sub-frame timing",
-                detail: format!("trims, start and transition rounded to whole frames at {fps} fps"),
+                detail: format!("trims, start, transition or fades rounded to whole frames at {fps} fps"),
             });
         }
-        if clip.fade_in_us != 0 || clip.fade_out_us != 0 {
-            losses.push(Loss { clip: Some(clip.id.clone()), caption: None, feature: "fade", detail: "not written: add the fades in the other editor".into() });
-        }
         untranslated_clip_settings(clip, &mut losses);
-        let audible = source.kind == MediaKind::Audio || (source.kind == MediaKind::Video && source.sound);
-        let volume = if audible { decibels(clip.volume, clip.muted) } else { None };
         if !used.contains(&source_index) {
             used.push(source_index);
         }
         if let Some(slot) = reach.get_mut(source_index) {
             *slot = (*slot).max(out_f);
         }
-        let placed = Placed { id: &clip.id, number, source: source_index, kind: source.kind, in_f, len_f, volume };
+        let placed = Placed { id: &clip.id, number, source: source_index, kind: source.kind, in_f, len_f, envelope };
         if clip.track == 0 {
             main.push((placed, transition_f));
         } else {
@@ -398,6 +405,7 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
         captions::resource(&mut xml);
     }
     for (n, index) in used.iter().enumerate() {
+        budget.check()?;
         let source = sequence.sources.get(*index).ok_or_else(|| invalid("a clip's media isn't listed".into()))?;
         let (video, audio) = match source.kind {
             MediaKind::Video => (1, u8::from(source.sound)),
@@ -436,6 +444,7 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
     );
     let ref_of = |source: usize| used.iter().position(|u| *u == source).map(asset_id).unwrap_or_default();
     for ((item, children), titles) in spine.iter().zip(&connected).zip(&titles) {
+        budget.check()?;
         let indent = "            ";
         match &item.clip {
             None => {
@@ -460,13 +469,15 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
                 );
             }
         }
-        let volume = item.clip.as_ref().and_then(|p| p.volume);
-        if children.is_empty() && titles.is_empty() && volume.is_none() {
+        let adjusted = item.clip.as_ref().is_some_and(|p| p.envelope.needed());
+        if children.is_empty() && titles.is_empty() && !adjusted {
             xml.push_str("/>\n");
         } else {
             xml.push_str(">\n");
-            if let Some(db) = volume {
-                let _ = writeln!(xml, "{indent}  <adjust-volume amount=\"{db:.2}dB\"/>");
+            if let Some(placed) = &item.clip {
+                // Preserve the full source envelope, including transition handles outside
+                // the visible spine segment. The dissolve still consumes those frames.
+                placed.envelope.write(&mut xml, placed.in_f, placed.len_f, fps, &format!("{indent}  "), &mut budget)?;
             }
             for (placed, lane, local) in children {
                 let _ = write!(
@@ -479,11 +490,12 @@ pub fn fcpxml(sequence: &Sequence<'_>) -> Result<Interchange, Error> {
                     time(placed.in_f, fps),
                     time(placed.len_f, fps)
                 );
-                match placed.volume {
-                    None => xml.push_str("/>\n"),
-                    Some(db) => {
-                        let _ = write!(xml, ">\n{indent}    <adjust-volume amount=\"{db:.2}dB\"/>\n{indent}  </{}>\n", element(placed.kind));
-                    }
+                if placed.envelope.needed() {
+                    xml.push_str(">\n");
+                    placed.envelope.write(&mut xml, placed.in_f, placed.len_f, fps, &format!("{indent}    "), &mut budget)?;
+                    let _ = writeln!(xml, "{indent}  </{}>", element(placed.kind));
+                } else {
+                    xml.push_str("/>\n");
                 }
             }
             for (caption, lane, local) in titles {

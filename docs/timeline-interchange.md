@@ -22,10 +22,18 @@ verified** yet (#643).
 | Command | Who | What |
 |---|---|---|
 | `timeline.interchange {canvas, id}` | UI, CLI, MCP, agent | The document, its media list and every loss, without writing anything. |
-| `timeline.export_interchange {canvas, id, path, overwrite?}` | UI, CLI, control channel | Writes the archive to an absolute `path`. Desktop only. Not offered to MCP agents, because it writes a file on this machine. |
+| `timeline.export_interchange {canvas, id, path, overwrite?, background?}` | UI, CLI, control channel | Writes the archive to an absolute `path`. Desktop only. Not offered to MCP agents, because it writes a file on this machine. |
 
 In the app, open the Timeline editor and choose **Export for another editor…**. Neither command
 opens a dialog: the UI asks where to save first and then dispatches the command with the path.
+The UI requests `background:true`: the canvas stays usable and its export progress area has a
+**Cancel export** button. Quitting asks whether to keep exporting or cancel and wait for cleanup.
+Programmatic callers retain the existing synchronous default (`background:false`), whose reply
+is `{bytes}`. With a host export runner, `background:true` instead first replies `{pending:id}`;
+`export.status` reports its phase, media/byte progress and terminal result, and `export.cancel {id}`
+cancels before publication. The final successful result is `{state:"exported",bytes}`. The initial
+receipt never claims bytes have already been saved. A missing/refused runner is an error; no
+background request silently falls back to blocking the caller.
 
 ## Which clips and media are written
 
@@ -72,7 +80,8 @@ already report the `format` and `version` they wrote.
 | Stills | `<video>` held for the clip's length | |
 | Volume (thousandths) | `<adjust-volume amount="… dB">` | Converted to decibels. Volume 0 and muted clips become -96 dB. |
 | Video with its own sound | `hasAudio` on the asset, sound played with the clip | From the asset's channel count. |
-| Fade in/out | **not written**, reported | A follow-up can translate fades into keyframed volume and opacity. |
+| Fade in/out | Keyframed `adjust-blend` and `adjust-volume` | Picture opacity has linear frame-aligned corners. Audio samples the linear amplitude envelope at every sequence frame before converting to dB. Muted/zero-volume audio stays at -96 dB. Actual editor interpretation remains unverified. |
+| Clip opacity | `adjust-blend amount` and the fade peak | Thousandths become 0–1; zero stays transparent. |
 | Background colour | **not written** unless black, reported | Editors show black behind a picture that doesn't fill the frame. |
 | Fit inside the frame | not written | Editors fit a clip of another size by default, as the render does. |
 | Disabled or unconnected clips | left out, reported | |
@@ -80,11 +89,19 @@ already report the `format` and `version` they wrote.
 | Caption alignment and position | text alignment and frame anchors in FCPXML; absent from SRT | Distinct lanes above picture tracks preserve overlapping titles. The destination's Basic Title template can change exact margins and text metrics; every caption reports this. |
 | Caption font, size, colour and outline | destination Basic Title appearance; absent from SRT | The requested font, pixel size, fill and outline are listed in the report, so style is never silently lost. No Motion template or font is included. |
 | Clip speed | **not written**, reported when not 1000 (1×) | Exports the unretimed length derived from media trim; retime in the destination editor. |
-| Clip position (`pos_x`, `pos_y`), scale, crop edges, rotation, opacity | **not written**, reported for each changed field | Exports centred, at the editor's default fitted size, uncropped, upright and fully opaque. Position axes and crop edges are grouped within their respective feature but individually named. |
+| Clip position (`pos_x`, `pos_y`), scale, crop edges, rotation | **not written**, reported for each changed field | Exports centred, at the editor's default fitted size, uncropped and upright. Position axes and crop edges are grouped within their respective feature but individually named. |
 | Effects | not written | |
 
 The report lists each loss, naming the clip it concerns. The document never claims more than it
 holds, and the export never presents itself as a lossless round trip.
+
+Fade times use the clip's source clock, including trimmed media starts and dissolve handles.
+Fades are specified in played time in NodeCraft: for the still-unsupported speed setting, their
+positions scale into source time with the unretimed exported clip. The speed loss remains in the
+report. Frame rounding, including fade boundary rounding, is reported. Audio's dB interpolation
+between frame samples may differ from the native sample-by-sample amplitude ramp; each audible
+fade records an `audio fade interpolation` report entry. Matching the
+curve in both destination editors is part of the outstanding import validation below.
 
 Caption losses name the caption id. SubRip times are rounded to the nearest millisecond and
 sorted by start time. Empty caption lines contain a zero-width space so they cannot end a cue;
@@ -99,11 +116,22 @@ separately; there is no EDL export mode yet.
   appears only once it is complete, so a failure, including a full disk, leaves nothing half
   written.
 - Every source is checked against its content hash as it is copied into the staged archive. Entries are stored, not recompressed, and copied as streams.
-- At most 256 media files go in one archive. Entry names are at most 255 bytes, relative, and
+- At most 256 media files and 8 GiB of media go in one archive. Entry names are at most 255 bytes, relative, and
   free of `..`, backslashes, colons and control characters. Names that differ only in case are
-  refused. The document and report are capped at 16 MiB each.
-- The export runs on the thread that dispatches it, like `history.export`. Moving it to a
-  cancellable background job is tracked in #643.
+  refused. The XML, report and SRT are capped at 16 MiB each. A document admits at most 65,536
+  fade keyframes; shorten long sound fades or lower the frame rate if that bound is reached.
+- Background admission captures only bounded clip/source metadata. XML is built on the worker.
+  Each indexed source is privately verified into managed workspace scratch, then copied directly
+  into the staged ZIP and released before the next source. At most one source's scratch is live;
+  it shares the native workspace quota. Sources are never all pre-staged in the system temp folder.
+- Cancellation is checked while building keyframes, writing sidecars and copying media. It waits
+  for an in-flight filesystem call to return. Once **Finishing export…** appears, syncing and atomic
+  publication cannot be cancelled. A cancelled pre-publication job removes its owned stage and
+  preserves an existing destination. Forced process termination can leave an atomic writer stage;
+  ordinary cancellation and quitting wait for cleanup.
+- Edits after background admission affect later exports. The current export keeps the captured
+  clips, titles and source bytes. Opening/replacing the session cancels its job; a retained receipt
+  remains observable until the worker has released its files.
 
 ## Compatibility
 
@@ -111,3 +139,23 @@ Unit tests check each document's elements and timing, frame by frame. Nothing va
 against the FCPXML DTD yet, and importing it into Final Cut Pro or DaVinci Resolve **has not been
 verified**. Please report what an
 editor does with an export, and which version of the editor you used.
+
+### Required editor import evidence for #643
+
+The offline changes are **draft-only until both rows below have real results**. Structural XML
+tests and opening ZIP entries are not import proof. No editor version is inferred from an export
+file. On the development host, neither Final Cut Pro/Trial nor DaVinci Resolve/Studio was found
+in installed application metadata; no editor was installed or launched for these checks.
+
+| Editor | Version | Representative import | Relative media, fades, lanes, transitions, captions | Status |
+|---|---|---|---|---|
+| Final Cut Pro | unavailable | not run | not checked in the editor | **merge blocker** |
+| DaVinci Resolve | unavailable | not run | not checked in the editor | **merge blocker** |
+
+The original tiny moving-marker video fixture has twelve distinct frames and a 440 Hz tone;
+the sample author adds original WAV/PNG content. The ignored sample-export test writes portable
+ZIPs to `NODECRAFT_INTERCHANGE643_SAMPLES` for a person with both editors. Import each unzipped
+document, inspect media relinking, trim/transition handles, connected picture/audio tracks,
+opacity and audible ramps, then record the exact app versions, results and any required fixes
+here before marking the PR ready. No copyrighted Apple DTD is vendored: its public documentation
+is not a permissive redistribution license, and even DTD validation would not prove an import.

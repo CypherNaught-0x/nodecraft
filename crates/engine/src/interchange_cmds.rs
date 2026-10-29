@@ -5,9 +5,10 @@
 //! the clips are the node's saved ones and the media each wired node's active result, and a wire
 //! with no result yet is an error rather than a hole. See `docs/timeline-interchange.md`.
 use crate::commands::{CommandSpec, Context, Effect, params};
+use crate::interchange_job::{Prepared, Recipe};
 use crate::timeline_cmds::{editor, inputs, stored};
 use nodecraft_format::interchange::Bundle;
-use nodecraft_nodes::timeline::interchange::{self, Interchange, MediaKind, Sequence, Source};
+use nodecraft_nodes::timeline::interchange::{self, MediaKind, Source};
 use nodecraft_nodes::timeline::{ID, Wire};
 use nodecraft_types::{AssetRef, CanvasId, Error, ErrorKind, NodeId};
 use serde::Deserialize;
@@ -33,11 +34,13 @@ struct ExportParams {
     path: PathBuf,
     #[serde(default)]
     overwrite: bool,
+    #[serde(default)]
+    background: bool,
 }
 
 /// `name` as a file name stem: letters, digits, `-` and `_`, every other run of characters one
 /// `-`, at most [`MAX_STEM_CHARS`]; `fallback` when nothing is left.
-fn stem(name: &str, fallback: &str) -> String {
+pub(crate) fn stem(name: &str, fallback: &str) -> String {
     let mut out = String::new();
     for c in name.chars() {
         if out.chars().count() >= MAX_STEM_CHARS {
@@ -72,15 +75,7 @@ fn extension(mime: &str) -> String {
     if !subtype.is_empty() && subtype.len() <= 8 && subtype.chars().all(|c| c.is_ascii_alphanumeric()) { subtype.to_ascii_lowercase() } else { "bin".into() }
 }
 
-/// A Timeline's document and the assets it names, in the order of its sources.
-struct Prepared {
-    name: String,
-    fps: u32,
-    interchange: Interchange,
-    sources: Vec<(Source, AssetRef)>,
-}
-
-fn prepare(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<Prepared, Error> {
+fn capture(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<Recipe, Error> {
     let node = editor(c, canvas, id)?;
     let timeline = stored(node)?;
     let values = c.kinds.get(ID)?.validate_instance(node, true)?.into_visible_values();
@@ -127,28 +122,13 @@ fn prepare(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<Prepared, Er
         wires.push(wire);
     }
     let name = if node.title.trim().is_empty() { "Timeline".to_owned() } else { node.title.trim().to_owned() };
-    let listed: Vec<Source> = sources.iter().map(|(source, _)| source.clone()).collect();
-    let sequence = Sequence {
-        name: &name,
-        width: frame.width,
-        height: frame.height,
-        fps: frame.fps.0,
-        background: frame.background,
-        timeline: &timeline,
-        wires: &wires,
-        media: &media,
-        sources: &listed,
-    };
-    let interchange = interchange::fcpxml(&sequence)?;
-    for index in &interchange.used {
-        let (_, asset) = sources.get(*index).ok_or_else(|| Error::new(ErrorKind::Internal, "the document names media that isn't listed"))?;
-        c.validate_asset(asset)?;
-    }
-    Ok(Prepared { name, fps: frame.fps.0, interchange, sources })
+    let recipe = Recipe { name, width: frame.width, height: frame.height, fps: frame.fps.0, background: frame.background, timeline, wires, media, sources };
+    recipe.check(c.assets)?;
+    Ok(recipe)
 }
 
 /// What a person reads beside the document: what it is, and everything it leaves out.
-fn report(prepared: &Prepared) -> String {
+pub(crate) fn report(prepared: &Prepared) -> String {
     let i = &prepared.interchange;
     let mut out = format!(
         "NodeCraft timeline interchange\n\nDocument: {}.fcpxml (FCPXML {})\nSequence: {}, {} frames at {} fps\nMedia: {} file(s) in media/\n\n",
@@ -179,22 +159,19 @@ fn report(prepared: &Prepared) -> String {
 }
 
 fn bundle(c: &Context<'_>, canvas: CanvasId, id: NodeId) -> Result<(Prepared, Bundle), Error> {
-    let prepared = prepare(c, canvas, id)?;
-    let report = report(&prepared);
-    let mut media = Vec::with_capacity(prepared.interchange.used.len());
-    for index in &prepared.interchange.used {
-        let (source, asset) = prepared.sources.get(*index).ok_or_else(|| Error::new(ErrorKind::Internal, "the document names media that isn't listed"))?;
-        media.push((source.file.clone(), asset.clone()));
-    }
-    let subtitles = prepared.interchange.srt.as_ref().map(|srt| (format!("{}.srt", stem(&prepared.name, "Timeline")), srt.clone()));
-    let bundle = Bundle { document: format!("{}.fcpxml", stem(&prepared.name, "Timeline")), xml: prepared.interchange.xml.clone(), report, subtitles, media };
-    bundle.check()?;
+    let recipe = capture(c, canvas, id)?;
+    let prepared = recipe.prepare(&mut || Ok(()))?;
+    let bundle = prepared.bundle()?;
     Ok((prepared, bundle))
 }
 
 fn preview(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: PreviewParams = params(value)?;
     let (prepared, bundle) = bundle(c, p.canvas, p.id)?;
+    for index in &prepared.interchange.used {
+        let (_, asset) = prepared.sources.get(*index).ok_or_else(|| Error::new(ErrorKind::Internal, "the document names media that isn't listed"))?;
+        c.validate_asset(asset)?;
+    }
     let media: Vec<Json> = prepared
         .interchange
         .used
@@ -227,16 +204,23 @@ fn preview(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
 fn export(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: ExportParams = params(value)?;
     crate::export::check(&p.path)?;
-    let (_, bundle) = bundle(c, p.canvas, p.id)?;
-    Ok(Effect::Export { what: crate::export::Exported::Bundle(Box::new(bundle)), path: p.path, overwrite: p.overwrite, background: false })
+    let what = if p.background {
+        crate::export::Exported::Timeline(Box::new(capture(c, p.canvas, p.id)?))
+    } else {
+        crate::export::Exported::Bundle(Box::new(bundle(c, p.canvas, p.id)?.1))
+    };
+    Ok(Effect::Export { what, path: p.path, overwrite: p.overwrite, background: p.background })
 }
 
 fn preview_enabled(c: &Context<'_>, value: &Json) -> Result<(), Error> {
-    preview(c, value).map(|_| ())
+    let p: PreviewParams = params(value)?;
+    capture(c, p.canvas, p.id).map(|_| ())
 }
 
 fn export_enabled(c: &Context<'_>, value: &Json) -> Result<(), Error> {
-    export(c, value).map(|_| ())
+    let p: ExportParams = params(value)?;
+    crate::export::check(&p.path)?;
+    capture(c, p.canvas, p.id).map(|_| ())
 }
 
 fn uuid() -> Json {
@@ -253,7 +237,7 @@ fn export_schema() -> Json {
         "required": ["canvas", "id", "path"],
         "properties": {"canvas": uuid(), "id": uuid(),
             "path": {"type": "string", "minLength": 1, "maxLength": crate::export::MAX_PATH_BYTES},
-            "overwrite": {"type": "boolean"}}})
+            "overwrite": {"type": "boolean"}, "background": {"type": "boolean", "default": false}}})
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -274,7 +258,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: export_schema,
-            params_doc: "{canvas, id: Timeline NodeId, path: absolute file path, overwrite?: bool (default false)} -> {bytes}; writes a ZIP holding <name>.fcpxml with caption titles, optional <name>.srt (caption text/timing), report.txt (every loss) and media/ with each source once at relative paths. Nothing is rendered and no provider is called. Refuses an existing file unless `overwrite`, a missing folder and a full disk, leaving nothing half written. Desktop only.",
+            params_doc: "{canvas, id: Timeline NodeId, path: absolute file path, overwrite?: bool (default false), background?: bool (default false)} -> {bytes}; writes a ZIP holding <name>.fcpxml with fades/caption titles, optional <name>.srt, report.txt and media/ with each source once at relative paths. background:true requires an export runner and initially returns {pending:id}; export.status reports progress and the final {state:exported,bytes} or failure; export.cancel cancels before publication. The default stays synchronous. At most 256 media and 8 GiB total media; sidecars at most 16 MiB each. No rendering or provider calls. Existing destinations require overwrite; cancellation or failure leaves no partial destination. Desktop only.",
             enabled: export_enabled,
             run: export,
         },

@@ -70,6 +70,35 @@ fn a_cancelled_export_stops() {
 }
 
 #[test]
+fn progress_counts_only_copied_media_and_mid_copy_cancellation_is_observed() {
+    let mut store = AssetStore::default();
+    let bytes = vec![42; 3 * crate::asset_source::TRANSFER_BYTES];
+    let a = asset(&mut store, &bytes, "text/plain");
+    let b = bundle(vec![("media/first.bin".into(), a.clone()), ("media/second.bin".into(), a)]);
+    let mut reports = Vec::new();
+    b.write_controlled(&store, Cursor::new(Vec::new()), &TransferCancel::default(), &mut |p| reports.push(p)).unwrap();
+    assert_eq!(reports.first().unwrap(), &Progress { total_media: 2, total_bytes: bytes.len() as u64 * 2, ..Default::default() });
+    assert_eq!(
+        reports.last().unwrap(),
+        &Progress { completed_media: 2, total_media: 2, copied_bytes: bytes.len() as u64 * 2, total_bytes: bytes.len() as u64 * 2, verifying: false }
+    );
+    assert!(reports.windows(2).all(|pair| pair[0].copied_bytes <= pair[1].copied_bytes));
+    let cancel = TransferCancel::default();
+    let mut latest = Progress::default();
+    let error = b
+        .write_controlled(&store, Cursor::new(Vec::new()), &cancel, &mut |p| {
+            latest = p;
+            if p.copied_bytes > 0 {
+                cancel.cancel();
+            }
+        })
+        .unwrap_err();
+    assert!(TransferCancel::is_cancellation(&error));
+    assert_eq!(latest.completed_media, 0);
+    assert!(latest.copied_bytes < latest.total_bytes);
+}
+
+#[test]
 fn srt_companion_bytes_are_in_the_archive_and_obey_all_entry_limits() {
     let store = AssetStore::default();
     let text = "1\n00:00:01,000 --> 00:00:02,000\nFüchse\n\n";
