@@ -14,6 +14,7 @@ mod csv;
 mod estimates;
 mod inputs;
 mod inspect;
+mod mcp_http;
 mod plugin;
 mod project;
 mod providers;
@@ -41,6 +42,10 @@ commands:
   mcp --bridge [token-file]
                   serve the running app instead (started with `nodecraft --control`); the
                   token file defaults to control/control.json in the app's settings folder
+  mcp [--bridge [token-file]] --listen [address]
+                  serve over MCP Streamable HTTP at http://<address>/mcp instead of stdio, on
+                  this computer only (default 127.0.0.1:41117). Clients send
+                  `Authorization: Bearer <token>`: NODECRAFT_MCP_TOKEN, or a new token shown once
   commands [--full]
                   list the engine's commands; --full adds their parameters
   inspect <project.ncraft>
@@ -153,7 +158,37 @@ fn default_token_file() -> Option<std::path::PathBuf> {
     nodecraft_engine::settings::settings_dir().map(|dir| dir.join("control").join("control.json"))
 }
 
-fn bridge(token_file: Option<&str>) -> ExitCode {
+/// Serves `server` over stdio, or over HTTP when `listen` names an address.
+fn serve_mcp(server: &mut McpServer, listen: Option<std::net::SocketAddr>) -> ExitCode {
+    match listen {
+        Some(addr) => mcp_http::serve(server, addr),
+        None => serve_stdio(server),
+    }
+}
+
+/// `mcp`'s options: `--bridge [token-file]` and `--listen [address]`, in either order.
+#[derive(Debug, Default, PartialEq)]
+struct McpArgs {
+    bridge: Option<Option<String>>,
+    listen: Option<std::net::SocketAddr>,
+}
+
+fn mcp_args(args: &[String]) -> Result<McpArgs, String> {
+    let mut out = McpArgs::default();
+    let mut rest = args.iter().peekable();
+    while let Some(arg) = rest.next() {
+        let value = rest.next_if(|next| !next.starts_with("--")).cloned();
+        match arg.as_str() {
+            "--bridge" if out.bridge.is_none() => out.bridge = Some(value),
+            "--listen" if out.listen.is_none() => out.listen = Some(mcp_http::listen_addr(value.as_deref())?),
+            "--bridge" | "--listen" => return Err(format!("`{arg}` is given twice")),
+            _ => return Err("`mcp` takes only `--bridge [token-file]` and `--listen [address]`".into()),
+        }
+    }
+    Ok(out)
+}
+
+fn bridge(token_file: Option<&str>, listen: Option<std::net::SocketAddr>) -> ExitCode {
     let Some(path) = token_file.map(std::path::PathBuf::from).or_else(default_token_file) else {
         eprintln!("error: no settings folder to find the app's control token in; pass the token file");
         return ExitCode::FAILURE;
@@ -165,10 +200,10 @@ fn bridge(token_file: Option<&str>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    serve_stdio(&mut McpServer::bridge(client, Box::new(random_bytes())))
+    serve_mcp(&mut McpServer::bridge(client, Box::new(random_bytes())), listen)
 }
 
-fn mcp() -> ExitCode {
+fn mcp(listen: Option<std::net::SocketAddr>) -> ExitCode {
     let mut new_id = random_bytes();
     let session = nodecraft_automation::blank_session(ProjectId::from_bytes(new_id()), CanvasId::from_bytes(new_id()));
     let mut services = Services::default();
@@ -206,8 +241,8 @@ fn mcp() -> ExitCode {
         eprintln!("warning: your skills are unavailable: {}", e.message);
     }
     match estimates {
-        Some((runner, maker)) => serve_stdio(&mut McpServer::with_host(estimates::Host::new(session, runner, maker), Box::new(new_id))),
-        None => serve_stdio(&mut McpServer::new(session, Box::new(new_id))),
+        Some((runner, maker)) => serve_mcp(&mut McpServer::with_host(estimates::Host::new(session, runner, maker), Box::new(new_id)), listen),
+        None => serve_mcp(&mut McpServer::new(session, Box::new(new_id)), listen),
     }
 }
 
@@ -587,12 +622,11 @@ fn main() -> ExitCode {
             let _ = writeln!(std::io::stderr(), "error: `control` takes no options\n\n{USAGE}");
             ExitCode::FAILURE
         }
-        Some("mcp") => match args.get(1..).unwrap_or_default() {
-            [] => mcp(),
-            [flag] if flag == "--bridge" => bridge(None),
-            [flag, path] if flag == "--bridge" => bridge(Some(path)),
-            _ => {
-                eprintln!("error: `mcp` takes only `--bridge [token-file]`\n\n{USAGE}");
+        Some("mcp") => match mcp_args(args.get(1..).unwrap_or_default()) {
+            Ok(McpArgs { bridge: None, listen }) => mcp(listen),
+            Ok(McpArgs { bridge: Some(path), listen }) => bridge(path.as_deref(), listen),
+            Err(e) => {
+                eprintln!("error: {e}\n\n{USAGE}");
                 ExitCode::FAILURE
             }
         },

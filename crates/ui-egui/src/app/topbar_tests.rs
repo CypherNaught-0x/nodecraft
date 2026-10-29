@@ -13,7 +13,7 @@ fn search_label() -> &'static str {
 pub(super) fn reveal(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
     if (matches!(
         label,
-        "API keys" | "Techniques" | "Elements" | "ComfyUI" | "Providers" | "Share" | "Queue" | "Budgets" | "Sheets" | "Comments" | "Open as app"
+        "API keys" | "Techniques" | "Elements" | "ComfyUI" | "Providers" | "Automation" | "Share" | "Queue" | "Budgets" | "Sheets" | "Comments" | "Open as app"
     ) || label.starts_with("Search ("))
         && h.query_by_role_and_label(Role::Button, label).is_none()
         && h.query_by_role_and_label(Role::Button, "More").is_some()

@@ -73,7 +73,7 @@ fn an_mcp_client_session() {
 
 #[test]
 fn unknown_mcp_options_are_refused() {
-    let out = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).args(["mcp", "--listen"]).output().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).args(["mcp", "--port"]).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("takes only"));
 }

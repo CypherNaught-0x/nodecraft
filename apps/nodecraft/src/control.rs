@@ -12,32 +12,51 @@ use nodecraft_automation::roots::FileRoots;
 use nodecraft_ui_egui::NodeCraftApp;
 
 /// Requests answered per frame, so a busy client can't stall drawing.
-const PER_FRAME: usize = 16;
+pub const PER_FRAME: usize = 16;
 /// Screenshots waiting for their image at once.
 const MAX_PENDING_SHOTS: usize = 4;
 /// A screenshot whose image hasn't arrived by then (the window isn't drawing) fails.
 const SHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Marks the screenshots this module asks for, so others aren't taken as replies.
-struct ControlShot;
+/// Each [`CallPump`] tags its own, so the control channel's and the MCP server's never answer
+/// with each other's image.
+struct ControlShot(u64);
+
+/// Tags for [`CallPump`]s.
+static NEXT_PUMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The control channel's listener and what it is waiting on. The window's [`crate::shell::Shell`]
 /// pumps it each frame.
 pub struct Channel {
     listener: Listener,
+    pump: CallPump,
+    token_file: Option<(PathBuf, TokenFile)>,
+}
+
+/// Answers control [`Call`]s on the UI thread, whoever queued them: the control channel's
+/// connections, or the app's built-in MCP server (#116).
+pub struct CallPump {
     shots: Vec<Call>,
     /// When the pending screenshot was requested.
     shot_since: Option<std::time::Instant>,
-    token_file: Option<(PathBuf, TokenFile)>,
     /// The folders clients may open projects from and save them to (`--root`, #423).
     roots: FileRoots,
+    /// This pump's [`ControlShot`] tag.
+    tag: u64,
 }
 
 impl Channel {
     /// Starts listening and writes the token file into `dir` (`control.json`).
     pub fn start(ctx: &egui::Context, dir: Option<PathBuf>, roots: FileRoots) -> Result<Self, nodecraft_types::Error> {
         let (listener, token_file) = Self::listen(ctx, dir)?;
-        Ok(Self { listener, shots: Vec::new(), shot_since: None, token_file, roots })
+        Ok(Self { listener, pump: CallPump::new(roots), token_file })
+    }
+
+    /// Answers waiting requests and finished screenshots.
+    pub fn pump(&mut self, app: &mut NodeCraftApp, ctx: &egui::Context) {
+        let calls = self.listener.calls.try_iter().take(PER_FRAME).collect();
+        self.pump.pump(calls, app, ctx);
     }
 
     /// Removes the token file, if this app wrote it.
@@ -72,10 +91,18 @@ impl Channel {
         };
         Ok((listener, token_file))
     }
+}
 
-    /// Answers waiting requests and finished screenshots.
-    pub fn pump(&mut self, app: &mut NodeCraftApp, ctx: &egui::Context) {
-        let ours = |data: &egui::UserData| data.data.as_ref().is_some_and(|d| d.downcast_ref::<ControlShot>().is_some());
+impl CallPump {
+    pub fn new(roots: FileRoots) -> Self {
+        Self { shots: Vec::new(), shot_since: None, roots, tag: NEXT_PUMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
+    }
+
+    /// Answers `calls` (at most [`PER_FRAME`]; a full batch asks for another frame) and finished
+    /// screenshots.
+    pub fn pump(&mut self, calls: Vec<Call>, app: &mut NodeCraftApp, ctx: &egui::Context) {
+        let tag = self.tag;
+        let ours = |data: &egui::UserData| data.data.as_ref().is_some_and(|d| d.downcast_ref::<ControlShot>().is_some_and(|shot| shot.0 == tag));
         let image = ctx.input(|i| {
             i.raw.events.iter().find_map(|e| match e {
                 egui::Event::Screenshot { image, user_data, .. } if ours(user_data) => Some(Arc::clone(image)),
@@ -113,8 +140,7 @@ impl Channel {
             }
             self.shot_since = None;
         }
-        let calls: Vec<Call> = self.listener.calls.try_iter().take(PER_FRAME).collect();
-        let more = calls.len() == PER_FRAME;
+        let more = calls.len() >= PER_FRAME;
         for call in calls {
             // The client already gave up on it: running it now could apply a command twice.
             if call.expired() {
@@ -124,7 +150,7 @@ impl Channel {
                 Some(result) => call.reply(result),
                 None if call.request == Request::Screenshot && self.shots.len() < MAX_PENDING_SHOTS => {
                     if self.shots.is_empty() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(ControlShot)));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(ControlShot(self.tag))));
                         self.shot_since = Some(std::time::Instant::now());
                     }
                     self.shots.push(call);

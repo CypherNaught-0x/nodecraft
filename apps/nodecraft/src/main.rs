@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 mod agent_panel;
 mod control;
+mod mcp_server;
 mod shell;
 mod storage_window;
 mod video_tools;
@@ -200,12 +201,29 @@ fn main() -> ExitCode {
                 app.set_renderer(format!("{} ({:?})", info.name, info.backend));
                 app.install_mesh_renderer(render);
             }
+            // Settings › Automation (#116): off unless the person turned it on.
+            let mcp = {
+                let waker = cc.egui_ctx.clone();
+                let port = app.automation_settings().mcp_port();
+                let server = std::rc::Rc::new(std::cell::RefCell::new(mcp_server::Server::new(
+                    port,
+                    std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore),
+                    std::sync::Arc::new(move || waker.request_repaint()),
+                )));
+                match app.install_mcp_server(server.clone()) {
+                    Ok(()) => Some((server, control::CallPump::new(roots.clone()))),
+                    Err(e) => {
+                        log::warn!("the built-in MCP server is unavailable: {}", e.message);
+                        None
+                    }
+                }
+            };
             // Without the channel the app still opens; the log says why.
             let channel = control
                 .then(|| control::Channel::start(&cc.egui_ctx, dir, roots).map_err(|e| log::error!("control channel not started: {}", e.message)).ok())
                 .flatten();
             let agent = agent_panel::AgentPanel::live(&cc.egui_ctx, app.agent_settings());
-            Ok(Box::new(shell::Shell { app, agent, channel, storage_window }))
+            Ok(Box::new(shell::Shell { app, agent, channel, storage_window, mcp }))
         }),
     );
     match result {

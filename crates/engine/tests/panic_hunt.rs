@@ -603,6 +603,9 @@ fn template(id: &str) -> (Session, Value) {
         "providers.settings_set" => json!({"comfyui_url":"http://127.0.0.1:8188","litellm_url":"https://proxy.example"}),
         // The updates service isn't registered here: the check must be refused cleanly.
         "app.check_updates" | "app.update_status" | "app.install_update" | "app.restart_to_update" => json!({}),
+        // No MCP server host here either (#116): refused cleanly, never started.
+        "automation.mcp_server_set" => json!({"enabled": true}),
+        "automation.mcp_server_status" => json!({}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})

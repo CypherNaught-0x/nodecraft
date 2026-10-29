@@ -58,6 +58,7 @@ pub mod live_actions;
 pub mod live_cmds;
 pub mod local_export;
 pub mod mask_cmds;
+pub mod mcp_server_cmds;
 pub mod mesh_cmds;
 pub mod mesh_view_cmds;
 pub mod migrate_cmds;

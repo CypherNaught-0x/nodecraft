@@ -46,6 +46,37 @@ pub struct NodeCraftSettings {
     pub agent: AgentSettings,
     pub share: ShareSettings,
     pub budgets: BudgetSettings,
+    pub automation: AutomationSettings,
+}
+
+/// Settings › Automation (#116): the desktop app's built-in MCP server. Its bearer token lives in
+/// the keychain ([`MCP_TOKEN_ACCOUNT`]), never here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutomationSettings {
+    /// Start the server with the app. Off unless the person turns it on.
+    pub mcp_server: bool,
+    /// The loopback port it listens on. Read through [`Self::mcp_port`].
+    pub mcp_port: u16,
+}
+
+/// The port the built-in MCP server listens on unless settings name another.
+pub const DEFAULT_MCP_PORT: u16 = 41116;
+/// The keychain account holding the built-in MCP server's bearer token.
+pub const MCP_TOKEN_ACCOUNT: &str = "nodecraft-mcp-server";
+
+impl Default for AutomationSettings {
+    fn default() -> Self {
+        Self { mcp_server: false, mcp_port: DEFAULT_MCP_PORT }
+    }
+}
+
+impl AutomationSettings {
+    /// The port, or [`DEFAULT_MCP_PORT`] for one that needs special rights or picks at random
+    /// (below 1024, or 0).
+    pub fn mcp_port(&self) -> u16 {
+        if self.mcp_port >= 1024 { self.mcp_port } else { DEFAULT_MCP_PORT }
+    }
 }
 
 /// External tools for video (#105). NodeCraft never downloads or bundles them, and never takes
@@ -540,6 +571,25 @@ mod tests {
         let (store, _) = open_in(dir.path());
         let caps = &store.get().budgets;
         assert_eq!((caps.per_call_usd_cents, caps.session_usd_cents, caps.project_usd_cents, caps.total_usd_cents), (Some(0), Some(700), Some(12), Some(0)));
+    }
+
+    #[test]
+    fn the_mcp_server_is_off_unless_turned_on_and_its_port_is_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _) = open_in(dir.path());
+        assert!(!store.get().automation.mcp_server, "off by default");
+        assert_eq!(store.get().automation.mcp_port(), DEFAULT_MCP_PORT);
+        drop(store);
+        write_config(dir.path(), "[automation]\nmcp_server = true\nmcp_port = 5000\n");
+        let (store, _) = open_in(dir.path());
+        assert!(store.get().automation.mcp_server);
+        assert_eq!(store.get().automation.mcp_port(), 5000);
+        drop(store);
+        for bad in ["mcp_port = 80", "mcp_port = 0", "mcp_port = 70000", "mcp_port = \"x\""] {
+            write_config(dir.path(), &format!("[automation]\nmcp_server = true\n{bad}\n"));
+            let (store, _) = open_in(dir.path());
+            assert_eq!(store.get().automation.mcp_port(), DEFAULT_MCP_PORT, "{bad}");
+        }
     }
 
     #[test]
