@@ -676,17 +676,20 @@ impl NodeCraftApp {
         let assets = self.session.assets();
         let preview = self.previews.request_asset(ctx, hash, edge, || assets.preview_read(&asset));
         let mut open = true;
-        egui::Window::new("Image").id(egui::Id::new("image_viewer")).open(&mut open).collapsible(false).default_width(t.viewer_width).show(ctx, |ui| {
-            let width = ui.available_width();
-            let height = match (&preview, asset.meta.width, asset.meta.height) {
-                (_, Some(w), Some(h)) if w > 0 && h > 0 => width * h as f32 / w as f32,
-                (crate::preview::Preview::Ready { size, .. }, ..) if size[0] > 0 => width * size[1] as f32 / size[0] as f32,
-                _ => width,
-            };
-            let height = if height.is_finite() { height.clamp(1.0, width.max(1.0) * 4.0) } else { width };
-            let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-            card::show_image(ui, area, &preview, None, &t);
-        });
+        crate::floating::panel(ctx, "Image", egui::Id::new("image_viewer"), crate::floating::Home::CenterTop, &t)
+            .open(&mut open)
+            .default_width(t.viewer_width)
+            .show(ctx, |ui| {
+                let width = ui.available_width();
+                let height = match (&preview, asset.meta.width, asset.meta.height) {
+                    (_, Some(w), Some(h)) if w > 0 && h > 0 => width * h as f32 / w as f32,
+                    (crate::preview::Preview::Ready { size, .. }, ..) if size[0] > 0 => width * size[1] as f32 / size[0] as f32,
+                    _ => width,
+                };
+                let height = if height.is_finite() { height.clamp(1.0, width.max(1.0) * 4.0) } else { width };
+                let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+                card::show_image(ui, area, &preview, None, &t);
+            });
         if !open {
             self.viewer = None;
         }

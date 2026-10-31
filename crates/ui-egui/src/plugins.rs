@@ -433,9 +433,7 @@ impl PluginsPanel {
             self.list(session);
         }
         let mut open = self.open;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Plugins").id(egui::Id::new("nodecraft.plugins")).open(&mut open).collapsible(false).frame(frame).show(ctx, |ui| {
+        crate::floating::panel(ctx, "Plugins", egui::Id::new("nodecraft.plugins"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
             if !available {
                 ui.label(egui::RichText::new("Plugin packages aren't available here.").color(t.text_muted));
                 return;

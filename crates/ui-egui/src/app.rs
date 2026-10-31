@@ -360,6 +360,7 @@ mod export;
 mod fields;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_dialogs;
+mod floating_bounds;
 #[cfg(not(target_arch = "wasm32"))]
 mod folder_import;
 mod generate;
@@ -1354,6 +1355,8 @@ impl NodeCraftApp {
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
         self.viewport = viewport;
+        // Panels drawn before the row (viewers) use this frame's area; republished below.
+        self.publish_floating_bounds(ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         let file_menu_owns_input = self.file_menu(ui, t);
         #[cfg(target_arch = "wasm32")]
@@ -2651,6 +2654,7 @@ impl NodeCraftApp {
         self.file_button(ui, t);
         #[cfg(target_arch = "wasm32")]
         self.web_file_button(ui, t);
+        self.publish_floating_bounds(ui.ctx());
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
         self.plugin_panel.show(ui.ctx(), &mut self.session, t);
@@ -3656,6 +3660,8 @@ mod held_restart_tests;
 #[cfg(test)]
 mod stale_tests;
 
+#[cfg(test)]
+mod floating957_tests;
 #[cfg(test)]
 mod router949_tests;
 #[cfg(test)]

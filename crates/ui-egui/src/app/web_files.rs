@@ -375,6 +375,7 @@ impl NodeCraftApp {
         let mut choice = None;
         egui::Window::new("Unsaved changes")
             .id(egui::Id::new("nodecraft.web_files.confirm"))
+            .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)

@@ -483,6 +483,61 @@ below both controls. Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
 [layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
 
+## Overlays and stacking
+
+One rule decides how every surface over the canvas moves, resizes and stacks (#957). It is
+implemented once, in [`crates/ui-egui/src/floating.rs`](../crates/ui-egui/src/floating.rs);
+panels do not position themselves. See the [decision](decisions/2026-10-28-floating-panel-rule.md).
+
+**Stacking, back to front** (egui `Order` in brackets):
+
+1. **Canvas** (`Background`): the board, cards and wires.
+2. **Floating panels** (`Middle`, `floating::PANEL_ORDER`): the last opened or pressed panel is
+   in front. Opening one never reorders the others.
+3. **Pinned chrome** (`Foreground`): the application row, Tag filter, Format selection, Search,
+   Discussions, the minimap and comment pins.
+4. **Menus, popups and dialogs** (`Foreground`, shown after chrome): the More menu, quick-add,
+   Turn into, mention lists, egui menus and combo boxes, and question dialogs.
+5. **Notices** (`Foreground`, bottom-left): the notice and staleness check, update banner,
+   pending drop, folder import and background export progress. They are above panels and
+   chrome. The quick-add palette and Turn into menu are raised over a notice while open (2026-10-18
+   staleness decision), so a menu the keyboard owns is never under a notice.
+6. **Tooltips** (`Tooltip`): egui's own, above everything.
+
+**Floating panels** are built by `floating::panel` and behave the same everywhere:
+
+- **Move** by dragging the header (title bar). Dragging inside the body never moves a panel.
+- **Resize** from the right or bottom edge or the bottom-right corner, never larger than the
+  panel area. Every panel is pivoted at its top-left corner, so the header and the top-left stay
+  where they are while resizing; the left and top edges are not handles.
+- **Dismiss** with the header's close button (AccessKit: "Close window", focusable by Tab) or the
+  control that opened it.
+- **Panel area**: the window below the application row, and below an open Search and left of
+  open Discussions, which are pinned chrome drawn above panels. A panel is clamped into it every
+  frame, so dragging, a smaller window, a resized panel or opening Search or Discussions can never
+  put its header under chrome or out of reach, and it can never cover the control that opened it.
+- **Opening**: a panel opens where it was last left, or first at its home: its top-right corner
+  at the panel area's top-right (`navigation_margin` in from the window edge); viewers open
+  centred at the same height. A first opening is measured by egui unseen and placed on the next
+  pass with its real size. If it would cover an open panel's header, it steps down by
+  `panel_cascade` (44) until every open panel's title and close button stay visible.
+- Position, size and stacking are view state in egui memory, never document changes or undo steps.
+
+| Surface | Kind | Moves | Resizes | Dismiss |
+|---|---|---|---|---|
+| Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins | floating panel | header | right/bottom edges, corner | close button or its row control |
+| Custom shader, Image viewer, PDF reader, Quarantined charges | floating panel (viewer/review) | header | right/bottom edges, corner | close button |
+| Project files (File menu) | floating window, not yet on `floating::panel` | header | no | close button or File |
+| Shared parameters (bulk) | fixed: pinned top-right while several nodes are selected; panels opening over it step below its header | no | no | change the selection |
+| Application row, Tag filter, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
+| Comment pins, generation toolbar, Save result toolbar | attached to their card or comment | with the canvas | no | deselect |
+| More menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
+| Model preview changed, Review model change, Model choice unavailable, Choose a model, Workflow fields, Rename field, Unsaved changes (browser) | dialog, above panels | header (Unsaved changes stays centred) | all but Rename field and Unsaved changes | its buttons |
+| Notice, update banner, pending drop, folder import, background export | notice | no | no | its own button |
+
+The generation and Save result toolbars draw in the panel order while their card is selected;
+they follow the card, so they are not clamped or cascaded.
+
 ## Saving results
 
 Generated media previews and their card menus offer **Save as…** and **Save to folder…**

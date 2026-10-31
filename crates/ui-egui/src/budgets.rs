@@ -37,16 +37,9 @@ impl BudgetsPanel {
         self.fields = None;
     }
 
-    /// Draws the panel when open, in `viewport` with its top right corner `offset` from the
-    /// viewport's; returns the caps to save when the person saves them.
-    pub fn show(
-        &mut self,
-        ctx: &egui::Context,
-        (viewport, offset): (egui::Rect, egui::Vec2),
-        settings: &BudgetSettings,
-        spent: Option<&Spent>,
-        t: &Tokens,
-    ) -> Option<BudgetSettings> {
+    /// Draws the panel when open, as a floating panel (`crate::floating`); returns the caps to
+    /// save when the person saves them.
+    pub fn show(&mut self, ctx: &egui::Context, settings: &BudgetSettings, spent: Option<&Spent>, t: &Tokens) -> Option<BudgetSettings> {
         if !self.open {
             self.fields = None;
             return None;
@@ -57,71 +50,61 @@ impl BudgetsPanel {
         });
         let mut save = None;
         let mut open = self.open;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Budgets")
-            .id(egui::Id::new("nodecraft.budgets"))
-            .open(&mut open)
-            .constrain_to(viewport)
-            .anchor(egui::Align2::RIGHT_TOP, offset)
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new("Runs that would go past a cap don't start. Leave a field empty for no cap. Amounts are in US dollars.")
-                        .color(t.text_muted),
-                );
-                ui.add_space(t.control_gap);
-                let mut edited = false;
-                egui::Grid::new("nodecraft.budgets.caps").num_columns(2).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
-                    for ((label, hint), field) in CAPS.iter().zip(fields.iter_mut()) {
-                        let name = ui.label(egui::RichText::new(*label).color(t.text)).on_hover_text(*hint);
-                        edited |= ui
-                            .add(egui::TextEdit::singleline(field).char_limit(MAX_FIELD_CHARS).hint_text("no cap").desired_width(t.card_width * 0.6))
-                            .labelled_by(name.id)
-                            .on_hover_text(*hint)
-                            .changed();
-                        ui.end_row();
-                    }
-                });
-                if edited {
-                    self.status = None;
-                }
-                if let Some(spent) = spent {
-                    let text = |amounts: &std::collections::BTreeMap<_, _>| {
-                        let listed: Vec<String> = amounts.values().copied().map(format_money).collect();
-                        if listed.is_empty() { "nothing".to_owned() } else { listed.join(", ") }
-                    };
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Spent this session: {}. In this project: {}. In total: {}.",
-                            text(&spent.session),
-                            text(&spent.this_project),
-                            text(&spent.project)
-                        ))
-                        .color(t.text_muted),
-                    );
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
-                        match parse(fields) {
-                            Ok(caps) => {
-                                self.notice = None;
-                                self.status = Some("Runs are checked against these caps from now on.".into());
-                                save = Some(caps);
-                            }
-                            Err(why) => self.notice = Some(why),
-                        }
-                    }
-                });
-                if let Some(notice) = &self.notice {
-                    ui.label(egui::RichText::new(notice).color(t.danger));
-                }
-                if let Some(status) = &self.status {
-                    ui.label(egui::RichText::new(status).color(t.text_muted));
+        crate::floating::panel(ctx, "Budgets", egui::Id::new("nodecraft.budgets"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new("Runs that would go past a cap don't start. Leave a field empty for no cap. Amounts are in US dollars.")
+                    .color(t.text_muted),
+            );
+            ui.add_space(t.control_gap);
+            let mut edited = false;
+            egui::Grid::new("nodecraft.budgets.caps").num_columns(2).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
+                for ((label, hint), field) in CAPS.iter().zip(fields.iter_mut()) {
+                    let name = ui.label(egui::RichText::new(*label).color(t.text)).on_hover_text(*hint);
+                    edited |= ui
+                        .add(egui::TextEdit::singleline(field).char_limit(MAX_FIELD_CHARS).hint_text("no cap").desired_width(t.card_width * 0.6))
+                        .labelled_by(name.id)
+                        .on_hover_text(*hint)
+                        .changed();
+                    ui.end_row();
                 }
             });
+            if edited {
+                self.status = None;
+            }
+            if let Some(spent) = spent {
+                let text = |amounts: &std::collections::BTreeMap<_, _>| {
+                    let listed: Vec<String> = amounts.values().copied().map(format_money).collect();
+                    if listed.is_empty() { "nothing".to_owned() } else { listed.join(", ") }
+                };
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Spent this session: {}. In this project: {}. In total: {}.",
+                        text(&spent.session),
+                        text(&spent.this_project),
+                        text(&spent.project)
+                    ))
+                    .color(t.text_muted),
+                );
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    match parse(fields) {
+                        Ok(caps) => {
+                            self.notice = None;
+                            self.status = Some("Runs are checked against these caps from now on.".into());
+                            save = Some(caps);
+                        }
+                        Err(why) => self.notice = Some(why),
+                    }
+                }
+            });
+            if let Some(notice) = &self.notice {
+                ui.label(egui::RichText::new(notice).color(t.danger));
+            }
+            if let Some(status) = &self.status {
+                ui.label(egui::RichText::new(status).color(t.text_muted));
+            }
+        });
         self.open = open;
         save
     }
