@@ -740,7 +740,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     let (mut admitted, mut quote) = nodecraft_exec::admission::admit_run_with_targets(
         plan,
         run.canvas,
-        expanded.canvas.into_owned(),
+        nodecraft_exec::run::snapshot(expanded.canvas),
         c.kinds,
         catalog.catalog(),
         limits,

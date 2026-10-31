@@ -725,7 +725,7 @@ fn failed_materialization_siblings_cannot_copy_past_the_shared_budget() {
                 _ => panic!(),
             }
         }
-        let limits = RunLimits { list_items: if late == "bytes" { 3 } else { 2 }, step_bytes: cap, run_bytes: cap };
+        let limits = RunLimits { list_items: if late == "bytes" { 3 } else { 2 }, step_bytes: cap, run_bytes: cap, ..RunLimits::default() };
         let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, limits)).unwrap();
         let (finished, failed, jobs) = drive(&mut run, &kinds, first, &BTreeSet::new());
         assert_eq!(finished.iter().map(|s| s.node).collect::<Vec<_>>(), vec![id(2), id(6)], "{late}");
@@ -755,10 +755,10 @@ fn materialization_exact_and_one_over_limits_admit_only_copied_values() {
     let plan = plan_of(&p, &[2, 3]);
     let cap = 2 * value_bytes(&Value::Text("a".into()));
     for limits in [
-        RunLimits { list_items: 2, step_bytes: cap, run_bytes: cap },
-        RunLimits { list_items: 1, step_bytes: cap, run_bytes: cap },
-        RunLimits { list_items: 2, step_bytes: cap - 1, run_bytes: cap },
-        RunLimits { list_items: 2, step_bytes: cap, run_bytes: cap - 1 },
+        RunLimits { list_items: 2, step_bytes: cap, run_bytes: cap, ..RunLimits::default() },
+        RunLimits { list_items: 1, step_bytes: cap, run_bytes: cap, ..RunLimits::default() },
+        RunLimits { list_items: 2, step_bytes: cap - 1, run_bytes: cap, ..RunLimits::default() },
+        RunLimits { list_items: 2, step_bytes: cap, run_bytes: cap - 1, ..RunLimits::default() },
     ] {
         let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, limits)).unwrap();
         let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
@@ -804,7 +804,7 @@ fn copies_stay_charged_when_kind_planning_fails_and_remaining_budget_is_usable()
     // The independent sibling needs just one value of the remaining allowance.
     plan.steps.iter_mut().find(|s| s.node == id(4)).unwrap().inputs[0].from = vec![InputSource::Value(Value::Text("z".into()))];
     let each = value_bytes(&Value::Text("a".into()));
-    let limits = RunLimits { list_items: 2, step_bytes: 2 * each, run_bytes: 3 * each };
+    let limits = RunLimits { list_items: 2, step_bytes: 2 * each, run_bytes: 3 * each, ..RunLimits::default() };
     let (mut run, first) = Run::start(&plan, C, canvas, &kinds, opts(RUN, 1, limits)).unwrap();
     let (finished, failed, jobs) = drive(&mut run, &kinds, first, &BTreeSet::new());
     assert_eq!(finished.iter().map(|r| r.node).collect::<Vec<_>>(), vec![id(2), id(4)]);
@@ -844,7 +844,7 @@ fn runtime_size_preflight_matches_all_values_and_has_depth_bounded_scratch() {
         let mut plan = plan_of(&p, &[2, 3]);
         plan.steps.iter_mut().find(|s| s.node == id(3)).unwrap().inputs[0].from = vec![InputSource::Value(value.clone())];
         for budget in [required, required - 1] {
-            let limits = RunLimits { list_items: 1, step_bytes: budget, run_bytes: budget };
+            let limits = RunLimits { list_items: 1, step_bytes: budget, run_bytes: budget, ..RunLimits::default() };
             let (mut run, first) = Run::start(&plan, C, p.canvases().get(&C).unwrap(), &kinds, opts(RUN, 1, limits)).unwrap();
             let (finished, failed, _) = drive(&mut run, &kinds, first, &BTreeSet::new());
             assert_eq!(failed.is_empty(), budget == required);
