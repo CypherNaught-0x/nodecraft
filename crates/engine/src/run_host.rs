@@ -37,6 +37,7 @@
 //! Not yet: media is read on the UI thread when a job is queued.
 use crate::Session;
 use crate::action_exec::LocalActions;
+use crate::billing_cmds::{self, BILLING_SERVICE};
 use crate::commands::Services;
 use crate::jobs::{CompletionAccounting, JobBudget, ProviderRunner, Sent, Stage, WriteAhead};
 use crate::ownership_cmds::{self, OWNERSHIP_SERVICE};
@@ -281,6 +282,32 @@ struct Shared {
     closing: bool,
     /// An ownership decision changed the usage log since the budget resources were refreshed.
     reconciled: bool,
+    /// What may still settle a charge, as of the last pump (#298).
+    following: Following,
+}
+
+/// What may still settle a charge on its own, so a person's decision for an unresolved charge
+/// (#298) is refused meanwhile: a run going, a restored job being followed, and the jobs parked
+/// or kept for a later launch, by `(adapter, instance, sent key)`.
+#[derive(Default)]
+struct Following {
+    busy: bool,
+    keys: BTreeSet<(String, Option<nodecraft_types::ProviderInstanceId>, String)>,
+}
+
+impl Shared {
+    /// Refuses a decision for `(provider, instance, key)` while anything might still settle it.
+    fn unfollowed(&self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> Result<(), Error> {
+        if self.following.busy {
+            return Err(Error::new(ErrorKind::Busy, "runs are in progress and may still settle this charge; decide it once they have finished"));
+        }
+        let follows = |s: &Submitted| s.target.adapter() == provider && s.target.instance() == instance && s.sent_key() == key;
+        let named = (provider.to_owned(), instance, key.to_owned());
+        if self.following.keys.contains(&named) || self.submitted.iter().chain(self.staging.values()).any(follows) {
+            return Err(Error::new(ErrorKind::Conflict, "a saved run still follows this charge; it settles when the run resumes"));
+        }
+        Ok(())
+    }
 }
 
 impl Shared {
@@ -411,6 +438,7 @@ impl RunHost {
         // runs again rather than dropping them.
         lock(&self.journal).submitted = self.parked.clone();
         self.journal_changed = true;
+        self.publish_following();
         Ok(())
     }
 
@@ -454,6 +482,7 @@ impl RunHost {
                 self.journal_changed = true;
             }
         }
+        self.publish_following();
     }
 
     /// Gives up on the restored jobs of `project` that ran on `adapter`, which can't be followed
@@ -468,6 +497,7 @@ impl RunHost {
             self.held.push(RunNotice::Failed { canvas: entry.canvas, node: entry.node, reason: format!("it couldn't be followed after a restart: {reason}") });
             self.journal_changed = true;
         }
+        self.publish_following();
     }
 
     /// Whether restored jobs are waiting for [`Self::resume`].
@@ -654,10 +684,36 @@ impl RunHost {
         })
     }
 
-    /// Provides `usage.resolve_charge` over the shared usage log, saved and kept exactly as
-    /// [`Self::register_ownership`] keeps an ownership decision. A charge a saved run still
-    /// follows is refused: that run settles it when it resumes.
+    /// Provides `usage.resolve_charge` (#332) and `usage.resolve_unresolved` (#298) over the
+    /// shared usage log, saved and kept exactly as [`Self::register_ownership`] keeps an
+    /// ownership decision. A charge a saved run still follows is refused: that run settles it
+    /// when it resumes. An unresolved charge is also refused while any run is waiting or going
+    /// or a restored job is followed, since a retry under its key settles it itself.
     pub fn register_resolution(&self, services: &mut Services) -> Result<(), Error> {
+        let shared = Arc::clone(&self.journal);
+        let log = Arc::clone(&self.budget.log);
+        let inbox = Arc::clone(&self.inbox);
+        let kept = Arc::clone(&self.kept_handles);
+        let wall_clock_ms = Arc::clone(&self.budget.wall_clock_ms);
+        services.register(BILLING_SERVICE, move |request| {
+            let (provider, instance, key) = billing_cmds::requested_charge(request)?;
+            let unfollowed = |shared: &Shared| {
+                if !lock(&inbox).waiting.is_empty() {
+                    return Err(Error::new(ErrorKind::Busy, "a run is about to start and may still settle this charge; decide it once it has finished"));
+                }
+                shared.unfollowed(&provider, instance, &key)?;
+                // The provider may still be working on it: a later run sends the job again under
+                // its key, follows the kept handle and settles the charge itself (#517).
+                if lock(&kept).holds(&provider, instance, &key) {
+                    return Err(Error::new(
+                        ErrorKind::Conflict,
+                        "the provider may still be working on this job; run it again to settle the charge, or decide it after restarting NodeCraft",
+                    ));
+                }
+                Ok(())
+            };
+            keep_decision(&shared, &log, wall_clock_ms(), unfollowed, |usage, at_ms| billing_cmds::resolve(usage, request, at_ms))
+        })?;
         let shared = Arc::clone(&self.journal);
         let log = Arc::clone(&self.budget.log);
         let wall_clock_ms = Arc::clone(&self.budget.wall_clock_ms);
@@ -686,6 +742,7 @@ impl RunHost {
     pub fn install(&self, session: &mut Session) {
         *lock(&self.mapping_running) = self.running();
         session.swap_resource(Some(MappingEditGuard { inbox: self.inbox.clone(), running: self.mapping_running.clone() }));
+        self.publish_following();
         refresh(session, &self.budget);
     }
 
@@ -839,7 +896,22 @@ impl RunHost {
             notices.extend(self.save(false));
         }
         *lock(&self.mapping_running) = self.running();
+        self.publish_following();
         notices
+    }
+
+    /// Shares what may still settle a charge with the decision services (#298).
+    fn publish_following(&self) {
+        let busy = !self.runs.is_empty() || !self.resumes.live.is_empty();
+        let keys = self
+            .parked
+            .iter()
+            .chain(&self.kept)
+            .chain(self.resumes.live.values().map(|(entry, _)| entry))
+            .chain(self.runs.iter().flat_map(|active| active.journal.values()))
+            .map(|entry| (entry.target.adapter().to_owned(), entry.target.instance(), entry.sent_key()))
+            .collect();
+        lock(&self.journal).following = Following { busy, keys };
     }
 
     fn start(&mut self, session: &mut Session, prepared: PreparedRun, notices: &mut Vec<RunNotice>) -> Result<(), Error> {

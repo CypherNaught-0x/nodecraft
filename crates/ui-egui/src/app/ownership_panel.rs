@@ -9,12 +9,19 @@
 //! `usage.unsettled`). The person states what their provider's records show, the billed amount
 //! or that it was never billed, previews the totals it leaves, and confirms
 //! `usage.resolve_charge`, which is also a person's alone.
+//!
+//! Below those, ordinary charges that may have been billed (#298, from `usage.unresolved`): a
+//! job whose outcome NodeCraft couldn't see (a lost reply, an error after sending) keeps its
+//! estimate. The person resolves one the same way, with an optional note of what they checked,
+//! and confirms `usage.resolve_unresolved`; the host refuses while a run might still settle it.
 use super::*;
 use serde_json::Value;
 use std::collections::BTreeSet;
 
 /// Charges one page of the panel shows.
 const PAGE: usize = 50;
+/// Characters the note field takes; the command refuses more than 256 bytes.
+const MAX_NOTE_CHARS: usize = 64;
 
 /// Which total holds a group's charges, apart from those marked as the other's.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -48,14 +55,35 @@ struct Group {
     refused: Option<String>,
 }
 
-/// One reconciled open charge being resolved.
+/// Which list a charge being resolved came from, and so which command decides it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Path {
+    /// A reconciled legacy charge (#332).
+    Reconciled,
+    /// An ordinary unresolved charge (#298).
+    Unresolved,
+}
+
+impl Path {
+    fn command(self) -> &'static str {
+        match self {
+            Self::Reconciled => "usage.resolve_charge",
+            Self::Unresolved => "usage.resolve_unresolved",
+        }
+    }
+}
+
+/// One open charge being resolved.
 struct Resolving {
-    /// Its `usage.unsettled` row, with the token the decision carries.
+    path: Path,
+    /// Its `usage.unsettled` or `usage.unresolved` row, with the token the decision carries.
     charge: Value,
     /// Billed (at `amount`), or never billed.
     billed: bool,
     /// The billed amount as typed, in the charge's currency.
     amount: String,
+    /// What the person checked (unresolved charges only).
+    note: String,
     /// The dry run of the decision as it stands; any change clears it.
     preview: Option<Value>,
     refused: Option<String>,
@@ -68,6 +96,8 @@ pub(super) struct OwnershipReview {
     groups: Value,
     /// The first `usage.unsettled` page.
     unsettled: Value,
+    /// The first `usage.unresolved` page.
+    unresolved: Value,
     group: Option<Group>,
     resolving: Option<Resolving>,
 }
@@ -81,9 +111,10 @@ enum Action {
     Toggle(String, String),
     Preview,
     Confirm,
-    Resolve(usize),
+    Resolve(Path, usize),
     Billed(bool),
     Amount(String),
+    Note(String),
     ResolvePreview,
     ResolveConfirm,
 }
@@ -136,6 +167,12 @@ impl Resolving {
     fn decision(&self, dry_run: bool) -> Result<Value, String> {
         let c = &self.charge;
         let mut decision = json!({"provider": text(c, "/provider"), "key": text(c, "/key"), "token": text(c, "/token"), "dry_run": dry_run});
+        if self.path == Path::Unresolved {
+            decision["instance"] = c.get("instance").cloned().unwrap_or(Value::Null);
+            if !self.note.trim().is_empty() {
+                decision["note"] = json!(self.note.trim());
+            }
+        }
         if self.billed {
             let micros = micros(&self.amount).ok_or("Enter the billed amount as a number, with at most six decimals")?;
             decision["outcome"] = json!("settled");
@@ -152,18 +189,26 @@ impl NodeCraftApp {
     /// Opens the review on the list of groups and the reconciled charges still open.
     pub(super) fn open_ownership_review(&mut self) {
         match self.ownership_listings() {
-            Ok((groups, unsettled)) => {
+            Ok((groups, unsettled, unresolved)) => {
                 self.notice = None;
-                self.ownership = Some(OwnershipReview { groups, unsettled, group: None, resolving: None });
+                self.ownership = Some(OwnershipReview { groups, unsettled, unresolved, group: None, resolving: None });
             }
             Err(error) => self.notice = Some(error.message),
         }
     }
 
-    fn ownership_listings(&mut self) -> Result<(Value, Value), Error> {
+    fn ownership_listings(&mut self) -> Result<(Value, Value, Value), Error> {
         let groups = self.session.dispatch("usage.ownership", &json!({}))?;
         let unsettled = self.session.dispatch("usage.unsettled", &json!({"limit": PAGE}))?;
-        Ok((groups, unsettled))
+        let unresolved = self.session.dispatch("usage.unresolved", &json!({"limit": PAGE}))?;
+        Ok((groups, unsettled, unresolved))
+    }
+
+    fn refresh_ownership(&mut self, review: &mut OwnershipReview) {
+        match self.ownership_listings() {
+            Ok((groups, unsettled, unresolved)) => (review.groups, review.unsettled, review.unresolved) = (groups, unsettled, unresolved),
+            Err(error) => self.notice = Some(error.message),
+        }
     }
 
     fn load_group(&mut self, session: String, currency: String, offset: usize) -> Result<Group, Error> {
@@ -177,7 +222,7 @@ impl NodeCraftApp {
         let mut action = None;
         let frame =
             egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Quarantined charges")
+        egui::Window::new("Charges to review")
             .id(egui::Id::new("nodecraft.ownership"))
             .open(&mut open)
             .constrain_to(self.viewport)
@@ -193,6 +238,7 @@ impl NodeCraftApp {
                     (None, None) => {
                         groups(ui, &review.groups, t, &mut action);
                         unsettled(ui, &review.unsettled, t, &mut action);
+                        unresolved(ui, &review.unresolved, t, &mut action);
                     }
                 }
             });
@@ -272,10 +318,7 @@ impl NodeCraftApp {
                                 charges(count(&record, "/charges")),
                                 short(&group.session)
                             ));
-                            match self.ownership_listings() {
-                                Ok((groups, unsettled)) => (review.groups, review.unsettled) = (groups, unsettled),
-                                Err(error) => self.notice = Some(error.message),
-                            }
+                            self.refresh_ownership(&mut review);
                         }
                         Err(error) => {
                             group.preview = None;
@@ -285,10 +328,18 @@ impl NodeCraftApp {
                     }
                 }
             }
-            Action::Resolve(index) => {
-                if let Some(charge) = review.unsettled.get("charges").and_then(|rows| rows.get(index)) {
+            Action::Resolve(path, index) => {
+                let listing = if path == Path::Reconciled { &review.unsettled } else { &review.unresolved };
+                if let Some(charge) = listing.get("charges").and_then(|rows| rows.get(index)) {
                     let amount = decimal(count(charge, "/amount/micros"));
-                    review.resolving = Some(Resolving { charge: charge.clone(), billed: true, amount, preview: None, refused: None });
+                    review.resolving =
+                        Some(Resolving { path, charge: charge.clone(), billed: true, amount, note: String::new(), preview: None, refused: None });
+                }
+            }
+            Action::Note(note) => {
+                if let Some(resolving) = &mut review.resolving {
+                    resolving.note = note;
+                    resolving.preview = None;
                 }
             }
             Action::Billed(billed) => {
@@ -305,7 +356,8 @@ impl NodeCraftApp {
             }
             Action::ResolvePreview => {
                 if let Some(resolving) = &mut review.resolving {
-                    let preview = resolving.decision(true).and_then(|d| self.session.dispatch("usage.resolve_charge", &d).map_err(|e| e.message));
+                    let command = resolving.path.command();
+                    let preview = resolving.decision(true).and_then(|d| self.session.dispatch(command, &d).map_err(|e| e.message));
                     (resolving.preview, resolving.refused) = match preview {
                         Ok(preview) => (Some(preview), None),
                         Err(refused) => (None, Some(refused)),
@@ -314,7 +366,8 @@ impl NodeCraftApp {
             }
             Action::ResolveConfirm => {
                 if let Some(mut resolving) = review.resolving.take() {
-                    let confirmed = resolving.decision(false).and_then(|d| self.session.dispatch("usage.resolve_charge", &d).map_err(|e| e.message));
+                    let command = resolving.path.command();
+                    let confirmed = resolving.decision(false).and_then(|d| self.session.dispatch(command, &d).map_err(|e| e.message));
                     match confirmed {
                         Ok(record) => {
                             if let Some(runs) = &self.runs {
@@ -324,10 +377,7 @@ impl NodeCraftApp {
                                 "settled" => format!("Settled the charge {} at {}.", text(&record, "/key"), text(&record, "/cost/text")),
                                 _ => format!("Released the charge {}; it no longer counts toward any total.", text(&record, "/key")),
                             });
-                            match self.ownership_listings() {
-                                Ok((groups, unsettled)) => (review.groups, review.unsettled) = (groups, unsettled),
-                                Err(error) => self.notice = Some(error.message),
-                            }
+                            self.refresh_ownership(&mut review);
                         }
                         Err(refused) => {
                             resolving.preview = None;
@@ -401,7 +451,52 @@ fn unsettled(ui: &mut egui::Ui, listing: &Value, t: &Tokens, action: &mut Option
                 ui.label(egui::RichText::new(text(charge, "/key")).color(t.text_muted))
                     .on_hover_text("The charge's idempotency key, as your provider's records show it");
                 if ui.button("Resolve").clicked() {
-                    *action = Some(Action::Resolve(index));
+                    *action = Some(Action::Resolve(Path::Reconciled, index));
+                }
+                ui.end_row();
+            }
+        });
+    });
+    if listing.get("next_offset").is_some_and(|next| !next.is_null()) {
+        ui.label(egui::RichText::new(format!("{} charges in all; resolve these first.", count(listing, "/total"))).color(t.text_muted));
+    }
+}
+
+fn unresolved(ui: &mut egui::Ui, listing: &Value, t: &Tokens, action: &mut Option<Action>) {
+    let dropped = count(listing, "/dropped");
+    if dropped > 0 {
+        // Their charges were already settled or released; only the record of the decision went.
+        let older = if dropped == 1 { "1 older decision is".to_owned() } else { format!("{dropped} older decisions are") };
+        ui.label(
+            egui::RichText::new(format!("{older} no longer kept in the usage log; the charges they decided were already settled or released."))
+                .color(t.text_muted),
+        );
+    }
+    let rows = listing.get("charges").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    if rows.is_empty() {
+        return;
+    }
+    ui.add_space(t.control_gap * 2.0);
+    ui.heading("Charges that may have been billed");
+    ui.label(
+        "These jobs ended without NodeCraft learning whether your provider billed them (a lost reply, an error after \
+         the request was sent), so their estimate still counts toward your budgets. Check each one against your \
+         provider's billing records, then record the amount it billed, or that it never billed it.",
+    );
+    egui::ScrollArea::vertical().id_salt("unresolved_scroll").max_height(t.minimap_height * 2.0).show(ui, |ui| {
+        egui::Grid::new("unresolved_charges").num_columns(4).spacing([t.control_gap * 2.0, t.control_gap]).striped(true).show(ui, |ui| {
+            for (index, charge) in rows.iter().enumerate() {
+                ui.label(format!("{} · {}", text(charge, "/provider"), text(charge, "/model"))).on_hover_text(format!(
+                    "Session {}, node {}, recorded at {} ms since 1970",
+                    short(text(charge, "/session")),
+                    text(charge, "/node"),
+                    count(charge, "/at_ms")
+                ));
+                ui.label(format!("{} held", text(charge, "/amount/text")));
+                ui.label(egui::RichText::new(text(charge, "/key")).color(t.text_muted))
+                    .on_hover_text("The charge's idempotency key, as your provider's records show it");
+                if ui.button("Resolve").on_hover_text("Record what your provider's records show for this charge").clicked() {
+                    *action = Some(Action::Resolve(Path::Unresolved, index));
                 }
                 ui.end_row();
             }
@@ -440,10 +535,20 @@ fn resolve_view(ui: &mut egui::Ui, resolving: &Resolving, t: &Tokens, action: &m
     });
     if resolving.billed {
         ui.horizontal(|ui| {
-            ui.label(format!("Billed amount ({})", text(c, "/amount/currency")));
+            let label = ui.label(format!("Billed amount ({})", text(c, "/amount/currency")));
             let mut amount = resolving.amount.clone();
-            if ui.add(egui::TextEdit::singleline(&mut amount).desired_width(t.card_width * 0.5)).changed() {
+            if ui.add(egui::TextEdit::singleline(&mut amount).desired_width(t.card_width * 0.5)).labelled_by(label.id).changed() {
                 *action = Some(Action::Amount(amount));
+            }
+        });
+    }
+    if resolving.path == Path::Unresolved {
+        ui.horizontal(|ui| {
+            let label = ui.label("What you checked (optional)");
+            let mut note = resolving.note.clone();
+            let field = egui::TextEdit::singleline(&mut note).char_limit(MAX_NOTE_CHARS).hint_text("e.g. invoice line").desired_width(t.card_width);
+            if ui.add(field).labelled_by(label.id).changed() {
+                *action = Some(Action::Note(note));
             }
         });
     }

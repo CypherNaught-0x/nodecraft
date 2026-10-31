@@ -28,6 +28,8 @@ mod background_save;
 mod batch_keys517;
 #[path = "bfl33.rs"]
 mod bfl33;
+#[path = "billing_host298.rs"]
+mod billing_host298;
 #[path = "browser_plugins866.rs"]
 mod browser_plugins866;
 #[path = "bulk_edits.rs"]
