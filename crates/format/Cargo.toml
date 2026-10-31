@@ -34,6 +34,8 @@ craft-atomic.workspace = true
 craft-settings.workspace = true
 # Safe native File-handle mismatch diagnostic (MIT choice); never ownership authority.
 same-file = "=1.0.6"
+# Free space per volume for the advisory save/open preflight (#367); the same pin as ui-egui.
+fs4 = { version = "=1.1.0", default-features = false, features = ["sync"] }
 
 [dev-dependencies]
 proptest.workspace = true

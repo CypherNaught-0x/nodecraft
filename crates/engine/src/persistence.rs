@@ -7,6 +7,7 @@ use crate::{
 use nodecraft_format::{
     ArchivePlan, AssetStore, CheckpointPlan, ProjectAccess, ProjectStorage, RecordedAssets, Snapshot, StorageCapability, StorageLocation,
     asset_source::{StreamMetrics, TransferCancel},
+    space::SpaceInventory,
 };
 use nodecraft_graph::Project;
 use nodecraft_types::{Blake3, Error, ErrorKind};
@@ -334,6 +335,8 @@ impl Persistence {
         }
         let location = location.or_else(|| self.location.clone()).ok_or_else(|| Error::new(ErrorKind::Conflict, "save_as needs an explicit location"))?;
         let epoch = self.epoch.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "checkpoint epoch overflow"))?;
+        // Before anything is written, history spills included (#367).
+        self.preflight_save(document, assets, epoch, &location)?;
         // Spill history-only roots before replacing any base or output destination.
         assets.verify_retained(retained, &TransferCancel::default(), &self.metrics)?;
         let snapshot = Snapshot { project: document.clone(), assets: assets.clone(), epoch };
@@ -351,6 +354,32 @@ impl Persistence {
             Started::Done(Settled::Saved(ready)) => Ok(Started::Done(ready)),
             Started::Done(Settled::Opened(_)) => Err(Error::new(ErrorKind::Internal, "a save finished as an open")),
         }
+    }
+    /// The advisory disk-space check before a save (#367): refuses only when the platform
+    /// reports less free space than the save's inventory needs, and stays out of the way when it
+    /// can't tell. A save that passes can still run out of room; that write error is handled
+    /// where it happens, before the destination is replaced.
+    fn preflight_save(&mut self, document: &Project, assets: &AssetStore, epoch: u64, location: &StorageLocation) -> Result<(), Error> {
+        if self.capability != StorageCapability::StreamingV2 {
+            return Ok(());
+        }
+        let probe = guard(|| Ok(self.store.get()?.space_probe(location)))?;
+        if probe.destination_free.is_none() && probe.recovery_free.is_none() {
+            return Ok(());
+        }
+        // An estimate that can't be made leaves the real error to the save itself.
+        let Ok(bytes) = ArchivePlan::estimate_bytes(document, assets, epoch, self.capability) else { return Ok(()) };
+        // Saving over an existing file frees it at publication, before the checkpoint.
+        SpaceInventory::save(bytes, probe.existing_bytes)?.check(&probe)
+    }
+    /// [`Self::preflight_save`] for an open: the file's private copy and its checkpoint.
+    fn preflight_open(&mut self, location: &StorageLocation) -> Result<(), Error> {
+        if self.capability != StorageCapability::StreamingV2 {
+            return Ok(());
+        }
+        let probe = guard(|| Ok(self.store.get()?.space_probe(location)))?;
+        let Some(bytes) = probe.existing_bytes else { return Ok(()) };
+        SpaceInventory::open(bytes)?.check(&probe)
     }
     fn idle(&self) -> Result<(), Error> {
         match self.pending.as_ref().map(|pending| pending.kind) {
@@ -470,6 +499,7 @@ impl Persistence {
     /// it. Otherwise it runs inline.
     pub fn open(&mut self, location: StorageLocation, state: u64, runner: Option<&dyn SaveRunner>) -> Result<Started<OpenedDocument>, Error> {
         self.idle()?;
+        self.preflight_open(&location)?;
         let control = Control::new(FilePhase::Reading);
         let metrics = self.metrics.clone();
         let work = {

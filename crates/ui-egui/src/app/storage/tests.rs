@@ -243,3 +243,45 @@ fn kept_inventory_is_canonical_bounded_and_does_not_claim_chronology() {
     assert!(kept.iter().all(|path| path.file_name().unwrap().to_str().unwrap().rsplit('-').next().unwrap().parse::<u32>().unwrap() <= MAX_KEPT));
     assert!(dir.0.join("session.journal.unrecovered-100").exists(), "unknown slots remain untouched");
 }
+
+/// Holds a file job until the test hands it to a thread.
+#[derive(Default)]
+struct Held(Mutex<Option<nodecraft_engine::save_runner::SaveJob>>);
+impl nodecraft_engine::save_runner::SaveRunner for Held {
+    fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+        *self.0.lock().unwrap() = Some(job);
+        Ok(())
+    }
+}
+
+#[test]
+fn quitting_during_a_background_open_cancels_it_and_keeps_the_open_project() {
+    let dir = Scratch::new("quit-open367");
+    let target = dir.0.join("target.ncraft");
+    {
+        let other = NodeCraftApp::with_services_and_storage(Default::default(), StorageSetup { recovery: dir.0.join("seed"), open: None }).unwrap();
+        let mut other = other;
+        add_text(&mut other, 70);
+        other.session.dispatch("file.save_as", &json!({"location": target.to_str().unwrap()})).unwrap();
+        other.close_storage();
+    }
+    let current = dir.0.join("current.ncraft");
+    let mut app = app(&dir.0, None);
+    app.session.dispatch("file.save_as", &json!({"location": current.to_str().unwrap()})).unwrap();
+    let before = app.session.document().clone();
+    let runner = Arc::new(Held::default());
+    app.session.set_save_runner(runner.clone());
+    let opening = app.session.dispatch("file.open", &json!({"location": target.to_str().unwrap(), "background": true})).unwrap();
+    assert_eq!(opening["opening"], true);
+    // The worker gets to the job only after quitting has begun, as a slow disk would.
+    let job = runner.0.lock().unwrap().take().unwrap();
+    let worker = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        job.run();
+    });
+    app.close_storage();
+    worker.join().unwrap();
+    assert_eq!(app.session.document(), &before, "the cancelled open replaced nothing");
+    assert_eq!(app.session.file_status().location, Some(nodecraft_format::StorageLocation::Path(current)));
+    assert!(app.session.file_status().operation.is_none());
+}

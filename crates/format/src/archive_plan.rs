@@ -129,6 +129,49 @@ impl ArchivePlan {
             Err(unsupported())
         }
     }
+    /// The byte length [`Self::prepare`] would produce for this snapshot, from the asset
+    /// descriptors and the manifest's encoded length, without reading or writing any asset
+    /// (#367). The manifest is measured with the higher of the two wire version numbers; both are
+    /// single digits today, so the estimate equals the prepared archive's length, and a test
+    /// checks it never falls short of it.
+    pub fn estimate_bytes(project: &nodecraft_graph::Project, assets: &crate::AssetStore, epoch: u64, capability: StorageCapability) -> Result<u64, Error> {
+        if capability == StorageCapability::SmallV1 {
+            let snapshot = Snapshot { project: project.clone(), assets: assets.clone(), epoch };
+            return Ok(crate::encode(&snapshot)?.len() as u64);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            #[derive(serde::Serialize)]
+            struct Manifest<'a> {
+                version: u32,
+                epoch: u64,
+                project: &'a nodecraft_graph::Project,
+            }
+            struct Counted(u64);
+            impl Write for Counted {
+                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                    self.0 = self.0.saturating_add(bytes.len() as u64);
+                    if self.0 > crate::MAX_MANIFEST_BYTES as u64 {
+                        return Err(std::io::Error::other("JSON limit exceeded"));
+                    }
+                    Ok(bytes.len())
+                }
+                fn flush(&mut self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            let version = crate::archive::VERSION.max(crate::archive::STREAMING_V4);
+            let mut counted = Counted(0);
+            serde_json::to_writer(&mut counted, &Manifest { version, epoch, project }).map_err(|_| invalid("project manifest exceeds its size limit"))?;
+            let assets = lengths(assets, &crate::assets::project_hashes(project))?;
+            Ok(layout(counted.0, assets.values().copied())?.bytes)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (project, assets, epoch);
+            Err(unsupported())
+        }
+    }
     pub(crate) fn from_small_open(mut bytes: Vec<u8>) -> Result<(Snapshot, Self), Error> {
         if bytes.len() > crate::MAX_ARCHIVE_BYTES {
             return Err(invalid("project exceeds legacy archive limit"));

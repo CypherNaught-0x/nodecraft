@@ -57,7 +57,8 @@ Limits: the check happens when the command arrives. A program that can change th
 themselves (swap a folder for a link between the check and the write) isn't guarded against.
 `file.cancel` cancels any background save or open, including one the person started outside the
 folders. Opening checks that the project's folder is writable for recovery, which briefly creates
-a file there, even in a `--read-root` folder.
+a file there, even in a `--read-root` folder. A save or open that the disk plainly can't hold is
+refused with `busy` before anything is written; the message gives the sizes needed and free.
 
 ## Tools
 

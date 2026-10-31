@@ -26,6 +26,8 @@ mod native_plans147;
 mod native_recovery147;
 #[path = "recovery.rs"]
 mod recovery;
+#[path = "space367.rs"]
+mod space367;
 #[path = "v3.rs"]
 mod v3;
 #[path = "zip_index147.rs"]
