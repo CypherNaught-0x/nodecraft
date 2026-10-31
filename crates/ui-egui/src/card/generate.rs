@@ -205,13 +205,17 @@ pub(super) fn answer(ui: &mut egui::Ui, area: Rect, active: Option<&str>, partia
             (None, None) => (NO_ANSWER, t.text_muted),
         };
         let streaming = partial.is_some_and(|partial| partial.stopped.is_none());
-        egui::ScrollArea::vertical().id_salt("answer").max_height(ui.available_height()).auto_shrink([false, false]).stick_to_bottom(streaming).show(
+        // Under the answer, so the card layer's hit test says when the pointer is over it.
+        let wheel = ui.interact(ui.available_rect_before_wrap(), ui.id().with("answer_wheel"), egui::Sense::hover());
+        let out = egui::ScrollArea::vertical().id_salt("answer").max_height(ui.available_height()).auto_shrink([false, false]).stick_to_bottom(streaming).show(
             ui,
             |ui| {
                 ui.set_width(width);
                 ui.add(egui::Label::new(egui::RichText::new(text).color(color)).selectable(true).wrap());
             },
         );
+        // A long answer scrolls first; the canvas pans by what is left (#413).
+        crate::scroll_chain::take(ui, wheel.contains_pointer(), &out, [false, true]);
     });
 }
 

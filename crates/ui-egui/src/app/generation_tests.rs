@@ -294,7 +294,7 @@ fn generation_shared_admission_charges_enabled_names_within_the_existing_cache_b
 }
 
 #[test]
-fn generation_catalog_replacement_updates_actual_placeholder_wheel_hover_without_revision_change() {
+fn generation_catalog_replacement_keeps_wheel_pan_over_the_placeholder_without_revision_change() {
     for inside in [true, false] {
         let mut h = Harness::builder()
             .with_size(Vec2::new(1200.0, 850.0))
@@ -326,7 +326,7 @@ fn generation_catalog_replacement_updates_actual_placeholder_wheel_hover_without
             modifiers: egui::Modifiers::NONE,
         });
         h.step();
-        assert_eq!(h.state().view.pan == pan, inside, "only the currently painted placeholder owns wheel hover");
+        assert_ne!(h.state().view.pan, pan, "a placeholder has nothing to scroll, so the canvas pans over it and around it (#413)");
         if !inside {
             assert_eq!(h.state().navigation.geometry.rects.get(&N), Some(&placeholder));
             assert!(!h.state().navigation.geometry.sizes.contains_key(&N));

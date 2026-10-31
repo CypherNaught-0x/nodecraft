@@ -43,6 +43,11 @@ fn scene(answered: bool, wired: bool) -> Harness<'static, NodeCraftApp> {
 }
 
 fn app(answered: bool, wired: bool) -> NodeCraftApp {
+    app_answering(answered.then_some(ANSWER), wired)
+}
+
+/// A text card whose active answer is `answer`, if any.
+pub(super) fn app_answering(answer: Option<&str>, wired: bool) -> NodeCraftApp {
     let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_TEXT).unwrap();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
@@ -58,9 +63,9 @@ fn app(answered: bool, wired: bool) -> NodeCraftApp {
         )
         .unwrap();
     node.pos = nodecraft_graph::Position { x: 400.0, y: 120.0 };
-    if answered {
+    if let Some(answer) = answer {
         let id = nodecraft_types::GenerationId::from_bytes([88; 16]);
-        node.history.push(Generation::new(id, vec![Value::Text(ANSWER.into())]));
+        node.history.push(Generation::new(id, vec![Value::Text(answer.into())]));
         node.active = Some(id);
     }
     Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();

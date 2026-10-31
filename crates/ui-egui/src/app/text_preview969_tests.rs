@@ -1,10 +1,10 @@
 use super::*;
 use egui_kittest::{Harness, kittest::Queryable};
 
-const ACTION: NodeId = NodeId::from_bytes([69; 16]);
+pub(super) const ACTION: NodeId = NodeId::from_bytes([69; 16]);
 const SECOND: NodeId = NodeId::from_bytes([70; 16]);
 
-fn harness(kind: &str, template: &str, first: &str, second: Option<&str>) -> Harness<'static, NodeCraftApp> {
+pub(super) fn harness(kind: &str, template: &str, first: &str, second: Option<&str>) -> Harness<'static, NodeCraftApp> {
     let mut app = NodeCraftApp::headless().unwrap();
     let canvas = app.canvas;
     let source = *app.session.document().canvases().get(&canvas).unwrap().nodes().keys().next().unwrap();
@@ -23,7 +23,7 @@ fn harness(kind: &str, template: &str, first: &str, second: Option<&str>) -> Har
     Harness::builder().with_size(Vec2::new(1400.0, 1100.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app)
 }
 
-fn wait(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&Harness<'static, NodeCraftApp>) -> bool) {
+pub(super) fn wait(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&Harness<'static, NodeCraftApp>) -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while std::time::Instant::now() < deadline {
         h.step();
@@ -36,7 +36,7 @@ fn wait(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&Harness<'static, 
     panic!("local preview did not arrive");
 }
 
-fn has_result(h: &Harness<'static, NodeCraftApp>) -> bool {
+pub(super) fn has_result(h: &Harness<'static, NodeCraftApp>) -> bool {
     h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&ACTION).unwrap().active.is_some()
 }
 
