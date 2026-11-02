@@ -371,6 +371,7 @@ mod key_changes;
 mod layer_editor;
 mod layer_fonts;
 mod layout;
+mod library_browsers;
 mod library_view;
 mod live;
 mod mask_badges;
@@ -3563,6 +3564,8 @@ mod history_tests;
 mod image_tools_tests;
 #[cfg(test)]
 mod layer_editor_tests;
+#[cfg(test)]
+mod library_browsers_tests;
 #[cfg(test)]
 mod library_view_tests;
 #[cfg(test)]

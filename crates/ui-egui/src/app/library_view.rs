@@ -2,6 +2,8 @@
 //! project shares. Placing, adding and removing dispatch `technique.place` and the `library.*`
 //! commands; the library list is read when the panel opens and after every change. Below them,
 //! the shader library (#90): each saved shader's latest version is placed with `shader.place`.
+//! The panel's other tabs browse the project's assets, past results and trained styles
+//! (`library_browsers`).
 use super::*;
 use nodecraft_types::TechniqueId;
 use serde::Deserialize;
@@ -19,6 +21,8 @@ pub(super) struct LibraryView {
     pub(super) template_query: String,
     /// The shader library's names and latest versions, read with the techniques.
     shaders: super::shader_editor::ShaderListing,
+    /// The Assets, History and Styles tabs.
+    pub(super) browsers: super::library_browsers::Browsers,
 }
 
 impl LibraryView {
@@ -112,6 +116,9 @@ impl NodeCraftApp {
             })
             .collect();
         own.sort_by(|a, b| (&a.3, a.2).cmp(&(&b.3, b.2)));
+        self.refresh_browser();
+        let selected = self.browse_selected_card();
+        let mut browse = None;
         let kept: &[Kept] = match &self.library.listed {
             Some(Ok(kept)) => kept,
             _ => &[],
@@ -131,6 +138,12 @@ impl NodeCraftApp {
             .resizable(false)
             .frame(frame)
             .show(ctx, |ui| {
+                ui.set_max_width(t.dialog_width);
+                super::library_browsers::tabs(ui, &mut self.library.browsers);
+                if self.library.browsers.tab != super::library_browsers::Tab::Library {
+                    browse = super::library_browsers::show(ui, t, &mut self.library.browsers, &mut self.previews, &self.session, self.canvas, selected);
+                    return;
+                }
                 egui::ScrollArea::vertical().max_height(t.sheet_list_height).show(ui, |ui| {
                     ui.set_max_width(t.dialog_width);
                     ui.label(egui::RichText::new("This project").strong().color(t.text));
@@ -262,6 +275,9 @@ impl NodeCraftApp {
         self.library.open = open;
         if let Some(action) = action {
             self.library_action(action, t);
+        }
+        if let Some(browse) = browse {
+            self.browse_action(browse, t);
         }
     }
 
