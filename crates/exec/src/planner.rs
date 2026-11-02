@@ -337,13 +337,19 @@ pub fn plan_settled(
         RunMode::Field(field) => canvas.nodes().values().filter(|n| n.field == Some(*field)).map(|n| n.id).collect(),
         RunMode::AllStale => graph.with_upstream(&stale.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect(), stale),
     };
-    // Routers and batches never run: they are resolved into their consumers' inputs.
-    let resolved_away = |id: &NodeId| crate::routing::is_router(canvas, *id) || is_batch(canvas, *id);
+    // Routers and batches never run: they are resolved into their consumers' inputs. Export cards
+    // (#746) never run either: writing files is the explicit `export.node_run` host command, so no
+    // run, recompute or replay can write one.
+    let resolved_away = |id: &NodeId| crate::routing::is_router(canvas, *id) || is_batch(canvas, *id) || is_export(canvas, *id);
     // Decided before settled nodes are left out: a request whose other nodes all reuse a result
     // is a run with nothing left to do, not a request for routers alone.
     let requested_only_routers = matches!(mode, RunMode::Selected | RunMode::WithUpstream) && !run.is_empty() && run.iter().all(resolved_away);
+    let requested_only_exports = requested_only_routers && run.iter().all(|id| is_export(canvas, *id));
     let run = graph.with_inlined(run.into_iter().filter(|id| !settled.contains(id)).collect(), stale, &expanded.inner);
     let run: BTreeSet<NodeId> = run.into_iter().filter(|id| !resolved_away(id)).collect();
+    if requested_only_exports {
+        return Err(Error::new(ErrorKind::InvalidInput, "an Export to folder card has nothing to run; choose a folder on it and press Export"));
+    }
     if requested_only_routers {
         return Err(Error::new(ErrorKind::InvalidInput, "routers and batches pass inputs through and have nothing to run"));
     }
@@ -428,7 +434,8 @@ pub fn ready_alone_expanded(
     let graph = Graph::new(canvas, kinds, &nodecraft_types::EMPTY_TARGET_SELECTION, &expanded.collects, &expanded.inner, &nodecraft_types::NoOptions)?;
     let requested: BTreeSet<NodeId> = requested.iter().copied().filter(|id| canvas.nodes().contains_key(id) && !expanded.inner.contains_key(id)).collect();
     let run = graph.with_inlined(graph.with_upstream(&requested, stale), stale, &expanded.inner);
-    let run: BTreeSet<NodeId> = run.into_iter().filter(|id| !crate::routing::is_router(canvas, *id) && !is_batch(canvas, *id)).collect();
+    let run: BTreeSet<NodeId> =
+        run.into_iter().filter(|id| !crate::routing::is_router(canvas, *id) && !is_batch(canvas, *id) && !is_export(canvas, *id)).collect();
     let not_inlined: BTreeSet<NodeId> = expanded.blockers.iter().map(|b| b.node).collect();
     let mut state = State::default();
     let mut passed = BTreeSet::new();
@@ -489,6 +496,11 @@ struct State {
     fanned: BTreeMap<NodeId, Vec<ItemTag>>,
     /// Known input bytes across the plan.
     plan_bytes: usize,
+}
+
+/// Whether `id` is an Export to folder card (#746): a sink that never runs.
+pub fn is_export(canvas: &Canvas, id: NodeId) -> bool {
+    canvas.nodes().get(&id).is_some_and(|node| node.kind == nodecraft_nodes::export::ID)
 }
 
 /// Whether `id` is a batch.

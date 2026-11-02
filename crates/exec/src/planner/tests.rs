@@ -1034,3 +1034,51 @@ fn a_folder_run_on_its_own_gives_its_first_file_and_every_file() {
     assert_eq!(on("file"), texts(&["alpha"]));
     assert_eq!(on("names"), texts(&["c1.txt", "c2.txt", "c10.txt"]));
 }
+
+// Export to folder cards (#746).
+
+fn exporting() -> Project {
+    let k = export_kinds();
+    let mut rendered = k.get("test.render").unwrap().descriptor().instantiate(id(2), &BTreeMap::new()).unwrap();
+    rendered.title = "Render".into();
+    let export = kinds().get(nodecraft_nodes::export::ID).unwrap().instantiate_instance(id(3), Default::default(), &Default::default()).unwrap();
+    let mut p = project(vec![text(1, "dawn"), rendered, export], &[(1, 2)]);
+    nodecraft_graph::Changeset::new(vec![wire(9, (2, "out"), (3, "image"), 0)]).apply(&mut p).unwrap();
+    p
+}
+fn export_kinds() -> Registry {
+    let mut k = kinds();
+    let render = NodeDescriptor {
+        id: "test.render".into(),
+        label: "Render".into(),
+        category: Category::Generation,
+        inputs: vec![Port { name: "in".into(), port_type: LIST }],
+        outputs: vec![Port { name: "out".into(), port_type: PortType { modality: Modality::Image, many: false } }],
+        params: ParamSchema { params: vec![] },
+        quick_add: None,
+    };
+    k.register(Box::new(Relay(render))).unwrap();
+    k
+}
+
+#[test]
+fn an_export_card_never_runs_and_writes_nothing() {
+    let p = exporting();
+    let canvas = p.canvases().get(&C).unwrap();
+    let k = export_kinds();
+    // On its own it has nothing to run, and says how to export instead.
+    let error = plan_run(canvas, &k, &RunMode::Selected, &ids(&[3]), &BTreeSet::new()).unwrap_err();
+    assert!(error.message.contains("Export to folder"), "{}", error.message);
+    // With what feeds it, only the feeding work runs: generating is ordinary, exporting is not.
+    let plan = ready(plan_run(canvas, &k, &RunMode::WithUpstream, &ids(&[3]), &BTreeSet::new()).unwrap());
+    assert!(order(&plan).contains(&id(2)));
+    assert!(!order(&plan).contains(&id(3)), "the export card is resolved away");
+    let plan = ready(plan_run(canvas, &k, &RunMode::Selected, &ids(&[2, 3]), &BTreeSet::new()).unwrap());
+    assert_eq!(order(&plan), vec![id(2)]);
+    // Everything stale (a recompute) never includes it either.
+    let plan = ready(plan_run(canvas, &k, &RunMode::AllStale, &BTreeSet::new(), &ids(&[1, 2, 3])).unwrap());
+    assert!(!order(&plan).contains(&id(3)));
+    // Live recompute's readiness query never offers it.
+    let ready_now = ready_alone(canvas, &k, &ids(&[2, 3]), &ids(&[2, 3]), &|_| true).unwrap();
+    assert!(!ready_now.contains(&id(3)));
+}
