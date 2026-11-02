@@ -439,7 +439,7 @@ fn paging() -> serde_json::Map<String, Json> {
     properties
 }
 fn object(properties: serde_json::Map<String, Json>) -> Json {
-    json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "properties": properties})
+    json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": [], "properties": properties})
 }
 fn assets_schema() -> Json {
     let mut properties = paging();
