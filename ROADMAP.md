@@ -70,6 +70,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   generated reference sheet (#104), and are saved to an Elements library every project shares,
   placed from it and updated from it (#552), even when placed under another name. A library
   Element can be renamed, shared, or exported as a bundle file another person imports (#765).
+  An Export to folder card writes the results wired into it into a folder a person chose on the
+  card, with a file-name pattern and a keep/number/replace policy, on the background export worker
+  with Cancel; the card never runs with the canvas (#746, completing #98's batch export).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
   image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL) become 3D nodes whose cards show

@@ -499,6 +499,17 @@ selector to the workflow-result preview, manifest and worker (#966). Its existin
 writer currently supports macOS and Linux; other platforms explain the limitation before a
 folder can be chosen. Individual Save as remains available on desktop Windows.
 
+An **Export to folder** card (`media.export`, #746) is a sink: wire image, video, audio, 3D or
+document results into its ports, and its generated body shows the file-name pattern, what to do
+when a file exists (keep, number or replace), the format and an optional subfolder. Above them the
+card shows the chosen folder's name ("No folder chosen yet" until then), **Choose folder…** (the
+native folder dialog; the only way to grant a folder) and **Export**, enabled once a folder is
+chosen. The folder is the window's view state for that card and never enters the project. Export
+writes on the background export worker behind a progress window with **Cancel export**; when it
+finishes, a notice says how many files were written, kept or failed and why. Running the canvas
+never exports. The browser build and non-Unix desktops show why export is unavailable instead of
+the buttons.
+
 ## Control icons
 
 Controls use Tabler outline SVGs through `icons::Icon`, prepared by the pinned Craft SVG

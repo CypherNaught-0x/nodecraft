@@ -297,7 +297,11 @@ history, revision or event, so neither is an undo step. Writing there is authori
 injecting `local_export::ExportHost` after a person chooses a folder — a destination named in a
 parameter is never authority — and without it `export.local_plan` and `export.local_run` return
 Unsupported. File → Save workflow results (#966) now scopes an ephemeral grant for
-`export.results_plan` / `export.results_start`; `media.export` remains #746. The new command
+`export.results_plan` / `export.results_start`. The `media.export` node (#746) never runs: the
+planner resolves it away like a router, and `export.node_plan` / `export.node_run` build the
+`export.local_*` request from the card and the host's grant, so no run, recompute, undo, autosave
+or replay writes a file (see the [media.export decision](decisions/2026-10-28-media-export-node.md)).
+`Effect::LocalExport { background: true }` runs the plan on the shared export worker. The new command
 snapshots all/active history or exact historical targets, uses the shared background export
 worker and quit watch, and atomically publishes complete new media plus a provenance manifest
 without replacement. See the [workflow save decision](decisions/2026-10-27-workflow-result-saves.md)

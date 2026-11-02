@@ -155,7 +155,12 @@ lists, and a test fails until then.
 `export.local_plan` previews a batch without writing files and is agent-visible; `export.local_run`
 would publish files outside the project and undo, so it is human-only (#98). Both require an
 app-injected authorized folder. File → Save workflow results now obtains an ephemeral grant
-for `export.results_plan` / `export.results_start` (#966); the `media.export` node remains #746. On Windows and
+for `export.results_plan` / `export.results_start` (#966). An Export to folder card (`media.export`,
+#746) is performed by `export.node_plan` (agent-visible preview) and `export.node_run` (human-only),
+which turn the card into exactly the `export.local_*` request from the results wired into it; the
+folder is the one a person chose on the card in the desktop app, never a parameter, so an agent
+can preview a card but cannot grant a folder or write. `export.local_run` and `export.node_run`
+take `background: true` to write on the export worker (`export.status`, `export.cancel`). On Windows and
 other non-Unix platforms an authorized host can preview with `export.local_plan`, but
 `export.local_run` returns Unsupported before creating or replacing any file: secure folder writes
 need an equivalent descriptor-relative no-follow implementation. The browser cannot authorize a
