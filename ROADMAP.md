@@ -125,6 +125,13 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   (`nodecraft-cli plugin pack|inventory|lint`, [`docs/plugin-authoring.md`](docs/plugin-authoring.md), #175),
   sign them with their own key (`plugin key new|trust`, `pack --sign`), and check them against a
   corpus of refused packages; a package may depend only on data packages (#866).
+- **Batch Generate sheets** (M5, #163, in progress): the Sheets panel makes a sheet, a table of
+  Generate rows with their own prompt, model and references, run together under one quote.
+  "From template" expands a `{{variable}}` prompt (text values, an empty value, or image
+  sources) into one row per combination; prompt and status filters narrow the rows. A Grid mode
+  reviews the rows' results as badged thumbnails and steps through a re-run row's older results;
+  the chosen results go to the canvas as source cards that record their row and run
+  (`sheet.place`), or into a folder through the shared result save (macOS and Linux).
 - **Actions** (M4): image action cards (blur, grade, filter, tint, flip, rotate, crop, key,
   replace colour, aspect, overlay, duplicate, resize, expand) and text action cards (split,
   replace, template, concat) come from quick-add and the palette (#85, #87, #410). After an edit

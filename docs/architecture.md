@@ -716,6 +716,13 @@ Generate cards as its rows, listed top to bottom by position. The commands are:
   editing; a real expansion is one changeset, adds at most 100 rows, and records each row's
   values under node config `nodecraft.sheet_expansion`, which the recipe hash leaves out. See
   [the template decision](decisions/2026-10-28-sheet-templates.md).
+- `sheet.place` puts rows' active results on a plain canvas as source cards (as
+  `history.extract` makes them), four across in row order, each recording its sheet, row, result,
+  output, item and asset under node config `nodecraft.sheet_result`; one changeset. A row's
+  results are its card's history (#81): a re-run adds one and makes it active, and `sheet.rows`
+  reports the active `generation`, the row's `results` count and the active one's `position`.
+  Rows' results export through `export.local_plan`/`export.local_run` by the `output` it reports.
+  See [the results decision](decisions/2026-11-02-sheet-results.md).
 
 Commands that add nodes or wires take one `seed` and derive every new id from it with blake3, so
 replays are deterministic. Cells are card parameters, so bulk edits use
@@ -736,7 +743,13 @@ out only the rows in view, so a full 1000-row sheet draws in about the time a sc
 variables (one value per line) and copies, with a live dry-run count and the first prompts;
 Expand stays disabled until the expansion fits. A prompt filter (ignoring case) and a status
 filter (not run, running, done, out of date, partial, failed) narrow the rows shown, keep each
-row's own number, and "Select shown" selects exactly the rows a filter shows.
+row's own number, and "Select shown" selects exactly the rows a filter shows. A template
+variable is Text (with an optional empty value) or Images (image sources on the sheet). The
+Table/Grid switch shows the shown rows that have a result as a grid of thumbnails with status
+badges; clicking a tile selects its row, and ‹/› step through a row's older results. "Send N to
+canvas" dispatches `sheet.place` to the project's first plain canvas, and "Export N"/"Export all"
+asks for a folder and opens the shared workflow-result save (#966) on those rows' active results,
+written off the UI thread; macOS and Linux only, like that save.
 
 ## Official workflow templates (#953)
 
