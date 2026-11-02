@@ -2,6 +2,7 @@
 //! the "Sheets" panel switches between the project's canvases and makes new sheets. Every edit
 //! dispatches a `sheet.*` or node command; running rows quotes them first like Generate does.
 use super::*;
+use nodecraft_types::GenerationId;
 use serde_json::Value as Json;
 
 /// The most characters of a title, model or reason shown on one line.
@@ -26,6 +27,16 @@ pub(super) struct SheetView {
     pub(super) status: StatusFilter,
     /// The template being expanded into rows, while its panel is open.
     pub(super) template: Option<TemplateDraft>,
+    /// Whether the rows show as the table or as a grid of their results.
+    pub(super) mode: ViewMode,
+}
+
+/// How the sheet shows its rows: the table of cells, or a grid of their results to review.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ViewMode {
+    #[default]
+    Table,
+    Grid,
 }
 
 /// Which rows the table shows by their state.
@@ -60,8 +71,7 @@ impl StatusFilter {
 /// A prompt template with its variables, expanded by `sheet.expand`.
 pub(super) struct TemplateDraft {
     pub(super) text: String,
-    /// Each variable's name and its values, one per line.
-    pub(super) variables: Vec<(String, String)>,
+    pub(super) variables: Vec<VariableDraft>,
     pub(super) copies: u32,
     /// The seed the expansion's ids derive from: the preview and the expansion use the same one.
     seed: NodeId,
@@ -71,7 +81,7 @@ pub(super) struct TemplateDraft {
 
 impl TemplateDraft {
     fn new(text: String, seed: NodeId) -> Self {
-        Self { text, variables: vec![(String::new(), String::new())], copies: 1, seed, preview: None }
+        Self { text, variables: vec![VariableDraft::default()], copies: 1, seed, preview: None }
     }
 
     /// The `sheet.expand` params this draft stands for. Blank lines are not values; a variable
@@ -80,13 +90,38 @@ impl TemplateDraft {
         let variables: Vec<Json> = self
             .variables
             .iter()
-            .filter(|(name, values)| !name.trim().is_empty() || !values.trim().is_empty())
-            .map(|(name, values)| {
-                let values: Vec<&str> = values.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
-                json!({"name": name.trim(), "text": values})
+            .filter(|variable| !variable.is_blank())
+            .map(|variable| match &variable.images {
+                Some(images) => json!({"name": variable.name.trim(), "images": images}),
+                None => {
+                    let mut values: Vec<&str> = variable.values.lines().map(str::trim).filter(|value| !value.is_empty()).collect();
+                    if variable.empty {
+                        values.push("");
+                    }
+                    json!({"name": variable.name.trim(), "text": values})
+                }
             })
             .collect();
         json!({"canvas": canvas, "seed": self.seed, "template": self.text, "variables": variables, "copies": self.copies})
+    }
+}
+
+/// One variable of a template being written.
+#[derive(Default)]
+pub(super) struct VariableDraft {
+    pub(super) name: String,
+    /// A text variable's values, one per line.
+    pub(super) values: String,
+    /// A text variable also has the empty value, which inserts nothing.
+    pub(super) empty: bool,
+    /// An image variable's image sources on the sheet, in the sheet's order; `None` for text.
+    pub(super) images: Option<Vec<NodeId>>,
+}
+
+impl VariableDraft {
+    /// Nothing typed or chosen: left out of the expansion.
+    fn is_blank(&self) -> bool {
+        self.name.trim().is_empty() && self.values.trim().is_empty() && !self.empty && self.images.as_ref().is_none_or(Vec::is_empty)
     }
 }
 
@@ -108,6 +143,22 @@ struct Row {
     references: String,
     result: String,
     stale: bool,
+    /// The active result, how many results the row's history holds and the active one's place
+    /// in it (1 is the oldest).
+    generation: Option<GenerationId>,
+    results: usize,
+    position: Option<usize>,
+    /// What the grid shows of the active result: its first image, or the start of its text.
+    preview: Preview,
+}
+
+/// What a grid tile shows of a row's active result.
+#[derive(Clone, Debug, Default)]
+enum Preview {
+    #[default]
+    Nothing,
+    Image(nodecraft_types::AssetRef),
+    Text(String),
 }
 
 impl Rows {
@@ -138,6 +189,10 @@ impl Row {
             references: label(&references),
             result: text("result"),
             stale: value.get("stale").and_then(Json::as_bool).unwrap_or(false),
+            generation: value.get("generation").and_then(|id| serde_json::from_value(id.clone()).ok()),
+            results: value.get("results").and_then(Json::as_u64).and_then(|n| usize::try_from(n).ok()).unwrap_or(0),
+            position: value.get("position").and_then(Json::as_u64).and_then(|n| usize::try_from(n).ok()),
+            preview: Preview::Nothing,
         })
     }
 }
@@ -172,6 +227,14 @@ enum Action {
     Template,
     Expand(Json),
     Select(Vec<NodeId>),
+    /// Selects the row, or unselects it.
+    Toggle(NodeId),
+    /// Places these rows' results on the home canvas (`sheet.place`).
+    Place(Vec<NodeId>),
+    /// Asks for a folder and saves these rows' results into it.
+    Export(Vec<NodeId>),
+    /// Makes the row's newer (true) or older result active.
+    Step(NodeId, bool),
 }
 
 impl NodeCraftApp {
@@ -194,6 +257,7 @@ impl NodeCraftApp {
         self.sheet.template = None;
         self.sheet.filter.clear();
         self.sheet.status = StatusFilter::All;
+        self.sheet.mode = ViewMode::Table;
         self.palette = None;
         self.turn_into = None;
         self.centred = false;
@@ -408,6 +472,33 @@ impl NodeCraftApp {
                     {
                         actions.push(Action::Template);
                     }
+                    ui.separator();
+                    for (mode, label, hint) in
+                        [(ViewMode::Table, "Table", "Edit the rows' prompts and settings"), (ViewMode::Grid, "Grid", "Review the rows' results as thumbnails")]
+                    {
+                        if ui.selectable_label(self.sheet.mode == mode, label).on_hover_text(hint).clicked() {
+                            self.sheet.mode = mode;
+                        }
+                    }
+                    ui.separator();
+                    let done: Vec<NodeId> = rows.rows.iter().filter(|row| row.generation.is_some()).map(|row| row.id).collect();
+                    let chosen: Vec<NodeId> = done.iter().copied().filter(|id| selected.contains(id)).collect();
+                    let place = if chosen.is_empty() { "Send to canvas".to_owned() } else { format!("Send {} to canvas", chosen.len()) };
+                    if ui
+                        .add_enabled(!chosen.is_empty(), egui::Button::new(place))
+                        .on_hover_text("Put the selected rows' results on the canvas as source cards")
+                        .clicked()
+                    {
+                        actions.push(Action::Place(chosen.clone()));
+                    }
+                    let (export, what) = if some { (format!("Export {}", chosen.len()), chosen) } else { ("Export all".to_owned(), done) };
+                    if ui
+                        .add_enabled(!what.is_empty(), egui::Button::new(export))
+                        .on_hover_text("Save the results of the selected rows, or of every row with one, into a folder you choose")
+                        .clicked()
+                    {
+                        actions.push(Action::Export(what));
+                    }
                 });
                 if self.sheet.template.is_some() {
                     ui.add_space(t.control_gap);
@@ -444,6 +535,10 @@ impl NodeCraftApp {
                     }
                 });
                 ui.add_space(t.control_gap);
+                if self.sheet.mode == ViewMode::Grid {
+                    self.sheet_grid(ui, t, &rows, &shown, &mut actions);
+                    return;
+                }
                 let gap = t.control_gap * 2.0;
                 ui.spacing_mut().item_spacing = Vec2::new(gap, t.control_gap);
                 // The prompt takes what the other columns leave, but never less than a card.
@@ -529,7 +624,12 @@ impl NodeCraftApp {
                 "partial" => ("Partial", t.stale),
                 _ => ("Not run", t.text_muted),
             };
-            cell(ui, egui::RichText::new(result).color(color));
+            // A row run more than once keeps its older results: which one is active, of how many.
+            let result = match row.position {
+                Some(position) if row.results > 1 => format!("{result} {position}/{}", row.results),
+                _ => result.to_owned(),
+            };
+            cell(ui, egui::RichText::new(result).color(color)).on_hover_text("Each run adds a result; older ones stay in the row's history");
             cell(ui, self.row_status(row.id, t));
             ui.allocate_ui_with_layout(Vec2::new(widths.other, height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = t.control_gap;
@@ -541,6 +641,92 @@ impl NodeCraftApp {
                 }
                 if ui.button("Run").on_hover_text("Quote this row, then run it").clicked() {
                     actions.push(Action::Run(vec![row.id]));
+                }
+            });
+        });
+    }
+
+    /// The rows the filter shows that have a result, as a grid of thumbnails with their status.
+    /// Clicking a tile selects its row; a row run more than once steps through its results.
+    fn sheet_grid(&mut self, ui: &mut egui::Ui, t: &Tokens, rows: &Rows, shown: &[usize], actions: &mut Vec<Action>) {
+        let tiles: Vec<(usize, &Row)> =
+            shown.iter().filter_map(|index| rows.rows.get(*index).map(|row| (*index, row))).filter(|(_, row)| row.generation.is_some()).collect();
+        let waiting = shown.len().saturating_sub(tiles.len());
+        if waiting > 0 {
+            let rows = if waiting == 1 { "1 row shown has" } else { "rows shown have" };
+            let text = if waiting == 1 { format!("{rows} no result yet.") } else { format!("{waiting} {rows} no result yet.") };
+            ui.label(egui::RichText::new(text).color(t.text_muted));
+        }
+        if tiles.is_empty() {
+            return;
+        }
+        let gap = t.control_gap * 2.0;
+        let side = t.sheet_thumbnail;
+        let columns = (((ui.available_width() + gap) / (side + gap)).floor() as usize).max(1);
+        let height = side + t.control_row_height + gap;
+        let lines = tiles.len().div_ceil(columns);
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, height, lines, |ui, range| {
+            for line in range {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(gap, gap);
+                    for (index, row) in tiles.iter().skip(line.saturating_mul(columns)).take(columns) {
+                        self.sheet_tile(ui, t, *index, row, actions);
+                    }
+                });
+            }
+        });
+    }
+
+    fn sheet_tile(&mut self, ui: &mut egui::Ui, t: &Tokens, index: usize, row: &Row, actions: &mut Vec<Action>) {
+        let side = t.sheet_thumbnail;
+        let number = index.saturating_add(1);
+        ui.vertical(|ui| {
+            ui.set_width(side);
+            let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
+            let chosen = self.selection.contains(row.id);
+            response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, chosen, format!("Row {number}")));
+            let radius = f32::from(t.panel_radius) / 2.0;
+            ui.painter().rect_filled(rect, radius, t.canvas_bg);
+            match &row.preview {
+                Preview::Image(asset) => {
+                    let edge = side * ui.ctx().pixels_per_point();
+                    let assets = self.session.assets();
+                    let preview = self.previews.request_asset(ui.ctx(), asset.hash, edge, || assets.preview_read(asset));
+                    crate::card::show_image(ui, rect.shrink(2.0), &preview, None, t);
+                }
+                Preview::Text(text) => {
+                    ui.put(rect.shrink(t.control_gap), egui::Label::new(egui::RichText::new(text).size(t.label_size).color(t.text)).wrap().selectable(false));
+                }
+                Preview::Nothing => {
+                    ui.put(rect.shrink(t.control_gap), egui::Label::new(egui::RichText::new("Result").color(t.text_muted)).selectable(false));
+                }
+            }
+            // The status badge, over the image's top-left corner.
+            let (label, color) = state_badge(self.row_state(row), t);
+            let text = egui::RichText::new(label).size(t.label_size).color(color);
+            let size = ui.painter().layout_no_wrap(label.to_owned(), egui::FontId::proportional(t.label_size), color).size();
+            let badge = Rect::from_min_size(rect.min + Vec2::splat(t.control_gap), size + Vec2::splat(t.control_gap));
+            ui.painter().rect_filled(badge, radius, t.panel_fill);
+            ui.put(badge, egui::Label::new(text).selectable(false));
+            let stroke = if chosen { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, t.panel_stroke) };
+            ui.painter().rect_stroke(rect, radius, stroke, egui::StrokeKind::Inside);
+            let response = response.on_hover_text(line(&row.prompt));
+            if response.clicked() {
+                actions.push(Action::Toggle(row.id));
+            }
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = t.control_gap;
+                ui.label(egui::RichText::new(format!("{number}")).color(t.text_muted));
+                if let Some(position) = row.position
+                    && row.results > 1
+                {
+                    if ui.add_enabled(position > 1, egui::Button::new("‹").small()).on_hover_text("Show this row's older result").clicked() {
+                        actions.push(Action::Step(row.id, false));
+                    }
+                    ui.label(egui::RichText::new(format!("{position} of {}", row.results)).color(t.text_muted));
+                    if ui.add_enabled(position < row.results, egui::Button::new("›").small()).on_hover_text("Show this row's newer result").clicked() {
+                        actions.push(Action::Step(row.id, true));
+                    }
                 }
             });
         });
@@ -592,6 +778,7 @@ impl NodeCraftApp {
     fn template_panel(&mut self, ui: &mut egui::Ui, t: &Tokens, existing: usize, actions: &mut Vec<Action>) {
         let canvas = self.canvas;
         let revision = self.session.revision();
+        let sources = self.image_sources();
         let Some(draft) = self.sheet.template.as_mut() else { return };
         let frame =
             egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
@@ -610,20 +797,54 @@ impl NodeCraftApp {
                 ui.add(egui::DragValue::new(&mut draft.copies).range(1..=100)).labelled_by(copies.id).on_hover_text("Rows made of each combination");
             });
             let mut remove = None;
-            for (n, (name, values)) in draft.variables.iter_mut().enumerate() {
+            for (n, variable) in draft.variables.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     let label = ui.label("Variable");
-                    ui.add(egui::TextEdit::singleline(name).hint_text("colour").desired_width(t.sheet_column_width).id(egui::Id::new(("sheet_variable", n))))
-                        .labelled_by(label.id);
-                    let label = ui.label("Values");
                     ui.add(
-                        egui::TextEdit::multiline(values)
-                            .hint_text("One value per line")
-                            .desired_rows(2)
-                            .desired_width(t.sheet_title_width)
-                            .id(egui::Id::new(("sheet_values", n))),
+                        egui::TextEdit::singleline(&mut variable.name)
+                            .hint_text("colour")
+                            .desired_width(t.sheet_column_width)
+                            .id(egui::Id::new(("sheet_variable", n))),
                     )
                     .labelled_by(label.id);
+                    let images = variable.images.is_some();
+                    if ui.selectable_label(!images, "Text").on_hover_text("Values written into the prompt where {{name}} is").clicked() && images {
+                        variable.images = None;
+                    }
+                    if ui.selectable_label(images, "Images").on_hover_text("Image sources on the sheet, one wired into each row").clicked() && !images {
+                        variable.images = Some(Vec::new());
+                    }
+                    match variable.images.as_mut() {
+                        None => {
+                            let label = ui.label("Values");
+                            ui.add(
+                                egui::TextEdit::multiline(&mut variable.values)
+                                    .hint_text("One value per line")
+                                    .desired_rows(2)
+                                    .desired_width(t.sheet_title_width)
+                                    .id(egui::Id::new(("sheet_values", n))),
+                            )
+                            .labelled_by(label.id);
+                            ui.checkbox(&mut variable.empty, "Empty value").on_hover_text("Also make rows where this variable inserts nothing");
+                        }
+                        Some(chosen) => {
+                            if sources.is_empty() {
+                                ui.label(egui::RichText::new("The sheet has no image sources to choose").color(t.text_muted));
+                            }
+                            for (id, title) in &sources {
+                                let mut on = chosen.contains(id);
+                                if ui.checkbox(&mut on, title.as_str()).changed() {
+                                    if on {
+                                        chosen.push(*id);
+                                        // In the sheet's order, whatever order they were ticked in.
+                                        chosen.sort_by_key(|id| sources.iter().position(|(source, _)| source == id));
+                                    } else {
+                                        chosen.retain(|other| other != id);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if ui.button("Remove variable").clicked() {
                         remove = Some(n);
                     }
@@ -645,7 +866,7 @@ impl NodeCraftApp {
             }
             ui.horizontal(|ui| {
                 if ui.add_enabled(draft.variables.len() < 8, egui::Button::new("Add variable")).clicked() {
-                    draft.variables.push((String::new(), String::new()));
+                    draft.variables.push(VariableDraft::default());
                 }
                 let preview = draft.preview.as_ref().map(|(_, _, result)| result);
                 let fits = matches!(preview, Some(Ok(result)) if result["fits"] == true);
@@ -684,6 +905,20 @@ impl NodeCraftApp {
                 }
             }
         });
+    }
+
+    /// The image sources on the open sheet that aren't rows, top to bottom, with their titles:
+    /// what an image variable can list.
+    fn image_sources(&self) -> Vec<(NodeId, String)> {
+        let Some(sheet) = self.session.document().canvases().get(&self.canvas) else { return Vec::new() };
+        let mut found: Vec<&Node> = sheet
+            .nodes()
+            .values()
+            .filter(|node| !nodecraft_nodes::generation::is_generation(&node.kind))
+            .filter(|node| matches!(node.outputs.as_slice(), [port] if port.port_type.modality == Modality::Image))
+            .collect();
+        found.sort_by(|a, b| a.pos.y.total_cmp(&b.pos.y).then(a.id.cmp(&b.id)));
+        found.into_iter().map(|node| (node.id, line(&card::title(node, self.session.kinds().get(&node.kind).ok().map(|kind| kind.descriptor()))))).collect()
     }
 
     /// The titles of a row's references, marking those wired into every row.
@@ -727,10 +962,19 @@ impl NodeCraftApp {
             return Arc::clone(rows);
         }
         let canvas = self.canvas;
-        let rows = Arc::new(match self.session.dispatch("sheet.rows", &json!({"canvas": canvas})) {
+        let mut rows = match self.session.dispatch("sheet.rows", &json!({"canvas": canvas})) {
             Ok(value) => Rows::read(&value, |references| self.references_label(canvas, references)),
             Err(error) => Rows { rows: Vec::new(), error: Some(error.message) },
-        });
+        };
+        if let Some(sheet) = self.session.document().canvases().get(&canvas) {
+            let chars = self.theme.tokens().preview_chars;
+            for row in &mut rows.rows {
+                if let Some(node) = sheet.nodes().get(&row.id) {
+                    row.preview = preview_of(node, chars);
+                }
+            }
+        }
+        let rows = Arc::new(rows);
         self.sheet.rows = Some((canvas, revision, Arc::clone(&rows)));
         rows
     }
@@ -763,6 +1007,16 @@ impl NodeCraftApp {
                 }
                 Ok(())
             }
+            Action::Toggle(row) => {
+                self.selection.toggle(row);
+                Ok(())
+            }
+            Action::Place(rows) => self.place_results(rows),
+            Action::Export(rows) => {
+                self.start_results_save_nodes(rows, true);
+                Ok(())
+            }
+            Action::Step(row, newer) => self.dispatch_sheet(if newer { "history.next" } else { "history.previous" }, json!({"canvas": canvas, "id": row})),
         };
         match result {
             Ok(()) => true,
@@ -771,6 +1025,27 @@ impl NodeCraftApp {
                 false
             }
         }
+    }
+
+    /// Places `rows`' results on the project's canvas, right of what it holds, and says so.
+    fn place_results(&mut self, rows: Vec<NodeId>) -> Result<(), Error> {
+        let document = self.session.document();
+        let target = home_canvas(document)
+            .filter(|id| document.canvases().get(id).is_some_and(|canvas| canvas.kind() == nodecraft_graph::CanvasKind::Canvas))
+            .ok_or_else(|| Error::new(ErrorKind::Unsupported, "the project has no canvas to send results to"))?;
+        let title = document.canvases().get(&target).map(|canvas| line(canvas.title())).unwrap_or_default();
+        let seed = self.sheet_seed()?;
+        let placed = self.session.dispatch("sheet.place", &json!({"canvas": self.canvas, "seed": seed, "rows": rows, "target": target}))?;
+        let count = placed["placed"].as_array().map_or(0, Vec::len);
+        let skipped = placed["skipped"].as_array().map_or(0, Vec::len);
+        let cards = if count == 1 { "1 result".to_owned() } else { format!("{count} results") };
+        let title = if title.trim().is_empty() { "the canvas".to_owned() } else { format!("\"{title}\"") };
+        self.notice = Some(match skipped {
+            0 => format!("Sent {cards} to {title}."),
+            1 => format!("Sent {cards} to {title}; 1 had nothing to send."),
+            n => format!("Sent {cards} to {title}; {n} had nothing to send."),
+        });
+        Ok(())
     }
 
     fn dispatch_sheet(&mut self, id: &str, params: Json) -> Result<(), Error> {
@@ -791,6 +1066,31 @@ impl NodeCraftApp {
         self.sheet.title.clear();
         self.open_canvas(id);
         Ok(())
+    }
+}
+
+/// A grid tile's badge for a row in `state`.
+fn state_badge(state: StatusFilter, t: &Tokens) -> (&'static str, egui::Color32) {
+    match state {
+        StatusFilter::Running => ("Running", t.accent),
+        StatusFilter::Failed => ("Failed", t.danger),
+        StatusFilter::OutOfDate => ("Out of date", t.stale),
+        StatusFilter::Partial => ("Partial", t.stale),
+        StatusFilter::Done => ("Done", t.text),
+        StatusFilter::NotRun | StatusFilter::All => ("Not run", t.text_muted),
+    }
+}
+
+/// What a grid tile shows of `node`'s active result: its first image, else the start of its text.
+fn preview_of(node: &Node, chars: usize) -> Preview {
+    let (images, _) = nodecraft_engine::split::image_rows(node);
+    if let Some(asset) = images.first().and_then(|row| row.first()) {
+        return Preview::Image((*asset).clone());
+    }
+    let active = node.active.and_then(|id| node.history.iter().find(|g| g.id == id));
+    match active.and_then(|generation| generation.outputs.first()) {
+        Some(Value::Text(text)) => Preview::Text(text.chars().take(chars).collect()),
+        _ => Preview::Nothing,
     }
 }
 

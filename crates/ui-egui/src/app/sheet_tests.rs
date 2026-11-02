@@ -34,6 +34,10 @@ pricing = { type = "per_call", price = "0.04 USD" }
 id = "text-to-image"
 output = "image"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.modes]]
+id = "image-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 1 }]
 "#;
 
 fn making() -> Make {
@@ -521,4 +525,148 @@ fn the_prompt_and_status_filters_narrow_the_table_and_select_what_they_show() {
     h.state_mut().sheet.filter = "owl".into();
     h.state_mut().open_canvas(C);
     assert!(h.state().sheet.filter.is_empty() && h.state().sheet.status == super::sheet_view::StatusFilter::All);
+}
+
+/// Runs `rows` through the price confirmation and waits for each to have a new result.
+fn run_rows(h: &mut Harness<'static, NodeCraftApp>, rows: &[NodeId]) {
+    let before: Vec<usize> = rows.iter().map(|row| history_of(h.state(), *row).len()).collect();
+    h.state_mut().request_runs(rows.to_vec(), super::generate::RunKind::Generate).unwrap();
+    frames_until(h, |app| app.run_confirm.is_some());
+    let label = h.get_by_label_contains("Generate for").accesskit_node().label().unwrap_or_default();
+    press(h, Role::Button, &label);
+    frames_until(h, |app| {
+        rows.iter().zip(&before).all(|(row, count)| {
+            history_of(app, *row).len() > *count && app.session.document().canvases().get(&S).unwrap().nodes().get(row).unwrap().active.is_some()
+        })
+    });
+    h.run();
+}
+
+fn history_of(app: &NodeCraftApp, row: NodeId) -> Vec<nodecraft_types::GenerationId> {
+    app.session.document().canvases().get(&S).unwrap().nodes().get(&row).unwrap().history.iter().map(|g| g.id).collect()
+}
+
+fn show_grid(h: &mut Harness<'static, NodeCraftApp>) {
+    let at = h.get_by_label("Grid").rect().center();
+    click(h, at);
+    assert_eq!(h.state().sheet.mode, super::sheet_view::ViewMode::Grid);
+}
+
+#[test]
+fn the_grid_shows_rows_with_results_badged_and_selects_and_sends_them_to_the_canvas() {
+    let mut h = on_sheet(&["a fox", "an owl", "a hare"]);
+    let rows = rows_of(&h.state().session);
+    run_rows(&mut h, &rows[..2]);
+    show_grid(&mut h);
+    assert!(h.query_by_label("Row 1").is_some() && h.query_by_label("Row 2").is_some());
+    assert!(h.query_by_label("Row 3").is_none(), "a row with no result has no tile");
+    assert!(h.query_by_label("1 row shown has no result yet.").is_some());
+    assert_eq!(h.query_all_by_label("Done").count(), 2, "each tile is badged with its row's status");
+    assert_eq!(h.query_all_by_role(Role::MultilineTextInput).count(), 0, "the grid replaces the table");
+
+    // The filters narrow the grid as they do the table.
+    retype(&mut h, "Filter", 0, "owl");
+    assert!(h.query_by_label("Row 1").is_none() && h.query_by_label("Row 2").is_some());
+    retype(&mut h, "Filter", 0, "");
+    h.state_mut().sheet.status = super::sheet_view::StatusFilter::NotRun;
+    h.run();
+    assert!(h.query_by_label("Row 1").is_none() && h.query_by_label("Row 2").is_none());
+    h.state_mut().sheet.status = super::sheet_view::StatusFilter::All;
+    h.run();
+
+    // Clicking a tile selects its row, as its checkbox does in the table.
+    let owl = h.get_by_label("Row 2").rect().center();
+    click(&mut h, owl);
+    assert!(h.state().selection.contains(rows[1]) && !h.state().selection.contains(rows[0]));
+    press(&mut h, Role::Button, "Send 1 to canvas");
+    let placed: Vec<&Node> = h.state().session.document().canvases().get(&C).unwrap().nodes().values().collect();
+    assert_eq!(placed.len(), 1, "one source card on the canvas");
+    assert_eq!(placed[0].kind, "source.image");
+    let Some(Value::Text(recorded)) = placed[0].config.get(nodecraft_engine::sheet_cmds::place::RESULT_CONFIG) else { panic!("no provenance") };
+    let recorded: serde_json::Value = serde_json::from_str(recorded).unwrap();
+    assert_eq!(recorded["row"], json!(rows[1]));
+    assert_eq!(recorded["generation"], json!(history_of(h.state(), rows[1])[0]));
+    assert_eq!(h.state().notice.as_deref(), Some("Sent 1 result to \"Canvas\"."));
+    assert!(h.state().on_sheet(), "the sheet stays open");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert!(h.state().session.document().canvases().get(&C).unwrap().nodes().is_empty(), "one undo takes the card back");
+}
+
+#[test]
+fn a_row_run_again_keeps_its_older_result_and_the_grid_steps_through_them() {
+    let mut h = on_sheet(&["a fox"]);
+    let row = rows_of(&h.state().session)[0];
+    run_rows(&mut h, &[row]);
+    run_rows(&mut h, &[row]);
+    let history = history_of(h.state(), row);
+    assert_eq!(history.len(), 2, "a run adds a result and keeps the one before");
+    let active = |h: &Harness<'static, NodeCraftApp>| h.state().session.document().canvases().get(&S).unwrap().nodes().get(&row).unwrap().active;
+    assert_eq!(active(&h), Some(history[1]), "the newest is active");
+    assert!(h.query_by_label("Done 2/2").is_some(), "the table says which result of how many");
+    show_grid(&mut h);
+    assert!(h.query_by_label("2 of 2").is_some());
+    assert!(h.get_by_role_and_label(Role::Button, "›").accesskit_node().is_disabled());
+    press(&mut h, Role::Button, "‹");
+    assert_eq!(active(&h), Some(history[0]), "the older result is active again");
+    assert!(h.query_by_label("1 of 2").is_some());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert_eq!(active(&h), Some(history[1]), "stepping is one undo step");
+}
+
+#[cfg(unix)]
+#[test]
+fn export_asks_for_a_folder_and_saves_the_chosen_rows_active_results() {
+    let mut h = on_sheet(&["a fox", "an owl"]);
+    let rows = rows_of(&h.state().session);
+    run_rows(&mut h, &rows);
+    let dir = tempfile::tempdir().unwrap();
+    h.state_mut().exports.answer = Some(dir.path().to_path_buf());
+    assert!(h.query_by_label("Export all").is_some(), "with nothing selected every result is offered");
+    let first = h.query_all_by_role(Role::CheckBox).next().unwrap().rect().center();
+    click(&mut h, first);
+    press(&mut h, Role::Button, "Export 1");
+    frames_until(&mut h, |app| app.export_pending() && app.notice.is_none());
+    h.run();
+    assert!(h.query_by_label_contains("1 media files; 1 ready").is_some(), "only the selected row's active result");
+    press(&mut h, Role::Button, "Save files");
+    frames_until(&mut h, |_| std::fs::read_dir(dir.path()).unwrap().count() >= 2);
+    let mut names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    assert!(names.iter().any(|name| name == "workflow-results.json"), "{names:?}");
+    assert_eq!(names.iter().filter(|name| name.ends_with(".png")).count(), 1, "{names:?}");
+}
+
+#[test]
+fn a_template_takes_an_empty_value_and_an_image_variable_from_the_panel() {
+    let mut h = on_sheet(&["a fox"]);
+    let snow = NodeId::from_bytes([61; 16]);
+    let mut node = h.state().session.kinds().get("source.image").unwrap().descriptor().instantiate(snow, &Default::default()).unwrap();
+    node.title = "Snow".into();
+    node.pos = nodecraft_graph::Position { x: -480.0, y: 0.0 };
+    h.state_mut().session.dispatch("node.add", &json!({"canvas": S, "node": node})).unwrap();
+    h.run();
+    open_template(&mut h);
+    retype(&mut h, "Template", 0, "a {{colour}} fox");
+    retype(&mut h, "Variable", 0, "colour");
+    retype(&mut h, "Values", 0, "red");
+    let empty = h.get_by_label("Empty value").rect().center();
+    click(&mut h, empty);
+    assert!(h.query_by_label_contains("2 new rows").is_some(), "red, and nothing");
+    press(&mut h, Role::Button, "Add variable");
+    retype(&mut h, "Variable", 1, "backdrop");
+    let images = h.query_all_by_label("Images").nth(1).unwrap().rect().center();
+    click(&mut h, images);
+    assert!(h.query_by_label_contains("needs 1 to 100 values").is_some(), "an image variable needs an image");
+    assert!(h.query_by_label_contains("Expand into").is_none());
+    let tick = h.get_by_label("Snow").rect().center();
+    click(&mut h, tick);
+    assert!(h.query_by_label_contains("2 new rows").is_some(), "the image is wired into each row: still 2");
+    press(&mut h, Role::Button, "Expand into 2 rows");
+    assert_eq!(prompts(h.state(), S), ["a fox", "a red fox", "a  fox"]);
+    let listed = h.state_mut().session.dispatch("sheet.rows", &json!({"canvas": S})).unwrap();
+    for row in 1..3 {
+        assert_eq!(listed["rows"][row]["references"][0]["node"], json!(snow), "each new row has the image wired in");
+    }
 }
