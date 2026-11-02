@@ -70,6 +70,11 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   generated reference sheet (#104), and are saved to an Elements library every project shares,
   placed from it and updated from it (#552), even when placed under another name. A library
   Element can be renamed, shared, or exported as a bundle file another person imports (#765).
+  The Techniques panel's Assets, History and Styles tabs browse the open project a page at a
+  time: every image, video, sound, 3D model and PDF with a thumbnail, filtered by kind and
+  inserted as a card; the open canvas's past results, restored or placed as a source card; and
+  every trained style and Soul ID, marked with the provider that keeps it and wired into the
+  selected card (`library.assets`, `library.history`, `library.styles`, part of #96).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
   image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL) become 3D nodes whose cards show

@@ -483,6 +483,35 @@ below both controls. Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
 [layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
 
+## Library browsers
+
+The Techniques panel (#96) has four tabs: **Library** (published techniques, the shared
+technique and shader libraries, starter templates), **Assets**, **History** and **Styles**. Each
+browser shows a page of 20 entries with Previous and Next, read with a read-only command when
+the tab opens and again whenever the document or a filter changes, so a large project never
+draws more than a page.
+
+- **Assets** (`library.assets`) lists every distinct image, video, sound, 3D model and PDF the
+  project's cards hold or made, once each, with how often it is used. Images and PDFs show a
+  `library_thumbnail` (56-point) thumbnail through the shared preview cache; other kinds show
+  their kind's name in the same square. Kind chips (All, Images, Videos, Sounds, 3D, PDFs) and a
+  search field filter it. **Insert** adds a source card holding the asset in the middle of the
+  view, selected, as one `node.add` undo step.
+- **History** (`library.history`) lists the open canvas's past results, card by card and newest
+  first, with the first image's thumbnail or a quote of the text, the model, and whether the card
+  uses it now. **Use this result** restores it (`history.select`); **Place** puts its value on the
+  canvas as a source card in the middle of the view (`history.extract`). **Selected card only**
+  narrows it to one card.
+- **Styles** (`library.styles`) lists every Train style card on every canvas: its family and
+  trigger, a **Soul ID** mark (`accent`) for a trained identity, and "Kept by provider": the
+  weights or the identity stay with that provider and only that account can use the handle.
+  **Use on selected card** wires a style on the open canvas into the selected card
+  (`style.use`), disabled with the reason when the card can't take it; a style on another canvas
+  offers **Open its canvas**.
+
+The browsers cover the open project only: NodeCraft keeps no store of other projects to browse
+yet. Cross-project browsing, URL import and starter templates as techniques remain part of #96.
+
 ## Saving results
 
 Generated media previews and their card menus offer **Save as…** and **Save to folder…**
