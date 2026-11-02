@@ -253,6 +253,7 @@ fn same_contract_renderer_uses_optional_composer_ownership() {
                     outdated: false,
                     prompt_overlay: true,
                     variations: Default::default(),
+                    export_folder: None,
                 };
                 *body = card::show(ui, &CanvasView::default(), &node, card, &mut editor, false, &theme::DARK).unwrap().response.rect;
             },

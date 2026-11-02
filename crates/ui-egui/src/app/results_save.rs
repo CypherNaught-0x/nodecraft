@@ -170,7 +170,7 @@ impl NodeCraftApp {
                             ExportResult::Cancelled => {
                                 ui.label("Save cancelled.");
                             }
-                            ExportResult::Exported { .. } => {
+                            ExportResult::Exported { .. } | ExportResult::Batch { .. } => {
                                 ui.label("Saved.");
                             }
                         }

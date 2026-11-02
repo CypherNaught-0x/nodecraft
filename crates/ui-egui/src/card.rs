@@ -85,6 +85,10 @@ pub enum Intent {
     VariationCards(bool),
     /// Choose a folder whose files replace the ones this Folder card holds.
     ImportFolder,
+    /// Choose the folder an Export to folder card writes into (#746): a person's grant.
+    ChooseExportFolder,
+    /// Write what an Export to folder card describes into its chosen folder (#746).
+    Export,
 }
 
 /// What a Folder card holds and gives: "12 of 40 images from Shoot".
@@ -227,6 +231,9 @@ pub struct CardView<'a> {
     pub outdated: bool,
     /// Where the canvas puts extra variations, and whether this card pins a seed (#808).
     pub variations: generate::Variations,
+    /// The name of the folder a person chose for an Export to folder card (#746), when one is
+    /// chosen in this window. View state: the project never holds it.
+    pub export_folder: Option<String>,
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -274,6 +281,7 @@ pub fn show(
         mesh,
         outdated,
         variations,
+        export_folder,
     } = card;
     let (images, video, audio, mesh) =
         if crate::text_preview::eligible(descriptor) { ((Vec::new(), 0), None, None, None) } else { (images, video, audio, mesh) };
@@ -544,6 +552,9 @@ pub fn show(
                                 intents.push(Intent::ImportFolder);
                             }
                         }
+                        if node.kind == nodecraft_nodes::export::ID {
+                            export_controls(ui, export_folder.as_deref(), &mut intents, t);
+                        }
                         for spec in &d.params.params {
                             if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
                                 continue;
@@ -632,6 +643,28 @@ pub fn show(
         ports.push((Side::Output, port.name.clone(), r.on_hover_text(format!("Drag to connect {}", port.name))));
     }
     Some(CardResponse { response, context, save_hit, intents, ports })
+}
+
+/// An Export to folder card's folder and Export button (#746). The folder is the person's choice
+/// in this window; the card's parameters below describe the names and policy.
+fn export_controls(ui: &mut egui::Ui, folder: Option<&str>, intents: &mut Vec<Intent>, t: &Tokens) {
+    if let Some(why) = crate::app::card_export_unavailable() {
+        ui.label(egui::RichText::new(why).color(t.text_muted));
+        return;
+    }
+    match folder {
+        Some(folder) => ui.label(format!("Folder: {folder}")),
+        None => ui.label(egui::RichText::new("No folder chosen yet").color(t.text_muted)),
+    };
+    ui.horizontal(|ui| {
+        let choose = if folder.is_some() { "Change folder…" } else { "Choose folder…" };
+        if ui.button(choose).on_hover_text("Pick the folder this card writes into; it stays on this computer, never in the project").clicked() {
+            intents.push(Intent::ChooseExportFolder);
+        }
+        if ui.add_enabled(folder.is_some(), egui::Button::new("Export")).on_hover_text("Write the wired results into the chosen folder").clicked() {
+            intents.push(Intent::Export);
+        }
+    });
 }
 
 // At overview zoom, and for additive migration input previews, screen-sized hit targets can

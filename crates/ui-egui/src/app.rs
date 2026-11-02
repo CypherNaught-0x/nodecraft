@@ -431,6 +431,7 @@ mod web_files;
 mod wire_body;
 #[cfg(test)]
 mod wiring951_tests;
+pub(crate) use export::card_unavailable as card_export_unavailable;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use web_files::pick_package;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -1332,7 +1333,7 @@ impl NodeCraftApp {
             // is painted last by show(), above any document editor or canvas gesture.
             return;
         }
-        let file_owns_input = self.results_overlay(ui.ctx()) || self.export_overlay(ui.ctx()) || file_owns_input;
+        let file_owns_input = self.results_overlay(ui.ctx()) || self.card_export_overlay(ui.ctx()) || self.export_overlay(ui.ctx()) || file_owns_input;
         self.videos.poll(ui.ctx());
         self.audios.poll(ui.ctx());
         self.meshes.poll();
@@ -1745,6 +1746,13 @@ impl NodeCraftApp {
             let mention_blocked = &self.mention_cache.blocked;
             let hidden = &membership.hidden;
             let field_shift = self.field_shift();
+            // Folders chosen for Export to folder cards (#746): view state, never document data.
+            let export_folders: BTreeMap<NodeId, String> = canvas
+                .nodes()
+                .values()
+                .filter(|node| node.kind == nodecraft_nodes::export::ID)
+                .filter_map(|node| Some((node.id, self.card_export_folder(node.id)?)))
+                .collect();
             for node in
                 canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
             {
@@ -1869,6 +1877,7 @@ impl NodeCraftApp {
                         audio,
                         mesh,
                         outdated,
+                        export_folder: export_folders.get(&node.id).cloned(),
                         variations: card::generate::Variations {
                             cards: canvas.variation_cards(),
                             alike: nodecraft_exec::variations::requested(node) > 1
@@ -2530,6 +2539,14 @@ impl NodeCraftApp {
                     {
                         self.notice = Some("Importing a folder needs the desktop app for now.".into());
                     }
+                    continue;
+                }
+                Intent::ChooseExportFolder => {
+                    self.choose_card_folder(id);
+                    continue;
+                }
+                Intent::Export => {
+                    self.export_card(id);
                     continue;
                 }
                 Intent::Video(intent) => {
@@ -3531,6 +3548,8 @@ mod audio672_tests;
 mod audio875_tests;
 #[cfg(test)]
 mod audio_tests;
+#[cfg(test)]
+mod card_export746_tests;
 #[cfg(test)]
 mod comfy_workflow9_tests;
 #[cfg(test)]

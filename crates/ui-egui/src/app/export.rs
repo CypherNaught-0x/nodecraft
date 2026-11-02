@@ -15,6 +15,8 @@ use std::{
     sync::Arc,
     task::{Context, Poll, Wake, Waker},
 };
+mod card;
+pub(crate) use card::unavailable as card_unavailable;
 #[cfg(not(target_arch = "wasm32"))]
 mod close;
 #[path = "results_save.rs"]
@@ -36,6 +38,8 @@ pub(super) enum Target {
     /// The command that writes the file and its params, without the path.
     File(&'static str, serde_json::Value),
     Results(serde_json::Value),
+    /// The folder an Export to folder card (#746) writes into: a grant, not a parameter.
+    Card(CanvasId, NodeId),
     /// The command that writes each file, its params without the path, and the suggested file
     /// name each is numbered from.
     Folder(&'static str, Vec<(serde_json::Value, String)>),
@@ -68,6 +72,10 @@ pub(super) struct Exports {
     pending: Option<Pending>,
     results: Option<results_save::State>,
     work: Option<work::Work>,
+    /// Folders people chose for Export to folder cards (#746), and the card export running now
+    /// with its folder's name.
+    grants: card::Grants,
+    card: Option<(nodecraft_engine::export_job::ExportWatch, String)>,
     pub(super) runner: Option<Arc<dyn nodecraft_engine::save_runner::SaveRunner>>,
     rect: egui::Rect,
     pointer_owned: bool,
@@ -87,6 +95,8 @@ impl Default for Exports {
             pending: None,
             results: None,
             work: None,
+            grants: Default::default(),
+            card: None,
             runner,
             rect: egui::Rect::NOTHING,
             pointer_owned: false,
@@ -111,7 +121,7 @@ impl Wake for Repaint {
 impl NodeCraftApp {
     #[cfg(test)]
     pub(super) fn export_pending(&self) -> bool {
-        self.exports.pending.is_some() || self.exports.work.is_some() || self.exports.results.is_some()
+        self.exports.pending.is_some() || self.exports.work.is_some() || self.exports.results.is_some() || self.exports.card.is_some()
     }
     /// Asks where to save output `port` (item `item`) of result `generation` of node `id`,
     /// suggesting `name`.
@@ -149,11 +159,11 @@ impl NodeCraftApp {
     }
 
     pub(super) fn pick_export(&mut self, target: Target, name: &str) {
-        if self.exports.pending.is_some() || self.exports.work.is_some() || self.exports.results.is_some() {
+        if self.exports.pending.is_some() || self.exports.work.is_some() || self.exports.results.is_some() || self.exports.card.is_some() {
             self.notice = Some("Another export is in progress; finish or cancel that first.".into());
             return;
         }
-        let folder = matches!(target, Target::Folder(..) | Target::Results(..));
+        let folder = matches!(target, Target::Folder(..) | Target::Results(..) | Target::Card(..));
         let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.export_pick(name, folder))) {
             Ok(Some(future)) => future,
             Ok(None) => {
@@ -218,6 +228,7 @@ impl NodeCraftApp {
         }
         match pending.target {
             Target::Results(params) => self.results_folder(params, path),
+            Target::Card(canvas, id) => self.card_folder_chosen(canvas, id, path),
             Target::File(command, mut params) => {
                 params["path"] = json!(path);
                 // The dialog already asked before replacing a file.
