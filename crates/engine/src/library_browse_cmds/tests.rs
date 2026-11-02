@@ -133,7 +133,11 @@ fn every_asset_is_listed_once_with_where_it_was_found_and_how_often_it_is_used()
     // Filtered by kind, canvas and search, a page at a time.
     assert_eq!(list(&mut s, "library.assets", json!({"kind": "audio"}))["total"], 1);
     assert_eq!(list(&mut s, "library.assets", json!({"canvas": BETA}))["total"], 1);
-    assert_eq!(field(&list(&mut s, "library.assets", json!({"query": " PAINT "})), "assets", "label"), [&json!("Painter")]);
+    // Search finds every asset the painter made, the photo included, though the photo was
+    // first found on the source card: each is listed where it first matches.
+    let painted_by = list(&mut s, "library.assets", json!({"query": " PAINT "}));
+    assert_eq!((painted_by["total"].clone(), field(&painted_by, "assets", "label")), (json!(2), vec![&json!("Painter"), &json!("Painter")]));
+    assert_eq!(painted_by["assets"][0]["generation"], json!(g(2)));
     let second = list(&mut s, "library.assets", json!({"offset": 1, "limit": 1}));
     assert_eq!((second["total"].clone(), field(&second, "assets", "label")), (json!(3), vec![&json!("Painter")]));
     assert_eq!(list(&mut s, "library.assets", json!({"offset": u64::MAX}))["assets"], json!([]));
@@ -196,6 +200,9 @@ fn past_results_are_listed_newest_first_and_restored_through_history_select() {
     assert_eq!(s.dispatch("library.history", &json!({"node": PAINTER})).unwrap_err().kind, ErrorKind::InvalidInput);
     assert_eq!(s.dispatch("library.history", &json!({"canvas": BETA, "node": PAINTER})).unwrap_err().kind, ErrorKind::NotFound);
     assert_eq!(field(&list(&mut s, "library.history", json!({"query": "writer"})), "generations", "label"), [&json!("Writer")]);
+    // A trained style has no source card to hold it, so it can't be placed.
+    let styles = list(&mut s, "library.history", json!({"canvas": BETA, "node": INK}));
+    assert_eq!((styles["total"].clone(), styles["generations"][0]["place"].clone()), (json!(1), Json::Null));
 }
 
 #[test]

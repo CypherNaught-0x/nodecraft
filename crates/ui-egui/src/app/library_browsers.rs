@@ -57,6 +57,8 @@ struct AssetEntry {
     label: String,
     canvas_title: String,
     uses: usize,
+    #[serde(default)]
+    stored: bool,
     source: Option<Source>,
 }
 
@@ -148,7 +150,15 @@ pub(super) struct Browsers {
     /// The first entry shown, per tab.
     offsets: std::collections::HashMap<Tab, usize>,
     listed: Option<(Key, Result<Listing, String>)>,
+    /// Whether each style on the open canvas can go into the selected card, as `style.use`
+    /// answered for this document revision and selection.
+    verdicts: Option<(VerdictKey, Verdicts)>,
 }
+
+/// What the style verdicts were checked against.
+type VerdictKey = (ProjectId, u64, CanvasId, Option<NodeId>);
+/// Per style card: the card it can go into, or why not.
+type Verdicts = std::collections::HashMap<NodeId, Result<NodeId, String>>;
 
 impl Browsers {
     fn offset(&mut self) -> &mut usize {
@@ -302,7 +312,7 @@ fn thumbnail(ui: &mut egui::Ui, t: &Tokens, previews: &mut crate::preview::Previ
         previews.request_asset(ui.ctx(), asset.hash, side * ui.ctx().pixels_per_point(), || assets.preview_read(asset))
     });
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
-    ui.painter().rect_filled(rect, t.panel_radius, t.panel_stroke);
+    ui.painter().rect_filled(rect, t.panel_radius, t.card_fill);
     let described = match preview {
         Some(Preview::Ready { texture, size, .. }) => {
             let [w, h] = size.map(|v| v.max(1) as f32);
@@ -375,6 +385,10 @@ pub(super) fn show(
             }
         }
         Tab::History => {
+            // With nothing selected the whole canvas is listed, so the box isn't left ticked.
+            if selected.is_none() {
+                browsers.card_only = false;
+            }
             let toggle = ui.add_enabled(selected.is_some(), egui::Checkbox::new(&mut browsers.card_only, "Selected card only"));
             if toggle.on_disabled_hover_text("Select one card to see only its results").changed() {
                 *browsers.offset() = 0;
@@ -391,10 +405,16 @@ pub(super) fn show(
         }
     }
     let mut offset = *browsers.offset();
+    let key = (session.document().id(), session.revision(), canvas, selected);
+    if browsers.verdicts.as_ref().is_none_or(|(old, _)| *old != key) {
+        browsers.verdicts = Some((key, Default::default()));
+    }
     let Some((_, listed)) = &browsers.listed else {
         ui.label(egui::RichText::new("Reading…").color(t.text_muted));
         return None;
     };
+    let mut no_verdicts = Verdicts::new();
+    let verdicts = browsers.verdicts.as_mut().map_or(&mut no_verdicts, |(_, verdicts)| verdicts);
     egui::ScrollArea::vertical().max_height(t.sheet_list_height).show(ui, |ui| match listed {
         Err(error) => {
             ui.colored_label(t.danger, error);
@@ -420,8 +440,9 @@ pub(super) fn show(
                                 .small()
                                 .color(t.text_muted),
                         );
-                        let insert = ui.add_enabled(entry.source.is_some(), egui::Button::new("Insert"));
-                        if insert.on_hover_text("A card holding it, in the middle of the view; one undo step").clicked()
+                        let insert = ui.add_enabled(entry.source.is_some() && entry.stored, egui::Button::new("Insert"));
+                        let why = if entry.stored { "This kind of file has no source card" } else { "The file is missing from this project" };
+                        if insert.on_hover_text("A card holding it, in the middle of the view; one undo step").on_disabled_hover_text(why).clicked()
                             && let Some(source) = &entry.source
                         {
                             action = Some(Browse::Insert { asset: asset.clone(), kind: source.kind.clone(), param: source.param.clone() });
@@ -469,7 +490,9 @@ pub(super) fn show(
                             let place = ui.add_enabled(entry.place.is_some(), egui::Button::new("Place"));
                             if place
                                 .on_hover_text("A source card holding it, in the middle of the view, feeding cards at once; one undo step")
-                                .on_disabled_hover_text("This result was made for other outputs than the card has now")
+                                .on_disabled_hover_text(
+                                    "This result can't become a source card: it is a trained style, or was made for other outputs than the card has now",
+                                )
                                 .clicked()
                                 && let Some(place) = &entry.place
                             {
@@ -501,18 +524,23 @@ pub(super) fn show(
                 }
                 ui.label(egui::RichText::new(facts.join(" · ")).small().color(t.text_muted));
                 if let Some(provider) = &entry.kept_by {
-                    ui.label(egui::RichText::new(format!("Kept by {provider}: only that account can use it")).small().color(t.text_muted));
+                    ui.label(egui::RichText::new(format!("Kept by {}: only that account can use it", sheet_view::line(provider))).small().color(t.text_muted));
                 }
                 if entry.canvas == canvas {
-                    let edge = ids::edge_id(session.document(), ("library-style", session.revision(), entry.id));
-                    let verdict = match (selected, edge) {
-                        (Some(target), Some(edge)) => session
-                            .enabled("style.use", &json!({"canvas": canvas, "style": entry.id, "target": target, "edge": edge}))
-                            .map(|()| target)
-                            .map_err(|error| error.message),
-                        (None, _) => Err("Select the card to style".to_owned()),
-                        (_, None) => Err("Couldn't allocate an edge id; try again".to_owned()),
-                    };
+                    let verdict = verdicts
+                        .entry(entry.id)
+                        .or_insert_with(|| {
+                            let edge = ids::edge_id(session.document(), ("library-style", session.revision(), entry.id));
+                            match (selected, edge) {
+                                (Some(target), Some(edge)) => session
+                                    .enabled("style.use", &json!({"canvas": canvas, "style": entry.id, "target": target, "edge": edge}))
+                                    .map(|()| target)
+                                    .map_err(|error| error.message),
+                                (None, _) => Err("Select the card to style".to_owned()),
+                                (_, None) => Err("Couldn't allocate an edge id; try again".to_owned()),
+                            }
+                        })
+                        .clone();
                     let button = ui.add_enabled(verdict.is_ok(), egui::Button::new("Use on selected card"));
                     let button = match &verdict {
                         Ok(_) => button.on_hover_text("Wire this style into the selected card's style input; one undo step. It doesn't run."),

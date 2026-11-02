@@ -170,7 +170,8 @@ fn every_asset<'a>(canvases: &[&'a Canvas]) -> Vec<Found<'a>> {
             }
             for generation in node.history.iter().rev() {
                 result_media(node, generation, |asset, port, item| {
-                    // The port says what the card made; a MIME type the port doesn't settle is read as such.
+                    // The port's modality wins over the MIME type: it says what the card made. Only a
+                    // text port (or a result recorded for other ports) leaves it to the MIME type.
                     let kind = port.map(|p| p.port_type.modality).filter(|m| *m != Modality::Text).or_else(|| kind_of(&asset.mime));
                     if let Some(kind) = kind {
                         found.push(Found {
@@ -206,13 +207,24 @@ struct AssetParams {
     limit: Option<usize>,
 }
 
-fn assets(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
-    let p: AssetParams = params(value)?;
+/// The request's checked parts, without listing anything.
+fn asset_request(c: &Context<'_>, value: &Json) -> Result<(AssetParams, usize, usize, Option<String>), Error> {
+    let mut p: AssetParams = params(value)?;
     if p.kind.is_some_and(|kind| !ASSET_KINDS.contains(&kind)) {
         return Err(invalid("kind must be image, video, audio, mesh or document; trained styles are listed by library.styles"));
     }
     let (offset, limit) = page(p.offset, p.limit)?;
-    let query = query(p.query)?;
+    let query = query(p.query.take())?;
+    if let Some(id) = p.canvas
+        && !c.document.canvases().contains_key(&id)
+    {
+        return Err(Error::new(ErrorKind::NotFound, "canvas does not exist"));
+    }
+    Ok((p, offset, limit, query))
+}
+
+fn assets(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
+    let (p, offset, limit, query) = asset_request(c, value)?;
     let canvases = canvases(c.document, p.canvas)?;
     let found = every_asset(&canvases);
     let mut uses: HashMap<_, usize> = HashMap::new();
@@ -224,10 +236,11 @@ fn assets(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let listed: Vec<Found<'_>> = found
         .into_iter()
         .filter(|f| ASSET_KINDS.contains(&f.kind) && p.kind.is_none_or(|kind| kind == f.kind))
-        .filter(|f| seen.insert(f.asset.hash))
         .filter(|f| {
             matches(query.as_deref(), &[label(f.node), f.canvas.title(), f.asset.mime.essence(), f.param.unwrap_or_default(), f.port.unwrap_or_default()])
         })
+        // After the filters, so each asset is listed where it first matches.
+        .filter(|f| seen.insert(f.asset.hash))
         .collect();
     let entries: Vec<Json> = listed
         .iter()
@@ -283,7 +296,8 @@ fn preview(node: &Node, generation: &Generation) -> (Option<Json>, Option<String
         if media.is_none() {
             let kind = port.map(|p| p.port_type.modality).filter(|m| *m != Modality::Text).or_else(|| kind_of(&asset.mime));
             media = Some(json!({"hash": asset.hash, "mime": asset.mime, "kind": kind, "meta": asset.meta}));
-            place = port.map(|p| json!({"port": p.name, "item": item}));
+            // history.extract reads the port's modality; a style has no source card to hold it.
+            place = port.filter(|p| source_for(p.port_type.modality).is_some()).map(|p| json!({"port": p.name, "item": item}));
         }
     });
     let positional = generation.outputs.len() == node.outputs.len();
@@ -307,19 +321,27 @@ fn preview(node: &Node, generation: &Generation) -> (Option<Json>, Option<String
     (media, text, place)
 }
 
-fn history(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
-    let p: HistoryParams = params(value)?;
+/// The request's checked parts, without listing anything.
+fn history_request(c: &Context<'_>, value: &Json) -> Result<(HistoryParams, usize, usize, Option<String>), Error> {
+    let mut p: HistoryParams = params(value)?;
     let (offset, limit) = page(p.offset, p.limit)?;
-    let query = query(p.query)?;
-    if p.node.is_some() && p.canvas.is_none() {
-        return Err(invalid("a card's results need its canvas"));
+    let query = query(p.query.take())?;
+    match (p.canvas, p.node) {
+        (None, Some(_)) => return Err(invalid("a card's results need its canvas")),
+        (Some(id), node) => {
+            let canvas = c.document.canvases().get(&id).ok_or_else(|| Error::new(ErrorKind::NotFound, "canvas does not exist"))?;
+            if node.is_some_and(|node| !canvas.nodes().contains_key(&node)) {
+                return Err(Error::new(ErrorKind::NotFound, "node does not exist"));
+            }
+        }
+        (None, None) => {}
     }
+    Ok((p, offset, limit, query))
+}
+
+fn history(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
+    let (p, offset, limit, query) = history_request(c, value)?;
     let canvases = canvases(c.document, p.canvas)?;
-    if let (Some(id), [canvas]) = (p.node, canvases.as_slice())
-        && !canvas.nodes().contains_key(&id)
-    {
-        return Err(Error::new(ErrorKind::NotFound, "node does not exist"));
-    }
     let mut listed = Vec::new();
     for canvas in &canvases {
         for node in canvas.nodes().values().filter(|n| p.node.is_none_or(|id| id == n.id)) {
@@ -377,10 +399,15 @@ struct StyleParams {
     limit: Option<usize>,
 }
 
-fn styles(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
+/// The request's checked parts, without listing anything.
+fn style_request(value: &Json) -> Result<(usize, usize, Option<String>), Error> {
     let p: StyleParams = params(value)?;
     let (offset, limit) = page(p.offset, p.limit)?;
-    let query = query(p.query)?;
+    Ok((offset, limit, query(p.query)?))
+}
+
+fn styles(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
+    let (offset, limit, query) = style_request(value)?;
     let canvases = canvases(c.document, None)?;
     let mut listed = Vec::new();
     for canvas in &canvases {
@@ -418,14 +445,16 @@ fn styles(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     Ok(Effect::None { result: json!({"styles": entries, "total": total, "offset": offset, "limit": limit}) })
 }
 
+// Enabled checks only the request, so asking (as the palette does every frame) never walks
+// the project.
 fn enabled_assets(c: &Context<'_>, value: &Json) -> Result<(), Error> {
-    assets(c, value).map(|_| ())
+    asset_request(c, value).map(|_| ())
 }
 fn enabled_history(c: &Context<'_>, value: &Json) -> Result<(), Error> {
-    history(c, value).map(|_| ())
+    history_request(c, value).map(|_| ())
 }
-fn enabled_styles(c: &Context<'_>, value: &Json) -> Result<(), Error> {
-    styles(c, value).map(|_| ())
+fn enabled_styles(_: &Context<'_>, value: &Json) -> Result<(), Error> {
+    style_request(value).map(|_| ())
 }
 
 fn uuid() -> Json {

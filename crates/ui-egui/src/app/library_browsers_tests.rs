@@ -191,4 +191,12 @@ fn the_styles_tab_marks_soul_ids_and_the_provider_and_uses_a_style_on_the_select
     assert_eq!(wired, [NEON], "the neon style replaced the ink one: {:?}", h.state().notice);
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     assert_eq!(h.state().session.document(), &before, "one undo step");
+
+    // A trained style is a result too, but it can't become a source card: Place is disabled.
+    h.get_by_label("History").click();
+    h.run();
+    h.run();
+    let places: Vec<_> = h.query_all_by_label("Place").collect();
+    assert_eq!(places.len(), 3, "each style card's result is listed");
+    assert!(places.iter().all(|button| button.accesskit_node().is_disabled()));
 }
