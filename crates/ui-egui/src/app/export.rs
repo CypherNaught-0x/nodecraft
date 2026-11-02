@@ -76,6 +76,8 @@ pub(super) struct Exports {
     /// with its folder's name.
     grants: card::Grants,
     card: Option<(nodecraft_engine::export_job::ExportWatch, String)>,
+    /// A card export waiting for the person to agree to replace this many existing files.
+    confirm: Option<(Arc<()>, CanvasId, NodeId, u64)>,
     pub(super) runner: Option<Arc<dyn nodecraft_engine::save_runner::SaveRunner>>,
     rect: egui::Rect,
     pointer_owned: bool,
@@ -97,6 +99,7 @@ impl Default for Exports {
             work: None,
             grants: Default::default(),
             card: None,
+            confirm: None,
             runner,
             rect: egui::Rect::NOTHING,
             pointer_owned: false,

@@ -125,7 +125,10 @@ pub fn subfolder_components(value: &str) -> Result<Vec<String>, Error> {
         return Err(Error::new(ErrorKind::InvalidInput, "the subfolder must be relative to the folder you chose, not an absolute path"));
     }
     let mut parts = Vec::new();
-    for part in value.split(['/', '\\']).map(str::trim) {
+    for part in value.split(['/', '\\']) {
+        if part.trim() != part {
+            return Err(Error::new(ErrorKind::InvalidInput, "a subfolder name cannot start or end with a space; remove the spaces"));
+        }
         match part {
             "" | "." => {}
             ".." => return Err(Error::new(ErrorKind::InvalidInput, "the subfolder cannot contain '..'; it must stay inside the folder you chose")),

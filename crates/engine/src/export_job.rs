@@ -140,7 +140,7 @@ impl Control {
             Err(error) => self.finish(Err(error)),
         }
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
     fn finish_batch(&self, outcome: Result<serde_json::Value, Error>) {
         match outcome {
             Ok(outcome) => {
@@ -196,6 +196,7 @@ impl Completion {
         self.control.finish_results(result);
         self.finished = true;
     }
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
     fn finish_batch(&mut self, result: Result<serde_json::Value, Error>) {
         self.lease = None;
         self.control.finish_batch(result);

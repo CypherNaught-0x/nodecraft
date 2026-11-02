@@ -120,7 +120,10 @@ fn request(c: &Context<'_>, parameters: &Json) -> Result<Request, Error> {
 fn plan(c: &Context<'_>, parameters: &Json) -> Result<Json, Error> {
     let request = request(c, parameters)?;
     let plan = build_request(c, &request, false)?;
-    Ok(planned_json(&plan))
+    let mut result = planned_json(&plan);
+    // So a person can be asked before `overwrite` replaces anything (#746). Unknown is null.
+    result["existing"] = json!(crate::local_export::existing_files(host(c)?, &plan));
+    Ok(result)
 }
 
 fn run(c: &Context<'_>, parameters: &Json) -> Result<Effect, Error> {
@@ -141,7 +144,9 @@ fn schema() -> Json {
 const PLAN_DOC: &str = "Preview what an Export to folder card (media.export) would write, without writing. Params: {canvas:uuid, \
     node:uuid}. The sources are the active results wired into the card (each item of a list output), its template, \
     on_collision and format parameters, and its subfolder inside the folder a person chose for the card in the desktop app. \
-    Returns the same entries as export.local_plan. Without a chosen folder it is Unsupported: only a person can choose one.";
+    Returns the same entries as export.local_plan, plus existing: how many intended names already exist in the \
+    folder (what overwrite would replace; null when unknown). Without a chosen folder it is Unsupported: only a person can choose one, \
+    in the desktop app, so callers without an export host (MCP, the CLI, the in-canvas agent) always get Unsupported.";
 
 const RUN_DOC: &str = "Write what an Export to folder card (media.export) describes into the folder a person chose for it. \
     Params: {canvas:uuid, node:uuid, background?:bool}. Same request, outcome and guarantees as export.local_run; the card \

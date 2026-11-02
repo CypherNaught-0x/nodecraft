@@ -160,7 +160,9 @@ for `export.results_plan` / `export.results_start` (#966). An Export to folder c
 which turn the card into exactly the `export.local_*` request from the results wired into it; the
 folder is the one a person chose on the card in the desktop app, never a parameter, so an agent
 can preview a card but cannot grant a folder or write. `export.local_run` and `export.node_run`
-take `background: true` to write on the export worker (`export.status`, `export.cancel`). On Windows and
+take `background: true` to write on the export worker (`export.status`, `export.cancel`); its
+finished `export.status` result has `state: "batch"` with the same per-entry `outcome` the
+synchronous command returns. On Windows and
 other non-Unix platforms an authorized host can preview with `export.local_plan`, but
 `export.local_run` returns Unsupported before creating or replacing any file: secure folder writes
 need an equivalent descriptor-relative no-follow implementation. The browser cannot authorize a

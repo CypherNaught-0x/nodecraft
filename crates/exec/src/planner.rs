@@ -344,7 +344,7 @@ pub fn plan_settled(
     // Decided before settled nodes are left out: a request whose other nodes all reuse a result
     // is a run with nothing left to do, not a request for routers alone.
     let requested_only_routers = matches!(mode, RunMode::Selected | RunMode::WithUpstream) && !run.is_empty() && run.iter().all(resolved_away);
-    let requested_only_exports = requested_only_routers && run.iter().all(|id| is_export(canvas, *id));
+    let requested_only_exports = requested_only_routers && run.iter().any(|id| is_export(canvas, *id));
     let run = graph.with_inlined(run.into_iter().filter(|id| !settled.contains(id)).collect(), stale, &expanded.inner);
     let run: BTreeSet<NodeId> = run.into_iter().filter(|id| !resolved_away(id)).collect();
     if requested_only_exports {

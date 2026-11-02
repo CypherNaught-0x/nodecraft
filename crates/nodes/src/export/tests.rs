@@ -73,4 +73,9 @@ fn a_subfolder_stays_inside_the_grant() {
         assert!(subfolder_components(hostile).is_err(), "{hostile:?} must be refused");
     }
     assert!(subfolder_components(&"a".repeat(MAX_SUBFOLDER_BYTES + 1)).is_err());
+    // A space at either end would name a different folder than the person sees.
+    for padded in [" renders", "renders ", "a/ b", "a /b"] {
+        assert!(subfolder_components(padded).is_err(), "{padded:?} must be refused");
+    }
+    assert_eq!(subfolder_components("final renders/v 2").unwrap(), ["final renders", "v 2"]);
 }

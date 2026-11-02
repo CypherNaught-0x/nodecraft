@@ -666,6 +666,28 @@ fn not_started(entry: &PlannedEntry) -> EntryOutcome {
     outcome_of(source, file, EntryState::NotStarted, Some(reasons::NOT_STARTED), 0, None)
 }
 
+/// How many of `plan`'s intended file names already exist in its folder: what `overwrite` would
+/// replace (and `skip` keep). A read of the pinned folder's metadata only; `None` where the secure
+/// folder reader is unavailable or a name cannot be checked.
+pub(crate) fn existing_files(host: &ExportHost, plan: &ExportPlan) -> Option<usize> {
+    #[cfg(unix)]
+    {
+        let destination = host.pinned_destination(&plan.destination).ok()?;
+        let mut existing = 0usize;
+        for name in ready_names(plan) {
+            if destination.taken(&name.file_name()).ok()? {
+                existing = existing.saturating_add(1);
+            }
+        }
+        Some(existing)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (host, plan);
+        None
+    }
+}
+
 /// The names of the entries that can become files, in request order.
 fn ready_names(plan: &ExportPlan) -> Vec<&ExportName> {
     plan.entries

@@ -59,7 +59,8 @@ fn press(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
         h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
         h.step();
     }
-    h.run();
+    // A progress window repaints until its export ends, so step rather than run to idle.
+    h.run_steps(2);
 }
 
 fn files_in(dir: &std::path::Path) -> Vec<String> {
@@ -155,4 +156,40 @@ fn card746_the_card_draws_its_schema_parameters() {
     let error = h.state_mut().session.dispatch("run.quote", &json!({"canvas": canvas, "mode": "selected", "nodes": [CARD]}));
     assert!(error.is_err() || error.as_ref().is_ok_and(|quote| !quote.to_string().contains(&CARD.to_string())), "{error:?}");
     h.run();
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[test]
+fn card746_replacing_existing_files_needs_the_persons_yes() {
+    let _serial = export_tests::EXPORT_TESTS.lock().unwrap();
+    let mut h = scene();
+    let canvas = h.state().canvas;
+    // Anyone who edits the project (an agent too) can set the card to replace files.
+    h.state_mut()
+        .session
+        .dispatch("node.param_set", &json!({"canvas": canvas, "id": CARD, "name": "on_collision", "value": {"type":"text","value":"overwrite"}}))
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("Renders");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("hero-out-1.png"), b"the person's own file").unwrap();
+    h.state_mut().exports.answer = Some(folder.clone());
+    press(&mut h, "Choose folder…");
+    export_tests::finish(&mut h);
+
+    press(&mut h, "Export");
+    h.get_by_label("Replace existing files?");
+    h.get_by_label("1 file in Renders will be replaced by this export.");
+    evidence(&mut h, "4-confirm-replace");
+    assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), b"the person's own file", "nothing is written before the answer");
+    press(&mut h, "Cancel");
+    export_tests::finish(&mut h);
+    assert!(h.query_by_label("Replace existing files?").is_none());
+    assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), b"the person's own file", "Cancel keeps the file");
+
+    press(&mut h, "Export");
+    press(&mut h, "Replace files");
+    export_tests::finish(&mut h);
+    assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), png(), "{:?}", h.state().notice);
+    assert_eq!(files_in(&folder), ["hero-out-1.png"]);
 }

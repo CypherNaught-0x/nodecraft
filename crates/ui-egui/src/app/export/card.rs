@@ -63,6 +63,11 @@ impl NodeCraftApp {
                     grants.hosts.clear();
                     grants.session = Some(identity);
                 }
+                if grants.hosts.len() >= MAX_GRANTS {
+                    // Cards that were deleted give their grants back first.
+                    let document = self.session.document();
+                    grants.hosts.retain(|(canvas, node), _| document.canvases().get(canvas).is_some_and(|c| c.nodes().contains_key(node)));
+                }
                 if grants.hosts.len() >= MAX_GRANTS && !grants.hosts.contains_key(&(canvas, id)) {
                     self.notice = Some("Too many Export to folder cards have a folder chosen; reopen the project to start over.".into());
                     return;
@@ -73,21 +78,56 @@ impl NodeCraftApp {
         }
     }
 
-    /// The card's *Export*: writes what the card describes into its chosen folder, off the UI
-    /// thread.
+    /// The card's *Export*: previews what the card describes and, when that would replace files
+    /// already in the folder, asks first; then writes it into its chosen folder, off the UI
+    /// thread. The card's parameters can be changed by anyone who edits the project (an agent
+    /// included), so a replacement is always the person's explicit yes here.
     pub(in crate::app) fn export_card(&mut self, id: NodeId) {
+        let Some(host) = self.export_ready(id) else {
+            return;
+        };
+        let plan = json!({"canvas": self.canvas, "node": id});
+        let preview = match dispatch_with_host(&mut self.session, &host, "export.node_plan", &plan) {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.notice = Some(error.message);
+                return;
+            }
+        };
+        let replacing = preview["on_collision"] == "overwrite";
+        match preview["existing"].as_u64() {
+            Some(0) => self.write_card(id, host),
+            Some(count) if replacing => self.exports.confirm = Some((self.session.view_identity(), self.canvas, id, count)),
+            Some(_) => self.write_card(id, host),
+            // Unknown: never replace without knowing what would be replaced.
+            None if replacing => self.notice = Some("Can't check which files would be replaced; choose Keep or Number on the card.".into()),
+            None => self.write_card(id, host),
+        }
+    }
+
+    /// Why card `id` can't export right now (in a notice), or its grant.
+    fn export_ready(&mut self, id: NodeId) -> Option<ExportHost> {
         if let Some(why) = unavailable() {
             self.notice = Some(why.into());
-            return;
+            return None;
         }
-        if self.exports.pending.is_some() || self.exports.work.is_some() || self.exports.results.is_some() || self.exports.card.is_some() {
+        if self.exports.pending.is_some()
+            || self.exports.work.is_some()
+            || self.exports.results.is_some()
+            || self.exports.card.is_some()
+            || self.exports.confirm.is_some()
+        {
             self.notice = Some("Another export is in progress; finish or cancel that first.".into());
-            return;
+            return None;
         }
         let Some(host) = self.grant(self.canvas, id).cloned() else {
             self.notice = Some("Choose a folder on the card first.".into());
-            return;
+            return None;
         };
+        Some(host)
+    }
+
+    fn write_card(&mut self, id: NodeId, host: ExportHost) {
         if let Some(runner) = &self.exports.runner {
             self.session.set_export_runner(Arc::clone(runner));
         }
@@ -103,6 +143,10 @@ impl NodeCraftApp {
 
     /// The progress window of a card export, with Cancel; `true` while it owns input.
     pub(in crate::app) fn card_export_overlay(&mut self, ctx: &egui::Context) -> bool {
+        if self.exports.confirm.is_some() {
+            self.confirm_overlay(ctx);
+            return true;
+        }
         let Some((watch, folder)) = self.exports.card.take() else {
             return false;
         };
@@ -139,6 +183,45 @@ impl NodeCraftApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
         self.exports.card = Some((watch, folder));
         true
+    }
+}
+
+impl NodeCraftApp {
+    /// Asks before a card export replaces files already in its folder.
+    fn confirm_overlay(&mut self, ctx: &egui::Context) {
+        let Some((session, canvas, id, count)) = self.exports.confirm.clone() else {
+            return;
+        };
+        let folder = self.grant(canvas, id).map(ExportHost::label);
+        let t = *self.theme.tokens();
+        let (mut replace, mut cancel) = (false, false);
+        egui::Modal::new(egui::Id::new("card_export746_confirm"))
+            .frame(egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding))
+            .backdrop_color(t.canvas_bg)
+            .show(ctx, |ui| {
+                ui.set_max_width(t.card_width * 2.0);
+                ui.heading("Replace existing files?");
+                let files = if count == 1 { "1 file".to_owned() } else { format!("{count} files") };
+                ui.label(format!("{files} in {} will be replaced by this export.", folder.as_deref().unwrap_or("the chosen folder")));
+                ui.label(
+                    egui::RichText::new("The card is set to replace existing files. Choose Keep or Number on the card to leave them.").color(t.text_muted),
+                );
+                ui.horizontal(|ui| {
+                    replace = ui.button("Replace files").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        if cancel {
+            self.exports.confirm = None;
+        } else if replace {
+            self.exports.confirm = None;
+            // The project or the grant may have gone while the question was open.
+            if !Arc::ptr_eq(&session, &self.session.view_identity()) || canvas != self.canvas {
+                self.notice = Some("The project changed; nothing was exported.".into());
+            } else if let Some(host) = self.export_ready(id) {
+                self.write_card(id, host);
+            }
+        }
     }
 }
 

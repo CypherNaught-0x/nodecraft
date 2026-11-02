@@ -130,8 +130,15 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     assert_eq!(text_many, [nodecraft_nodes::batch::ID, router::ID, "text.concat", "text.template"], "only list inputs take a list");
     assert_eq!(
         ids(PortType { modality: Modality::Image, many: true }),
-        [nodecraft_nodes::element::ID, nodecraft_nodes::layers::ID, nodecraft_nodes::batch::ID, router::ID, nodecraft_nodes::timeline::ID],
-        "an Element, the Layer Editor and a Timeline take a list of images"
+        [
+            nodecraft_nodes::element::ID,
+            nodecraft_nodes::layers::ID,
+            nodecraft_nodes::export::ID,
+            nodecraft_nodes::batch::ID,
+            router::ID,
+            nodecraft_nodes::timeline::ID
+        ],
+        "an Element, the Layer Editor, an Export to folder card and a Timeline take a list of images"
     );
     use nodecraft_nodes::video_edit::{REPLACE_AUDIO, SPEED, STITCH, TRIM};
     use nodecraft_nodes::video_frames::{CONTACT_SHEET, FRAMES, LONG_EXPOSURE, REVERSE};
@@ -140,7 +147,9 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
     let (batch, timeline) = (nodecraft_nodes::batch::ID, nodecraft_nodes::timeline::ID);
     let mut video_one = ids(PortType { modality: Modality::Video, many: false });
     video_one.sort();
+    let export = nodecraft_nodes::export::ID;
     let mut want = vec![
+        export,
         batch,
         router::ID,
         CONTACT_SHEET,
@@ -161,18 +170,22 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         EXTRACT_AUDIO,
     ];
     want.sort();
-    assert_eq!(video_one, want, "a Timeline and the video actions take a video");
+    assert_eq!(video_one, want, "a Timeline, an Export to folder card and the video actions take a video");
     assert_eq!(
         ids(PortType { modality: Modality::Video, many: true }),
-        [batch, router::ID, STITCH, timeline],
+        [export, batch, router::ID, STITCH, timeline],
         "only Stitch and a Timeline take a list of videos"
     );
     assert_eq!(
         ids(PortType { modality: Modality::Audio, many: false }),
-        [batch, router::ID, REPLACE_AUDIO, timeline],
+        [export, batch, router::ID, REPLACE_AUDIO, timeline],
         "a Timeline and Replace sound take a sound"
     );
-    assert_eq!(ids(PortType { modality: Modality::Audio, many: true }), [batch, router::ID, timeline], "a Timeline takes sounds");
+    assert_eq!(
+        ids(PortType { modality: Modality::Audio, many: true }),
+        [export, batch, router::ID, timeline],
+        "a Timeline and an Export to folder card take sounds"
+    );
     assert!(compatible(PortType { modality: Modality::Text, many: false }, PortType { modality: Modality::Text, many: true }));
     assert!(!compatible(PortType { modality: Modality::Text, many: true }, PortType { modality: Modality::Text, many: false }));
     assert!(!compatible(PortType { modality: Modality::Text, many: false }, PortType { modality: Modality::Image, many: false }));

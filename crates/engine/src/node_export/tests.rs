@@ -176,6 +176,8 @@ fn running_writes_into_the_granted_folder_and_changes_no_document() {
     assert_eq!((s.revision(), s.can_undo()), (revision, undo), "an export is no edit and no undo step");
     assert_eq!(serde_json::to_value(s.document()).unwrap(), document);
 
+    // A preview now counts what overwrite would replace, so a person can be asked first.
+    assert_eq!(dispatch_with_host(&mut s, &host, "export.node_plan", &args()).unwrap()["existing"], 4);
     // Running again keeps what is there by default, and says so.
     let again = dispatch_with_host(&mut s, &host, "export.node_run", &args()).unwrap();
     assert_eq!(again["counts"]["skipped"], 4);
