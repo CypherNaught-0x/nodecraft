@@ -53,6 +53,7 @@ pub mod keys_cmds;
 pub mod layer_cmds;
 pub mod layout_cmds;
 pub mod library;
+pub mod library_browse_cmds;
 pub mod library_cmds;
 pub mod live_actions;
 pub mod live_cmds;

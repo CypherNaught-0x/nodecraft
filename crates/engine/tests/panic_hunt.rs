@@ -567,6 +567,9 @@ fn template(id: &str) -> (Session, Value) {
             json!({"scope":"user","id":skill,"text":text,"origin":"a file"})
         }
         "library.list" => json!({}),
+        "library.assets" => json!({"kind":"image","query":"photo","canvas":canvas(),"offset":0,"limit":200}),
+        "library.history" => json!({"canvas":canvas(),"node":node_id(1),"query":"x","offset":1,"limit":1}),
+        "library.styles" => json!({"query":"ink","offset":0,"limit":50}),
         "template.list" => json!({}),
         "template.add" => json!({"id":"generate-text"}),
         "template.refresh" => json!({}),

@@ -115,6 +115,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "app.form",
     "app.input_set",
     "library.list",
+    // The Library's browsers only read the open project.
+    "library.assets",
+    "library.history",
+    "library.styles",
     "library.place",
     // Shipped data adds canvases/assets through the ordinary undoable project mutation path.
     "template.list",
