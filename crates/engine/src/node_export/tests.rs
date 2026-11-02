@@ -7,6 +7,7 @@ use nodecraft_graph::{Canvas, Change, Edge, Endpoint, Generation, Node, Port, Pr
 use nodecraft_nodes::export;
 use nodecraft_types::{AssetRef, Blake3, CanvasId, EdgeId, ErrorKind, GenerationId, Modality, NodeId, PortType, ProjectId, Value};
 use serde_json::{Value as Json, json};
+#[cfg(unix)]
 use std::sync::{Arc, Mutex};
 
 const C: CanvasId = CanvasId::from_bytes([0x46; 16]);
@@ -213,14 +214,17 @@ fn a_permission_failure_is_reported_per_file_and_never_panics() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+#[cfg(unix)]
 #[derive(Default)]
 struct Held(Mutex<Option<crate::save_runner::SaveJob>>);
+#[cfg(unix)]
 impl crate::save_runner::SaveRunner for Held {
     fn spawn(&self, job: crate::save_runner::SaveJob) -> Result<(), crate::save_runner::SaveJob> {
         *self.0.lock().unwrap() = Some(job);
         Ok(())
     }
 }
+#[cfg(unix)]
 impl Held {
     fn run(&self) {
         let job = self.0.lock().unwrap().take();

@@ -1,10 +1,9 @@
 //! Export to folder cards (#746): a person chooses the folder on the card, and Export writes the
 //! wired results there off the UI thread. Pointer events drive the real card buttons.
 use super::*;
-use egui_kittest::{
-    Harness,
-    kittest::{NodeT, Queryable},
-};
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+use egui_kittest::kittest::NodeT;
+use egui_kittest::{Harness, kittest::Queryable};
 
 const IMAGE: NodeId = NodeId::from_bytes([0x74; 16]);
 const CARD: NodeId = NodeId::from_bytes([0x75; 16]);
@@ -51,6 +50,7 @@ fn scene() -> Harness<'static, NodeCraftApp> {
 }
 
 /// A real pointer hovers, presses and releases the button labelled `label`.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
 fn press(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
     let pos = h.get_by_label(label).rect().center();
     h.hover_at(pos);
@@ -69,6 +69,7 @@ fn files_in(dir: &std::path::Path) -> Vec<String> {
     names
 }
 
+#[cfg(all(unix, not(target_arch = "wasm32")))]
 fn evidence(h: &mut Harness<'static, NodeCraftApp>, name: &str) {
     if let Some(dir) = std::env::var_os("NODECRAFT_CARD_EXPORT746_EVIDENCE") {
         h.run();
