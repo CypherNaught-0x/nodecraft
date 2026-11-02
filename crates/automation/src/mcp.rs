@@ -290,6 +290,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     // export is `HUMAN_ONLY`: writing files into a folder is a person's decision.
     "export.local_plan",
     "export.results_plan",
+    // An Export to folder card's preview (#746): the same read-only plan, from the card.
+    "export.node_plan",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
 /// pass through an agent's context, and `keys.remove` deletes a key with no undo. (The file
@@ -351,6 +353,8 @@ pub const HUMAN_ONLY: &[&str] = &[
     // is: the destination is outside the project and outside undo (#98).
     "export.local_run",
     "export.results_start",
+    // Performing an Export to folder card writes files, exactly as export.local_run does (#746).
+    "export.node_run",
     "run.record",
     "usage.reconcile_ownership",
     "usage.resolve_charge",

@@ -189,6 +189,31 @@ fn template(id: &str) -> (Session, Value) {
         }
         document = seed.document().clone();
     }
+    if id.starts_with("export.node_") {
+        // An image result wired into an Export to folder card (#746), so a hunt reaches source
+        // resolution, naming and the write path rather than stopping at an unwired card.
+        let mut image = nodecraft_graph::Node::new(node_id(0x74), "test.gen");
+        image.outputs.push(nodecraft_graph::Port {
+            name: "out".into(),
+            port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Image, many: false },
+        });
+        let asset =
+            nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([0x74; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
+        let result = nodecraft_graph::Generation::new(gen_id(0x74), vec![nodecraft_types::Value::Media(asset)]);
+        image.active = Some(result.id);
+        image.history.push(result);
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node: image }.apply(&mut document).unwrap();
+        let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+        let card = kinds.get(nodecraft_nodes::export::ID).unwrap().instantiate_instance(node_id(0x75), Default::default(), &Default::default()).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node: card }.apply(&mut document).unwrap();
+        let wire = nodecraft_graph::Edge {
+            id: nodecraft_types::EdgeId::from_bytes([0x76; 16]),
+            from: nodecraft_graph::Endpoint { node: node_id(0x74), port: "out".into() },
+            to: nodecraft_graph::Endpoint { node: node_id(0x75), port: "image".into() },
+            order: 0,
+        };
+        nodecraft_graph::Change::Connect { canvas: canvas(), edge: wire }.apply(&mut document).unwrap();
+    }
     if id == "document.use_pages" {
         let mut seed = Session::new(document.clone()).unwrap();
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"document.pages","pos":{"x":0,"y":0}})).unwrap();
@@ -356,7 +381,7 @@ fn template(id: &str) -> (Session, Value) {
             })
             .unwrap();
     }
-    if id.starts_with("export.local_") || id.starts_with("export.results_") {
+    if id.starts_with("export.local_") || id.starts_with("export.results_") || id.starts_with("export.node_") {
         // A real destination, so the hunt reaches name rendering and the write path rather than
         // stopping at the host check. It is in the system temporary folder, never the repository.
         session.swap_resource(Some(nodecraft_engine::local_export::ExportHost::authorize(&export_destination()).unwrap()));
@@ -630,6 +655,7 @@ fn template(id: &str) -> (Session, Value) {
             "on_collision":"numbered",
             "format":{"mode":"original"}
         }),
+        "export.node_plan" | "export.node_run" => json!({"canvas":canvas(),"node":node_id(0x75)}),
         "export.results_plan" | "export.results_start" => json!({
             "canvas":canvas(),"nodes":[node_id(1)],"history":"all",
             "destination":export_destination().display().to_string(),"template":"{title}-{generation}-{index}"

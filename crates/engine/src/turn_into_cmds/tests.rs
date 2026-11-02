@@ -115,6 +115,8 @@ fn the_picker_offers_kinds_with_an_input_for_the_noodle_and_never_sources() {
         nodecraft_nodes::element::ID,
         nodecraft_nodes::timeline::ID,
         nodecraft_nodes::video_frames::KEN_BURNS,
+        // Or written to a folder by an Export to folder card (#746).
+        nodecraft_nodes::export::ID,
     ]);
     image_one.sort();
     let mut got = ids(PortType { modality: Modality::Image, many: false });
