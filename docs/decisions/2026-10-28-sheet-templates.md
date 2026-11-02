@@ -1,12 +1,13 @@
 ## 2026-10-28 · Batch Generate prompt templates expand into rows with `{{name}}` variables (#163)
 
 - **Syntax.** A template is a prompt in which `{{name}}` stands for a named variable's value.
-  It is the Template text action's syntax, so one rule holds everywhere in NodeCraft: spaces
-  inside the braces are allowed (`{{ colour }}`), `{{{{` is a literal `{{` and `}}}}` a literal
-  `}}`. A `}}` outside a placeholder and an unclosed `{{` are refused with the escape to use, so
-  a typo never becomes silent text. Card mentions (`@[Title](id)`) and Element mentions
-  (`#name`) hold no double braces and pass through untouched. Values are inserted as they are
-  and never read as template text again.
+  Its escapes and refusals are the Template text action's: `{{{{` is a literal `{{` and `}}}}` a
+  literal `}}`, and a `}}` outside a placeholder or an unclosed `{{` is refused with the escape
+  to use, so a typo never becomes silent text. Unlike that action, a sheet template trims spaces
+  inside the braces (`{{ colour }}` is `colour`) and allows only ASCII names (below); the action
+  itself is unchanged. Card mentions (`@[Title](id)`) and Element mentions (`#name`) hold no
+  double braces and pass through untouched. Values are inserted as they are and never read as
+  template text again.
 - **Names.** 1 to 32 ASCII letters, digits, `_` or `-`. Two variables whose names differ only by
   case are refused, as is a placeholder no variable defines and a text variable the template
   doesn't use (it would only multiply identical rows).
@@ -16,16 +17,21 @@
 - **Image variables** list image source nodes already on the sheet. They are not written in the
   prompt (`{{name}}` for one is refused): each new row gets one of them wired into its first free
   image input, after the shared references it copies, exactly as `sheet.reference_wire` would.
-  A node that is already a shared reference can't also be a variable's value.
+  A node that is already a shared reference can't also be a variable's value, and one image
+  can't be listed by two variables (it would be wired into a row twice).
 - **Expansion** (`sheet.expand`) makes one row per combination of the values, their Cartesian
   product, with the first variable varying slowest, and each combination repeated `copies`
   times (1 to 100, adjacent). With no variables, `copies` makes that many rows of the template.
+  Copies hash alike, so when there are copies a `nodecraft.cache` (reuse identical results)
+  setting copied from the row they follow is cleared; otherwise every copy would reuse one result.
   The count is computed with checked arithmetic; one expansion adds at most 100 rows (the row
   commands' limit) and the sheet still holds at most 1000. Too many is refused with the count,
   its factors ("10 colour × 2 size × 6 copies makes 120 rows") and what to change.
 - **Preview before materialising.** `dry_run: true` returns the count, whether it fits, the
   problem if not, and the first five prompts, and edits nothing. A dry run builds the same rows a
-  real one would, so "fits" means the expansion works. The table view shows this preview live
+  real one would and checks them as applying would without the document (seed collisions, the
+  changeset's operation count and size, and that the document is editable), so "fits" means the
+  expansion works. The table view shows this preview live
   and only enables Expand when it fits.
 - **One undo step, no run.** An expansion is one changeset, so one undo removes every row it
   made. It never runs anything: the new rows are quoted and run like any others.

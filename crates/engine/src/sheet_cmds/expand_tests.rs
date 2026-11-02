@@ -279,3 +279,41 @@ fn rows_added_after_an_expanded_row_carry_no_provenance_but_duplicates_keep_it()
     let provenance: Vec<&Json> = rows["rows"].as_array().unwrap().iter().map(|row| &row["expansion"]).collect();
     assert_eq!(provenance, [&json!({"values": {"c": "red"}, "copy": null}), &json!({"values": {"c": "red"}, "copy": null}), &Json::Null]);
 }
+
+#[test]
+fn one_image_listed_by_two_variables_is_refused() {
+    let (mut s, _) = reference_session();
+    let images = image_sources(&mut s, 2);
+    let variables = json!([{"name": "a", "images": images}, {"name": "b", "images": [images[1]]}]);
+    let before = s.document().clone();
+    let error = expand(&mut s, json!({"seed": seed(10), "template": "x", "variables": variables})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert!(error.message.contains(&format!("`b` lists reference {}, which `a` already lists", images[1])), "{}", error.message);
+    assert_eq!(s.document(), &before);
+}
+
+#[test]
+fn a_dry_run_on_a_document_this_session_cant_edit_does_not_fit() {
+    let mut s = session();
+    s.set_access(crate::access::Access::new(nodecraft_sync::Role::View, None).unwrap());
+    let error = expand(&mut s, json!({"seed": seed(10), "template": "x", "copies": 2, "dry_run": true})).unwrap_err();
+    assert_ne!(error.kind, ErrorKind::Internal);
+    assert!(expand(&mut s, json!({"seed": seed(10), "template": "x", "copies": 2})).is_err());
+}
+
+#[test]
+fn copies_dont_inherit_result_reuse_but_single_rows_keep_it() {
+    use nodecraft_exec::staleness::CACHE_CONFIG;
+    let mut s = session();
+    let made = s.dispatch("sheet.rows_add", &json!({"canvas": SHEET, "seed": seed(5), "prompts": ["first"]})).unwrap();
+    let row: NodeId = serde_json::from_value(made["rows"][0].clone()).unwrap();
+    s.dispatch("node.cache_set", &json!({"canvas": SHEET, "id": row, "enabled": true})).unwrap();
+    let cached = |s: &Session, id: NodeId| s.document().canvases().get(&SHEET).unwrap().nodes().get(&id).unwrap().config.get(CACHE_CONFIG).cloned();
+    assert_eq!(cached(&s, row), Some(Value::Bool(true)));
+    let copies = expand(&mut s, json!({"seed": seed(10), "template": "x", "copies": 2, "after": row})).unwrap();
+    let copies: Vec<NodeId> = serde_json::from_value(copies["rows"].clone()).unwrap();
+    assert!(copies.iter().all(|id| cached(&s, *id).is_none()), "copies would all reuse one result");
+    let single = expand(&mut s, json!({"seed": seed(11), "template": "{{c}}", "variables": [{"name": "c", "text": ["a", "b"]}], "after": row})).unwrap();
+    let single: Vec<NodeId> = serde_json::from_value(single["rows"].clone()).unwrap();
+    assert!(single.iter().all(|id| cached(&s, *id) == Some(Value::Bool(true))), "distinct prompts keep the setting");
+}

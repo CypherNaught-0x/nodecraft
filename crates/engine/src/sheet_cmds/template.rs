@@ -1,9 +1,10 @@
 //! Prompt templates for Batch Generate sheets (#163): `{{name}}` in a prompt stands for a named
 //! variable's value (`docs/decisions/2026-10-28-sheet-templates.md`).
 //!
-//! The syntax is the Template text action's: `{{name}}` with optional spaces inside the braces,
-//! `{{{{` for a literal `{{` and `}}}}` for a literal `}}`. A `}}` outside a placeholder is
-//! refused, so a typo never silently becomes text. Values are inserted as they are and never read
+//! The escapes and refusals are the Template text action's: `{{{{` for a literal `{{`, `}}}}` for
+//! a literal `}}`, and a `}}` outside a placeholder or an unclosed `{{` refused, so a typo never
+//! silently becomes text. Unlike that action, a sheet template trims spaces inside the braces
+//! (`{{ colour }}`) and allows only ASCII names (see [`valid_name`]). Values are inserted as they are and never read
 //! as template text again. `@[Title](id)` card mentions and `#element` mentions hold no double
 //! braces, so they pass through unchanged.
 use nodecraft_types::{Error, ErrorKind};

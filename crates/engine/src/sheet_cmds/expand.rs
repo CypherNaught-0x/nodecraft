@@ -4,12 +4,13 @@
 //!
 //! A text variable fills its `{{name}}` placeholders; an image variable wires one reference node
 //! per row. New rows copy the row they follow like `sheet.rows_add`, and each records where it
-//! came from under [`PROVENANCE_CONFIG`]. `dry_run` reports the count, whether it fits and the
-//! first prompts without editing anything; a real expansion is one changeset, so one undo
+//! came from under [`PROVENANCE_CONFIG`]. With copies, a `nodecraft.cache` setting copied from
+//! the row they follow is cleared: identical copies would otherwise all reuse one result.
+//! `dry_run` reports the count, whether it fits and the first prompts without editing anything; a real expansion is one changeset, so one undo
 //! removes every row it made. Nothing runs: the rows are quoted and run like any others.
 use super::template::{self, Piece, clip};
 use super::*;
-use nodecraft_exec::staleness::PROVENANCE_CONFIG;
+use nodecraft_exec::staleness::{CACHE_CONFIG, PROVENANCE_CONFIG};
 use nodecraft_types::Modality;
 
 /// Most variables one template uses.
@@ -82,6 +83,9 @@ fn variables<'a>(given: &'a [VariableParams], pieces: &[Piece], canvas: &'a Canv
         return Err(bad(format!("a template has at most {MAX_VARIABLES} variables")));
     }
     let mut seen = BTreeSet::new();
+    // Every image any variable lists, with the variable listing it: one image in two variables
+    // would be wired into a row twice.
+    let mut listed: BTreeMap<NodeId, &str> = BTreeMap::new();
     let mut out = Vec::with_capacity(given.len());
     for variable in given {
         let name = variable.name.as_str();
@@ -112,6 +116,9 @@ fn variables<'a>(given: &'a [VariableParams], pieces: &[Piece], canvas: &'a Canv
                 for id in ids {
                     if !distinct.insert(*id) {
                         return Err(bad(format!("`{name}` lists reference {id} twice; use copies to repeat rows")));
+                    }
+                    if let Some(other) = listed.insert(*id, name) {
+                        return Err(bad(format!("`{name}` lists reference {id}, which `{other}` already lists; an image belongs to one variable")));
                     }
                     let node =
                         canvas.nodes().get(id).ok_or_else(|| Error::new(ErrorKind::NotFound, format!("`{name}`'s reference {id} isn't on this sheet")))?;
@@ -252,6 +259,10 @@ fn expand(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             provenance["copy"] = json!((n % copies_rows).saturating_add(1));
         }
         node.config.insert(PROVENANCE_CONFIG.into(), Value::Text(provenance.to_string()));
+        // Copies hash alike, so reusing identical results would give every copy one result.
+        if copies > 1 {
+            node.config.remove(CACHE_CONFIG);
+        }
         // The shared references first, like the row it copies, then one per image variable.
         let mut wires: Vec<Edge> = base
             .wires
@@ -290,10 +301,15 @@ fn expand(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     if taken {
         return Err(Error::new(ErrorKind::Conflict, "that seed was used before; use a fresh one"));
     }
+    let changes = Changeset::new(changes);
+    // What applying checks without the document: the operation count and replay size, and
+    // that this session may edit it at all.
+    changes.validate_payload()?;
+    c.preview_changes(&changes)?;
     if p.dry_run {
         return Ok(Effect::None { result: result(prompts, None) });
     }
-    edit(c, changes, json!({"rows": made, "count": made.len()}))
+    Ok(Effect::Edit { changes, result: json!({"rows": made, "count": made.len()}), gesture: None })
 }
 
 /// A wire's id before it is given its derived one.

@@ -102,6 +102,8 @@ struct Row {
     id: NodeId,
     model: String,
     prompt: String,
+    /// The prompt lowercased for the filter, once per document revision rather than per frame.
+    folded: String,
     /// The references' titles, read once per document revision.
     references: String,
     result: String,
@@ -132,6 +134,7 @@ impl Row {
             id: serde_json::from_value(value.get("id")?.clone()).ok()?,
             model: text("model"),
             prompt: text("prompt"),
+            folded: text("prompt").to_lowercase(),
             references: label(&references),
             result: text("result"),
             stale: value.get("stale").and_then(Json::as_bool).unwrap_or(false),
@@ -549,14 +552,15 @@ impl NodeCraftApp {
         rows.rows
             .iter()
             .enumerate()
-            .filter(|(_, row)| needle.is_empty() || row.prompt.to_lowercase().contains(&needle))
+            .filter(|(_, row)| needle.is_empty() || row.folded.contains(&needle))
             .filter(|(_, row)| self.sheet.status == StatusFilter::All || self.row_state(row) == self.sheet.status)
             .map(|(index, _)| index)
             .collect()
     }
 
     /// The state the status filter sorts `row` by: a live run first, then its last failure, then
-    /// its result.
+    /// its result. A failure is forgotten when the row's next run starts, is recorded, cancelled
+    /// or placed (`Runs::tick`), so a later success is never filtered as failed.
     fn row_state(&self, row: &Row) -> StatusFilter {
         if let Some(runs) = &self.runs {
             if runs.card_status(self.canvas, row.id).is_some() {
