@@ -549,6 +549,9 @@ fn template(id: &str) -> (Session, Value) {
         "sheet.row_move" => json!({"canvas":sheet,"row":sheet_rows[1],"index":0}),
         "sheet.reference_wire" => json!({"canvas":sheet,"seed":node_id(0x54),"reference":node_id(0x53),"rows":[sheet_rows[1]]}),
         "sheet.reference_unwire" => json!({"canvas":sheet,"reference":node_id(0x53),"rows":[sheet_rows[0]]}),
+        // The rows have no results, so this reaches the "nothing to place" refusal; the
+        // engine's own tests place real results.
+        "sheet.place" => json!({"canvas":sheet,"seed":node_id(0x57),"rows":[sheet_rows[0]],"target":canvas(),"pos":{"x":1,"y":2}}),
         "sheet.expand" => {
             json!({"canvas":sheet,"seed":node_id(0x56),"template":"a {{colour}} fox","variables":[{"name":"colour","text":["red","blue"]}],"copies":2})
         }

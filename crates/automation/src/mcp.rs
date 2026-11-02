@@ -105,6 +105,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "sheet.reference_wire",
     "sheet.reference_unwire",
     "sheet.expand",
+    "sheet.place",
     "technique.check",
     "technique.publish",
     "technique.list",

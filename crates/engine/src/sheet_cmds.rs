@@ -180,6 +180,9 @@ fn describe_rows(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
                 Some(generation) if generation.is_partial() => "partial",
                 Some(_) => "complete",
             };
+            // The row's history (#81): every run adds a result and makes it active; older ones
+            // stay until the node's history or size limit drops the oldest inactive ones.
+            let position = row.active.and_then(|id| row.history.iter().position(|g| g.id == id)).map(|index| index.saturating_add(1));
             json!({
                 "id": row.id,
                 "kind": row.kind,
@@ -188,6 +191,10 @@ fn describe_rows(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
                 "prompt": text_param(row, generation::PROMPT),
                 "references": references,
                 "result": result,
+                "generation": row.active,
+                "output": row.outputs.first().map(|port| port.name.as_str()),
+                "results": row.history.len(),
+                "position": position,
                 "stale": stale.contains(&row.id),
                 "expansion": expansion(row),
             })
@@ -592,7 +599,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "sheet.rows",
             "List a sheet's rows",
             schema(&["canvas"], json!({"canvas": uuid()})),
-            "{canvas} -> {canvas, title, rows: [{id, kind, title, model, prompt, references: [{node, port, shared}], result: none|complete|partial, stale, expansion: null|{values: {name: text|{node}}, copy}}], shared: [NodeId]}; rows top to bottom. A shared reference is wired into every row. Read-only.",
+            "{canvas} -> {canvas, title, rows: [{id, kind, title, model, prompt, references: [{node, port, shared}], result: none|complete|partial, generation: active result id|null, output: first output name, results: results in the row's history, position: the active one's place in it (1 is the oldest)|null, stale, expansion: null|{values: {name: text|{node}}, copy}}], shared: [NodeId]}; rows top to bottom. A shared reference is wired into every row. Each run of a row adds a result to its history and makes it active; history.previous/history.next/history.select change which one is active, and export.local_plan/export.local_run with sources [{node: row, port: output}] write the active results to a folder. Read-only.",
             describe_rows
         ),
         spec!(
@@ -645,10 +652,12 @@ pub fn specs() -> Vec<CommandSpec> {
             unwire
         ),
         expand::spec(),
+        place::spec(),
     ]
 }
 
 mod expand;
+pub mod place;
 pub mod template;
 
 #[cfg(test)]
