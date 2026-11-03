@@ -406,7 +406,9 @@ impl Runs {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn key_test_host(&self) -> Option<nodecraft_engine::key_test::KeyTestHost> {
         let http = self.http.clone()?;
-        Some(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::clone(&self.runtime), http })
+        // Settings are read at each check, so an edit to a custom base URL (#960) counts at once.
+        let providers: nodecraft_engine::key_test::ProviderSettingsSource = Arc::new(|| nodecraft_engine::settings::peek().providers);
+        Some(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::clone(&self.runtime), http, providers: Some(providers) })
     }
 
     /// The caps later quotes and jobs are checked against (#201).

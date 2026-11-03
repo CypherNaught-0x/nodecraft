@@ -53,6 +53,22 @@ impl KeyCheck {
 pub struct KeyTestHost {
     pub runtime: Arc<dyn Runtime>,
     pub http: Arc<dyn Http>,
+    /// The provider settings as they are now, read at each check, so a key set up for a custom
+    /// base URL (#960) is never sent to the provider's own API. `None` where the host has no
+    /// settings (tests): no account counts as redirected.
+    pub providers: Option<ProviderSettingsSource>,
+}
+
+/// Reads the current provider settings for [`KeyTestHost::providers`].
+pub type ProviderSettingsSource = Arc<dyn Fn() -> crate::settings::ProviderSettings + Send + Sync>;
+
+/// What `keys.test` answers for a key set up for a custom base URL: nothing is sent.
+pub const REDIRECTED: &str =
+    "this key is set up for a custom base URL, so NodeCraft doesn't send it to the provider's own API to check it; a run shows whether the server accepts it";
+
+/// Whether `account`'s key is set up for a custom base URL, by `host`'s settings.
+pub fn redirected(host: &KeyTestHost, account: &Account) -> bool {
+    host.providers.as_ref().is_some_and(|read| crate::custom_endpoints::account_redirected(&read(), account.as_str()))
 }
 
 /// A free request that needs the key.

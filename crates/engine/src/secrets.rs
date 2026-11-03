@@ -368,6 +368,13 @@ mod worker {
             return Err(Error::new(ErrorKind::NotFound, format!("no key is stored for {}", account.as_str())));
         };
         let masked = key.masked();
+        if crate::key_test::redirected(host, account) {
+            let mut answer = crate::key_test::KeyCheck::Unverifiable(crate::key_test::REDIRECTED).to_json();
+            if let Some(fields) = answer.as_object_mut() {
+                fields.insert("masked".into(), json!(masked));
+            }
+            return Ok(answer);
+        }
         let (tx, rx) = sync_channel(1);
         let (account, http) = (account.clone(), Arc::clone(&host.http));
         host.runtime.spawn(Box::pin(async move {
@@ -685,7 +692,7 @@ mod tests {
 
         for (status, expected) in [(200, Ok(json!({"result": "verified", "masked": "…1234"}))), (401, Err(ErrorKind::Authentication))] {
             let http = Arc::new(Answer(status, Mutex::new(vec![])));
-            let host = crate::key_test::KeyTestHost { runtime: Arc::new(Pool), http: http.clone() };
+            let host = crate::key_test::KeyTestHost { runtime: Arc::new(Pool), http: http.clone(), providers: None };
             let (worker, results) = KeyWorker::spawn_with_tests(store.clone(), Some(host)).unwrap();
             let mut services = Services::default();
             register_key_worker(&mut services, worker).unwrap();
@@ -699,6 +706,19 @@ mod tests {
             assert_eq!(wait(&results, missing).result.unwrap_err().kind, ErrorKind::NotFound);
             assert_eq!(http.1.lock().unwrap().len(), 1);
         }
+        // A key set up for a custom base URL (#960) is never sent to the provider's own API.
+        let http = Arc::new(Answer(200, Mutex::new(vec![])));
+        let mut custom = crate::settings::ProviderSettings::default();
+        custom.base_urls.insert("openai".into(), "https://gateway.example/v1".into());
+        let custom = Arc::new(custom);
+        let read = Arc::clone(&custom);
+        let host = crate::key_test::KeyTestHost { runtime: Arc::new(Pool), http: http.clone(), providers: Some(Arc::new(move || (*read).clone())) };
+        let (worker, results) = KeyWorker::spawn_with_tests(store.clone(), Some(host)).unwrap();
+        let mut services = Services::default();
+        register_key_worker(&mut services, worker).unwrap();
+        let id = services.invoke(KEY_SERVICE, &test).unwrap()["pending"].as_u64().unwrap();
+        assert_eq!(wait(&results, id).result.unwrap(), json!({"result": "unverifiable", "reason": crate::key_test::REDIRECTED, "masked": "…1234"}));
+        assert!(http.1.lock().unwrap().is_empty(), "nothing is sent");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
