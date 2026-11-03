@@ -19,13 +19,13 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 0 | **Skeleton** — workspace, CI, release pipeline, themed canvas | ✅ done | 10/10 |
 | 1 | **Canvas core** — graph, undo, commands, canvas, `.ncraft` | ✅ done | 36/37 |
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done | 14/14 |
-| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), variations (#81), cost and budget checks (#201) | 43/46 |
+| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), variations (#81), cost and budget checks (#201) | 46/49 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done (close-out #375) | 13/14 |
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; batch node complete (#92), first signed release pending | 25/33 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 10/13 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 28/31 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
-| 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 5/8 |
+| 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; HTTP serve with signed webhooks (#117), close-out (#380) open | 7/8 |
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 14/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 3/29 |
 
@@ -280,8 +280,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 - **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,
   the Layer Editor, Elements and PDF cards have shipped in some form. The first signed release
   (#100), typed nested descriptor records/lists (#528), and browser option-list parity (#721)
-  remain open. HTTP serve's tracker #117 is open although `nodecraft-cli serve` and signed
-  completion webhooks are already in current source; see [`docs/serve.md`](docs/serve.md).
+  remain open. HTTP serve (`nodecraft-cli serve`) runs techniques with signed completion
+  webhooks, idempotent retries and budget caps (#117); see [`docs/serve.md`](docs/serve.md).
   Provider availability and modes vary by adapter and host: Google Gemini Omni Flash video
   replaces the shut-down Veo API (#17), and Veo 3.1, Fast and Lite run on Google Cloud with a
   service account (#742), as do Google TTS's classic and Gemini voices (#21) and the Gemini
@@ -300,11 +300,11 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
-1. **Finish M3 generation**: video to text and declared reading capabilities on text cards (#84) and the remaining keychain
-   issue (#80); do not mistake a tested adapter for a working mode in every host.
+1. **Finish M3 generation**: video to text and declared reading capabilities on text cards (#84);
+   do not mistake a tested adapter for a working mode in every host.
 2. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
-   including provider plugins (#174), then browser option-list parity (#721),
-   verification/closure of HTTP serve's still-open tracker (#117), and later milestone gaps.
+   including provider plugins (#174), then browser option-list parity (#721), and later
+   milestone gaps.
    M4's open follow-ups sit outside a milestone: the Generate confirmation should say which nodes
    reuse a cached result (#811), and a superseded live action should be cancelled and its work
    bounded (#596). Using the wgpu path (#89) for built-in image actions, and a button for result
