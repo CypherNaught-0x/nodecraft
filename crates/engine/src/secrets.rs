@@ -712,7 +712,11 @@ mod tests {
         custom.base_urls.insert("openai".into(), "https://gateway.example/v1".into());
         let custom = Arc::new(custom);
         let read = Arc::clone(&custom);
-        let host = crate::key_test::KeyTestHost { runtime: Arc::new(Pool), http: http.clone(), providers: Some(Arc::new(move || (*read).clone())) };
+        let host = crate::key_test::KeyTestHost {
+            runtime: Arc::new(Pool),
+            http: http.clone(),
+            providers: Some(Arc::new(move || vec![crate::settings::ProviderSettings::default(), (*read).clone()])),
+        };
         let (worker, results) = KeyWorker::spawn_with_tests(store.clone(), Some(host)).unwrap();
         let mut services = Services::default();
         register_key_worker(&mut services, worker).unwrap();

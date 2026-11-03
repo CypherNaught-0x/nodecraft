@@ -59,8 +59,10 @@ pub struct KeyTestHost {
     pub providers: Option<ProviderSettingsSource>,
 }
 
-/// Reads the current provider settings for [`KeyTestHost::providers`].
-pub type ProviderSettingsSource = Arc<dyn Fn() -> crate::settings::ProviderSettings + Send + Sync>;
+/// Reads the provider settings for [`KeyTestHost::providers`]: one or more views (such as the
+/// settings loaded at startup and the file as it is now). An account any view marks as set up
+/// for a custom base URL is redirected.
+pub type ProviderSettingsSource = Arc<dyn Fn() -> Vec<crate::settings::ProviderSettings> + Send + Sync>;
 
 /// What `keys.test` answers for a key set up for a custom base URL: nothing is sent.
 pub const REDIRECTED: &str =
@@ -68,7 +70,7 @@ pub const REDIRECTED: &str =
 
 /// Whether `account`'s key is set up for a custom base URL, by `host`'s settings.
 pub fn redirected(host: &KeyTestHost, account: &Account) -> bool {
-    host.providers.as_ref().is_some_and(|read| crate::custom_endpoints::account_redirected(&read(), account.as_str()))
+    host.providers.as_ref().is_some_and(|read| read().iter().any(|view| crate::custom_endpoints::account_redirected(view, account.as_str())))
 }
 
 /// A free request that needs the key.

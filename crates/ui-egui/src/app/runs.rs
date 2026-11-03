@@ -404,10 +404,13 @@ impl Runs {
     /// Where the keychain worker sends `keys.test` checks: the runs' own runtime and HTTP client,
     /// so a check goes out like a run's request does. `None` for a test host without a client.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn key_test_host(&self) -> Option<nodecraft_engine::key_test::KeyTestHost> {
+    pub(super) fn key_test_host(&self, loaded: nodecraft_engine::settings::ProviderSettings) -> Option<nodecraft_engine::key_test::KeyTestHost> {
         let http = self.http.clone()?;
-        // Settings are read at each check, so an edit to a custom base URL (#960) counts at once.
-        let providers: nodecraft_engine::key_test::ProviderSettingsSource = Arc::new(|| nodecraft_engine::settings::peek().providers);
+        // The settings loaded at startup and the file as it is now, read at each check: either
+        // marking the account redirected is enough (#960), so an unreadable file never lowers
+        // protection below what was loaded.
+        let providers: nodecraft_engine::key_test::ProviderSettingsSource =
+            Arc::new(move || vec![loaded.clone(), nodecraft_engine::settings::peek().providers]);
         Some(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::clone(&self.runtime), http, providers: Some(providers) })
     }
 
