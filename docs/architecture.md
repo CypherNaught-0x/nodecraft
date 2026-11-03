@@ -748,7 +748,10 @@ archives and verifies each against its index digest before `fetch::settle` insta
 session. `templates::disk` persists the last good index and verified archives through a
 `TemplateCacheStore` (a `FileCache` under the settings folder's `templates/v1/` on native, a
 `MemoryCache` in the browser and tests), re-verifies everything it reads back at startup and reports
-damaged files instead of trusting them; `templates.status` and `templates.clear_cache` expose it. See
+damaged files instead of trusting them; `templates.status` and `templates.clear_cache` expose it. On
+the desktop the UI host's template worker owns the `FileCache`: it runs `disk::load` at startup and
+applies the session's queued `disk::Write`s, so no template disk I/O, hashing or decoding runs on the
+UI thread. See
 the [decision](decisions/2026-11-03-template-updates-verified-cache.md).
 
 ## Techniques (#93)

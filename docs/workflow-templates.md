@@ -180,13 +180,17 @@ catalog and all bundled examples.
 
 On the desktop, verified downloads and the last good index are kept in the app data folder (the
 settings folder) under `templates/v1/`: `index.json`, and per template `<blake3>.ncraft` with its
-index record `<blake3>.json`. They are read back and verified again at startup, locally, without the
-network (at most 128 archives and 64 MiB). A damaged, renamed or oversize file is skipped and
-reported in the status line and `templates.status`; it is never trusted. **Clear downloaded**
-(`templates.clear_cache {}`) removes the folder; deleting it by hand is also safe. The browser keeps
-downloads in memory for the page's session. Cached templates are read-only: **Add template** copies
-the graph and assets into your project as one undoable edit, after which they are ordinary project
-data and survive saving and reloading without the cache.
+index record `<blake3>.json`. The template worker reads them back and verifies them again at
+startup, off the UI thread and without the network (at most 128 archives, 64 MiB); **Update
+templates** waits until that read is done. A damaged, renamed or oversize file, or a cached copy
+that contradicts the cached index, is skipped and reported in the status line and
+`templates.status`; it is never trusted. **Clear downloaded** (`templates.clear_cache {}`) removes
+the `v1` folder; deleting it by hand is also safe. Other open NodeCraft windows keep the templates
+they already loaded until they restart, and may write their own downloads back; clear again after
+closing them if you want the folder empty. The browser keeps downloads in memory for the page's
+session. Cached templates are read-only: **Add template** copies the graph and assets into your
+project as one undoable edit, after which they are ordinary project data and survive saving and
+reloading without the cache.
 
 One request runs at a time; each index is at most 128 KiB, each archive at most 2 MiB, and each
 request times out after 10 seconds. Requests carry only the generic `NodeCraft/<version>`

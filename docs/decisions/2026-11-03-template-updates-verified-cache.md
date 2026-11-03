@@ -25,8 +25,16 @@ nothing and only suggest trust that isn't there. The trust model is therefore:
   A `Source` can carry template-index keys; when it does, `index.json.sig` (64 raw bytes, signing
   `NodeCraft templates index v1\n` followed by the index bytes) must verify against one of them or the
   update is refused. The official source carries no key today, so official updates are unsigned.
+  The verified signature is cached as `index.json.sig` beside the cached index, and a keyed host
+  verifies it again when it reads the cache; an index without a valid cached signature is ignored.
   Adding a key is a follow-up for the templates repository (a signing secret in its publication job)
-  plus one constant here; nothing else changes.
+  plus one constant here.
+- **Requirement for that follow-up: rollback protection.** A signature alone lets anyone who can
+  serve the URL replay an older signed index, hiding newer versions. Before a key is published, the
+  index must gain a monotonic `serial` (a new `schema_version`), covered by the signature, and the
+  client must refuse an index whose serial is lower than the cached one's. Today the official source
+  is unsigned, so trust already rests on HTTPS to the fixed repository and this adds nothing to
+  exploit.
 
 **Bounds.** The index is at most 128 KiB and 128 entries, each archive at most 2 MiB, every request
 times out after 10 s, and one `templates.update` downloads at most 16 changed archives (the rest are
@@ -40,13 +48,26 @@ last outcome, the update in flight and cache problems. There is no automatic-upd
 be added later as an opt-in. `template.refresh`/`template.retrieve` remain for single steps.
 
 **Cache.** Verified archives and the last good index are written under the app data directory
-(the settings folder) in `templates/v1/`: `index.json`, and per archive `<blake3>.ncraft` with its
-index record `<blake3>.json`. The `v1` directory versions the layout; another version's directory
-is ignored. At startup the cache is read locally (bounded: 128 files, 64 MiB, each archive hashed and
-validated again); a damaged, oversize, renamed or unreadable file is skipped and reported, never a
-panic, and the bundled set is always the floor. `templates.clear_cache` (or deleting the folder)
-removes it. Cached templates are read-only: adding one copies its canvas and assets into the project
-through the same undoable `template.add` import as a bundled one.
+(the settings folder) in `templates/v1/`: `index.json` (with `index.json.sig` in signed mode), and
+per archive `<blake3>.ncraft` with its index record `<blake3>.json`. The `v1` directory versions the
+layout; another version's directory is ignored, and clearing removes only `v1/`. A cache read admits
+at most 258 ordinary files (128 archives with their records, the index and its signature; hidden and
+temporary files don't count), 64 MiB of archives and per-file caps, and never follows a symlink.
+Every archive is hashed against its record's digest, decoded and its node kinds validated again, so
+`template.add` never sees an unchecked cached graph. The cached index is installed first; a cached
+archive that contradicts it, a bundled version or another cached copy of the same version is dropped
+and removed (the index wins), so a stale copy can't block later updates with a conflict. A damaged,
+oversize, renamed or unreadable file is skipped and reported, never a panic, and the bundled set is
+always the floor. `templates.clear_cache` (or deleting the folder) removes it. Cached templates are
+read-only: adding one copies its canvas and assets into the project through the same undoable
+`template.add` import as a bundled one.
+
+**Off the UI thread.** The desktop's template worker thread owns the file store: it reads and
+verifies the cache at startup and hands the verified records back (`disk::load` / `disk::adopt`),
+and the session only queues writes (`disk::Write`) that the worker applies in order after each
+update, eviction or clear. `templates.update` waits (Busy) until the startup read is adopted, so it
+never re-downloads what the cache holds. Hosts without a worker (tests, a failed worker start)
+use `disk::install`, the same steps inline.
 
 **Transport.** The same `ReqwestHttp` as the update check (#123), with redirects off on native. Not
 `ReqwestHttp::public_only()`: it disables system proxies, which would break updates behind a proxy

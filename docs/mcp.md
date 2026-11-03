@@ -285,7 +285,7 @@ the index, then at most 16 missing listed templates, each verified against its i
 it is stored; mismatches are rejected and reported, keeping the previous copy.
 `templates.status {}` (read-only) returns `{supported, source, pending, last, bundled, available,
 cache}`, where `last` lists what the last update downloaded, rejected (`failed`) or `skipped` and any
-whole-update `error`, and `cache` its layout, location and problems. `templates.clear_cache {}` removes
+whole-update `error`, and `cache` its layout, location, `loading` flag and problems (`templates.update` is Busy while the desktop is still reading the cache at startup). `templates.clear_cache {}` removes
 downloaded templates. All three are agent commands; none edits the project or calls a paid provider,
 and hosts without the fetch service (the CLI) report `update`/`clear_cache` Unsupported. See
 [workflow starters](workflow-templates.md) for cache, offline, schema, authoring and update behavior
