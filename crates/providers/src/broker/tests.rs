@@ -394,6 +394,7 @@ fn an_unauthenticated_template_sends_no_credential() {
 }
 
 mod adapter;
+mod concurrency;
 
 #[test]
 fn a_model_says_what_it_makes_and_what_it_is_called() {

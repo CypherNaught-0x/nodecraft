@@ -16,10 +16,12 @@
 //! sent, and a template that breaks one is refused whole.
 
 pub mod adapter;
+pub mod gate;
 pub mod plan;
 pub mod template;
 
 pub use adapter::Broker;
+pub use gate::RequestGate;
 pub use plan::{authorize, plan_cancel, plan_poll, plan_submit, read_poll, read_submit};
 pub use template::{Credential, Origin, Template, TemplateError};
 

@@ -1063,7 +1063,7 @@ impl std::ops::Deref for AuthorizedRun {
 }
 impl AuthorizedRun {
     /// The scheduler limits for this run: the defaults, with each bound target that sets its own
-    /// cap on jobs at once (#864).
+    /// cap on jobs at once (a ComfyUI server's, #864; a plugin template's, #174).
     pub fn lane_limits(&self) -> Result<nodecraft_exec::scheduler::Limits, Error> {
         let mut limits = nodecraft_exec::scheduler::Limits::default();
         for (_, binding) in &self.bindings {

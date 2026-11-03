@@ -8,6 +8,11 @@
 //! carries the grant it was published under and is flagged revoked once that grant is gone, and
 //! its broker sends nothing after that: no paid request, and no poll, cancel or download of a
 //! job it sent before.
+//!
+//! Its template's `limits.concurrency` holds in two places: a run sends it no more jobs at once
+//! (the broker sets its scheduler lane's cap), and every broker built for it shares one
+//! [`RequestGate`], so all runs and jobs followed after a restart together keep that many
+//! requests in flight at most.
 use crate::plugin_runtime::PluginStamp;
 use crate::secrets::{Account, SecretStore};
 use nodecraft_catalog::{InputRole, ModeSpec, ModelDescriptor, Price, Pricing, model::is_id};
@@ -16,7 +21,7 @@ use nodecraft_plugin::manifest::{Capability, RegistrationKind, Runtime};
 use nodecraft_plugin_store::Package;
 use nodecraft_plugin_store::grants::Grant;
 use nodecraft_providers::Provider;
-use nodecraft_providers::broker::{Broker, Template};
+use nodecraft_providers::broker::{Broker, RequestGate, Template};
 use nodecraft_providers::http::Http;
 use nodecraft_types::Modality;
 use std::sync::Arc;
@@ -35,11 +40,14 @@ pub struct PluginProvider {
     pub stamp: PluginStamp,
     pub template: Template,
     revoked: AtomicBool,
+    /// Its requests at once, for every broker built for it.
+    gate: Arc<RequestGate>,
 }
 
 impl PluginProvider {
     pub(crate) fn new(stamp: PluginStamp, template: Template) -> Self {
-        Self { stamp, template, revoked: AtomicBool::new(false) }
+        let gate = RequestGate::new(usize::try_from(template.limits.concurrency).unwrap_or(1));
+        Self { stamp, template, revoked: AtomicBool::new(false), gate }
     }
 
     /// Whether its grant is gone: its broker sends no paid request any more.
@@ -146,7 +154,10 @@ pub fn broker(
         Some(name) => Some(crate::provider_setup::needs_key(keys, &name)?),
     };
     let held = Arc::clone(provider);
-    let broker = Broker::new(id, provider.template.clone(), key, http).map_err(|e| Readiness::Failed(e.message))?.granted(Arc::new(move || !held.is_revoked()));
+    let broker = Broker::new(id, provider.template.clone(), key, http)
+        .map_err(|e| Readiness::Failed(e.message))?
+        .granted(Arc::new(move || !held.is_revoked()))
+        .gated(Arc::clone(&provider.gate));
     Ok(Arc::new(broker))
 }
 

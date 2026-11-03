@@ -181,6 +181,13 @@ pub trait Provider: MaybeSendSync {
         true
     }
 
+    /// The most of one run's jobs this adapter takes at once, when it sets its own; the engine
+    /// captures it with the routing binding as the cap on the adapter's scheduler lane. A plugin
+    /// provider's is its template's `limits.concurrency` (#174). `None` keeps the default.
+    fn max_jobs_at_once(&self) -> Option<usize> {
+        None
+    }
+
     /// Starts a job. Queue-style APIs return [`Submission::Queued`] without waiting; synchronous
     /// APIs return [`Submission::Finished`].
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>>;

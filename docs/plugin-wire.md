@@ -113,7 +113,7 @@ its templates. Unknown fields are refused, and so is any template that breaks a 
 | `submit` | `POST`, a `path`, a JSON `body`, and either `handle` (a JSON pointer to the job id) or `outputs` |
 | `poll` | needed for a queued submit, refused for one that finishes in its reply: `GET`, a `path` naming `{job}`, `status` (pointer), `states` (`queued`, `running`, `done`, `failed` status lists; `done` and `failed` required; no value in two), `outputs`, optional `error` (pointer), and `interval_ms` (500 to 60000) |
 | `cancel` | optional, queued jobs only: `POST` or `DELETE`, and a `path` naming `{job}` |
-| `limits` | `response_bytes` (up to 4 MiB), `timeout_ms` (1 to 120 s) and `concurrency` (1 to 4): host ceilings a template can lower, never raise |
+| `limits` | `response_bytes` (up to 4 MiB), `timeout_ms` (1 to 120 s) and `concurrency` (1 to 4): host ceilings a template can lower, never raise. `concurrency` caps both a run's jobs at once on the provider (its scheduler lane) and the requests in flight to it from every run and restored job together |
 
 A path segment is a literal of unreserved characters, or a whole `{model}` (a model the template
 lists) or `{job}` (an id from a reply of at most 128 unreserved characters). Paths have no query,

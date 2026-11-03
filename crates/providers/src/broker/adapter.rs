@@ -6,11 +6,16 @@
 //! unknown to the host, so no reply proves a submit created nothing: once the paid request is
 //! sent, every failure may hide a billed job, and an ambiguous submit is retried automatically
 //! only when the template names an idempotency header for the key.
+//!
+//! The template's `limits.concurrency` bounds what it is sent at once twice: the most of one
+//! run's jobs it holds ([`Provider::max_jobs_at_once`], the scheduler lane's cap), and the most
+//! requests in flight to it from every run and restored job together ([`RequestGate`]).
 
 use std::sync::Arc;
 
 use nodecraft_types::Money;
 
+use super::gate::RequestGate;
 use super::plan::{authorize, plan_cancel, plan_poll, plan_submit, read_poll, read_submit};
 use super::template::Template;
 use crate::secrets::Secret;
@@ -42,6 +47,8 @@ pub struct Broker {
     http: Arc<dyn Http>,
     /// Whether the grant it runs under still stands; asked right before a paid request.
     granted: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// Slots for the template's requests at once, shared with every broker for this provider.
+    gate: Arc<RequestGate>,
 }
 
 impl Broker {
@@ -57,7 +64,23 @@ impl Broker {
             (Some(_), None) => return Err(ProviderError::new(ErrorKind::Auth, "this plugin provider needs an API key; add it in Settings")),
             (None, _) => None,
         };
-        Ok(Self { id: id.into(), template, key, http, granted: Arc::new(|| true) })
+        let gate = RequestGate::new(concurrency(&template));
+        Ok(Self { id: id.into(), template, key, http, granted: Arc::new(|| true), gate })
+    }
+
+    /// This broker sending through `gate`, shared with the brokers built for the same provider
+    /// before it, so a rebuilt broker (a new key, say) adds no slots. A gate of another size is
+    /// not this template's and is ignored.
+    pub fn gated(self, gate: Arc<RequestGate>) -> Self {
+        if gate.size() != concurrency(&self.template) {
+            return self;
+        }
+        Self { gate, ..self }
+    }
+
+    /// The gate its requests go through.
+    pub fn gate(&self) -> &Arc<RequestGate> {
+        &self.gate
     }
 
     /// This broker sending a paid request only while `granted` says its grant stands.
@@ -108,8 +131,9 @@ impl Broker {
 
     /// Sends `request` to the API origin with the credential, while the grant stands.
     async fn api(&self, request: HttpRequest) -> Result<HttpResponse, ProviderError> {
-        self.still_granted()?;
         let request = authorize(&self.template, request, self.key())?;
+        let _slot = self.gate.acquire().await;
+        self.still_granted()?;
         self.http.send_no_redirect(request).await.map_err(|e| self.scrub(e))
     }
 
@@ -124,6 +148,9 @@ impl Broker {
 
     async fn create(&self, job: &ProviderJob, context: Option<&SubmitContext>) -> Result<Submission, ProviderError> {
         let request = authorize(&self.template, plan_submit(&self.template, job)?, self.key())?;
+        // Waiting for a slot comes first: a wait given up has sent nothing, and the grant is
+        // asked again after it.
+        let slot = self.gate.acquire().await;
         // The last moment the job can still be refused without being sent.
         if !(self.granted)() {
             return Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; nothing was sent"));
@@ -138,7 +165,10 @@ impl Broker {
             e.message = format!("{}; the job may have been accepted and billed", e.message);
             e
         };
-        let reply = self.http.send_no_redirect(request).await.map_err(billed)?;
+        let reply = self.http.send_no_redirect(request).await.map_err(billed);
+        // The downloads that follow take slots of their own.
+        drop(slot);
+        let reply = reply?;
         if !reply.is_success() {
             return Err(billed(self.status_error(&reply)));
         }
@@ -212,9 +242,12 @@ impl Broker {
         if !self.template.origins().any(|o| o.holds(&parsed)) || !parsed.username().is_empty() || parsed.password().is_some() {
             return Err(malformed("an output link in the provider's reply is outside its template's origins"));
         }
-        self.still_granted()?;
         let request = HttpRequest::get(parsed.as_str()).max_response_bytes(MAX_OUTPUT_BYTES.min(*budget)).timeout_ms(DOWNLOAD_TIMEOUT_MS);
-        let reply = self.http.send_no_redirect(request).await.map_err(|e| self.scrub(e))?;
+        let slot = self.gate.acquire().await;
+        self.still_granted()?;
+        let reply = self.http.send_no_redirect(request).await.map_err(|e| self.scrub(e));
+        drop(slot);
+        let reply = reply?;
         if !reply.is_success() {
             let mut error = ProviderError::new(ErrorKind::Server, format!("the plugin provider's output download failed (HTTP {})", reply.status));
             error.retry_after_ms = retry_after(&reply).filter(|n| *n <= 3_600_000);
@@ -234,6 +267,11 @@ impl Broker {
     }
 }
 
+/// The template's requests at once, as a count.
+fn concurrency(template: &Template) -> usize {
+    usize::try_from(template.limits.concurrency).unwrap_or(1).max(1)
+}
+
 fn retry_after(reply: &HttpResponse) -> Option<u64> {
     reply.header("retry-after").and_then(|v| v.trim().parse::<u64>().ok()).and_then(|s| s.checked_mul(1000))
 }
@@ -247,6 +285,11 @@ impl Provider for Broker {
     /// again: the service then answers with the job it may already have.
     fn retry_ambiguous_submit(&self) -> bool {
         self.template.idempotency.is_some()
+    }
+
+    /// The template's `limits.concurrency`: a run holds no more of its jobs at once.
+    fn max_jobs_at_once(&self) -> Option<usize> {
+        Some(concurrency(&self.template))
     }
 
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
