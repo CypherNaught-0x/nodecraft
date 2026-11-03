@@ -54,7 +54,9 @@ fn scene() -> Harness<'static, NodeCraftApp> {
 fn press(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
     let pos = h.get_by_label(label).rect().center();
     h.hover_at(pos);
-    h.run();
+    // A hovered button inside a fading-in dialog keeps repainting on some platforms (macOS CI
+    // exceeded `run`'s step limit here), so step a fixed count instead of running to idle.
+    h.run_steps(2);
     for pressed in [true, false] {
         h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
         h.step();
