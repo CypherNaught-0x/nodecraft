@@ -4,21 +4,21 @@ use nodecraft_nodes::generation::STYLE_KIND;
 use nodecraft_types::{AssetRef, CanvasId, ErrorKind, GenerationId, Modality, NodeId, PortType, ProjectId, Value};
 use serde_json::{Value as Json, json};
 
-const ALPHA: CanvasId = CanvasId::from_bytes([1; 16]);
-const BETA: CanvasId = CanvasId::from_bytes([2; 16]);
-const PHOTO: NodeId = NodeId::from_bytes([10; 16]);
-const PAINTER: NodeId = NodeId::from_bytes([11; 16]);
-const WRITER: NodeId = NodeId::from_bytes([12; 16]);
-const SOUND: NodeId = NodeId::from_bytes([20; 16]);
-const SOUL: NodeId = NodeId::from_bytes([21; 16]);
-const INK: NodeId = NodeId::from_bytes([22; 16]);
-const UNTRAINED: NodeId = NodeId::from_bytes([23; 16]);
+pub(crate) const ALPHA: CanvasId = CanvasId::from_bytes([1; 16]);
+pub(crate) const BETA: CanvasId = CanvasId::from_bytes([2; 16]);
+pub(crate) const PHOTO: NodeId = NodeId::from_bytes([10; 16]);
+pub(crate) const PAINTER: NodeId = NodeId::from_bytes([11; 16]);
+pub(crate) const WRITER: NodeId = NodeId::from_bytes([12; 16]);
+pub(crate) const SOUND: NodeId = NodeId::from_bytes([20; 16]);
+pub(crate) const SOUL: NodeId = NodeId::from_bytes([21; 16]);
+pub(crate) const INK: NodeId = NodeId::from_bytes([22; 16]);
+pub(crate) const UNTRAINED: NodeId = NodeId::from_bytes([23; 16]);
 
-fn g(n: u8) -> GenerationId {
+pub(crate) fn g(n: u8) -> GenerationId {
     GenerationId::from_bytes([n; 16])
 }
 
-fn png(shade: u8) -> Vec<u8> {
+pub(crate) fn png(shade: u8) -> Vec<u8> {
     nodecraft_media::encode_png(2, 2, &[shade; 16], &Default::default()).unwrap()
 }
 
@@ -56,7 +56,7 @@ fn style_card(id: NodeId, title: &str, asset: Option<Value>) -> Node {
 /// "Alpha" holds an imported photo and a painter that made two images (the newest reusing the
 /// photo) and a writer with a text result; "Beta" holds a sound, a Soul ID, an ink style and a
 /// style card not trained yet.
-fn session() -> Session {
+pub(crate) fn session() -> Session {
     let mut scratch = Session::new(Project::new(ProjectId::from_bytes([9; 16]), "Scratch").unwrap()).unwrap();
     let photo = scratch.import_asset(&png(10)).unwrap();
     let painted = scratch.import_asset(&png(200)).unwrap();

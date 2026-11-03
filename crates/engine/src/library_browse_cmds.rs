@@ -192,6 +192,57 @@ fn every_asset<'a>(canvases: &[&'a Canvas]) -> Vec<Found<'a>> {
     found
 }
 
+/// Where the Assets browser lists an asset: the document's own reference to it (never one a
+/// caller supplied), its kind, and the card and result it was first found on.
+pub(crate) struct Located {
+    pub asset: AssetRef,
+    pub kind: Modality,
+    pub canvas: CanvasId,
+    pub node: NodeId,
+    pub label: String,
+    /// The result holding it, with its 1-based place in the card's history and the history's
+    /// length, when it was first found in a result rather than a parameter.
+    pub result: Option<(GenerationId, usize, usize)>,
+    /// Whether the card it was first found on has a title of its own.
+    pub titled: bool,
+}
+
+/// The first place, in the Assets browser's order, the open document holds media `hash`.
+pub(crate) fn locate(document: &Project, hash: &nodecraft_types::Blake3) -> Option<Located> {
+    let canvases = canvases(document, None).ok()?;
+    let found = every_asset(&canvases).into_iter().find(|f| f.asset.hash == *hash && ASSET_KINDS.contains(&f.kind))?;
+    let result = found.generation.and_then(|id| {
+        let index = found.node.history.iter().position(|g| g.id == id)?;
+        Some((id, index.saturating_add(1), found.node.history.len()))
+    });
+    Some(Located {
+        asset: found.asset.clone(),
+        kind: found.kind,
+        canvas: found.canvas.id(),
+        node: found.node.id,
+        label: label(found.node).to_owned(),
+        result,
+        titled: !found.node.title.trim().is_empty(),
+    })
+}
+
+/// Every media hash the open document holds, as the Assets browser would list it.
+pub(crate) fn listed_hashes(document: &Project) -> HashSet<nodecraft_types::Blake3> {
+    let Ok(canvases) = canvases(document, None) else { return HashSet::new() };
+    every_asset(&canvases).into_iter().filter(|f| ASSET_KINDS.contains(&f.kind)).map(|f| f.asset.hash).collect()
+}
+
+/// A card's name cut to a short quote, for the provenance title of a card placed from the
+/// library.
+pub(crate) fn short_label(text: &str) -> String {
+    let mut chars = text.chars().filter(|c| !c.is_control());
+    let mut quoted: String = chars.by_ref().take(80).collect();
+    if chars.next().is_some() {
+        quoted.push('…');
+    }
+    quoted
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AssetParams {
@@ -522,4 +573,4 @@ pub fn specs() -> Vec<CommandSpec> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

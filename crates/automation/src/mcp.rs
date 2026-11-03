@@ -119,6 +119,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "library.assets",
     "library.history",
     "library.styles",
+    // Places library entries as source cards: one ordinary undoable edit.
+    "library.attach",
     "library.place",
     // Shipped data adds canvases/assets through the ordinary undoable project mutation path.
     "template.list",

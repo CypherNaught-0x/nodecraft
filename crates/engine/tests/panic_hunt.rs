@@ -570,6 +570,8 @@ fn template(id: &str) -> (Session, Value) {
         "library.assets" => json!({"kind":"image","query":"photo","canvas":canvas(),"offset":0,"limit":200}),
         "library.history" => json!({"canvas":canvas(),"node":node_id(1),"query":"x","offset":1,"limit":1}),
         "library.styles" => json!({"query":"ink","offset":0,"limit":50}),
+        "library.attach" => json!({"canvas":canvas(),"items":[{"from":{"canvas":canvas(),"node":node_id(1),"generation":gen_id(0x21)}},
+            {"hash":"00".repeat(32)}],"ids":[node_id(7),node_id(8)],"at":{"x":1,"y":2},"step":320}),
         "template.list" => json!({}),
         "template.add" => json!({"id":"generate-text"}),
         "template.refresh" => json!({}),
