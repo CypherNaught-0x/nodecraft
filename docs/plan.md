@@ -767,7 +767,15 @@ follow-up). M3 is still open, so its checklist waits for its own close-out (#374
   (#173); a session-only store in the browser (#823); structured property tests over hostile
   archives and failing operation sequences (#824).
 - [x] Exit criterion: colour grade, blur and crop chains preview live in the desktop app (#88).
-- [ ] Close the M4 documentation follow-up (#375), then GitHub can mark its milestone closed.
+- [x] Close the M4 documentation follow-up (#375).
+
+### M7 video and audio
+
+The milestone close-out tracks the Timeline render demo (#378).
+
+### M10 sharing and collaboration
+
+The milestone close-out tracks the two-user editing demo (#381).
 
 ---
 
