@@ -42,7 +42,7 @@ The texture tests distinguish probe/output/rotation refusal from retained RGBA c
 
 ## Run the browser probe
 
-From `apps/nodecraft-web`, build the test-only page with the pinned Trunk 0.21.14:
+Build the test-only page from `apps/nodecraft-web` with the pinned Trunk 0.21.14.
 
 ```sh
 trunk build --offline --locked --release --dist ../../target/web-conformance --public-url ./ mesh-conformance.html
@@ -57,5 +57,41 @@ serve another copy under `/missing/probe/` with the three `nodecraft-mesh-worker
 The page should start, report an unavailable worker after **Run conformance**, and still accept
 the edit-counter click. Production packages exclude this page.
 
-Actual browser/GPU upload and maximum poll timing are PENDING and must be recorded with the
-frozen browser-build commit/tree and artifact digests before publication.
+## Packaged browser checks
+
+The production package was built from `cb7733b38f99cb5f7e45cbf3e532736322797918`
+(tree `df2389a7a76bbdc46e6475b97959f9c7bf56ab29`) using Trunk 0.21.14 and
+Binaryen 133. Both optimized Wasm files fit the 25 MiB per-file limit. The served
+directory and the archive contained the same 12 files, including exactly two Wasm files.
+
+| Artifact | Bytes | SHA-256 |
+|---|---:|---|
+| Application Wasm | 25,232,639 | `5e19d8437479221ee6bcc780d0958bf898d56f817ffe6e75bd8fe04d6d3e1407` |
+| Mesh worker Wasm | 961,005 | `72384e6574c7eb1896f3639cf4c0ad08f1e95fb4a8b6325e51d1bd817a1b89e9` |
+| Release ZIP | 10,487,103 | `cc9d74cdcf15b984a408bf2ae3e861133004d6490b9808b9fa5400df734022e7` |
+
+Chrome 156.0.8078.80 on macOS 27.0 with an Apple M3 Pro loaded the packaged app and its
+worker at `/` and `/nested/site/`. The browser accepted a pointer click and a Text card
+edit before adoption began. Both project downloads contained the edit and the unchanged
+9,000,084-byte original. Panning away and fitting the canvas reused the preview. Removing
+the worker loader produced a 404 while the packaged app started, accepted edits, and saved
+the original. Undo during decode terminated that worker before adoption. Reimporting the same
+original started a new worker and rendered. Two distinct originals completed in FIFO order
+with both cards offscreen and a maximum of one active worker. Fitting the canvas reused their
+prepared data without starting another worker.
+
+| Measurement for the 9,000,084-byte STL | Root | Nested |
+|---|---:|---:|
+| Start of decode to start of adoption | 216.6 ms | 214.7 ms |
+| Pointer click after start of decode | 5.8 ms | 4.6 ms |
+| Text edit after start of decode | 12.0 ms | 9.3 ms |
+| Elapsed adoption across frames | 1,816.3 ms | 1,817.1 ms |
+| Main-thread GPU allocation and write submission | 5.2 ms | 3.2 ms |
+
+The test-only probe, built before the UI queue and desktop scoping fixes, exercised the
+same worker protocol and matched the native prepared fingerprint
+`79dc46f44cc13d0aa3b6932125d6e5013f4d9ef41d5ad4712590de324374088b`
+at root and under a nested path. Its 10 protocol checks and 10 lifecycle checks passed,
+including the separate missing-loader run. The longest observed single main-thread poll
+was 2.7 ms. The timings describe these runs. GPU submission timing excludes GPU execution,
+and elapsed adoption includes the intervals between frames.

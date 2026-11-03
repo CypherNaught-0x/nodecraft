@@ -59,5 +59,5 @@ model, decoder code or screenshot is shipped. The conformance-only binary and fa
 feature gated and excluded from the release package inventory.
 
 Detailed allocation paths, admission/lifetime overlap, texture/JSON/accessor scratch and test
-coverage are tracked in the [resource worksheet](../browser-mesh-resources.md). Actual browser
-measurements must be completed before this change is published.
+coverage are tracked in the [resource worksheet](../browser-mesh-resources.md), together with
+the packaged browser measurements and artifact digests.
