@@ -92,6 +92,6 @@ done < <(find "$SITE" -type f -print0)
 if [ "$too_big" = 1 ]; then exit 1; fi
 
 ZIP="$DIST/$BASENAME.zip"
-(cd "$(dirname "$SITE")" && zip -q -r -X "$ZIP" "$BASENAME")
+(cd "$(dirname "$SITE")" && zip -q -r -X -D "$ZIP" "$BASENAME")
 echo "==> $ZIP ($(wc -c <"$ZIP" | tr -d ' ') bytes)"
 find "$SITE" -type f -exec wc -c {} + | sort -n

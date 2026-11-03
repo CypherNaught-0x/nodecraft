@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Exact generated main + trusted worker inventory. Sourced after Trunk has built the site.
+if [ -n "$(find "$SITE" ! -type d ! -type f -print -quit)" ]; then
+  echo "error: generated site contains a link or special file" >&2; exit 1
+fi
 shopt -s nullglob
 wasm=("$SITE"/*.wasm)
 main=("$SITE"/nodecraft-web-*_bg.wasm)
@@ -38,14 +41,19 @@ without_icon="${html/"$icon_tag"/}"
 if grep -Eq 'integrity[[:space:]]*=' <<< "$without_icon"; then
   echo "error: stale integrity attributes are incompatible with post-Trunk wasm-opt" >&2; exit 1
 fi
+# wasm-bindgen emits snippet paths as quoted imports in its adjacent wrappers. Keep
+# their original relative layout, and do not pick up unrelated files in snippets/.
+snippets="$({ grep -hoE "'\./snippets/[[:alnum:]_./-]+\.js'" "$MAIN_STEM.js" "$SITE/nodecraft-mesh-worker.js" || true; } | sed "s@^'\./@@;s@'\$@@" | sort -u)"
+while IFS= read -r snippet; do
+  [ -n "$snippet" ] || continue
+  case "/$snippet/" in *'/../'*|*'/./'*|*'//'*) echo "error: invalid snippet path: $snippet" >&2; exit 1 ;; esac
+  if [ ! -f "$SITE/$snippet" ]; then echo "error: missing generated snippet: $snippet" >&2; exit 1; fi
+done <<< "$snippets"
 while IFS= read -r -d '' f; do
   relative="${f#"$SITE"/}"
   case "$relative" in
-    index.html|nodecraft-web-*.js|nodecraft-web-*_bg.wasm|nodecraft-mesh-worker.js|nodecraft-mesh-worker_bg.wasm|nodecraft-mesh-worker_loader.js|snippets/*.js|*.png|README.md|LICENSE-MIT|LICENSE-APACHE|NOTICE|ATTRIBUTION.md) ;;
+    index.html|"${MAIN_STEM##*/}.js"|"${main[0]##*/}"|nodecraft-mesh-worker.js|nodecraft-mesh-worker_bg.wasm|nodecraft-mesh-worker_loader.js|"$icon_name"|README.md|LICENSE-MIT|LICENSE-APACHE|NOTICE|ATTRIBUTION.md) ;;
+    snippets/*.js) grep -Fxq -- "$relative" <<< "$snippets" || { echo "error: unreferenced snippet: $relative" >&2; exit 1; } ;;
     *) echo "error: unexpected site artifact: $relative" >&2; exit 1 ;;
-  esac
-  case "$relative" in
-    nodecraft-web-*.js) [ "$f" = "$MAIN_STEM.js" ] || { echo "error: extra main wrapper" >&2; exit 1; } ;;
-    nodecraft-web-*_bg.wasm) [ "$f" = "${main[0]}" ] || { echo "error: extra main Wasm" >&2; exit 1; } ;;
   esac
 done < <(find "$SITE" -type f -print0)

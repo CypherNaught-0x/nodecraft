@@ -30,5 +30,10 @@ fixture; printf '<html>old.js old.wasm</html>' > "$SITE/index.html"; reject 'sta
 fixture; printf 'changed icon' > "$SITE/icon.png"; reject 'corrupt unchanged icon bytes'
 fixture; rm "$SITE/icon.png"; reject 'missing referenced icon'
 fixture; sed 's/sha384-/sha256-/' "$SITE/index.html" > "$SITE/changed.html"; mv "$SITE/changed.html" "$SITE/index.html"; reject 'wrong icon integrity algorithm'
-fixture; mkdir -p "$SITE/snippets/valid"; printf 'generated' > "$SITE/snippets/valid/example.js"; accept
-printf 'web generated-inventory tests: 14 passed\n'
+fixture; printf 'unrelated' > "$SITE/screenshot.png"; reject 'unreferenced PNG'
+fixture; ln -s "$SITE/index.html" "$SITE/linked.html"; reject 'linked file'
+fixture; mkdir -p "$SITE/snippets/valid"; printf 'generated' > "$SITE/snippets/valid/example.js"; reject 'unreferenced snippet'
+printf "import './snippets/valid/example.js';\n" >> "$SITE/nodecraft-web-abcdef.js"; accept
+rm "$SITE/snippets/valid/example.js"; reject 'missing referenced snippet'
+fixture; printf "import './snippets/../icon.js';\n" >> "$SITE/nodecraft-web-abcdef.js"; reject 'snippet traversal'
+printf 'web generated-inventory tests: 19 passed\n'
