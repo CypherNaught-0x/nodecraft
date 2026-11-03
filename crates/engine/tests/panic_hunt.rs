@@ -600,7 +600,9 @@ fn template(id: &str) -> (Session, Value) {
                 "output_names":[{"modality":"image","name":"images"}],"disconnect":false,"clear_history":false})
         }
         "providers.settings_get" => json!({}),
-        "providers.settings_set" => json!({"comfyui_url":"http://127.0.0.1:8188","litellm_url":"https://proxy.example"}),
+        "providers.settings_set" => {
+            json!({"comfyui_url":"http://127.0.0.1:8188","litellm_url":"https://proxy.example","base_urls":{"openai":"http://127.0.0.1:4000/v1"}})
+        }
         // The updates service isn't registered here: the check must be refused cleanly.
         "app.check_updates" | "app.update_status" | "app.install_update" | "app.restart_to_update" => json!({}),
         "edge.rewire" => {

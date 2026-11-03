@@ -99,6 +99,12 @@ pub struct ProviderSettings {
     pub litellm_url: Option<String>,
     /// Azure OpenAI resource root or `/openai/v1` base; the key uses account `azure-openai`.
     pub azure_openai_url: Option<String>,
+    /// Base URLs set in place of a provider's own API (`[providers.base_urls]`, #960), by catalog
+    /// provider id, such as `openai = "http://127.0.0.1:4000/v1"` for a LiteLLM proxy. Only the
+    /// providers [`crate::custom_endpoints::PROVIDERS`] lists take one; the URL is checked when the
+    /// adapter is built. The key stays in the provider's keychain account.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub base_urls: std::collections::BTreeMap<String, String>,
     /// A random value made once per install; it keeps prompt ids of different installs apart on
     /// a shared ComfyUI server. Empty until the host first creates it.
     pub install_salt: String,
@@ -116,14 +122,16 @@ struct ReadProviderSettings {
     comfyui_url: Option<String>,
     litellm_url: Option<String>,
     azure_openai_url: Option<String>,
+    #[serde(deserialize_with = "crate::custom_endpoints::lenient_base_urls")]
+    base_urls: std::collections::BTreeMap<String, String>,
 }
 
 impl From<ReadProviderSettings> for ProviderSettings {
     fn from(read: ReadProviderSettings) -> Self {
-        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url, azure_openai_url } = read;
+        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url, azure_openai_url, base_urls } = read;
         match comfyui_url.as_deref().map(str::trim).filter(|url| !url.is_empty()) {
-            Some(url) if comfyui.is_empty() => Self { litellm_url, azure_openai_url, ..Self::with_comfyui(url, &install_salt) },
-            _ => Self { comfyui, comfyui_default, litellm_url, azure_openai_url, install_salt },
+            Some(url) if comfyui.is_empty() => Self { litellm_url, azure_openai_url, base_urls, ..Self::with_comfyui(url, &install_salt) },
+            _ => Self { comfyui, comfyui_default, litellm_url, azure_openai_url, base_urls, install_salt },
         }
     }
 }
@@ -777,6 +785,36 @@ mod tests {
             assert!(report.section_errors.is_empty(), "{report:?}");
             assert!(store.get().providers.comfyui.is_empty());
         }
+    }
+
+    /// Custom base URLs (#960) are read by provider; a hand-edited entry that isn't text, or names
+    /// a provider that can't take one, is dropped without resetting `[providers]`, and saving
+    /// writes them back.
+    #[test]
+    fn custom_base_urls_are_read_leniently_and_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(
+            dir.path(),
+            "schema_version = 2\n[providers]\ninstall_salt = \"s\"\nlitellm_url = \"http://127.0.0.1:4000\"\n[providers.base_urls]\nopenai = \"http://127.0.0.1:4000/v1\"\nanthropic = 3\nreplicate = \"https://x.example\"\n",
+        );
+        let (mut store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        let providers = store.get().providers.clone();
+        assert_eq!(providers.base_urls, [("openai".to_owned(), "http://127.0.0.1:4000/v1".to_owned())].into());
+        assert_eq!(providers.litellm_url.as_deref(), Some("http://127.0.0.1:4000"), "the rest of the section is kept");
+        store.update(|settings| {
+            settings.providers.base_urls.insert("openai-images".into(), "https://images.example/v1".into());
+        });
+        store.flush().unwrap();
+        let (store, _) = open_in(dir.path());
+        assert_eq!(store.get().providers.base_urls.get("openai-images").map(String::as_str), Some("https://images.example/v1"));
+        // A table that isn't one is dropped too.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 2\n[providers]\ninstall_salt = \"s\"\nbase_urls = \"https://x.example\"\n");
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        assert!(store.get().providers.base_urls.is_empty());
+        assert_eq!(store.get().providers.install_salt, "s");
     }
 
     /// A hand-edited job cap that's out of range or not a number never resets `[providers]`.

@@ -50,7 +50,7 @@ fn endpoint_commands_persist_per_origin_without_touching_the_document_or_keys() 
     let mut session = session(&store);
     let document = session.document().clone();
     let saved = session.dispatch("providers.settings_set", &addresses()).unwrap();
-    assert_eq!(saved, json!({"comfyui_url": "http://127.0.0.1:8188", "litellm_url": "https://proxy.example"}));
+    assert_eq!(saved, json!({"comfyui_url": "http://127.0.0.1:8188", "litellm_url": "https://proxy.example", "base_urls": {}}));
     assert_eq!(session.dispatch("providers.settings_get", &json!({})).unwrap(), saved);
     assert_eq!(session.document(), &document);
     assert_eq!(store.settings().unwrap().install_salt.len(), 64);
@@ -117,6 +117,43 @@ fn hostile_addresses_and_unknown_fields_refuse_without_echoing_credentials() {
     assert!(session.dispatch("providers.settings_set", &json!({"litellm_url": "x".repeat(MAX_URL_BYTES + 1)})).is_err());
     assert!(origin.get(STORAGE_KEY).unwrap().is_none());
     assert_eq!(store.settings().unwrap(), ProviderSettings::default());
+}
+
+#[test]
+fn custom_base_urls_are_saved_per_provider_and_hostile_ones_refuse_without_echo() {
+    let origin = Arc::new(Origin::default());
+    let (store, _) = OriginProviders::load(origin.clone());
+    let mut session = session(&store);
+    let saved = session
+        .dispatch("providers.settings_set", &json!({"base_urls": {"openai": " http://127.0.0.1:4000/v1/ ", "anthropic": "", "openai-images": null}}))
+        .unwrap();
+    assert_eq!(saved["base_urls"], json!({"openai": "http://127.0.0.1:4000/v1"}));
+    assert_eq!(session.dispatch("providers.settings_get", &json!({})).unwrap()["base_urls"], saved["base_urls"]);
+    let (reloaded, notice) = OriginProviders::load(origin.clone());
+    assert!(notice.is_none());
+    assert_eq!(reloaded.settings().unwrap().base_urls.get("openai").map(String::as_str), Some("http://127.0.0.1:4000/v1"));
+    let before = store.settings().unwrap();
+    for urls in [
+        json!({"openai": "ftp://proxy.example/v1"}),
+        json!({"openai": "http://proxy.example/v1"}),
+        json!({"openai": "https://user:secret721@proxy.example/v1"}),
+        json!({"openai": "https://proxy.example/v1?key=secret721"}),
+        json!({"secret721": "https://proxy.example/v1"}),
+        json!({"openai": 721}),
+    ] {
+        let error = session.dispatch("providers.settings_set", &json!({"base_urls": urls})).unwrap_err();
+        assert!(!error.message.contains("secret721") && !error.message.contains("proxy.example"), "{}", error.message);
+    }
+    assert_eq!(store.settings().unwrap(), before, "a refused save keeps the saved base URLs");
+    // Omitted, like the other addresses, clears them.
+    session.dispatch("providers.settings_set", &json!({})).unwrap();
+    assert!(store.settings().unwrap().base_urls.is_empty());
+    // A stored record with an unusable base URL is reported, not used.
+    let damaged = Arc::new(Origin::default());
+    damaged.set(STORAGE_KEY, r#"{"base_urls":{"openai":"http://proxy.example/v1"},"install_salt":"s"}"#).unwrap();
+    let (store, notice) = OriginProviders::load(damaged);
+    assert!(notice.unwrap().contains("unusable address"));
+    assert!(store.settings().unwrap().base_urls.is_empty());
 }
 
 #[test]

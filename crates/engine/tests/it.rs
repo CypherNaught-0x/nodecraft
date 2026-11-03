@@ -40,6 +40,8 @@ mod comfy_workflow9;
 mod commands;
 #[path = "comments.rs"]
 mod comments;
+#[path = "custom_endpoints960.rs"]
+mod custom_endpoints960;
 #[path = "document_input591.rs"]
 mod document_input591;
 #[path = "fal.rs"]
