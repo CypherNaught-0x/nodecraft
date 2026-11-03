@@ -11,6 +11,9 @@ pub(super) struct BrowserProviders {
     was_open: bool,
     comfyui: String,
     litellm: String,
+    /// Custom base URLs being edited, by provider (#960); one field per
+    /// [`nodecraft_engine::custom_endpoints::PROVIDERS`] entry.
+    base_urls: std::collections::BTreeMap<&'static str, String>,
     applied: ProviderSettings,
     notice: Option<String>,
 }
@@ -25,6 +28,7 @@ impl BrowserProviders {
             was_open: false,
             comfyui: nodecraft_engine::browser_providers::comfyui_url(&settings).unwrap_or_default(),
             litellm: settings.litellm_url.clone().unwrap_or_default(),
+            base_urls: base_urls(|provider| settings.base_urls.get(provider).and_then(|entry| entry.text()).map(str::to_owned)),
             applied: settings,
             notice,
         }
@@ -45,6 +49,8 @@ impl BrowserProviders {
                 Ok(settings) => {
                     self.comfyui = settings.get("comfyui_url").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
                     self.litellm = settings.get("litellm_url").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+                    let saved = settings.get("base_urls");
+                    self.base_urls = base_urls(|provider| saved.and_then(|urls| urls.get(provider)).and_then(serde_json::Value::as_str).map(str::to_owned));
                 }
                 Err(error) => self.notice = Some(error.message),
             }
@@ -54,7 +60,7 @@ impl BrowserProviders {
             return;
         }
         let mut open = self.open;
-        egui::Window::new("Provider servers").id(egui::Id::new("nodecraft.browser_providers")).open(&mut open).default_width(t.dialog_width).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).show(ctx, |ui| {
+        crate::floating::panel(ctx, "Provider servers", egui::Id::new("nodecraft.browser_providers"), crate::floating::Home::RightTop, t).open(&mut open).default_width(t.dialog_width).show(ctx, |ui| {
             ui.label("Server addresses are kept in this browser for this site. Put tokens and virtual keys in API keys.");
             ui.label("Calls go directly from this page to the server. Allow this page's origin in ComfyUI and LiteLLM's CORS settings. HTTPS pages may block HTTP servers.");
             let label = ui.label("ComfyUI server");
@@ -63,8 +69,23 @@ impl BrowserProviders {
             ui.add(egui::TextEdit::singleline(&mut self.litellm).id(egui::Id::new("browser_litellm_url")).char_limit(2048).hint_text("http://127.0.0.1:4000")).labelled_by(label.id);
             ui.label("Use the LiteLLM proxy's root address, without /v1. Its optional virtual key uses the litellm account in API keys.");
             ui.label("LiteLLM models are not available yet. You can save this address for future use.");
+            ui.separator();
+            ui.label("Custom endpoints");
+            ui.label(
+                "Send a provider's requests and key to another server that speaks its API, such as a LiteLLM proxy or vLLM. \
+                 Leave blank to use the provider's own API. Runs keep the catalog price; a step that would be free needs your consent to an unknown price.",
+            );
+            // Only the providers the browser can use a base URL for (OpenAI chat).
+            for entry in nodecraft_engine::custom_endpoints::available() {
+                let label = ui.label(entry.label);
+                let text = self.base_urls.entry(entry.provider).or_default();
+                ui.add(egui::TextEdit::singleline(text).id(egui::Id::new(("browser_base_url", entry.provider))).char_limit(2048).hint_text(entry.default))
+                    .labelled_by(label.id);
+            }
             if ui.button("Save servers").clicked() {
-                match session.dispatch("providers.settings_set", &serde_json::json!({"comfyui_url": self.comfyui, "litellm_url": self.litellm})) {
+                let base_urls: serde_json::Map<String, serde_json::Value> =
+                    self.base_urls.iter().map(|(provider, url)| ((*provider).to_owned(), serde_json::Value::from(url.as_str()))).collect();
+                match session.dispatch("providers.settings_set", &serde_json::json!({"comfyui_url": self.comfyui, "litellm_url": self.litellm, "base_urls": base_urls})) {
                     Ok(_) => self.notice = Some("Provider servers saved for this site.".into()),
                     Err(error) => self.notice = Some(error.message),
                 }
@@ -75,6 +96,11 @@ impl BrowserProviders {
         });
         self.open = open;
     }
+}
+
+/// One editable text per provider that takes a custom base URL, from what `saved` holds.
+fn base_urls(saved: impl Fn(&str) -> Option<String>) -> std::collections::BTreeMap<&'static str, String> {
+    nodecraft_engine::custom_endpoints::available().map(|entry| (entry.provider, saved(entry.provider).unwrap_or_default())).collect()
 }
 
 impl NodeCraftApp {

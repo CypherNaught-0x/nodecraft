@@ -12,8 +12,8 @@ For other clients, configure a stdio server that runs `nodecraft-cli` with the a
 
 The server starts with a new, empty project with one canvas. It has no allowed folders, so the
 project file commands are listed but refused; use the bridge below to open and save projects.
-It does not load the desktop app's usage log: `usage.export_csv`, `usage.ownership` and
-`usage.unsettled` are listed as `ready: false` with bridge guidance, rather than reporting an
+It does not load the desktop app's usage log: `usage.export_csv`, `usage.ownership`,
+`usage.unsettled` and `usage.unresolved` are listed as `ready: false` with bridge guidance, rather than reporting an
 empty log as though it were billing evidence. Bridge to the running app to read its real log.
 
 ## Streamable HTTP
@@ -123,7 +123,8 @@ Limits: the check happens when the command arrives. A program that can change th
 themselves (swap a folder for a link between the check and the write) isn't guarded against.
 `file.cancel` cancels any background save or open, including one the person started outside the
 folders. Opening checks that the project's folder is writable for recovery, which briefly creates
-a file there, even in a `--read-root` folder.
+a file there, even in a `--read-root` folder. A save or open that the disk plainly can't hold is
+refused with `busy` before anything is written; the message gives the sizes needed and free.
 
 ## Tools
 
@@ -195,7 +196,9 @@ machine, so it is human-only for the same reason (#557), as are `timeline.export
 takes it from, so it is human-only too (#831). `run.record` writes results the host ran, and
 `usage.reconcile_ownership` records a person's judgement about historical charges against their
 own provider records (#325), as does `usage.resolve_charge` for what a reconciled charge was billed
-(#332); agents can still review those charges with `usage.ownership` and `usage.unsettled`. `run.held_discard` lets a held paid result go for good (#369); agents can list held
+(#332), and `usage.resolve_unresolved` for what an ordinary unresolved charge was billed (#298);
+agents can still review those charges with `usage.ownership`, `usage.unsettled` and
+`usage.unresolved`. `run.held_discard` lets a held paid result go for good (#369); agents can list held
 results with `run.held` and retry or place them with `run.held_retry` and `run.held_place`. The
 `plugins.*` changes (import, update, reload, enable, disable, rollback, uninstall, prune) read package files
 and decide what extends the app, like installing software, so only a person runs them; agents can
@@ -234,6 +237,13 @@ Neither command changes active history, edits the graph or opens a dialog.
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
 server waits until the prompt is answered.
+
+**Whole-canvas runs (#965):** `run.changed` and `run.workflow` take `{canvas}` and return the
+`run.quote` result for mode `pending` (every card whose result is stale, part-made or missing,
+with the upstream it needs) or `workflow` (every generation and technique card as well), plus
+that `mode`. A node with work between two nodes of the run runs too; nodes after a batch the run
+feeds are listed in `waiting` for the next run. They start nothing; start the quoted run with `run.start {canvas, mode, accept}`.
+In the app they are **Run changed** (⌘/Ctrl+Enter) and **Run workflow**.
 
 **Provider prices:** Standalone `nodecraft-cli mcp` supports `command_run` with
 `id: "run.estimate"` and the same parameters as `run.quote`. It sends the job's inputs to the

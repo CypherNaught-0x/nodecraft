@@ -1,7 +1,7 @@
 //! Convert 3D (#111): decodes the connected model within the media limits and writes it as GLB
-//! or OBJ, staged like any other action result.
+//! or OBJ, or geometry-only binary STL, staged like any other action result.
 use super::{LocalActions, word};
-use nodecraft_media::{MeshFormat, MeshLimits, decode_mesh, encode_glb, encode_obj};
+use nodecraft_media::{MeshFormat, MeshLimits, decode_mesh, encode_glb, encode_obj, encode_stl};
 use nodecraft_types::{AssetRef, MediaMeta, ParamValues, Value};
 use std::sync::PoisonError;
 
@@ -38,12 +38,14 @@ impl LocalActions {
         let format = match word(params, "format")? {
             "glb" => MeshFormat::Glb,
             "obj" => MeshFormat::Obj,
+            "stl" => MeshFormat::Stl,
             other => return Err(format!("{other} isn't a 3D format NodeCraft writes")),
         };
         let bytes = self.model_bytes(inputs.first())?;
         let mesh = decode_mesh(&bytes, &MeshLimits::default()).map_err(|e| format!("the input model can't be read: {e}"))?;
         let encoded = match format {
             MeshFormat::Obj => encode_obj(&mesh),
+            MeshFormat::Stl => encode_stl(&mesh, nodecraft_format::MAX_ASSET_BYTES),
             _ => encode_glb(&mesh),
         }
         .map_err(|e| format!("the model can't be written: {e}"))?;
@@ -53,7 +55,9 @@ impl LocalActions {
         let hash = self.staged.lock().unwrap_or_else(PoisonError::into_inner).insert(&encoded).map_err(|e| e.message)?;
         let mime = format.mime().parse().map_err(|_| "the 3D format has no media type".to_owned())?;
         let info = mesh.info();
-        let meta = MediaMeta { vertices: u32::try_from(info.vertices).ok(), triangles: u32::try_from(info.triangles).ok(), ..MediaMeta::default() };
+        let vertices =
+            if format == MeshFormat::Stl { info.triangles.checked_mul(3).and_then(|n| u32::try_from(n).ok()) } else { u32::try_from(info.vertices).ok() };
+        let meta = MediaMeta { vertices, triangles: u32::try_from(info.triangles).ok(), ..MediaMeta::default() };
         Ok(Value::Media(AssetRef { hash, mime, meta }))
     }
 }

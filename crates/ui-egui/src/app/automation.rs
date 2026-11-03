@@ -170,9 +170,7 @@ impl NodeCraftApp {
         let mut open = true;
         let mut toggle = None;
         let mut rotate = false;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Automation").id(egui::Id::new("nodecraft.automation")).open(&mut open).collapsible(false).resizable(false).frame(frame).show(ctx, |ui| {
+        crate::floating::panel(ctx, "Automation", egui::Id::new("nodecraft.automation"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
             let mut on = enabled;
             if ui.checkbox(&mut on, "Enable MCP server").on_hover_text("Let AI agents on this computer work on this window through MCP").changed() {
                 toggle = Some(on);

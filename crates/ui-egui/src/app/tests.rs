@@ -10,10 +10,10 @@ pub(super) fn harness() -> Harness<'static, NodeCraftApp> {
         .with_size(Vec2::new(1000.0, 700.0))
         .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap())
 }
-fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
+pub(super) fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
     app.session.document().canvases().get(&app.canvas).unwrap().nodes().values().next().unwrap()
 }
-fn screen(app: &NodeCraftApp) -> Rect {
+pub(super) fn screen(app: &NodeCraftApp) -> Rect {
     app.view.rect_to_screen(app.viewport.min, payload_rect(&app.session, node(app), app.theme.tokens()))
 }
 fn click(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
@@ -181,10 +181,10 @@ impl NodeKind for TestKind {
         Err(Error::new(ErrorKind::Unsupported, "test-only kind"))
     }
 }
-fn spec(name: &str, control: ParamControl, default: Value) -> ParamSpec {
+pub(super) fn spec(name: &str, control: ParamControl, default: Value) -> ParamSpec {
     ParamSpec { name: name.into(), label: name.into(), description: None, control, required: false, default: Some(default), visible_if: None }
 }
-fn schema_harness(params: Vec<ParamSpec>) -> Harness<'static, NodeCraftApp> {
+pub(super) fn schema_harness(params: Vec<ParamSpec>) -> Harness<'static, NodeCraftApp> {
     let descriptor = NodeDescriptor {
         id: "test.controls".into(),
         label: "Controls".into(),
@@ -2065,7 +2065,8 @@ fn first_frame_hover_captured(was_tall: bool, capture: Option<&std::path::Path>)
         modifiers: egui::Modifiers::NONE,
     });
     h.step(); // Deliberately the first frame: running to quiescence hides stale hover ownership.
-    assert_eq!(h.state().view.pan != pan, was_tall, "shrunk card permits canvas pan; grown card owns scroll");
+    // Neither body has anything to scroll, so the canvas pans over the grown card too (#413).
+    assert_ne!(h.state().view.pan, pan, "a card with nothing to scroll never swallows the wheel");
     if let Some(root) = capture {
         h.render().unwrap().save(root.join(if was_tall { "after-shrink.png" } else { "after-growth.png" })).unwrap();
     }
@@ -2085,7 +2086,7 @@ fn first_frame_hover_after_shrink() {
 }
 
 #[test]
-fn unavailable_instance_placeholder_owns_wheel_hover_but_not_surrounding_canvas() {
+fn unavailable_instance_placeholder_lets_the_wheel_pan_over_and_around_it() {
     for inside in [true, false] {
         let mut h = changing_height_harness(true);
         h.run();
@@ -2113,7 +2114,7 @@ fn unavailable_instance_placeholder_owns_wheel_hover_but_not_surrounding_canvas(
             modifiers: egui::Modifiers::NONE,
         });
         h.step();
-        assert_eq!(h.state().view.pan == pan, inside, "painted placeholder owns wheel; surrounding canvas permits pan");
+        assert_ne!(h.state().view.pan, pan, "a placeholder has nothing to scroll, so the canvas pans over it and around it (#413)");
         assert_eq!(h.state().session.document(), &before);
         assert_eq!(h.state().session.revision(), revision);
     }

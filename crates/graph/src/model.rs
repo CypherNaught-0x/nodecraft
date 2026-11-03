@@ -217,6 +217,26 @@ pub struct Node {
 }
 
 impl Node {
+    /// A copy with only its active result in its history (see [`Canvas::active_only`]); the
+    /// other generations are never copied.
+    pub fn active_only(&self) -> Self {
+        let Node { id, kind, title, pos, params, config, inputs, outputs, history, active, tag, field } = self;
+        Self {
+            id: *id,
+            kind: kind.clone(),
+            title: title.clone(),
+            pos: *pos,
+            params: params.clone(),
+            config: config.clone(),
+            inputs: inputs.clone(),
+            outputs: outputs.clone(),
+            history: history.iter().filter(|g| Some(g.id) == *active).cloned().collect(),
+            active: *active,
+            tag: *tag,
+            field: *field,
+        }
+    }
+
     /// Validate all payload limits before a kind clones or interprets detached instance data.
     pub fn validate_payload(&self) -> Result<(), Error> {
         crate::validate::node(self)
@@ -476,6 +496,36 @@ impl Canvas {
             && *variation_cards == other.variation_cards
             && nodes.len() == other.nodes.len()
             && nodes.iter().zip(&other.nodes).all(|((a_id, a), (b_id, b))| a_id == b_id && same_node(a, b))
+    }
+
+    /// This canvas with each node's history cut down to its active result: the copy a run plans,
+    /// hashes and assembles against (#254). A run reads no other generation, and the history is
+    /// most of what a large canvas weighs, so a run doesn't carry it. Never stored.
+    pub fn active_only(&self) -> Self {
+        let Canvas { id, title, kind, nodes, edges, fields, comments, tags, technique, private, variation_cards } = self;
+        Self {
+            id: *id,
+            title: title.clone(),
+            kind: *kind,
+            nodes: nodes.iter().map(|(id, node)| (*id, node.active_only())).collect(),
+            edges: edges.clone(),
+            fields: fields.clone(),
+            comments: comments.clone(),
+            tags: tags.clone(),
+            technique: technique.clone(),
+            private: *private,
+            variation_cards: *variation_cards,
+        }
+    }
+
+    /// [`Canvas::active_only`], cutting this copy down in place rather than copying it.
+    pub fn into_active_only(mut self) -> Self {
+        for node in self.nodes.values_mut() {
+            let active = node.active;
+            node.history.retain(|g| Some(g.id) == active);
+            node.history.shrink_to_fit();
+        }
+        self
     }
 
     /// An empty Batch Generate sheet (#163).

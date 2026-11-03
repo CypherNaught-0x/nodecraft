@@ -33,9 +33,17 @@ enum Purpose {
     Save { then_open: Option<PathBuf> },
 }
 enum Phase {
-    Picking { future: PickFuture, purpose: Purpose },
+    Picking {
+        future: PickFuture,
+        purpose: Purpose,
+    },
     Confirm(PathBuf),
-    Saving { then_open: Option<PathBuf>, saved_path: Option<PathBuf> },
+    Saving {
+        then_open: Option<PathBuf>,
+        saved_path: Option<PathBuf>,
+    },
+    /// A background open of this file is running (#367); edits are refused until it settles.
+    Opening(PathBuf),
 }
 struct Pending {
     stamp: Stamp,
@@ -50,6 +58,8 @@ pub(super) struct FileDialogs {
     // Completed-frame number: every pass of the choice/completion frame stays owned.
     owner_frame: Option<u64>,
     storage_problem: Option<(Arc<()>, String, bool)>,
+    /// Frame time the running background save or open was first seen, for the progress window.
+    progress_since: Option<f64>,
 }
 impl Default for FileDialogs {
     fn default() -> Self {
@@ -57,7 +67,16 @@ impl Default for FileDialogs {
         let picker: Picker = Box::new(native_picker);
         #[cfg(test)]
         let picker: Picker = Box::new(|_| Ok(Box::pin(std::future::ready(Ok(None)))));
-        Self { pending: None, picker, projects: Default::default(), observed: None, menu_open: false, owner_frame: None, storage_problem: None }
+        Self {
+            pending: None,
+            picker,
+            projects: Default::default(),
+            observed: None,
+            menu_open: false,
+            owner_frame: None,
+            storage_problem: None,
+            progress_since: None,
+        }
     }
 }
 #[cfg_attr(test, allow(dead_code))]
@@ -234,16 +253,23 @@ impl NodeCraftApp {
             }
         }
     }
+    /// Opens `path` on the save runner (#367), so a large project doesn't hold the window; the
+    /// open settles in [`Self::file_save_completed`]. Without a runner it opens inline.
     fn open_selected(&mut self, path: PathBuf, discard: bool) {
-        let result = admitted(&path, false)
-            .and_then(|location| self.session.dispatch("file.open", &json!({"location":location,"discard_dirty":discard})).map(|_| ()).map_err(|e| e.message));
+        let result = admitted(&path, false).and_then(|location| {
+            self.session.dispatch("file.open", &json!({"location":location,"discard_dirty":discard,"background":true})).map_err(|e| e.message)
+        });
         match result {
-            Ok(()) => {
-                self.after_file_open();
-                self.remember_project(&path);
+            Ok(result) if result.get("opening").and_then(serde_json::Value::as_bool) == Some(true) => {
+                self.files.pending = Some(Pending { stamp: Stamp::capture(self), phase: Phase::Opening(path) });
             }
+            Ok(_) => self.file_opened(path),
             Err(error) => self.notice = Some(error),
         }
+    }
+    fn file_opened(&mut self, path: PathBuf) {
+        self.after_file_open();
+        self.remember_project(&path);
     }
     fn choose_open(&mut self, path: PathBuf, stamp: Stamp) {
         if let Err(error) = admitted(&path, false) {
@@ -298,9 +324,25 @@ impl NodeCraftApp {
         }
     }
     pub(super) fn file_save_completed(&mut self, ctx: &egui::Context, result: Result<serde_json::Value, Error>) {
+        let opened = result.as_ref().is_ok_and(|value| value.get("opened").and_then(serde_json::Value::as_bool) == Some(true));
+        if let Some(Pending { phase: Phase::Opening(path), stamp }) = self.files.pending.take_if(|pending| matches!(pending.phase, Phase::Opening(_))) {
+            self.files.own_frame(ctx);
+            match result {
+                // The open replaced this session's document; a replaced session's open never
+                // reaches this poll, so the identity check is all that's left to make.
+                Ok(_) if opened && Arc::ptr_eq(&stamp.session, &self.session.view_identity()) => self.file_opened(path),
+                Ok(_) => self.notice = Some("The project did not confirm it opened; the current project was kept.".into()),
+                Err(error) => self.notice = Some(error.message),
+            }
+            self.clear_file_input(ctx);
+            return;
+        }
         if !self.files.pending.as_ref().is_some_and(|pending| matches!(pending.phase, Phase::Saving { .. })) {
-            if let Err(error) = result {
-                self.notice = Some(error.message);
+            match result {
+                // An open another surface started in the background: show its project too.
+                Ok(_) if opened => self.after_file_open(),
+                Ok(_) => {}
+                Err(error) => self.notice = Some(error.message),
             }
             return;
         }
@@ -337,6 +379,13 @@ impl NodeCraftApp {
             self.remember_project(&path);
         }
         let Some(mut pending) = self.files.pending.take() else {
+            if self.session.file_status().operation.is_some() {
+                // A save or open started elsewhere (the control channel, say) owns the file too.
+                self.file_progress(ctx);
+                self.clear_file_input(ctx);
+                return true;
+            }
+            self.files.progress_since = None;
             // A later egui pass in this same completed-frame epoch still owns input.
             return self.files.owns_navigation(ctx);
         };
@@ -385,6 +434,16 @@ impl NodeCraftApp {
                 } else {
                     self.notice = Some("The project changed while saving. Open the project again.".into());
                 }
+                self.file_progress(ctx);
+            }
+            Phase::Opening(path) => {
+                if Arc::ptr_eq(&pending.stamp.session, &self.session.view_identity()) && self.session.file_status().operation.is_some() {
+                    self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Opening(path) });
+                } else {
+                    // The host replaced the session, or the open ended without an outcome.
+                    self.notice = Some("The project didn't finish opening. Open it again.".into());
+                }
+                self.file_progress(ctx);
             }
             Phase::Confirm(path) => {
                 if !pending.stamp.matches(self) {
@@ -590,5 +649,6 @@ impl NodeCraftApp {
     }
 }
 
+mod progress;
 #[cfg(test)]
 mod tests;

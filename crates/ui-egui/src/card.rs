@@ -15,6 +15,7 @@ use std::{
 };
 
 mod chips;
+pub(crate) mod connected;
 pub(crate) mod generate;
 mod layout;
 #[cfg(test)]
@@ -215,6 +216,9 @@ pub struct CardView<'a> {
     pub mention_blocked: Option<&'a str>,
     /// A text card's answer still arriving, or cut short (#504).
     pub partial: Option<generate::Partial<'a>>,
+    /// The media wired into a text card, shown above its answer (#84): the tiles the host
+    /// prepared, and how many assets are connected in all.
+    pub connected: (Vec<connected::Thumb>, usize),
     pub(crate) local_text: Option<&'a [crate::text_preview::Row]>,
     /// The node's video and its player, when it has one (#105).
     pub video: Option<crate::video::VideoView>,
@@ -268,6 +272,7 @@ pub fn show(
         mentions,
         mention_blocked,
         partial,
+        connected: connected_media,
         local_text,
         video,
         audio,
@@ -483,7 +488,8 @@ pub fn show(
         } else if node.kind == nodecraft_nodes::generation::TEXT_KIND {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.answer);
             inner = rest;
-            generate::answer(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), generate::answer_of(node), partial, &mut intents, t);
+            let area = connected::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &connected_media.0, connected_media.1, view.zoom, t);
+            generate::answer(&mut ui, area, generate::answer_of(node), partial, &mut intents, t);
         }
         if let Some(d) = draw_composer {
             inner = generate::show(
@@ -511,95 +517,98 @@ pub fn show(
         let own = |name: &str| generate::owns_parameter(composer.is_some(), roles, name);
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
-        egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height().min(metrics.parameters)).auto_shrink([false, false]).show(
-            &mut body,
-            |ui| {
-                ui.set_width(inner.width());
-                // Another version's ports or settings may not fit this one's schema at all.
-                if outdated {
-                    ui.label(egui::RichText::new("This card was made with another version of its plugin.").color(t.text_muted));
-                    if ui.button("Update card").clicked() {
-                        intents.push(Intent::Migrate);
+        // Under the controls, so the card layer's hit test says when the pointer is over the body.
+        let viewport_height = inner.height().min(metrics.parameters);
+        let wheel = body.interact(Rect::from_min_size(inner.min, Vec2::new(inner.width(), viewport_height)), body.id().with("wheel"), Sense::hover());
+        let parameters = egui::ScrollArea::vertical().id_salt("parameters").max_height(viewport_height).auto_shrink([false, false]).show(&mut body, |ui| {
+            ui.set_width(inner.width());
+            // Another version's ports or settings may not fit this one's schema at all.
+            if outdated {
+                ui.label(egui::RichText::new("This card was made with another version of its plugin.").color(t.text_muted));
+                if ui.button("Update card").clicked() {
+                    intents.push(Intent::Migrate);
+                }
+            }
+            match descriptor {
+                None if outdated => {}
+                None if let Some(lock) = nodecraft_engine::plugin_runtime::PluginLock::of(node) => {
+                    ui.label(missing_plugin(&lock));
+                }
+                None => {
+                    ui.label("This node kind or its controls are unavailable. Check its schema and view cache budget.");
+                    if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, nodecraft_nodes::generation::MODEL)
+                        && ui.button("Choose supported model…").clicked()
+                    {
+                        intents.push(Intent::Model);
                     }
                 }
-                match descriptor {
-                    None if outdated => {}
-                    None if let Some(lock) = nodecraft_engine::plugin_runtime::PluginLock::of(node) => {
-                        ui.label(missing_plugin(&lock));
-                    }
-                    None => {
-                        ui.label("This node kind or its controls are unavailable. Check its schema and view cache budget.");
-                        if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, nodecraft_nodes::generation::MODEL)
-                            && ui.button("Choose supported model…").clicked()
-                        {
-                            intents.push(Intent::Model);
+                Some(d) => {
+                    if node.kind == nodecraft_nodes::folder::ID {
+                        ui.label(folder_summary(node));
+                        let label =
+                            if nodecraft_nodes::folder::stored(node).is_ok_and(|files| files.is_empty()) { "Import folder…" } else { "Import again…" };
+                        if ui.button(label).on_hover_text("Choose a folder; its files replace the ones this card holds").clicked() {
+                            intents.push(Intent::ImportFolder);
                         }
                     }
-                    Some(d) => {
-                        if node.kind == nodecraft_nodes::folder::ID {
-                            ui.label(folder_summary(node));
-                            let label =
-                                if nodecraft_nodes::folder::stored(node).is_ok_and(|files| files.is_empty()) { "Import folder…" } else { "Import again…" };
-                            if ui.button(label).on_hover_text("Choose a folder; its files replace the ones this card holds").clicked() {
-                                intents.push(Intent::ImportFolder);
-                            }
+                    for spec in &d.params.params {
+                        if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
+                            continue;
                         }
-                        for spec in &d.params.params {
-                            if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
-                                continue;
-                            }
-                            // A workflow card's model is fixed: it runs the workflow it holds.
-                            if node.kind == nodecraft_nodes::comfy_workflow::ID && spec.name == nodecraft_nodes::comfy_workflow::MODEL {
-                                continue;
-                            }
-                            ui.push_id(&spec.name, |ui| {
-                                let label = ui.add_sized(
-                                    [ui.available_width(), t.body_size + t.control_gap],
-                                    egui::Label::new(egui::RichText::new(&spec.label).color(t.text_muted)).truncate().halign(egui::Align::LEFT),
-                                );
-                                let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };
-                                let value = node.params.get(&spec.name).or(spec.default.as_ref());
-                                let editable = enabled.is_none_or(|names| names.contains(&spec.name));
-                                if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, &spec.name) {
-                                    let current = match value {
-                                        Some(Value::Text(id)) => id.as_str(),
-                                        _ => "Unavailable saved model",
-                                    };
-                                    let preview: String = current.chars().take(t.preview_chars).collect();
-                                    ui.add_sized([ui.available_width(), t.body_size + t.control_gap], egui::Label::new(&preview).truncate());
-                                    if ui.add_enabled(editable, egui::Button::new("Change model…")).labelled_by(label.id).on_hover_text(&preview).clicked() {
-                                        intents.push(Intent::Model);
-                                    }
-                                } else {
-                                    let list = listed_params.and_then(|listed| listed.get(&spec.name));
-                                    // A stored value of another type (a hand-edited project) keeps the
-                                    // ordinary control, which shows it as it is.
-                                    let text = value.is_none_or(|value| matches!(value, Value::Text(_)));
-                                    let choices = list.filter(|_| text).and_then(|list| list.choices(lists));
-                                    // A stored copy of the default (a new card stores its defaults) is not an override.
-                                    let overridden = node.params.get(&spec.name).is_some_and(|stored| spec.default.as_ref() != Some(stored));
-                                    let changed = match choices {
-                                        Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, overridden, label.id, t)).inner,
-                                        None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
-                                        None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
-                                    };
-                                    if let Some(hint) = list.filter(|_| text && choices.is_none()).and_then(Listed::hint) {
-                                        ui.label(egui::RichText::new(hint).color(t.text_muted).small());
-                                    }
-                                    if editable && let Some(value) = changed {
-                                        intents.push(Intent::Parameter { name: spec.name.clone(), value });
-                                    }
+                        // A workflow card's model is fixed: it runs the workflow it holds.
+                        if node.kind == nodecraft_nodes::comfy_workflow::ID && spec.name == nodecraft_nodes::comfy_workflow::MODEL {
+                            continue;
+                        }
+                        ui.push_id(&spec.name, |ui| {
+                            let label = ui.add_sized(
+                                [ui.available_width(), t.body_size + t.control_gap],
+                                egui::Label::new(egui::RichText::new(&spec.label).color(t.text_muted)).truncate().halign(egui::Align::LEFT),
+                            );
+                            let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };
+                            let value = node.params.get(&spec.name).or(spec.default.as_ref());
+                            let editable = enabled.is_none_or(|names| names.contains(&spec.name));
+                            if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, &spec.name) {
+                                let current = match value {
+                                    Some(Value::Text(id)) => id.as_str(),
+                                    _ => "Unavailable saved model",
+                                };
+                                let preview: String = current.chars().take(t.preview_chars).collect();
+                                ui.add_sized([ui.available_width(), t.body_size + t.control_gap], egui::Label::new(&preview).truncate());
+                                if ui.add_enabled(editable, egui::Button::new("Change model…")).labelled_by(label.id).on_hover_text(&preview).clicked() {
+                                    intents.push(Intent::Model);
                                 }
-                            });
-                        }
+                            } else {
+                                let list = listed_params.and_then(|listed| listed.get(&spec.name));
+                                // A stored value of another type (a hand-edited project) keeps the
+                                // ordinary control, which shows it as it is.
+                                let text = value.is_none_or(|value| matches!(value, Value::Text(_)));
+                                let choices = list.filter(|_| text).and_then(|list| list.choices(lists));
+                                // A stored copy of the default (a new card stores its defaults) is not an override.
+                                let overridden = node.params.get(&spec.name).is_some_and(|stored| spec.default.as_ref() != Some(stored));
+                                let changed = match choices {
+                                    Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, overridden, label.id, t)).inner,
+                                    None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
+                                    None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
+                                };
+                                if let Some(hint) = list.filter(|_| text && choices.is_none()).and_then(Listed::hint) {
+                                    ui.label(egui::RichText::new(hint).color(t.text_muted).small());
+                                }
+                                if editable && let Some(value) = changed {
+                                    intents.push(Intent::Parameter { name: spec.name.clone(), value });
+                                }
+                            }
+                        });
                     }
                 }
+            }
 
-                if let Some((_, error)) = &editor.error {
-                    ui.label(error);
-                }
-            },
-        );
+            if let Some((_, error)) = &editor.error {
+                ui.label(error);
+            }
+        });
+        // Inner regions (a long text field) have taken their share already; this body takes what
+        // it can of the rest and the canvas pans by whatever remains (#413).
+        crate::scroll_chain::take(&body, wheel.contains_pointer(), &parameters, [false, true]);
     }
     if view.zoom < BODY_MIN_ZOOM {
         editor.mark_hidden();
@@ -1116,12 +1125,13 @@ pub(crate) fn control_with_mode(
             let id = ui.make_persistent_id(egui::IdSalt::new("value"));
             let widget = widget.id(id).desired_width(f32::INFINITY).char_limit(char_limit);
             let r = if multiline {
-                egui::ScrollArea::vertical()
+                let out = egui::ScrollArea::vertical()
                     .id_salt("text_scroll")
                     .max_height(t.body_size * t.text_rows as f32)
                     .auto_shrink([false, false])
-                    .show(ui, |ui| ui.add(widget))
-                    .inner
+                    .show(ui, |ui| ui.add(widget));
+                crate::scroll_chain::take(ui, out.inner.contains_pointer(), &out, [false, true]);
+                out.inner
             } else {
                 ui.add_sized(Vec2::new(ui.available_width(), t.control_row_height / 2.0), widget)
             }

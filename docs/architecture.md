@@ -778,3 +778,19 @@ socket; the host passes frames. See the [decision](decisions/2026-10-22-crdt-syn
 entry schema, the protocol and the limits.
 Assets over 16 MiB travel in parts, paced by the receiver and kept in a `Spool` until whole
 (the desktop's spools to temporary files); see the [decision](decisions/2026-10-23-large-shared-assets.md).
+
+## Custom endpoints (#960)
+
+A catalog provider can be served from a base URL the person sets (`[providers.base_urls]`).
+`providers::base_url::BaseUrl` is the only URL check: HTTPS, or plain HTTP for a local or private
+IP literal or `localhost`, with no credentials, query or fragment. Adapters take the checked URL
+through `with_base_url` and report it through `Provider::custom_base_url`. `engine::provider_setup`
+builds them from settings, and refuses a set but unusable URL instead of falling back to the
+default host. `engine::custom_endpoints` holds the list of providers that accept a base URL;
+the settings command schema and the browser panel are generated from it. It also holds the
+quote pass that keeps a custom endpoint from ever being free, and the quote binding of each
+routed adapter's URL. The routing binding captures a digest of the URL when the adapter is built,
+and `jobs` settles a job on such a binding at no less than its estimate. A keychain account
+whose key is set up for a custom base URL never reaches a provider's own API: other adapters
+sharing it are refused (`custom_endpoints::shared_key_conflict`), and `keys.test` sends nothing
+for it (`KeyTestHost::providers`). See [the decision](decisions/2026-11-03-custom-base-urls.md).

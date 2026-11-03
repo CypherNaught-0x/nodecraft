@@ -194,6 +194,7 @@ impl NodeCraftApp {
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
         #[cfg(not(target_arch = "wasm32"))]
         self.file_button(ui, t);
+        self.publish_floating_bounds(ui.ctx());
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
         self.queue_panel(ui.ctx(), t);
@@ -249,38 +250,27 @@ impl NodeCraftApp {
             .collect();
         let mut open = true;
         let mut action = None;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Sheets")
-            .id(egui::Id::new("nodecraft.sheets"))
-            .open(&mut open)
-            .constrain_to(self.viewport)
-            .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap])
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().max_height(t.sheet_list_height).show(ui, |ui| {
-                    for (id, title, sheet) in &canvases {
-                        let label = if *sheet { format!("{title} (sheet)") } else { title.clone() };
-                        if ui.selectable_label(*id == self.canvas, label).clicked() {
-                            action = Some(Action::Open(*id));
-                        }
+        crate::floating::panel(ctx, "Sheets", egui::Id::new("nodecraft.sheets"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
+            egui::ScrollArea::vertical().max_height(t.sheet_list_height).show(ui, |ui| {
+                for (id, title, sheet) in &canvases {
+                    let label = if *sheet { format!("{title} (sheet)") } else { title.clone() };
+                    if ui.selectable_label(*id == self.canvas, label).clicked() {
+                        action = Some(Action::Open(*id));
                     }
-                });
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let name = ui.label("Title");
-                    let field = ui
-                        .add(egui::TextEdit::singleline(&mut self.sheet.title).hint_text("New sheet").desired_width(t.sheet_title_width))
-                        .labelled_by(name.id);
-                    let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    let can = !self.sheet.title.trim().is_empty();
-                    if (ui.add_enabled(can, egui::Button::new("New sheet")).clicked() || entered) && can {
-                        action = Some(Action::Create(self.sheet.title.trim().to_owned()));
-                    }
-                });
+                }
             });
+            ui.separator();
+            ui.horizontal(|ui| {
+                let name = ui.label("Title");
+                let field =
+                    ui.add(egui::TextEdit::singleline(&mut self.sheet.title).hint_text("New sheet").desired_width(t.sheet_title_width)).labelled_by(name.id);
+                let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let can = !self.sheet.title.trim().is_empty();
+                if (ui.add_enabled(can, egui::Button::new("New sheet")).clicked() || entered) && can {
+                    action = Some(Action::Create(self.sheet.title.trim().to_owned()));
+                }
+            });
+        });
         self.sheet.open = open;
         if let Some(action) = action {
             self.sheet_action(action);

@@ -46,8 +46,19 @@ thumbnails 120 across. The Timeline editor shares the Layer Editor's panel width
 is 84 high under a 22-high time ruler, and a clip's edge trims within 6 points.
 The ComfyUI servers panel's jobs-at-once text field is `comfy_jobs_width` (48) wide,
 and its new-server name field is `comfy_name_width` (160) wide.
+The batch items review (#92) opens `batch_review_width` (520) wide; its Cross grid draws each
+result `batch_review_cell` (96) across, with the first batch's items as rows and the second's as
+columns.
 A card's image preview, and a text card's answer, take `card_preview_height` (180) above the
-composer; a long answer scrolls inside it and can be selected and copied. While a wire feeds a
+composer; a long answer scrolls inside it and can be selected and copied. Media wired into a text
+card (images, a PDF's first page, clips and sounds) show along the top of that answer area as
+`connected_thumb` (40) squares, in port then wire order, `control_gap` apart; pictures fill the
+square from their middle, other media show their kind's name, and when they don't all fit the last
+square counts the rest (`+3`; past 256 assets it says "or more"). Each wire shows what a run would
+read from it: a source's (or an Element's) current value, else the upstream card's usable active
+result; a batch's items, which exist only once a run plans them, aren't shown. Only the squares
+drawn ask for a preview. The row takes room from the answer, so wiring media never changes
+the card's size. While a wire feeds a
 card's prompt the prompt is shown disabled, its label says it comes from connected text (on the
 label's own row, so the card keeps its size), and its hover text explains that nonempty connected
 text is used instead; the typed prompt is kept and comes back when the wire is removed. A
@@ -64,7 +75,7 @@ selected border more visible than the resting one, in both themes.
 | Input | Effect |
 |---|---|
 | Drag empty canvas (primary) or drag anywhere (middle or right button) | pan |
-| Two-finger scroll / mouse wheel | pan on the canvas; scroll parameters over an expanded card |
+| Two-finger scroll / mouse wheel | pan the canvas (zoom about the pointer with *Scroll = Zoom*), over cards too. Scroll chains: the innermost region under the pointer that can still scroll that way takes what it can before reaching its limit, and the canvas takes the remainder. The chained regions are a multiline text field, a card's parameter body (outside the text field), a text card's answer and a text action's input/output preview rows; distances are in screen points, so content moves exactly with the finger at any zoom; a card with nothing to scroll, a body at its limit, and horizontal scroll over a vertical body all pan the canvas. A swipe belongs to where it started: one begun on the canvas keeps panning when the pointer crosses a card, until the gesture ends |
 | Pinch, or ⌘/Ctrl + scroll | zoom about the pointer (10%–400%) |
 | ⌘/Ctrl + `=` / `-` | zoom about the centre by 1.25× |
 | ⌘/Ctrl + `0`, or click the zoom badge | 100%, centred on the cards |
@@ -97,6 +108,8 @@ selected border more visible than the resting one, in both themes.
 | Right-click (or long-press) a card | menu: select the upstream / downstream chain of the selection, or all nodes of the card's kind; an unselected card becomes the selection first |
 | Double-click the title | rename; Enter or blur commits, Escape cancels; empty restores the automatic title |
 | Enter on a focused generation card, ⌘/Ctrl+Enter in its prompt, or its round arrow button | quote a run of that card (`run.quote`) and show its price, anything blocking it and any unknown part (a by-usage step whose provider can quote it is asked first, `run.estimate`, and the price shown again with its answer); **Generate for …** starts priced work (`run.start` with the quote's token and totals). The confirmation counts cached reuse as **N reused, free**; with only cached results, it says results are used where needed, already-active results stay in place, and nothing generates. Its button is **Continue without generating**: `run.start` applies any needed cached results but does nothing when they are already active. Cancel or Escape starts nothing. An edit after the quote makes it stale: nothing starts until it is quoted again. If the start fails, the dialog offers only Close, since the host may have taken the run. F2 or double-click still renames a generation card |
+| ⌘/Ctrl+Enter outside text fields, or **Run changed** in the palette | quote a run of every card that changed or hasn't run (`run.changed`, mode `pending`): each generation, action and technique card whose result is stale, part-made or missing, with the upstream it needs, in dependency order (notes, decks, routers, batches and sources have nothing to run). The confirmation, titled **Run changed**, names the cards that run (**Runs N cards: …**), the total, anything blocking it and any unknown part, as a card's own run does; **Run changed for …** starts exactly the quoted cards (`run.start`, mode `pending`), and Cancel or Escape starts nothing. A card with work between two cards of the run runs too, in order. Cards after a batch the run feeds wait for its results; the dialog says so, and the next ⌘/Ctrl+Enter runs them. A card still running from an earlier run keeps the start button off until it finishes, so nothing is charged twice. When everything is up to date it says **Nothing to run** and opens no dialog. A focused field keeps its own ⌘/Ctrl+Enter (a prompt quotes its card; multiline text commits), and the key yields to drags, open menus, the palette, panels, dialogs and the recovery question. Free actions still recompute on their own when their inputs change, without a quote (#965) |
+| **Run workflow** in the palette | the same, for the whole workflow (`run.workflow`, mode `workflow`): every generation and technique card, fresh or not, plus everything **Run changed** would run; a fresh action keeps its result. Never starts without the confirmation |
 | Click a card's **Stale ↻** badge (shown when its result no longer matches its inputs) | quote a refresh of that card with whatever upstream is stale or missing (`run.quote`, mode `with_upstream`) and confirm it as above, in a dialog titled **Refresh** |
 | Click **Queue** (top-right, beside **API keys**; **Queue (N)** while N jobs are queued or running) | open the queue panel under search: every running and recent job with its card, provider and model, status, and price. **Cancel** stops a live job; **Retry** quotes a failed or cancelled card again like Generate; **Clear finished** forgets ended jobs. A cancelled job never sent shows **Not charged**; one that may have reached the provider shows its estimate as **unresolved**. Cancel asks the provider to stop; if it refuses or doesn't answer, the job shows **Cancel refused** and is followed to its end, since it may still be billed. A paid result that couldn't be kept on its card (it didn't fit its ports, couldn't be converted or couldn't be recorded) is **held** (#369): **Queue (N, M held)** counts them and the panel lists each with why, and **Retry**, **Put on canvas** and **Discard**; none calls the provider again. While 16 are held, new jobs are refused unsent. The desktop app saves held results so they survive a restart (#614). Cards show their own status under them (**Queued**, **Generating 40%**, **Run failed: API key**, with the full error and a hint on hover) |
 | Click **Plugins** (top-right, beside **API keys**) | open the plugins panel (#172); in the browser it says packages last only for the session and can't run there (#823): every installed package with its version, state, licence, signer and grant. Type or **Choose…** a `.ncraft-plugin` file and **Check** it: a dry run shows who signed it (or that nobody did), its licence and the text of its licence and notice files, the IDs it adds and the capabilities and addresses it asks for (and, for an update, what is new), with nothing installed; **Install** or **Update** then imports it disabled. **Grant…** shows what a grant would allow, required capabilities ticked and fixed, optional ones to tick, before **Grant**; a data package says it needs none. **Enable**, **Disable**, **Revoke**, **Roll back to …** (a kept version, while disabled), **Uninstall** (asks to confirm) and **Remove unused versions** each dispatch one `plugins.*` command |
@@ -482,6 +495,61 @@ reserved left slot; Format selection reserves the next slot when present, with t
 below both controls. Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
 [layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
+
+## Overlays and stacking
+
+One rule decides how every surface over the canvas moves, resizes and stacks (#957). It is
+implemented once, in [`crates/ui-egui/src/floating.rs`](../crates/ui-egui/src/floating.rs);
+panels do not position themselves. See the [decision](decisions/2026-10-28-floating-panel-rule.md).
+
+**Stacking, back to front** (egui `Order` in brackets):
+
+1. **Canvas** (`Background`): the board, cards and wires.
+2. **Floating panels** (`Middle`, `floating::PANEL_ORDER`): the last opened or pressed panel is
+   in front. Opening one never reorders the others.
+3. **Pinned chrome** (`Foreground`): the application row, Tag filter, Format selection, Search,
+   Discussions, the minimap and comment pins.
+4. **Menus, popups and dialogs** (`Foreground`, shown after chrome): the More menu, quick-add,
+   Turn into, mention lists, egui menus and combo boxes, and question dialogs.
+5. **Notices** (`Foreground`, bottom-left): the notice and staleness check, update banner,
+   pending drop, folder import and background export progress. They are above panels and
+   chrome. The quick-add palette and Turn into menu are raised over a notice while open (2026-10-18
+   staleness decision), so a menu the keyboard owns is never under a notice.
+6. **Tooltips** (`Tooltip`): egui's own, above everything.
+
+**Floating panels** are built by `floating::panel` and behave the same everywhere:
+
+- **Move** by dragging the header (title bar). Dragging inside the body never moves a panel.
+- **Resize** from the right or bottom edge or the bottom-right corner, never larger than the
+  panel area. Every panel is pivoted at its top-left corner, so the header and the top-left stay
+  where they are while resizing; the left and top edges are not handles.
+- **Dismiss** with the header's close button (AccessKit: "Close window", focusable by Tab) or the
+  control that opened it.
+- **Panel area**: the window below the application row, and below an open Search and left of
+  open Discussions, which are pinned chrome drawn above panels. A panel is clamped into it every
+  frame, so dragging, a smaller window, a resized panel or opening Search or Discussions can never
+  put its header under chrome or out of reach, and it can never cover the control that opened it.
+- **Opening**: a panel opens where it was last left, or first at its home: its top-right corner
+  at the panel area's top-right (`navigation_margin` in from the window edge); viewers open
+  centred at the same height. A first opening is measured by egui unseen and placed on the next
+  pass with its real size. If it would cover an open panel's header, it steps down by
+  `panel_cascade` (44) until every open panel's title and close button stay visible.
+- Position, size and stacking are view state in egui memory, never document changes or undo steps.
+
+| Surface | Kind | Moves | Resizes | Dismiss |
+|---|---|---|---|---|
+| Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins, Automation | floating panel | header | right/bottom edges, corner | close button or its row control |
+| Custom shader, Image viewer, PDF reader, Charges to review | floating panel (viewer/review) | header | right/bottom edges, corner | close button |
+| Project files (File menu) | floating window, not yet on `floating::panel` | header | no | close button or File |
+| Shared parameters (bulk) | fixed: pinned top-right while several nodes are selected; panels opening over it step below its header | no | no | change the selection |
+| Application row, Tag filter, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
+| Comment pins, generation toolbar, Save result toolbar | attached to their card or comment | with the canvas | no | deselect |
+| More menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
+| Model preview changed, Review model change, Model choice unavailable, Choose a model, Workflow fields, Rename field, Unsaved changes (browser) | dialog, above panels | header (Unsaved changes stays centred) | all but Rename field and Unsaved changes | its buttons |
+| Notice, update banner, pending drop, folder import, background export | notice | no | no | its own button |
+
+The generation and Save result toolbars draw in the panel order while their card is selected;
+they follow the card, so they are not clamped or cascaded.
 
 ## Saving results
 

@@ -82,6 +82,8 @@ pub fn sniff(bytes: &[u8]) -> Option<Sniffed> {
         Sniffed::new("application/pdf", Document)
     } else if at(0, b"glTF") {
         Sniffed::new("model/gltf-binary", Model3d)
+    } else if crate::mesh::recognizes_stl(bytes) {
+        Sniffed::new("model/stl", Model3d)
     } else if at(0, crate::style::MAGIC) {
         Sniffed::new(crate::style::MIME, Style)
     } else if crate::svg::recognizes(bytes) {
