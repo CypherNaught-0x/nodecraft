@@ -3456,8 +3456,10 @@ version = "0.6.0"
 dependencies = [
  "blake3",
  "craft-pdf",
+ "crc32fast",
  "image",
  "kurbo 0.13.1",
+ "proptest",
  "quick-xml",
  "resvg",
  "roxmltree",

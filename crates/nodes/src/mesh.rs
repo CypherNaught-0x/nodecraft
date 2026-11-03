@@ -21,20 +21,25 @@ pub mod view;
 pub const MAX_PHOTO_SIDE: u64 = 2048;
 pub const MAX_VIEW_SIDE: u64 = 1024;
 
-/// A 3D model (glTF, GLB, OBJ or binary STL), shown in an orbit viewer on its card.
+/// A supported 3D model, shown in an orbit viewer on its card.
 pub fn kind_source() -> SourceKind {
     SourceKind::new(SOURCE, "3D", "3", Modality::Mesh)
 }
 
-/// Writes GLB or OBJ with vertex colours, or geometry-only binary STL. Textures were already
-/// baked into vertex colours when the model was read; STL recomputes flat normals from winding.
+/// Writes GLB, OBJ, PLY or static USDZ with vertex colours, or geometry-only binary STL.
+/// Textures were already baked into vertex colours; STL recomputes flat normals from winding.
 pub fn convert_kind() -> ActionKind {
     kind(
         CONVERT,
         "Convert 3D",
         vec![port("model", Modality::Mesh, false)],
         vec![port("out", Modality::Mesh, false)],
-        vec![choice("format", "Format", &[("glb", "GLB (binary glTF)"), ("obj", "OBJ"), ("stl", "STL (geometry only)"), ("ply", "PLY (ASCII RGBA)")], "glb")],
+        vec![choice(
+            "format",
+            "Format",
+            &[("glb", "GLB (binary glTF)"), ("obj", "OBJ"), ("stl", "STL (geometry only)"), ("ply", "PLY (ASCII RGBA)"), ("usdz", "USDZ (static RGBA)")],
+            "glb",
+        )],
     )
 }
 
