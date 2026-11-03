@@ -325,6 +325,8 @@ fn reported_costs_become_money() {
     assert_eq!(header(" 0.5 "), Some(Money::new(Currency::USD, 500_000)));
     assert_eq!(header("NaN"), None);
     assert_eq!(header("lots"), None);
+    assert_eq!(header("0"), None, "LiteLLM writes 0 when it has no price: that is no report (#961)");
+    assert_eq!(header("0.0"), None);
 }
 
 #[test]

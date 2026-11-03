@@ -167,6 +167,13 @@ pub trait Provider: MaybeSendSync {
         false
     }
 
+    /// The base URL the person set for this adapter in place of its provider's own API (#960),
+    /// or `None` when it talks to its default. The engine captures it with the routing binding:
+    /// a quote binds it, and a step it would price as free counts as unknown-price instead.
+    fn custom_base_url(&self) -> Option<&str> {
+        None
+    }
+
     /// Whether an uncertain, no-handle submit may be retried automatically. This is a stable
     /// policy of this provider instance, not remote deduplication or proof of nonbilling.
     /// The compatibility default preserves legacy adapters; paid synchronous adapters can refuse.

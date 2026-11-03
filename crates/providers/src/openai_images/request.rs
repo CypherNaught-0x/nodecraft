@@ -257,7 +257,7 @@ impl Prepared<'_> {
         }
         Ok(sink.len)
     }
-    pub(super) fn encode(&self, key: &Secret, l: &Limits) -> Result<HttpRequest, ProviderError> {
+    pub(super) fn encode(&self, key: &Secret, l: &Limits, origin: &str) -> Result<HttpRequest, ProviderError> {
         let length = self.length;
         let mut bytes = Vec::new();
         reserve(&mut bytes, length)?;
@@ -272,7 +272,7 @@ impl Prepared<'_> {
             ("/images/edits", format!("multipart/form-data; boundary={b}"))
         };
         let body = sink.bytes.ok_or_else(|| invalid("image encoder has no output buffer"))?;
-        Ok(HttpRequest { method: HttpMethod::Post, body, ..HttpRequest::get(format!("{ORIGIN}{path}")) }
+        Ok(HttpRequest { method: HttpMethod::Post, body, ..HttpRequest::get(format!("{origin}{path}")) }
             .header("Content-Type", ct)
             .secret_header("Authorization", format!("Bearer {}", key.expose()))
             .timeout_ms(180_000)
@@ -313,7 +313,7 @@ mod tests {
         let p = prepare(&j, &Limits::default()).unwrap();
         let mut l = Limits { request_bytes: p.length, ..Limits::default() };
         let p = prepare(&j, &l).unwrap();
-        assert_eq!(p.encode(&Secret::new("fixture").unwrap(), &l).unwrap().body.len(), l.request_bytes);
+        assert_eq!(p.encode(&Secret::new("fixture").unwrap(), &l, super::super::ORIGIN).unwrap().body.len(), l.request_bytes);
         l.request_bytes -= 1;
         super::super::COUNTERS.with(|c| c.set((0, 0, 0, 0)));
         assert!(prepare(&j, &l).is_err());
