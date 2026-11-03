@@ -285,8 +285,78 @@ fn templates954_worker_reads_the_cache_off_the_ui_thread_and_applies_writes() {
     assert!(disk::problems(&session).is_empty(), "{:?}", disk::problems(&session));
     session.dispatch("templates.clear_cache", &json!({})).unwrap();
     let folder = data.path().join("templates").join(disk::LAYOUT);
-    wait(&mut fetcher, &mut session, &|_| !folder.exists());
+    // Success is announced only once the worker has removed the folder.
+    let notices = std::cell::RefCell::new(Vec::new());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !notices.borrow().iter().any(|notice: &String| notice.starts_with("Downloaded templates were removed")) {
+        assert!(std::time::Instant::now() < deadline, "no removal notice: {:?}", notices.borrow());
+        if let Some(notice) = fetcher.tick(&mut session, &ctx) {
+            if notice.starts_with("Downloaded templates were removed") {
+                assert!(!folder.exists(), "success before the folder was removed");
+            }
+            notices.borrow_mut().push(notice);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!disk::is_clearing(&session));
     assert_eq!(templates::catalog::cached(&session), 0);
+}
+
+// Unix: removing a plain file with remove_dir_all fails there; Windows reports it differently.
+#[cfg(unix)]
+#[test]
+fn templates954_a_failed_worker_clear_is_reported_not_announced_as_done() {
+    use nodecraft_engine::templates::disk::{self, FileCache};
+    let data = tempfile::tempdir().unwrap();
+    // A plain file where the cache folder belongs: reading reports it, removing it fails.
+    std::fs::create_dir_all(data.path().join("templates")).unwrap();
+    std::fs::write(data.path().join("templates").join(disk::LAYOUT), b"not a folder").unwrap();
+    let mut fetcher = TemplateFetcher::spawn(
+        Source::official(),
+        Box::new(|request| match request {
+            Request::ClearCache => Ok(Fetched::ClearCache),
+            _ => Err(Error::new(ErrorKind::Network, "offline fixture")),
+        }),
+        Some(FileCache::new(data.path())),
+    )
+    .unwrap();
+    let mut session = setup().session;
+    fetcher.bind(&mut session).unwrap();
+    let ctx = egui::Context::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while disk::is_loading(&session) {
+        assert!(std::time::Instant::now() < deadline);
+        fetcher.tick(&mut session, &ctx);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    session.dispatch("templates.clear_cache", &json!({})).unwrap();
+    let mut notices = Vec::new();
+    while !notices.iter().any(|notice: &String| notice.contains("couldn't be removed")) {
+        assert!(std::time::Instant::now() < deadline, "no failure notice: {notices:?}");
+        if let Some(notice) = fetcher.tick(&mut session, &ctx) {
+            notices.push(notice);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!notices.iter().any(|notice| notice.starts_with("Downloaded templates were removed")), "{notices:?}");
+    assert!(!disk::is_clearing(&session));
+    let status = session.dispatch("templates.status", &json!({})).unwrap();
+    assert!(status["cache"]["problems"].as_array().unwrap().iter().any(|p| p.as_str().unwrap().contains("couldn't be removed")), "{status}");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn templates954_a_panicking_cache_read_ends_the_startup_wait() {
+    use nodecraft_engine::templates::disk;
+    let loaded = load_guarded(|| panic!("simulated cache read panic"));
+    let mut session = setup().session;
+    disk::install_deferred(&mut session, true, None);
+    session.register_host_service(SERVICE, |_| Ok(json!({"pending":1}))).unwrap();
+    assert_eq!(session.dispatch("templates.update", &json!({})).unwrap_err().kind, ErrorKind::Busy);
+    let problems = disk::adopt(&mut session, loaded);
+    assert!(problems.iter().any(|problem| problem.contains("stopped unexpectedly")), "{problems:?}");
+    assert!(!disk::is_loading(&session));
+    assert_eq!(session.dispatch("templates.update", &json!({})).unwrap(), json!({"pending":1}));
 }
 
 #[test]

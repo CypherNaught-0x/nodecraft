@@ -98,7 +98,9 @@ impl NodeCraftApp {
         }
         let can_fetch_templates = self.session.enabled("template.refresh", &json!({})).is_ok();
         let template_status = self.template_status();
-        let template_waiting = self.template_fetch.as_ref().is_some_and(template_fetch::TemplateFetcher::waiting);
+        let template_waiting = self.template_fetch.as_ref().is_some_and(template_fetch::TemplateFetcher::waiting)
+            || nodecraft_engine::templates::disk::is_clearing(&self.session)
+            || nodecraft_engine::templates::disk::is_loading(&self.session);
         let can_clear_templates = !template_waiting
             && self.session.enabled("templates.clear_cache", &json!({})).is_ok()
             && nodecraft_engine::templates::catalog::cached(&self.session) > 0;
@@ -297,7 +299,11 @@ impl NodeCraftApp {
     /// set is in use; and the first cache problem, if any.
     fn template_status(&self) -> (String, Option<String>) {
         let waiting = self.template_fetch.as_ref().is_some_and(template_fetch::TemplateFetcher::waiting);
-        let line = if waiting {
+        let line = if nodecraft_engine::templates::disk::is_clearing(&self.session) {
+            "Removing downloaded templates…".to_owned()
+        } else if nodecraft_engine::templates::disk::is_loading(&self.session) {
+            "Reading downloaded templates…".to_owned()
+        } else if waiting {
             "Updating templates…".to_owned()
         } else if self.template_fetch.is_none() || self.session.enabled("templates.update", &json!({})).is_err() {
             "Bundled templates only: this window can't download templates.".to_owned()

@@ -19,6 +19,13 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 type Ask = (u64, Arc<()>, Request);
+const REMOVED: &str = "Downloaded templates were removed. Bundled templates and templates in your projects stay.";
+/// Runs the worker's cache read; a panic becomes a failed read, so the session never waits on it
+/// forever.
+#[cfg(not(target_arch = "wasm32"))]
+fn load_guarded(load: impl FnOnce() -> Loaded + std::panic::UnwindSafe) -> Loaded {
+    std::panic::catch_unwind(load).unwrap_or_else(|_| Loaded::failed("Reading downloaded templates stopped unexpectedly; the bundled set is in use"))
+}
 #[cfg(not(target_arch = "wasm32"))]
 type Done = (u64, Arc<()>, Result<Fetched, Error>);
 /// What the UI thread asks the worker for.
@@ -34,8 +41,11 @@ enum Job {
 enum Out {
     Fetched(Done),
     Loaded(Arc<()>, Loaded),
-    /// Problems applying writes.
-    Wrote(Vec<String>),
+    /// Problems applying writes, and how a queued clear went.
+    Wrote {
+        problems: Vec<String>,
+        cleared: Option<Result<(), String>>,
+    },
 }
 #[cfg(any(test, target_arch = "wasm32"))]
 type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Fetched, Error>>>>;
@@ -113,23 +123,24 @@ impl TemplateFetcher {
                         }
                         Job::Load(owner) => {
                             let Some(store) = &store else { continue };
-                            match std::panic::catch_unwind(|| disk::load(store, &keys)) {
-                                Ok(loaded) => Out::Loaded(owner, loaded),
-                                Err(_) => Out::Wrote(vec![stopped().message]),
-                            }
+                            Out::Loaded(owner, load_guarded(|| disk::load(store, &keys)))
                         }
                         Job::Write(writes) => {
                             let Some(store) = &store else { continue };
-                            let problems: Vec<String> = writes
-                                .iter()
-                                .filter_map(|write| {
-                                    std::panic::catch_unwind(|| write.apply(store)).unwrap_or_else(|_| Err(stopped())).err().map(|error| error.message)
-                                })
-                                .collect();
-                            if problems.is_empty() {
+                            let mut problems = Vec::new();
+                            let mut cleared = None;
+                            for write in &writes {
+                                let result = std::panic::catch_unwind(|| write.apply(store)).unwrap_or_else(|_| Err(stopped())).map_err(|error| error.message);
+                                if matches!(write, Write::Clear) {
+                                    cleared = Some(result);
+                                } else if let Err(problem) = result {
+                                    problems.push(problem);
+                                }
+                            }
+                            if problems.is_empty() && cleared.is_none() {
                                 continue;
                             }
-                            Out::Wrote(problems)
+                            Out::Wrote { problems, cleared }
                         }
                     };
                     if outbox.send(out).is_err() {
@@ -243,9 +254,14 @@ impl TemplateFetcher {
             #[cfg(not(target_arch = "wasm32"))]
             Worker::Thread { done, .. } => match done.try_recv() {
                 Ok(Out::Fetched(done)) => done,
-                Ok(Out::Wrote(problems)) => {
+                Ok(Out::Wrote { problems, cleared }) => {
                     disk::wrote(session, problems);
-                    return None;
+                    let cleared = cleared?;
+                    disk::cleared(session, cleared.clone());
+                    return Some(match cleared {
+                        Ok(()) => REMOVED.into(),
+                        Err(problem) => format!("Downloaded templates couldn't be removed: {problem}"),
+                    });
                 }
                 Ok(Out::Loaded(owner, loaded)) => {
                     if !Arc::ptr_eq(&owner, &session.view_identity()) {
@@ -259,6 +275,13 @@ impl TemplateFetcher {
                 }
                 Err(TryRecvError::Empty) => return None,
                 Err(TryRecvError::Disconnected) => {
+                    // Never leave the session waiting on a worker that is gone.
+                    if disk::is_loading(session) {
+                        disk::adopt(session, Loaded::failed("The template worker stopped before reading downloaded templates"));
+                    }
+                    if disk::is_clearing(session) {
+                        disk::cleared(session, Err("The template worker stopped before removing downloaded templates".into()));
+                    }
                     if !self.asked.borrow().busy {
                         return None;
                     }
@@ -291,7 +314,10 @@ impl TemplateFetcher {
                 Some(outcome) => update::notice(&outcome),
                 None => settled.err().map_or_else(|| "Templates are up to date.".to_owned(), |error| format!("Templates were not updated: {}", error.message)),
             },
-            (Some(Flight::Clear), Ok(())) => "Downloaded templates were removed. Bundled templates and templates in your projects stay.".into(),
+            // The worker reports the removal itself once it has run.
+            #[cfg(not(target_arch = "wasm32"))]
+            (Some(Flight::Clear), Ok(())) if disk::is_clearing(session) => "Removing downloaded templates…".into(),
+            (Some(Flight::Clear), Ok(())) => REMOVED.into(),
             (_, Ok(())) => {
                 "Templates updated. Retrieved versions are verified and kept for later sessions; imported projects keep their assets when saved.".into()
             }
@@ -307,7 +333,7 @@ impl super::NodeCraftApp {
         if let Some(notice) = fetcher.tick(&mut self.session, ctx) {
             self.notice = Some(notice);
         }
-        if fetcher.waiting() || nodecraft_engine::templates::disk::is_loading(&self.session) {
+        if fetcher.waiting() || nodecraft_engine::templates::disk::is_loading(&self.session) || nodecraft_engine::templates::disk::is_clearing(&self.session) {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
