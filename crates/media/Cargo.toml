@@ -28,3 +28,9 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "ti
 craft-pdf = { workspace = true, optional = true, features = ["write-pdf"] }
 # Geometry types in the PDF reader's device interface (the version hayro-interpret uses).
 kurbo = { version = "0.13", optional = true }
+
+# Shared static SVG renderer; exact existing permissive versions, no system resources/fonts.
+resvg = { version = "=0.45.1", default-features = false }
+roxmltree = "=0.20.0"
+svgtypes = "=0.15.3"
+quick-xml = { version = "=0.41.0", default-features = false }

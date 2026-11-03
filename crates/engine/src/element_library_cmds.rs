@@ -159,7 +159,12 @@ fn place(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     changes.extend(wiring);
     let changes = Changeset::new(changes);
     c.preview_changes(&changes)?;
-    Ok(Effect::Place { media: media(&entry), changes, result: json!({"id": p.id, "name": entry.name, "sources": ids}) })
+    Ok(Effect::Place {
+        from: crate::commands::PlaceFrom::Elements,
+        media: media(&entry),
+        changes,
+        result: json!({"id": p.id, "name": entry.name, "sources": ids}),
+    })
 }
 
 #[derive(Deserialize)]
@@ -217,7 +222,12 @@ fn update(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     changes.extend(wiring);
     let changes = Changeset::new(changes);
     c.preview_changes(&changes)?;
-    Ok(Effect::Place { media: media(&entry), changes, result: json!({"id": p.id, "removed": removed, "sources": ids}) })
+    Ok(Effect::Place {
+        from: crate::commands::PlaceFrom::Elements,
+        media: media(&entry),
+        changes,
+        result: json!({"id": p.id, "removed": removed, "sources": ids}),
+    })
 }
 
 fn list(c: &Context<'_>, _: &Json) -> Result<Effect, Error> {

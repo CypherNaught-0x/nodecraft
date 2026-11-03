@@ -508,7 +508,7 @@ pub fn examples() -> Vec<Example> {
             let source = match port.port_type.modality {
                 Modality::Image => g.image(100),
                 Modality::Audio => g.media("source.audio", "audio/wav", include_bytes!("../../../providers/src/fal/fixtures/tone.wav")),
-                _ => g.media("source.video", "video/mp4", include_bytes!("../../../../assets/templates/fixtures/blue-tone.mp4")),
+                _ => g.media("source.video", "video/mp4", nodecraft_template_data::VIDEO_FIXTURE),
             };
             g.wire(source, "out", n, &port.name, u32::try_from(i).unwrap());
             if d.id == "video.stitch" {
@@ -525,7 +525,7 @@ pub fn examples() -> Vec<Example> {
             "Arrange a Timeline",
             "A one-second original clip becomes an automatic Timeline clip. Open the editor to trim or add sources, then run. Configure FFmpeg/ffprobe; all media is bundled.",
         );
-        let source = g.media("source.video", "video/mp4", include_bytes!("../../../../assets/templates/fixtures/blue-tone.mp4"));
+        let source = g.media("source.video", "video/mp4", nodecraft_template_data::VIDEO_FIXTURE);
         let n = g.node("video.timeline", &[("width", u(64)), ("height", u(64))]);
         g.wire(source, "out", n, "clips", 0);
         out.push(g.finish(&["timeline"]));
@@ -603,15 +603,19 @@ pub fn examples() -> Vec<Example> {
 }
 
 #[test]
-#[ignore = "data author: TEMPLATE952_WRITE_DIR=assets/templates; no provider or network"]
+#[ignore = "data author: TEMPLATE952_WRITE_DIR=external repository; no provider or network"]
 fn templates952_author() {
     let dir = std::path::PathBuf::from(std::env::var_os("TEMPLATE952_WRITE_DIR").unwrap());
     std::fs::create_dir_all(&dir).unwrap();
     let mut index = vec![];
     for example in examples() {
         let bytes = nodecraft_format::encode(&example.snapshot).unwrap();
-        std::fs::write(dir.join(format!("{}.ncraft", example.id)), &bytes).unwrap();
-        index.push(json!({"id":example.id,"title":example.title,"description":example.description,"version":1,"file":format!("{}.ncraft",example.id),"blake3":blake3::hash(&bytes).to_hex().to_string(),"features":example.features,"canvas":example.canvas}));
+        let digest = blake3::hash(&bytes).to_hex().to_string();
+        let file = format!("templates/{}/1/{digest}.ncraft", example.id);
+        let path = dir.join(&file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, &bytes).unwrap();
+        index.push(json!({"id":example.id,"title":example.title,"description":example.description,"version":1,"file":file,"blake3":digest,"features":example.features,"canvas":example.canvas}));
     }
-    std::fs::write(dir.join("index.json"), serde_json::to_vec_pretty(&json!({"version":1,"templates":index})).unwrap()).unwrap();
+    std::fs::write(dir.join("index.json"), serde_json::to_vec_pretty(&json!({"schema_version":1,"templates":index})).unwrap()).unwrap();
 }

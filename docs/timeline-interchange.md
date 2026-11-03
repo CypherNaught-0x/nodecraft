@@ -135,6 +135,10 @@ separately; there is no EDL export mode yet.
 
 ## Compatibility
 
+The export and preview commands check connected media before enabling. The writer checks
+trim and frame bounds and the fade keyframe budget when the command runs. A failure names
+the affected clip or the limit reached.
+
 Unit tests check each document's elements and timing, frame by frame. Nothing validates it
 against the FCPXML DTD yet, and importing it into Final Cut Pro or DaVinci Resolve **has not been
 verified**. Please report what an

@@ -7,14 +7,10 @@ use nodecraft_types::Error;
 use serde_json::{Value, json};
 use std::sync::Arc;
 impl Session {
-    pub(super) fn add_template(&mut self, command: &'static str, id: &str) -> Result<Value, Error> {
-        let snapshot = crate::templates::load(id)?;
-        let entry = crate::templates::entries()?
-            .into_iter()
-            .find(|entry| entry.id == id)
-            .ok_or_else(|| nodecraft_types::Error::new(nodecraft_types::ErrorKind::NotFound, "No shipped template has that id"))?;
+    pub(super) fn add_template(&mut self, command: &'static str, template: crate::templates::PreparedTemplate) -> Result<Value, Error> {
+        let crate::templates::PreparedTemplate { entry, snapshot } = template;
         let changes = Changeset::new(snapshot.project.canvases().values().cloned().map(|canvas| Change::AddCanvas { canvas }).collect());
-        let edit = Effect::Edit { changes, result: json!({"canvas":entry.canvas,"template":id,"version":entry.version}), gesture: None };
+        let edit = Effect::Edit { changes, result: json!({"canvas":entry.canvas,"template":entry.id,"version":entry.version}), gesture: None };
         let sources = snapshot
             .assets
             .iter()

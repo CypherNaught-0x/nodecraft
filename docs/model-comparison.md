@@ -72,13 +72,24 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `fal.luma-photon` | [Documentation](https://fal.ai/models/fal-ai/luma-photon) | 2026-10-27 |
 | `fal.luma-ray32` | [Documentation](https://fal.ai/models/luma/agent/ray/v3.2/text-to-video) | 2026-10-27 |
 | `fal.luma-ray32-i2v` | [Documentation](https://fal.ai/models/luma/agent/ray/v3.2/image-to-video/api) | 2026-10-27 |
+| `fal.minimax-h3` | [Documentation](https://fal.ai/models/minimax/h3/text-to-video/api) | 2026-10-28 |
+| `fal.minimax-h3-i2v` | [Documentation](https://fal.ai/models/minimax/h3/image-to-video/api) | 2026-10-28 |
+| `fal.minimax-speech28-hd` | [Documentation](https://fal.ai/models/fal-ai/minimax/speech-2.8-hd/api) | 2026-10-28 |
+| `fal.minimax-music3` | [Documentation](https://fal.ai/models/minimax/music-3/api) | 2026-10-28 |
+| `fal.pika25-i2v` | [Documentation](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video/api) | 2026-10-28 |
+| `fal.heygen-avatar4` | [Documentation](https://fal.ai/models/fal-ai/heygen/avatar4/image-to-video/api) | 2026-10-28 |
+| `fal.heygen-lipsync-speed` | [Documentation](https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api) | 2026-10-28 |
+| `fal.heygen-lipsync-precision` | [Documentation](https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api) | 2026-10-28 |
 | `fal.qwen-image3` | [Documentation](https://fal.ai/models/alibaba/qwen-image-3/text-to-image/api) | 2026-10-27 |
 | `fal.qwen-image3-edit` | [Documentation](https://fal.ai/models/alibaba/qwen-image-3/edit/api) | 2026-10-27 |
+| `fal.recraft41` | [Documentation](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image/api) | 2026-10-27 |
+| `fal.recraft41-vector` | [Documentation](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector/api) | 2026-10-27 |
 | `fal.rodin25` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/api) | 2026-10-27 |
 | `fal.rodin25-images` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/api) | 2026-10-27 |
 | `fal.rodin25-fast` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/text-to-3d/fast/api) | 2026-10-27 |
 | `fal.rodin25-fast-images` | [Documentation](https://fal.ai/models/fal-ai/hyper3d/rodin/v2.5/fast/api) | 2026-10-27 |
 | `fal.trellis2` | [Documentation](https://fal.ai/models/fal-ai/trellis-2) | 2026-10-27 |
+| `fal.topaz-precision` | [Documentation](https://fal.ai/models/topaz/upscale/image/precision/api) | 2026-10-27 |
 | `fal.wan22` | [Documentation](https://fal.ai/models/fal-ai/wan/v2.2-a14b/text-to-video) | 2026-10-27 |
 | `fal.wan22-i2v` | [Documentation](https://fal.ai/models/fal-ai/wan/v2.2-a14b/image-to-video) | 2026-10-27 |
 | `fal.wan22-s2v` | [Documentation](https://fal.ai/models/fal-ai/wan/v2.2-14b/speech-to-video) | 2026-10-27 |
@@ -140,8 +151,13 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `seedance.2-5` | [Documentation](https://docs.byteplus.com/en/docs/byteplus_las/video_gen_enhanced) | 2026-10-27 |
 | `seedream.4_5` | [Documentation](https://docs.byteplus.com/en/docs/modelark/seedream-4-0-5-0?redirect=1) | 2026-10-27 |
 | `stability.audio3` | [Documentation](https://docs.stability.ai/api-reference/stable-audio/text-to-audio) | 2026-10-27 |
+| `magnific.precision-v2` | [Documentation](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/post-image-upscaler-precision-v2) | 2026-10-27 |
 | `stability.fast-3d` | [Documentation](https://docs.stability.ai/api-reference/3d/stable-fast-3d) | 2026-10-27 |
 | `stability.image-core` | [Documentation](https://docs.stability.ai/api-reference/generate/stable-image-core) | 2026-10-27 |
 | `tripo.image-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.multiview-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.text-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
+
+MiniMax's current video, speech and music models reuse Fal (#27): H3 at explicit 480P/768P,
+Speech 2.8 HD MP3 and Music 3 stereo WAV. Their native streamed-storage requirement and exact
+scope/rates are in [provider bounds](providers.md#minimax-video-speech-and-music-through-fal-27).

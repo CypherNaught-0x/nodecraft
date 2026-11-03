@@ -1,0 +1,42 @@
+# Current Precision V2 API checked 2026-10-27:
+# https://docs.magnific.com/api-reference/image-upscaler-precision-v2/overview
+# https://docs.magnific.com/pricing
+# Organizational credits have no verified current per-job currency conversion.
+[[model]]
+id = "magnific.precision-v2"
+provider = "magnific"
+provider_model = "image-upscaler-precision-v2"
+label = "Magnific Precision V2"
+description = "Upscale one upright static PNG, JPEG or WebP, up to 1 MiB and 1024 pixels per edge. Photo flavor, 2× or 4×. Native project storage required. Uses credits; monetary cost is unknown. Text does not guide this model."
+latency_s = 60
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "upscale"
+output = "image"
+inputs = [{ role = "image", modality = "image", min = 1, max = 1 }]
+
+[[model.params.params]]
+name = "scale_factor"
+label = "Scale factor"
+control = { type = "choice", options = [{ value = "2", label = "2×" }, { value = "4", label = "4×" }] }
+default = { type = "text", value = "2" }
+
+[[model.params.params]]
+name = "sharpen"
+label = "Sharpen"
+control = { type = "unsigned", min = "0", max = "100", step = "1" }
+default = { type = "unsigned", value = "7" }
+
+[[model.params.params]]
+name = "smart_grain"
+label = "Smart grain"
+control = { type = "unsigned", min = "0", max = "100", step = "1" }
+default = { type = "unsigned", value = "7" }
+
+[[model.params.params]]
+name = "ultra_detail"
+label = "Ultra detail"
+control = { type = "unsigned", min = "0", max = "100", step = "1" }
+default = { type = "unsigned", value = "30" }

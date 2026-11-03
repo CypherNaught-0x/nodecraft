@@ -166,7 +166,7 @@ requires it). Prefer `--quick` over `cargo test -p <crate>`: it builds with the 
 full gate, where `-p` rebuilds dependencies under a different feature set. Also run, when they apply:
 
 ```sh
-cargo test -p nodecraft-engine --test panic_hunt -- --ignored   # added or changed commands
+cargo test -p nodecraft-engine --test panic_hunt -- --ignored   # added or changed commands (`cargo xtask shared -- test …` with a shared build directory)
 node --test scripts/claim/*.test.js                             # touched the claim bot
 packaging/icons.sh                                              # edited assets/app-icon/nodecraft.svg
 cargo xtask catalog-check                                       # edited assets/catalog
@@ -231,12 +231,22 @@ that drive real pointer and key events through the canvas.
 
 ## Parallel agents on one machine
 
-- Work in your own git worktree and build in its own `target/` (Cargo's default), so builds don't
-  wait on another agent's lock and `git worktree remove` takes the build with it. Never point two
-  checkouts at one target dir: Cargo names a workspace crate's artifacts the same in every
-  checkout and judges freshness by file times, so one checkout can link another's stale code.
-  Agents sharing the primary checkout use `CARGO_TARGET_DIR=target/agent-<name>` instead and
-  delete it when they are done.
+- Work in your own git worktree. Build in one of two ways. Never point two checkouts at one target dir
+  with plain `CARGO_TARGET_DIR`: Cargo names a workspace crate's artifacts the same in every checkout
+  and judges freshness by file times, so one checkout can link another's stale code.
+  - **Own `target/`** (Cargo's default). Fastest, and `git worktree remove` takes the build with it.
+    Costs about 15 GB per worktree. Agents sharing the primary checkout use
+    `CARGO_TARGET_DIR=target/agent-<name>` instead and delete it when they are done.
+  - **Shared build directory**, when disk is short: export one absolute
+    `NODECRAFT_SHARED_TARGET` for every worktree and build only through xtask (`cargo xtask ci`,
+    `ci --quick`, `wasm`, and `cargo xtask shared -- <cargo args>` for anything else). xtask then:
+    - takes a lock, so only one build runs at a time and the others wait;
+    - rebuilds only the workspace crates when a different checkout built last, reusing every
+      dependency.
+
+    That is one ~15 GB build for all worktrees plus ~200 MB each, for some extra compile time.
+    `cargo xtask shared --clean` empties it. See `docs/development.md`, "Sharing one build
+    directory".
 - Disk is the scarce resource. Agent worktrees build with `CARGO_INCREMENTAL=0` exported for the
   whole task: it drops the incremental cache, about half of a worktree's `target/` (some 6 GB), for
   roughly 30–40 s more per rebuild after an edit to a core crate. Set it before the first build and

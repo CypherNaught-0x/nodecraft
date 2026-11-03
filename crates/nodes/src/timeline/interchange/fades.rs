@@ -40,9 +40,9 @@ pub(super) struct Envelope {
 impl Envelope {
     /// NodeCraft fades use played time. The interchange currently retains unretimed media,
     /// so convert the fade positions to source time too; the existing speed loss remains.
-    pub(super) fn new(clip: &Clip, kind: MediaKind, sound: bool, fps: u32, origin: u64, length: u64) -> Result<(Self, bool), Error> {
+    pub(super) fn new(clip: &Clip, kind: MediaKind, sound: bool, fps: u32, origin: u64, length: u64) -> Result<(Self, bool, bool), Error> {
         if fps == 0 || clip.speed == 0 || clip.opacity > UNIT {
-            return Err(invalid("a fade needs a positive frame/playback rate and opacity from 0 to 1000".into()));
+            return Err(invalid("the clip needs a positive frame and playback rate, and opacity from 0 to 1000".into()));
         }
         let source_frames = |us: u64| -> Result<(u64, bool), Error> {
             let scaled = u128::from(us).checked_mul(u128::from(clip.speed)).ok_or_else(too_many)?;
@@ -66,7 +66,8 @@ impl Envelope {
                 picture: kind != MediaKind::Audio,
                 audio,
             },
-            in_exact && out_exact && in_f == fade_in && out_f == fade_out,
+            in_exact && out_exact,
+            in_f != fade_in || out_f != fade_out,
         ))
     }
     fn faded(&self) -> bool {

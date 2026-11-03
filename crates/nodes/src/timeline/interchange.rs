@@ -299,7 +299,7 @@ pub fn fcpxml_controlled(sequence: &Sequence<'_>, check: &mut dyn FnMut() -> Res
         if len_f == 0 {
             return Err(invalid(format!("clip {number} is shorter than a frame")));
         }
-        let (envelope, fades_exact) = fades::Envelope::new(clip, source.kind, source.sound, fps, in_f, len_f)?;
+        let (envelope, fades_exact, fades_shortened) = fades::Envelope::new(clip, source.kind, source.sound, fps, in_f, len_f)?;
         if envelope.audio_sampled() {
             losses.push(Loss {
                 clip: Some(clip.id.clone()),
@@ -315,6 +315,9 @@ pub fn fcpxml_controlled(sequence: &Sequence<'_>, check: &mut dyn FnMut() -> Res
                 feature: "sub-frame timing",
                 detail: format!("trims, start, transition or fades rounded to whole frames at {fps} fps"),
             });
+        }
+        if fades_shortened {
+            losses.push(Loss { clip: Some(clip.id.clone()), caption: None, feature: "fade duration", detail: "fade shortened to fit the clip".into() });
         }
         untranslated_clip_settings(clip, &mut losses);
         if !used.contains(&source_index) {

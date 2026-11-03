@@ -239,6 +239,8 @@ impl NodeCraftApp {
         let mut app = Self::from_session(session, canvas)?;
         nodecraft_engine::library::install(&mut app.session, Box::new(nodecraft_engine::library::MemoryLibrary::default()))?;
         nodecraft_engine::element_library::install(&mut app.session, Rc::new(nodecraft_engine::element_library::MemoryElements::default()));
+        // My library (#96) lasts for the page's session in the browser.
+        nodecraft_engine::asset_library::install(&mut app.session, Rc::new(nodecraft_engine::asset_library::MemoryAssetLibrary::default()));
         nodecraft_engine::shader_library::install(&mut app.session, Box::new(nodecraft_engine::library::MemoryLibrary::default()))?;
         nodecraft_engine::skills::install(&mut app.session, Rc::new(nodecraft_engine::skills::MemorySkills::default()))?;
         app.web_files = files;
@@ -375,6 +377,7 @@ impl NodeCraftApp {
         let mut choice = None;
         egui::Window::new("Unsaved changes")
             .id(egui::Id::new("nodecraft.web_files.confirm"))
+            .order(egui::Order::Foreground)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)

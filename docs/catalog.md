@@ -86,7 +86,9 @@ default = { type = "unsigned", value = "1" }
   at most six decimals, and quotes round up. `call` counts provider jobs, so a preset-priced 3D
   generation uses `per_unit_by_choice`, `unit = "call"` and `default_count = 1`. Token-priced models without a `count` are quoted
   at run time. ElevenLabs character-priced models without a `count` or `default_count` are
-  priced from the known jobs' trimmed prompt at run admission. Other adapters and text made
+  priced from the known jobs' trimmed prompt at run admission. MiniMax Speech 2.8 HD through
+  Fal counts the complete sent prompt's UTF-8 bytes as a conservative upper bound on its
+  unspecified Unicode character billing unit (#27); this is a budget estimate. Other adapters and text made
   by an upstream step stay unknown until their billed request shape can be counted exactly.
   A fanned step reserves its most expensive job per item, so its total is an upper bound.
   `per_source_second` (`param`, `prices`) prices a source video edit by each started second of

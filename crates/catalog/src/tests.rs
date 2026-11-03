@@ -75,6 +75,24 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 other => panic!("{other}: no verified Grok price"),
             };
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
+        } else if model.id.starts_with("fal.heygen-") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
+        } else if model.id.starts_with("fal.minimax-") {
+            let micros = if model.id == "fal.minimax-music3" {
+                Some(120_000)
+            } else if model.id == "fal.minimax-speech28-hd" {
+                None
+            } else {
+                Some(250_000)
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
+        } else if model.id == "fal.pika25-i2v" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if model.id == "fal.topaz-precision" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 80_000)));
+        } else if matches!(model.id.as_str(), "fal.recraft41" | "fal.recraft41-vector") {
+            let price = if model.id.ends_with("-vector") { 80_000 } else { 35_000 };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, price)));
         } else if model.id == "fal.bria-rmbg" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 18_000)));
@@ -260,6 +278,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.ideogram-v3", true),
             ("fal.luma-photon", true),
             ("fal.qwen-image3", true),
+            ("fal.recraft41-vector", true),
+            ("fal.recraft41", true),
             ("gemini-images.pro", true),
             ("gemini-images.nano-banana-2.1", true),
             ("gemini-images.flash-lite", true),
@@ -289,12 +309,21 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.flux-lora", false),
             ("fal.ltx23", false),
             ("fal.ltx23-i2v", false),
+            ("fal.minimax-h3-i2v", false),
+            ("fal.minimax-h3", false),
+            ("fal.minimax-music3", false),
+            ("fal.minimax-speech28-hd", false),
+            ("fal.pika25-i2v", false),
+            ("fal.topaz-precision", false),
             ("fal.bria-rmbg", false),
             ("fal.esrgan", false),
             ("fal.flux-lora-trainer", false),
             ("fal.grok-image2-edit", false),
             ("fal.grok-video15", false),
             ("fal.grok-video15-i2v", false),
+            ("fal.heygen-lipsync-precision", false),
+            ("fal.heygen-lipsync-speed", false),
+            ("fal.heygen-avatar4", false),
             ("fal.hunyuan3d-v3-image", false),
             ("fal.hunyuan3d-v3-sketch", false),
             ("fal.hunyuan3d-v3", false),
@@ -335,6 +364,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("kling.v2_1_master", false),
             ("kling.v2_5_turbo", false),
             ("kling.v1_6", false),
+            ("magnific.precision-v2", false),
             ("meshy.image-to-3d", false),
             ("meshy.multi-image-to-3d", false),
             ("meshy.remesh", false),
@@ -1102,4 +1132,54 @@ fn a_model_cards_dont_offer_is_kept_but_never_picked() {
     }
     let unlisted = PRICED.replace("quality = 5", "quality = 5\ncards = false");
     assert!(!Catalog::from_toml(&unlisted).unwrap().models().next().unwrap().cards);
+}
+
+/// A text model whose one mode takes `inputs` and declares `reads` (#84).
+fn watcher(inputs: &str, reads: &str, output: &str) -> Result<Catalog, nodecraft_types::Error> {
+    Catalog::from_toml(&format!(
+        r#"
+[[model]]
+id = "test.watcher"
+provider = "test"
+provider_model = "watcher-v1"
+label = "Test Watcher"
+description = "Reads clips."
+latency_s = 10
+quality = 3
+pricing = {{ type = "per_call", price = "0.01 USD" }}
+
+[[model.modes]]
+id = "read"
+output = "{output}"
+inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }}{inputs}]
+{reads}
+"#
+    ))
+}
+
+#[test]
+fn reading_capabilities_are_explicit_and_need_the_inputs_they_describe() {
+    const VIDEO: &str = r#", { role = "clip", modality = "video", min = 1, max = 1 }"#;
+    const AUDIO: &str = r#", { role = "talk", modality = "audio", min = 1, max = 1 }"#;
+    let catalog = watcher(VIDEO, r#"reads = { context_tokens = 32000, frames = { every_ms = 1000, max = 64 }, timestamps = true }"#, "text").unwrap();
+    let reads = catalog.get("test.watcher").unwrap().mode("read").and_then(|mode| mode.reads.clone()).unwrap();
+    assert_eq!(reads.frames, Some(nodecraft_types::FrameSampling { every_ms: 1000, max: 64 }));
+    assert!(reads.timestamps && !reads.speakers, "only what is declared is promised");
+    assert!(watcher(AUDIO, "reads = { timestamps = true, speakers = true }", "text").is_ok());
+    assert!(watcher("", "reads = { context_tokens = 200000, max_output_tokens = 8000 }", "text").is_ok());
+    assert!(watcher("", "", "text").unwrap().get("test.watcher").unwrap().mode("read").unwrap().reads.is_none(), "declaring nothing is allowed");
+    for (inputs, reads, output, reason) in [
+        (VIDEO, "", "text", "says how it samples frames"),
+        (VIDEO, "reads = { context_tokens = 32000 }", "text", "exactly when the mode takes a video"),
+        ("", "reads = { frames = { every_ms = 1000, max = 64 } }", "text", "exactly when the mode takes a video"),
+        ("", "reads = { speakers = true }", "text", "need an audio or video input"),
+        ("", "reads = { context_tokens = 0 }", "text", "`context_tokens` is 1 to"),
+        (VIDEO, "reads = { frames = { every_ms = 0, max = 64 } }", "text", "`frames.every_ms`"),
+        ("", "reads = { context_tokens = 1000, max_output_tokens = 2000 }", "text", "can't be more than"),
+        ("", "reads = { context_tokens = 1000 }", "image", "describes a text answer"),
+        ("", "reads = { fps = 1 }", "text", ""),
+    ] {
+        let error = watcher(inputs, reads, output).unwrap_err();
+        assert!(error.message.contains(reason), "{reads}: {}", error.message);
+    }
 }

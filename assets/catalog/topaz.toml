@@ -1,0 +1,24 @@
+# Public fal precision schema and price checked 2026-10-27:
+# https://fal.ai/models/topaz/upscale/image/precision/api
+# https://fal.ai/models/topaz/upscale/image/precision
+# $0.08 per started24MP output; admitted input1024² × factor4 stays below24MP.
+[[model]]
+id = "fal.topaz-precision"
+provider = "fal"
+provider_model = "topaz/upscale/image/precision"
+label = "Topaz Precision Standard V2 (fal)"
+description = "Upscale one image with Standard V2. Desktop project required to save large results. PNG/JPEG/WebP up to 1 MiB and 1024 px per edge; integer 1–4×, PNG output. Text does not guide this model."
+latency_s = 60
+quality = 4
+pricing = { type = "per_call", price = "0.08 USD" }
+
+[[model.modes]]
+id = "upscale"
+output = "image"
+inputs = [{ role = "image", modality = "image", min = 1, max = 1 }]
+
+[[model.params.params]]
+name = "upscale_factor"
+label = "Upscale factor"
+control = { type = "unsigned", min = "1", max = "4", step = "1" }
+default = { type = "unsigned", value = "2" }

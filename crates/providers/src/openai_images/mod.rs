@@ -107,18 +107,29 @@ pub struct OpenAiImages {
     key: Secret,
     http: Arc<dyn Http>,
     limits: Limits,
+    /// A base URL the person set (#960) in place of OpenAI's own API.
+    base: Option<crate::base_url::BaseUrl>,
 }
 impl OpenAiImages {
     pub fn new(key: Secret, http: Arc<dyn Http>) -> Self {
-        Self { key, http, limits: Limits::HARD }
+        Self { key, http, limits: Limits::HARD, base: None }
     }
     pub fn with_limits(key: Secret, http: Arc<dyn Http>, limits: Limits) -> Result<Self, ProviderError> {
         limits.validate()?;
-        Ok(Self { key, http, limits })
+        Ok(Self { key, http, limits, base: None })
+    }
+    /// The same adapter sending its requests (and the key) to `base`, such as a LiteLLM proxy's
+    /// `/v1`, instead of `https://api.openai.com/v1` (#960). The wire format is unchanged.
+    pub fn with_base_url(mut self, base: crate::base_url::BaseUrl) -> Self {
+        self.base = Some(base);
+        self
+    }
+    fn origin(&self) -> &str {
+        self.base.as_ref().map_or(ORIGIN, |base| base.as_str())
     }
     async fn perform(&self, job: &ProviderJob) -> Result<Completed, ProviderError> {
         let prepared = request::prepare(job, &self.limits)?;
-        let request = prepared.encode(&self.key, &self.limits)?;
+        let request = prepared.encode(&self.key, &self.limits, self.origin())?;
         let reply = self.http.send_no_redirect(request).await?;
         response::parse(reply, prepared.n, prepared.format, prepared.background, &self.limits)
     }
@@ -126,6 +137,9 @@ impl OpenAiImages {
 impl Provider for OpenAiImages {
     fn id(&self) -> &str {
         "openai-images"
+    }
+    fn custom_base_url(&self) -> Option<&str> {
+        self.base.as_ref().map(|base| base.as_str())
     }
     fn retry_ambiguous_submit(&self) -> bool {
         false

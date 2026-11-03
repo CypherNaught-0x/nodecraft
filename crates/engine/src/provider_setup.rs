@@ -75,6 +75,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "gemini-video" => Some("gemini"),
         "google-veo" | "google-tts" | "google-gemini-images" => Some(nodecraft_providers::google_cloud::ACCOUNT),
         "fal" => Some("fal"),
+        "magnific" => Some("magnific"),
         "tripo" => Some("tripo"),
         "meshy" => Some("meshy"),
         "higgsfield" => Some("higgsfield"),
@@ -250,6 +251,32 @@ fn llm(endpoint: Endpoint, env: &HostEnv<'_>) -> LlmClient {
     LlmClient::new(endpoint, env.http.clone())
 }
 
+/// The base URL set for `adapter` in place of its own API (#960), checked before any key is read.
+/// A set but unusable one refuses the adapter: it never falls back to the default host.
+fn custom_base(adapter: &str, env: &HostEnv<'_>) -> Result<Option<nodecraft_providers::base_url::BaseUrl>, Readiness> {
+    crate::custom_endpoints::base_url(env.settings, adapter)
+        .map_err(|error| Readiness::NotSetUp(format!("{} can't be used: {}", where_base_urls(adapter), error.message)))
+}
+
+/// Where the person edits `adapter`'s custom base URL, in this host's words.
+fn where_base_urls(adapter: &str) -> String {
+    if cfg!(target_arch = "wasm32") {
+        format!("its custom base URL (Providers, Custom endpoints: {adapter})")
+    } else {
+        format!("its custom base URL in settings ([providers.base_urls] {adapter} in config.toml)")
+    }
+}
+
+/// A catalog chat provider's client, at its custom base URL when one is set.
+fn chat(adapter: &str, endpoint: impl FnOnce(ApiKey) -> Endpoint, env: &HostEnv<'_>) -> Result<LlmClient, Readiness> {
+    let base = custom_base(adapter, env)?;
+    let endpoint = endpoint(ApiKey::from(&needs_key(env.keys, adapter)?));
+    Ok(match base {
+        Some(base) => LlmClient::with_base_url(endpoint, &base, env.http.clone()),
+        None => llm(endpoint, env),
+    })
+}
+
 /// The host's maker: the adapter for setup key `slot` (an adapter id, or a ComfyUI server's
 /// [`comfy_slot`]), built from its key and settings.
 pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readiness> {
@@ -263,10 +290,14 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         return comfy_profile::make(server, env);
     }
     let adapter = slot;
+    // A key set up for a custom endpoint never goes to another adapter's own API (#960).
+    if let Some(error) = crate::custom_endpoints::shared_key_conflict(env.settings, adapter) {
+        return Err(Readiness::NotSetUp(error.message));
+    }
     let provider: Arc<dyn Provider> = match adapter {
         // Chat models (#503): the LLM client, keyed by its endpoint id.
-        "openai" => Arc::new(llm(Endpoint::openai(ApiKey::from(&needs_key(env.keys, "openai")?)), env)),
-        "anthropic" => Arc::new(llm(Endpoint::anthropic(ApiKey::from(&needs_key(env.keys, "anthropic")?)), env)),
+        "openai" => Arc::new(chat("openai", Endpoint::openai, env)?),
+        "anthropic" => Arc::new(chat("anthropic", Endpoint::anthropic, env)?),
         "azure-openai" => {
             let url = env.settings.azure_openai_url.as_deref().filter(|url| !url.trim().is_empty()).ok_or_else(|| {
                 let why = if cfg!(target_arch = "wasm32") {
@@ -299,7 +330,14 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             };
             Arc::new(llm(Endpoint::litellm(&url, key.as_ref().map(ApiKey::from)), env))
         }
-        "openai-images" => Arc::new(nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone())),
+        "openai-images" => {
+            let base = custom_base("openai-images", env)?;
+            let images = nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone());
+            Arc::new(match base {
+                Some(base) => images.with_base_url(base),
+                None => images,
+            })
+        }
         "deepgram" => Arc::new(nodecraft_providers::deepgram::Deepgram::new(needs_key(env.keys, "deepgram")?, env.http.clone())),
         "stability" => {
             if cfg!(target_arch = "wasm32") {
@@ -320,6 +358,12 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         "google-tts" => Arc::new(google_tts(env)?),
         "google-gemini-images" => Arc::new(google_gemini_images(env)?),
         "fal" => Arc::new(nodecraft_providers::fal::Fal::new(needs_key(env.keys, "fal")?, env.http.clone())),
+        "magnific" => {
+            if cfg!(target_arch = "wasm32") {
+                return Err(Readiness::NotSetUp("Magnific Precision V2 needs the desktop or CLI host and native streamed project storage".into()));
+            }
+            Arc::new(nodecraft_providers::magnific::Magnific::new(needs_key(env.keys, "magnific")?, env.http.clone()))
+        }
         "tripo" => Arc::new(nodecraft_providers::tripo::Tripo::new(needs_key(env.keys, "tripo")?, env.http.clone())),
         "meshy" => Arc::new(nodecraft_providers::meshy::Meshy::new(needs_key(env.keys, "meshy")?, env.http.clone())),
         "higgsfield" => Arc::new(higgsfield(env)?),

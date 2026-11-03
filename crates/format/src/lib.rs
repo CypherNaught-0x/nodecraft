@@ -33,6 +33,8 @@ mod reader_import;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_assets::NativeAssetWorkspace;
 mod legacy;
+/// Disk-space inventory and advisory preflight for saves and opens (#367).
+pub mod space;
 pub mod storage;
 #[cfg(any(test, feature = "validation-metrics"))]
 mod validation_metrics;
@@ -69,3 +71,6 @@ pub fn canonical_hash(hash: nodecraft_media::ContentHash) -> nodecraft_types::Bl
 pub fn media_hash(hash: nodecraft_types::Blake3) -> nodecraft_media::ContentHash {
     nodecraft_media::ContentHash(*hash.as_bytes())
 }
+
+#[cfg(test)]
+mod svg_tests;

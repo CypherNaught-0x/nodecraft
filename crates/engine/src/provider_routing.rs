@@ -18,6 +18,13 @@ struct Binding {
     limit: Option<usize>,
     /// Hosted execution is paid even when the logical ComfyUI catalog model is local/free.
     metered_comfy: bool,
+    /// A digest of the base URL the person set for this adapter (#960), captured once: quotes
+    /// bind it, and a free step routed here counts as unknown-price.
+    custom_endpoint: Option<[u8; 32]>,
+}
+
+fn custom_endpoint(provider: &dyn Provider) -> Option<[u8; 32]> {
+    provider.custom_base_url().map(|url| *blake3::Hasher::new().update(b"nodecraft.custom-endpoint.v1\0").update(url.as_bytes()).finalize().as_bytes())
 }
 /// Captured immutable physical adapter and its typed logical identity.
 #[derive(Clone)]
@@ -33,7 +40,8 @@ impl RegisteredProvider {
         let target = ProviderTarget::new(provider.id(), instance)?;
         let serial = crate::execution_identity::nonce()?;
         let metered_comfy = provider.metered_comfy_workflows();
-        Ok(Self(Arc::new(Binding { target, provider, serial, limit: None, metered_comfy })))
+        let custom_endpoint = custom_endpoint(provider.as_ref());
+        Ok(Self(Arc::new(Binding { target, provider, serial, limit: None, metered_comfy, custom_endpoint })))
     }
     /// A named instance that runs at most `limit` of a run's jobs at once (#864), such as a
     /// ComfyUI server with one GPU.
@@ -41,10 +49,15 @@ impl RegisteredProvider {
         let target = ProviderTarget::new(provider.id(), Some(instance))?;
         let serial = crate::execution_identity::nonce()?;
         let metered_comfy = provider.metered_comfy_workflows();
-        Ok(Self(Arc::new(Binding { target, provider, serial, limit: limit.map(|n| n.max(1)), metered_comfy })))
+        let custom_endpoint = custom_endpoint(provider.as_ref());
+        Ok(Self(Arc::new(Binding { target, provider, serial, limit: limit.map(|n| n.max(1)), metered_comfy, custom_endpoint })))
     }
     pub(crate) fn metered_comfy(&self) -> bool {
         self.0.metered_comfy
+    }
+    /// The digest of the custom base URL this adapter was built with, if any (#960).
+    pub(crate) fn custom_endpoint(&self) -> Option<&[u8; 32]> {
+        self.0.custom_endpoint.as_ref()
     }
     /// Most of a run's jobs sent to this target at once, when it sets its own.
     pub fn limit(&self) -> Option<usize> {

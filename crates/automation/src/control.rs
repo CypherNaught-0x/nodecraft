@@ -516,6 +516,71 @@ fn serve_connection(stream: TcpStream, token: Token, to_ui: &SyncSender<Call>, w
     }
 }
 
+/// What an MCP server bridged to the app talks to: a control connection from another process
+/// (`nodecraft-cli mcp --bridge`), or the app's own call queue (its built-in server, #116).
+pub enum Bridge {
+    Remote(Client),
+    Local(LocalClient),
+}
+
+impl Bridge {
+    /// One control method and its result, as [`Client::call`].
+    pub fn call(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
+        match self {
+            Self::Remote(client) => client.call(method, params),
+            Self::Local(client) => client.call(method, params),
+        }
+    }
+}
+
+/// An in-process client: the app's built-in MCP server asks the UI thread through the same queue,
+/// timeouts and [`Call`]s as a control connection's thread, already authenticated (it runs in
+/// the app). Made with [`local`].
+pub struct LocalClient {
+    to_ui: SyncSender<Call>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    answer: Duration,
+}
+
+/// A client and the queue of its calls, which the app answers each frame as it does a
+/// [`Listener`]'s. `wake` is called when a call is queued.
+pub fn local(wake: Arc<dyn Fn() + Send + Sync>) -> (LocalClient, Receiver<Call>) {
+    local_with(wake, ANSWER_TIMEOUT)
+}
+
+/// [`local`] with another answer timeout (tests shorten it).
+pub fn local_with(wake: Arc<dyn Fn() + Send + Sync>, answer: Duration) -> (LocalClient, Receiver<Call>) {
+    let (to_ui, calls) = sync_channel::<Call>(QUEUE);
+    (LocalClient { to_ui, wake, answer }, calls)
+}
+
+impl LocalClient {
+    /// One request, answered by the UI thread: `commands.list`, `command.run`, `state.get`,
+    /// `canvas.inspect` or `screenshot`.
+    pub fn call(&mut self, method: &str, params: Map<String, Value>) -> Result<Value, Error> {
+        let request = match method {
+            "commands.list" => Request::ListCommands(params),
+            "command.run" => Request::RunCommand(params),
+            "state.get" => Request::State,
+            "canvas.inspect" => Request::Inspect(params),
+            "screenshot" => Request::Screenshot,
+            other => return Err(Error::new(ErrorKind::NotFound, format!("unknown method {}", other.chars().take(64).collect::<String>()))),
+        };
+        let (reply, answer) = sync_channel(1);
+        let deadline = Instant::now().checked_add(self.answer).unwrap_or_else(Instant::now);
+        self.to_ui.try_send(Call { request, reply, deadline }).map_err(|e| match e {
+            std::sync::mpsc::TrySendError::Full(_) => Error::new(ErrorKind::Busy, "the app is still answering earlier requests; try again"),
+            std::sync::mpsc::TrySendError::Disconnected(_) => Error::new(ErrorKind::Unsupported, "the app's MCP server has stopped"),
+        })?;
+        (self.wake)();
+        match answer.recv_timeout(self.answer) {
+            Ok(result) => result,
+            Err(RecvTimeoutError::Timeout) => Err(Error::new(ErrorKind::Timeout, "the app didn't answer in time")),
+            Err(RecvTimeoutError::Disconnected) => Err(Error::new(ErrorKind::Internal, "the app dropped the request")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

@@ -36,6 +36,17 @@ fn a_cross_transition_is_a_dissolve_centred_on_the_cut() {
 }
 
 #[test]
+fn a_whole_frame_fade_shortened_to_fit_has_its_own_loss() {
+    let (mut timeline, wires, sources) = crossing();
+    timeline.clips[0].fade_in_us = 5_000_000;
+    let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).unwrap();
+    assert!(
+        out.losses.iter().any(|loss| loss.clip.as_deref() == Some("fox") && loss.feature == "fade duration" && loss.detail == "fade shortened to fit the clip")
+    );
+    assert!(!out.losses.iter().any(|loss| loss.feature == "sub-frame timing"));
+}
+
+#[test]
 fn other_tracks_connect_to_what_is_under_them_on_lanes() {
     let (mut timeline, mut wires, mut sources) = crossing();
     timeline.tracks = vec![Track { kind: TrackKind::Video }, Track { kind: TrackKind::Audio }];
