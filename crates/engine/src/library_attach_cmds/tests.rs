@@ -108,3 +108,22 @@ fn an_asset_whose_bytes_the_project_no_longer_stores_is_refused() {
     bare.import_asset(&png(10)).unwrap();
     bare.dispatch("library.attach", &json!({"canvas": ALPHA, "items": [{"hash": photo}], "ids": [id(1)], "at": {"x": 0, "y": 0}})).unwrap();
 }
+
+#[test]
+fn the_grid_may_reach_the_canvas_edge_but_not_past_it_and_an_entry_is_one_thing() {
+    let mut s = session();
+    let photo = hash_of(&s, PHOTO, ALPHA);
+    // One card at the very edge fits; a second one step further does not.
+    let edge = json!({"canvas": ALPHA, "items": [{"hash": photo}], "ids": [id(1)], "at": {"x": 10_000_000.0, "y": -10_000_000.0}});
+    s.dispatch("library.attach", &edge).unwrap();
+    let past = json!({"canvas": ALPHA, "items": [{"hash": photo}, {"hash": photo}], "ids": [id(2), id(3)], "at": {"x": 10_000_000.0, "y": 0}, "step": 1});
+    assert_eq!(s.dispatch("library.attach", &past).unwrap_err().kind, ErrorKind::InvalidInput);
+    // An entry names an asset or a result, never both.
+    let both = json!({"hash": photo, "from": {"canvas": ALPHA, "node": PAINTER, "generation": g(1), "port": "out", "item": 0}});
+    let params = json!({"canvas": ALPHA, "items": [both], "ids": [id(4)], "at": {"x": 0, "y": 0}});
+    assert_eq!(s.enabled("library.attach", &params).unwrap_err().kind, ErrorKind::InvalidInput);
+    assert_eq!(s.dispatch("library.attach", &params).unwrap_err().kind, ErrorKind::InvalidInput);
+    assert_eq!(super::columns(1), 1);
+    assert_eq!(super::columns(5), 3);
+    assert_eq!(super::columns(32), 6);
+}

@@ -267,10 +267,11 @@ pub fn import_files_positioned(
     movies: &[ProbedMovie],
     position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
 ) -> Result<Imported, Error> {
-    import_titled(session, canvas, at, step, files, ids, movies, position, &[])
+    import_titled(session, canvas, at, step, files, ids, movies, position, &[], &[])
 }
 
-/// As [`import_files_positioned`], titling each media card with the matching entry of `titles`.
+/// As [`import_files_positioned`], titling each media card with the matching entry of `titles`
+/// and using `hashes[i]` as file `i`'s BLAKE3 when given (the store verifies it before publishing).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn import_titled(
     session: &mut Session,
@@ -282,8 +283,9 @@ pub(crate) fn import_titled(
     movies: &[ProbedMovie],
     position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
     titles: &[String],
+    hashes: &[nodecraft_types::Blake3],
 ) -> Result<Imported, Error> {
-    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies, position, titles));
+    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies, position, titles, hashes));
     match result {
         Ok(imported) => Ok(imported),
         Err(mut error) => {

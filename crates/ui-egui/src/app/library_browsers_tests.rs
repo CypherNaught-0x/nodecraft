@@ -299,3 +299,29 @@ fn ticked_results_export_through_the_workflow_result_save_after_a_folder_is_chos
     h.get_by_label("Cancel").click();
     h.run_steps(2);
 }
+
+#[test]
+fn a_ticked_result_that_is_deleted_is_unticked() {
+    let mut h = harness();
+    with_paintings(&mut h);
+    open(&mut h, "History");
+    h.get_by_label("Painter · 2/2").click();
+    h.run();
+    h.get_by_label("Painter · 1/2").click();
+    h.run();
+    assert!(h.query_by_label("2 ticked").is_some());
+    let on = h.state().canvas;
+    h.state_mut().session.dispatch("history.delete", &json!({"canvas": on, "id": PAINTER, "generation": g(11)})).unwrap();
+    h.run();
+    h.run();
+    assert!(h.query_by_label("1 ticked").is_some(), "the deleted result's tick is gone");
+    let count = canvas(&h).nodes().len();
+    h.get_by_label("Place on canvas").click();
+    h.run();
+    assert_eq!(canvas(&h).nodes().len(), count + 1, "the rest still places: {:?}", h.state().notice);
+    // Undoing the placement and the deletion brings the result back, unticked.
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.run();
+    assert!(h.query_by_label("Place on canvas").is_none());
+}

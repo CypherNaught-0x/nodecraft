@@ -36,8 +36,16 @@
   card), media only (text and ComfyUI workflows are still dropped on the canvas), and the file's
   name, never its folder, as the card's title. The reader is bounded like a folder import's:
   regular files only, 16 MiB each, 48 MiB and 32 files per import, counted for progress and
-  cancellable between files. The failed files' paths stay in the window's view state for Retry
-  failed; they never reach the document, a log or a command.
+  cancellable between files. A video whose headers don't state its length and size is then
+  measured by the video service, as a dropped one is, within the same bounded wait. The
+  library's BLAKE3 is passed to the import rather than computed again; the store still hashes the
+  bytes it reads and refuses a mismatch. The failed files' paths stay in the window's view state
+  for Retry failed; they never reach the document, a log or a command, and only the public file
+  name reaches the import's messages.
+- **Ticks follow the document.** Whenever the document changes (a deletion, an undo), a ticked
+  entry the project no longer holds is unticked, and an asset whose result is gone can no longer
+  be exported, so Place and Export never fail on a stale tick. Each tab holds up to 32 ticks,
+  the most one request takes.
 - **No URL import yet.** The desktop app has no general network platform service with a host
   network policy: provider adapters reach only their own hosts, and the one public-address check
   (`nodecraft-cli serve`'s webhooks) lives in the CLI. A URL import needs that service first,

@@ -7,12 +7,15 @@
 //! cancellable between files. Each file then has its own outcome: added, a duplicate, already
 //! in the library, or failed with why. The paths of the failed files stay in this window's view
 //! state, so "Retry failed" reads exactly those again; they never reach the document, which
-//! keeps only a file's name, as its card's title.
+//! keeps only a file's name, as its card's title. Between reading and importing, a video whose
+//! headers don't state its length and size is probed by the video service, exactly as a dropped
+//! one is, within the same bounded wait.
 use super::NodeCraftApp;
 use super::folder_import::{clean, read_bounded};
 use super::library_browsers::{ImportLine, ImportReport};
+use crate::video::import::{Probe, WAIT};
 use crate::{ids, theme::Tokens};
-use nodecraft_engine::import::{FileState, Incoming, MAX_FILES, MAX_PROJECT_MEDIA_BYTES, import_library};
+use nodecraft_engine::import::{FileState, Incoming, MAX_FILES, MAX_PROJECT_MEDIA_BYTES, ProbedMovie, import_library};
 use nodecraft_graph::Position;
 use nodecraft_types::{CanvasId, NodeId, ProjectId};
 use std::{
@@ -25,6 +28,7 @@ use std::{
         mpsc,
     },
     task::{Context, Poll, Wake, Waker},
+    time::Instant,
 };
 
 type PickFuture = Pin<Box<dyn Future<Output = Option<Vec<PathBuf>>>>>;
@@ -33,7 +37,44 @@ type PickFuture = Pin<Box<dyn Future<Output = Option<Vec<PathBuf>>>>>;
 struct ReadFile {
     path: PathBuf,
     name: String,
-    bytes: Result<Vec<u8>, String>,
+    bytes: Result<Arc<[u8]>, String>,
+}
+
+/// Read files waiting for the video service to measure the videos their headers don't.
+struct Probing {
+    project: ProjectId,
+    canvas: CanvasId,
+    read: Vec<ReadFile>,
+    movies: Vec<ProbedMovie>,
+    next: usize,
+    active: Option<Probe>,
+    started: Instant,
+}
+
+impl Probing {
+    /// Moves the probes along; `true` once every file is probed or the wait is over.
+    fn poll(&mut self, videos: &mut crate::video::Videos, ctx: &egui::Context) -> bool {
+        if self.started.elapsed() >= WAIT {
+            self.active = None;
+            return true;
+        }
+        loop {
+            if let Some(probe) = &mut self.active {
+                match probe.poll(videos, ctx) {
+                    None => return false,
+                    Some(movie) => {
+                        self.movies.extend(movie);
+                        self.active = None;
+                    }
+                }
+            }
+            let Some(file) = self.read.get(self.next) else { return true };
+            self.next = self.next.saturating_add(1);
+            if let Ok(bytes) = &file.bytes {
+                self.active = Probe::new(Arc::clone(bytes));
+            }
+        }
+    }
 }
 
 struct Reading {
@@ -57,6 +98,7 @@ impl Drop for Reading {
 pub(super) struct LibraryImport {
     picking: Option<PickFuture>,
     reading: Option<Reading>,
+    probing: Option<Probing>,
     /// What the file picker "chooses" in tests.
     #[cfg(test)]
     pub(super) pick: Option<Vec<PathBuf>>,
@@ -67,7 +109,7 @@ pub(super) struct LibraryImport {
 
 impl LibraryImport {
     pub(super) fn busy(&self) -> bool {
-        self.picking.is_some() || self.reading.is_some()
+        self.picking.is_some() || self.reading.is_some() || self.probing.is_some()
     }
 }
 
@@ -91,10 +133,11 @@ fn read_files(paths: Vec<PathBuf>, cancel: &AtomicBool, done: &AtomicUsize, hold
             return Err("Import cancelled; nothing was added.".into());
         }
         let name = clean(&path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
-        let bytes = if index >= MAX_FILES {
+        let bytes: Result<Arc<[u8]>, String> = if index >= MAX_FILES {
             Err(format!("at most {MAX_FILES} files are imported at once; retry to import it next"))
         } else {
-            read_bounded(&path, room, OVER_ROOM).map_err(str::to_owned)
+            // The one Vec-to-Arc conversion runs here, never on a frame.
+            read_bounded(&path, room, OVER_ROOM).map(Arc::from).map_err(str::to_owned)
         };
         if let Ok(bytes) = &bytes {
             room = room.saturating_sub(bytes.len() as u64);
@@ -125,14 +168,14 @@ impl NodeCraftApp {
         }
     }
 
-    /// Starts reading `paths` on their own thread.
-    pub(super) fn read_library_files(&mut self, paths: Vec<PathBuf>) {
-        if self.library.browsers.import.reading.is_some() {
+    /// Starts reading `paths` on their own thread; `false` (with a notice) when it can't start.
+    pub(super) fn read_library_files(&mut self, paths: Vec<PathBuf>) -> bool {
+        if self.library.browsers.import.reading.is_some() || self.library.browsers.import.probing.is_some() {
             self.notice = Some("Files are already being imported; wait for them or cancel.".into());
-            return;
+            return false;
         }
         if paths.is_empty() {
-            return;
+            return false;
         }
         let cancel = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicUsize::new(0));
@@ -157,10 +200,11 @@ impl NodeCraftApp {
         });
         if spawned.is_err() {
             self.notice = Some("File reading is unavailable; restart the app to try again.".into());
-            return;
+            return false;
         }
         self.notice = None;
         self.library.browsers.import.reading = Some(Reading { project: self.session.document().id(), canvas: self.canvas, total, cancel, done, result });
+        true
     }
 
     /// Polls the picker and the reader, shows the reading progress with its Cancel button, and
@@ -171,15 +215,36 @@ impl NodeCraftApp {
             let poll = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| future.as_mut().poll(&mut Context::from_waker(&waker))));
             match poll {
                 Ok(Poll::Pending) => self.library.browsers.import.picking = Some(future),
-                Ok(Poll::Ready(Some(paths))) => self.read_library_files(paths),
+                Ok(Poll::Ready(Some(paths))) => {
+                    self.read_library_files(paths);
+                }
                 Ok(Poll::Ready(None)) => {}
                 Err(_) => self.notice = Some("The file picker could not be opened; try again.".into()),
             }
         }
+        if let Some(mut probing) = self.library.browsers.import.probing.take() {
+            if probing.poll(&mut self.videos, ctx) {
+                let Probing { project, canvas, read, movies, .. } = probing;
+                self.import_read_files(project, canvas, read, &movies, t);
+            } else {
+                let cancel = progress(ctx, t, "Checking the videos' lengths…", None);
+                if cancel {
+                    self.notice = Some("Import cancelled; nothing was added.".into());
+                } else {
+                    self.library.browsers.import.probing = Some(probing);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                }
+            }
+            return;
+        }
         let Some(reading) = self.library.browsers.import.reading.take() else { return };
         match reading.result.try_recv() {
             Ok(Ok(read)) => {
-                self.import_read_files(&reading, read, t);
+                let (project, canvas) = (reading.project, reading.canvas);
+                drop(reading);
+                self.library.browsers.import.probing =
+                    Some(Probing { project, canvas, read, movies: Vec::new(), next: 0, active: None, started: Instant::now() });
+                ctx.request_repaint();
                 return;
             }
             Ok(Err(message)) => {
@@ -193,22 +258,8 @@ impl NodeCraftApp {
             Err(mpsc::TryRecvError::Empty) => {}
         }
         let done = reading.done.load(Ordering::Relaxed).min(reading.total);
-        let cancel = egui::Area::new(egui::Id::new("library_import_reading"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::LEFT_BOTTOM, egui::Vec2::new(t.card_padding, -t.card_padding * 6.0))
-            .show(ctx, |ui| {
-                egui::Frame::NONE
-                    .fill(t.panel_fill)
-                    .inner_margin(t.card_padding)
-                    .show(ui, |ui| {
-                        ui.label(format!("Reading files for the library… {done} of {}", reading.total));
-                        let ratio = if reading.total == 0 { 0.0 } else { done as f32 / reading.total as f32 };
-                        ui.add(egui::ProgressBar::new(ratio).desired_width(t.card_width));
-                        ui.button("Cancel import").clicked()
-                    })
-                    .inner
-            })
-            .inner;
+        let ratio = if reading.total == 0 { 0.0 } else { done as f32 / reading.total as f32 };
+        let cancel = progress(ctx, t, &format!("Reading files for the library… {done} of {}", reading.total), Some(ratio));
         if cancel {
             // Dropping the reading stops the reader at its next file.
             self.notice = Some("Import cancelled; nothing was added.".into());
@@ -218,13 +269,14 @@ impl NodeCraftApp {
         }
     }
 
-    fn import_read_files(&mut self, reading: &Reading, read: Vec<ReadFile>, t: &Tokens) {
+    fn import_read_files(&mut self, project: ProjectId, canvas: CanvasId, read: Vec<ReadFile>, movies: &[ProbedMovie], t: &Tokens) {
+        // Nothing was imported: every file is reported, with why, and can be retried.
         let failed_all = |read: Vec<ReadFile>, why: &str| ImportReport {
             summary: format!("{} failed", read.len()),
             lines: read.iter().map(|file| ImportLine { name: file.name.clone(), state: why.to_owned(), failed: true }).collect(),
             retry: read.into_iter().map(|file| file.path).collect(),
         };
-        if reading.project != self.session.document().id() || reading.canvas != self.canvas {
+        if project != self.session.document().id() || canvas != self.canvas {
             let why = "the project or canvas changed while it was read";
             self.library.browsers.report = Some(failed_all(read, why));
             self.notice = Some("The project or canvas changed while the files were read; nothing was added. Retry to import them here.".into());
@@ -233,41 +285,50 @@ impl NodeCraftApp {
         let centre = match self.browse_centre(t) {
             Ok(centre) => centre,
             Err(error) => {
+                self.library.browsers.report = Some(failed_all(read, &error.message));
                 self.notice = Some(error.message);
                 return;
             }
         };
         // The files that were read, with the card id each would get.
-        let mut incoming = Vec::new();
         let mut fresh: Vec<NodeId> = Vec::new();
         let mut taken = Vec::new();
+        let mut allocated = true;
         for (index, file) in read.iter().enumerate() {
-            if let Ok(bytes) = &file.bytes {
+            if file.bytes.is_ok() {
                 let id = ids::node_id(self.session.document(), ("library-import", self.session.revision(), index)).filter(|id| !fresh.contains(id));
                 let Some(id) = id else {
-                    self.notice = Some("Couldn't allocate node ids; try again.".into());
-                    return;
+                    allocated = false;
+                    break;
                 };
                 fresh.push(id);
-                incoming.push(Incoming { name: &file.name, bytes });
                 taken.push(index);
             }
         }
+        if !allocated {
+            self.library.browsers.report = Some(failed_all(read, "couldn't allocate node ids; retry"));
+            self.notice = Some("Couldn't allocate node ids; nothing was added. Retry the import.".into());
+            return;
+        }
+        let incoming: Vec<Incoming<'_>> =
+            read.iter().filter_map(|file| file.bytes.as_ref().ok().map(|bytes| Incoming { name: &file.name, bytes: &bytes[..] })).collect();
         let at = Position { x: centre.x, y: centre.y };
         let step = t.card_width + t.card_padding * 4.0;
         let imported = if incoming.is_empty() {
             Ok(Default::default())
         } else {
-            import_library(&mut self.session, self.canvas, at, step, &incoming, &fresh, &[], &|node, kinds| Self::creation_position(node, kinds, t))
+            import_library(&mut self.session, self.canvas, at, step, &incoming, &fresh, movies, &|node, kinds| Self::creation_position(node, kinds, t))
         };
         let imported = match imported {
             Ok(imported) => imported,
             Err(error) => {
+                drop(incoming);
                 self.notice = Some(error.message.clone());
                 self.library.browsers.report = Some(failed_all(read, &error.message));
                 return;
             }
         };
+        drop(incoming);
         let mut outcomes = taken.iter().zip(imported.files.iter());
         let mut next = outcomes.next();
         let mut lines = Vec::new();
@@ -307,6 +368,27 @@ impl NodeCraftApp {
         self.notice = None;
         self.library.browsers.report = Some(ImportReport { summary, lines, retry });
     }
+}
+
+/// The import's progress panel at the bottom left, with Cancel; whether Cancel was pressed.
+fn progress(ctx: &egui::Context, t: &Tokens, text: &str, ratio: Option<f32>) -> bool {
+    egui::Area::new(egui::Id::new("library_import_reading"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::Vec2::new(t.card_padding, -t.card_padding * 6.0))
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(t.panel_fill)
+                .inner_margin(t.card_padding)
+                .show(ui, |ui| {
+                    ui.label(text);
+                    if let Some(ratio) = ratio {
+                        ui.add(egui::ProgressBar::new(ratio).desired_width(t.card_width));
+                    }
+                    ui.button("Cancel import").clicked()
+                })
+                .inner
+        })
+        .inner
 }
 
 #[cfg(test)]

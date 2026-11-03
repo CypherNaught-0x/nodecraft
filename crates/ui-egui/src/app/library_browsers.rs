@@ -172,6 +172,8 @@ pub(super) struct Browsers {
     /// The ticked entries, by key, for the project and canvas they were ticked on.
     picked: std::collections::BTreeMap<String, Pick>,
     picked_for: Option<(ProjectId, CanvasId)>,
+    /// The document revision the ticks were last checked against.
+    picked_revision: Option<u64>,
     /// The last library import's report.
     pub(super) report: Option<ImportReport>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -185,6 +187,10 @@ pub(super) struct Pick {
     tab: Tab,
     place: Option<serde_json::Value>,
     export: Option<ResultSelector>,
+    /// The asset it is, for an Assets entry.
+    asset: Option<Blake3>,
+    /// The result it is (History) or was made by (Assets), on the open canvas.
+    result: Option<(NodeId, GenerationId)>,
 }
 
 /// One file of the last library import, as its report shows it.
@@ -218,11 +224,36 @@ impl Browsers {
     fn picks(&self) -> impl Iterator<Item = &Pick> {
         self.picked.values().filter(|pick| pick.tab == self.tab)
     }
-    /// Forgets ticks made on another project or canvas.
-    fn keep_picks_for(&mut self, project: ProjectId, canvas: CanvasId) {
+    /// Forgets ticks made on another project or canvas, and, whenever the document changed (a
+    /// deletion, an undo), ticks of entries it no longer holds: an asset no card holds or a result
+    /// that is gone is unticked; an asset whose result is gone can no longer be exported.
+    fn keep_picks_for(&mut self, session: &Session, canvas: CanvasId) {
+        let project = session.document().id();
         if self.picked_for != Some((project, canvas)) {
             self.picked.clear();
             self.picked_for = Some((project, canvas));
+        }
+        if self.picked_revision == Some(session.revision()) {
+            return;
+        }
+        self.picked_revision = Some(session.revision());
+        if self.picked.is_empty() {
+            return;
+        }
+        let held = nodecraft_engine::library_browse_cmds::listed_hashes(session.document());
+        let nodes = session.document().canvases().get(&canvas).map(|canvas| canvas.nodes());
+        let made = |(node, generation): (NodeId, GenerationId)| {
+            nodes.and_then(|nodes| nodes.get(&node)).is_some_and(|node| node.history.iter().any(|g| g.id == generation))
+        };
+        self.picked.retain(|_, pick| match pick.asset {
+            Some(hash) => held.contains(&hash),
+            None => pick.result.is_none_or(made),
+        });
+        for pick in self.picked.values_mut() {
+            if pick.asset.is_some() && pick.result.is_some_and(|result| !made(result)) {
+                pick.result = None;
+                pick.export = None;
+            }
         }
     }
 }
@@ -268,9 +299,10 @@ pub(super) enum Browse {
 /// `ticks`. At most [`MAX_ITEMS`] entries can be ticked.
 fn tick(ui: &mut egui::Ui, picked: &std::collections::BTreeMap<String, Pick>, key: String, label: &str, pick: Pick, ticks: &mut Vec<(String, Option<Pick>)>) {
     let mut on = picked.contains_key(&key);
-    let room = on || picked.len() < MAX_ITEMS;
+    // Each tab places and exports its own ticks, so each may hold the most one request takes.
+    let room = on || picked.values().filter(|p| p.tab == pick.tab).count() < MAX_ITEMS;
     let response = ui.add_enabled(room, egui::Checkbox::new(&mut on, label));
-    if response.on_disabled_hover_text("At most 32 entries can be ticked at once").changed() {
+    if response.on_disabled_hover_text("At most 32 entries can be ticked at once in a tab").changed() {
         ticks.push((key, on.then_some(pick)));
     }
 }
@@ -328,10 +360,15 @@ fn report(ui: &mut egui::Ui, t: &Tokens, browsers: &mut Browsers, action: &mut O
         });
         ui.horizontal(|ui| {
             let failed = report.retry.len();
+            #[cfg(not(target_arch = "wasm32"))]
+            let busy = browsers.import.busy();
+            #[cfg(target_arch = "wasm32")]
+            let busy = true;
             if failed > 0
                 && ui
-                    .button(format!("Retry failed ({failed})"))
+                    .add_enabled(!busy, egui::Button::new(format!("Retry failed ({failed})")))
                     .on_hover_text("Read the files that failed again and import them; the rest are left alone")
+                    .on_disabled_hover_text("Files are being imported; retry when they are done")
                     .clicked()
             {
                 *action = Some(Browse::RetryImport);
@@ -517,7 +554,7 @@ pub(super) fn show(
 ) -> Option<Browse> {
     let mut action = None;
     ui.set_max_width(t.dialog_width);
-    browsers.keep_picks_for(session.document().id(), canvas);
+    browsers.keep_picks_for(session, canvas);
     match browsers.tab {
         Tab::Library => {}
         Tab::Assets => {
@@ -613,6 +650,8 @@ pub(super) fn show(
                                 port: entry.port.clone(),
                                 item: entry.item,
                             }),
+                            asset: Some(entry.hash),
+                            result: entry.generation.filter(|_| entry.canvas == canvas).map(|generation| (entry.node, generation)),
                         };
                         tick(ui, picked, format!("asset:{}", entry.hash), &sheet_view::line(&entry.label), pick, &mut ticks);
                         let uses = if entry.uses > 1 { format!(" · used {}×", entry.uses) } else { String::new() };
@@ -656,6 +695,8 @@ pub(super) fn show(
                                 port: Some(place.port.clone()),
                                 item: place.item,
                             }),
+                            asset: None,
+                            result: Some((entry.node, entry.generation)),
                         };
                         tick(ui, picked, format!("result:{}:{}", entry.node, entry.generation), &title, pick, &mut ticks);
                         let mut facts: Vec<String> = entry.model.iter().cloned().collect();
@@ -790,9 +831,16 @@ impl NodeCraftApp {
                 return;
             }
             Browse::RetryImport => {
-                let retry = self.library.browsers.report.as_mut().map(|report| std::mem::take(&mut report.retry)).unwrap_or_default();
+                // The paths are given up only once the reading has started, so a refusal keeps them.
+                let retry = self.library.browsers.report.as_ref().map(|report| report.retry.clone()).unwrap_or_default();
                 #[cfg(not(target_arch = "wasm32"))]
-                self.read_library_files(retry);
+                {
+                    if self.read_library_files(retry)
+                        && let Some(report) = self.library.browsers.report.as_mut()
+                    {
+                        report.retry.clear();
+                    }
+                }
                 #[cfg(target_arch = "wasm32")]
                 drop(retry);
                 return;
@@ -816,7 +864,7 @@ impl NodeCraftApp {
             fresh.push(id);
         }
         let step = t.card_width + t.card_padding * 4.0;
-        let columns = (1..=MAX_ITEMS).find(|c| c * c >= items.len()).unwrap_or(MAX_ITEMS);
+        let columns = nodecraft_engine::library_attach_cmds::columns(items.len());
         let rows = items.len().div_ceil(columns);
         let at = Pos2::new(centre.x - step * columns as f32 * 0.5, centre.y - step * rows as f32 * 0.5);
         let params = json!({"canvas": self.canvas, "items": items, "ids": fresh, "at": {"x": at.x, "y": at.y}, "step": step});

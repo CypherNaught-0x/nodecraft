@@ -97,9 +97,8 @@ pub fn import_library(
     let mut outcome = LibraryImported::default();
     outcome.files.try_reserve_exact(files.len()).map_err(|_| Error::new(ErrorKind::InvalidInput, "cannot reserve import bookkeeping"))?;
     let mut seen: HashMap<Blake3, usize> = HashMap::new();
-    // The files handed to the drop's import: their input index, bytes, card id and title.
+    // The files handed to the drop's import: their input index and hash, card id and title.
     let mut pending: Vec<(usize, Blake3)> = Vec::new();
-    let mut incoming = Vec::new();
     let mut fresh = Vec::new();
     let mut titles = Vec::new();
     for (index, file) in files.iter().enumerate() {
@@ -122,7 +121,6 @@ pub fn import_library(
                     } else {
                         seen.insert(hash, index);
                         pending.push((index, hash));
-                        incoming.push(Incoming { name: file.name, bytes: file.bytes });
                         fresh.push(*id);
                         titles.push(name.clone());
                         // Settled below, once the batch is imported.
@@ -139,7 +137,15 @@ pub fn import_library(
     if pending.is_empty() {
         return Ok(outcome);
     }
-    match import_titled(session, canvas, at, step, &incoming, &fresh, movies, position, &titles) {
+    // Only the public names travel on, so no message the import makes can quote a folder.
+    let mut incoming = Vec::new();
+    incoming.try_reserve_exact(pending.len()).map_err(|_| Error::new(ErrorKind::InvalidInput, "cannot reserve import bookkeeping"))?;
+    for ((index, _), title) in pending.iter().zip(&titles) {
+        let bytes = files.get(*index).map(|file| file.bytes).unwrap_or_default();
+        incoming.push(Incoming { name: title, bytes });
+    }
+    let hashes: Vec<Blake3> = pending.iter().map(|(_, hash)| *hash).collect();
+    match import_titled(session, canvas, at, step, &incoming, &fresh, movies, position, &titles, &hashes) {
         Ok(imported) => {
             // Each pending file either became the card with its id or was skipped, in order.
             let mut skipped = imported.skipped.into_iter();

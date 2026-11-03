@@ -207,27 +207,33 @@ pub(crate) struct Located {
     pub titled: bool,
 }
 
-/// The first place, in the Assets browser's order, the open document holds media `hash`.
-pub(crate) fn locate(document: &Project, hash: &nodecraft_types::Blake3) -> Option<Located> {
-    let canvases = canvases(document, None).ok()?;
-    let found = every_asset(&canvases).into_iter().find(|f| f.asset.hash == *hash && ASSET_KINDS.contains(&f.kind))?;
-    let result = found.generation.and_then(|id| {
-        let index = found.node.history.iter().position(|g| g.id == id)?;
-        Some((id, index.saturating_add(1), found.node.history.len()))
-    });
-    Some(Located {
-        asset: found.asset.clone(),
-        kind: found.kind,
-        canvas: found.canvas.id(),
-        node: found.node.id,
-        label: label(found.node).to_owned(),
-        result,
-        titled: !found.node.title.trim().is_empty(),
-    })
+/// Where the open document holds each media hash: the first place, in the Assets browser's
+/// order. One walk of the document, however many hashes the caller then looks up.
+pub(crate) fn locate_all(document: &Project) -> HashMap<nodecraft_types::Blake3, Located> {
+    let mut located = HashMap::new();
+    let Ok(canvases) = canvases(document, None) else { return located };
+    for found in every_asset(&canvases).into_iter().filter(|f| ASSET_KINDS.contains(&f.kind)) {
+        located.entry(found.asset.hash).or_insert_with(|| {
+            let result = found.generation.and_then(|id| {
+                let index = found.node.history.iter().position(|g| g.id == id)?;
+                Some((id, index.saturating_add(1), found.node.history.len()))
+            });
+            Located {
+                asset: found.asset.clone(),
+                kind: found.kind,
+                canvas: found.canvas.id(),
+                node: found.node.id,
+                label: label(found.node).to_owned(),
+                result,
+                titled: !found.node.title.trim().is_empty(),
+            }
+        });
+    }
+    located
 }
 
 /// Every media hash the open document holds, as the Assets browser would list it.
-pub(crate) fn listed_hashes(document: &Project) -> HashSet<nodecraft_types::Blake3> {
+pub fn listed_hashes(document: &Project) -> HashSet<nodecraft_types::Blake3> {
     let Ok(canvases) = canvases(document, None) else { return HashSet::new() };
     every_asset(&canvases).into_iter().filter(|f| ASSET_KINDS.contains(&f.kind)).map(|f| f.asset.hash).collect()
 }

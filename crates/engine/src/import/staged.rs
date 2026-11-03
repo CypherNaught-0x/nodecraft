@@ -65,6 +65,7 @@ pub(super) fn run(
     movies: &[ProbedMovie],
     position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
     titles: &[String],
+    hashes: &[Blake3],
 ) -> Result<Imported, Error> {
     // A pending save changes the admission identity the prepared batch is checked against.
     session.settle_for_edit()?;
@@ -124,7 +125,9 @@ pub(super) fn run(
             Plan::Card(_) => None,
             Plan::Media { bytes, .. } => {
                 let length = u64::try_from(bytes.len()).map_err(|_| invalid("import length cannot be represented"))?;
-                let hash = Blake3::from_bytes(*blake3::hash(bytes).as_bytes());
+                // A caller's precomputed hash saves a pass; `prepare` checks every one against the
+                // bytes the store actually reads, so a wrong one refuses the import.
+                let hash = hashes.get(index).copied().unwrap_or_else(|| Blake3::from_bytes(*blake3::hash(bytes).as_bytes()));
                 if let Some(existing) = unique.iter().find(|file| file.hash == hash) {
                     if existing.bytes.len() != bytes.len() {
                         return Err(invalid("duplicate import has inconsistent content length"));

@@ -406,7 +406,7 @@ fn a_partial_library_import_reports_each_file_and_retries_only_the_failed_ones()
         Incoming { name: "/home/someone/private/holiday.png", bytes: &photo },
         Incoming { name: "notes.txt", bytes: b"Plain notes" },
         Incoming { name: "C:\\Users\\someone\\copy.png", bytes: &photo },
-        Incoming { name: "broken.png", bytes: &broken },
+        Incoming { name: "/home/someone/broken.png", bytes: &broken },
         Incoming { name: "empty.bin", bytes: b"" },
         Incoming { name: "other.png", bytes: &other },
     ];
@@ -427,6 +427,7 @@ fn a_partial_library_import_reports_each_file_and_retries_only_the_failed_ones()
     let names: Vec<&str> = imported.files.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(names, ["holiday.png", "notes.txt", "copy.png", "broken.png", "empty.bin", "other.png"]);
     assert_eq!(node(&s, ids(6)[0]).title, "holiday.png");
+    assert!(imported.files.iter().all(|(_, state)| !matches!(state, FileState::Failed { reason } if reason.contains("someone"))), "no reason quotes a folder");
     let saved = serde_json::to_string(s.document()).unwrap();
     assert!(!saved.contains("someone") && !saved.contains("private"), "no private path in the document");
     // One undo step for the whole import.

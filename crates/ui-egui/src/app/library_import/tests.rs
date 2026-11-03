@@ -121,3 +121,106 @@ fn reading_shows_per_file_progress_and_cancel_adds_nothing() {
     h.run();
     assert_eq!(h.state().session.document(), &before, "nothing was added");
 }
+
+/// Reads `paths` without a test hold and without cancelling.
+fn read(paths: Vec<PathBuf>) -> Vec<ReadFile> {
+    read_files(paths, &AtomicBool::new(false), &AtomicUsize::new(0), &|| {}).unwrap()
+}
+
+fn reason(file: &ReadFile) -> &str {
+    file.bytes.as_ref().err().map_or("", String::as_str)
+}
+
+#[test]
+fn the_reader_refuses_files_over_16_mib_and_stops_at_48_mib_in_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let write = |name: &str, len: usize| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, vec![7u8; len]).unwrap();
+        path
+    };
+    const MIB: usize = 1024 * 1024;
+    let big = write("big.bin", 16 * MIB + 1);
+    let fifteen: Vec<PathBuf> = (0..4).map(|i| write(&format!("part{i}.bin"), 15 * MIB)).collect();
+    let files = read([vec![big], fifteen].concat());
+    assert_eq!(reason(&files[0]), "files over 16 MiB can't be added");
+    assert!(files[1..4].iter().all(|file| file.bytes.is_ok()), "45 MiB fits");
+    assert_eq!(reason(&files[4]), OVER_ROOM, "the fourth 15 MiB file would pass 48 MiB");
+    // A cancelled reader stops before the next file.
+    let cancelled = read_files(vec![dir.path().join("part0.bin")], &AtomicBool::new(true), &AtomicUsize::new(0), &|| {});
+    assert!(cancelled.is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn the_reader_refuses_folders_and_pipes_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("folder");
+    std::fs::create_dir(&folder).unwrap();
+    let pipe = dir.path().join("pipe");
+    assert!(std::process::Command::new("mkfifo").arg(&pipe).status().unwrap().success());
+    let files = read(vec![folder, pipe]);
+    assert_eq!(reason(&files[0]), "only regular files are read, not devices or pipes");
+    assert_eq!(reason(&files[1]), "only regular files are read, not devices or pipes", "a FIFO opens at once and is refused");
+}
+
+#[test]
+fn retry_is_disabled_while_files_are_imported_and_keeps_the_failed_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("later.png");
+    let mut h = harness();
+    open_assets(&mut h);
+    h.state_mut().library.browsers.report = Some(super::super::library_browsers::ImportReport {
+        summary: "1 failed".into(),
+        lines: vec![ImportLine { name: "later.png".into(), state: "the file can't be read".into(), failed: true }],
+        retry: vec![missing.clone()],
+    });
+    let shot = dir.path().join("shot.png");
+    std::fs::write(&shot, png(70)).unwrap();
+    let (release, hold) = mpsc::channel();
+    h.state_mut().library.browsers.import.pick = Some(vec![shot]);
+    h.state_mut().library.browsers.import.hold = Some(hold);
+    h.get_by_label("Import files…").click();
+    h.run();
+    assert!(h.state().library.browsers.import.busy());
+    assert!(h.get_by_label("Retry failed (1)").accesskit_node().is_disabled(), "no retry while another import runs");
+    // Even asked directly, a refused retry keeps the paths to retry later.
+    let t = *h.state().theme.tokens();
+    h.state_mut().browse_action(super::super::library_browsers::Browse::RetryImport, &t);
+    assert_eq!(h.state().library.browsers.report.as_ref().unwrap().retry, std::slice::from_ref(&missing));
+    release.send(()).unwrap();
+    drop(release);
+    settle(&mut h);
+    assert_eq!(sources(&h), ["shot.png"]);
+}
+
+/// A fragmented MP4 states no length in its headers; the configured video service measures
+/// it before the import, as for a dropped file.
+#[test]
+#[ignore = "runs explicitly configured ffmpeg and ffprobe"]
+fn an_imported_video_keeps_the_length_the_video_service_measured() {
+    use nodecraft_types::Value;
+    let ffmpeg = PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let ffprobe = PathBuf::from(std::env::var_os("NODECRAFT_VIDEO_TEST_FFPROBE").unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fragmented.mp4");
+    let status = std::process::Command::new(&ffmpeg)
+        .args(["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", "color=c=green:s=64x48:r=4", "-t", "0.5", "-an", "-c:v", "libx264"])
+        .args(["-pix_fmt", "yuv420p", "-movflags", "empty_moov+frag_keyframe+default_base_moof"])
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(nodecraft_media::probe_movie(&std::fs::read(&path).unwrap()).unwrap().duration_ms, None);
+    let mut h = harness();
+    h.state_mut().videos.configure(Some((ffmpeg.as_path(), ffprobe.as_path())));
+    open_assets(&mut h);
+    h.state_mut().library.browsers.import.pick = Some(vec![path]);
+    h.get_by_label("Import files…").click();
+    h.run();
+    settle(&mut h);
+    let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
+    let video = canvas.nodes().values().find(|n| n.kind == "source.video").expect("a video card");
+    let Some(Value::Media(asset)) = video.params.get("asset") else { panic!("video source") };
+    assert_eq!((asset.meta.duration_ms, asset.meta.width, asset.meta.height), (Some(500), Some(64), Some(48)));
+}

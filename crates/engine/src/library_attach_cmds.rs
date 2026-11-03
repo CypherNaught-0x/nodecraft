@@ -10,7 +10,7 @@
 //! either all of it or nothing.
 use crate::commands::{CommandSpec, Context, Effect, invalid, params};
 use crate::history_cmds::{result_value, source_kind};
-use crate::library_browse_cmds::{locate, short_label};
+use crate::library_browse_cmds::{locate_all, short_label};
 use nodecraft_graph::{Change, Changeset, Node, Position};
 use nodecraft_types::{Blake3, CanvasId, Error, ErrorKind, GenerationId, NodeId, ParamValues};
 use serde::Deserialize;
@@ -70,8 +70,9 @@ struct AttachParams {
     step: Option<f32>,
 }
 
-/// The smallest column count whose square holds `n`.
-fn columns(n: usize) -> usize {
+/// The smallest column count whose square holds `n` (at most [`MAX_ITEMS`]): the grid
+/// `library.attach` lays cards out in, which a frontend uses to centre it.
+pub fn columns(n: usize) -> usize {
     (1..=MAX_ITEMS).find(|c| c.saturating_mul(*c) >= n).unwrap_or(MAX_ITEMS)
 }
 
@@ -106,6 +107,8 @@ fn plan(c: &Context<'_>, value: &Json) -> Result<(CanvasId, Vec<Node>, Vec<Json>
         }
     }
     let columns = columns(p.items.len());
+    // One walk of the document for every asset entry, never one per entry.
+    let located = if p.items.iter().any(|item| matches!(item, Item::Asset(_))) { locate_all(c.document) } else { Default::default() };
     let mut nodes = Vec::with_capacity(p.items.len());
     let mut placed = Vec::with_capacity(p.items.len());
     for (index, (item, id)) in p.items.iter().zip(&p.ids).enumerate() {
@@ -116,19 +119,19 @@ fn plan(c: &Context<'_>, value: &Json) -> Result<(CanvasId, Vec<Node>, Vec<Json>
         }
         let (kind, parameter, value, title, from) = match item {
             Item::Asset(AssetItem { hash }) => {
-                let located = locate(c.document, hash)
-                    .ok_or_else(|| Error::new(ErrorKind::NotFound, "the project holds no such image, video, sound, 3D model or PDF"))?;
+                let found =
+                    located.get(hash).ok_or_else(|| Error::new(ErrorKind::NotFound, "the project holds no such image, video, sound, 3D model or PDF"))?;
                 if !c.assets.contains(hash) {
                     return Err(Error::new(ErrorKind::NotFound, "the file is missing from this project"));
                 }
-                let (kind, parameter) = source_kind(located.kind)?;
-                let title = match located.result {
-                    Some((_, index, count)) => format!("{} · {index}/{count}", short_label(&located.label)),
-                    None if located.titled => short_label(&located.label),
+                let (kind, parameter) = source_kind(found.kind)?;
+                let title = match found.result {
+                    Some((_, index, count)) => format!("{} · {index}/{count}", short_label(&found.label)),
+                    None if found.titled => short_label(&found.label),
                     None => String::new(),
                 };
-                let from = json!({"canvas": located.canvas, "node": located.node, "generation": located.result.map(|r| r.0)});
-                (kind, parameter, nodecraft_types::Value::Media(located.asset), title, from)
+                let from = json!({"canvas": found.canvas, "node": found.node, "generation": found.result.map(|r| r.0)});
+                (kind, parameter, nodecraft_types::Value::Media(found.asset.clone()), title, from)
             }
             Item::Result(ResultItem { from }) => {
                 let (value, modality) = result_value(c, from.canvas, from.node, from.generation, from.port.as_deref(), from.item)?;
