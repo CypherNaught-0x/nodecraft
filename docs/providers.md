@@ -1394,6 +1394,18 @@ shows Higgsfield's reason on the card. Training can't be cancelled. When the des
 training it refreshes the option lists, so the new identity appears in SOUL 2's Soul ID picker,
 labelled without the tag, once it is ready.
 
+**Soul IDs are provider-bound handles (#180).** The trained descriptor is a style of family
+`soul-2` (`docs/decisions/2026-11-04-soul-ids-as-styles.md`), but unlike a style whose weights are
+a file it names an identity only the training account can use. `library.styles` marks it
+`portable: false` with the id it names and whether the account whose Soul IDs were last fetched
+lists it (`listed`, `unlisted` or `unchecked`). `history.export` and the folder exports refuse to
+write it out as a file, and the Share live panel says the project's Soul IDs work only on the
+account that trained them. **Use on selected card** (`style.use`) on a SOUL 2 card sets the card's
+Soul ID to it, as the picker does, rather than wiring it; family checks keep it off LoRA models.
+A project opened on another account keeps every Soul ID setting: with that account's list fetched
+the run is blocked as "not one of the available options", and with no list the adapter's free
+check refuses it as unknown to this account, still training or failed, before anything is paid.
+
 **Inputs.** Kling's image (PNG, JPEG or WebP whose bytes match their type, at most 20 MiB) is
 staged through Higgsfield's upload grant: the adapter asks for an upload link with the key, then
 PUTs the bytes to the storage host **without** the key, with only the grant's content type and

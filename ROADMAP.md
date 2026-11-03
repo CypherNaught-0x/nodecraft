@@ -86,6 +86,11 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   only its file name. Ticked files can be saved to My library, which every project shares
   (bounded at 4096 files and 1 GiB, repaired if its index is damaged), and placed from it on any
   canvas of any project (`library.saved`, `library.place_saved`; part of #96).
+  Higgsfield Soul IDs are listed from the account, trained on a Train style card and kept as
+  provider-bound handles: the Library and the Share live panel say they work only on the account
+  that trained them, exports never write one out as a file, Use on selected card sets a SOUL 2
+  card's Soul ID, and a project opened on another account keeps every setting and refuses the
+  run before paying (#180, #680).
   An Export to folder card writes the results wired into it into a folder a person chose on the
   card, with a file-name pattern and a keep/number/replace policy, on the background export worker
   with Cancel; the card never runs with the canvas (#746, completing #98's batch export).

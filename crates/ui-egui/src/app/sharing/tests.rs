@@ -322,6 +322,68 @@ fn the_share_chip_opens_the_panel() {
     assert!(h.query_by_label("Stop sharing").is_none());
 }
 
+/// A Train style card holding a trained Soul ID, recorded as a run records it.
+pub(crate) fn with_soul_id(app: &mut NodeCraftApp) {
+    let on = app.canvas;
+    let card = NodeId::from_bytes([90; 16]);
+    let session = &mut app.session;
+    session.dispatch("node.create", &json!({"canvas": on, "id": card, "kind": nodecraft_nodes::generation::STYLE_KIND, "pos": {"x": 900, "y": 900}})).unwrap();
+    session.dispatch("node.title", &json!({"canvas": on, "id": card, "title": "Mara"})).unwrap();
+    let style = nodecraft_media::style::Style {
+        provider: "higgsfield".into(),
+        trainer: "higgsfield/soul-id/v2".into(),
+        family: "soul-2".into(),
+        trigger: String::new(),
+        weights: "https://api.higgsfield.ai/v1/custom-references/7c9e6679-7425-40de-944b-e07fc1f90ae7".into(),
+    };
+    let hash = session.import_asset(&nodecraft_media::style::encode(&style).unwrap()).unwrap();
+    let asset = nodecraft_types::AssetRef { hash, mime: "application/vnd.nodecraft.style+json; family=soul-2".parse().unwrap(), meta: Default::default() };
+    let results = json!([{"node": card, "generation": {"id": nodecraft_types::GenerationId::from_bytes([91; 16]), "outputs": [Value::Media(asset)]}}]);
+    session.dispatch("run.record", &json!({"canvas": on, "results": results})).unwrap();
+}
+
+#[test]
+fn the_share_panel_says_a_projects_soul_ids_work_only_on_the_account_that_trained_them() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1200.0, 800.0))
+        .with_max_steps(60)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app(&opened));
+    h.run();
+    use egui_kittest::kittest::Queryable;
+    crate::app::topbar_tests::reveal(&mut h, "Share");
+    h.get_by_label("Share").click();
+    h.run();
+    let note = "This project uses Higgsfield Soul IDs";
+    assert!(h.query_by_label_contains(note).is_none(), "no Soul IDs, no note");
+    with_soul_id(h.state_mut());
+    h.run();
+    h.run();
+    assert!(h.query_by_label_contains(note).is_some(), "the note follows the document's revision");
+}
+
+#[test]
+#[ignore = "manual public-safe capture; SOUL180_RENDER_DIR"]
+fn soul180_share_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("SOUL180_RENDER_DIR").unwrap());
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let mut owner = app(&opened);
+    with_soul_id(&mut owner);
+    let mut h = egui_kittest::Harness::builder()
+        .wgpu()
+        .with_size(Vec2::new(1200.0, 800.0))
+        .with_max_steps(60)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), owner);
+    h.run();
+    use egui_kittest::kittest::Queryable;
+    crate::app::topbar_tests::reveal(&mut h, "Share");
+    h.get_by_label("Share").click();
+    for _ in 0..4 {
+        h.run();
+    }
+    h.render().unwrap().save(dir.join("soul180-share-panel.png")).unwrap();
+}
+
 #[test]
 #[ignore = "manual public-safe capture; SHARE698_RENDER_DIR"]
 fn share698_visual() {

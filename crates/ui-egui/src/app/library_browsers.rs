@@ -170,6 +170,9 @@ struct StyleEntry {
     identity: bool,
     trigger: Option<String>,
     kept_by: Option<String>,
+    /// For a Soul ID: listed, unlisted or unchecked against the account last fetched.
+    #[serde(default)]
+    available: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -937,7 +940,29 @@ pub(super) fn show(
                     facts.push("not trained yet".into());
                 }
                 ui.label(egui::RichText::new(facts.join(" · ")).small().color(t.text_muted));
-                if let Some(provider) = &entry.kept_by {
+                if entry.identity {
+                    // A handle to one account's identity, never a file to hand on (#180).
+                    ui.label(
+                        egui::RichText::new("Bound to the Higgsfield account that trained it: not a portable file, and not exported")
+                            .small()
+                            .color(t.text_muted),
+                    );
+                    match entry.available.as_deref() {
+                        Some("unlisted") => {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Unavailable on this account: cards keep it, but runs are refused until you use the account that trained it",
+                                )
+                                .small()
+                                .color(t.danger),
+                            );
+                        }
+                        Some("unchecked") => {
+                            ui.label(egui::RichText::new("Not checked on this account yet; Refresh option lists checks it").small().color(t.text_muted));
+                        }
+                        _ => {}
+                    }
+                } else if let Some(provider) = &entry.kept_by {
                     ui.label(egui::RichText::new(format!("Kept by {}: only that account can use it", sheet_view::line(provider))).small().color(t.text_muted));
                 }
                 if entry.canvas == canvas {
@@ -957,6 +982,7 @@ pub(super) fn show(
                         .clone();
                     let button = ui.add_enabled(verdict.is_ok(), egui::Button::new("Use on selected card"));
                     let button = match &verdict {
+                        Ok(_) if entry.identity => button.on_hover_text("Set the selected SOUL 2 card's Soul ID to this one; one undo step. It doesn't run."),
                         Ok(_) => button.on_hover_text("Wire this style into the selected card's style input; one undo step. It doesn't run."),
                         Err(why) => button.on_disabled_hover_text(why.as_str()),
                     };

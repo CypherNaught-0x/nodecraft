@@ -92,6 +92,7 @@ pub mod resolve_cmds;
 pub mod results_export;
 pub mod search_cmds;
 pub mod share_cmds;
+pub mod soul_ids;
 pub mod storage_window_cmds;
 pub mod style_cmds;
 
