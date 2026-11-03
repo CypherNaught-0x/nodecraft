@@ -819,6 +819,29 @@ mod tests {
         assert_eq!(saved.base_urls.get("openai").and_then(BaseUrlEntry::text), Some("https://proxy.example/v1"));
         assert_eq!(saved.base_urls.get("anthropic"), Some(&BaseUrlEntry::Unreadable(serde_json::json!(3))), "kept as written");
         assert_eq!(saved.base_urls.get("replicate").and_then(BaseUrlEntry::text), Some("https://x.example"), "unknown keys are kept");
+        // TOML `nan` and `inf` read as unreadable, never as unset, and are saved back readable.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 2\n[providers]\ninstall_salt = \"s\"\n[providers.base_urls]\nopenai = nan\nanthropic = inf\n");
+        let (mut store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        for provider in ["openai", "anthropic"] {
+            assert!(base_url(&store.get().providers, provider).is_err(), "{provider}");
+        }
+        store.update(|settings| settings.providers.install_salt = "t".into());
+        store.flush().unwrap();
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        assert_eq!(store.get().providers.install_salt, "t");
+        assert!(base_url(&store.get().providers, "openai").is_err(), "still refused after a save");
+        // More entries than are read refuse every provider, whichever were cut.
+        let dir = tempfile::tempdir().unwrap();
+        let many: String = (0..70).map(|n| format!("zz{n:02} = \"https://x.example\"\n")).collect();
+        write_config(dir.path(), &format!("schema_version = 2\n[providers]\ninstall_salt = \"s\"\n[providers.base_urls]\n{many}"));
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        for entry in crate::custom_endpoints::PROVIDERS {
+            assert!(base_url(&store.get().providers, entry.provider).is_err(), "{}", entry.provider);
+        }
         // A value that isn't a table refuses every provider.
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path(), "schema_version = 2\n[providers]\ninstall_salt = \"s\"\nbase_urls = \"https://x.example\"\n");

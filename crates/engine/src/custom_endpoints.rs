@@ -102,7 +102,7 @@ impl From<String> for BaseUrlEntry {
 /// The key a `[providers.base_urls]` value that isn't a table is kept under: it refuses every
 /// provider in [`PROVIDERS`] until the person fixes it.
 pub const UNREADABLE_TABLE: &str = "*";
-/// The most entries read; a longer table is cut there.
+/// The most entries read; a longer table is cut there and refuses every listed provider.
 const MAX_ENTRIES: usize = 64;
 
 /// The refusal for an unusable base URL. It never quotes the URL.
@@ -229,15 +229,25 @@ pub(crate) fn lenient_base_urls<'de, D: serde::Deserializer<'de>>(deserializer: 
     let read = <Option<serde_json::Value> as Deserialize>::deserialize(deserializer)?;
     Ok(match read {
         None | Some(serde_json::Value::Null) => BTreeMap::new(),
-        Some(serde_json::Value::Object(entries)) => entries
-            .into_iter()
-            .filter_map(|(key, value)| match value {
-                serde_json::Value::Null => None,
-                serde_json::Value::String(text) => Some((key, BaseUrlEntry::Text(text))),
-                other => Some((key, BaseUrlEntry::Unreadable(other))),
-            })
-            .take(MAX_ENTRIES)
-            .collect(),
+        Some(serde_json::Value::Object(entries)) => {
+            let overflow = entries.len() > MAX_ENTRIES;
+            let mut read: BTreeMap<String, BaseUrlEntry> = entries
+                .into_iter()
+                .take(MAX_ENTRIES)
+                .map(|(key, value)| match value {
+                    serde_json::Value::String(text) => (key, BaseUrlEntry::Text(text)),
+                    // A TOML `nan` or `inf` reads as null: unreadable, never "unset". It is kept
+                    // as `false`, which TOML can write back.
+                    serde_json::Value::Null => (key, BaseUrlEntry::Unreadable(serde_json::Value::Bool(false))),
+                    other => (key, BaseUrlEntry::Unreadable(other)),
+                })
+                .collect();
+            if overflow {
+                // Entries past the limit aren't read, and one of them could be a provider's.
+                read.insert(UNREADABLE_TABLE.to_owned(), BaseUrlEntry::Unreadable(serde_json::Value::Bool(false)));
+            }
+            read
+        }
         Some(other) => [(UNREADABLE_TABLE.to_owned(), BaseUrlEntry::Unreadable(other))].into(),
     })
 }
