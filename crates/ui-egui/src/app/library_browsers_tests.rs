@@ -200,3 +200,102 @@ fn the_styles_tab_marks_soul_ids_and_the_provider_and_uses_a_style_on_the_select
     assert_eq!(places.len(), 3, "each style card's result is listed");
     assert!(places.iter().all(|button| button.accesskit_node().is_disabled()));
 }
+
+const PAINTER: NodeId = NodeId::from_bytes([90; 16]);
+
+/// An image card titled "Painter", far from the view's middle, with two image results.
+fn with_paintings(h: &mut Harness<'static, NodeCraftApp>) {
+    let on = h.state().canvas;
+    let session = &mut h.state_mut().session;
+    let mut node = session.kinds().get("generation.image").unwrap().descriptor().instantiate(PAINTER, &BTreeMap::new()).unwrap();
+    node.pos = nodecraft_graph::Position { x: 3000.0, y: 3000.0 };
+    session.dispatch("node.add", &json!({"canvas": on, "node": node})).unwrap();
+    session.dispatch("node.title", &json!({"canvas": on, "id": PAINTER, "title": "Painter"})).unwrap();
+    for i in 1..=2u8 {
+        let png = nodecraft_media::encode_png(3, 3, &[40 * i; 36], &Default::default()).unwrap();
+        let hash = session.import_asset(&png).unwrap();
+        let asset = AssetRef { hash, mime: "image/png".parse().unwrap(), meta: Default::default() };
+        let results = json!([{"node": PAINTER, "generation": {"id": g(10 + i), "outputs": [Value::Media(asset)]}}]);
+        session.dispatch("run.record", &json!({"canvas": on, "results": results})).unwrap();
+    }
+    h.run();
+}
+
+#[test]
+fn ticked_results_go_on_the_canvas_together_in_one_undo_step() {
+    let mut h = harness();
+    with_paintings(&mut h);
+    open(&mut h, "History");
+    assert!(h.query_by_label("Place on canvas").is_none(), "no bar until something is ticked");
+    h.get_by_label("Painter · 2/2").click();
+    h.run();
+    h.get_by_label("Painter · 1/2").click();
+    h.run();
+    assert!(h.query_by_label("2 ticked").is_some());
+    let before = h.state().session.document().clone();
+    let count = canvas(&h).nodes().len();
+    h.get_by_label("Place on canvas").click();
+    h.run();
+    assert_eq!(canvas(&h).nodes().len(), count + 2, "{:?}", h.state().notice);
+    let placed: Vec<NodeId> = h.state().selection.nodes().iter().copied().collect();
+    assert_eq!(placed.len(), 2, "the placed cards are selected");
+    let mut titles: Vec<String> = placed.iter().map(|id| canvas(&h).nodes()[id].title.clone()).collect();
+    titles.sort();
+    assert_eq!(titles, ["Painter · 1/2", "Painter · 2/2"], "each card says where it came from");
+    assert!(placed.iter().all(|id| canvas(&h).nodes()[id].kind == "source.image"));
+    assert!(h.query_by_label("2 ticked").is_none(), "placing clears the ticks");
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &before, "one undo step for all of them");
+}
+
+#[test]
+fn ticked_assets_are_placed_and_only_results_on_this_canvas_export() {
+    let mut h = harness();
+    let photo = with_photo(&mut h);
+    with_paintings(&mut h);
+    open(&mut h, "Assets");
+    assert!(wait_for(&mut h, "Thumbnail of Holiday photo"));
+    h.get_by_label("Holiday photo").click();
+    h.run();
+    assert!(h.get_by_label("Export…").accesskit_node().is_disabled(), "a card's own asset is not a result to export");
+    let painted: Vec<_> = h.query_all_by_label("Painter").collect();
+    assert_eq!(painted.len(), 2);
+    painted[0].click();
+    h.run();
+    assert!(h.query_by_label("2 ticked").is_some());
+    let count = canvas(&h).nodes().len();
+    h.get_by_label("Place on canvas").click();
+    h.run();
+    assert_eq!(canvas(&h).nodes().len(), count + 2, "{:?}", h.state().notice);
+    assert_eq!(holding(&h, &photo).len(), 2, "the photo again, from the project's stored bytes");
+    // Ticking a painting alone allows Export: an entry labelled with its card was found in a result.
+    h.query_all_by_label("Painter").next().unwrap().click();
+    h.run();
+    assert!(!h.get_by_label("Export…").accesskit_node().is_disabled());
+    h.get_by_label("Clear ticks").click();
+    h.run();
+    assert!(h.query_by_label("Export…").is_none());
+}
+
+#[test]
+#[cfg(unix)]
+fn ticked_results_export_through_the_workflow_result_save_after_a_folder_is_chosen() {
+    let _serial = super::export_tests::EXPORT_TESTS.lock().unwrap();
+    let mut h = harness();
+    with_paintings(&mut h);
+    open(&mut h, "History");
+    h.get_by_label("Painter · 2/2").click();
+    h.run();
+    h.get_by_label("Painter · 1/2").click();
+    h.run();
+    let dir = tempfile::tempdir().unwrap();
+    h.state_mut().exports.answer = Some(dir.path().to_path_buf());
+    h.get_by_label("Export…").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Save workflow results").is_some(), "{:?}", h.state().notice);
+    assert!(h.query_by_label("Only the chosen historical result items.").is_some());
+    assert!(h.query_by_label("2 media files; 2 ready").is_some());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing is written before Save files");
+    h.get_by_label("Cancel").click();
+    h.run_steps(2);
+}

@@ -4,9 +4,17 @@
 //! or the filters change), and acts through existing commands: an asset goes on the canvas as a
 //! source card with `node.add`, a result is restored with `history.select` or placed with
 //! `history.extract`, and a style is wired into the selected card with `style.use`.
+//!
+//! Assets and results can also be ticked, up to 32 at a time across pages: "Place on canvas"
+//! puts them all on the open canvas with `library.attach`, one undo step, and "Export…" saves
+//! the ticked results through the workflow-result save (`export.results_plan` and
+//! `export.results_start`), after a person picks the folder. "Import files…" brings files into
+//! the library as source cards (`library_import`).
 use super::*;
 use crate::preview::Preview;
+use nodecraft_engine::library_attach_cmds::MAX_ITEMS;
 use nodecraft_engine::library_browse_cmds::{MAX_QUERY_BYTES, kind_of};
+use nodecraft_engine::results_export::ResultSelector;
 use nodecraft_types::{AssetRef, Blake3, GenerationId, MediaMeta, Mime};
 use serde::Deserialize;
 
@@ -55,7 +63,15 @@ struct AssetEntry {
     #[serde(default)]
     meta: MediaMeta,
     label: String,
+    canvas: CanvasId,
     canvas_title: String,
+    node: NodeId,
+    #[serde(default)]
+    generation: Option<GenerationId>,
+    #[serde(default)]
+    port: Option<String>,
+    #[serde(default)]
+    item: Option<usize>,
     uses: usize,
     #[serde(default)]
     stored: bool,
@@ -153,6 +169,40 @@ pub(super) struct Browsers {
     /// Whether each style on the open canvas can go into the selected card, as `style.use`
     /// answered for this document revision and selection.
     verdicts: Option<(VerdictKey, Verdicts)>,
+    /// The ticked entries, by key, for the project and canvas they were ticked on.
+    picked: std::collections::BTreeMap<String, Pick>,
+    picked_for: Option<(ProjectId, CanvasId)>,
+    /// The last library import's report.
+    pub(super) report: Option<ImportReport>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) import: super::library_import::LibraryImport,
+}
+
+/// One ticked entry: what `library.attach` takes to place it, and what the workflow-result save
+/// takes to export it (`None` when it can't be: an asset not made on the open canvas).
+#[derive(Clone, Debug)]
+pub(super) struct Pick {
+    tab: Tab,
+    place: Option<serde_json::Value>,
+    export: Option<ResultSelector>,
+}
+
+/// One file of the last library import, as its report shows it.
+#[derive(Clone, Debug)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(super) struct ImportLine {
+    pub(super) name: String,
+    pub(super) state: String,
+    pub(super) failed: bool,
+}
+
+/// What the last library import did, file by file. The paths of the failed files stay here, in
+/// the window's view state, for "Retry failed"; the document never holds them.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ImportReport {
+    pub(super) summary: String,
+    pub(super) lines: Vec<ImportLine>,
+    pub(super) retry: Vec<std::path::PathBuf>,
 }
 
 /// What the style verdicts were checked against.
@@ -163,6 +213,17 @@ type Verdicts = std::collections::HashMap<NodeId, Result<NodeId, String>>;
 impl Browsers {
     fn offset(&mut self) -> &mut usize {
         self.offsets.entry(self.tab).or_default()
+    }
+    /// The ticked entries of the open tab.
+    fn picks(&self) -> impl Iterator<Item = &Pick> {
+        self.picked.values().filter(|pick| pick.tab == self.tab)
+    }
+    /// Forgets ticks made on another project or canvas.
+    fn keep_picks_for(&mut self, project: ProjectId, canvas: CanvasId) {
+        if self.picked_for != Some((project, canvas)) {
+            self.picked.clear();
+            self.picked_for = Some((project, canvas));
+        }
     }
 }
 
@@ -193,6 +254,94 @@ pub(super) enum Browse {
         target: NodeId,
     },
     OpenCanvas(CanvasId),
+    /// Every ticked entry as a source card on the open canvas, in one undo step.
+    Attach(Vec<serde_json::Value>),
+    /// Save the ticked results to a folder a person picks.
+    Export(Vec<ResultSelector>),
+    /// Pick files to import into the library.
+    Import,
+    /// Read the files that failed in the last import again.
+    RetryImport,
+}
+
+/// A tick box for one entry, labelled `label`, given what is ticked now; a change goes in
+/// `ticks`. At most [`MAX_ITEMS`] entries can be ticked.
+fn tick(ui: &mut egui::Ui, picked: &std::collections::BTreeMap<String, Pick>, key: String, label: &str, pick: Pick, ticks: &mut Vec<(String, Option<Pick>)>) {
+    let mut on = picked.contains_key(&key);
+    let room = on || picked.len() < MAX_ITEMS;
+    let response = ui.add_enabled(room, egui::Checkbox::new(&mut on, label));
+    if response.on_disabled_hover_text("At most 32 entries can be ticked at once").changed() {
+        ticks.push((key, on.then_some(pick)));
+    }
+}
+
+/// The bar over a list with ticked entries: how many, and what can be done with them all.
+fn bulk(ui: &mut egui::Ui, t: &Tokens, browsers: &mut Browsers, action: &mut Option<Browse>) {
+    let picks: Vec<Pick> = browsers.picks().cloned().collect();
+    if picks.is_empty() {
+        return;
+    }
+    let mut clear = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(format!("{} ticked", picks.len())).color(t.text));
+        let places: Option<Vec<serde_json::Value>> = picks.iter().map(|pick| pick.place.clone()).collect();
+        let place = ui.add_enabled(places.is_some(), egui::Button::new("Place on canvas"));
+        if place
+            .on_hover_text("Each ticked entry as a source card in the middle of the view; one undo step")
+            .on_disabled_hover_text(
+                "A ticked entry can't become a source card: a trained style, a result made for other outputs, or a file missing from the project",
+            )
+            .clicked()
+            && let Some(places) = places
+        {
+            *action = Some(Browse::Attach(places));
+        }
+        let exports: Option<Vec<ResultSelector>> = picks.iter().map(|pick| pick.export.clone()).collect();
+        let export = ui.add_enabled(exports.is_some(), egui::Button::new("Export…"));
+        if export
+            .on_hover_text("Save the ticked results' original files, with their run settings, to a folder you choose")
+            .on_disabled_hover_text("Only media results made on this canvas export to files; place an asset and run, or open its canvas")
+            .clicked()
+            && let Some(exports) = exports
+        {
+            *action = Some(Browse::Export(exports));
+        }
+        clear = ui.button("Clear ticks").clicked();
+    });
+    if clear {
+        let tab = browsers.tab;
+        browsers.picked.retain(|_, pick| pick.tab != tab);
+    }
+}
+
+/// The last library import's report: each file and what became of it, with Retry and Dismiss.
+fn report(ui: &mut egui::Ui, t: &Tokens, browsers: &mut Browsers, action: &mut Option<Browse>) {
+    let Some(report) = &browsers.report else { return };
+    let mut dismiss = false;
+    egui::Frame::NONE.fill(t.card_fill).corner_radius(t.panel_radius).inner_margin(t.card_padding).show(ui, |ui| {
+        ui.label(egui::RichText::new(format!("Import: {}", report.summary)).color(t.text));
+        egui::ScrollArea::vertical().id_salt("library_import_report").max_height(t.card_width * 0.5).show(ui, |ui| {
+            for line in &report.lines {
+                let colour = if line.failed { t.danger } else { t.text_muted };
+                ui.label(egui::RichText::new(format!("{}: {}", sheet_view::line(&line.name), line.state)).small().color(colour));
+            }
+        });
+        ui.horizontal(|ui| {
+            let failed = report.retry.len();
+            if failed > 0
+                && ui
+                    .button(format!("Retry failed ({failed})"))
+                    .on_hover_text("Read the files that failed again and import them; the rest are left alone")
+                    .clicked()
+            {
+                *action = Some(Browse::RetryImport);
+            }
+            dismiss = ui.button("Dismiss").clicked();
+        });
+    });
+    if dismiss {
+        browsers.report = None;
+    }
 }
 
 /// `text` cut to at most `max` bytes at a character boundary.
@@ -368,9 +517,25 @@ pub(super) fn show(
 ) -> Option<Browse> {
     let mut action = None;
     ui.set_max_width(t.dialog_width);
+    browsers.keep_picks_for(session.document().id(), canvas);
     match browsers.tab {
         Tab::Library => {}
         Tab::Assets => {
+            #[cfg(not(target_arch = "wasm32"))]
+            let (importing, why) = (browsers.import.busy(), "Files are being imported");
+            #[cfg(target_arch = "wasm32")]
+            let (importing, why) = (true, "In the browser, drop files onto the canvas to add them");
+            let import = ui.add_enabled(!importing, egui::Button::new("Import files…"));
+            if import
+                .on_hover_text(
+                    "Add images, videos, sounds, 3D models and PDFs as source cards in the middle of the view; one undo step. Only each file's name is kept.",
+                )
+                .on_disabled_hover_text(why)
+                .clicked()
+            {
+                action = Some(Browse::Import);
+            }
+            report(ui, t, browsers, &mut action);
             ui.horizontal_wrapped(|ui| {
                 for (kind, label) in KINDS {
                     if ui.selectable_label(browsers.kind == kind, label).clicked() && browsers.kind != kind {
@@ -404,6 +569,10 @@ pub(super) fn show(
             );
         }
     }
+    if matches!(browsers.tab, Tab::Assets | Tab::History) {
+        bulk(ui, t, browsers, &mut action);
+    }
+    let mut ticks = Vec::new();
     let mut offset = *browsers.offset();
     let key = (session.document().id(), session.revision(), canvas, selected);
     if browsers.verdicts.as_ref().is_none_or(|(old, _)| *old != key) {
@@ -411,8 +580,9 @@ pub(super) fn show(
     }
     let Some((_, listed)) = &browsers.listed else {
         ui.label(egui::RichText::new("Reading…").color(t.text_muted));
-        return None;
+        return action;
     };
+    let picked = &browsers.picked;
     let mut no_verdicts = Verdicts::new();
     let verdicts = browsers.verdicts.as_mut().map_or(&mut no_verdicts, |(_, verdicts)| verdicts);
     egui::ScrollArea::vertical().max_height(t.sheet_list_height).show(ui, |ui| match listed {
@@ -433,14 +603,25 @@ pub(super) fn show(
                 ui.horizontal(|ui| {
                     thumbnail(ui, t, previews, session, &asset, &entry.label);
                     ui.vertical(|ui| {
-                        ui.label(sheet_view::line(&entry.label));
+                        let insertable = entry.source.is_some() && entry.stored;
+                        let pick = Pick {
+                            tab: Tab::Assets,
+                            place: insertable.then(|| json!({"hash": entry.hash})),
+                            export: entry.generation.filter(|_| entry.canvas == canvas && entry.stored).map(|generation| ResultSelector {
+                                node: entry.node,
+                                generation,
+                                port: entry.port.clone(),
+                                item: entry.item,
+                            }),
+                        };
+                        tick(ui, picked, format!("asset:{}", entry.hash), &sheet_view::line(&entry.label), pick, &mut ticks);
                         let uses = if entry.uses > 1 { format!(" · used {}×", entry.uses) } else { String::new() };
                         ui.label(
                             egui::RichText::new(format!("{} · {}{uses}", kind_name(entry.kind), sheet_view::line(&entry.canvas_title)))
                                 .small()
                                 .color(t.text_muted),
                         );
-                        let insert = ui.add_enabled(entry.source.is_some() && entry.stored, egui::Button::new("Insert"));
+                        let insert = ui.add_enabled(insertable, egui::Button::new("Insert"));
                         let why = if entry.stored { "This kind of file has no source card" } else { "The file is missing from this project" };
                         if insert.on_hover_text("A card holding it, in the middle of the view; one undo step").on_disabled_hover_text(why).clicked()
                             && let Some(source) = &entry.source
@@ -464,7 +645,19 @@ pub(super) fn show(
                         thumbnail(ui, t, previews, session, &asset, &title);
                     }
                     ui.vertical(|ui| {
-                        ui.label(&title);
+                        let pick = Pick {
+                            tab: Tab::History,
+                            place: entry.place.as_ref().map(|place| {
+                                json!({"from": {"canvas": canvas, "node": entry.node, "generation": entry.generation, "port": place.port, "item": place.item}})
+                            }),
+                            export: entry.place.as_ref().filter(|_| entry.media.is_some()).map(|place| ResultSelector {
+                                node: entry.node,
+                                generation: entry.generation,
+                                port: Some(place.port.clone()),
+                                item: place.item,
+                            }),
+                        };
+                        tick(ui, picked, format!("result:{}:{}", entry.node, entry.generation), &title, pick, &mut ticks);
                         let mut facts: Vec<String> = entry.model.iter().cloned().collect();
                         if entry.active {
                             facts.push("in use".into());
@@ -560,6 +753,12 @@ pub(super) fn show(
         }
     });
     *browsers.offset() = offset;
+    for (key, pick) in ticks {
+        match pick {
+            Some(pick) => browsers.picked.insert(key, pick),
+            None => browsers.picked.remove(&key),
+        };
+    }
     action
 }
 
@@ -580,6 +779,24 @@ impl NodeCraftApp {
                 self.open_canvas(canvas);
                 Ok(())
             }
+            Browse::Attach(items) => self.browse_attach(t, items),
+            Browse::Export(targets) => {
+                self.start_results_save(Some(targets));
+                return;
+            }
+            Browse::Import => {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.pick_library_files();
+                return;
+            }
+            Browse::RetryImport => {
+                let retry = self.library.browsers.report.as_mut().map(|report| std::mem::take(&mut report.retry)).unwrap_or_default();
+                #[cfg(not(target_arch = "wasm32"))]
+                self.read_library_files(retry);
+                #[cfg(target_arch = "wasm32")]
+                drop(retry);
+                return;
+            }
         };
         match result {
             Ok(()) => self.notice = None,
@@ -587,8 +804,31 @@ impl NodeCraftApp {
         }
     }
 
+    /// Every ticked entry as a source card with `library.attach`, in a grid centred in the view,
+    /// selected; the ticks of the open tab are cleared.
+    fn browse_attach(&mut self, t: &Tokens, items: Vec<serde_json::Value>) -> Result<(), Error> {
+        let centre = self.browse_centre(t)?;
+        let mut fresh: Vec<NodeId> = Vec::with_capacity(items.len());
+        for index in 0..items.len() {
+            let id = ids::node_id(self.session.document(), ("library-attach", self.session.revision(), index))
+                .filter(|id| !fresh.contains(id))
+                .ok_or_else(|| Error::new(ErrorKind::Conflict, "Couldn't allocate node ids; try again."))?;
+            fresh.push(id);
+        }
+        let step = t.card_width + t.card_padding * 4.0;
+        let columns = (1..=MAX_ITEMS).find(|c| c * c >= items.len()).unwrap_or(MAX_ITEMS);
+        let rows = items.len().div_ceil(columns);
+        let at = Pos2::new(centre.x - step * columns as f32 * 0.5, centre.y - step * rows as f32 * 0.5);
+        let params = json!({"canvas": self.canvas, "items": items, "ids": fresh, "at": {"x": at.x, "y": at.y}, "step": step});
+        self.session.dispatch("library.attach", &params)?;
+        self.selection.replace(fresh.into_iter().collect());
+        let tab = self.library.browsers.tab;
+        self.library.browsers.picked.retain(|_, pick| pick.tab != tab);
+        Ok(())
+    }
+
     /// The middle of the usable view, in canvas coordinates.
-    fn browse_centre(&self, t: &Tokens) -> Result<Pos2, Error> {
+    pub(super) fn browse_centre(&self, t: &Tokens) -> Result<Pos2, Error> {
         let usable = self.navigation.usable(self.viewport, t);
         let centre = self.view.to_world(self.viewport.min, usable.center());
         if !canvas::valid_rect(usable) || !centre.is_finite() {

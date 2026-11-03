@@ -372,6 +372,8 @@ mod layer_editor;
 mod layer_fonts;
 mod layout;
 mod library_browsers;
+#[cfg(not(target_arch = "wasm32"))]
+mod library_import;
 mod library_view;
 mod live;
 mod mask_badges;

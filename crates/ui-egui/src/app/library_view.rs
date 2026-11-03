@@ -79,6 +79,9 @@ impl NodeCraftApp {
 
     /// The panel listing the project's published versions and the library's.
     pub(super) fn techniques_panel(&mut self, ctx: &egui::Context, t: &Tokens) {
+        // A library import keeps going, and shows its progress, with the panel closed.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_library_import(ctx, t);
         if !self.library.open {
             return;
         }
