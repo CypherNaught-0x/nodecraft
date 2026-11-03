@@ -24,6 +24,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **OpenRouter** | `llm` | API key | text, vision, streaming | Model ids like `anthropic/claude-opus-5-5`. |
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Azure OpenAI** (v1 Chat Completions) | `llm` | resource API key (`Authorization: Bearer`) | text chat and streaming | Reuses `LlmClient` through `Endpoint::azure_openai`; the **Azure OpenAI deployment** card sends the configured deployment name as `model`. Unknown usage price requires explicit acceptance. No dated `api-version` or Azure SDK. |
+| **Amazon Bedrock** (OpenAI-compatible Chat Completions on `bedrock-runtime`) | `llm` | Bedrock API key (`Authorization: Bearer`), keychain account `bedrock` | text → text, streaming | Reuses `LlmClient` through `Endpoint::bedrock` with `[providers] bedrock_region`. GPT OSS 120B and 20B cards; unknown usage price requires explicit acceptance; no automatic paid replay. No SigV4, AWS SDK, Converse API or AWS credential discovery (#489). See below. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. After the server is read, the model picker's ComfyUI group also lists the server's own models by type (`comfy.models.list`, #970). Only Generate image cards get them. A listed checkpoint runs through the FLUX graph when a word in its name starts with `flux`, and through the SDXL graph otherwise. SD 1.x/2.x names and names whose architecture isn't recognised carry a warning that they may fail. Names that hint at video, audio, SD3, inpainting, refiners, FLUX tool models or other model families are shown as unavailable. LoRAs, VAEs, text encoders, diffusion models and upscalers are listed as unavailable, each with its reason, because no built-in workflow loads them on their own. Imported workflow cards are listed by title, and choosing one places a copy. A name the server doesn't list is refused, never replaced (docs/decisions/2026-11-03-comfy-server-models-in-picker.md). A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file or pasting its JSON on the canvas does the same. Pasted workflow text is titled Pasted workflow because the text clipboard supplies no filename; a file drop keeps its filename. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
@@ -72,6 +73,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `openai` (chat) | `openai` | — |
 | `anthropic` (chat) | `anthropic` | — |
 | `azure-openai` (chat) | `azure-openai` | `[providers] azure_openai_url` with an HTTPS Azure resource root or its `/openai/v1` base |
+| `bedrock` (chat) | `bedrock` (a Bedrock API key) | `[providers] bedrock_region` with an AWS Region code such as `us-east-1`, and access to the model in that Region |
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
@@ -197,6 +199,50 @@ NODECRAFT_LIVE_AZURE_OPENAI=1 AZURE_OPENAI_API_KEY=… \
   AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com \
   AZURE_OPENAI_DEPLOYMENT=YOUR-DEPLOYMENT \
   cargo test -p nodecraft-providers --test live_llm live_azure_openai
+```
+
+### Amazon Bedrock (#46)
+
+Select **GPT OSS 120B (Bedrock)** or **GPT OSS 20B (Bedrock)** on a text generation card. They
+send Bedrock's model ids `openai.gpt-oss-120b-1:0` and `openai.gpt-oss-20b-1:0` to the
+OpenAI-compatible Chat Completions route on `bedrock-runtime`, which AWS documents at
+`https://bedrock-runtime.{region}.amazonaws.com/openai/v1/chat/completions` with a Bedrock API
+key as `Authorization: Bearer` ([Chat Completions API](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html),
+[API keys](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-use.html), and the
+[gpt-oss-120b](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-120b.html)
+and [gpt-oss-20b](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-20b.html)
+model cards, checked 2026-11-03). Both are text-only with a 16K output cap, sent as
+`max_completion_tokens`.
+
+For native desktop/CLI use, create a Bedrock API key in the Bedrock console, save it with
+`keys.set` as account `bedrock` (or the API keys panel), and set the Region in settings:
+
+```toml
+[providers]
+bedrock_region = "us-east-1"
+```
+
+The Region must be a code such as `us-east-1` or `us-gov-west-1`; anything else, including a URL,
+refuses before a request. China Regions (`amazonaws.com.cn`) are not supported. The key comes
+only from the keychain: NodeCraft never reads `AWS_BEARER_TOKEN_BEDROCK`, AWS profiles, access
+keys or instance metadata, and does not sign requests with SigV4. The native Converse API,
+SigV4 and other Bedrock models are deferred to the provider-layer decision in
+[#489](https://github.com/CypherNaught-0x/nodecraft/issues/489). The browser has no Bedrock
+settings panel.
+
+Bedrock publishes prices per Region and service tier, so the cards use `ByUsage`: the picker says
+**Usage based (USD)** and run confirmation requires explicit unknown-price acceptance. Bedrock
+returns token usage, not a charge, so no exact dollar cost is settled. `keys.test` answers
+unverifiable: `bedrock-runtime` has no OpenAI model list, and NodeCraft knows no free,
+Region-independent check. Chat completes at submit with no remote job to poll or cancel; no
+idempotency is documented, so an uncertain submission is never retried automatically. Offline
+contract tests cover the regional URL, Region validation, key secrecy, usage, streaming, errors
+and the synchronous lifecycle. The opt-in smoke test costs tokens and was not run for this
+addition:
+
+```sh
+NODECRAFT_LIVE_BEDROCK=1 BEDROCK_API_KEY=… BEDROCK_REGION=us-east-1 \
+  cargo test -p nodecraft-providers --test live_llm live_bedrock46
 ```
 
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build

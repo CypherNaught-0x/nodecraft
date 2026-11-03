@@ -299,6 +299,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("anthropic.claude-sonnet-5-5", false),
             ("anthropic.claude-haiku-5-5", false),
             ("azure-openai.deployment", false),
+            ("bedrock.gpt-oss-120b", false),
+            ("bedrock.gpt-oss-20b", false),
             ("deepgram.nova-3", false),
             ("elevenlabs.v3", false),
             ("elevenlabs.multilingual-v2", false),

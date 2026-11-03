@@ -42,6 +42,8 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `anthropic.claude-opus-5-5` | [Documentation](https://platform.claude.com/docs/en/models/overview) | 2026-10-27 |
 | `anthropic.claude-sonnet-5-5` | [Documentation](https://platform.claude.com/docs/en/models/overview) | 2026-10-27 |
 | `azure-openai.deployment` | [Documentation](https://learn.microsoft.com/en-us/azure/ai-studio/ai-services/concepts/endpoints) | 2026-10-27 |
+| `bedrock.gpt-oss-120b` | [Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-120b.html) | 2026-11-03 |
+| `bedrock.gpt-oss-20b` | [Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-20b.html) | 2026-11-03 |
 | `bfl.flux-2-klein-4b` | [Documentation](https://docs.bfl.ai/quick_start/generating_images) | 2026-10-27 |
 | `comfyui.flux-dev` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
 | `comfyui.sdxl` | [Documentation](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | 2026-10-27 |

@@ -26,6 +26,8 @@ mod background_open;
 mod background_save;
 #[path = "batch_keys517.rs"]
 mod batch_keys517;
+#[path = "bedrock46.rs"]
+mod bedrock46;
 #[path = "bfl33.rs"]
 mod bfl33;
 #[path = "billing_host298.rs"]

@@ -14,6 +14,7 @@
 
 mod anthropic;
 mod azure;
+mod bedrock;
 #[cfg(test)]
 mod custom_base_tests;
 mod openai;
@@ -25,6 +26,7 @@ mod turns_tests;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
 pub use azure::validate_azure_deployment;
+pub use bedrock::{BEDROCK, validate_bedrock_region};
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -547,7 +549,9 @@ impl LlmClient {
         req.validate(self.endpoint.dialect)?;
         let req = &req;
         let (path, body) = match self.endpoint.dialect {
-            Dialect::OpenAi => ("chat/completions", openai::body(req, stream, matches!(self.endpoint.id.as_str(), "openai" | "azure-openai"))),
+            Dialect::OpenAi => {
+                ("chat/completions", openai::body(req, stream, matches!(self.endpoint.id.as_str(), "openai" | "azure-openai" | bedrock::BEDROCK)))
+            }
             Dialect::Anthropic => ("messages", anthropic::body(req, stream)),
         };
         // A stream carries ~200–250 bytes of framing per token: size the cap from the reply length,
@@ -829,11 +833,11 @@ impl Provider for LlmClient {
     }
 
     fn retry_ambiguous_submit(&self) -> bool {
-        // Azure v1 offers no idempotency guarantee. A lost synchronous reply may already
-        // have been billed; preserve legacy endpoint policies while making Azure terminal.
-        // A custom base URL is assumed to ignore idempotency keys too, whatever model it serves
-        // (#960, #961). Endpoints at their own address keep their policy.
-        self.endpoint.id != "azure-openai" && !self.custom
+        // Azure v1 and Bedrock's Chat Completions route offer no idempotency guarantee. A lost
+        // synchronous reply may already have been billed; preserve legacy endpoint policies while
+        // making them terminal. A custom base URL is assumed to ignore idempotency keys too,
+        // whatever model it serves (#960, #961). Endpoints at their own address keep their policy.
+        !matches!(self.endpoint.id.as_str(), "azure-openai" | bedrock::BEDROCK) && !self.custom
     }
 
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
