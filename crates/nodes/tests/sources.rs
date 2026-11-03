@@ -72,7 +72,10 @@ fn sources_declare_ports_shortcuts_and_no_connected_input_modes() {
             // Routers and batches take a wire of any modality (they are created with the wire's);
             // action kinds (#410) take their own modality on one of their inputs.
             let structure = [nodecraft_nodes::router::ID, nodecraft_nodes::batch::ID];
-            let compatible: Vec<&str> = registry.compatible(&[port]).map(|d| d.id.as_str()).filter(|id| !structure.contains(id)).collect();
+            // An Export to folder card (#746) takes any media wire and is a sink, not an action.
+            let compatible: Vec<&str> =
+                registry.compatible(&[port]).map(|d| d.id.as_str()).filter(|id| !structure.contains(id) && *id != nodecraft_nodes::export::ID).collect();
+            assert_eq!(registry.compatible(&[port]).any(|d| d.id == nodecraft_nodes::export::ID), input != Modality::Text);
             for id in structure {
                 assert!(registry.compatible(&[port]).any(|d| d.id == id));
             }
@@ -107,6 +110,8 @@ fn empty_text_is_valid_but_media_sources_remain_unconfigured_until_an_asset_is_s
                 assert!(node.inputs.is_empty() && node.outputs.is_empty());
                 assert!(result.unwrap().is_empty());
             }
+            // An Export to folder card (#746) never plans a job; files are written by a command.
+            nodecraft_nodes::export::ID => assert!(result.unwrap().is_empty()),
             "structure.router" | "structure.batch" => assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput),
             "source.mesh" => {
                 assert_eq!(node.params, nodecraft_nodes::mesh::view::State::default().params().unwrap());

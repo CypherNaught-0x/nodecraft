@@ -97,12 +97,18 @@ impl Wake for Repaint {
 }
 
 /// A name shown to people or kept for a file: control characters dropped, at most 200 chars.
-fn clean(name: &str) -> String {
+pub(super) fn clean(name: &str) -> String {
     name.chars().filter(|c| !c.is_control()).take(200).collect()
 }
 
 /// Reads a file only when it is a regular file of at most `room` bytes; why not otherwise.
 fn read_file(path: &Path, room: u64) -> Result<Vec<u8>, &'static str> {
+    read_bounded(path, room, "a folder import reads at most 256 MiB")
+}
+
+/// As [`read_file`], saying `over_room` when the file is larger than `room`. Shared with the
+/// Library's file import (#96).
+pub(super) fn read_bounded(path: &Path, room: u64, over_room: &'static str) -> Result<Vec<u8>, &'static str> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     // As for dropped files: a FIFO opens at once and the regular-file check refuses it.
@@ -118,7 +124,7 @@ fn read_file(path: &Path, room: u64) -> Result<Vec<u8>, &'static str> {
         return Err("files over 16 MiB can't be added");
     }
     if length > room {
-        return Err("a folder import reads at most 256 MiB");
+        return Err(over_room);
     }
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(usize::try_from(length).map_err(|_| "the file is too large")?).map_err(|_| "there isn't enough memory to read the file")?;

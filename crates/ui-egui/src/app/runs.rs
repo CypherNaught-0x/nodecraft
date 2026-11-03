@@ -44,6 +44,19 @@ mod browser;
 #[cfg(not(target_arch = "wasm32"))]
 const ASKS: usize = 16;
 
+/// What a card's jobs say, for views that ask about many cards each frame (#163).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct CardJobs {
+    /// A job of it is queued or running.
+    pub(super) live: bool,
+    /// Its latest job was cancelled.
+    pub(super) cancelled: bool,
+    /// Its latest job may have been charged with no result kept (`JobView::may_have_been_charged`).
+    pub(super) maybe_charged: bool,
+    /// A paid result of it is held for a decision (#369).
+    pub(super) held: bool,
+}
+
 /// The engine's runtime over a tokio runtime the app owns.
 #[cfg(not(target_arch = "wasm32"))]
 struct Tokio {
@@ -264,6 +277,11 @@ pub(super) struct Runs {
     jobs: Vec<JobView>,
     /// Paid results the host couldn't keep, waiting for a decision (#369).
     held: Vec<HeldView>,
+    /// What each card's jobs and held results say, rebuilt whenever they are read: a sheet asks
+    /// for every row each frame, which must not scan every job per row (#163).
+    cards: BTreeMap<(CanvasId, NodeId), CardJobs>,
+    /// The host's cards possibly charged with no result kept, which outlive their job views.
+    charged: BTreeSet<(CanvasId, NodeId)>,
     /// Runs the host's tasks; shut down without waiting when the app closes.
     #[cfg(not(target_arch = "wasm32"))]
     tokio: Option<tokio::runtime::Runtime>,
@@ -389,6 +407,8 @@ impl Runs {
             running: BTreeSet::new(),
             jobs: Vec::new(),
             held: Vec::new(),
+            cards: BTreeMap::new(),
+            charged: BTreeSet::new(),
             #[cfg(not(target_arch = "wasm32"))]
             tokio: Some(tokio),
             #[cfg(not(target_arch = "wasm32"))]
@@ -404,9 +424,14 @@ impl Runs {
     /// Where the keychain worker sends `keys.test` checks: the runs' own runtime and HTTP client,
     /// so a check goes out like a run's request does. `None` for a test host without a client.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn key_test_host(&self) -> Option<nodecraft_engine::key_test::KeyTestHost> {
+    pub(super) fn key_test_host(&self, loaded: nodecraft_engine::settings::ProviderSettings) -> Option<nodecraft_engine::key_test::KeyTestHost> {
         let http = self.http.clone()?;
-        Some(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::clone(&self.runtime), http })
+        // The settings loaded at startup and the file as it is now, read at each check: either
+        // marking the account redirected is enough (#960), so an unreadable file never lowers
+        // protection below what was loaded.
+        let providers: nodecraft_engine::key_test::ProviderSettingsSource =
+            Arc::new(move || vec![loaded.clone(), nodecraft_engine::settings::peek().providers]);
+        Some(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::clone(&self.runtime), http, providers: Some(providers) })
     }
 
     /// The caps later quotes and jobs are checked against (#201).
@@ -446,7 +471,7 @@ impl Runs {
             problems.push(format!("Paid results held from the last session: {}", error.message));
         }
         // Restored results show in the queue panel before anything runs.
-        self.held = self.host.held_results();
+        self.read_held();
         if !problems.is_empty() {
             self.journal_problem = Some(problems.join("\n"));
         }
@@ -537,7 +562,7 @@ impl Runs {
         let (adapters, inner) = adapters_of(session, canvas, settings);
         let mut reached: BTreeSet<NodeId> = match kind {
             RunKind::Generate => ids.iter().copied().collect(),
-            RunKind::Refresh => with_upstream(session, canvas, ids, stale),
+            RunKind::Refresh | RunKind::Changed | RunKind::Workflow => with_upstream(session, canvas, ids, stale),
         };
         // A technique node runs the nodes inlined for it.
         reached.extend(inner.iter().filter(|(_, owner)| reached.contains(owner)).map(|(id, _)| *id).collect::<Vec<_>>());
@@ -704,6 +729,7 @@ impl Runs {
         self.running = self.host.running();
         self.jobs = self.host.jobs();
         self.held = self.host.held_results();
+        self.summarize();
         tick
     }
 
@@ -719,20 +745,20 @@ impl Runs {
 
     /// Reads the held results again, after a decision about one.
     pub(super) fn refresh_held(&mut self) {
-        self.held = self.host.held_results();
+        self.read_held();
     }
 
     /// Asks one job to stop; its end shows on the next frames.
     pub(super) fn cancel(&mut self, key: JobKey) -> Result<(), Error> {
         self.host.cancel(key)?;
-        self.jobs = self.host.jobs();
+        self.read_jobs();
         Ok(())
     }
 
     /// Forgets the jobs that ended.
     pub(super) fn clear_finished(&mut self) {
         self.host.clear_finished();
-        self.jobs = self.host.jobs();
+        self.read_jobs();
     }
 
     /// A card's status while it has work queued or running: "Queued", "Generating 40%", ….
@@ -779,7 +805,7 @@ impl Runs {
     pub(super) fn keep_partial(&mut self, session: &mut Session, canvas: CanvasId, node: NodeId) -> Result<(), Error> {
         let key = self.ended_partial(canvas, node)?;
         let kept = self.host.keep_partial(session, key);
-        self.jobs = self.host.jobs();
+        self.read_jobs();
         kept
     }
 
@@ -787,7 +813,7 @@ impl Runs {
     pub(super) fn discard_partial(&mut self, canvas: CanvasId, node: NodeId) -> Result<(), Error> {
         let key = self.ended_partial(canvas, node)?;
         self.host.discard_partial(key);
-        self.jobs = self.host.jobs();
+        self.read_jobs();
         Ok(())
     }
 
@@ -808,6 +834,52 @@ impl Runs {
 
     pub(super) fn is_running(&self, canvas: CanvasId, node: NodeId) -> bool {
         self.running.contains(&(canvas, node))
+    }
+
+    /// The cards whose latest job may have been charged with no result kept, until they run
+    /// again (`RunHost::possibly_charged`).
+    pub(super) fn possibly_charged(&self) -> &BTreeSet<(CanvasId, NodeId)> {
+        &self.charged
+    }
+
+    /// What card `node`'s jobs and held results say.
+    pub(super) fn card(&self, canvas: CanvasId, node: NodeId) -> CardJobs {
+        self.cards.get(&(canvas, node)).copied().unwrap_or_default()
+    }
+
+    fn read_jobs(&mut self) {
+        self.jobs = self.host.jobs();
+        self.summarize();
+    }
+
+    fn read_held(&mut self) {
+        self.held = self.host.held_results();
+        self.summarize();
+    }
+
+    /// One pass over the jobs (in order, so a card's last view is its latest job) and the held
+    /// results.
+    fn summarize(&mut self) {
+        let mut cards: BTreeMap<(CanvasId, NodeId), CardJobs> = BTreeMap::new();
+        for view in &self.jobs {
+            let card = cards.entry((view.canvas, view.node)).or_default();
+            let held = card.held;
+            *card = CardJobs {
+                live: card.live || !view.state.is_final(),
+                cancelled: view.state == JobState::Cancelled,
+                maybe_charged: view.may_have_been_charged(),
+                held,
+            };
+        }
+        for view in &self.held {
+            cards.entry((view.canvas, view.node)).or_default().held = true;
+        }
+        // Remembered after its job view is gone ("clear finished", newer jobs pushing it out).
+        self.charged.clone_from(self.host.possibly_charged());
+        for card in &self.charged {
+            cards.entry(*card).or_default().maybe_charged = true;
+        }
+        self.cards = cards;
     }
 
     pub(super) fn failure(&self, canvas: CanvasId, node: NodeId) -> Option<&str> {
@@ -856,6 +928,59 @@ fn wall_clock_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
 fn wall_clock_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
     // `SystemTime::now` isn't there in the browser.
     Arc::new(|| browser::millis(js_sys::Date::now()))
+}
+
+/// The cards a run of the whole canvas covers (#965), as the engine's `pending` and `workflow`
+/// modes pick them, for setting up their providers: generation, action and technique cards (and
+/// ones of a kind not installed) whose result is stale or missing; with `workflow`, every
+/// generation and technique card as well; then what they need upstream, and any card with work
+/// between two of them. The engine plans the run itself.
+pub(super) fn whole_roots(session: &Session, canvas: CanvasId, workflow: bool, stale: &BTreeSet<NodeId>) -> Vec<NodeId> {
+    use nodecraft_nodes::Category;
+    let Some(on) = session.document().canvases().get(&canvas) else {
+        return Vec::new();
+    };
+    let category = |node: &nodecraft_graph::Node| session.kinds().get(&node.kind).map(|kind| kind.descriptor().category);
+    let generative = |node: &nodecraft_graph::Node| node.kind == nodecraft_nodes::technique::ID || matches!(category(node), Ok(Category::Generation));
+    let has_work = |node: &nodecraft_graph::Node| generative(node) || matches!(category(node), Ok(Category::Action) | Err(_));
+    let roots: Vec<NodeId> = on
+        .nodes()
+        .values()
+        .filter(|node| has_work(node) && ((workflow && generative(node)) || stale.contains(&node.id) || !has_result(node)))
+        .map(|node| node.id)
+        .collect();
+    let mut up: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    let mut down: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for edge in on.edges().values() {
+        up.entry(edge.to.node).or_default().push(edge.from.node);
+        down.entry(edge.from.node).or_default().push(edge.to.node);
+    }
+    // The graph may have cycles: seen-sets end each walk.
+    let reach = |from: &BTreeSet<NodeId>, next: &BTreeMap<NodeId, Vec<NodeId>>| {
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<NodeId> = from.iter().copied().collect();
+        while let Some(id) = stack.pop() {
+            for to in next.get(&id).into_iter().flatten() {
+                if seen.insert(*to) {
+                    stack.push(*to);
+                }
+            }
+        }
+        seen
+    };
+    let mut run = with_upstream(session, canvas, &roots, stale);
+    loop {
+        let after = reach(&run, &down);
+        let between: Vec<NodeId> =
+            reach(&run, &up).into_iter().filter(|id| after.contains(id) && !run.contains(id) && on.nodes().get(id).is_some_and(has_work)).collect();
+        if between.is_empty() {
+            break;
+        }
+        run.extend(between);
+        let ids: Vec<NodeId> = run.iter().copied().collect();
+        run = with_upstream(session, canvas, &ids, stale);
+    }
+    run.into_iter().collect()
 }
 
 /// `ids` and every node upstream of them on `canvas` that a `with_upstream` run would run too.

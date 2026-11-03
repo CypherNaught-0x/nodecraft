@@ -190,17 +190,9 @@ impl NodeCraftApp {
         self.element_library_listed();
         let mut action = None;
         let mut open = self.element_library.open;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Elements")
-            .id(egui::Id::new("nodecraft.element_library"))
-            .open(&mut open)
-            .constrain_to(self.viewport)
-            .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap])
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
+        crate::floating::panel(ctx, "Elements", egui::Id::new("nodecraft.element_library"), crate::floating::Home::RightTop, t).open(&mut open).show(
+            ctx,
+            |ui| {
                 let view = &self.element_library;
                 if let Some(path) = &view.clashing {
                     ui.horizontal_wrapped(|ui| {
@@ -330,7 +322,8 @@ impl NodeCraftApp {
                 if ui.button("Import…").on_hover_text("Add an Element someone sent you (.ncelement)").clicked() {
                     action = Some(Action::Import);
                 }
-            });
+            },
+        );
         self.element_library.open = open;
         self.element_library.focus_rename = false;
         if let Some(action) = action {

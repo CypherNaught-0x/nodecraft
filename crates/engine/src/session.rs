@@ -860,12 +860,13 @@ impl Session {
                 | Effect::Copy { .. }
                 | Effect::CancelFile
                 | Effect::CancelExport { .. }
-                | Effect::Elements { .. } => Ok(()),
+                | Effect::Elements { .. }
+                | Effect::Assets { .. } => Ok(()),
                 // Dispatch refuses everything else until the open settles.
                 _ if matches!(self.pending, Some(PendingFile::Open(_))) => Err(opening()),
                 effect @ (Effect::Edit { .. } | Effect::Undo | Effect::Redo) => self.prepare(effect).map(|_| ()),
                 // Images still in the library are checked when they are copied in.
-                Effect::Place { media, changes, result } if media.iter().all(|hash| self.assets.contains(hash)) => {
+                Effect::Place { media, changes, result, .. } if media.iter().all(|hash| self.assets.contains(hash)) => {
                     self.prepare(Effect::Edit { changes, result, gesture: None }).map(|_| ())
                 }
                 _ => Ok(()),
@@ -918,6 +919,7 @@ impl Session {
                     | Effect::CancelFile
                     | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
+                    | Effect::Assets { .. }
             )
         {
             return Err(opening());
@@ -926,7 +928,7 @@ impl Session {
             Effect::Edit { .. } | Effect::Undo | Effect::Redo => {
                 guard(|| self.prepare(effect))?;
             }
-            Effect::Place { media, changes, result } if media.iter().all(|hash| self.assets.contains(hash)) => {
+            Effect::Place { media, changes, result, .. } if media.iter().all(|hash| self.assets.contains(hash)) => {
                 guard(|| self.prepare(Effect::Edit { changes, result, gesture: None }))?;
             }
             _ => {}
@@ -1048,6 +1050,7 @@ impl Session {
                     | Effect::CancelFile
                     | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
+                    | Effect::Assets { .. }
             ),
         };
         // A run would start on the project being replaced, so only pure reads, and the Elements
@@ -1063,6 +1066,7 @@ impl Session {
                     | Effect::CancelFile
                     | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
+                    | Effect::Assets { .. }
             )
         {
             return Err(opening());
@@ -1145,7 +1149,15 @@ impl Session {
                     Ok(result)
                 });
             }
-            Effect::Place { media, changes, result } => return self.place(spec.id, media, changes, result),
+            Effect::Assets { request } => {
+                let shelf = self.resources.require::<crate::asset_library::AssetShelf>()?.clone();
+                return guard(|| {
+                    let result = crate::asset_library::handle(&shelf, &self.assets, request)?;
+                    validate_json(&result)?;
+                    Ok(result)
+                });
+            }
+            Effect::Place { from, media, changes, result } => return self.place(spec.id, from, media, changes, result),
             Effect::TemplateAdd { template } => return self.add_template(spec.id, *template),
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
@@ -1159,7 +1171,7 @@ impl Session {
                 let id = self.exports.start_results(&self.assets, *plan)?;
                 return Ok(serde_json::json!({"pending": id}));
             }
-            Effect::LocalExport { plan } => {
+            Effect::LocalExport { plan, background } => {
                 // Export changes no document, so nothing is staged and there is nothing to undo.
                 // Authority is enforced here as well as where the plan was built, because this is
                 // where the writing happens: the folder must still be one the app authorized, and
@@ -1170,6 +1182,13 @@ impl Session {
                     .ok_or_else(|| Error::new(ErrorKind::Unsupported, nodecraft_format::export::reasons::NO_HOST))?;
                 if !host.authorizes(&plan.destination) {
                     return Err(Error::new(ErrorKind::Unsupported, nodecraft_format::export::reasons::UNSUPPORTED_TARGET));
+                }
+                if background {
+                    // The job retains its own clone of the grant (and its pinned descriptor) and an
+                    // asset snapshot; the document is never touched (#746).
+                    let host = host.clone();
+                    let id = self.exports.start_local(&self.assets, plan, host)?;
+                    return Ok(serde_json::json!({"pending": id}));
                 }
                 // Publication retains the host's pinned root descriptor throughout the run.
                 let outcome = guard(|| crate::local_export::run(&self.assets, &plan, host))?;
@@ -1462,6 +1481,7 @@ impl Session {
             | Effect::CancelFile
             | Effect::CancelExport { .. }
             | Effect::Elements { .. }
+            | Effect::Assets { .. }
             | Effect::TemplateAdd { .. }
             | Effect::Place { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));

@@ -236,6 +236,16 @@ Every layered crate, `ui-egui` included, must build for `wasm32-unknown-unknown`
 (`cargo xtask wasm`). Filesystem access, threads and processes go through platform services that the
 apps provide; network I/O uses `reqwest`, which works on both targets.
 
+Requests whose address a person or a package supplies, rather than a fixed provider host, go
+through `ReqwestHttp::public_only()` (native only): it resolves names itself, refuses any name
+with a non-public address, connects to the addresses it checked, and uses no proxy and no
+redirects. Plugin brokers (#174) and the Library's Import from URL… (#96) use it; the latter's
+policy (https, every redirect re-checked, byte cap, media type and bytes) is
+`engine::url_import`, run by the desktop host on its own thread. The browser build has no such
+transport, so it doesn't offer either. My library (`engine::asset_library`), the files a person
+saves to use in any project, follows the Elements library's file-plus-media-folder shape in the
+settings folder, in memory in the browser.
+
 `apps/nodecraft` wraps `NodeCraftApp` in a `Shell` that adds the agent sidebar (`agent_panel`,
 over `agent` with `automation`'s tools) and, with `--control`, the control channel; both run
 against the window's live session.
@@ -297,7 +307,11 @@ history, revision or event, so neither is an undo step. Writing there is authori
 injecting `local_export::ExportHost` after a person chooses a folder — a destination named in a
 parameter is never authority — and without it `export.local_plan` and `export.local_run` return
 Unsupported. File → Save workflow results (#966) now scopes an ephemeral grant for
-`export.results_plan` / `export.results_start`; `media.export` remains #746. The new command
+`export.results_plan` / `export.results_start`. The `media.export` node (#746) never runs: the
+planner resolves it away like a router, and `export.node_plan` / `export.node_run` build the
+`export.local_*` request from the card and the host's grant, so no run, recompute, undo, autosave
+or replay writes a file (see the [media.export decision](decisions/2026-10-28-media-export-node.md)).
+`Effect::LocalExport { background: true }` runs the plan on the shared export worker. The new command
 snapshots all/active history or exact historical targets, uses the shared background export
 worker and quit watch, and atomically publishes complete new media plus a provenance manifest
 without replacement. See the [workflow save decision](decisions/2026-10-27-workflow-result-saves.md)
@@ -710,6 +724,27 @@ Generate cards as its rows, listed top to bottom by position. The commands are:
   rows. Each is one changeset, and it moves the rows back into one column.
 - `sheet.reference_wire` and `sheet.reference_unwire` wire a source node into rows. A node wired
   into every row is a shared reference.
+- `sheet.expand` turns a prompt template with `{{name}}` variables into one row per combination
+  of the variables' values (their Cartesian product), each repeated `copies` times; image
+  variables wire one image source per row. `dry_run` returns the count and first prompts without
+  editing; a real expansion is one changeset, adds at most 100 rows, and records each row's
+  values under node config `nodecraft.sheet_expansion`, which the recipe hash leaves out. See
+  [the template decision](decisions/2026-10-28-sheet-templates.md).
+- `sheet.place` puts rows' active results on a plain canvas as source cards (as
+  `history.extract` makes them), four across in row order, each recording its sheet, row, result,
+  output, item and asset under node config `nodecraft.sheet_result`; one changeset. A row's
+  results are its card's history (#81): a re-run adds one and makes it active, and `sheet.rows`
+  reports the active `generation`, the row's `results` count and the active one's `position`.
+  Rows' results export through `export.local_plan`/`export.local_run` by the `output` it reports.
+  See [the results decision](decisions/2026-11-02-sheet-results.md).
+- `sheet.rename` names a batch (one undo step); `sheet_cmds::batch::retry_failed` picks the rows
+  "Retry failed" runs: those whose latest run failed or left a partial result, never a success,
+  and never a row `RetryHolds` names (running, a held paid result, or a job that may already have
+  been charged, which the run host remembers until the row runs again).
+  A started run is the snapshot it was quoted from: an edit after the quote refuses the start, and
+  an edit while a row runs leaves its result out of date. See
+  [the batches decision](decisions/2026-11-03-sheet-batches.md), which also sets the sheet's
+  limits and how a sheet differs from the Batch node (#92) and `nodecraft-cli batch` (#97).
 
 Commands that add nodes or wires take one `seed` and derive every new id from it with blake3, so
 replays are deterministic. Cells are card parameters, so bulk edits use
@@ -726,7 +761,25 @@ rows, whether selected, one or all, quotes them together in one price confirmati
 Generate uses (`request_runs`). A prompt still being typed is committed before the save and
 open keys act, and when a dialog takes the input; a project opens on its first plain canvas
 (`home_canvas`), and the view goes back to it if an undo removes the open sheet. The table lays
-out only the rows in view, so a full 1000-row sheet draws in about the time a screenful does.
+out only the rows in view, so a full 1000-row sheet draws in about the time a screenful does. "From template" opens a panel to write a template, its
+variables (one value per line) and copies, with a live dry-run count and the first prompts;
+Expand stays disabled until the expansion fits. A prompt filter (ignoring case) and a status
+filter (not run, running, done, out of date, partial, failed) narrow the rows shown, keep each
+row's own number, and "Select shown" selects exactly the rows a filter shows. A template
+variable is Text (with an optional empty value) or Images (image sources on the sheet). The
+Table/Grid switch shows the shown rows that have a result as a grid of thumbnails with status
+badges; clicking a tile selects its row, and ‹/› step through a row's older results. "Send N to
+canvas" dispatches `sheet.place` to the plain canvas open before the sheet (a picker chooses
+another when there are several), and "Export N"/"Export all" (at most 256 rows)
+asks for a folder and opens the shared workflow-result save (#966) on those rows' active results,
+written off the UI thread; macOS and Linux only, like that save. A second toolbar selects every
+row, opens the model picker for the selected rows or every row (a row's model cell opens it for
+that row), opens Row settings (the bulk parameter panel, #473, for one or more selected rows, with
+Mixed values), wires and unwires the sheet's sources as references (files dropped onto a sheet
+become sources; the menu disables a source the row's model can't take), retries the failed rows
+it can without paying twice and cancels the running ones. Rows show Held for a paid result
+waiting in the queue, and "No mode fits" when their references leave the model no mode. The Aspect column is the
+row contract's aspect parameter, or "Not offered". The header renames the sheet.
 
 ## Official workflow templates (#953)
 
@@ -792,3 +845,19 @@ socket; the host passes frames. See the [decision](decisions/2026-10-22-crdt-syn
 entry schema, the protocol and the limits.
 Assets over 16 MiB travel in parts, paced by the receiver and kept in a `Spool` until whole
 (the desktop's spools to temporary files); see the [decision](decisions/2026-10-23-large-shared-assets.md).
+
+## Custom endpoints (#960)
+
+A catalog provider can be served from a base URL the person sets (`[providers.base_urls]`).
+`providers::base_url::BaseUrl` is the only URL check: HTTPS, or plain HTTP for a local or private
+IP literal or `localhost`, with no credentials, query or fragment. Adapters take the checked URL
+through `with_base_url` and report it through `Provider::custom_base_url`. `engine::provider_setup`
+builds them from settings, and refuses a set but unusable URL instead of falling back to the
+default host. `engine::custom_endpoints` holds the list of providers that accept a base URL;
+the settings command schema and the browser panel are generated from it. It also holds the
+quote pass that keeps a custom endpoint from ever being free, and the quote binding of each
+routed adapter's URL. The routing binding captures a digest of the URL when the adapter is built,
+and `jobs` settles a job on such a binding at no less than its estimate. A keychain account
+whose key is set up for a custom base URL never reaches a provider's own API: other adapters
+sharing it are refused (`custom_endpoints::shared_key_conflict`), and `keys.test` sends nothing
+for it (`KeyTestHost::providers`). See [the decision](decisions/2026-11-03-custom-base-urls.md).

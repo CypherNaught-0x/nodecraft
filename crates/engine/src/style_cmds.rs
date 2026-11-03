@@ -39,7 +39,7 @@ fn port(ports: &[Port], modality: Modality) -> Option<&Port> {
 }
 
 /// The card's active trained style: its one style asset, when it has a complete result.
-fn active_style(node: &Node) -> Option<&AssetRef> {
+pub(crate) fn active_style(node: &Node) -> Option<&AssetRef> {
     let result = node.history.iter().find(|g| Some(g.id) == node.active)?;
     if result.incomplete.is_some() {
         return None;
@@ -60,7 +60,7 @@ fn active_style(node: &Node) -> Option<&AssetRef> {
 
 /// The family a style was trained for, when it names a valid one; a hand-edited project can hold
 /// anything there.
-fn family(style: &AssetRef) -> Option<&str> {
+pub(crate) fn family(style: &AssetRef) -> Option<&str> {
     style.mime.param("family").filter(|f| nodecraft_types::style_family(f))
 }
 
