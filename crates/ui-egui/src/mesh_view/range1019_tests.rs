@@ -1,5 +1,6 @@
 use super::*;
 use egui_kittest::{Harness, kittest::Queryable};
+use nodecraft_media::decode_mesh;
 
 const RANGE_REASON: &str = "3D preview unavailable at this coordinate range";
 fn square(side: f32, offset: f32) -> nodecraft_media::Mesh {
@@ -19,6 +20,8 @@ fn usdz1019_extreme_interchange_is_retained_but_actual_orbit_preview_is_unavaila
     let (center, radius) = decoded.bounds().unwrap().checked_sphere().unwrap();
     let actual = Orbit::default().view_projection(center, radius, 1.);
     assert!(actual.iter().any(|v| !v.is_finite()), "exercise the actual pre-existing f32 camera limitation");
+    let prepared = nodecraft_mesh_preview::prepare(&bytes, nodecraft_mesh_preview::Profile::Browser).unwrap();
+    assert_eq!(Model::prepared(prepared).err(), Some(nodecraft_mesh_preview::Error::Coordinates), "adopted data is defensively camera-checked too");
     assert_eq!(Model::decode(&bytes).err(), Some(RANGE_REASON), "a bounded actionable outcome must precede GPU upload");
     let mut assets = nodecraft_format::AssetStore::default();
     let hash = assets.insert(&bytes).unwrap();
@@ -26,7 +29,7 @@ fn usdz1019_extreme_interchange_is_retained_but_actual_orbit_preview_is_unavaila
     let mut previews = Meshes::default();
     previews.inline(hash, &bytes);
     assert!(matches!(
-        previews.request(&egui::Context::default(), &asset, || panic!("cached range refusal never rereads")),
+        previews.request(&egui::Context::default(), nodecraft_types::NodeId::from_bytes([101; 16]), &asset, || panic!("cached range refusal never rereads")),
         MeshPreview::Unavailable(RANGE_REASON)
     ));
     assert_eq!(previews.bytes(), 0, "unusable models are not held in the decoded preview cache");

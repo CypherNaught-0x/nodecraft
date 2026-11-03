@@ -11,6 +11,7 @@ description = "NodeCraft: wgpu actions, custom WGSL actions and the 3D preview r
 workspace = true
 
 [dependencies]
+nodecraft-mesh-preview.workspace = true
 nodecraft-actions = { workspace = true }
 # Validates custom shaders (#90) before any GPU sees them; the same version wgpu builds on.
 naga = { version = "=30.0.1", default-features = false, features = ["wgsl-in"] }

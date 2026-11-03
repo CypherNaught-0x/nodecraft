@@ -313,3 +313,22 @@ fn recraft35_indexed_svg_preview_and_export_verify_full_original_without_residen
     assert!(store.validate_reference(&asset).is_err());
     assert_eq!(store.preview_read(&asset).unwrap().read_verified(&Default::default(), &Default::default()), Err(PreviewReadError::Corrupt));
 }
+
+#[test]
+fn worker1013_owned_resident_bytes_are_shared_immutable_originals_without_io() {
+    let bytes = png();
+    let mut store = AssetStore::default();
+    let hash = store.insert(&bytes).unwrap();
+    let asset = AssetRef { hash, mime: "image/png".parse().unwrap(), meta: Default::default() };
+    let request = store.preview_read(&asset).unwrap();
+    let first = request.resident_owned().unwrap();
+    let second = request.resident_owned().unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(&*first, bytes.as_slice());
+    assert_eq!(request.read_verified(&Default::default(), &Default::default()).unwrap(), bytes);
+    assert!(store.context().same_instance(&store.context().clone()));
+    assert!(!store.context().same_instance(&AssetContext::default()));
+    drop(request);
+    drop(store);
+    assert_eq!(&*first, bytes.as_slice(), "transfers may read this immutable body without detaching a store original");
+}

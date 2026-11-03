@@ -14,6 +14,7 @@ getrandom = { version = "0.3.4", features = ["wasm_js"] }
 # internal (layers: docs/architecture.md, enforced by `cargo xtask layers`)
 nodecraft-types = { path = "crates/types" }
 nodecraft-media = { path = "crates/media" }
+nodecraft-mesh-preview = { path = "crates/mesh-preview" }
 nodecraft-plugin = { path = "crates/plugin" }
 nodecraft-plugin-store = { path = "crates/plugin-store" }
 nodecraft-comfy = { path = "crates/comfy" }

@@ -374,3 +374,65 @@ fn a_required_texture_transform_is_refused_not_ignored() {
     let message = decode_mesh(&file, &MeshLimits::default()).unwrap_err().to_string();
     assert!(message.contains("KHR_texture_transform"), "{message}");
 }
+
+fn worker1013_textured_triangle(image: &[u8], count: usize) -> Vec<u8> {
+    let mime = crate::sniff(image).unwrap().mime;
+    triangle_gltf(|doc| {
+        let uv: [u8; 24] = [0u8; 24];
+        doc["buffers"].as_array_mut().unwrap().push(json!({"byteLength":uv.len(),"uri":format!("data:application/octet-stream;base64,{}",base64(&uv))}));
+        doc["bufferViews"].as_array_mut().unwrap().push(json!({"buffer":1,"byteLength":uv.len()}));
+        doc["accessors"].as_array_mut().unwrap().push(json!({"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"}));
+        let primitives: Vec<_> = (0..count).map(|i| json!({"attributes":{"POSITION":0,"TEXCOORD_0":2},"indices":1,"material":i})).collect();
+        doc["meshes"][0]["primitives"] = json!(primitives);
+        doc["materials"] = json!((0..count).map(|i| json!({"pbrMetallicRoughness":{"baseColorTexture":{"index":i}}})).collect::<Vec<_>>());
+        doc["textures"] = json!((0..count).map(|i| json!({"source":i})).collect::<Vec<_>>());
+        doc["images"] = json!((0..count).map(|_| json!({"uri":format!("data:{mime};base64,{}",base64(image))})).collect::<Vec<_>>());
+    })
+}
+#[test]
+fn worker1013_json_caps_refuse_before_typed_tree_admission() {
+    let file = triangle_gltf(|_| {});
+    for limits in [MeshLimits { max_json_values: 0, ..Default::default() }, MeshLimits { max_json_objects: 0, ..Default::default() }] {
+        assert!(matches!(decode_mesh(&file, &limits), Err(MediaError::LimitExceeded(_))));
+    }
+    assert!(decode_mesh(&file, &MeshLimits::default()).is_ok());
+}
+#[test]
+fn worker1013_texture_decoder_budget_is_per_call_and_retention_is_separate() {
+    let png = crate::encode_png(2, 2, &[255, 0, 0, 255].repeat(4), &Default::default()).unwrap();
+    let file = worker1013_textured_triangle(&png, 5);
+    let native = decode_mesh(&file, &MeshLimits::default()).unwrap();
+    assert!(native.colors.iter().all(|v| *v == [1., 0., 0., 1.]));
+    let capped = MeshLimits { max_textures: 4, max_texture_alloc: 32 * 1024 * 1024, ..Default::default() };
+    let browser = decode_mesh(&file, &capped).unwrap();
+    assert_eq!(browser.positions, native.positions);
+    assert_eq!(browser.indices, native.indices);
+    assert!(browser.colors.get(..12).unwrap().iter().all(|v| *v == [1., 0., 0., 1.]));
+    assert!(browser.colors.get(12..).unwrap().iter().all(|v| *v == [1.; 4]), "fifth distinct decoded image is omitted; four prior RGBA images remain bounded");
+    let refused = MeshLimits { max_texture_alloc: 0, ..capped };
+    assert!(decode_mesh(&file, &refused).unwrap().colors.iter().all(|v| *v == [1.; 4]));
+}
+#[test]
+fn worker1013_oriented_texture_precharges_output_and_rotation_before_baking() {
+    let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(4, 2, image::Rgb([255, 0, 0])));
+    let mut plain = Vec::new();
+    image.write_to(&mut std::io::Cursor::new(&mut plain), image::ImageFormat::Jpeg).unwrap();
+    let mut exif = b"Exif\0\0MM\0*\0\0\0\x08\0\x01".to_vec();
+    exif.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]);
+    let mut tagged = plain.get(..2).unwrap().to_vec();
+    tagged.extend_from_slice(&[0xff, 0xe1]);
+    tagged.extend_from_slice(&u16::try_from(exif.len() + 2).unwrap().to_be_bytes());
+    tagged.extend_from_slice(&exif);
+    tagged.extend_from_slice(plain.get(2..).unwrap());
+    let generous = crate::Limits { max_alloc: 32 * 1024 * 1024, ..Default::default() };
+    let meta = crate::probe_image(&tagged, &generous).unwrap();
+    assert_eq!((meta.width, meta.height), (2, 4));
+    assert!(crate::image_requires_orientation(&tagged, &generous).unwrap());
+    let pixel_bytes = 4 * 2 * 3;
+    assert!(crate::probe_image(&tagged, &crate::Limits { max_alloc: pixel_bytes * 2 - 1, ..generous }).is_err());
+    let file = worker1013_textured_triangle(&tagged, 1);
+    let accepted = decode_mesh(&file, &MeshLimits { max_texture_alloc: 32 * 1024 * 1024, ..Default::default() }).unwrap();
+    assert!(accepted.colors.iter().all(|v| v[0] > 0.99 && v[1] < 0.01 && v[2] < 0.01));
+    let omitted = decode_mesh(&file, &MeshLimits { max_texture_alloc: pixel_bytes * 2 - 1, ..Default::default() }).unwrap();
+    assert!(omitted.colors.iter().all(|v| *v == [1.; 4]));
+}

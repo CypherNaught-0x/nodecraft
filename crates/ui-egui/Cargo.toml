@@ -11,6 +11,7 @@ description = "NodeCraft: the egui shell: canvas widget, node cards, panels and 
 workspace = true
 
 [dependencies]
+nodecraft-mesh-preview.workspace = true
 nodecraft-engine = { workspace = true }
 nodecraft-catalog.workspace = true
 nodecraft-graph.workspace = true
