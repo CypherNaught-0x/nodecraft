@@ -75,7 +75,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: || json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":[],"properties":{}}),
-            params_doc: "{} -> {export: null | {id, phase, cancellable, result}}; path-free status of the latest background export; optional progress has completed/total/written/failed counts. result.state is exported (bytes), results (per-file report and manifest name), cancelled or failed (error).",
+            params_doc: "{} -> {export: null | {id, phase, cancellable, result}}; path-free status of the latest background export; optional progress has completed/total/written/failed counts. result.state is exported (bytes), results (per-file report and manifest name), batch (outcome: the export.local_run/export.node_run per-entry result with counts), cancelled or failed (error).",
             enabled: |_, value| {
                 let _: Empty = params(value)?;
                 Ok(())

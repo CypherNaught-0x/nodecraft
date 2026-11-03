@@ -355,3 +355,25 @@ fn a_missing_file_acquisition_service_does_not_discard_plain_clipboard_text() {
     h.run();
     assert_eq!(h.state().session.document(), &before);
 }
+
+/// Files dropped onto a Batch Generate sheet (#163) become sources on the sheet, which its
+/// References menu wires into rows; they are never rows themselves.
+#[test]
+fn files_dropped_onto_a_sheet_become_its_sources() {
+    let (mut h, _worker) = drop_harness();
+    let sheet = nodecraft_types::CanvasId::from_bytes([0x63; 16]);
+    h.state_mut().session.dispatch("sheet.create", &serde_json::json!({"canvas": sheet, "title": "Mugs"})).unwrap();
+    h.state_mut().open_canvas(sheet);
+    h.run();
+    assert!(h.state().on_sheet());
+    let png = nodecraft_media::encode_png(4, 4, &[90; 64], &Default::default()).unwrap();
+    let scratch = Scratch::new("sheet163");
+    drop_at(&mut h, Pos2::new(700.0, 300.0), &[scratch.write("pic.png", &png)]);
+    let canvas = h.state().session.document().canvases().get(&sheet).unwrap();
+    let kinds: Vec<&str> = canvas.nodes().values().map(|node| node.kind.as_str()).collect();
+    assert_eq!(kinds, ["source.image"], "{:?}", h.state().notice);
+    assert!(nodecraft_engine::sheet_cmds::rows(canvas).is_empty(), "a source is not a row");
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert!(h.state().session.document().canvases().get(&sheet).unwrap().nodes().is_empty(), "one undo step");
+}

@@ -1,0 +1,31 @@
+{
+  "Painter": {
+    "outputs": [
+      {
+        "type": "media",
+        "value": {
+          "hash": "dcd3ab9fc42aa6d5ca784293df79e0d140324cabf57f9b0bc022a050b7e3bac8",
+          "meta": {},
+          "mime": "image/png"
+        }
+      }
+    ],
+    "requests": [
+      {
+        "inputs": [
+          {
+            "role": "prompt",
+            "text": "a lighthouse"
+          }
+        ],
+        "key": "nodecraft:60606060606060606060606060606060:1",
+        "model": "mock-image",
+        "params": {
+          "style": ""
+        },
+        "provider": "mock"
+      }
+    ],
+    "stamped": true
+  }
+}

@@ -35,6 +35,7 @@ the same change that adds it (CONTRIBUTING.md, "Clean-room").
 | `assets/icons/tabler/dots.svg` | Tabler outline dots icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/dots.svg) | MIT |
 | `assets/icons/tabler/apps.svg` | Tabler outline apps icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/apps.svg) | MIT |
 | `assets/icons/tabler/cloud.svg` | Tabler outline cloud icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/cloud.svg) | MIT |
+| `assets/icons/tabler/plug-connected.svg` | Tabler outline plug-connected icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/plug-connected.svg) | MIT |
 
 ## Tabler icon license
 

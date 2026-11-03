@@ -5,7 +5,9 @@ use nodecraft_types::{Error, ErrorKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
 pub mod catalog;
+pub mod disk;
 pub mod fetch;
+pub mod update;
 mod validation;
 pub use validation::{Entry, MAX_BYTES, MAX_HISTORY_BYTES, MAX_HISTORY_ENTRIES, MAX_INDEX_BYTES, parse_history, parse_index, validate_archive, validate_nodes};
 

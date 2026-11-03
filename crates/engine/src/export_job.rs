@@ -25,10 +25,22 @@ pub enum ExportPhase {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ExportResult {
-    Exported { bytes: u64 },
-    Results { report: crate::results_export::Report },
+    Exported {
+        bytes: u64,
+    },
+    Results {
+        report: crate::results_export::Report,
+    },
+    /// An `export.local_run` / `export.node_run` batch (#746): its per-entry outcome, exactly as
+    /// the synchronous command returns it.
+    Batch {
+        outcome: serde_json::Value,
+    },
     Cancelled,
-    Failed { error: Error, name_taken: bool },
+    Failed {
+        error: Error,
+        name_taken: bool,
+    },
 }
 
 /// Contains no destination path or project content. The most recent outcome remains until
@@ -128,6 +140,18 @@ impl Control {
             Err(error) => self.finish(Err(error)),
         }
     }
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    fn finish_batch(&self, outcome: Result<serde_json::Value, Error>) {
+        match outcome {
+            Ok(outcome) => {
+                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                state.result = Some(ExportResult::Batch { outcome });
+                state.phase = ExportPhase::Completed;
+                state.cancellable = false;
+            }
+            Err(error) => self.finish(Err(error)),
+        }
+    }
     fn request_cancel(&self) -> Result<(), Error> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if !state.cancellable {
@@ -170,6 +194,12 @@ impl Completion {
     fn finish_results(&mut self, result: Result<crate::results_export::Report, Error>) {
         self.lease = None;
         self.control.finish_results(result);
+        self.finished = true;
+    }
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    fn finish_batch(&mut self, result: Result<serde_json::Value, Error>) {
+        self.lease = None;
+        self.control.finish_batch(result);
         self.finished = true;
     }
     fn finish(&mut self, result: Result<u64, Error>) {
@@ -288,6 +318,53 @@ impl Exports {
             });
             // Publish the receipt before handing off: even a runner that drops a queued job
             // produces a terminal outcome through Completion. A rejected spawn never runs inline.
+            self.next = id;
+            self.current = Some(control);
+            if let Err(job) = runner.spawn(job) {
+                drop(job);
+                return Err(Error::new(ErrorKind::Internal, "the export worker couldn't start; export again"));
+            }
+            Ok(id)
+        }
+    }
+}
+impl Exports {
+    /// Starts a validated `export.local_run`/`export.node_run` batch on the export worker (#746).
+    /// The job keeps its own grant and asset snapshot; the session and document are free at once.
+    pub(crate) fn start_local(
+        &mut self,
+        assets: &AssetStore,
+        plan: nodecraft_format::export::ExportPlan,
+        host: crate::local_export::ExportHost,
+    ) -> Result<u64, Error> {
+        #[cfg(any(target_arch = "wasm32", not(unix)))]
+        {
+            let _ = (assets, plan, host);
+            Err(Error::new(ErrorKind::Unsupported, "secure folder export requires descriptor-relative no-follow file operations on this platform"))
+        }
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
+        {
+            if self.status().is_some_and(|status| status.result.is_none()) {
+                return Err(Error::new(ErrorKind::Busy, "an export is already in progress; wait or cancel it"));
+            }
+            let runner = self.runner.as_ref().ok_or_else(|| Error::new(ErrorKind::Unsupported, "background export needs an export runner"))?;
+            let id = self.next.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "too many exports; reopen the project"))?;
+            let lease = Lease::acquire()?;
+            let control = Arc::new(Control {
+                state: Mutex::new(ExportStatus { id, phase: ExportPhase::Queued, cancellable: true, result: None, progress: None }),
+                cancel: TransferCancel::default(),
+            });
+            let snapshot = assets.clone();
+            let mut completion = Completion { control: Arc::clone(&control), lease: Some(lease), finished: false };
+            let job = SaveJob::new(move || {
+                let result = crate::session::guard(|| {
+                    crate::local_export::run_background(&snapshot, &plan, &host, &completion.control).map(|outcome| crate::local_export::outcome_json(&outcome))
+                });
+                drop((snapshot, plan, host));
+                completion.finish_batch(result);
+            });
+            // As for the other exports: the receipt is published before the hand-off, and a
+            // rejected spawn never runs inline.
             self.next = id;
             self.current = Some(control);
             if let Err(job) = runner.spawn(job) {

@@ -9,7 +9,7 @@ use nodecraft_catalog::{
     model::{MAX_TEXT, SELECTION_TIER_HELP},
     pricing::Unit,
 };
-use nodecraft_types::{Error, ErrorKind, Modality, Money};
+use nodecraft_types::{CanvasId, Error, ErrorKind, Modality, Money, NodeId};
 
 const QUERY_CHARS: usize = 128;
 
@@ -21,6 +21,75 @@ struct Choice {
 enum Row {
     Provider(usize),
     Model(usize),
+    /// The ComfyUI server section's heading, with its Refresh button (#970).
+    Server,
+    /// A target checkpoint the server doesn't list.
+    Missing(usize),
+    ServerGroup(usize),
+    ServerModel(usize, usize),
+    Workflows,
+    Workflow(usize),
+}
+
+/// One model a ComfyUI server lists (#970), as the controller read it from `comfy.models.list`,
+/// with the compatibility it evaluated once when opening. The picker hardcodes none of it.
+pub struct ServerEntry {
+    pub group: String,
+    pub name: String,
+    /// What choosing it does, e.g. which built-in workflow runs it.
+    pub detail: String,
+    /// Why it can't be chosen for these cards, shown with it.
+    pub unavailable: Option<String>,
+}
+
+/// One type of model the server lists.
+pub struct ServerGroup {
+    pub label: String,
+    pub entries: Vec<ServerEntry>,
+    /// Entries the server listed past the listing's limits.
+    pub more: usize,
+}
+
+/// One imported workflow card in the document.
+pub struct ServerWorkflow {
+    pub canvas: CanvasId,
+    pub id: NodeId,
+    pub title: String,
+    pub unavailable: Option<String>,
+}
+
+/// What the default ComfyUI server's last read lists, beside the catalog's choices.
+pub struct ServerSection {
+    /// The server's name, when it was read through a named server (#864).
+    pub server: Option<String>,
+    /// Whether the server's models were read at all.
+    pub read: bool,
+    /// Whether this host can read the server again.
+    pub can_refresh: bool,
+    /// Why the server's list couldn't be read, shown in the heading row.
+    pub error: Option<String>,
+    /// The targets' checkpoints the server doesn't list.
+    pub missing: Vec<String>,
+    pub groups: Vec<ServerGroup>,
+    pub workflows: Vec<ServerWorkflow>,
+}
+
+impl ServerSection {
+    fn text_bytes(&self) -> usize {
+        let groups = self.groups.iter().flat_map(|g| g.entries.iter()).map(|e| e.name.len() + e.detail.len() + e.unavailable.as_ref().map_or(0, String::len));
+        let workflows = self.workflows.iter().map(|w| w.title.len() + w.unavailable.as_ref().map_or(0, String::len));
+        groups.chain(workflows).chain(self.missing.iter().map(String::len)).fold(0usize, usize::saturating_add)
+    }
+    /// Whether the section shows its heading row (and so its entries).
+    fn shown(&self) -> bool {
+        self.read || self.can_refresh || self.error.is_some()
+    }
+    fn heading(&self) -> String {
+        match &self.server {
+            Some(name) => format!("From ComfyUI server \"{name}\""),
+            None => "From your ComfyUI server".into(),
+        }
+    }
 }
 
 /// An open picker retains IDs/reasons and indices, not another model/schema inventory.
@@ -34,6 +103,12 @@ pub struct ModelPicker {
     highlighted: Option<usize>,
     focus: bool,
     text_bytes: usize,
+    server: Option<ServerSection>,
+    /// The server entries' and workflows' names in lowercase, computed once for search.
+    server_search: Vec<Vec<String>>,
+    workflow_search: Vec<String>,
+    /// The highlighted server row, by its index in `rows`; never set with `highlighted`.
+    server_highlight: Option<usize>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -46,6 +121,18 @@ pub enum Outcome {
     CatalogChanged,
     /// A choice could not be retained; the caller shows this without changing the document.
     Unavailable(&'static str),
+    /// A model the ComfyUI server lists (#970): the caller previews it through the engine.
+    ServerModel {
+        group: String,
+        name: String,
+    },
+    /// An imported workflow card: the caller places a copy beside the targets.
+    Workflow {
+        canvas: CanvasId,
+        id: NodeId,
+    },
+    /// Read the default ComfyUI server again.
+    RefreshServer,
 }
 
 fn invalid(message: &'static str) -> Error {
@@ -103,9 +190,37 @@ impl ModelPicker {
         filtered.try_reserve_exact(choices.len()).map_err(|_| allocation())?;
         let mut rows = Vec::new();
         rows.try_reserve_exact(choices.len().checked_mul(2).ok_or_else(|| invalid("model picker row size overflow"))?).map_err(|_| allocation())?;
-        let mut picker = Self { choices, filtered, rows, query: String::new(), filtered_query: String::new(), highlighted: None, focus: true, text_bytes };
+        let mut picker = Self {
+            choices,
+            filtered,
+            rows,
+            query: String::new(),
+            filtered_query: String::new(),
+            highlighted: None,
+            focus: true,
+            text_bytes,
+            server: None,
+            server_search: Vec::new(),
+            workflow_search: Vec::new(),
+            server_highlight: None,
+        };
         picker.refilter(catalog);
         Ok(picker)
+    }
+
+    /// Adds the ComfyUI server's own models and the document's imported workflows (#970).
+    pub fn with_server(mut self, server: ServerSection, catalog: &Catalog) -> Self {
+        self.text_bytes = self.text_bytes.saturating_add(server.text_bytes());
+        self.server_search = server.groups.iter().map(|g| g.entries.iter().map(|e| e.name.to_lowercase()).collect()).collect();
+        self.workflow_search = server.workflows.iter().map(|w| w.title.to_lowercase()).collect();
+        self.server = Some(server);
+        self.refilter(catalog);
+        self
+    }
+
+    /// The current search text, kept when the controller rebuilds the picker.
+    pub fn query(&self) -> &str {
+        &self.query
     }
 
     /// Retained ID/reason payload lengths only; excludes vector shells/capacity, the borrowed
@@ -141,18 +256,98 @@ impl ModelPicker {
         }
         self.highlighted = self.filtered.iter().copied().find(|index| self.choices.get(*index).is_some_and(|choice| choice.unavailable.is_none()));
         self.filtered_query.clone_from(&self.query);
+        self.server_highlight = None;
+        let Some(server) = &self.server else { return };
+        let matches = |lower: &str| query.is_empty() || lower.contains(&query);
+        let mut rows: Vec<Row> = (0..server.missing.len()).map(Row::Missing).collect();
+        for (g, group) in server.groups.iter().enumerate() {
+            let names = self.server_search.get(g).map(Vec::as_slice).unwrap_or_default();
+            let label = matches(&group.label.to_lowercase());
+            let entries: Vec<usize> = (0..group.entries.len()).filter(|i| label || names.get(*i).is_some_and(|name| matches(name))).collect();
+            if entries.is_empty() {
+                continue;
+            }
+            rows.push(Row::ServerGroup(g));
+            rows.extend(entries.into_iter().map(|e| Row::ServerModel(g, e)));
+        }
+        let workflows: Vec<usize> =
+            (0..server.workflows.len()).filter(|i| matches("workflow") || self.workflow_search.get(*i).is_some_and(|title| matches(title))).collect();
+        let mut section = Vec::new();
+        if server.shown() {
+            section.push(Row::Server);
+            section.extend(rows);
+        }
+        if !workflows.is_empty() {
+            section.push(Row::Workflows);
+            section.extend(workflows.into_iter().map(Row::Workflow));
+        }
+        // The server's own models sit right after the catalog's ComfyUI cards, as one group.
+        let comfy = |row: &Row| match row {
+            Row::Model(index) => {
+                self.choices.get(*index).and_then(|choice| catalog.get(&choice.id)).is_some_and(|m| m.provider == nodecraft_nodes::comfy_workflow::PROVIDER)
+            }
+            _ => false,
+        };
+        let at = self.rows.iter().rposition(comfy).map_or(self.rows.len(), |last| last.saturating_add(1));
+        let tail = self.rows.split_off(at.min(self.rows.len()));
+        self.rows.extend(section);
+        self.rows.extend(tail);
+        if self.highlighted.is_none() {
+            self.server_highlight = self.rows.iter().position(|row| self.server_enabled(*row));
+        }
     }
 
+    /// Whether `row` is a server entry or workflow that can be chosen.
+    fn server_enabled(&self, row: Row) -> bool {
+        let Some(server) = &self.server else { return false };
+        match row {
+            Row::ServerModel(g, e) => server.groups.get(g).and_then(|group| group.entries.get(e)).is_some_and(|entry| entry.unavailable.is_none()),
+            Row::Workflow(index) => server.workflows.get(index).is_some_and(|workflow| workflow.unavailable.is_none()),
+            _ => false,
+        }
+    }
+
+    /// What choosing the server row `row` asks for.
+    fn server_outcome(&self, row: Row) -> Option<Outcome> {
+        let server = self.server.as_ref().filter(|_| self.server_enabled(row))?;
+        match row {
+            Row::ServerModel(g, e) => {
+                let entry = server.groups.get(g)?.entries.get(e)?;
+                Some(Outcome::ServerModel { group: entry.group.clone(), name: entry.name.clone() })
+            }
+            Row::Workflow(index) => server.workflows.get(index).map(|workflow| Outcome::Workflow { canvas: workflow.canvas, id: workflow.id }),
+            _ => None,
+        }
+    }
+
+    /// The highlighted row's index in `rows`, catalog or server.
+    fn highlighted_row(&self) -> Option<usize> {
+        self.server_highlight.or_else(|| self.highlighted.and_then(|h| self.rows.iter().position(|row| matches!(row, Row::Model(index) if *index == h))))
+    }
+
+    /// Moves through every row that can be chosen, catalog and server alike.
     fn move_highlight(&mut self, down: bool) {
-        let current = self.highlighted.and_then(|index| self.filtered.iter().position(|candidate| *candidate == index));
-        let enabled = |index: &usize| self.choices.get(*index).is_some_and(|choice| choice.unavailable.is_none());
-        let next = if down {
-            self.filtered.iter().skip(current.map_or(0, |n| n.saturating_add(1))).copied().find(enabled)
-        } else {
-            self.filtered.iter().take(current.unwrap_or(self.filtered.len())).rev().copied().find(enabled)
+        let current = self.highlighted_row();
+        let enabled = |index: &usize| match self.rows.get(*index) {
+            Some(Row::Model(choice)) => self.choices.get(*choice).is_some_and(|choice| choice.unavailable.is_none()),
+            Some(row) => self.server_enabled(*row),
+            None => false,
         };
-        if next.is_some() {
-            self.highlighted = next;
+        let next = if down {
+            (current.map_or(0, |n| n.saturating_add(1))..self.rows.len()).find(enabled)
+        } else {
+            (0..current.unwrap_or(self.rows.len())).rev().find(enabled)
+        };
+        match next.and_then(|index| self.rows.get(index).copied().map(|row| (index, row))) {
+            Some((_, Row::Model(choice))) => {
+                self.highlighted = Some(choice);
+                self.server_highlight = None;
+            }
+            Some((index, _)) => {
+                self.highlighted = None;
+                self.server_highlight = Some(index);
+            }
+            None => {}
         }
     }
 
@@ -172,6 +367,7 @@ impl ModelPicker {
         }
         let mut open = true;
         let mut chosen = None;
+        let mut server_chosen = None;
         let mut changed_catalog = false;
         egui::Window::new("Choose a model")
             .id(egui::Id::new("model_picker157"))
@@ -196,7 +392,7 @@ impl ModelPicker {
                 }
                 ui.label(egui::RichText::new("Model rates only. Run quotes and budgets are checked separately.").color(t.text_muted));
                 ui.label(egui::RichText::new(SELECTION_TIER_HELP).color(t.text_muted));
-                if self.filtered.is_empty() {
+                if self.rows.is_empty() {
                     ui.label("No matching models");
                 }
                 // One choice control and three bounded text lines, also at larger text sizes.
@@ -204,14 +400,26 @@ impl ModelPicker {
                     t.control_row_height.max(ui.spacing().interact_size.y) + 3.0 * (ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y);
                 let mut scroll = egui::ScrollArea::vertical().max_height(t.comments_height);
                 if (up || down)
-                    && let Some(row) = self.rows.iter().position(|row| matches!(row, Row::Model(index) if Some(*index) == self.highlighted))
+                    && let Some(row) = self.highlighted_row()
                 {
                     scroll = scroll.vertical_scroll_offset(row as f32 * (row_height + ui.spacing().item_spacing.y));
                 }
                 scroll.show_rows(ui, row_height, self.rows.len(), |ui, range| {
-                    for row in self.rows.get(range).into_iter().flatten() {
+                    let first = range.start;
+                    for (offset, row) in self.rows.get(range).into_iter().flatten().enumerate() {
+                        let at = first.saturating_add(offset);
                         let index = match row {
                             Row::Provider(index) | Row::Model(index) => *index,
+                            _ => {
+                                if let Some(server) = &self.server {
+                                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                        if let Some(outcome) = server_row(ui, server, *row, self.server_highlight == Some(at), t) {
+                                            server_chosen = Some(outcome);
+                                        }
+                                    });
+                                }
+                                continue;
+                            }
                         };
                         let Some(choice) = self.choices.get(index) else { continue };
                         let Some(model) = catalog.get(&choice.id) else {
@@ -255,6 +463,14 @@ impl ModelPicker {
         if !open {
             return Outcome::Closed;
         }
+        if let Some(outcome) = server_chosen.or_else(|| {
+            (enter && chosen.is_none())
+                .then(|| self.server_highlight.and_then(|at| self.rows.get(at).copied()))
+                .flatten()
+                .and_then(|row| self.server_outcome(row))
+        }) {
+            return outcome;
+        }
         if let Some(index) = chosen.or(enter.then_some(self.highlighted).flatten())
             && let Some(choice) = self.choices.get(index).filter(|choice| choice.unavailable.is_none())
         {
@@ -268,6 +484,83 @@ impl ModelPicker {
         }
         Outcome::Open
     }
+}
+
+/// Draws one row of the ComfyUI server section; what the person chose there, if anything.
+fn server_row(ui: &mut egui::Ui, server: &ServerSection, row: Row, highlighted: bool, t: &Tokens) -> Option<Outcome> {
+    let muted = |text: &str| egui::Label::new(egui::RichText::new(text).color(t.text_muted)).truncate();
+    match row {
+        Row::Server => {
+            ui.heading(server.heading());
+            if let Some(error) = &server.error {
+                ui.add(egui::Label::new(egui::RichText::new(format!("Couldn't list the server's models: {error}")).color(t.danger)).truncate())
+                    .on_hover_text(error);
+                if server.can_refresh && ui.button("Refresh server models").clicked() {
+                    return Some(Outcome::RefreshServer);
+                }
+                return None;
+            }
+            let note = if server.read {
+                "Listed from the server's last read, not from the catalog. Free: runs on your own server."
+            } else {
+                "Read the server to list its own checkpoints, LoRAs and other models here."
+            };
+            ui.add(muted(note));
+            if server.can_refresh && ui.button("Refresh server models").clicked() {
+                return Some(Outcome::RefreshServer);
+            }
+        }
+        Row::Missing(index) => {
+            let name = server.missing.get(index)?;
+            ui.add(egui::Label::new(egui::RichText::new(format!("Missing on the server: {name}")).color(t.stale)).truncate()).on_hover_text(name);
+            ui.add(muted("The card keeps this checkpoint and won't run it until the server has it. Install it, or choose another."));
+        }
+        Row::ServerGroup(g) => {
+            let group = server.groups.get(g)?;
+            ui.strong(&group.label);
+            if group.more > 0 {
+                ui.add(muted(&format!("{} more not listed", group.more)));
+            }
+        }
+        Row::ServerModel(g, e) => {
+            let entry = server.groups.get(g)?.entries.get(e)?;
+            let response = ui.add_enabled(entry.unavailable.is_none(), egui::Button::selectable(highlighted, &entry.name).truncate());
+            match &entry.unavailable {
+                Some(reason) => {
+                    ui.add(muted(&format!("Unavailable: {reason}"))).on_hover_text(reason);
+                    response.on_disabled_hover_text(reason);
+                }
+                None => {
+                    ui.add(muted(&entry.detail));
+                    if response.on_hover_text(&entry.detail).clicked() {
+                        return Some(Outcome::ServerModel { group: entry.group.clone(), name: entry.name.clone() });
+                    }
+                }
+            }
+        }
+        Row::Workflows => {
+            ui.heading("Imported ComfyUI workflows");
+            ui.add(muted("Choosing one places a copy of that workflow card, with its saved fields, beside this card."));
+        }
+        Row::Workflow(index) => {
+            let workflow = server.workflows.get(index)?;
+            let response = ui.add_enabled(workflow.unavailable.is_none(), egui::Button::selectable(highlighted, &workflow.title).truncate());
+            match &workflow.unavailable {
+                Some(reason) => {
+                    ui.add(muted(&format!("Unavailable: {reason}")));
+                    response.on_disabled_hover_text(reason);
+                }
+                None => {
+                    ui.add(muted("Imported workflow · its saved mapping"));
+                    if response.clicked() {
+                        return Some(Outcome::Workflow { canvas: workflow.canvas, id: workflow.id });
+                    }
+                }
+            }
+        }
+        Row::Provider(_) | Row::Model(_) => {}
+    }
+    None
 }
 
 fn amount(money: Money) -> String {
@@ -351,6 +644,9 @@ fn model_details(ui: &mut egui::Ui, model: &ModelDescriptor) {
         if let Some(document) = &mode.document {
             ui.label(document.summary());
         }
+        if let Some(line) = mode.reads.as_ref().map(nodecraft_types::ReadingUse::summary).filter(|line| !line.is_empty()) {
+            ui.label(line);
+        }
         if let Some(params) = &mode.params {
             ui.label(if params.is_empty() { "Sends no settings".to_owned() } else { format!("Sends only: {}", params.join(", ")) });
         }
@@ -405,3 +701,6 @@ mod topaz37_tests;
 
 #[cfg(test)]
 mod pika29_tests;
+
+#[cfg(test)]
+mod comfy970_tests;

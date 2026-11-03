@@ -78,6 +78,37 @@ fn bad_server_input_preserves_saved_settings_and_never_enters_the_project() {
 }
 
 #[test]
+fn custom_endpoint_fields_come_from_the_provider_list_and_save_through_the_command() {
+    let origin = Arc::new(Origin::default());
+    let mut panel = app(Arc::clone(&origin));
+    panel.browser_providers.as_mut().unwrap().open = true;
+    let mut h = harness(panel);
+    h.run();
+    assert!(h.query_by_label_contains("Custom endpoints").is_some());
+    for entry in nodecraft_engine::custom_endpoints::available() {
+        assert!(h.query_all_by_label(entry.label).next().is_some(), "{} has a field", entry.provider);
+    }
+    // A remote plain-HTTP address is refused, without echoing it, and nothing is saved.
+    h.state_mut().browser_providers.as_mut().unwrap().base_urls.insert("openai", "http://proxy.example/v1".into());
+    h.run();
+    h.get_by_label("Save servers").click();
+    h.run();
+    assert_eq!(h.state().provider_settings(), ProviderSettings::default());
+    let notice = h.state().browser_providers.as_ref().unwrap().notice.clone().unwrap();
+    assert!(notice.contains("HTTPS") && !notice.contains("proxy.example"), "{notice}");
+    // A local proxy is saved, normalised, and read back after a reload.
+    h.state_mut().browser_providers.as_mut().unwrap().base_urls.insert("openai", "http://127.0.0.1:4000/v1/".into());
+    h.run();
+    h.get_by_label("Save servers").click();
+    h.run();
+    assert!(h.query_by_label("Provider servers saved for this site.").is_some());
+    let settings = h.state().provider_settings();
+    assert_eq!(settings.base_urls.get("openai").and_then(nodecraft_engine::custom_endpoints::BaseUrlEntry::text), Some("http://127.0.0.1:4000/v1"));
+    assert_eq!(settings.base_urls.len(), 1, "blank fields keep their provider's own API");
+    assert_eq!(app(origin).provider_settings(), settings);
+}
+
+#[test]
 #[ignore = "manual public-safe #721 evidence; requires NODECRAFT_REVIEW_EVIDENCE"]
 fn render_browser_provider_settings_evidence() {
     let folder = std::path::PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());

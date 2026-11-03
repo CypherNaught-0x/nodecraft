@@ -13,6 +13,7 @@ pub mod deck;
 mod descriptor;
 pub mod document;
 pub mod element;
+pub mod export;
 pub mod folder;
 pub mod generation;
 pub mod image;

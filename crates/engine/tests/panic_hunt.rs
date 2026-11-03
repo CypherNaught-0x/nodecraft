@@ -189,6 +189,31 @@ fn template(id: &str) -> (Session, Value) {
         }
         document = seed.document().clone();
     }
+    if id.starts_with("export.node_") {
+        // An image result wired into an Export to folder card (#746), so a hunt reaches source
+        // resolution, naming and the write path rather than stopping at an unwired card.
+        let mut image = nodecraft_graph::Node::new(node_id(0x74), "test.gen");
+        image.outputs.push(nodecraft_graph::Port {
+            name: "out".into(),
+            port_type: nodecraft_types::PortType { modality: nodecraft_types::Modality::Image, many: false },
+        });
+        let asset =
+            nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([0x74; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
+        let result = nodecraft_graph::Generation::new(gen_id(0x74), vec![nodecraft_types::Value::Media(asset)]);
+        image.active = Some(result.id);
+        image.history.push(result);
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node: image }.apply(&mut document).unwrap();
+        let kinds = nodecraft_nodes::Registry::builtins().unwrap();
+        let card = kinds.get(nodecraft_nodes::export::ID).unwrap().instantiate_instance(node_id(0x75), Default::default(), &Default::default()).unwrap();
+        nodecraft_graph::Change::AddNode { canvas: canvas(), node: card }.apply(&mut document).unwrap();
+        let wire = nodecraft_graph::Edge {
+            id: nodecraft_types::EdgeId::from_bytes([0x76; 16]),
+            from: nodecraft_graph::Endpoint { node: node_id(0x74), port: "out".into() },
+            to: nodecraft_graph::Endpoint { node: node_id(0x75), port: "image".into() },
+            order: 0,
+        };
+        nodecraft_graph::Change::Connect { canvas: canvas(), edge: wire }.apply(&mut document).unwrap();
+    }
     if id == "document.use_pages" {
         let mut seed = Session::new(document.clone()).unwrap();
         seed.dispatch("node.create", &json!({"canvas":canvas(),"id":node_id(5),"kind":"document.pages","pos":{"x":0,"y":0}})).unwrap();
@@ -219,7 +244,7 @@ fn template(id: &str) -> (Session, Value) {
         let node = seed.kinds().get("generation.image").unwrap().instantiate_instance(node_id(7), Default::default(), &supplied).unwrap();
         nodecraft_graph::Change::AddNode { canvas: canvas(), node }.apply(&mut document).unwrap();
     }
-    if id == "comfy.server.use" {
+    if id == "comfy.server.use" || id.starts_with("comfy.models.") {
         let seed = Session::new(document.clone()).unwrap();
         let supplied = [("model".into(), nodecraft_types::Value::Text("comfyui.sdxl".into()))].into();
         let node = seed.kinds().get("generation.image").unwrap().instantiate_instance(node_id(7), Default::default(), &supplied).unwrap();
@@ -348,7 +373,7 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
-    if matches!(id, "template.refresh" | "template.retrieve") {
+    if matches!(id, "template.refresh" | "template.retrieve" | "templates.update" | "templates.clear_cache") {
         session
             .register_host_service(nodecraft_engine::templates::fetch::SERVICE, |request| {
                 let _: nodecraft_engine::templates::fetch::Request = serde_json::from_value(request.clone()).unwrap();
@@ -356,7 +381,7 @@ fn template(id: &str) -> (Session, Value) {
             })
             .unwrap();
     }
-    if id.starts_with("export.local_") || id.starts_with("export.results_") {
+    if id.starts_with("export.local_") || id.starts_with("export.results_") || id.starts_with("export.node_") {
         // A real destination, so the hunt reaches name rendering and the write path rather than
         // stopping at the host check. It is in the system temporary folder, never the repository.
         session.swap_resource(Some(nodecraft_engine::local_export::ExportHost::authorize(&export_destination()).unwrap()));
@@ -378,6 +403,14 @@ fn template(id: &str) -> (Session, Value) {
         session.swap_resource(Some(nodecraft_engine::run_cmds::UsageSnapshot(std::sync::Arc::new(log.clone()))));
         let log = std::sync::Mutex::new(log);
         session.register_host_service(RESOLUTION_SERVICE, move |request| resolve(&mut log.lock().unwrap(), request, 0)).unwrap();
+    }
+    if id == "usage.unresolved" || id == "usage.resolve_unresolved" {
+        use nodecraft_engine::billing_cmds::*;
+        // One unresolved charge, so adversarial params reach the token, amount and note checks.
+        let log = unresolved_charge();
+        session.swap_resource(Some(nodecraft_engine::run_cmds::UsageSnapshot(std::sync::Arc::new(log.clone()))));
+        let log = std::sync::Mutex::new(log);
+        session.register_host_service(BILLING_SERVICE, move |request| resolve(&mut log.lock().unwrap(), request, 0)).unwrap();
     }
     if id.starts_with("usage.ownership") || id == "usage.reconcile_ownership" {
         use nodecraft_engine::ownership_cmds::*;
@@ -432,6 +465,17 @@ fn template(id: &str) -> (Session, Value) {
         store.save(&serde_json::to_vec(&json!({"version": 1, "elements": [{"name": "hero", "category": "character", "images": [image]}]})).unwrap()).unwrap();
         nodecraft_engine::element_library::install(&mut session, std::rc::Rc::new(store));
     }
+    if matches!(id, "library.saved" | "library.save_assets" | "library.unsave_assets" | "library.place_saved" | "library.repair_saved") {
+        // My library holding one image, kept by its hash.
+        use nodecraft_engine::asset_library::{AssetLibraryStore, MemoryAssetLibrary};
+        let store = MemoryAssetLibrary::default();
+        let png = nodecraft_media::encode_png(2, 2, &[30, 60, 90, 255].repeat(4), &nodecraft_media::Limits::default()).unwrap();
+        let hash = nodecraft_types::Blake3::from_bytes(*blake3::hash(&png).as_bytes());
+        store.put_media(&hash, &png).unwrap();
+        let entry = json!({"asset": {"hash": hash, "mime": "image/png"}, "name": "Saved", "origin": "Elsewhere", "bytes": png.len()});
+        store.save(&serde_json::to_vec(&json!({"version": 1, "assets": [entry]})).unwrap()).unwrap();
+        nodecraft_engine::asset_library::install(&mut session, std::rc::Rc::new(store));
+    }
     if matches!(id, "shader.save" | "shader.place" | "shader.update" | "library.shaders" | "library.remove_shader") {
         // A shader library holding "Glow" version 1.
         use nodecraft_engine::library::LibraryStore;
@@ -479,6 +523,12 @@ fn template(id: &str) -> (Session, Value) {
     if matches!(id, "comfy.workflow.import" | "comfy.workflow.mapping" | "comfy.workflow.mapping_set") {
         // The server's nodes as comfy.nodes.refresh installs them, so the import succeeds.
         let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {}]}}, "output": ["IMAGE"]}, "SaveImage": {"input": {"required": {"images": ["IMAGE", {}]}}, "output": [], "output_node": true}}"#;
+        let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
+        nodecraft_engine::comfy_workflow_cmds::finish(&mut session, 1, Ok(std::sync::Arc::new(catalog).into()));
+    }
+    if id.starts_with("comfy.models.") {
+        // A default server listing one SDXL-style checkpoint and one LoRA (#970).
+        let info = br#"{"CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [["juggernaut_xl.safetensors"], {}]}}, "output": ["MODEL", "CLIP", "VAE"]}, "LoraLoader": {"input": {"required": {"lora_name": [["detail.safetensors"], {}]}}, "output": ["MODEL", "CLIP"]}}"#;
         let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
         nodecraft_engine::comfy_workflow_cmds::finish(&mut session, 1, Ok(std::sync::Arc::new(catalog).into()));
     }
@@ -549,6 +599,13 @@ fn template(id: &str) -> (Session, Value) {
         "sheet.row_move" => json!({"canvas":sheet,"row":sheet_rows[1],"index":0}),
         "sheet.reference_wire" => json!({"canvas":sheet,"seed":node_id(0x54),"reference":node_id(0x53),"rows":[sheet_rows[1]]}),
         "sheet.reference_unwire" => json!({"canvas":sheet,"reference":node_id(0x53),"rows":[sheet_rows[0]]}),
+        // The rows have no results, so this reaches the "nothing to place" refusal; the
+        // engine's own tests place real results.
+        "sheet.place" => json!({"canvas":sheet,"seed":node_id(0x57),"rows":[sheet_rows[0]],"target":canvas(),"pos":{"x":1,"y":2}}),
+        "sheet.rename" => json!({"canvas":sheet,"title":"Renamed batch"}),
+        "sheet.expand" => {
+            json!({"canvas":sheet,"seed":node_id(0x56),"template":"a {{colour}} fox","variables":[{"name":"colour","text":["red","blue"]}],"copies":2})
+        }
         "technique.check" => json!({"canvas":canvas(),"outputs":[{"node":node_id(0x63)}]}),
         "technique.publish" => {
             json!({"canvas":canvas(),"published":technique_canvas,"seed":node_id(0x64),"technique":technique,"name":"Note","outputs":[{"node":node_id(0x63)}]})
@@ -567,9 +624,20 @@ fn template(id: &str) -> (Session, Value) {
             json!({"scope":"user","id":skill,"text":text,"origin":"a file"})
         }
         "library.list" => json!({}),
+        "library.assets" => json!({"kind":"image","query":"photo","canvas":canvas(),"offset":0,"limit":200}),
+        "library.history" => json!({"canvas":canvas(),"node":node_id(1),"query":"x","offset":1,"limit":1}),
+        "library.styles" => json!({"query":"ink","offset":0,"limit":50}),
+        "library.attach" => json!({"canvas":canvas(),"items":[{"from":{"canvas":canvas(),"node":node_id(1),"generation":gen_id(0x21)}},
+            {"hash":"00".repeat(32)}],"ids":[node_id(7),node_id(8)],"at":{"x":1,"y":2},"step":320}),
+        "library.saved" => json!({"kind":"image","query":"saved","offset":0,"limit":200}),
+        "library.repair_saved" => json!({}),
+        "library.save_assets" => json!({"items":[{"hash":"00".repeat(32)}]}),
+        "library.unsave_assets" => json!({"hashes":["00".repeat(32)]}),
+        "library.place_saved" => json!({"canvas":canvas(),"items":[{"hash":"00".repeat(32)}],"ids":[node_id(7)],"at":{"x":1,"y":2},"step":320}),
         "template.list" => json!({}),
         "template.add" => json!({"id":"generate-text"}),
         "template.refresh" => json!({}),
+        "templates.update" | "templates.status" | "templates.clear_cache" => json!({}),
         "template.retrieve" => {
             let entry = nodecraft_engine::templates::entries().unwrap().into_iter().find(|entry| entry.id == "generate-text").unwrap();
             json!({"id":entry.id,"version":entry.version,"blake3":entry.blake3})
@@ -589,6 +657,18 @@ fn template(id: &str) -> (Session, Value) {
         // No fetch service here: the refresh must be refused cleanly.
         "comfy.nodes.refresh" | "comfy.nodes.status" => json!({}),
         "comfy.server.use" => json!({"canvas":canvas(),"id":node_id(7),"server":"studio"}),
+        "comfy.models.list" => json!({"canvas":canvas(),"nodes":[node_id(7)]}),
+        "comfy.models.preview" => json!({"canvas":canvas(),"nodes":[node_id(7)],"group":"checkpoints","name":"juggernaut_xl.safetensors"}),
+        "comfy.models.use" => {
+            let mut request = json!({"canvas":canvas(),"nodes":[node_id(7)],"group":"checkpoints","name":"juggernaut_xl.safetensors"});
+            let preview = session.dispatch("comfy.models.preview", &request).unwrap();
+            request["expected_revision"] = preview["revision"].clone();
+            request["preview_binding"] = preview["binding"].clone();
+            request
+        }
+        "comfy.models.add" => {
+            json!({"canvas":canvas(),"id":node_id(0x6a),"pos":{"x":0,"y":0},"group":"checkpoints","name":"juggernaut_xl.safetensors"})
+        }
         "comfy.workflow.import" => json!({"canvas":canvas(),"id":node_id(0x69),"pos":{"x":0,"y":0},"workflow":
             r#"{"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a fox"}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}"#}),
         "comfy.workflow.mapping" => json!({"canvas":canvas(),"id":node_id(0x69)}),
@@ -600,9 +680,14 @@ fn template(id: &str) -> (Session, Value) {
                 "output_names":[{"modality":"image","name":"images"}],"disconnect":false,"clear_history":false})
         }
         "providers.settings_get" => json!({}),
-        "providers.settings_set" => json!({"comfyui_url":"http://127.0.0.1:8188","litellm_url":"https://proxy.example"}),
+        "providers.settings_set" => {
+            json!({"comfyui_url":"http://127.0.0.1:8188","litellm_url":"https://proxy.example","base_urls":{"openai":"http://127.0.0.1:4000/v1"}})
+        }
         // The updates service isn't registered here: the check must be refused cleanly.
         "app.check_updates" | "app.update_status" | "app.install_update" | "app.restart_to_update" => json!({}),
+        // No MCP server host here either (#116): refused cleanly, never started.
+        "automation.mcp_server_set" => json!({"enabled": true}),
+        "automation.mcp_server_status" => json!({}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
@@ -610,6 +695,7 @@ fn template(id: &str) -> (Session, Value) {
         "canvas.paste" => json!({"canvas":canvas(),"nodes":[node(3)],"edges":[]}),
         "run.quote" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]}),
         "run.estimate" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]}),
+        "run.changed" | "run.workflow" => json!({"canvas":canvas()}),
         "run.start" => {
             let mut request = json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]});
             let quote = session.dispatch("run.quote", &request).unwrap();
@@ -630,6 +716,7 @@ fn template(id: &str) -> (Session, Value) {
             "on_collision":"numbered",
             "format":{"mode":"original"}
         }),
+        "export.node_plan" | "export.node_run" => json!({"canvas":canvas(),"node":node_id(0x75)}),
         "export.results_plan" | "export.results_start" => json!({
             "canvas":canvas(),"nodes":[node_id(1)],"history":"all",
             "destination":export_destination().display().to_string(),"template":"{title}-{generation}-{index}"
@@ -653,6 +740,13 @@ fn template(id: &str) -> (Session, Value) {
             // path is hunted too.
             let token: String = reconciled_legacy().resolvable_charges()[0].token.iter().map(|b| format!("{b:02x}")).collect();
             json!({"provider":"t","key":"old","token":token,"outcome":"settled","currency":"USD","micros":1,"dry_run":false})
+        }
+        "usage.unresolved" => json!({"offset":0,"limit":1}),
+        "usage.resolve_unresolved" => {
+            // A real token for the fixture's unresolved charge; not a dry run, so the service's
+            // path is hunted too.
+            let token: String = unresolved_charge().unresolved_charges()[0].token.iter().map(|b| format!("{b:02x}")).collect();
+            json!({"provider":"t","key":"lost","token":token,"outcome":"settled","currency":"USD","micros":1,"note":"checked","dry_run":false})
         }
         "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),
@@ -879,7 +973,7 @@ fn typed_template_panic_hunt() {
             if id == "run.start" && params.pointer("/accept/token") == valid.pointer("/accept/token") {
                 params["accept"]["token"] = fresh["accept"]["token"].clone();
             }
-            if id == "node.set_model" && params.get("preview_binding") == valid.get("preview_binding") {
+            if matches!(id, "node.set_model" | "comfy.models.use") && params.get("preview_binding") == valid.get("preview_binding") {
                 params["preview_binding"] = fresh["preview_binding"].clone();
             }
             if matches!(id, "plugins.result" | "plugins.forget") && params.get("pending") == valid.get("pending") {
@@ -938,6 +1032,8 @@ fn typed_template_panic_hunt() {
                             | "options.status"
                             | "comfy.nodes.refresh"
                             | "comfy.nodes.status"
+                            | "comfy.models.list"
+                            | "comfy.models.preview"
                             | "app.check_updates"
                             | "app.update_status"
                             | "app.install_update"
@@ -949,6 +1045,8 @@ fn typed_template_panic_hunt() {
                             | "canvas.search_previous"
                             | "canvas.search_close"
                             | "run.quote"
+                            | "run.changed"
+                            | "run.workflow"
                             | "run.estimate"
                             // Applies cached results first (#91); the fixture has none to reuse.
                             | "run.start"
@@ -961,6 +1059,8 @@ fn typed_template_panic_hunt() {
                             | "usage.reconcile_ownership"
                             | "usage.unsettled"
                             | "usage.resolve_charge"
+                            | "usage.unresolved"
+                            | "usage.resolve_unresolved"
                             // The fixture has no results to reuse: nothing changes.
                             | "run.reuse"
                     ) {
@@ -1029,6 +1129,23 @@ fn model_templates_reach_the_production_kind_and_current_preview_binding() {
 }
 
 #[test]
+fn comfy_model_templates_reach_the_server_list_and_change_only_on_use_and_add() {
+    for id in ["comfy.models.list", "comfy.models.preview", "comfy.models.use", "comfy.models.add"] {
+        let (mut session, params) = template(id);
+        let before = session.document().clone();
+        let result = session.dispatch(id, &params).unwrap();
+        if matches!(id, "comfy.models.list" | "comfy.models.preview") {
+            assert_eq!(session.document(), &before, "{id}");
+        } else {
+            assert_ne!(session.document(), &before, "{id}");
+        }
+        if id == "comfy.models.list" {
+            assert_eq!(result["groups"][0]["models"][0]["model"], "comfyui.sdxl");
+        }
+    }
+}
+
+#[test]
 fn plugin_templates_reach_the_real_store_and_results_without_document_edits() {
     for id in [
         "plugins.list",
@@ -1073,6 +1190,28 @@ fn plugin_templates_reach_the_real_store_and_results_without_document_edits() {
 }
 
 /// The legacy fixture with its one quarantined group reconciled.
+/// One ordinary charge a 401 left unresolved (#298).
+fn unresolved_charge() -> nodecraft_exec::cost::UsageLog {
+    use nodecraft_exec::cost::{Charge, UsageEntry, UsageLog};
+    let mut log = UsageLog::default();
+    let cost = nodecraft_types::Money::new(nodecraft_types::Currency::USD, 5);
+    log.record(UsageEntry {
+        at_ms: 0,
+        session: "a".into(),
+        node: common::node_id(1),
+        provider: "t".into(),
+        instance: None,
+        project: None,
+        model: "m".into(),
+        cost,
+        idempotency_key: "lost".into(),
+        status: Charge::Estimate,
+    })
+    .unwrap();
+    log.settle("t", "lost", cost, Charge::Unresolved).unwrap();
+    log
+}
+
 fn reconciled_legacy() -> nodecraft_exec::cost::UsageLog {
     let mut log: nodecraft_exec::cost::UsageLog =
         serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
@@ -1083,15 +1222,17 @@ fn reconciled_legacy() -> nodecraft_exec::cost::UsageLog {
 
 #[test]
 fn template_fetch_corpus_reaches_shared_commands_without_project_mutation() {
-    for id in ["template.refresh", "template.retrieve"] {
+    for id in ["template.refresh", "template.retrieve", "templates.update", "templates.clear_cache", "templates.status"] {
         let (mut session, params) = template(id);
         let before = session.document().clone();
         let revision = session.revision();
         let result = session.dispatch(id, &params).unwrap();
-        if id == "template.refresh" {
-            assert_eq!(result, json!({"pending":1}));
-        } else {
+        if id == "template.retrieve" {
             assert_eq!(result, json!({"available":true}));
+        } else if id == "templates.status" {
+            assert_eq!(result["pending"], json!(false));
+        } else {
+            assert_eq!(result, json!({"pending":1}));
         }
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), revision);
