@@ -14,16 +14,23 @@ with `CARGO_TARGET_DIR` shared, building B and then A ran B's code from A.
 **Decision.** Sharing becomes opt-in and safe through xtask, trading compute for disk:
 
 - **Opt in.** `NODECRAFT_SHARED_TARGET=<absolute dir>` routes every cargo command xtask runs into
-  that directory: `ci`, `ci --quick`, `wasm`, `catalog-check`, `slow-tests` and `perf`. `cargo
-  xtask shared -- <cargo args>` runs any other cargo command the same way. xtask itself still
-  builds in the worktree's own `target/` (about 200 MB), because `cargo xtask` compiles it before
-  xtask can take the lock. For the same reason, pointing `CARGO_TARGET_DIR` at the shared directory
-  is refused.
+  that directory: `ci`, `ci --quick`, `wasm`, `catalog-check` and `slow-tests`. `cargo xtask
+  shared -- <cargo args>` runs any other cargo command the same way. It refuses `clean`,
+  `--target-dir` and `--manifest-path`. xtask itself still builds in the worktree's own `target/`
+  (about 200 MB), because `cargo xtask` compiles it before xtask can take the lock. For the same
+  reason, xtask refuses to run when it was built inside the shared directory, whether through
+  `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` or `build.target-dir`. `perf` keeps its own target.
 - **One build at a time.** An exclusive file lock (`std::fs::File::lock`) on the directory is held
   for the whole xtask command, so builds from different checkouts queue rather than interleave.
-  Child processes carry `NODECRAFT_SHARED_TARGET_HELD`, so an xtask started inside a held command
-  uses its parent's lock rather than deadlocking on it. That nested xtask must belong to the
-  checkout the directory was prepared for.
+  - **Nested xtasks.** The holder writes a random token beside the lock and gives it to its children
+    in `NODECRAFT_SHARED_TARGET_HELD`. An xtask started inside a held command uses its parent's lock,
+    rather than deadlocking on it, only while that token is still the live holder's. That nested
+    xtask must also belong to the checkout the directory was prepared for. The token is withdrawn
+    when the holder finishes.
+  - **A replaced lock file.** A lock file deleted and replaced while someone waited is detected
+    (same inode, on Unix), and the lock is taken again.
+  - **A cargo outliving its xtask.** Cargo's own per-profile `.cargo-lock` is taken before anything
+    is deleted.
 - **Rebuild the workspace crates on a switch, and nothing else.** A stamp file names the checkout
   that built last. When a different checkout, or an unknown one, takes the directory, xtask deletes
   the fingerprint directories of the workspace packages (`<package>-<hash>` under every

@@ -276,28 +276,41 @@ dependencies in every checkout. When several worktrees build on one machine and 
 ```sh
 export NODECRAFT_SHARED_TARGET="$HOME/.cache/nodecraft-target"
 export CARGO_INCREMENTAL=0
-cargo xtask ci --quick                                   # ci, wasm, catalog-check, slow-tests, perf
+cargo xtask ci --quick                                   # also ci, wasm, catalog-check, slow-tests
 cargo xtask shared -- test -p nodecraft-engine --test panic_hunt -- --ignored   # any other cargo command
-cargo xtask shared -- build -p nodecraft                 # then run "$NODECRAFT_SHARED_TARGET/debug/nodecraft"
+cargo xtask shared -- run -p nodecraft                   # holds the lock while the app runs
 cargo xtask shared --clean                               # empty it (waits for the lock)
 ```
 
-Do not point `CARGO_TARGET_DIR` itself at the shared directory: xtask refuses, because `cargo xtask`
-builds xtask in `CARGO_TARGET_DIR` before xtask can take the lock. Each worktree's own `target/`
-then holds only xtask, about 200 MB.
+Do not point `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` or `build.target-dir` at the shared
+directory. `cargo xtask` builds xtask there before xtask can take the lock, and xtask refuses to
+run from inside it. Each worktree's own `target/` then holds only xtask, about 200 MB.
+`shared --` refuses `cargo clean`, which would delete the lock. It also refuses `--target-dir`, and
+`--manifest-path`, which can build another workspace whose crates are not invalidated. `perf` keeps
+building in the worktree's own `target/`.
+
+To keep the app running without holding the lock, copy the binary out first:
+`cargo xtask shared -- build -p nodecraft`, then copy
+`$NODECRAFT_SHARED_TARGET/debug/nodecraft` somewhere of your own. Running it in place lets another
+checkout relink it underneath, and on Windows a running `.exe` makes other checkouts' builds fail.
 
 What xtask does with the directory:
 
 - **One build at a time.** xtask holds an exclusive lock on it for the whole command (all of `ci`,
   for instance). A second checkout prints `waiting for … (in use by <checkout>)` and continues when
   the first finishes. An xtask started inside a held command, such as a test that runs the xtask
-  binary, shares its parent's lock.
+  binary, shares its parent's lock. It proves this with a random token that the live holder writes
+  beside the lock and withdraws when it finishes, so an inherited variable never skips the lock
+  later. Before deleting anything, xtask also takes Cargo's own per-profile lock, so a cargo still
+  running from a killed xtask finishes first.
 - **Never another checkout's code.** Cargo names a workspace crate's artifacts the same in every
   checkout and judges freshness by file times, so a plain shared `CARGO_TARGET_DIR` can link
   another checkout's code without rebuilding. The directory records the checkout that built last.
   When a different checkout takes it, xtask deletes the workspace crates' fingerprints and
   incremental state in every profile and target, and nothing else. Cargo then rebuilds the NodeCraft
   crates in place and reuses every third-party dependency.
+- **Never bypass it.** A plain cargo command whose target dir is the shared directory skips both the
+  lock and the invalidation.
 - **The cost.** Switching checkouts rebuilds the workspace crates, and builds queue rather than run
   in parallel. Consecutive builds from one checkout are incremental as usual. Feature sets and
   profiles still each keep their own copy of what they link, so keep building through

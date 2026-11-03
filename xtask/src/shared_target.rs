@@ -17,85 +17,133 @@
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// The opt-in: an absolute path to the shared build directory.
 pub const ENV: &str = "NODECRAFT_SHARED_TARGET";
+/// Set on every cargo command xtask runs in the shared directory, to the lock holder's token. An
+/// xtask started inside one (a test that runs the xtask binary, say) is covered by that lock while
+/// the holder still owns it.
+pub const HELD: &str = "NODECRAFT_SHARED_TARGET_HELD";
 /// The checkout that last built in the directory.
 const STAMP: &str = ".nodecraft-checkout";
-/// Locked for the whole xtask command. Never deleted, so a waiter keeps a valid handle.
+/// Locked for the whole xtask command. xtask never deletes it.
 const LOCK: &str = ".nodecraft-lock";
-/// Who holds the lock, for the waiting message. Best effort.
+/// The current holder: its token on the first line, then its checkout, for the waiting message.
 const OWNER: &str = ".nodecraft-owner";
-/// Set on every cargo command xtask runs in the shared directory: an xtask started inside one
-/// (a test that runs the xtask binary, say) is covered by its ancestor's lock and must not wait
-/// for it.
-pub const HELD: &str = "NODECRAFT_SHARED_TARGET_HELD";
+/// How often to retry when the lock file was replaced under a waiter.
+const LOCK_ATTEMPTS: usize = 8;
 
-static DIR: OnceLock<PathBuf> = OnceLock::new();
+/// The configured shared directory.
+#[derive(Clone, Debug)]
+pub struct Shared {
+    /// Absolute, as given: what cargo is told. Not canonicalised, so Windows tools never see a
+    /// `\\?\` path.
+    pub path: PathBuf,
+    /// Canonical, for comparisons only.
+    canonical: PathBuf,
+}
 
-/// The shared directory every child cargo command builds in, once [`acquire`] has run.
-pub fn dir() -> Option<&'static Path> {
-    DIR.get().map(PathBuf::as_path)
+/// The directory and holder token every child cargo command uses, once [`acquire`] has run.
+static ROUTE: OnceLock<(PathBuf, String)> = OnceLock::new();
+
+/// The shared directory and lock token child cargo commands carry, once [`acquire`] has run.
+pub fn route() -> Option<(&'static Path, &'static str)> {
+    ROUTE.get().map(|(path, token)| (path.as_path(), token.as_str()))
 }
 
 /// Holds the directory lock until dropped (the end of the xtask command).
 pub struct Guard {
-    _lock: Option<File>,
+    lock: Option<(File, PathBuf, String)>,
 }
 
-/// Whether an ancestor xtask already holds `dir`.
-fn held(dir: &Path) -> bool {
-    std::env::var_os(HELD).is_some_and(|held| Path::new(&held) == dir)
+impl Drop for Guard {
+    fn drop(&mut self) {
+        // Withdraw the token first, so a process that inherited it can no longer skip the lock.
+        if let Some((_, dir, token)) = &self.lock
+            && owner_token(dir).as_deref() == Some(token.as_str())
+        {
+            let _ = fs::remove_file(dir.join(OWNER));
+        }
+    }
 }
 
 /// The configured shared directory, or `None` when the variable is unset or empty.
-pub fn configured() -> Result<Option<PathBuf>, String> {
+pub fn configured() -> Result<Option<Shared>, String> {
     let Some(value) = std::env::var_os(ENV).filter(|v| !v.is_empty()) else { return Ok(None) };
-    let path = PathBuf::from(value);
-    if !path.is_absolute() {
+    let given = PathBuf::from(value);
+    if !given.is_absolute() {
         return Err(format!("{ENV} must be an absolute path"));
     }
-    fs::create_dir_all(&path).map_err(|e| format!("create {ENV} directory: {e}"))?;
-    let path = path.canonicalize().map_err(|e| format!("resolve {ENV} directory: {e}"))?;
-    // xtask itself is built in CARGO_TARGET_DIR before any of this runs, outside the lock, so it
-    // must not be the shared directory.
-    // Inside a held directory, CARGO_TARGET_DIR is the shared one by design.
-    if !held(&path)
-        && let Some(own) = std::env::var_os("CARGO_TARGET_DIR").filter(|v| !v.is_empty())
-        && Path::new(&own).canonicalize().is_ok_and(|own| own == path)
-    {
-        return Err(format!("set {ENV}, not CARGO_TARGET_DIR, to the shared directory: xtask itself must build outside it"));
+    fs::create_dir_all(&given).map_err(|e| format!("create {ENV} directory: {e}"))?;
+    let path = std::path::absolute(&given).map_err(|e| format!("resolve {ENV} directory: {e}"))?;
+    let canonical = path.canonicalize().map_err(|e| format!("resolve {ENV} directory: {e}"))?;
+    let shared = Shared { path, canonical };
+    if !held(&shared) {
+        // xtask itself is built before it can take the lock, so it must not be built in the
+        // shared directory, however that was configured.
+        for var in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
+            if std::env::var_os(var).filter(|v| !v.is_empty()).is_some_and(|own| inside(Path::new(&own), &shared.canonical)) {
+                return Err(format!("set {ENV}, not {var}, to the shared directory: xtask itself must build outside it"));
+            }
+        }
+        if std::env::current_exe().is_ok_and(|exe| inside(&exe, &shared.canonical)) {
+            return Err(format!(
+                "xtask was built inside {ENV}, outside its lock (check CARGO_TARGET_DIR and build.target-dir); build xtask in the worktree's own target/"
+            ));
+        }
     }
-    Ok(Some(path))
+    Ok(Some(shared))
 }
 
-/// Locks `dir`, invalidates another checkout's workspace artifacts, and routes every later
+fn inside(path: &Path, dir: &Path) -> bool {
+    path.canonicalize().is_ok_and(|path| path.starts_with(dir))
+}
+
+/// Whether a live ancestor xtask holds `shared`: its token is in our environment and still in the
+/// owner file.
+fn held(shared: &Shared) -> bool {
+    std::env::var(HELD).is_ok_and(|token| !token.is_empty() && owner_token(&shared.path).as_deref() == Some(token.as_str()))
+}
+
+fn owner_token(dir: &Path) -> Option<String> {
+    fs::read_to_string(dir.join(OWNER)).ok()?.lines().next().map(str::to_owned).filter(|t| !t.is_empty())
+}
+
+/// Locks the directory, invalidates another checkout's workspace artifacts, and routes every later
 /// [`crate::cargo`] command into it.
-pub fn acquire(root: &Path, dir: &Path, members: &BTreeSet<String>) -> Result<Guard, String> {
-    let guard = if held(dir) {
+pub fn acquire(root: &Path, shared: &Shared, members: &BTreeSet<String>) -> Result<Guard, String> {
+    let (guard, token) = if held(shared) {
         // The ancestor's lock covers this command, but only for the checkout it prepared.
-        let last = fs::read_to_string(dir.join(STAMP)).unwrap_or_default();
-        if last != root.display().to_string() {
-            return Err(format!("{} is held for another checkout by a parent xtask; run this one outside it", dir.display()));
+        if read_stamp(&shared.path).as_deref() != Some(stamp_of(root).as_str()) {
+            return Err(format!("{} is held for another checkout by a parent xtask; run this one outside it", shared.path.display()));
         }
-        Guard { _lock: None }
+        (Guard { lock: None }, std::env::var(HELD).unwrap_or_default())
     } else {
-        prepare(root, dir, members)?
+        let guard = prepare(root, &shared.path, members)?;
+        let token = guard.lock.as_ref().map(|(_, _, token)| token.clone()).unwrap_or_default();
+        (guard, token)
     };
-    eprintln!("shared target: {}", dir.display());
-    // A second acquire in one process would be a bug; the first directory stays in force.
-    let _ = DIR.set(dir.to_path_buf());
+    eprintln!("shared target: {}", shared.path.display());
+    // A second acquire in one process would be a bug; the first route stays in force.
+    let _ = ROUTE.set((shared.path.clone(), token));
     Ok(guard)
+}
+
+fn stamp_of(root: &Path) -> String {
+    root.to_string_lossy().into_owned()
+}
+
+fn read_stamp(dir: &Path) -> Option<String> {
+    fs::read_to_string(dir.join(STAMP)).ok()
 }
 
 /// Locks `dir` and, when another checkout built there last, invalidates its workspace artifacts.
 fn prepare(root: &Path, dir: &Path, members: &BTreeSet<String>) -> Result<Guard, String> {
-    let lock = lock(root, dir)?;
-    let checkout = root.display().to_string();
-    let last = fs::read_to_string(dir.join(STAMP)).ok();
+    let guard = lock(root, dir)?;
+    let checkout = stamp_of(root);
+    let last = read_stamp(dir);
     if last.as_deref() != Some(checkout.as_str()) {
         let removed = invalidate(dir, members)?;
         if removed > 0 {
@@ -104,74 +152,124 @@ fn prepare(root: &Path, dir: &Path, members: &BTreeSet<String>) -> Result<Guard,
                 last.as_deref().unwrap_or("an unknown checkout")
             );
         }
+        // Only after a complete invalidation: a failed one is retried next time.
         fs::write(dir.join(STAMP), &checkout).map_err(|e| format!("write shared target stamp: {e}"))?;
     }
-    Ok(Guard { _lock: Some(lock) })
+    Ok(guard)
 }
 
-/// Deletes everything in `dir` except the lock, holding the lock.
-pub fn clean(root: &Path, dir: &Path) -> Result<(), String> {
-    if held(dir) {
-        return Err(format!("{} is in use by a parent xtask; clean it from outside", dir.display()));
+/// Deletes everything in the directory except the lock, holding the lock.
+pub fn clean(root: &Path, shared: &Shared) -> Result<(), String> {
+    if held(shared) {
+        return Err(format!("{} is in use by a parent xtask; clean it from outside", shared.path.display()));
     }
-    let _lock = lock(root, dir)?;
+    let dir = &shared.path;
+    let _guard = lock(root, dir)?;
     for entry in fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
         let entry = entry.map_err(|e| format!("read {}: {e}", dir.display()))?;
-        if entry.file_name() == LOCK {
+        if entry.file_name() == LOCK || entry.file_name() == OWNER {
             continue;
         }
-        let path = entry.path();
-        let kind = entry.file_type().map_err(|e| format!("inspect {}: {e}", path.display()))?;
-        let result = if kind.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
-        result.map_err(|e| format!("remove {}: {e}", path.display()))?;
+        remove(&entry.path())?;
     }
     println!("shared target: cleaned {}", dir.display());
     Ok(())
 }
 
-fn lock(root: &Path, dir: &Path) -> Result<File, String> {
+fn remove(path: &Path) -> Result<(), String> {
+    let kind = fs::symlink_metadata(path).map_err(|e| format!("inspect {}: {e}", path.display()))?;
+    let result = if kind.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) };
+    result.map_err(|e| format!("remove {}: {e}", path.display()))
+}
+
+fn lock(root: &Path, dir: &Path) -> Result<Guard, String> {
     let path = dir.join(LOCK);
-    let file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            let owner = fs::read_to_string(dir.join(OWNER)).unwrap_or_default();
-            let owner = owner.trim();
-            eprintln!("shared target: waiting for {} (in use by {})", dir.display(), if owner.is_empty() { "another checkout" } else { owner });
-            file.lock().map_err(|e| format!("lock {}: {e}", path.display()))?;
+    for _ in 0..LOCK_ATTEMPTS {
+        let file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                let owner = fs::read_to_string(dir.join(OWNER)).unwrap_or_default();
+                let owner = owner.lines().nth(1).unwrap_or("another checkout").to_owned();
+                eprintln!("shared target: waiting for {} (in use by {owner})", dir.display());
+                file.lock().map_err(|e| format!("lock {}: {e}", path.display()))?;
+            }
+            Err(TryLockError::Error(e)) => return Err(format!("lock {}: {e}", path.display())),
         }
-        Err(TryLockError::Error(e)) => return Err(format!("lock {}: {e}", path.display())),
+        // Something outside xtask may have deleted the lock file while we waited; then another
+        // process can hold a new one, and this lock protects nothing. Try again.
+        if !same_file(&file, &path) {
+            continue;
+        }
+        let token = token()?;
+        let tmp = dir.join(format!("{OWNER}.{}", std::process::id()));
+        fs::write(&tmp, format!("{token}\n{} (pid {})\n", root.display(), std::process::id())).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        fs::rename(&tmp, dir.join(OWNER)).map_err(|e| format!("write {}: {e}", dir.join(OWNER).display()))?;
+        return Ok(Guard { lock: Some((file, dir.to_path_buf(), token)) });
     }
-    if let Ok(mut owner) = File::create(dir.join(OWNER)) {
-        let _ = write!(owner, "{} (pid {})", root.display(), std::process::id());
+    Err(format!("{} keeps being replaced while waiting for it; is something cleaning the directory?", path.display()))
+}
+
+#[cfg(unix)]
+fn same_file(file: &File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (file.metadata(), fs::metadata(path)) {
+        (Ok(held), Ok(named)) => held.dev() == named.dev() && held.ino() == named.ino(),
+        _ => false,
     }
-    Ok(file)
+}
+
+/// Windows refuses to delete a file another process has open, so the named file is the held one
+/// whenever it exists.
+#[cfg(not(unix))]
+fn same_file(_file: &File, path: &Path) -> bool {
+    path.is_file()
+}
+
+fn token() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| format!("make a lock token: {e}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Removes the workspace crates' fingerprints (and incremental state) from every profile of every
 /// target in `dir`, so Cargo rebuilds them from this checkout's sources. Third-party artifacts stay.
-/// Returns how many entries were removed.
+/// Each profile's own cargo lock is held meanwhile, so a cargo still building there (from an
+/// xtask that was killed) finishes first. Returns how many entries were removed.
 pub fn invalidate(dir: &Path, members: &BTreeSet<String>) -> Result<usize, String> {
     let mut removed = 0usize;
     for profile in profile_dirs(dir)? {
+        let _cargo = cargo_lock(&profile)?;
         let fingerprints = profile.join(".fingerprint");
         for entry in fs::read_dir(&fingerprints).map_err(|e| format!("read {}: {e}", fingerprints.display()))? {
             let entry = entry.map_err(|e| format!("read {}: {e}", fingerprints.display()))?;
             let name = entry.file_name();
             if name.to_str().and_then(package_of).is_some_and(|package| members.contains(package)) {
-                let path = entry.path();
-                fs::remove_dir_all(&path).map_err(|e| format!("remove {}: {e}", path.display()))?;
+                remove(&entry.path())?;
                 removed = removed.saturating_add(1);
             }
         }
         // Cargo keeps incremental state for workspace crates only.
         let incremental = profile.join("incremental");
         if incremental.is_dir() {
-            fs::remove_dir_all(&incremental).map_err(|e| format!("remove {}: {e}", incremental.display()))?;
+            remove(&incremental)?;
             removed = removed.saturating_add(1);
         }
     }
     Ok(removed)
+}
+
+fn cargo_lock(profile: &Path) -> Result<Option<File>, String> {
+    let path = profile.join(".cargo-lock");
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let file = OpenOptions::new().read(true).write(true).open(&path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    if let Err(TryLockError::WouldBlock) = file.try_lock() {
+        eprintln!("shared target: waiting for a cargo still building in {}", profile.display());
+        file.lock().map_err(|e| format!("lock {}: {e}", path.display()))?;
+    }
+    Ok(Some(file))
 }
 
 /// `<dir>/<profile>` and `<dir>/<triple>/<profile>`: every directory holding a `.fingerprint`.
@@ -207,6 +305,25 @@ fn subdirs(dir: &Path) -> Result<Vec<PathBuf>, String> {
 fn package_of(entry: &str) -> Option<&str> {
     let (package, hash) = entry.rsplit_once('-')?;
     (!package.is_empty() && (8..=64).contains(&hash.len()) && hash.bytes().all(|b| b.is_ascii_hexdigit())).then_some(package)
+}
+
+/// Cargo arguments `cargo xtask shared --` refuses: they would skip the lock or the invalidation.
+pub fn refused_argument(args: &[&str]) -> Option<&'static str> {
+    if args.first().is_some_and(|command| *command == "clean") {
+        return Some("`cargo clean` would delete the lock; use `cargo xtask shared --clean`");
+    }
+    for arg in args {
+        if *arg == "--" {
+            break;
+        }
+        if *arg == "--target-dir" || arg.starts_with("--target-dir=") {
+            return Some("`--target-dir` would build outside the shared directory");
+        }
+        if *arg == "--manifest-path" || arg.starts_with("--manifest-path=") {
+            return Some("`--manifest-path` can build another workspace, whose crates are not invalidated; run it from that workspace");
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -251,11 +368,13 @@ mod tests {
         for path in keep.iter().chain(&remove) {
             make(&root.join(path));
         }
+        fs::write(root.join("debug/.fingerprint/xtask-00000000aaaaaaaa"), "a stray file").unwrap();
+        fs::write(root.join("debug/.cargo-lock"), "").unwrap();
         make(&root.join("debug/incremental/nodecraft_engine-0123456789abcdef"));
         fs::create_dir_all(root.join("debug/deps")).unwrap();
         fs::create_dir_all(root.join("nextest")).unwrap();
 
-        assert_eq!(invalidate(root, &members()).unwrap(), remove.len() + 1);
+        assert_eq!(invalidate(root, &members()).unwrap(), remove.len() + 2);
         for path in keep {
             assert!(root.join(path).is_dir(), "{path} is kept");
         }
@@ -284,7 +403,7 @@ mod tests {
         make(&fingerprint);
         drop(prepare(&one, shared, &members()).unwrap());
         assert!(!fingerprint.exists(), "an unstamped directory may hold another checkout's build");
-        assert_eq!(fs::read_to_string(shared.join(STAMP)).unwrap(), one.display().to_string());
+        assert_eq!(read_stamp(shared).unwrap(), stamp_of(&one));
 
         make(&fingerprint);
         drop(prepare(&one, shared, &members()).unwrap());
@@ -292,17 +411,53 @@ mod tests {
 
         drop(prepare(&two, shared, &members()).unwrap());
         assert!(!fingerprint.exists(), "another checkout rebuilds the workspace crates");
-        assert_eq!(fs::read_to_string(shared.join(STAMP)).unwrap(), two.display().to_string());
+        assert_eq!(read_stamp(shared).unwrap(), stamp_of(&two));
+    }
+
+    #[test]
+    fn the_holder_token_is_withdrawn_when_the_lock_is_released() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = lock(Path::new("/checkout"), dir.path()).unwrap();
+        let token = owner_token(dir.path()).unwrap();
+        assert_eq!(token.len(), 32);
+        assert_eq!(guard.lock.as_ref().map(|(_, _, t)| t.as_str()), Some(token.as_str()));
+        drop(guard);
+        assert_eq!(owner_token(dir.path()), None, "an inherited token no longer skips the lock");
+        let again = lock(Path::new("/checkout"), dir.path()).unwrap();
+        assert_ne!(owner_token(dir.path()), Some(token), "every holder has its own token");
+        drop(again);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_lock_file_is_not_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(LOCK);
+        let file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path).unwrap();
+        assert!(same_file(&file, &path));
+        fs::remove_file(&path).unwrap();
+        File::create(&path).unwrap();
+        assert!(!same_file(&file, &path));
     }
 
     #[test]
     fn clean_keeps_only_the_lock() {
         let dir = tempfile::tempdir().unwrap();
-        let shared = dir.path();
-        make(&shared.join("debug/deps"));
-        fs::write(shared.join(STAMP), "somewhere").unwrap();
-        clean(Path::new("/checkout"), shared).unwrap();
-        let left: Vec<_> = fs::read_dir(shared).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let shared = Shared { path: dir.path().to_path_buf(), canonical: dir.path().canonicalize().unwrap() };
+        make(&shared.path.join("debug/deps"));
+        fs::write(shared.path.join(STAMP), "somewhere").unwrap();
+        clean(Path::new("/checkout"), &shared).unwrap();
+        let left: Vec<_> = fs::read_dir(&shared.path).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(left, [std::ffi::OsString::from(LOCK)]);
+    }
+
+    #[test]
+    fn arguments_that_escape_the_lock_or_the_invalidation_are_refused() {
+        assert!(refused_argument(&["clean"]).is_some());
+        assert!(refused_argument(&["build", "--target-dir", "/elsewhere"]).is_some());
+        assert!(refused_argument(&["build", "--target-dir=/elsewhere"]).is_some());
+        assert!(refused_argument(&["test", "--manifest-path", "tools/eyecandy/Cargo.toml"]).is_some());
+        assert!(refused_argument(&["test", "-p", "nodecraft-engine", "--", "--target-dir"]).is_none(), "test binary arguments pass");
+        assert!(refused_argument(&["build", "-p", "nodecraft"]).is_none());
     }
 }

@@ -166,7 +166,7 @@ requires it). Prefer `--quick` over `cargo test -p <crate>`: it builds with the 
 full gate, where `-p` rebuilds dependencies under a different feature set. Also run, when they apply:
 
 ```sh
-cargo test -p nodecraft-engine --test panic_hunt -- --ignored   # added or changed commands
+cargo test -p nodecraft-engine --test panic_hunt -- --ignored   # added or changed commands (`cargo xtask shared -- test …` with a shared build directory)
 node --test scripts/claim/*.test.js                             # touched the claim bot
 packaging/icons.sh                                              # edited assets/app-icon/nodecraft.svg
 cargo xtask catalog-check                                       # edited assets/catalog
