@@ -542,3 +542,36 @@ fn custom_base_urls_route_catalog_providers_to_the_configured_server_only() {
     }
     assert!(http.1.lock().unwrap().is_empty(), "nothing is sent for an unusable base URL");
 }
+
+#[test]
+fn a_key_set_up_for_a_custom_base_url_never_reaches_another_adapters_own_api() {
+    const KEY: &str = "sk-gateway-public-fixture-960";
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("openai").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    let http = Arc::new(Wire::default());
+    let mut settings = ProviderSettings::default();
+    settings.base_urls.insert("openai".into(), "https://gateway.example/v1".into());
+    // openai-images and openai-audio read the same `openai` key and have no base URL of their own.
+    for adapter in ["openai-images", "openai-audio"] {
+        let Err(Readiness::NotSetUp(why)) = make(adapter, &env(&keys, &http, &settings)) else { panic!("{adapter} must refuse") };
+        assert!(why.contains("openai key") && why.contains("custom base URL") && !why.contains(KEY), "{why}");
+    }
+    // The other way round too: an images base URL keeps chat from sending the key to OpenAI.
+    let mut images_only = ProviderSettings::default();
+    images_only.base_urls.insert("openai-images".into(), "https://gateway.example/v1".into());
+    assert!(matches!(make("openai", &env(&keys, &http, &images_only)), Err(Readiness::NotSetUp(_))));
+    // With its own base URL, it is built and sends there.
+    settings.base_urls.insert("openai-images".into(), "https://gateway.example/v1".into());
+    assert_eq!(make("openai-images", &env(&keys, &http, &settings)).unwrap().custom_base_url(), Some("https://gateway.example/v1"));
+    assert!(make("openai-audio", &env(&keys, &http, &settings)).is_err(), "openai-audio takes no base URL, so it stays refused");
+    // Unrelated accounts are unaffected.
+    keys.set(&Account::new("anthropic").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    assert!(make("anthropic", &env(&keys, &http, &settings)).is_ok());
+    // An unreadable entry refuses too: never the default host.
+    let mut unreadable = ProviderSettings::default();
+    unreadable.base_urls.insert("openai".into(), crate::custom_endpoints::BaseUrlEntry::Unreadable(serde_json::json!({"url": "x"})));
+    for adapter in ["openai", "openai-images", "openai-audio"] {
+        assert!(matches!(make(adapter, &env(&keys, &http, &unreadable)), Err(Readiness::NotSetUp(_))), "{adapter}");
+    }
+    assert!(http.1.lock().unwrap().is_empty());
+}

@@ -102,9 +102,11 @@ pub struct ProviderSettings {
     /// Base URLs set in place of a provider's own API (`[providers.base_urls]`, #960), by catalog
     /// provider id, such as `openai = "http://127.0.0.1:4000/v1"` for a LiteLLM proxy. Only the
     /// providers [`crate::custom_endpoints::PROVIDERS`] lists take one; the URL is checked when the
-    /// adapter is built. The key stays in the provider's keychain account.
+    /// adapter is built. An entry that isn't text, or a key spelled like a provider's with other
+    /// case or separators, is kept as written and refuses that provider. Other keys are kept and
+    /// ignored. The key stays in the provider's keychain account.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub base_urls: std::collections::BTreeMap<String, String>,
+    pub base_urls: std::collections::BTreeMap<String, crate::custom_endpoints::BaseUrlEntry>,
     /// A random value made once per install; it keeps prompt ids of different installs apart on
     /// a shared ComfyUI server. Empty until the host first creates it.
     pub install_salt: String,
@@ -123,7 +125,7 @@ struct ReadProviderSettings {
     litellm_url: Option<String>,
     azure_openai_url: Option<String>,
     #[serde(deserialize_with = "crate::custom_endpoints::lenient_base_urls")]
-    base_urls: std::collections::BTreeMap<String, String>,
+    base_urls: std::collections::BTreeMap<String, crate::custom_endpoints::BaseUrlEntry>,
 }
 
 impl From<ReadProviderSettings> for ProviderSettings {
@@ -787,34 +789,45 @@ mod tests {
         }
     }
 
-    /// Custom base URLs (#960) are read by provider; a hand-edited entry that isn't text, or names
-    /// a provider that can't take one, is dropped without resetting `[providers]`, and saving
-    /// writes them back.
+    /// Custom base URLs (#960) are read by provider. A hand-edited entry that isn't text, a key
+    /// spelled like a provider's, or a value that isn't a table is kept as written and refuses
+    /// its provider rather than leaving it at its default host; `[providers]` isn't reset, and
+    /// saving writes them back unchanged.
     #[test]
-    fn custom_base_urls_are_read_leniently_and_saved() {
+    fn custom_base_urls_are_read_leniently_refuse_when_unreadable_and_are_saved() {
+        use crate::custom_endpoints::{BaseUrlEntry, base_url};
         let dir = tempfile::tempdir().unwrap();
         write_config(
             dir.path(),
-            "schema_version = 2\n[providers]\ninstall_salt = \"s\"\nlitellm_url = \"http://127.0.0.1:4000\"\n[providers.base_urls]\nopenai = \"http://127.0.0.1:4000/v1\"\nanthropic = 3\nreplicate = \"https://x.example\"\n",
+            "schema_version = 2\n[providers]\ninstall_salt = \"s\"\nlitellm_url = \"http://127.0.0.1:4000\"\n[providers.base_urls]\nopenai = \"http://127.0.0.1:4000/v1\"\nanthropic = 3\nOpenAI_Images = \"https://x.example/v1\"\nreplicate = \"https://x.example\"\n",
         );
         let (mut store, report) = open_in(dir.path());
         assert!(report.section_errors.is_empty(), "{report:?}");
         let providers = store.get().providers.clone();
-        assert_eq!(providers.base_urls, [("openai".to_owned(), "http://127.0.0.1:4000/v1".to_owned())].into());
+        assert_eq!(providers.base_urls.get("openai").and_then(BaseUrlEntry::text), Some("http://127.0.0.1:4000/v1"));
+        assert_eq!(providers.base_urls.get("anthropic"), Some(&BaseUrlEntry::Unreadable(serde_json::json!(3))));
         assert_eq!(providers.litellm_url.as_deref(), Some("http://127.0.0.1:4000"), "the rest of the section is kept");
+        assert!(base_url(&providers, "openai").unwrap().is_some());
+        assert!(base_url(&providers, "anthropic").is_err(), "a number refuses Anthropic, never its default host");
+        assert!(base_url(&providers, "openai-images").is_err(), "a misspelled key refuses the provider it reads as");
         store.update(|settings| {
-            settings.providers.base_urls.insert("openai-images".into(), "https://images.example/v1".into());
+            settings.providers.base_urls.insert("openai".into(), "https://proxy.example/v1".into());
         });
         store.flush().unwrap();
         let (store, _) = open_in(dir.path());
-        assert_eq!(store.get().providers.base_urls.get("openai-images").map(String::as_str), Some("https://images.example/v1"));
-        // A table that isn't one is dropped too.
+        let saved = &store.get().providers;
+        assert_eq!(saved.base_urls.get("openai").and_then(BaseUrlEntry::text), Some("https://proxy.example/v1"));
+        assert_eq!(saved.base_urls.get("anthropic"), Some(&BaseUrlEntry::Unreadable(serde_json::json!(3))), "kept as written");
+        assert_eq!(saved.base_urls.get("replicate").and_then(BaseUrlEntry::text), Some("https://x.example"), "unknown keys are kept");
+        // A value that isn't a table refuses every provider.
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path(), "schema_version = 2\n[providers]\ninstall_salt = \"s\"\nbase_urls = \"https://x.example\"\n");
         let (store, report) = open_in(dir.path());
         assert!(report.section_errors.is_empty(), "{report:?}");
-        assert!(store.get().providers.base_urls.is_empty());
         assert_eq!(store.get().providers.install_salt, "s");
+        for entry in crate::custom_endpoints::PROVIDERS {
+            assert!(base_url(&store.get().providers, entry.provider).is_err(), "{}", entry.provider);
+        }
     }
 
     /// A hand-edited job cap that's out of range or not a number never resets `[providers]`.

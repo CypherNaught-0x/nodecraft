@@ -131,7 +131,7 @@ fn custom_base_urls_are_saved_per_provider_and_hostile_ones_refuse_without_echo(
     assert_eq!(session.dispatch("providers.settings_get", &json!({})).unwrap()["base_urls"], saved["base_urls"]);
     let (reloaded, notice) = OriginProviders::load(origin.clone());
     assert!(notice.is_none());
-    assert_eq!(reloaded.settings().unwrap().base_urls.get("openai").map(String::as_str), Some("http://127.0.0.1:4000/v1"));
+    assert_eq!(reloaded.settings().unwrap().base_urls.get("openai").and_then(crate::custom_endpoints::BaseUrlEntry::text), Some("http://127.0.0.1:4000/v1"));
     let before = store.settings().unwrap();
     for urls in [
         json!({"openai": "ftp://proxy.example/v1"}),
@@ -148,12 +148,25 @@ fn custom_base_urls_are_saved_per_provider_and_hostile_ones_refuse_without_echo(
     // Omitted, like the other addresses, clears them.
     session.dispatch("providers.settings_set", &json!({})).unwrap();
     assert!(store.settings().unwrap().base_urls.is_empty());
-    // A stored record with an unusable base URL is reported, not used.
+    // A stored base URL that is unusable now is kept, and refuses its provider: never the
+    // provider's own API.
+    let stored = Arc::new(Origin::default());
+    stored.set(STORAGE_KEY, r#"{"base_urls":{"openai":"http://proxy.example/v1","anthropic":7},"install_salt":"s"}"#).unwrap();
+    let (store, notice) = OriginProviders::load(stored);
+    assert!(notice.is_none());
+    let settings = store.settings().unwrap();
+    assert!(crate::custom_endpoints::base_url(&settings, "openai").is_err());
+    assert!(crate::custom_endpoints::base_url(&settings, "anthropic").is_err());
+    // A damaged record that held base URLs refuses every provider that takes one until a save.
     let damaged = Arc::new(Origin::default());
-    damaged.set(STORAGE_KEY, r#"{"base_urls":{"openai":"http://proxy.example/v1"},"install_salt":"s"}"#).unwrap();
-    let (store, notice) = OriginProviders::load(damaged);
-    assert!(notice.unwrap().contains("unusable address"));
-    assert!(store.settings().unwrap().base_urls.is_empty());
+    damaged.set(STORAGE_KEY, r#"{"base_urls":{"openai":"https://proxy.example/v1"},"comfyui_url":"ftp://x","install_salt":"s"}"#).unwrap();
+    let (store, notice) = OriginProviders::load(damaged.clone());
+    assert!(notice.is_some());
+    for entry in crate::custom_endpoints::PROVIDERS {
+        assert!(crate::custom_endpoints::base_url(&store.settings().unwrap(), entry.provider).is_err(), "{}", entry.provider);
+    }
+    self::session(&store).dispatch("providers.settings_set", &json!({"base_urls": {"openai": "https://proxy.example/v1"}})).unwrap();
+    assert!(crate::custom_endpoints::base_url(&store.settings().unwrap(), "openai").unwrap().is_some(), "a save replaces the refusal");
 }
 
 #[test]

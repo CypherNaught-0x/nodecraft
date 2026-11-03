@@ -89,9 +89,8 @@ impl OriginProviders {
                 set_comfyui_url(&mut settings, comfyui);
                 settings.litellm_url = server_url(settings.litellm_url.as_deref())
                     .map_err(|_| "Provider settings in this site's storage contain an unusable address. Set the server addresses again.")?;
-                let stored: BTreeMap<String, Option<String>> = settings.base_urls.iter().map(|(k, v)| (k.clone(), Some(v.clone()))).collect();
-                settings.base_urls = crate::custom_endpoints::check_all(&stored)
-                    .map_err(|_| "Provider settings in this site's storage contain an unusable address. Set the server addresses again.")?;
+                // Base URLs are kept as stored: an unusable one refuses its provider when the
+                // adapter is built, rather than this whole record falling back to defaults.
                 if settings.install_salt.len() > 128 {
                     return Err("Provider settings in this site's storage are damaged. Set the server addresses again.");
                 }
@@ -100,7 +99,19 @@ impl OriginProviders {
         });
         let (settings, notice) = match loaded {
             Ok(settings) => (settings, None),
-            Err(notice) => (ProviderSettings::default(), Some(notice.to_owned())),
+            Err(notice) => {
+                // A damaged record that may have held custom base URLs (#960) refuses every
+                // provider that takes one until the person saves again: a key set up for a
+                // custom endpoint never silently goes to the provider's own API.
+                let mut defaults = ProviderSettings::default();
+                let held = storage.get(STORAGE_KEY).ok().flatten().is_none_or(|bytes| bytes.contains("base_urls"));
+                if held {
+                    defaults
+                        .base_urls
+                        .insert(crate::custom_endpoints::UNREADABLE_TABLE.to_owned(), crate::custom_endpoints::BaseUrlEntry::Unreadable(Value::Bool(false)));
+                }
+                (defaults, Some(notice.to_owned()))
+            }
         };
         (Self { storage, settings: Arc::new(Mutex::new(settings)) }, notice)
     }
@@ -210,8 +221,7 @@ fn get_schema() -> Value {
 
 fn set_schema() -> Value {
     // One property per provider that takes a custom base URL: the list is the data (#960).
-    let base_urls: serde_json::Map<String, Value> = crate::custom_endpoints::PROVIDERS
-        .iter()
+    let base_urls: serde_json::Map<String, Value> = crate::custom_endpoints::available()
         .map(|entry| {
             let about = format!("{} base URL, including its version path; blank or null uses {}", entry.label, entry.default);
             (entry.provider.to_owned(), json!({"type": ["string", "null"], "maxLength": MAX_URL_BYTES, "description": about}))
@@ -243,7 +253,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: set_schema,
-            params_doc: "{comfyui_url?: string|null, litellm_url?: string|null, base_urls?: {openai?, anthropic?, openai-images?: string|null}} -> {comfyui_url, litellm_url, base_urls}; replace the server addresses and custom base URLs in this browser site's storage. Omitted, null or blank values clear an address; a provider without a base URL uses its own API. HTTP(S) only, and a base URL takes plain HTTP only for a local or private IP address or localhost; credentials, queries and fragments refuse. Keys belong in keys.set. Failed persistence preserves the prior settings.",
+            params_doc: "{comfyui_url?: string|null, litellm_url?: string|null, base_urls?: {openai?, anthropic?, openai-images?: string|null}} (the browser takes openai only) -> {comfyui_url, litellm_url, base_urls}; replace the server addresses and custom base URLs in this browser site's storage. Omitted, null or blank values clear an address; a provider without a base URL uses its own API. HTTP(S) only, and a base URL takes plain HTTP only for a local or private IP address or localhost; credentials, queries and fragments refuse. Keys belong in keys.set. Failed persistence preserves the prior settings.",
             enabled: enabled_set,
             run: set,
         },

@@ -95,7 +95,7 @@ fn runtime() -> tokio::runtime::Runtime {
 fn the_request_and_the_key_go_to_the_configured_base_url() {
     let (base, seen) = fixture_server();
     let mut settings = ProviderSettings::default();
-    settings.base_urls.insert("openai".into(), format!("{base}/v1/"));
+    settings.base_urls.insert("openai".into(), format!("{base}/v1/").into());
     let keys = keys();
     let provider = make("openai", &env(&keys, Arc::new(ReqwestHttp::new().unwrap()), &settings)).unwrap();
     assert_eq!(provider.id(), "openai", "the catalog provider keeps its identity");
@@ -121,7 +121,7 @@ fn an_invalid_scheme_is_refused_and_nothing_is_sent() {
     let keys = keys();
     for bad in [format!("ftp://{address}/v1"), format!("file://{address}/v1"), format!("ws://{address}/v1"), "http://proxy.example/v1".to_owned()] {
         let mut settings = ProviderSettings::default();
-        settings.base_urls.insert("openai".into(), bad.clone());
+        settings.base_urls.insert("openai".into(), bad.clone().into());
         let Err(Readiness::NotSetUp(why)) = make("openai", &env(&keys, Arc::new(ReqwestHttp::new().unwrap()), &settings)) else {
             panic!("{bad} must be refused")
         };
@@ -146,7 +146,7 @@ impl Http for Recorder {
 fn the_default_is_unchanged_when_nothing_is_set() {
     let keys = keys();
     let http = Arc::new(Recorder::default());
-    for settings in [ProviderSettings::default(), ProviderSettings { base_urls: [("openai".to_owned(), "  ".to_owned())].into(), ..Default::default() }] {
+    for settings in [ProviderSettings::default(), ProviderSettings { base_urls: [("openai".to_owned(), "  ".into())].into(), ..Default::default() }] {
         let provider = make("openai", &env(&keys, http.clone(), &settings)).unwrap();
         assert_eq!(provider.custom_base_url(), None);
         assert!(provider.retry_ambiguous_submit(), "OpenAI's own API keeps its retry policy");

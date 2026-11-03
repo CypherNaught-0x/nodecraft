@@ -119,9 +119,35 @@ fn settings_are_checked_by_provider_without_echoing_input() {
     }
     assert_eq!(check(None).unwrap(), None);
     assert_eq!(check(Some(" ")).unwrap(), None);
-    let all = check_all(&[("openai".to_owned(), Some("https://proxy.example/v1/".to_owned())), ("anthropic".to_owned(), None)].into()).unwrap();
-    assert_eq!(all, [("openai".to_owned(), "https://proxy.example/v1".to_owned())].into());
+    let all = check_all_for(&[("openai".to_owned(), Some("https://proxy.example/v1/".to_owned())), ("anthropic".to_owned(), None)].into(), false).unwrap();
+    assert_eq!(all, [("openai".to_owned(), BaseUrlEntry::from("https://proxy.example/v1"))].into());
+    // The browser can't use Anthropic's or OpenAI Images' (redirects, no-redirect transport).
+    for provider in ["anthropic", "openai-images"] {
+        assert!(check_all_for(&[(provider.to_owned(), Some("https://proxy.example/v1".to_owned()))].into(), true).is_err());
+        let mut set = ProviderSettings::default();
+        set.base_urls.insert(provider.into(), "https://proxy.example/v1".into());
+        assert_eq!(base_url_for(&set, provider, true).unwrap_err().kind, ErrorKind::Unsupported);
+        assert!(base_url_for(&set, provider, false).unwrap().is_some());
+    }
+    assert!(check_all_for(&[("openai".to_owned(), Some("https://proxy.example/v1".to_owned()))].into(), true).is_ok());
     let error = check_all(&[("sk-secret-provider".to_owned(), None)].into()).unwrap_err();
+    assert!(!error.message.contains("sk-secret"), "{}", error.message);
+    // Misspelled or unreadable entries refuse; unrelated keys are ignored.
+    let mut odd = ProviderSettings::default();
+    odd.base_urls.insert("OpenAI".into(), "https://proxy.example/v1".into());
+    odd.base_urls.insert("anthropic".into(), BaseUrlEntry::Unreadable(serde_json::json!(["x"])));
+    odd.base_urls.insert("replicate".into(), "https://x.example".into());
+    assert!(base_url(&odd, "openai").is_err());
+    assert!(base_url(&odd, "anthropic").is_err());
+    assert_eq!(base_url(&odd, "openai-images").unwrap(), None);
+    assert!(account_redirected(&odd, "openai") && account_redirected(&odd, "anthropic"));
+    assert!(!account_redirected(&odd, "replicate") && !account_redirected(&ProviderSettings::default(), "openai"));
+    assert!(shared_key_conflict(&odd, "openai-audio").is_some());
+    assert!(shared_key_conflict(&odd, "anthropic").is_none(), "it has its own entry, which refuses on its own");
+    assert!(shared_key_conflict(&ProviderSettings::default(), "openai-images").is_none());
+    let mut blank = ProviderSettings::default();
+    blank.base_urls.insert("openai".into(), " ".into());
+    assert!(!account_redirected(&blank, "openai") && shared_key_conflict(&blank, "openai-images").is_none(), "blank is unset");
     assert!(!error.message.contains("sk-secret"), "{}", error.message);
     for entry in PROVIDERS {
         assert_eq!(endpoint(entry.provider), Some(entry));

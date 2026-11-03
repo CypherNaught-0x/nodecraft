@@ -254,9 +254,17 @@ fn llm(endpoint: Endpoint, env: &HostEnv<'_>) -> LlmClient {
 /// The base URL set for `adapter` in place of its own API (#960), checked before any key is read.
 /// A set but unusable one refuses the adapter: it never falls back to the default host.
 fn custom_base(adapter: &str, env: &HostEnv<'_>) -> Result<Option<nodecraft_providers::base_url::BaseUrl>, Readiness> {
-    crate::custom_endpoints::base_url(env.settings, adapter).map_err(|error| {
-        Readiness::NotSetUp(format!("its custom base URL in provider settings ([providers.base_urls] {adapter}) can't be used: {}", error.message))
-    })
+    crate::custom_endpoints::base_url(env.settings, adapter)
+        .map_err(|error| Readiness::NotSetUp(format!("{} can't be used: {}", where_base_urls(adapter), error.message)))
+}
+
+/// Where the person edits `adapter`'s custom base URL, in this host's words.
+fn where_base_urls(adapter: &str) -> String {
+    if cfg!(target_arch = "wasm32") {
+        format!("its custom base URL (Providers, Custom endpoints: {adapter})")
+    } else {
+        format!("its custom base URL in settings ([providers.base_urls] {adapter} in config.toml)")
+    }
 }
 
 /// A catalog chat provider's client, at its custom base URL when one is set.
@@ -282,6 +290,10 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         return comfy_profile::make(server, env);
     }
     let adapter = slot;
+    // A key set up for a custom endpoint never goes to another adapter's own API (#960).
+    if let Some(error) = crate::custom_endpoints::shared_key_conflict(env.settings, adapter) {
+        return Err(Readiness::NotSetUp(error.message));
+    }
     let provider: Arc<dyn Provider> = match adapter {
         // Chat models (#503): the LLM client, keyed by its endpoint id.
         "openai" => Arc::new(chat("openai", Endpoint::openai, env)?),
