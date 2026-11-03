@@ -99,6 +99,8 @@ mod mesh_generation22;
 mod model_swap157;
 #[path = "native_files.rs"]
 mod native_files;
+#[path = "nested_batch92.rs"]
+mod nested_batch92;
 #[path = "node_edits.rs"]
 mod node_edits;
 #[path = "openai_images.rs"]
