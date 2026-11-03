@@ -1,6 +1,7 @@
 //! Generate from a card (#83): every run is quoted and confirmed before `run.start`, which
 //! reaches a fake run host routed to the mock provider. Nothing here calls a real provider.
 mod reasons655;
+mod whole965;
 
 use super::*;
 use egui::accesskit::Role;
@@ -246,6 +247,7 @@ fn same_contract_renderer_uses_optional_composer_ownership() {
                     mentions: &[],
                     mention_blocked: None,
                     partial: None,
+                    connected: (Vec::new(), 0),
                     local_text: None,
                     video: None,
                     audio: None,
@@ -253,6 +255,7 @@ fn same_contract_renderer_uses_optional_composer_ownership() {
                     outdated: false,
                     prompt_overlay: true,
                     variations: Default::default(),
+                    export_folder: None,
                 };
                 *body = card::show(ui, &CanvasView::default(), &node, card, &mut editor, false, &theme::DARK).unwrap().response.rect;
             },

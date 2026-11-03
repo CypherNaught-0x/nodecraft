@@ -514,3 +514,26 @@ fn optional_usage_input_detail_positional_array_is_unknown() {
 fn optional_usage_output_detail_positional_array_is_unknown() {
     assert_usage_survives(json!({"input_tokens":7,"output_tokens":11,"total_tokens":18,"output_tokens_details":[8,3]}));
 }
+
+#[test]
+fn a_custom_base_url_takes_the_request_and_the_key_and_nothing_else_changes() {
+    // Default: OpenAI's own API, no custom base.
+    let (done, h) = run(&job(), body(vec![png()]), Limits::default());
+    completed(done.unwrap());
+    assert_eq!(h.requests()[0].url, format!("{ORIGIN}/images/generations"));
+    assert_eq!(client(h.clone(), Limits::default()).custom_base_url(), None);
+    // A base URL the person set (#960): same body and key, sent to that server only.
+    let base = crate::base_url::BaseUrl::parse("http://127.0.0.1:4000/v1/").unwrap();
+    let h = Canned::response(body(vec![png()]));
+    let provider = client(h.clone(), Limits::default()).with_base_url(base);
+    assert_eq!(provider.custom_base_url(), Some("http://127.0.0.1:4000/v1"));
+    assert!(!provider.retry_ambiguous_submit());
+    let c = completed(block_on(provider.submit(&job())).unwrap());
+    assert_eq!(c.outputs.len(), 1);
+    assert_eq!(c.usage.cost, None);
+    let requests = h.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "http://127.0.0.1:4000/v1/images/generations");
+    assert!(requests[0].headers.contains(&("Authorization".into(), "Bearer fixture-key-not-real".into())));
+    assert!(requests[0].secret_headers.contains(&"authorization".to_owned()), "the key stays with this origin across redirects");
+}

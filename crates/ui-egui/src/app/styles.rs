@@ -94,7 +94,7 @@ impl NodeCraftApp {
     }
 
     /// Wires the trained style of `style` into `target`'s style input, replacing the one there.
-    fn use_style(&mut self, target: NodeId, style: NodeId) {
+    pub(super) fn use_style(&mut self, target: NodeId, style: NodeId) {
         let document = self.session.document();
         let Some(edge) = ids::edge_id(document, ("style-wire", self.session.revision(), target)) else {
             self.notice = Some("Couldn't allocate an edge id; try again.".into());

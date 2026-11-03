@@ -160,6 +160,43 @@ fn azure_lost_reply_stops_actual_driver_retries_and_keeps_the_charge_unresolved(
     assert_eq!(statuses(&budget), [Charge::Unresolved]);
 }
 
+/// A catalog provider served from a custom base URL (#960, #961): neither a lost reply nor an
+/// error reply is sent again, and the job keeps its charge for reconciliation.
+#[test]
+fn custom_base_url_lost_or_error_replies_are_never_resent() {
+    use nodecraft_providers::base_url::BaseUrl;
+    use nodecraft_providers::llm::{ApiKey, Endpoint, LlmClient};
+    struct Replies(AtomicU64, Option<u16>);
+    impl nodecraft_providers::Http for Replies {
+        fn send(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let status = self.1;
+            Box::pin(async move {
+                match status {
+                    Some(status) => Ok(nodecraft_providers::HttpResponse { status, headers: vec![], body: br#"{"error":{"message":"busy"}}"#.to_vec() }),
+                    None => Err(ProviderError::new(ErrorKind::Network, "public custom-endpoint accepted-but-lost fixture")),
+                }
+            })
+        }
+    }
+    for status in [None, Some(500), Some(502), Some(503), Some(429)] {
+        let http = Arc::new(Replies(AtomicU64::new(0), status));
+        let base = BaseUrl::parse("http://127.0.0.1:4000/v1").unwrap();
+        let provider = Arc::new(LlmClient::with_base_url(Endpoint::openai(ApiKey::new("public-fixture")), &base, http.clone()));
+        assert!(!provider.retry_ambiguous_submit());
+        let (runner, budget) = budgeted(Some(1_000_000));
+        let mut queued = priced(provider, Some(100_000));
+        queued.job.inputs = vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A harbour".into() }];
+        runner.register(JobId(1), queued);
+        let (scheduler, events) = drive(Arc::new(runner));
+        assert_eq!(http.0.load(Ordering::SeqCst), 1, "{status:?} is sent once");
+        assert!(!events.iter().any(|event| matches!(event, Event::Retrying { .. })), "{status:?}: {events:?}");
+        assert!(matches!(scheduler.state(JobId(1)), Some(JobState::Failed { .. })));
+        assert_eq!(spent(&budget), 100_000, "{status:?} keeps its charge");
+        assert_eq!(statuses(&budget), [Charge::Unresolved], "{status:?}");
+    }
+}
+
 #[test]
 fn false_policy_preserves_genuine_handle_resume_and_finished_generation_retry() {
     for finished in [false, true] {

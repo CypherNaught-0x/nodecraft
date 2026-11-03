@@ -21,7 +21,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done | 14/14 |
 | 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), variations (#81), cost and budget checks (#201) | 43/46 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done (close-out #375) | 13/14 |
-| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 18/30 |
+| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; batch node complete (#92), first signed release pending | 25/33 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 10/13 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 28/31 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 11/16 |
@@ -32,6 +32,10 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 ComfyUI workflow cards expose prompts and common generation settings on import. Their
 **Edit workflow fields…** dialog saves custom field visibility, names and order without
 reimporting, including retained image previews for compatible core workflows (#947).
+The model picker's ComfyUI group lists the default server's own models by type once the server
+is read. Checkpoints run through the built-in FLUX or SDXL workflow. Models with no built-in
+workflow are shown as unavailable, with the reason, and imported workflow cards are listed by
+title (#970).
 
 Runway Gen-4.5 text/first-frame video and Gen-4 Turbo first-frame video are available through
 priced catalog models and the direct task adapter (#25); paid live verification remains opt-in.
@@ -39,7 +43,10 @@ priced catalog models and the direct task adapter (#25); paid live verification 
 Official workflow starters are maintained in the separate
 [nodecraft-templates](https://github.com/CypherNaught-0x/nodecraft-templates) repository. Native and
 browser builds embed a pinned offline set; the Techniques panel can refresh the versioned index
-and retrieve one verified version without importing or running it (#953).
+and retrieve one verified version without importing or running it (#953). **Update templates**
+(`templates.update`) downloads new and changed templates in one bounded, explicit update, each
+checked against its index digest, into a versioned cache in the app data folder that is verified
+again at startup and can be cleared (#954).
 
 ## What works today
 
@@ -61,7 +68,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   (#707), Fit all frames by that header (#739), and search and tag navigation open to reveal a
   hidden card (#706); shared parameter editing with explicit Mixed
   values and atomic undo across compatible selected nodes (#71), and an API keys panel backed by
-  the OS keychain. Shared model changes show per-target migration results before applying (#157).
+  the OS keychain, whose late keychain answers still update the remembered accounts and which
+  refuses a new account before writing when the list is full (#240). Shared model changes show
+  per-target migration results before applying (#157).
   A mask editor paints brush masks over an image, expands its canvas and wires an inpaint or
   outpaint generation card from a prompt (#102).
   A Layer Editor card composites its wired images with text and shape layers into one frame;
@@ -70,6 +79,22 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   generated reference sheet (#104), and are saved to an Elements library every project shares,
   placed from it and updated from it (#552), even when placed under another name. A library
   Element can be renamed, shared, or exported as a bundle file another person imports (#765).
+  The Techniques panel's Assets, History and Styles tabs browse the open project a page at a
+  time: every image, video, sound, 3D model and PDF with a thumbnail, filtered by kind and
+  inserted as a card; the open canvas's past results, restored or placed as a source card; and
+  every trained style and Soul ID, marked with the provider that keeps it and wired into the
+  selected card (`library.assets`, `library.history`, `library.styles`, part of #96). Ticked
+  assets and results go on the canvas together in one undo step (`library.attach`) or are saved
+  to a chosen folder, and Import files… brings picked files into the library as source cards,
+  deduplicated by content, with a line per file and Retry failed (part of #96). Import from
+  URL… fetches one media file from a public https address on the desktop, refusing local and
+  private addresses on every redirect, capped at 16 MiB and checked by type and bytes, and keeps
+  only its file name. Ticked files can be saved to My library, which every project shares
+  (bounded at 4096 files and 1 GiB, repaired if its index is damaged), and placed from it on any
+  canvas of any project (`library.saved`, `library.place_saved`; part of #96).
+  An Export to folder card writes the results wired into it into a folder a person chose on the
+  card, with a file-name pattern and a keep/number/replace policy, on the background export worker
+  with Cancel; the card never runs with the canvas (#746, completing #98's batch export).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
   image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL, ASCII PLY) become 3D nodes whose cards show
@@ -125,6 +150,16 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   (`nodecraft-cli plugin pack|inventory|lint`, [`docs/plugin-authoring.md`](docs/plugin-authoring.md), #175),
   sign them with their own key (`plugin key new|trust`, `pack --sign`), and check them against a
   corpus of refused packages; a package may depend only on data packages (#866).
+- **Batch Generate sheets** (M5, #163): the Sheets panel makes, names and reopens sheets, tables
+  of Generate rows with their own prompt, model, aspect, settings and references, run together
+  under one quote within budgets. Model and settings apply to the selected rows (Mixed values
+  shown); "Retry failed" reruns only the failed rows, and running rows can be cancelled. A started
+  run is a snapshot: later edits leave its results out of date. Drafts edit and save offline.
+  "From template" expands a `{{variable}}` prompt (text values, an empty value, or image
+  sources) into one row per combination; prompt and status filters narrow the rows. A Grid mode
+  reviews the rows' results as badged thumbnails and steps through a re-run row's older results;
+  the chosen results go to the canvas as source cards that record their row and run
+  (`sheet.place`), or into a folder through the shared result save (macOS and Linux).
 - **Actions** (M4): image action cards (blur, grade, filter, tint, flip, rotate, crop, key,
   replace colour, aspect, overlay, duplicate, resize, expand) and text action cards (split,
   replace, template, concat) come from quick-add and the palette (#85, #87, #410). After an edit
@@ -161,8 +196,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   output block. Browser sessions refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
-- **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
-  running app, `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
+- **Automation**: `nodecraft-cli mcp` (MCP over stdio or, with `--listen`, Streamable HTTP on
+  loopback with a bearer token; 4 generic tools), `mcp --bridge` to drive a running app, the
+  desktop app's own MCP server (Automation › Enable MCP server, #116), `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
   screenshots), plus `nodecraft-cli serve` for a project's published Techniques over a local
   authenticated HTTP API with optional signed webhooks. Agents open and save projects only inside
   the folders the person allows with `--root`/`--read-root` (#423). See [`docs/mcp.md`](docs/mcp.md),
@@ -180,7 +216,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 - **Generation is not finished across every model or surface.** The desktop run host now constructs
   supported catalog adapters and runs authorized generation cards (#409, #362, #83); a listed model
   is not proof that every provider, modality or input mode runs in every host. The text card's
-  chat-style turn UI remains open (#84), and browser provider settings/option lists differ from
+  turn UI, mentions, streaming and connected-media thumbnails have landed; video to text and
+  built-in models' declared reading capabilities (context window, frames, timestamps, speakers)
+  remain open (#84), and browser provider settings/option lists differ from
   desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
 - **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
@@ -262,7 +300,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
-1. **Finish M3 generation**: the chat-style text-card turn UI (#84) and the remaining keychain
+1. **Finish M3 generation**: video to text and declared reading capabilities on text cards (#84) and the remaining keychain
    issue (#80); do not mistake a tested adapter for a working mode in every host.
 2. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
    including provider plugins (#174), then browser option-list parity (#721),
@@ -364,3 +402,8 @@ The near-term order follows the remaining open issues, not an already-finished w
 - **2026-10-23** — card option pickers filter labels and values, open at the current choice,
   keep a stable width and clear stale overrides with Use default (#678). Indexed selected labels,
   virtual rows and bounded filter work support fetched lists of up to 16,384 choices.
+- **2026-10-28** — the Batch node is complete (#92): a batch collecting another batch flattens
+  its items into its own (bounded at 1,000 items and 16 batches per chain, every item quoted
+  before the run), and "Review items…" on a fanned card steps through each item's result, with a
+  rows × columns grid for a Cross of two batches that marks failed and cancelled cells. Batches
+  inside a technique's own graph are not yet supported (#93). M5 25/33.

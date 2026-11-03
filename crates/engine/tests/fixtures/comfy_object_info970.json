@@ -1,0 +1,53 @@
+{
+  "CheckpointLoaderSimple": {
+    "input": {"required": {"ckpt_name": [["sd_xl_base_1.0.safetensors", "juggernaut_xl_v9.safetensors", "flux1-dev-fp8.safetensors", "svd_xt.safetensors", "sd3.5_large.safetensors", ""], {}]}},
+    "output": ["MODEL", "CLIP", "VAE"], "output_name": ["MODEL", "CLIP", "VAE"], "display_name": "Load Checkpoint", "category": "loaders"
+  },
+  "ImageOnlyCheckpointLoader": {
+    "input": {"required": {"ckpt_name": [["sd_xl_base_1.0.safetensors", "juggernaut_xl_v9.safetensors", "flux1-dev-fp8.safetensors", "svd_xt.safetensors", "sd3.5_large.safetensors", ""], {}]}},
+    "output": ["CLIP_VISION", "VAE", "MODEL"], "display_name": "Image Only Checkpoint Loader (img2vid model)", "category": "loaders/video_models"
+  },
+  "LoraLoader": {
+    "input": {"required": {
+      "model": ["MODEL", {}], "clip": ["CLIP", {}],
+      "lora_name": [["detail_tweaker.safetensors", "watercolor_style.safetensors"], {}],
+      "strength_model": ["FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}],
+      "strength_clip": ["FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0, "step": 0.01}]
+    }},
+    "output": ["MODEL", "CLIP"], "display_name": "Load LoRA", "category": "loaders"
+  },
+  "VAELoader": {"input": {"required": {"vae_name": [["sdxl_vae.safetensors"], {}]}}, "output": ["VAE"], "category": "loaders"},
+  "CLIPLoader": {"input": {"required": {"clip_name": [["t5xxl_fp8.safetensors"], {}], "type": [["stable_diffusion", "flux"], {}]}}, "output": ["CLIP"], "category": "loaders"},
+  "UNETLoader": {"input": {"required": {"unet_name": [["flux1-schnell.safetensors"], {}], "weight_dtype": [["default", "fp8_e4m3fn"], {}]}}, "output": ["MODEL"], "category": "loaders"},
+  "UpscaleModelLoader": {"input": {"required": {"model_name": [["4x_ultrasharp.pth"], {}]}}, "output": ["UPSCALE_MODEL"], "category": "loaders"},
+  "CLIPTextEncode": {
+    "input": {"required": {"text": ["STRING", {"multiline": true, "dynamicPrompts": true}], "clip": ["CLIP", {}]}},
+    "output": ["CONDITIONING"], "display_name": "CLIP Text Encode (Prompt)", "category": "conditioning"
+  },
+  "EmptyLatentImage": {
+    "input": {"required": {
+      "width": ["INT", {"default": 1024, "min": 16, "max": 16384, "step": 8}],
+      "height": ["INT", {"default": 1024, "min": 16, "max": 16384, "step": 8}],
+      "batch_size": ["INT", {"default": 1, "min": 1, "max": 4096}]
+    }},
+    "output": ["LATENT"], "category": "latent"
+  },
+  "KSampler": {
+    "input": {"required": {
+      "model": ["MODEL", {}],
+      "seed": ["INT", {"default": 0, "min": 0, "max": 18446744073709551615, "control_after_generate": true}],
+      "steps": ["INT", {"default": 20, "min": 1, "max": 10000}],
+      "cfg": ["FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0, "step": 0.1}],
+      "sampler_name": [["euler", "euler_ancestral", "dpmpp_2m"], {}],
+      "scheduler": [["normal", "karras", "simple"], {}],
+      "positive": ["CONDITIONING", {}], "negative": ["CONDITIONING", {}], "latent_image": ["LATENT", {}],
+      "denoise": ["FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}]
+    }},
+    "output": ["LATENT"], "category": "sampling"
+  },
+  "VAEDecode": {"input": {"required": {"samples": ["LATENT", {}], "vae": ["VAE", {}]}}, "output": ["IMAGE"], "category": "latent"},
+  "SaveImage": {
+    "input": {"required": {"images": ["IMAGE", {}], "filename_prefix": ["STRING", {"default": "ComfyUI"}]}},
+    "output": [], "category": "image", "output_node": true
+  }
+}

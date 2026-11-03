@@ -16,16 +16,25 @@ impl NodeCraftApp {
     /// Reusable result selector seam: None saves selected nodes/all nodes, explicit targets
     /// identify historical generations and output items without changing history selection.
     pub(in crate::app) fn start_results_save(&mut self, targets: Option<Vec<nodecraft_engine::results_export::ResultSelector>>) {
-        if !cfg!(all(unix, not(target_arch = "wasm32"))) {
-            self.notice =
-                Some("Secure folder saving is currently available on macOS and Linux; export individual results with Save as on this platform.".into());
-            return;
-        }
         let mut params = json!({"canvas":self.canvas,"history":"all"});
         if let Some(targets) = targets {
             params["targets"] = json!(targets);
         } else {
             params["nodes"] = json!(self.selection.nodes());
+        }
+        self.pick_results_folder(params);
+    }
+    /// Saves `nodes`' results, starting on their active results only when `active` (a Batch
+    /// Generate sheet's rows, #163); the dialog still offers their whole history.
+    pub(in crate::app) fn start_results_save_nodes(&mut self, nodes: Vec<nodecraft_types::NodeId>, active: bool) {
+        let params = json!({"canvas":self.canvas,"history":if active { "active" } else { "all" },"nodes":nodes});
+        self.pick_results_folder(params);
+    }
+    fn pick_results_folder(&mut self, params: Value) {
+        if !cfg!(all(unix, not(target_arch = "wasm32"))) {
+            self.notice =
+                Some("Secure folder saving is currently available on macOS and Linux; export individual results with Save as on this platform.".into());
+            return;
         }
         self.pick_export(Target::Results(params), "");
     }
@@ -38,13 +47,14 @@ impl NodeCraftApp {
         })();
         match result {
             Ok((host, preview)) => {
+                let active = params["history"] == "active";
                 self.exports.results = Some(State::Preview {
                     session: self.session.view_identity(),
                     revision: self.session.revision(),
                     host,
                     params,
                     pattern: nodecraft_engine::results_export::DEFAULT_TEMPLATE.into(),
-                    active: false,
+                    active,
                     preview: Ok(preview),
                 })
             }
@@ -170,7 +180,7 @@ impl NodeCraftApp {
                             ExportResult::Cancelled => {
                                 ui.label("Save cancelled.");
                             }
-                            ExportResult::Exported { .. } => {
+                            ExportResult::Exported { .. } | ExportResult::Batch { .. } => {
                                 ui.label("Saved.");
                             }
                         }
