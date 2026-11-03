@@ -206,6 +206,8 @@ pub enum Effect {
     },
     LocalExport {
         plan: nodecraft_format::export::ExportPlan,
+        /// Hand the plan to the shared background export worker and return `{pending:id}`.
+        background: bool,
     },
     Service {
         capability: &'static str,
@@ -241,13 +243,26 @@ pub enum Effect {
     Elements {
         request: crate::element_library::Request,
     },
-    /// An edit that shows images from the Elements library (#552): those of `media` the project
-    /// lacks are copied in from the library, and land with the edit as one undo step.
+    /// Read or change My library (#96); saving reads the project's files.
+    Assets {
+        request: crate::asset_library::Request,
+    },
+    /// An edit that shows files from a library outside the project: the Elements library (#552)
+    /// or My library (#96). Those of `media` the project lacks are copied in from `from`, and
+    /// land with the edit as one undo step.
     Place {
+        from: PlaceFrom,
         media: Vec<nodecraft_types::Blake3>,
         changes: Changeset,
         result: Value,
     },
+}
+
+/// The library a [`Effect::Place`] copies missing files from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaceFrom {
+    Elements,
+    Assets,
 }
 
 #[derive(Clone, Copy)]
@@ -274,7 +289,7 @@ impl Registry {
         let mut registry = Self::default();
         // A flat list rather than a chain of iterators: one `Chain` per module nests the
         // iterator type deeper than the compiler's recursion limit.
-        let groups: [fn() -> Vec<CommandSpec>; 73] = [
+        let groups: [fn() -> Vec<CommandSpec>; 79] = [
             crate::graph_cmds::specs,
             crate::node_cmds::specs,
             crate::assist_cmds::specs,
@@ -289,6 +304,9 @@ impl Registry {
             crate::technique_node_cmds::specs,
             crate::app_cmds::specs,
             crate::library_cmds::specs,
+            crate::library_browse_cmds::specs,
+            crate::library_attach_cmds::specs,
+            crate::asset_library_cmds::specs,
             crate::templates::specs,
             crate::describe_cmds::specs,
             crate::option_cmds::specs,
@@ -304,8 +322,10 @@ impl Registry {
             crate::search_cmds::specs,
             crate::file_cmds::specs,
             crate::storage_window_cmds::specs,
+            crate::mcp_server_cmds::specs,
             crate::local_export::specs,
             crate::results_export::specs,
+            crate::node_export::specs,
             crate::layout_cmds::specs,
             crate::comment_cmds::specs,
             crate::run_cmds::specs,
@@ -334,6 +354,7 @@ impl Registry {
             crate::plugin_cmds::specs,
             crate::ownership_cmds::specs,
             crate::resolve_cmds::specs,
+            crate::billing_cmds::specs,
             crate::held_cmds::specs,
             crate::share_cmds::specs,
             crate::private_cmds::specs,

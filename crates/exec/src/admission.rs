@@ -583,6 +583,7 @@ pub fn admit_run_with_targets(
     work.list_items = work.list_items.min(crate::planner::MAX_LIST_ITEMS);
     work.step_bytes = work.step_bytes.min(crate::planner::MAX_STEP_INPUT_BYTES);
     work.run_bytes = work.run_bytes.min(crate::planner::MAX_PLAN_INPUT_BYTES);
+    work.held_bytes = work.held_bytes.min(crate::run::MAX_HELD_OUTPUT_BYTES);
     let mut usage = Usage { steps: BTreeMap::new(), bytes: measure::add(size_of::<RunPlan>(), size_of::<Usage>())?, limits: work };
     if usage.bytes > work.run_bytes {
         return Err(cap());

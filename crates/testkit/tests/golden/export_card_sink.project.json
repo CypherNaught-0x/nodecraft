@@ -1,0 +1,180 @@
+{
+  "canvases": {
+    "01010101-0101-0101-0101-010101010101": {
+      "comments": {},
+      "edges": {
+        "64646464-6464-6464-6464-646464646464": {
+          "from": {
+            "node": "01010101-0101-0101-0101-010101010101",
+            "port": "out"
+          },
+          "id": "64646464-6464-6464-6464-646464646464",
+          "order": 0,
+          "to": {
+            "node": "02020202-0202-0202-0202-020202020202",
+            "port": "in"
+          }
+        },
+        "78787878-7878-7878-7878-787878787878": {
+          "from": {
+            "node": "02020202-0202-0202-0202-020202020202",
+            "port": "out"
+          },
+          "id": "78787878-7878-7878-7878-787878787878",
+          "order": 0,
+          "to": {
+            "node": "03030303-0303-0303-0303-030303030303",
+            "port": "image"
+          }
+        }
+      },
+      "fields": {},
+      "id": "01010101-0101-0101-0101-010101010101",
+      "nodes": {
+        "01010101-0101-0101-0101-010101010101": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "01010101-0101-0101-0101-010101010101",
+          "inputs": [],
+          "kind": "source.text",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "text"
+              }
+            }
+          ],
+          "params": {
+            "text": {
+              "type": "text",
+              "value": "a lighthouse"
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Idea"
+        },
+        "02020202-0202-0202-0202-020202020202": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "02020202-0202-0202-0202-020202020202",
+          "inputs": [
+            {
+              "name": "in",
+              "port_type": {
+                "many": true,
+                "modality": "text"
+              }
+            }
+          ],
+          "kind": "mock.image",
+          "outputs": [
+            {
+              "name": "out",
+              "port_type": {
+                "many": false,
+                "modality": "image"
+              }
+            }
+          ],
+          "params": {
+            "model": {
+              "type": "text",
+              "value": "mock-image"
+            },
+            "style": {
+              "type": "text",
+              "value": ""
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": "Painter"
+        },
+        "03030303-0303-0303-0303-030303030303": {
+          "active": null,
+          "field": null,
+          "history": [],
+          "id": "03030303-0303-0303-0303-030303030303",
+          "inputs": [
+            {
+              "name": "image",
+              "port_type": {
+                "many": true,
+                "modality": "image"
+              }
+            },
+            {
+              "name": "video",
+              "port_type": {
+                "many": true,
+                "modality": "video"
+              }
+            },
+            {
+              "name": "audio",
+              "port_type": {
+                "many": true,
+                "modality": "audio"
+              }
+            },
+            {
+              "name": "mesh",
+              "port_type": {
+                "many": true,
+                "modality": "mesh"
+              }
+            },
+            {
+              "name": "document",
+              "port_type": {
+                "many": true,
+                "modality": "document"
+              }
+            }
+          ],
+          "kind": "media.export",
+          "outputs": [],
+          "params": {
+            "format": {
+              "type": "text",
+              "value": "original"
+            },
+            "on_collision": {
+              "type": "text",
+              "value": "skip"
+            },
+            "subfolder": {
+              "type": "text",
+              "value": ""
+            },
+            "template": {
+              "type": "text",
+              "value": "{title}-{output}-{index}"
+            }
+          },
+          "pos": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "tag": null,
+          "title": ""
+        }
+      },
+      "tags": {},
+      "title": "Canvas"
+    }
+  },
+  "id": "02020202-0202-0202-0202-020202020202",
+  "title": "Golden"
+}

@@ -696,3 +696,62 @@ fn a_technique_whose_items_read_each_other_runs_again_in_full() {
     assert!(ran.iter().any(|job| matches!(job, JobSpec::Source { value, .. } if *value == Value::Text("FOX".into()))), "the fox runs again: {ran:?}");
     assert_eq!(outputs(&finished), vec![(T, vec!["FOX|FOX+OWL+OWL|FOX+OWL".to_owned()])]);
 }
+
+/// #965: a whole-canvas run that feeds a batch leaves what follows it for the next run, and a
+/// technique node waiting there takes its inlined nodes with it: none of them is planned (and
+/// charged) under a technique node that has no step to collect them.
+#[test]
+fn a_technique_after_a_batch_the_run_feeds_waits_with_its_inlined_nodes() {
+    const HEAD: NodeId = NodeId::from_bytes([50; 16]);
+    const MIDDLE: NodeId = NodeId::from_bytes([51; 16]);
+    for through_middle in [false, true] {
+        let (mut project, kinds) = project(None, "!");
+        // Source → Head (no result) → batch → [Middle (has a result) →] T.
+        let mut changes = vec![
+            Change::AddNode { canvas: C, node: node(&kinds, SOURCE, "source.text", "fox") },
+            Change::AddNode { canvas: C, node: node(&kinds, HEAD, "test.shout", "") },
+            Change::AddNode { canvas: C, node: batch_node(&kinds, BATCH, "owl") },
+            Change::Connect { canvas: C, edge: edge(41, (SOURCE, "out"), (HEAD, "in"), 0) },
+            Change::Connect { canvas: C, edge: edge(42, (HEAD, "out"), (BATCH, "in"), 0) },
+        ];
+        if through_middle {
+            let mut middle = node(&kinds, MIDDLE, "test.shout", "");
+            let generation = nodecraft_types::GenerationId::from_bytes([51; 16]);
+            middle.history.push(nodecraft_graph::Generation {
+                id: generation,
+                outputs: vec![Value::Text("OWL".into()), Value::List(vec![Value::Text("O".into())])],
+                input_hash: None,
+                items: Vec::new(),
+                settings: Vec::new(),
+                source_versions: Vec::new(),
+                incomplete: None,
+            });
+            middle.active = Some(generation);
+            changes.push(Change::AddNode { canvas: C, node: middle });
+            changes.push(Change::Connect { canvas: C, edge: edge(43, (BATCH, "item"), (MIDDLE, "in"), 0) });
+            changes.push(Change::Connect { canvas: C, edge: edge(44, (MIDDLE, "out"), (T, "words"), 0) });
+        } else {
+            changes.push(Change::Connect { canvas: C, edge: edge(43, (BATCH, "item"), (T, "words"), 0) });
+        }
+        Changeset::new(changes).apply(&mut project).unwrap();
+        let expanded = expand(project.canvases(), project.canvases().get(&C).unwrap(), &kinds).unwrap();
+        assert!(!expanded.inner.is_empty(), "the technique is inlined");
+        let none = BTreeSet::new();
+        let (planned, waiting) = crate::planner::plan_waiting(
+            &expanded,
+            &kinds,
+            &RunMode::Workflow,
+            &none,
+            &none,
+            &none,
+            &nodecraft_types::EMPTY_TARGET_SELECTION,
+            &nodecraft_types::NoOptions,
+        )
+        .unwrap();
+        let plan = ready(planned);
+        assert_eq!(plan.steps.iter().map(|step| step.node).collect::<Vec<_>>(), vec![HEAD], "through the middle: {through_middle}");
+        assert!(plan.inner.values().all(|owner| *owner != T), "no inlined step of a waiting technique: {:?}", plan.inner);
+        assert!(waiting.contains(&T), "{waiting:?}");
+        assert_eq!(waiting.contains(&MIDDLE), through_middle);
+    }
+}

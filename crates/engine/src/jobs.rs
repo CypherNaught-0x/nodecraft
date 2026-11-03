@@ -141,6 +141,21 @@ fn measured(price: Option<&JobPrice>, usage: &nodecraft_providers::Usage) -> Opt
     })
 }
 
+/// [`measured`] for the provider that ran the job. A server at a custom base URL (#960) reports
+/// usage NodeCraft can't check, so it may raise the charge but never lower it below the
+/// estimate: a job there is settled at the larger of the two.
+fn settled(price: Option<&JobPrice>, usage: &nodecraft_providers::Usage, custom_endpoint: bool) -> Option<Money> {
+    let reported = measured(price, usage)?;
+    if !custom_endpoint {
+        return Some(reported);
+    }
+    match price.and_then(|price| price.estimate) {
+        Some(estimate) if estimate.currency == reported.currency && estimate.micros > reported.micros => Some(estimate),
+        Some(estimate) if estimate.currency != reported.currency => Some(estimate),
+        _ => Some(reported),
+    }
+}
+
 impl JobPrice {
     /// A price for work outside an authorized run, so with no run ceiling: only the budgets
     /// apply. Like the estimate itself, this is the trusted host's statement; prices for an
@@ -280,6 +295,11 @@ impl KeptHandles {
     /// (by its budget, say) leaves it for the next run.
     fn find(&self, at: &(nodecraft_types::ProviderTarget, String)) -> Option<JobHandle> {
         self.0.iter().find(|(kept, _)| kept == at).map(|(_, handle)| handle.clone())
+    }
+
+    /// Whether a handle is kept for the job sent under `key` on `provider`/`instance` (#298).
+    pub(crate) fn holds(&self, provider: &str, instance: Option<nodecraft_types::ProviderInstanceId>, key: &str) -> bool {
+        self.0.iter().any(|((target, sent), _)| target.adapter() == provider && target.instance() == instance && sent == key)
     }
 }
 
@@ -1220,7 +1240,7 @@ impl JobRunner for ProviderRunner {
                             identity,
                             attempt: &attempt,
                             permit: guard.metadata.take(),
-                            reported: measured(queued.charged_price(), &done.usage),
+                            reported: settled(queued.charged_price(), &done.usage, queued.provider.custom_endpoint().is_some()),
                         });
                         let failed = matches!(accounting, CompletionAccounting::Failed(_));
                         on_output(job_id, CompletionDelivery { completed: done, accounting });
@@ -1907,6 +1927,53 @@ mod tests {
         let rows: Vec<(u64, Charge)> = log.entries().map(|e| (e.cost.micros, e.status)).collect();
         // Measured at the rates; a reported cost wins; with no rates, the estimate.
         assert_eq!(rows, [(1_100, Charge::Actual), (7, Charge::Actual), (40_000, Charge::Actual)]);
+    }
+
+    /// A provider at a custom base URL (#960), reporting `tokens` of each kind.
+    struct CustomTokens(u64);
+    impl Provider for CustomTokens {
+        fn id(&self) -> &str {
+            "tokens"
+        }
+        fn custom_base_url(&self) -> Option<&str> {
+            Some("http://127.0.0.1:4000/v1")
+        }
+        fn submit<'a>(&'a self, _job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
+            let mut done = Completed::new(vec![Output::Text("ok".into())]);
+            done.usage.input_tokens = Some(self.0);
+            done.usage.output_tokens = Some(self.0);
+            Box::pin(async move { Ok(Submission::Finished(done)) })
+        }
+        fn poll<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<JobProgress, ProviderError>> {
+            Box::pin(async { Err(ProviderError::new(ErrorKind::NotFound, "none")) })
+        }
+        fn cancel<'a>(&'a self, _h: &'a JobHandle) -> BoxFuture<'a, Result<(), ProviderError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn a_custom_endpoint_is_settled_at_no_less_than_its_estimate() {
+        let rates = nodecraft_catalog::TokenRates { input: "0.0001 USD".parse().unwrap(), output: "0.0005 USD".parse().unwrap(), long: None };
+        let with_rates = |provider: Arc<dyn Provider>| {
+            let mut job = priced(provider, Some(40_000));
+            if let Some(price) = job.price.as_mut() {
+                price.rates = Some(rates.clone());
+            }
+            job
+        };
+        let (runner, budget) = budgeted(Some(10_000_000));
+        // Zero tokens, and fewer than the estimate covers: the estimate stands.
+        runner.register(JobId(1), with_rates(Arc::new(CustomTokens(0))));
+        assert_eq!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Done);
+        runner.register(JobId(2), with_rates(Arc::new(CustomTokens(1_000))));
+        assert_eq!(block_on(runner.run(job(2), CancelToken::default())), Outcome::Done);
+        // More than the estimate: the measured usage is charged.
+        runner.register(JobId(3), with_rates(Arc::new(CustomTokens(1_000_000))));
+        assert_eq!(block_on(runner.run(job(3), CancelToken::default())), Outcome::Done);
+        let log = budget.log.lock().unwrap();
+        let rows: Vec<(u64, Charge)> = log.entries().map(|e| (e.cost.micros, e.status)).collect();
+        assert_eq!(rows, [(40_000, Charge::Actual), (40_000, Charge::Actual), (600_000, Charge::Actual)]);
     }
 
     #[test]

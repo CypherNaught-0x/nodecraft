@@ -16,6 +16,8 @@ mod layout;
 mod mcp;
 #[path = "mcp_files.rs"]
 mod mcp_files;
+#[path = "mcp_http.rs"]
+mod mcp_http;
 #[path = "model_swap157.rs"]
 mod model_swap157;
 #[path = "overview.rs"]

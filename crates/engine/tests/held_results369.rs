@@ -145,6 +145,11 @@ struct Fixture {
 
 /// A text card and an image card, each with its own prompt.
 fn fixture() -> Fixture {
+    fixture_with(nodecraft_exec::run::RunLimits::default())
+}
+
+/// [`fixture`] whose runs keep at most `limits`.
+fn fixture_with(limits: nodecraft_exec::run::RunLimits) -> Fixture {
     let canned = Canned::default();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
@@ -164,7 +169,9 @@ fn fixture() -> Fixture {
         session: "held-results".into(),
         wall_clock_ms: Arc::new(|| 0),
     };
-    let host = RunHost::new(Arc::new(Threads(Instant::now())), budget.clone()).with_retry(RetryPolicy { max_attempts: 1, ..Default::default() });
+    let host = RunHost::new(Arc::new(Threads(Instant::now())), budget.clone())
+        .with_retry(RetryPolicy { max_attempts: 1, ..Default::default() })
+        .with_run_limits(limits);
     let mut services = Services::default();
     host.register(&mut services).unwrap();
     let mut routing = ProviderRouting::new();
@@ -481,4 +488,29 @@ fn a_held_result_waits_while_its_project_is_closed() {
     act(&mut f, "run.held_place", id);
     assert!(f.host.held_results().is_empty());
     assert_eq!(placed(&f).len(), 2);
+}
+
+#[test]
+fn a_paid_result_past_what_a_run_keeps_is_held_and_never_sent_again() {
+    // #254: a run keeps at most `held_bytes` of results; one over it fails its step, and the
+    // paid result is held rather than dropped.
+    let mut f = fixture_with(nodecraft_exec::run::RunLimits { held_bytes: 64, ..Default::default() });
+    let long = "a sea of words ".repeat(20);
+    f.canned.answer(vec![text(&long)]);
+    let notices = run(&mut f, WRITER);
+    let reason = failed(&notices, WRITER).unwrap_or_else(|| panic!("{notices:?}"));
+    assert!(reason.contains("past 64 bytes of results") && reason.contains("run fewer nodes together"), "{reason}");
+    assert!(reason.contains("the paid result is held"), "{reason}");
+    assert!(history(&f, WRITER).is_empty(), "nothing is recorded");
+    let held = f.host.held_results();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(f.canned.requests(), 1);
+    // Put on the canvas from where it is held, it is the whole result, and the provider isn't
+    // asked again.
+    let id = held[0].id;
+    act(&mut f, "run.held_place", id);
+    assert_eq!(placed(&f), vec![("source.text".to_owned(), Value::Text(long))]);
+    assert_eq!(f.canned.requests(), 1, "held, never sent again");
+    assert_eq!(f.budget.log.lock().unwrap().entries().count(), 1, "charged once");
+    assert!(f.host.held_results().is_empty());
 }

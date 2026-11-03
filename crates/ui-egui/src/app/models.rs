@@ -43,6 +43,14 @@ struct Current {
     checkpoint: String,
     present: Option<bool>,
 }
+
+#[cfg(test)]
+impl ModelChoice {
+    /// The cards the picker was opened for, sorted.
+    pub(super) fn nodes(&self) -> &[NodeId] {
+        &self.nodes
+    }
+}
 fn invalid(message: &'static str) -> Error {
     Error::new(ErrorKind::InvalidInput, message)
 }

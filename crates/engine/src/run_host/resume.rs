@@ -151,6 +151,7 @@ impl Resumes {
             reported_sent: true,
             partial: None,
             partial_attempt: 0,
+            unrefused_attempt: false,
             preview: None,
             made: None,
         };

@@ -87,6 +87,65 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `comfy-cloud` | `comfy-cloud` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[[providers.comfyui]]` entries with `name`, `url` (such as `"http://127.0.0.1:8188"`) and optional `max_jobs` (1–16; unset, 4), and `[providers] comfyui_default` naming one (or the desktop toolbar's ComfyUI panel), and the per-install `install_salt`; an older `comfyui_url` is read as one server |
 
+### Custom endpoints (base URLs)
+
+OpenAI chat, Anthropic chat and OpenAI Images can be served from another server that speaks the
+same API, such as a LiteLLM proxy, vLLM or LM Studio (#960). On the desktop and in the CLI, set
+the base URL, including the API's version path, under `[providers.base_urls]` in `config.toml`.
+The desktop app reads this table when it starts, so restart it after editing the file. In the
+browser, only OpenAI chat can take a base URL: use the Providers panel's **Custom endpoints**
+field (`providers.settings_set {base_urls}`).
+
+```toml
+[providers.base_urls]
+openai = "http://127.0.0.1:4000/v1"        # chat: /chat/completions
+anthropic = "https://gateway.example/v1"   # chat: /messages
+openai-images = "http://127.0.0.1:4000/v1" # /images/generations and /images/edits
+```
+
+- With no entry, or a blank one, the provider uses its own API, and nothing about it changes.
+- **The key.** The provider's own keychain account holds the key (`openai` or `anthropic`); put
+  the key the server expects there, such as a LiteLLM virtual key. Requests go to the configured
+  host, and the key is dropped when a redirect leaves its origin. While any provider has a base
+  URL, NodeCraft never sends that account's key to a provider's own API:
+  - another adapter that reads the same account but has no base URL of its own is refused. With
+    `openai` set, OpenAI Images needs its own entry, and OpenAI speech and transcription
+    (`openai-audio`, which takes no base URL) can't run until the entry is removed;
+  - `keys.test` answers *unverifiable* for that account and sends nothing;
+  - the desktop agent panel follows the OpenAI or Anthropic base URL, or refuses. It also
+    refuses until a restart if the file now names a different base URL than at startup.
+- **The address.** A base URL must be HTTPS, or plain HTTP to a local address: loopback, a
+  private (RFC 1918) or link-local IPv4 address, a link-local or unique local IPv6 address, or
+  `localhost`. Carrier-grade NAT (`100.64.0.0/10`, which includes Tailscale's addresses) and
+  tunnelled IPv6 forms need HTTPS. Other schemes, credentials, queries and fragments are refused
+  with a message that never repeats the address.
+- **No fallback.** If an entry is set but can't be used, the provider's adapter isn't built: its
+  runs are refused, and nothing goes to the default host instead. That holds for an entry that
+  isn't text, and for a key spelled like a provider's with other case or `_` (such as `OpenAI`);
+  both are kept as written. Other unknown keys are kept and ignored. If the settings file, or
+  its whole `[providers]` section, can't be read, NodeCraft reports it at startup and uses
+  defaults, which brings back every provider's own API; fix it before running. In the browser, a damaged
+  stored record refuses every custom endpoint until you save again.
+- **The browser.** Its `fetch` follows redirects itself and drops only `Authorization` across
+  origins, so Anthropic's `x-api-key` could follow a redirect to another host. OpenAI Images
+  needs a no-redirect transport the browser doesn't have. Both are therefore desktop and CLI
+  only.
+- **Price.** Catalog models keep their id, the `provider_model` sent to the server, and their
+  catalog price. A step that would be quoted free is quoted as unknown-price: a run with a
+  budget cap is blocked, and an uncapped run needs the unknown-price consent. The quote binds
+  the base URL, so changing it means quoting again. A finished job is charged at least its
+  estimate: the server's reported tokens can raise the charge, never lower it, and its
+  `x-litellm-response-cost` header isn't read.
+- **Retries.** A custom server is assumed to ignore idempotency keys, so a lost or failed
+  request is never sent again automatically. The job keeps its charge, unresolved, for
+  reconciliation.
+- **Model names.** The server must know the catalog's model names (`provider_model`, such as
+  `gpt-4.1-mini-2025-04-14`). For LiteLLM, add them as model aliases.
+
+The rules are recorded in
+[the custom base URL decision](decisions/2026-11-03-custom-base-urls.md). Models that only the
+server offers, and that the catalog doesn't price, are the LiteLLM catalog work in #489.
+
 LiteLLM's endpoint and optional `litellm` virtual key can be saved now, but the shipped model
 catalog has no LiteLLM entries: no card can select or call the proxy yet. The adapter accepts the
 proxy root (`[providers] litellm_url = "https://proxy.example"`, without `/v1`) for future catalog
@@ -154,7 +213,7 @@ in a new session, and in CLI, MCP or serve hosts that do not install the desktop
 legacy cards retain their previous pricing behavior. Reimporting with a current server list
 stores partner names on the card and avoids that host/session limitation.
 
-In the browser, the same server addresses and installation salt persist only for this origin,
+In the browser, the same server addresses, custom base URLs and installation salt persist only for this origin,
 separately from API keys. Open Providers to edit them; a failed save keeps the previous settings.
 ComfyUI and LiteLLM must allow this page's origin in their CORS settings, and an HTTPS page may
 block an HTTP endpoint. `options.refresh` runs asynchronously on the page and hands its option
