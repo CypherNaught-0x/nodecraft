@@ -528,9 +528,28 @@ summary ("2 added · 1 duplicate · 1 failed") and a line per file, failures in 
 **Retry failed (N)**, which reads only the failed files again (disabled while files are being
 imported), and **Dismiss**.
 
-The browsers cover the open project only: NodeCraft keeps no store of other projects to browse
-yet. Cross-project browsing, URL import and starter templates as techniques remain part of #96
-([decision](decisions/2026-11-02-library-import-and-attach.md)).
+**Import from URL…** (Assets, desktop only) opens a row with an address field, **Import** and
+**Close**. The field says under it why an address won't do ("only https addresses are imported",
+"addresses on this computer or its local network aren't imported") and Import stays disabled
+until it will. While the file downloads, the same foreground panel shows "Downloading from
+<host>…" with **Cancel import**; the file then takes the Import files… path and gets a line in the
+report, titled with the address's file name. A failed download gets one `danger` line naming the
+host, with nothing to retry. The browser build disables the button and says to download the file
+and drop it.
+
+**My library.** The Assets tab has two scopes, **This project** and **My library**. With entries
+ticked, the bar also offers **Save to My library** (Assets and History), which copies the files
+into the library every project shares and says what became of each in the notice ("2 saved to My
+library · 1 already in My library"). The My library scope lists the saved files newest first,
+with the same kind chips and search, a square naming each file's kind where a project asset shows
+its thumbnail (the file isn't in the project until it is placed), "Image · from <project> ·
+1.4 MB", and **Place** (a card in the middle of the view, copied into this project, one undo step)
+and **Remove from My library**. Ticked entries get **Place on canvas** and **Remove from My library**. Above the
+list, "12 files · 34.0 MB of 1.1 GB" and **Refresh** (to see what another window saved). An index
+that can't be read is explained in `danger` with **Repair**, which rebuilds the list from the
+saved files and says in the notice what it recovered and where the old index was kept. With more
+entries ticked than one request takes, the bulk buttons are disabled with the reason. In the browser My library lasts until the page is
+closed, and says so ([decision](decisions/2026-11-03-library-url-import-and-global-library.md)).
 
 ## Saving results
 

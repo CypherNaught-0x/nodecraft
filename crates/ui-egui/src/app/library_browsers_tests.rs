@@ -325,3 +325,46 @@ fn a_ticked_result_that_is_deleted_is_unticked() {
     h.run();
     assert!(h.query_by_label("Place on canvas").is_none());
 }
+
+/// My library: a ticked asset is saved, listed under the My library scope with its project's
+/// title, placed back as a card in one undo step, and removed.
+#[test]
+fn a_ticked_asset_is_saved_to_my_library_placed_from_it_and_removed() {
+    let mut h = harness();
+    let asset = with_photo(&mut h);
+    open(&mut h, "Assets");
+    h.get_by_label("Holiday photo").click();
+    h.run();
+    h.get_by_label("Save to My library").click();
+    h.run();
+    assert_eq!(h.state().notice.as_deref(), Some("1 saved to My library"));
+    assert!(h.query_by_label("Save to My library").is_none(), "the ticks were cleared");
+
+    h.get_by_label("My library").click();
+    h.run();
+    h.run();
+    assert!(h.query_by_label("Image Holiday photo").is_some(), "the entry is listed: {:?}", h.state().notice);
+    assert!(h.query_by_label_contains("Image · from ").is_some(), "with the project it came from");
+    assert!(h.query_by_label_contains("1 file · ").is_some());
+
+    let before = h.state().session.document().clone();
+    h.get_by_label("Place").click();
+    h.run();
+    let cards = holding(&h, &asset);
+    assert_eq!(cards.len(), 2, "{:?}", h.state().notice);
+    let placed = cards.into_iter().find(|id| *id != PHOTO).unwrap();
+    assert_eq!(canvas(&h).nodes()[&placed].title, "Holiday photo");
+    assert_eq!(h.state().selection.nodes().iter().copied().collect::<Vec<_>>(), [placed]);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &before, "placing is one undo step");
+
+    h.get_by_label("Remove from My library").click();
+    h.run();
+    h.run();
+    assert_eq!(h.state().notice.as_deref(), Some("Removed 1 file from My library."));
+    assert!(h.query_by_label_contains("Nothing saved yet").is_some());
+    h.get_by_label("This project").click();
+    h.run();
+    h.run();
+    assert!(h.query_by_label("Holiday photo").is_some(), "the project's own asset stays");
+}

@@ -236,6 +236,16 @@ Every layered crate, `ui-egui` included, must build for `wasm32-unknown-unknown`
 (`cargo xtask wasm`). Filesystem access, threads and processes go through platform services that the
 apps provide; network I/O uses `reqwest`, which works on both targets.
 
+Requests whose address a person or a package supplies, rather than a fixed provider host, go
+through `ReqwestHttp::public_only()` (native only): it resolves names itself, refuses any name
+with a non-public address, connects to the addresses it checked, and uses no proxy and no
+redirects. Plugin brokers (#174) and the Library's Import from URL… (#96) use it; the latter's
+policy (https, every redirect re-checked, byte cap, media type and bytes) is
+`engine::url_import`, run by the desktop host on its own thread. The browser build has no such
+transport, so it doesn't offer either. My library (`engine::asset_library`), the files a person
+saves to use in any project, follows the Elements library's file-plus-media-folder shape in the
+settings folder, in memory in the browser.
+
 `apps/nodecraft` wraps `NodeCraftApp` in a `Shell` that adds the agent sidebar (`agent_panel`,
 over `agent` with `automation`'s tools) and, with `--control`, the control channel; both run
 against the window's live session.

@@ -10,12 +10,19 @@
 //! keeps only a file's name, as its card's title. Between reading and importing, a video whose
 //! headers don't state its length and size is probed by the video service, exactly as a dropped
 //! one is, within the same bounded wait.
+//!
+//! Import from URL… fetches one file on its own thread, under `nodecraft_engine::url_import`'s
+//! policy, over a transport that resolves names only to public addresses and connects to the ones
+//! it checked (`ReqwestHttp::public_only`: no proxy, no cookies, the generic User-Agent). The
+//! fetched bytes then take exactly the path a picked file takes. The address stays in this
+//! thread and the fetch; only the file's name and host reach the report.
 use super::NodeCraftApp;
 use super::folder_import::{clean, read_bounded};
 use super::library_browsers::{ImportLine, ImportReport};
 use crate::video::import::{Probe, WAIT};
 use crate::{ids, theme::Tokens};
 use nodecraft_engine::import::{FileState, Incoming, MAX_FILES, MAX_PROJECT_MEDIA_BYTES, ProbedMovie, import_library};
+use nodecraft_engine::url_import::Fetched;
 use nodecraft_graph::Position;
 use nodecraft_types::{CanvasId, NodeId, ProjectId};
 use std::{
@@ -33,9 +40,10 @@ use std::{
 
 type PickFuture = Pin<Box<dyn Future<Output = Option<Vec<PathBuf>>>>>;
 
-/// One picked file, read or not.
+/// One picked or fetched file, read or not.
 struct ReadFile {
-    path: PathBuf,
+    /// Where a picked file is, for Retry failed; a fetched one has none.
+    path: Option<PathBuf>,
     name: String,
     bytes: Result<Arc<[u8]>, String>,
 }
@@ -86,6 +94,22 @@ struct Reading {
     result: mpsc::Receiver<Result<Vec<ReadFile>, String>>,
 }
 
+/// A file being fetched from an address.
+struct Fetching {
+    project: ProjectId,
+    canvas: CanvasId,
+    host: String,
+    cancel: Arc<AtomicBool>,
+    result: mpsc::Receiver<Result<Fetched, nodecraft_types::Error>>,
+}
+
+impl Drop for Fetching {
+    fn drop(&mut self) {
+        // Ending the fetch any way stops it at the next piece of the body.
+        self.cancel.store(true, Ordering::Release);
+    }
+}
+
 impl Drop for Reading {
     fn drop(&mut self) {
         // Ending the import any way stops its reader at its next file.
@@ -98,6 +122,7 @@ impl Drop for Reading {
 pub(super) struct LibraryImport {
     picking: Option<PickFuture>,
     reading: Option<Reading>,
+    fetching: Option<Fetching>,
     probing: Option<Probing>,
     /// What the file picker "chooses" in tests.
     #[cfg(test)]
@@ -105,11 +130,14 @@ pub(super) struct LibraryImport {
     /// In tests, the reader waits for a message before each file.
     #[cfg(test)]
     pub(super) hold: Option<mpsc::Receiver<()>>,
+    /// In tests, what a fetch "downloads": nothing reaches the network.
+    #[cfg(test)]
+    pub(super) fetched: Option<Result<Fetched, nodecraft_types::Error>>,
 }
 
 impl LibraryImport {
     pub(super) fn busy(&self) -> bool {
-        self.picking.is_some() || self.reading.is_some() || self.probing.is_some()
+        self.picking.is_some() || self.reading.is_some() || self.fetching.is_some() || self.probing.is_some()
     }
 }
 
@@ -143,7 +171,7 @@ fn read_files(paths: Vec<PathBuf>, cancel: &AtomicBool, done: &AtomicUsize, hold
             room = room.saturating_sub(bytes.len() as u64);
         }
         done.fetch_add(1, Ordering::Relaxed);
-        read.push(ReadFile { path, name, bytes });
+        read.push(ReadFile { path: Some(path), name, bytes });
     }
     Ok(read)
 }
@@ -207,9 +235,95 @@ impl NodeCraftApp {
         true
     }
 
+    /// Starts fetching the file at `address` on its own thread; `false` (with a notice) when it
+    /// can't start. The address is checked first, so a refused one starts nothing.
+    pub(super) fn fetch_library_url(&mut self, address: String) -> bool {
+        if self.library.browsers.import.busy() {
+            self.notice = Some("A file is already being imported; wait for it or cancel.".into());
+            return false;
+        }
+        let host = match nodecraft_engine::url_import::check(&address) {
+            Ok(checked) => checked.host(),
+            Err(error) => {
+                self.notice = Some(format!("That address isn't imported: {}.", error.message));
+                return false;
+            }
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (send, result) = mpsc::channel();
+        let stop = Arc::clone(&cancel);
+        #[cfg(test)]
+        let canned = self.library.browsers.import.fetched.take();
+        let spawned = std::thread::Builder::new().name("nodecraft-library-fetch".into()).spawn(move || {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(test)]
+                {
+                    let _ = (&address, &stop);
+                    canned.unwrap_or_else(|| Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Network, "no network in tests")))
+                }
+                #[cfg(not(test))]
+                fetch(&address, &stop)
+            }))
+            .unwrap_or_else(|_| Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Internal, "the download stopped unexpectedly")));
+            // The app may have ended the fetch; then nobody listens, which is fine.
+            let _ = send.send(outcome);
+        });
+        if spawned.is_err() {
+            self.notice = Some("Downloading is unavailable; restart the app to try again.".into());
+            return false;
+        }
+        self.notice = None;
+        self.library.browsers.import.fetching = Some(Fetching { project: self.session.document().id(), canvas: self.canvas, host, cancel, result });
+        true
+    }
+
+    /// Moves a fetch along: once it is done, its file goes on to be probed and imported as a
+    /// picked one does; meanwhile its progress shows with Cancel. `true` while it is running.
+    fn poll_library_fetch(&mut self, ctx: &egui::Context, t: &Tokens) -> bool {
+        let Some(fetching) = self.library.browsers.import.fetching.take() else { return false };
+        let outcome = match fetching.result.try_recv() {
+            Ok(outcome) => outcome,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Internal, "the download stopped unexpectedly"))
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+                if progress(ctx, t, &format!("Downloading from {}…", sheet_line(&fetching.host)), None) {
+                    // Dropping the fetch stops it at its next piece.
+                    self.notice = Some("Download cancelled; nothing was added.".into());
+                } else {
+                    self.library.browsers.import.fetching = Some(fetching);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(50));
+                }
+                return true;
+            }
+        };
+        let (project, canvas) = (fetching.project, fetching.canvas);
+        let host = fetching.host.clone();
+        drop(fetching);
+        match outcome {
+            Ok(fetched) => {
+                let name = fetched.name;
+                let bytes: Arc<[u8]> = Arc::from(fetched.bytes);
+                let read = vec![ReadFile { path: None, name, bytes: Ok(bytes) }];
+                self.library.browsers.import.probing =
+                    Some(Probing { project, canvas, read, movies: Vec::new(), next: 0, active: None, started: Instant::now() });
+                ctx.request_repaint();
+            }
+            Err(error) => {
+                let line = ImportLine { name: format!("From {}", sheet_line(&host)), state: error.message.clone(), failed: true };
+                self.library.browsers.report = Some(ImportReport { summary: "1 failed".into(), lines: vec![line], retry: Vec::new() });
+                self.notice = Some(format!("Nothing was imported: {}.", error.message));
+            }
+        }
+        true
+    }
+
     /// Polls the picker and the reader, shows the reading progress with its Cancel button, and
     /// imports the files once they are read.
     pub(super) fn poll_library_import(&mut self, ctx: &egui::Context, t: &Tokens) {
+        if self.poll_library_fetch(ctx, t) {
+            return;
+        }
         if let Some(mut future) = self.library.browsers.import.picking.take() {
             let waker = Waker::from(Arc::new(Repaint(ctx.clone())));
             let poll = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| future.as_mut().poll(&mut Context::from_waker(&waker))));
@@ -274,7 +388,7 @@ impl NodeCraftApp {
         let failed_all = |read: Vec<ReadFile>, why: &str| ImportReport {
             summary: format!("{} failed", read.len()),
             lines: read.iter().map(|file| ImportLine { name: file.name.clone(), state: why.to_owned(), failed: true }).collect(),
-            retry: read.into_iter().map(|file| file.path).collect(),
+            retry: read.into_iter().filter_map(|file| file.path).collect(),
         };
         if project != self.session.document().id() || canvas != self.canvas {
             let why = "the project or canvas changed while it was read";
@@ -350,8 +464,8 @@ impl NodeCraftApp {
                 }
                 (Ok(_), _) => ("it wasn't imported".to_owned(), true),
             };
-            if failed {
-                retry.push(file.path);
+            if failed && let Some(path) = file.path {
+                retry.push(path);
             }
             lines.push(ImportLine { name: file.name, state, failed });
         }
@@ -368,6 +482,24 @@ impl NodeCraftApp {
         self.notice = None;
         self.library.browsers.report = Some(ImportReport { summary, lines, retry });
     }
+}
+
+fn sheet_line(text: &str) -> String {
+    super::sheet_view::line(text)
+}
+
+/// Fetches `address` under the URL import policy on a runtime of this thread's own, over a
+/// transport that reaches public addresses only.
+#[cfg(not(test))]
+fn fetch(address: &str, cancel: &AtomicBool) -> Result<Fetched, nodecraft_types::Error> {
+    use nodecraft_types::{Error, ErrorKind};
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| Error::new(ErrorKind::Unsupported, "downloading couldn't start; restart the app to try again"))?;
+    let http =
+        nodecraft_providers::http::ReqwestHttp::public_only().map_err(|_| Error::new(ErrorKind::Unsupported, "downloading is unavailable on this computer"))?;
+    runtime.block_on(nodecraft_engine::url_import::fetch(&http, address, cancel))
 }
 
 /// The import's progress panel at the bottom left, with Cancel; whether Cancel was pressed.

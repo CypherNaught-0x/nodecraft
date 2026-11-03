@@ -9,7 +9,12 @@
 //! puts them all on the open canvas with `library.attach`, one undo step, and "Export…" saves
 //! the ticked results through the workflow-result save (`export.results_plan` and
 //! `export.results_start`), after a person picks the folder. "Import files…" brings files into
-//! the library as source cards (`library_import`).
+//! the library as source cards (`library_import`), and "Import from URL…" one file from a public
+//! https address (`library_import`, over `nodecraft_engine::url_import`).
+//!
+//! "Save to My library" copies ticked assets and results into the library every project shares
+//! (`library.save_assets`); the Assets tab's "My library" scope lists it (`library.saved`) and
+//! places or removes its entries (`library.place_saved`, `library.unsave_assets`).
 use super::*;
 use crate::preview::Preview;
 use nodecraft_engine::library_attach_cmds::MAX_ITEMS;
@@ -52,6 +57,42 @@ impl Tab {
             Tab::Styles => "Trained styles and Soul IDs on every canvas of this project",
         }
     }
+}
+
+/// Which assets the Assets tab lists: the open project's, or My library's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Scope {
+    #[default]
+    Project,
+    Mine,
+}
+
+/// One entry of My library, as `library.saved` lists it.
+#[derive(Clone, Debug, Deserialize)]
+pub(super) struct SavedEntry {
+    pub(super) hash: Blake3,
+    pub(super) mime: Mime,
+    pub(super) kind: Option<Modality>,
+    pub(super) name: String,
+    #[serde(default)]
+    pub(super) origin: Option<String>,
+    pub(super) bytes: u64,
+}
+
+/// A page of My library, with how full it is.
+#[derive(Debug, Deserialize)]
+pub(super) struct SavedPage {
+    pub(super) assets: Vec<SavedEntry>,
+    pub(super) total: usize,
+    pub(super) offset: usize,
+    pub(super) used_bytes: u64,
+    pub(super) max_bytes: u64,
+    pub(super) entries: usize,
+    /// Why the index can't be read, until a person repairs it.
+    #[serde(default)]
+    pub(super) index_damaged: Option<String>,
+    #[serde(default)]
+    pub(super) damaged: Vec<String>,
 }
 
 /// One asset, as `library.assets` lists it.
@@ -141,6 +182,7 @@ struct Page<T> {
 
 enum Listing {
     Assets(Page<AssetEntry>),
+    Saved(SavedPage),
     History(Page<HistoryEntry>),
     Styles(Page<StyleEntry>),
 }
@@ -158,6 +200,12 @@ struct Key {
 #[derive(Default)]
 pub(super) struct Browsers {
     pub(super) tab: Tab,
+    /// The Assets tab's scope.
+    pub(super) scope: Scope,
+    /// Counts this window's changes to My library, so its listing is read again after each.
+    pub(super) saved_stamp: u64,
+    /// The address being typed for Import from URL, while its row is open.
+    pub(super) url: Option<String>,
     /// The kind of asset shown; every kind when `None`.
     pub(super) kind: Option<Modality>,
     pub(super) query: String,
@@ -184,13 +232,17 @@ pub(super) struct Browsers {
 /// takes to export it (`None` when it can't be: an asset not made on the open canvas).
 #[derive(Clone, Debug)]
 pub(super) struct Pick {
-    tab: Tab,
-    place: Option<serde_json::Value>,
-    export: Option<ResultSelector>,
+    pub(super) tab: Tab,
+    /// An entry of My library rather than of the project.
+    pub(super) mine: bool,
+    /// The file it holds, when it can be saved to My library.
+    pub(super) save: Option<Blake3>,
+    pub(super) place: Option<serde_json::Value>,
+    pub(super) export: Option<ResultSelector>,
     /// The asset it is, for an Assets entry.
-    asset: Option<Blake3>,
+    pub(super) asset: Option<Blake3>,
     /// The result it is (History) or was made by (Assets), on the open canvas.
-    result: Option<(NodeId, GenerationId)>,
+    pub(super) result: Option<(NodeId, GenerationId)>,
 }
 
 /// One file of the last library import, as its report shows it.
@@ -218,11 +270,31 @@ type Verdicts = std::collections::HashMap<NodeId, Result<NodeId, String>>;
 
 impl Browsers {
     fn offset(&mut self) -> &mut usize {
-        self.offsets.entry(self.tab).or_default()
+        let mine = self.mine();
+        // My library pages on its own.
+        let tab = if mine { Tab::Library } else { self.tab };
+        self.offsets.entry(tab).or_default()
     }
-    /// The ticked entries of the open tab.
+    /// My library's page as last listed, while the tab shows it.
+    pub(super) fn saved_page(&self) -> Option<&SavedPage> {
+        match &self.listed {
+            Some((_, Ok(Listing::Saved(page)))) if self.mine() => Some(page),
+            _ => None,
+        }
+    }
+    /// Whether the open tab shows My library.
+    pub(super) fn mine(&self) -> bool {
+        self.tab == Tab::Assets && self.scope == Scope::Mine
+    }
+    /// The ticked entries of the open tab and scope.
     fn picks(&self) -> impl Iterator<Item = &Pick> {
-        self.picked.values().filter(|pick| pick.tab == self.tab)
+        let mine = self.mine();
+        self.picked.values().filter(move |pick| pick.tab == self.tab && pick.mine == mine)
+    }
+    /// Forgets the ticks of the open tab and scope.
+    pub(super) fn clear_picks(&mut self) {
+        let (tab, mine) = (self.tab, self.mine());
+        self.picked.retain(|_, pick| pick.tab != tab || pick.mine != mine);
     }
     /// Forgets ticks made on another project or canvas, and, whenever the document changed (a
     /// deletion, an undo), ticks of entries it no longer holds: an asset no card holds or a result
@@ -246,6 +318,8 @@ impl Browsers {
             nodes.and_then(|nodes| nodes.get(&node)).is_some_and(|node| node.history.iter().any(|g| g.id == generation))
         };
         self.picked.retain(|_, pick| match pick.asset {
+            // My library's entries don't follow the project.
+            _ if pick.mine => true,
             Some(hash) => held.contains(&hash),
             None => pick.result.is_none_or(made),
         });
@@ -293,14 +367,31 @@ pub(super) enum Browse {
     Import,
     /// Read the files that failed in the last import again.
     RetryImport,
+    /// Fetch the file at this address and import it.
+    FetchUrl(String),
+    /// Copy these project files into My library.
+    SaveToLibrary(Vec<Blake3>),
+    /// My library's entries as source cards on the open canvas, in one undo step.
+    PlaceSaved(Vec<Blake3>),
+    /// Take these entries out of My library.
+    Unsave(Vec<Blake3>),
+    /// Rebuild My library's damaged index.
+    RepairSaved,
 }
 
 /// A tick box for one entry, labelled `label`, given what is ticked now; a change goes in
 /// `ticks`. At most [`MAX_ITEMS`] entries can be ticked.
-fn tick(ui: &mut egui::Ui, picked: &std::collections::BTreeMap<String, Pick>, key: String, label: &str, pick: Pick, ticks: &mut Vec<(String, Option<Pick>)>) {
+pub(super) fn tick(
+    ui: &mut egui::Ui,
+    picked: &std::collections::BTreeMap<String, Pick>,
+    key: String,
+    label: &str,
+    pick: Pick,
+    ticks: &mut Vec<(String, Option<Pick>)>,
+) {
     let mut on = picked.contains_key(&key);
     // Each tab places and exports its own ticks, so each may hold the most one request takes.
-    let room = on || picked.values().filter(|p| p.tab == pick.tab).count() < MAX_ITEMS;
+    let room = on || picked.values().filter(|p| p.tab == pick.tab && p.mine == pick.mine).count() < MAX_ITEMS;
     let response = ui.add_enabled(room, egui::Checkbox::new(&mut on, label));
     if response.on_disabled_hover_text("At most 32 entries can be ticked at once in a tab").changed() {
         ticks.push((key, on.then_some(pick)));
@@ -308,12 +399,42 @@ fn tick(ui: &mut egui::Ui, picked: &std::collections::BTreeMap<String, Pick>, ke
 }
 
 /// The bar over a list with ticked entries: how many, and what can be done with them all.
-fn bulk(ui: &mut egui::Ui, t: &Tokens, browsers: &mut Browsers, action: &mut Option<Browse>) {
+fn bulk(ui: &mut egui::Ui, t: &Tokens, browsers: &mut Browsers, can_save: bool, action: &mut Option<Browse>) {
     let picks: Vec<Pick> = browsers.picks().cloned().collect();
     if picks.is_empty() {
         return;
     }
     let mut clear = false;
+    // Ticking stops at the most one request takes; this holds even if that ever changes.
+    let fits = picks.len() <= MAX_ITEMS;
+    const TOO_MANY: &str = "At most 32 entries are handled at once; clear some ticks";
+    if browsers.mine() {
+        let hashes: Vec<Blake3> = picks.iter().filter_map(|pick| pick.asset).collect();
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(format!("{} ticked", picks.len())).color(t.text));
+            if ui
+                .add_enabled(fits, egui::Button::new("Place on canvas"))
+                .on_hover_text("Each ticked file as a source card in the middle of the view, copied into this project; one undo step")
+                .on_disabled_hover_text(TOO_MANY)
+                .clicked()
+            {
+                *action = Some(Browse::PlaceSaved(hashes.clone()));
+            }
+            if ui
+                .add_enabled(fits, egui::Button::new("Remove from My library"))
+                .on_hover_text("Take them out of My library; cards placed from them keep their own copies")
+                .on_disabled_hover_text(TOO_MANY)
+                .clicked()
+            {
+                *action = Some(Browse::Unsave(hashes.clone()));
+            }
+            clear = ui.button("Clear ticks").clicked();
+        });
+        if clear {
+            browsers.clear_picks();
+        }
+        return;
+    }
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(format!("{} ticked", picks.len())).color(t.text));
         let places: Option<Vec<serde_json::Value>> = picks.iter().map(|pick| pick.place.clone()).collect();
@@ -338,11 +459,27 @@ fn bulk(ui: &mut egui::Ui, t: &Tokens, browsers: &mut Browsers, action: &mut Opt
         {
             *action = Some(Browse::Export(exports));
         }
+        let saves: Option<Vec<Blake3>> = picks.iter().map(|pick| pick.save).collect();
+        let save = ui.add_enabled(can_save && saves.is_some() && fits, egui::Button::new("Save to My library"));
+        let why = if !can_save {
+            "This window has no My library"
+        } else if !fits {
+            TOO_MANY
+        } else {
+            "Only images, videos, sounds, 3D models and PDFs this project holds can be saved"
+        };
+        if save
+            .on_hover_text("Copy the ticked files into the library every project shares; only their names and this project's title go with them")
+            .on_disabled_hover_text(why)
+            .clicked()
+            && let Some(saves) = saves
+        {
+            *action = Some(Browse::SaveToLibrary(saves));
+        }
         clear = ui.button("Clear ticks").clicked();
     });
     if clear {
-        let tab = browsers.tab;
-        browsers.picked.retain(|_, pick| pick.tab != tab);
+        browsers.clear_picks();
     }
 }
 
@@ -382,12 +519,12 @@ fn report(ui: &mut egui::Ui, t: &Tokens, browsers: &mut Browsers, action: &mut O
 }
 
 /// `text` cut to at most `max` bytes at a character boundary.
-fn bounded(text: &str, max: usize) -> &str {
+pub(super) fn bounded(text: &str, max: usize) -> &str {
     let end = text.char_indices().map(|(at, c)| at.saturating_add(c.len_utf8())).take_while(|end| *end <= max).last().unwrap_or(0);
     text.get(..end).unwrap_or_default()
 }
 
-fn kind_name(kind: Modality) -> &'static str {
+pub(super) fn kind_name(kind: Modality) -> &'static str {
     match kind {
         Modality::Image => "Image",
         Modality::Video => "Video",
@@ -424,8 +561,21 @@ impl NodeCraftApp {
         let on = self.canvas;
         let browsers = &mut self.library.browsers;
         let offset = *browsers.offset();
+        let mut stamp = 0;
         let (command, params) = match browsers.tab {
             Tab::Library => return,
+            Tab::Assets if browsers.scope == Scope::Mine => {
+                let mut params = json!({"offset": offset, "limit": PAGE});
+                if let Some(kind) = browsers.kind {
+                    params["kind"] = json!(kind);
+                }
+                let query = bounded(browsers.query.trim(), MAX_QUERY_BYTES);
+                if !query.is_empty() {
+                    params["query"] = json!(query);
+                }
+                stamp = browsers.saved_stamp;
+                ("library.saved", params)
+            }
             Tab::Assets => {
                 let mut params = json!({"offset": offset, "limit": PAGE});
                 if let Some(kind) = browsers.kind {
@@ -448,7 +598,7 @@ impl NodeCraftApp {
             }
             Tab::Styles => ("library.styles", json!({"offset": offset, "limit": PAGE})),
         };
-        let key = Key { command, params: params.to_string(), project: self.session.document().id(), revision: self.session.revision() };
+        let key = Key { command, params: format!("{params}#{stamp}"), project: self.session.document().id(), revision: self.session.revision() };
         if self.library.browsers.listed.as_ref().is_some_and(|(old, _)| *old == key) {
             return;
         }
@@ -456,6 +606,7 @@ impl NodeCraftApp {
             let unreadable = |_| "The list couldn't be read.".to_owned();
             match command {
                 "library.assets" => serde_json::from_value(value).map(Listing::Assets).map_err(unreadable),
+                "library.saved" => serde_json::from_value(value).map(Listing::Saved).map_err(unreadable),
                 "library.history" => serde_json::from_value(value).map(Listing::History).map_err(unreadable),
                 _ => serde_json::from_value(value).map(Listing::Styles).map_err(unreadable),
             }
@@ -463,6 +614,7 @@ impl NodeCraftApp {
         // A page past the end (after a filter or a deletion) goes back to the start.
         let past_end = |page: &Result<Listing, String>| match page {
             Ok(Listing::Assets(p)) => p.entries.is_empty() && p.offset > 0,
+            Ok(Listing::Saved(p)) => p.assets.is_empty() && p.offset > 0,
             Ok(Listing::History(p)) => p.entries.is_empty() && p.offset > 0,
             Ok(Listing::Styles(p)) => p.entries.is_empty() && p.offset > 0,
             Err(_) => false,
@@ -553,26 +705,46 @@ pub(super) fn show(
     selected: Option<NodeId>,
 ) -> Option<Browse> {
     let mut action = None;
+    let can_save = session.enabled("library.saved", &json!({})).is_ok();
     ui.set_max_width(t.dialog_width);
     browsers.keep_picks_for(session, canvas);
     match browsers.tab {
         Tab::Library => {}
         Tab::Assets => {
-            #[cfg(not(target_arch = "wasm32"))]
-            let (importing, why) = (browsers.import.busy(), "Files are being imported");
-            #[cfg(target_arch = "wasm32")]
-            let (importing, why) = (true, "In the browser, drop files onto the canvas to add them");
-            let import = ui.add_enabled(!importing, egui::Button::new("Import files…"));
-            if import
-                .on_hover_text(
-                    "Add images, videos, sounds, 3D models and PDFs as source cards in the middle of the view; one undo step. Only each file's name is kept.",
-                )
-                .on_disabled_hover_text(why)
-                .clicked()
-            {
-                action = Some(Browse::Import);
+            ui.horizontal(|ui| {
+                for (scope, label, hint) in [
+                    (Scope::Project, "This project", "Every image, video, sound, 3D model and PDF in this project"),
+                    (Scope::Mine, "My library", "Files you saved to use in any project"),
+                ] {
+                    if ui.selectable_label(browsers.scope == scope, label).on_hover_text(hint).clicked() && browsers.scope != scope {
+                        browsers.scope = scope;
+                        browsers.listed = None;
+                    }
+                }
+            });
+            if browsers.scope == Scope::Mine {
+                super::library_saved::header(ui, t, browsers, &mut action);
+            } else {
+                #[cfg(not(target_arch = "wasm32"))]
+                let (importing, why) = (browsers.import.busy(), "Files are being imported");
+                #[cfg(target_arch = "wasm32")]
+                let (importing, why) = (true, "In the browser, drop files onto the canvas to add them");
+                ui.horizontal_wrapped(|ui| {
+                    let import = ui.add_enabled(!importing, egui::Button::new("Import files…"));
+                    if import
+                        .on_hover_text(
+                            "Add images, videos, sounds, 3D models and PDFs as source cards in the middle of the view; one undo step. Only each file's name is kept.",
+                        )
+                        .on_disabled_hover_text(why)
+                        .clicked()
+                    {
+                        action = Some(Browse::Import);
+                    }
+                    super::library_saved::url_button(ui, browsers, importing);
+                });
+                super::library_saved::url_row(ui, t, browsers, importing, &mut action);
+                report(ui, t, browsers, &mut action);
             }
-            report(ui, t, browsers, &mut action);
             ui.horizontal_wrapped(|ui| {
                 for (kind, label) in KINDS {
                     if ui.selectable_label(browsers.kind == kind, label).clicked() && browsers.kind != kind {
@@ -607,7 +779,7 @@ pub(super) fn show(
         }
     }
     if matches!(browsers.tab, Tab::Assets | Tab::History) {
-        bulk(ui, t, browsers, &mut action);
+        bulk(ui, t, browsers, can_save, &mut action);
     }
     let mut ticks = Vec::new();
     let mut offset = *browsers.offset();
@@ -626,6 +798,10 @@ pub(super) fn show(
         Err(error) => {
             ui.colored_label(t.danger, error);
         }
+        Ok(Listing::Saved(page)) => {
+            super::library_saved::list(ui, t, page, picked, &mut ticks, &mut action);
+            pager(ui, t, &mut offset, page.assets.len(), page.total);
+        }
         Ok(Listing::Assets(page)) => {
             if page.total == 0 {
                 let empty = if browsers.kind.is_some() || !browsers.query.trim().is_empty() {
@@ -643,6 +819,8 @@ pub(super) fn show(
                         let insertable = entry.source.is_some() && entry.stored;
                         let pick = Pick {
                             tab: Tab::Assets,
+                            mine: false,
+                            save: entry.stored.then_some(entry.hash),
                             place: insertable.then(|| json!({"hash": entry.hash})),
                             export: entry.generation.filter(|_| entry.canvas == canvas && entry.stored).map(|generation| ResultSelector {
                                 node: entry.node,
@@ -686,6 +864,8 @@ pub(super) fn show(
                     ui.vertical(|ui| {
                         let pick = Pick {
                             tab: Tab::History,
+                            mine: false,
+                            save: entry.media.as_ref().map(|media| media.hash),
                             place: entry.place.as_ref().map(|place| {
                                 json!({"from": {"canvas": canvas, "node": entry.node, "generation": entry.generation, "port": place.port, "item": place.item}})
                             }),
@@ -830,6 +1010,36 @@ impl NodeCraftApp {
                 self.pick_library_files();
                 return;
             }
+            Browse::FetchUrl(address) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                self.fetch_library_url(address);
+                #[cfg(target_arch = "wasm32")]
+                {
+                    drop(address);
+                    self.notice = Some(super::library_saved::NO_URL_IMPORT.into());
+                }
+                return;
+            }
+            // These say what they did in the notice themselves.
+            Browse::SaveToLibrary(hashes) => {
+                if let Err(error) = self.save_to_library(hashes) {
+                    self.notice = Some(error.message);
+                }
+                return;
+            }
+            Browse::Unsave(hashes) => {
+                if let Err(error) = self.unsave(hashes) {
+                    self.notice = Some(error.message);
+                }
+                return;
+            }
+            Browse::RepairSaved => {
+                if let Err(error) = self.repair_saved() {
+                    self.notice = Some(error.message);
+                }
+                return;
+            }
+            Browse::PlaceSaved(hashes) => self.place_saved(t, hashes),
             Browse::RetryImport => {
                 // The paths are given up only once the reading has started, so a refusal keeps them.
                 let retry = self.library.browsers.report.as_ref().map(|report| report.retry.clone()).unwrap_or_default();
@@ -870,8 +1080,7 @@ impl NodeCraftApp {
         let params = json!({"canvas": self.canvas, "items": items, "ids": fresh, "at": {"x": at.x, "y": at.y}, "step": step});
         self.session.dispatch("library.attach", &params)?;
         self.selection.replace(fresh.into_iter().collect());
-        let tab = self.library.browsers.tab;
-        self.library.browsers.picked.retain(|_, pick| pick.tab != tab);
+        self.library.browsers.clear_picks();
         Ok(())
     }
 

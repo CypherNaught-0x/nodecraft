@@ -374,6 +374,7 @@ mod layout;
 mod library_browsers;
 #[cfg(not(target_arch = "wasm32"))]
 mod library_import;
+mod library_saved;
 mod library_view;
 mod live;
 mod mask_badges;
@@ -801,6 +802,12 @@ impl NodeCraftApp {
             None => std::rc::Rc::new(nodecraft_engine::element_library::MemoryElements::default()),
         };
         nodecraft_engine::element_library::install(&mut app.session, elements);
+        // My library (#96): files saved to use in any project, beside it.
+        let saved: std::rc::Rc<dyn nodecraft_engine::asset_library::AssetLibraryStore> = match store.dir() {
+            Some(dir) => std::rc::Rc::new(nodecraft_engine::asset_library::FileAssetLibrary::new(dir.join("assets"))),
+            None => std::rc::Rc::new(nodecraft_engine::asset_library::MemoryAssetLibrary::default()),
+        };
+        nodecraft_engine::asset_library::install(&mut app.session, saved);
         // The shader library (#90), beside it.
         let shaders: Box<dyn nodecraft_engine::library::LibraryStore> = match store.dir() {
             Some(dir) => Box::new(nodecraft_engine::shader_library::file_store(dir.join("shaders"))),
@@ -879,6 +886,7 @@ impl NodeCraftApp {
         let mut app = Self::with_services(services)?;
         nodecraft_engine::library::install(&mut app.session, store)?;
         nodecraft_engine::element_library::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::element_library::MemoryElements::default()));
+        nodecraft_engine::asset_library::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::asset_library::MemoryAssetLibrary::default()));
         nodecraft_engine::shader_library::install(&mut app.session, Box::new(nodecraft_engine::library::MemoryLibrary::default()))?;
         nodecraft_engine::skills::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::skills::MemorySkills::default()))?;
         Ok(app)

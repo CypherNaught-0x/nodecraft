@@ -77,7 +77,12 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   selected card (`library.assets`, `library.history`, `library.styles`, part of #96). Ticked
   assets and results go on the canvas together in one undo step (`library.attach`) or are saved
   to a chosen folder, and Import files… brings picked files into the library as source cards,
-  deduplicated by content, with a line per file and Retry failed (part of #96).
+  deduplicated by content, with a line per file and Retry failed (part of #96). Import from
+  URL… fetches one media file from a public https address on the desktop, refusing local and
+  private addresses on every redirect, capped at 16 MiB and checked by type and bytes, and keeps
+  only its file name. Ticked files can be saved to My library, which every project shares
+  (bounded at 4096 files and 1 GiB, repaired if its index is damaged), and placed from it on any
+  canvas of any project (`library.saved`, `library.place_saved`; part of #96).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
   image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL) become 3D nodes whose cards show

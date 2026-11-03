@@ -224,3 +224,51 @@ fn an_imported_video_keeps_the_length_the_video_service_measured() {
     let Some(Value::Media(asset)) = video.params.get("asset") else { panic!("video source") };
     assert_eq!((asset.meta.duration_ms, asset.meta.width, asset.meta.height), (Some(500), Some(64), Some(48)));
 }
+
+/// Import from URL… hands the fetched file to the import a picked file takes: a card titled with
+/// the address's file name, and nothing else of the address in the document. The fetch is
+/// canned, so no test reaches the network.
+#[test]
+fn a_file_from_an_address_becomes_a_card_named_after_it_and_keeps_nothing_else_of_the_address() {
+    let mut h = harness();
+    open_assets(&mut h);
+    h.get_by_label("Import from URL…").click();
+    h.run();
+    assert!(h.state().library.browsers.url.is_some(), "the address row opens");
+
+    // A local address is refused before anything starts.
+    h.state_mut().library.browsers.url = Some("https://192.168.1.20/photo.png".into());
+    h.run();
+    assert!(h.get_by_label("Import").accesskit_node().is_disabled());
+    assert!(h.query_by_label("addresses on this computer or its local network aren't imported").is_some());
+
+    let address = "https://cdn.example.com/photos/sunset%20glow.png?sig=s3cr3t";
+    h.state_mut().library.browsers.url = Some(address.into());
+    h.state_mut().library.browsers.import.fetched =
+        Some(Ok(Fetched { name: "sunset glow.png".into(), host: "cdn.example.com".into(), kind: nodecraft_types::Modality::Image, bytes: png(90) }));
+    let before = h.state().session.document().clone();
+    h.run();
+    h.get_by_label("Import").click();
+    h.run();
+    settle(&mut h);
+    assert_eq!(sources(&h), ["sunset glow.png"], "{:?}", h.state().notice);
+    assert!(h.query_by_label("Import: 1 added").is_some());
+    let saved = serde_json::to_string(h.state().session.document()).unwrap();
+    for leaked in ["s3cr3t", "cdn.example.com", "photos", "https"] {
+        assert!(!saved.contains(leaked), "{leaked} reached the document");
+    }
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &before, "one undo step");
+
+    // A failed download is reported by host, with nothing to retry.
+    h.state_mut().library.browsers.url = Some("https://files.example.org/x.png".into());
+    h.state_mut().library.browsers.import.fetched =
+        Some(Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::NotFound, "files.example.org has no file at that address")));
+    h.run();
+    h.get_by_label("Import").click();
+    h.run();
+    settle(&mut h);
+    assert!(h.query_by_label("From files.example.org: files.example.org has no file at that address").is_some());
+    assert!(h.query_by_label_contains("Retry failed").is_none());
+    assert_eq!(h.state().session.document(), &before);
+}

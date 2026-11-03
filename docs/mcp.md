@@ -273,6 +273,17 @@ Persistent tag commands (`tag.put`, `tag.remove`, `node.tag_set`) are available 
 Field commands (`field.create`, `field.update`, `field.move`, `field.remove`,
 `node.field_set`) are available to agents.
 
+### My library (#96)
+
+`library.saved` lists the files the person saved to My library from any of their projects, with
+each entry's name and `origin`: the **title of the project it was saved from**. So an agent in one
+project can see the titles of other projects that saved files, and `library.place_saved` can put
+those files on a canvas of this project (copied in, one undo step). Nothing else of another
+project is visible. `library.save_assets`, `library.unsave_assets` and `library.repair_saved` are
+human-only: what leaves a project, what is deleted and when a damaged index is rebuilt are the
+person's. Listing never writes; a damaged index is reported as `index_damaged`. Import from URL is
+not a command at all, so an agent can't make NodeCraft fetch an address.
+
 ### Official workflow starters (#953)
 
 `template.list {}` returns indexed/bundled/cached metadata, available `{id,version,blake3}` identities
