@@ -71,3 +71,14 @@ fn only_3d_assets_are_a_cards_model() {
     assert!(make("model/gltf-binary").is_some_and(|node| mesh_of(&node).is_some()));
     assert!(make("image/png").is_none_or(|node| mesh_of(&node).is_none()));
 }
+
+#[test]
+fn ply1011_model_preview_decodes_authored_rgba_geometry() {
+    let bytes = include_bytes!("../../../media/src/mesh/fixtures/original-rgba.ply");
+    let model = Model::decode(bytes).unwrap();
+    assert_eq!(model.triangles(), 1);
+    assert_eq!(model.center, [0.5, 0.5, 0.]);
+    let mut meshes = Meshes::default();
+    meshes.inline(hash(11), bytes);
+    assert!(matches!(meshes.entries.get(&hash(11)), Some(Entry::Ready { .. })));
+}
