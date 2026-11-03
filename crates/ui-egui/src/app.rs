@@ -341,6 +341,8 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
 pub(crate) mod admission;
 
 mod app_mode;
+pub mod automation;
+mod batch_review;
 mod browser_providers;
 mod budget_caps;
 mod comfy_mapping;
@@ -360,12 +362,15 @@ mod export;
 mod fields;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_dialogs;
+mod floating_bounds;
 #[cfg(not(target_arch = "wasm32"))]
 mod folder_import;
 mod generate;
 mod host;
 mod image_tools;
 mod input_ports;
+#[cfg(test)]
+mod key_account_tests;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod key_changes;
 mod layer_editor;
@@ -579,6 +584,8 @@ pub struct NodeCraftApp {
     /// The cards prompts can `@mention`, and blocked mentions (#505).
     mention_cache: mentions::Cache,
     marquee_geometry: admission::GeometryCache,
+    /// The two-finger scroll or wheel gesture in progress, and who it belongs to (#413).
+    scroll_gesture: crate::scroll_chain::Gesture,
     cache_clock: u64,
     next_gesture: u64,
     centred: bool,
@@ -593,6 +600,8 @@ pub struct NodeCraftApp {
     pub key_accounts: nodecraft_engine::settings::KeySettings,
     /// The Budgets panel, and the caps runs are checked against (from settings, #201).
     pub budgets: crate::budgets::BudgetsPanel,
+    /// Settings › Automation: the desktop app's built-in MCP server, once it hands one over (#116).
+    pub automation: automation::AutomationPanel,
     budget_caps: nodecraft_engine::settings::BudgetSettings,
     browser_providers: Option<browser_providers::BrowserProviders>,
     /// Answers from the keychain thread (the app's `keys.store` service).
@@ -624,6 +633,8 @@ pub struct NodeCraftApp {
     plugins: Option<(Arc<nodecraft_engine::plugin_cmds::PluginWorker>, Option<u64>)>,
     /// The queue panel is open (#82).
     queue_open: bool,
+    /// The batch items review, when open (#92).
+    batch_review: Option<batch_review::BatchReview>,
     /// The quarantined-charge review, when open (#362).
     #[cfg(not(target_arch = "wasm32"))]
     ownership: Option<ownership_panel::OwnershipReview>,
@@ -667,7 +678,7 @@ impl NodeCraftApp {
         // No settings file remembers the accounts in the browser: list the ones with a stored key.
         #[cfg(target_arch = "wasm32")]
         for account in &accounts {
-            app.key_accounts.remember(account);
+            let _ = app.key_accounts.remember(account);
         }
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
         Ok(app)
@@ -703,7 +714,7 @@ impl NodeCraftApp {
         // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
         // If the thread can't start, the app runs without the keychain (the panel says so).
         // `keys.test` sends its check on the runs' runtime and HTTP client (#237).
-        let key_tests = runs.as_ref().and_then(runs::Runs::key_test_host);
+        let key_tests = runs.as_ref().and_then(|runs| runs.key_test_host(settings.providers.clone()));
         let results = match nodecraft_engine::secrets::KeyWorker::spawn_with_tests(std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore), key_tests) {
             Ok((worker, results)) => {
                 nodecraft_engine::secrets::register_key_worker(&mut services, worker)?;
@@ -933,6 +944,12 @@ impl NodeCraftApp {
     }
 
     /// The in-canvas agent's settings (#114), or the defaults without a settings file.
+    /// The provider settings the app runs with: the store's on the desktop (loaded at startup),
+    /// the site's in the browser.
+    pub fn loaded_provider_settings(&self) -> nodecraft_engine::settings::ProviderSettings {
+        self.provider_settings()
+    }
+
     pub fn agent_settings(&self) -> nodecraft_engine::settings::AgentSettings {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &self.store {
@@ -1205,6 +1222,7 @@ impl NodeCraftApp {
             schemas: SchemaCache::default(),
             mention_cache: mentions::Cache::default(),
             marquee_geometry: admission::GeometryCache::default(),
+            scroll_gesture: crate::scroll_chain::Gesture::default(),
             cache_clock: 0,
             next_gesture: 0,
             centred: false,
@@ -1213,6 +1231,7 @@ impl NodeCraftApp {
             plugin_panel: crate::plugins::PluginsPanel::default(),
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
             budgets: crate::budgets::BudgetsPanel::default(),
+            automation: automation::AutomationPanel::default(),
             budget_caps: nodecraft_engine::settings::BudgetSettings::default(),
             browser_providers: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1233,6 +1252,7 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             plugins: None,
             queue_open: false,
+            batch_review: None,
             #[cfg(not(target_arch = "wasm32"))]
             ownership: None,
             sheet: sheet_view::SheetView::default(),
@@ -1354,6 +1374,8 @@ impl NodeCraftApp {
         let t = self.theme.tokens();
         let viewport = ui.max_rect();
         self.viewport = viewport;
+        // Panels drawn before the row (viewers) use this frame's area; republished below.
+        self.publish_floating_bounds(ui.ctx());
         #[cfg(not(target_arch = "wasm32"))]
         let file_menu_owns_input = self.file_menu(ui, t);
         #[cfg(target_arch = "wasm32")]
@@ -1489,6 +1511,33 @@ impl NodeCraftApp {
                 } else {
                     self.notice = None;
                     // Invalid drafts remain view state across unrelated undo/redo.
+                }
+            }
+            // ⌘/Ctrl+Enter quotes a run of everything that changed or hasn't run (#965); nothing
+            // starts until the person confirms the price. A focused text field keeps its own
+            // ⌘/Ctrl+Enter (a prompt quotes its card, a multiline value commits), and so do a
+            // gesture in flight and an open menu or panel. Not while the recovery question is open
+            // either: its answer may replace the document the run would be quoted on.
+            #[cfg(not(target_arch = "wasm32"))]
+            let recovering = recovery_owns_input || self.recovery.is_some();
+            #[cfg(target_arch = "wasm32")]
+            let recovering = recovery_owns_input || self.web_recovery_owns_input();
+            let blocked = self.canvas_letter_keys_blocked(ui, minimap_held, model_blocks, bulk_blocks)
+                || recovering
+                || self.keys.open
+                || self.browser_providers.as_ref().is_some_and(|providers| providers.open);
+            if !blocked {
+                let whole = ui.input_mut(|input| {
+                    self.session.registry().specs().filter(|spec| matches!(spec.id, "run.changed" | "run.workflow")).find_map(|spec| {
+                        spec.shortcut
+                            .into_iter()
+                            .chain(spec.alternate_shortcuts.iter().copied())
+                            .any(|shortcut| consume_shortcut(input, shortcut))
+                            .then_some(spec.id)
+                    })
+                });
+                if let Some(id) = whole {
+                    self.run_whole_command(id);
                 }
             }
             // `H` hides prompt overlays on media cards (#321). It is a plan §2.1 canvas letter, so
@@ -1635,27 +1684,18 @@ impl NodeCraftApp {
         {
             self.marquee = Some(Marquee { start: self.view.to_world(viewport.min, origin), base: self.selection.clone(), cancelled: false });
         }
-        let membership = self.membership();
-        let collapsed = &membership.hidden;
-        let over_card = ui.input(|i| i.pointer.hover_pos()).is_some_and(|pointer| {
-            // navigation_overlay refreshed actual-instance geometry for this revision above.
-            // The visible-card schema cache is refreshed later and may still describe an old size.
-            // Cards hidden in a collapsed field aren't there to scroll.
-            self.navigation.geometry.rects.iter().any(|(id, rect)| !collapsed.contains(id) && self.view.rect_to_screen(viewport.min, *rect).contains(pointer))
-        });
         let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         // Menus draw later in the frame. Leave their wheel input untouched and keep their world
         // insertion point fixed, including when the pointer is outside or a zoom modifier is held.
-        let scroll_navigation = if self.palette.is_some() || self.turn_into.is_some() {
-            canvas::ScrollNavigation::Disabled
-        } else if !over_card || self.view.zoom < card::BODY_MIN_ZOOM {
-            canvas::ScrollNavigation::PanAndZoom
-        } else {
-            canvas::ScrollNavigation::ZoomOnly
-        };
+        let scroll_navigation =
+            if self.palette.is_some() || self.turn_into.is_some() { canvas::ScrollNavigation::Disabled } else { canvas::ScrollNavigation::Enabled };
         if !canvas_blocks {
             canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, scroll_navigation, self.marquee.is_none());
         }
+        // Scroll is chained (#413): what the cards drawn below can use, they take; the canvas pans
+        // by the rest once they are drawn. Being over a card is no reason to drop the gesture.
+        let scroll_live = !canvas_blocks && scroll_navigation == canvas::ScrollNavigation::Enabled;
+        self.scroll_gesture.begin(ui.ctx(), scroll_live);
         // The palette and "Turn into" create at the world point they opened on; once the view
         // moves, close them.
         if self.view != view_before {
@@ -1676,6 +1716,7 @@ impl NodeCraftApp {
         let mut reader_request = None;
         let mut comfy_mapping_request = None;
         let mut timeline_request = None;
+        let mut review_request = None;
         // Element card menus offer saving to, or updating from, the library: know what it holds.
         self.element_library_listed();
         let mut element_request = false;
@@ -1739,6 +1780,7 @@ impl NodeCraftApp {
             self.painted.clear();
             let prompt_wired: BTreeSet<NodeId> =
                 canvas.edges().values().filter(|edge| edge.to.port == nodecraft_nodes::generation::PROMPT).map(|edge| edge.to.node).collect();
+            let connected_wires = card::connected::incoming(canvas);
             let element_names = elements::names(canvas);
             self.mention_cache.refresh(self.session.revision(), self.canvas, canvas, kinds);
             let mention_cards = &self.mention_cache.cards;
@@ -1825,6 +1867,29 @@ impl NodeCraftApp {
                     }
                     _ => None,
                 };
+                // The media wired into a text card, as thumbnails above its answer (#84). Only the
+                // squares the row draws ask for a preview.
+                let connected = match connected_wires.get(&node.id) {
+                    Some(wires) if self.view.zoom >= card::BODY_MIN_ZOOM => {
+                        let wired = card::connected::assets(canvas, kinds, node, wires);
+                        let shown = card::connected::shown(card::connected::row_width(t), wired.len(), t);
+                        let side = t.connected_thumb * self.view.zoom * ui.ctx().pixels_per_point();
+                        let assets = self.session.assets();
+                        let previews = &mut self.previews;
+                        let thumbs = wired
+                            .iter()
+                            .take(shown)
+                            .map(|asset| {
+                                let kind = card::connected::MediaKind::of(asset);
+                                let edge = card::connected::request_edge(asset, side);
+                                let preview = kind.previews().then(|| previews.request_asset(ui.ctx(), asset.hash, edge, || assets.preview_read(asset)));
+                                card::connected::Thumb { kind, preview }
+                            })
+                            .collect();
+                        (thumbs, wired.len())
+                    }
+                    _ => (Vec::new(), 0),
+                };
                 let rejected = self.marquee.is_some() && self.marquee_geometry.placeholder(node.id);
                 let schema = if rejected { None } else { cached_schema(&mut self.schemas, &self.session, node, self.cache_clock) };
                 let descriptor = schema.map(|cached| cached.descriptor.as_ref());
@@ -1864,6 +1929,7 @@ impl NodeCraftApp {
                         mentions: mention_cards,
                         mention_blocked: mention_blocked.get(&node.id).map(String::as_str),
                         partial: self.runs.as_ref().and_then(|runs| runs.partial(self.canvas, node.id)),
+                        connected,
                         local_text: self.text_previews.rows(node.id),
                         video,
                         audio,
@@ -2155,6 +2221,12 @@ impl NodeCraftApp {
                             if let Some(action) = technique_menu::menu(ui, self.session.document(), node) {
                                 technique_request = Some(action);
                             }
+                            if batch_review::reviewable(node)
+                                && ui.button("Review items…").on_hover_text("Step through each batch item's result, or see every combination").clicked()
+                            {
+                                review_request = Some(node.id);
+                                ui.close();
+                            }
                         });
                     }
                     if !canvas_blocks && r.drag_started_by(egui::PointerButton::Primary) {
@@ -2364,6 +2436,9 @@ impl NodeCraftApp {
             present_after = present_request;
             reader_after = reader_request;
             timeline_after = timeline_request;
+            if let Some(node) = review_request {
+                self.batch_review = Some(batch_review::BatchReview::new(node));
+            }
             element_after = element_request;
             image_tool_after = image_tool_request;
             element_library_after = element_library_request;
@@ -2396,6 +2471,10 @@ impl NodeCraftApp {
         } else {
             self.selection.clear();
         }
+        // Applied after the cards, like their own drag pan below; `view_before` closes the
+        // palette for it there.
+        let scroll = self.scroll_gesture.finish(ui.ctx());
+        canvas::scroll(ui, viewport, &mut self.view, &self.canvas_prefs, scroll);
         // Drawn while a popup is open too, so its own aspect menu stays alive; it acts only
         // when nothing else owns the frame.
         let toolbar_live = !overlay_blocks && !file_owns_input && !file_menu_owns_input && !recovery_owns_input;
@@ -2651,6 +2730,7 @@ impl NodeCraftApp {
         self.file_button(ui, t);
         #[cfg(target_arch = "wasm32")]
         self.web_file_button(ui, t);
+        self.publish_floating_bounds(ui.ctx());
         let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
         self.save_accounts(changes);
         self.plugin_panel.show(ui.ctx(), &mut self.session, t);
@@ -2659,7 +2739,9 @@ impl NodeCraftApp {
         self.comfy_server_panel(ui.ctx(), t);
         self.comfy_mapping_window(ui.ctx(), t);
         self.budgets_panel(ui.ctx(), t);
+        self.automation_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);
+        self.batch_review_window(ui.ctx(), t);
         self.share_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
         self.ownership_panel(ui.ctx(), t);
@@ -2833,6 +2915,10 @@ impl NodeCraftApp {
             }
             if self.keys.is_waiting() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            } else if self.keys.is_following() {
+                // A request past its timeout may still be answered (an unlock prompt accepted
+                // late); keep looking for that answer, without drawing at full rate.
+                ctx.request_repaint_after(std::time::Duration::from_secs(1));
             }
         }
         #[cfg(any(test, target_arch = "wasm32"))]
@@ -2844,23 +2930,58 @@ impl NodeCraftApp {
     /// Keeps the remembered account names in settings in step with the keychain.
     /// Records keys saved or deleted, from the keychain's answers or the browser's at once (from
     /// any view's panel); adapters read their keys again.
+    /// A key found by a check changes no key, so adapters keep theirs. The panel reserves room
+    /// before writing a new account's key, so the list is full here only if settings changed
+    /// underneath it; the notice then says the account won't be listed after a restart.
     fn save_accounts(&mut self, changes: Vec<crate::keys::AccountChange>) {
+        use crate::keys::AccountChange;
         if changes.is_empty() {
             return;
         }
-        self.forget_key_adapters();
+        if changes.iter().any(|change| !matches!(change, AccountChange::Found(_))) {
+            self.forget_key_adapters();
+        }
+        // A key found by a check may not take a place held for a new account still being saved.
+        let reserved = self.keys.reserved();
         let apply = |keys: &mut nodecraft_engine::settings::KeySettings| {
+            let mut refused: Vec<String> = Vec::new();
             for change in &changes {
                 match change {
-                    crate::keys::AccountChange::Remember(account) => keys.remember(account),
-                    crate::keys::AccountChange::Forget(account) => keys.forget(account),
+                    AccountChange::Remember(account) => {
+                        if !keys.remember(account) {
+                            refused.push(account.as_str().to_owned());
+                        }
+                    }
+                    AccountChange::Found(account) => {
+                        if !(keys.admits(account, &reserved) && keys.remember(account)) {
+                            refused.push(account.as_str().to_owned());
+                        }
+                    }
+                    AccountChange::Forget(account) => keys.forget(account),
                 }
             }
+            refused
         };
-        apply(&mut self.key_accounts);
+        let before = self.key_accounts.clone();
+        let refused = apply(&mut self.key_accounts);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(store) = &mut self.store {
-            store.update(|settings| apply(&mut settings.keys));
+        if self.key_accounts != before
+            && let Some(store) = &mut self.store
+        {
+            store.update(|settings| {
+                apply(&mut settings.keys);
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = before;
+        if !refused.is_empty() {
+            let (keys, them) = if refused.len() == 1 { ("key", "it") } else { ("keys", "they") };
+            self.keys.notice = Some(format!(
+                "The {keys} for {} {} stored, but NodeCraft can list at most {} accounts, so {them} won't be listed after a restart. Remove an account you no longer use.",
+                refused.join(", "),
+                if refused.len() == 1 { "is" } else { "are" },
+                nodecraft_engine::settings::KeySettings::MAX_ACCOUNTS
+            ));
         }
     }
     /// Delete the selection (nodes, noodles and the selected field) in one undo step, skipping
@@ -3461,6 +3582,7 @@ impl eframe::App for NodeCraftApp {
                 self.title = title;
             }
         }
+        self.sync_mcp_setting();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &mut self.store {
             let tick = store.tick(std::time::Instant::now());
@@ -3531,6 +3653,8 @@ mod audio672_tests;
 mod audio875_tests;
 #[cfg(test)]
 mod audio_tests;
+#[cfg(test)]
+mod batch_review_tests;
 #[cfg(test)]
 mod comfy_workflow9_tests;
 #[cfg(test)]
@@ -3646,6 +3770,8 @@ mod palette_scroll_tests;
 #[cfg(test)]
 mod reverse_wiring_tests;
 #[cfg(test)]
+mod scroll413_tests;
+#[cfg(test)]
 mod turn_into_tests;
 
 #[cfg(test)]
@@ -3656,6 +3782,8 @@ mod held_restart_tests;
 #[cfg(test)]
 mod stale_tests;
 
+#[cfg(test)]
+mod floating957_tests;
 #[cfg(test)]
 mod router949_tests;
 #[cfg(test)]

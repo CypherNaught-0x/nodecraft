@@ -824,10 +824,6 @@ fn batch_plans_that_cant_run_say_why() {
     let message = blocked(plan_of(&wired(vec![batch(1, "  \n", "cross"), single(2)], &[(1, "item", 2, "in")]), &[2]));
     assert!(message.contains("no items"), "{message}");
 
-    let message =
-        blocked(plan_of(&wired(vec![batch(1, "a", "cross"), batch(2, "b", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]), &[3]));
-    assert!(message.contains("another batch"), "{message}");
-
     let message = blocked(plan_of(
         &wired(vec![text(4, "a"), single(1), batch(2, "b", "cross"), single(3)], &[(4, "out", 1, "in"), (1, "out", 2, "in"), (2, "item", 3, "in")]),
         &[1, 3],
@@ -842,6 +838,186 @@ fn batch_plans_that_cant_run_say_why() {
 
     let message = blocked(plan_of(&wired(vec![batch(1, "a", "bogus"), single(2)], &[(1, "item", 2, "in")]), &[2]));
     assert!(message.contains("Pairing"), "{message}");
+}
+
+/// The batch a fanned step's items are tagged with, once each.
+fn tagged_by(step: &Step) -> BTreeSet<NodeId> {
+    step.fanout.as_ref().unwrap().items.iter().flatten().map(|key| key.batch).collect()
+}
+
+#[test]
+fn a_batch_collecting_a_batch_flattens_its_items_in_wire_order() {
+    // 1 (batch a, b) → 2 (batch c): 2's items are 1's, then its own, and they are 2's.
+    let p = wired(vec![batch(1, "a\nb", "cross"), batch(2, "c", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]);
+    let plan = ready(plan_of(&p, &[3]));
+    let step = plan.steps.first().unwrap();
+    assert_eq!(fanned_values(step), vec![texts(&["a"]), texts(&["b"]), texts(&["c"])]);
+    assert_eq!(tagged_by(step), BTreeSet::from([id(2)]), "the collecting batch names the items");
+    // Every item is quoted: one job each, all known before the run.
+    assert_eq!(step.fanout.as_ref().unwrap().jobs, vec![1, 1, 1]);
+    assert_eq!(step.jobs.as_ref().unwrap().len(), 3);
+    // Ids are stable from plan to plan.
+    assert_eq!(ready(plan_of(&p, &[3])).steps.first().unwrap().fanout.as_ref().unwrap().items, step.fanout.as_ref().unwrap().items);
+
+    // Wired twice, a batch's items come twice, each a distinct item; a text wired between them
+    // keeps its place.
+    let p = wired(
+        vec![batch(1, "a\nb", "cross"), text(4, "mid"), batch(2, "", "cross"), single(3)],
+        &[(1, "item", 2, "in"), (4, "out", 2, "in"), (1, "item", 2, "in"), (2, "item", 3, "in")],
+    );
+    let step = ready(plan_of(&p, &[3])).steps.into_iter().next().unwrap();
+    assert_eq!(fanned_values(&step), ["a", "b", "mid", "a", "b"].map(|t| texts(&[t])).to_vec());
+    assert_eq!(step.fanout.as_ref().unwrap().items.iter().collect::<BTreeSet<_>>().len(), 5);
+
+    // A chain flattens all the way down.
+    let p = wired(
+        vec![batch(1, "a", "cross"), batch(2, "b", "cross"), batch(5, "c", "cross"), single(3)],
+        &[(1, "item", 2, "in"), (2, "item", 5, "in"), (5, "item", 3, "in")],
+    );
+    let step = ready(plan_of(&p, &[3])).steps.into_iter().next().unwrap();
+    assert_eq!(fanned_values(&step), vec![texts(&["a"]), texts(&["b"]), texts(&["c"])]);
+}
+
+#[test]
+fn a_collected_batch_and_the_batch_it_feeds_are_different_batches() {
+    // 1 → 2 (collects 1), and both reach 3: every combination of the two, as for any two
+    // batches; Zip pairs item by item.
+    for (pairing, runs) in [("cross", 6), ("zip", 3)] {
+        let pair = of_kind(3, "test.pair", None);
+        let mut b = batch(2, "c", pairing);
+        if pairing == "zip" {
+            b.params.insert("text".into(), Value::Text(String::new()));
+        }
+        let mut a = batch(1, "a\nb", pairing);
+        if pairing == "zip" {
+            a.params.insert("text".into(), Value::Text("a\nb\nc".into()));
+        }
+        let p = wired(vec![a, b, pair], &[(1, "item", 2, "in"), (1, "item", 3, "a"), (2, "item", 3, "b")]);
+        let step = ready(plan_of(&p, &[3])).steps.into_iter().next().unwrap();
+        assert_eq!(fanned_values(&step).len(), runs, "{pairing}");
+        assert_eq!(tagged_by(&step), BTreeSet::from([id(1), id(2)]), "{pairing}");
+    }
+}
+
+#[test]
+fn nested_batches_are_bounded_before_anything_runs() {
+    // Too many items over the chain: refused with what to do, before anything is copied on.
+    let many: String = (0..600).map(|n| format!("{n}\n")).collect();
+    let more: String = (0..500).map(|n| format!("m{n}\n")).collect();
+    let p = wired(vec![batch(1, &many, "cross"), batch(2, &more, "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]);
+    let message = blocked(plan_of(&p, &[3]));
+    assert!(message.contains("at most 1000 items") && message.contains("split them"), "{message}");
+    // Wired twice, a batch can go over on its own.
+    let p = wired(vec![batch(1, &many, "cross"), batch(2, "", "cross"), single(3)], &[(1, "item", 2, "in"), (1, "item", 2, "in"), (2, "item", 3, "in")]);
+    assert!(blocked(plan_of(&p, &[3])).contains("at most 1000 items"));
+
+    // The longest chain plans; one batch more is refused.
+    let chain = |length: u8| {
+        let mut nodes: Vec<Node> = (1..=length).map(|n| batch(n, &format!("i{n}"), "cross")).collect();
+        nodes.push(single(200));
+        let mut links: Vec<(u8, &str, u8, &str)> = (1..length).map(|n| (n, "item", n + 1, "in")).collect();
+        links.push((length, "item", 200, "in"));
+        wired(nodes, &links)
+    };
+    let longest = u8::try_from(MAX_BATCH_CHAIN).unwrap();
+    let step = ready(plan_of(&chain(longest), &[200])).steps.into_iter().next().unwrap();
+    assert_eq!(fanned_values(&step).len(), MAX_BATCH_CHAIN);
+    let message = blocked(plan_of(&chain(longest + 1), &[200]));
+    assert!(message.contains("in a chain"), "{message}");
+
+    // A batch deep in the chain still collects existing results only.
+    let p = wired(
+        vec![text(4, "a"), single(1), batch(2, "b", "cross"), batch(5, "c", "cross"), single(3)],
+        &[(4, "out", 1, "in"), (1, "out", 2, "in"), (2, "item", 5, "in"), (5, "item", 3, "in")],
+    );
+    let message = blocked(plan_of(&p, &[1, 3]));
+    assert!(message.contains("run the nodes feeding it first"), "{message}");
+    // And its problems block the collecting batch, naming the batch they are about.
+    let mut styles = batch(1, "a", "bogus");
+    styles.title = "Styles".into();
+    let p = wired(vec![styles, batch(2, "b", "cross"), batch(5, "c", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 5, "in"), (5, "item", 3, "in")]);
+    let message = blocked(plan_of(&p, &[3]));
+    assert!(message.contains("Pairing") && message.contains("(Styles)"), "{message}");
+    assert_eq!(message.matches("in the batch it collects").count(), 1, "named once: {message}");
+}
+
+#[test]
+fn a_batch_reached_again_counts_its_whole_chain_from_there() {
+    // 1 → … → 15: a chain of 15 batches. 50 collects 15 directly (16 batches: allowed), and
+    // then through 21 → … → 29 (nine more), whose chain through 15 is 25 batches long. 15 is
+    // resolved once, through the first wire; the second must still count all of it.
+    let mut nodes: Vec<Node> = (1..=15).map(|n| batch(n, &format!("l{n}"), "cross")).collect();
+    nodes.extend((21..=29).map(|n| batch(n, "", "cross")));
+    nodes.extend([batch(50, "top", "cross"), single(200)]);
+    let mut links: Vec<(u8, &str, u8, &str)> = (1..15).map(|n| (n, "item", n + 1, "in")).collect();
+    links.push((15, "item", 29, "in"));
+    links.extend((22..=29).rev().map(|n| (n, "item", n - 1, "in")));
+    links.extend([(15, "item", 50, "in"), (21, "item", 50, "in"), (50, "item", 200, "in")]);
+    let message = blocked(plan_of(&wired(nodes.clone(), &links), &[200]));
+    assert!(message.contains("in a chain"), "{message}");
+
+    // Without the long branch, the same batches plan.
+    let short: Vec<_> = links.into_iter().filter(|(from, _, to, _)| !(*from == 21 && *to == 50)).collect();
+    let step = ready(plan_of(&wired(nodes, &short), &[200])).steps.into_iter().next().unwrap();
+    assert_eq!(fanned_values(&step).len(), 16);
+}
+
+#[test]
+fn a_batchs_items_are_listed_with_the_ids_its_results_carry() {
+    let p = wired(vec![batch(1, "a\nb", "cross"), batch(2, "c", "cross"), single(3)], &[(1, "item", 2, "in"), (2, "item", 3, "in")]);
+    let canvas = p.canvases().get(&C).unwrap();
+    let listed = super::batch_items(canvas, &kinds(), id(2)).unwrap();
+    let step = ready(plan_of(&p, &[3])).steps.into_iter().next().unwrap();
+    let tagged: Vec<_> = step.fanout.unwrap().items.iter().map(|tag| tag.first().unwrap().item).collect();
+    assert_eq!(listed.iter().map(|(item, _)| *item).collect::<Vec<_>>(), tagged);
+    assert_eq!(listed.into_iter().map(|(_, value)| value).collect::<Vec<_>>(), texts(&["a", "b", "c"]));
+    assert!(super::batch_items(canvas, &kinds(), id(3)).is_err(), "not a batch");
+    assert!(super::batch_items(canvas, &kinds(), id(9)).is_err(), "not on the canvas");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    /// A chain of batches, each collecting the one before and adding its own items, fans its
+    /// consumer out over every item in order, each once, or refuses when it has none.
+    #[test]
+    fn a_chain_of_batches_fans_out_over_every_item_in_order(own in proptest::collection::vec(0usize..4, 1..6), wires in 1usize..3) {
+        let length = u8::try_from(own.len()).unwrap();
+        let items = |n: usize| (0..own[n]).map(|i| format!("b{n}-{i}")).collect::<Vec<_>>();
+        let mut nodes: Vec<Node> = (0..own.len()).map(|n| batch(u8::try_from(n + 1).unwrap(), &items(n).join("\n"), "cross")).collect();
+        nodes.push(single(200));
+        let mut links: Vec<(u8, &str, u8, &str)> = Vec::new();
+        for n in 1..length {
+            // The first batch may be wired more than once into the second.
+            for _ in 0..if n == 1 { wires } else { 1 } {
+                links.push((n, "item", n + 1, "in"));
+            }
+        }
+        links.push((length, "item", 200, "in"));
+        let p = wired(nodes, &links);
+        // What the last batch holds: the first one's items as often as it is wired, then each
+        // later batch's own.
+        let mut expected: Vec<String> = Vec::new();
+        for n in 0..own.len() {
+            if n == 1 {
+                expected = vec![expected.clone(); wires].concat();
+            }
+            expected.extend(items(n));
+        }
+        match plan_of(&p, &[200]) {
+            Planned::Ready(plan) => {
+                let step = plan.steps.first().unwrap();
+                let got: Vec<Vec<Value>> = fanned_values(step);
+                let want: Vec<Vec<Value>> = expected.iter().map(|t| texts(&[t.as_str()])).collect();
+                prop_assert_eq!(got, want);
+                let fanout = step.fanout.as_ref().unwrap();
+                prop_assert_eq!(fanout.items.iter().collect::<BTreeSet<_>>().len(), expected.len());
+                prop_assert!(fanout.items.iter().all(|tag| tag.len() == 1 && tag.first().unwrap().batch == id(length)));
+                prop_assert_eq!(fanout.jobs.iter().sum::<usize>(), expected.len());
+            }
+            Planned::Blocked(_) => prop_assert!(expected.is_empty(), "blocked with items {:?}", expected),
+        }
+    }
 }
 
 #[test]
@@ -1033,4 +1209,141 @@ fn a_folder_run_on_its_own_gives_its_first_file_and_every_file() {
     };
     assert_eq!(on("file"), texts(&["alpha"]));
     assert_eq!(on("names"), texts(&["c1.txt", "c2.txt", "c10.txt"]));
+}
+
+/// #965: a pending run starts from every node with work to do, a workflow run from every
+/// generative node too; notes and sources are never steps, and a fresh action keeps its result.
+#[test]
+fn pending_and_workflow_runs_choose_nodes_with_work() {
+    let mut kinds = kinds();
+    let action = NodeDescriptor {
+        id: "test.action".into(),
+        label: "Action".into(),
+        category: Category::Action,
+        ..kinds.get("test.relay").unwrap().descriptor().clone()
+    };
+    kinds.register(Box::new(Relay(action))).unwrap();
+    let note = kinds.get("structure.note").unwrap().descriptor().instantiate(id(5), &BTreeMap::new()).unwrap();
+    let action = |n: u8, result: Option<&str>| Node { kind: "test.action".into(), ..relay(n, result) };
+    // 1 (text) → 2 (relay, result) → 3 (relay, none) → 4 (relay, none); 2 → 6 (action, result);
+    // 3 → 7 (action, none); 5 is a note.
+    let p = project(
+        vec![text(1, "dawn"), relay(2, Some("forest")), relay(3, None), relay(4, None), note, action(6, Some("cut")), action(7, None)],
+        &[(1, 2), (2, 3), (3, 4), (2, 6), (3, 7)],
+    );
+    let canvas = p.canvases().get(&C).unwrap();
+    let none = BTreeSet::new();
+    let plan = ready(plan_run(canvas, &kinds, &RunMode::Pending, &none, &none).unwrap());
+    assert_eq!(order(&plan), vec![id(3), id(4), id(7)]);
+    // Stale 2 runs too, and so does what reads it; requested nodes are ignored.
+    let plan = ready(plan_run(canvas, &kinds, &RunMode::Pending, &ids(&[1]), &ids(&[2, 6])).unwrap());
+    assert_eq!(order(&plan), vec![id(2), id(3), id(4), id(6), id(7)]);
+    // The workflow regenerates fresh 2 as well, but leaves fresh action 6 alone.
+    let plan = ready(plan_run(canvas, &kinds, &RunMode::Workflow, &none, &none).unwrap());
+    assert_eq!(order(&plan), vec![id(2), id(3), id(4), id(7)]);
+    // Everything fresh: nothing pending is an empty plan, not an error; the workflow still runs
+    // every generative node.
+    let p = project(vec![text(1, "dawn"), relay(2, Some("a")), relay(3, Some("b")), action(6, Some("c"))], &[(1, 2), (2, 3), (2, 6)]);
+    let canvas = p.canvases().get(&C).unwrap();
+    assert!(ready(plan_run(canvas, &kinds, &RunMode::Pending, &none, &none).unwrap()).steps.is_empty());
+    assert_eq!(order(&ready(plan_run(canvas, &kinds, &RunMode::Workflow, &none, &none).unwrap())), vec![id(2), id(3)]);
+    // A kind that isn't installed has work it can't do: it blocks, rather than being skipped.
+    let mut missing = relay(8, None);
+    missing.kind = "test.not_installed".into();
+    let p = project(vec![text(1, "dawn"), missing], &[]);
+    let canvas = p.canvases().get(&C).unwrap();
+    for mode in [RunMode::Pending, RunMode::Workflow] {
+        let Planned::Blocked(blockers) = plan_run(canvas, &kinds, &mode, &none, &none).unwrap() else { panic!("{mode:?} must block") };
+        assert_eq!(blockers.first().map(|b| (b.node, &b.reason)), Some((id(8), &Reason::UnknownKind)));
+    }
+}
+
+fn whole_plan(p: &Project, kinds: &Registry, mode: RunMode, stale: &[u8]) -> (Planned, BTreeSet<NodeId>) {
+    let canvas = p.canvases().get(&C).unwrap();
+    let none = BTreeSet::new();
+    plan_waiting(&Expanded::plain(canvas), kinds, &mode, &none, &none, &ids(stale), &nodecraft_types::EMPTY_TARGET_SELECTION, &nodecraft_types::NoOptions)
+        .unwrap()
+}
+
+/// #965 review: a fresh action between two generators of a whole-canvas run runs between them,
+/// so the later generator never reads a result made from the earlier one's old result.
+#[test]
+fn a_fresh_action_between_two_run_nodes_runs_in_order() {
+    let mut kinds = kinds();
+    let action = NodeDescriptor {
+        id: "test.action".into(),
+        label: "Action".into(),
+        category: Category::Action,
+        ..kinds.get("test.relay").unwrap().descriptor().clone()
+    };
+    kinds.register(Box::new(Relay(action))).unwrap();
+    let action = |n: u8, result: Option<&str>| Node { kind: "test.action".into(), ..relay(n, result) };
+    // 1 (text) → 2 (generator, result) → 6 (action, fresh result) → 9 (generator, no result).
+    let p = project(vec![text(1, "dawn"), relay(2, Some("a")), action(6, Some("b")), relay(9, None)], &[(1, 2), (2, 6), (6, 9)]);
+    for (mode, stale) in [(RunMode::Workflow, &[][..]), (RunMode::Pending, &[2][..])] {
+        let (planned, waiting) = whole_plan(&p, &kinds, mode.clone(), stale);
+        let plan = ready(planned);
+        assert_eq!(order(&plan), vec![id(2), id(6), id(9)], "{mode:?}");
+        assert!(plan.edges.contains(&(id(2), id(6))) && plan.edges.contains(&(id(6), id(9))), "{mode:?}: {:?}", plan.edges);
+        assert!(waiting.is_empty());
+    }
+    // With nothing changed upstream, a pending run leaves the fresh action and generator alone.
+    assert_eq!(order(&ready(whole_plan(&p, &kinds, RunMode::Pending, &[]).0)), vec![id(9)]);
+}
+
+/// #965 review: a batch collects existing results only (#92), so a whole-canvas run that makes
+/// what a batch collects leaves what follows the batch for the next run instead of blocking.
+#[test]
+fn a_whole_canvas_run_waits_on_a_batch_it_feeds() {
+    let kinds = kinds();
+    let p = wired(
+        vec![text(4, "a"), of_kind(1, "test.single", Some(Value::Text("x".into()))), batch(2, "b", "cross"), single(3)],
+        &[(4, "out", 1, "in"), (1, "out", 2, "in"), (2, "item", 3, "in")],
+    );
+    // The workflow regenerates 1, so 3 (after the batch) waits for the next run.
+    let (planned, waiting) = whole_plan(&p, &kinds, RunMode::Workflow, &[]);
+    assert_eq!(order(&ready(planned)), vec![id(1)]);
+    assert_eq!(waiting, ids(&[3]));
+    // Pending with 1 stale is the same; with 1 fresh, 3 fans out over the batch's items now.
+    let (planned, waiting) = whole_plan(&p, &kinds, RunMode::Pending, &[1]);
+    assert_eq!((order(&ready(planned)), waiting), (vec![id(1)], ids(&[3])));
+    let (planned, waiting) = whole_plan(&p, &kinds, RunMode::Pending, &[]);
+    let plan = ready(planned);
+    assert_eq!(order(&plan), vec![id(3)]);
+    assert!(plan.steps.first().unwrap().fanout.is_some());
+    assert!(waiting.is_empty());
+}
+
+/// #965 review: a node of a kind not installed blocks a whole-canvas run only when it needs a
+/// run; one holding a fresh result is left alone, as a fresh action is.
+#[test]
+fn an_uninstalled_kind_with_a_fresh_result_does_not_block_a_workflow() {
+    let mut missing = relay(8, Some("kept"));
+    missing.kind = "test.not_installed".into();
+    let p = project(vec![text(1, "dawn"), relay(2, Some("a")), missing], &[(1, 2)]);
+    let (planned, _) = whole_plan(&p, &kinds(), RunMode::Workflow, &[]);
+    assert_eq!(order(&ready(planned)), vec![id(2)]);
+}
+
+/// #965 review: what waits for a batch pulls nothing into the run. 2 feeds a batch into 9, so 9
+/// waits; fresh action 6 between 2 and 9 then has no reason to run.
+#[test]
+fn nothing_joins_a_whole_canvas_run_only_for_a_node_that_waits() {
+    let mut kinds = kinds();
+    let action = NodeDescriptor {
+        id: "test.action".into(),
+        label: "Action".into(),
+        category: Category::Action,
+        ..kinds.get("test.relay").unwrap().descriptor().clone()
+    };
+    kinds.register(Box::new(Relay(action))).unwrap();
+    let action = Node { kind: "test.action".into(), ..relay(6, Some("cut")) };
+    let pair = kinds.get("test.pair").unwrap().descriptor().instantiate(id(9), &BTreeMap::new()).unwrap();
+    let p = wired(
+        vec![text(1, "dawn"), relay(2, None), action, batch(5, "b", "cross"), pair],
+        &[(1, "out", 2, "in"), (2, "out", 6, "in"), (6, "out", 9, "a"), (2, "out", 5, "in"), (5, "item", 9, "b")],
+    );
+    let (planned, waiting) = whole_plan(&p, &kinds, RunMode::Pending, &[]);
+    assert_eq!(order(&ready(planned)), vec![id(2)]);
+    assert_eq!(waiting, ids(&[9]));
 }

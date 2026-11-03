@@ -86,6 +86,11 @@ pub struct Tokens {
     /// ComfyUI servers panel's job-count and new-name text field widths (#874).
     pub comfy_jobs_width: f32,
     pub comfy_name_width: f32,
+    /// The batch items review window's width (#92).
+    pub batch_review_width: f32,
+    /// The width of one result in the batch items review's Cross grid, and its height when the
+    /// results are images.
+    pub batch_review_cell: f32,
     pub search_width: f32,
     pub search_height: f32,
     pub search_button_width: f32,
@@ -121,6 +126,9 @@ pub struct Tokens {
     pub grid_dot_radius: f32,
     pub card_radius: u8,
     pub panel_radius: u8,
+    /// A floating panel's header band, title and close button included: how far a panel that
+    /// opens over another steps down so the one beneath keeps its header in view (#957).
+    pub panel_cascade: f32,
     /// Inner padding of a card.
     pub card_padding: f32,
     /// Gap between the label and the top of its card.
@@ -179,6 +187,8 @@ pub struct Tokens {
     pub viewer_width: f32,
     /// The PDF reader's thumbnail column width (#590).
     pub reader_thumb_width: f32,
+    /// The side of a connected-media thumbnail above a text card's answer (#84), in world points.
+    pub connected_thumb: f32,
     /// The sheet table (#163): its narrow checkbox and number columns, every other column but
     /// the prompt, the canvas list's height in the Sheets panel, its title field's width, and the
     /// side of a result thumbnail in the sheet's grid.
@@ -266,6 +276,8 @@ pub const DARK: Tokens = Tokens {
     field_fill_opacity: 0.10,
     comfy_jobs_width: 48.0,
     comfy_name_width: 160.0,
+    batch_review_width: 520.0,
+    batch_review_cell: 96.0,
     search_width: 420.0,
     search_height: 128.0,
     search_button_width: 130.0,
@@ -295,6 +307,7 @@ pub const DARK: Tokens = Tokens {
     grid_dot_radius: 1.0,
     card_radius: 14,
     panel_radius: 12,
+    panel_cascade: 44.0,
     card_padding: 16.0,
     label_gap: 6.0,
     label_size: 10.5,
@@ -333,6 +346,7 @@ pub const DARK: Tokens = Tokens {
     toolbar_gap: 10.0,
     viewer_width: 720.0,
     reader_thumb_width: 112.0,
+    connected_thumb: 40.0,
     sheet_index_width: 32.0,
     sheet_column_width: 120.0,
     sheet_list_height: 320.0,

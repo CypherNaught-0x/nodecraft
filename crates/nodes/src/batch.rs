@@ -162,7 +162,7 @@ fn split_mode(node: &Node) -> Result<Split, Error> {
 }
 
 fn too_many() -> Error {
-    Error::new(ErrorKind::InvalidInput, format!("a batch holds at most {MAX_ITEMS} items"))
+    Error::new(ErrorKind::InvalidInput, format!("a batch holds at most {MAX_ITEMS} items; remove some, or split them across batches"))
 }
 
 fn push(items: &mut Vec<Value>, value: Value) -> Result<(), Error> {

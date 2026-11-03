@@ -8,6 +8,7 @@ use std::sync::Mutex;
 
 mod character673;
 mod reasons655;
+mod whole965;
 
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
 
@@ -132,6 +133,11 @@ fn project() -> Project {
 type Started = Arc<Mutex<Vec<PreparedRun>>>;
 
 fn session(budgets: Budgets, with_service: bool) -> (Session, Started) {
+    session_with(project(), kinds(), budgets, with_service)
+}
+
+/// [`session`] on `project` with `kinds`, every node routed to the test provider.
+fn session_with(project: Project, kinds: nodecraft_nodes::Registry, budgets: Budgets, with_service: bool) -> (Session, Started) {
     let mut resources = Resources::default();
     resources.insert(RunCatalog::new(Catalog::from_toml(CATALOG).unwrap()).unwrap());
     resources.insert(BudgetState { budgets, spent: Spent::default() });
@@ -150,7 +156,7 @@ fn session(budgets: Budgets, with_service: bool) -> (Session, Started) {
         let log = Arc::clone(&started);
         services.register_run_host_idle(move || log.lock().unwrap().is_empty()).unwrap();
     }
-    let mut session = Session::with_registries(project(), Registry::builtins().unwrap(), kinds()).unwrap().with_resources(resources).with_services(services);
+    let mut session = Session::with_registries(project, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
     let mut routing = crate::provider_routing::ProviderRouting::new();
     let binding = routing.bind_default(Arc::new(CommandProvider)).unwrap();
     for n in session.document().canvases().get(&C).unwrap().nodes().keys() {
