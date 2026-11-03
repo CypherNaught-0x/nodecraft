@@ -775,13 +775,25 @@ impl NodeCraftApp {
         }
         app.runs = runs;
         app.option_fetch = option_fetch;
-        app.template_fetch = template_fetch::TemplateFetcher::new()
+        app.template_fetch = template_fetch::TemplateFetcher::new(template_fetch::TemplateFetcher::configured_source())
             .and_then(|mut fetcher| {
                 fetcher.bind(&mut app.session)?;
                 Ok(fetcher)
             })
             .inspect_err(|error| log::warn!("templates unavailable: {}", error.message))
             .ok();
+        // Verified templates kept from earlier updates (#954), read locally and checked again;
+        // never the network. The bundled set stays the floor whatever the cache holds.
+        let template_cache: Box<dyn nodecraft_engine::templates::disk::TemplateCacheStore> = match store.dir() {
+            Some(dir) => Box::new(nodecraft_engine::templates::disk::FileCache::new(dir)),
+            None => Box::new(nodecraft_engine::templates::disk::MemoryCache::default()),
+        };
+        let template_problems = nodecraft_engine::templates::disk::install(&mut app.session, template_cache);
+        if let Some(first) = template_problems.first() {
+            log::warn!("template cache: {}", template_problems.join("; "));
+            let told = format!("Some downloaded templates were skipped: {first}. Clear them from Techniques → Starter templates.");
+            app.notice = Some(app.notice.map_or(told.clone(), |notice| format!("{notice} {told}")));
+        }
         app.comfy_nodes = comfy_nodes;
         // The technique library every project shares (#96), beside the plugins; in memory when
         // settings aren't kept on disk.
@@ -918,6 +930,8 @@ impl NodeCraftApp {
         app.runs = runs;
         app.key_changes = Some(changed);
         app.option_fetch = option_fetch;
+        // The browser keeps downloaded templates for this page's session only.
+        nodecraft_engine::templates::disk::install(&mut app.session, Box::new(nodecraft_engine::templates::disk::MemoryCache::default()));
         app.template_fetch = template_fetch::TemplateFetcher::browser()
             .and_then(|mut fetcher| {
                 fetcher.bind(&mut app.session)?;

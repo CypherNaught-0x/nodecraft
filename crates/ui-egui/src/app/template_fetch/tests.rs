@@ -51,6 +51,7 @@ fn templates953_pointer_refresh_retrieves_only_selected_version_and_adds_it_as_o
                 observed.borrow_mut().push("archive");
                 Fetched::Archive { entry, bytes: bytes.clone() }
             }
+            other => panic!("unexpected template request {other:?}"),
         };
         Box::pin(async move { Ok(result) })
     }));
@@ -66,8 +67,8 @@ fn templates953_pointer_refresh_retrieves_only_selected_version_and_adds_it_as_o
         app,
     );
     h.run();
-    assert!(!h.get_by_label("Refresh templates").accesskit_node().is_disabled(), "{:?}", h.state().session.enabled("template.refresh", &json!({})));
-    h.get_by_label("Refresh templates").click();
+    assert!(!h.get_by_label("Update templates").accesskit_node().is_disabled(), "{:?}", h.state().session.enabled("templates.update", &json!({})));
+    h.state_mut().session.dispatch("template.refresh", &json!({})).unwrap();
     h.run();
     h.run();
     h.run();
@@ -157,6 +158,95 @@ fn templates953_catalog_stamp_and_session_identity_refresh_the_panel_cache() {
 }
 
 #[test]
+fn templates954_pointer_update_shows_status_then_clear_removes_downloads() {
+    let (entry, bytes, index) = remote();
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&asked);
+    let mut fetcher = TemplateFetcher::asynchronous(Box::new(move |request| {
+        let result = match request {
+            Request::Update { have, .. } => {
+                observed.borrow_mut().push("update");
+                assert!(!have.contains(&Identity::from(&entry)));
+                Ok(Fetched::Update(Box::new(nodecraft_engine::templates::update::Updated {
+                    index: index.clone(),
+                    signed: false,
+                    archives: vec![(entry.clone(), bytes.clone())],
+                    failed: Vec::new(),
+                    skipped: 0,
+                })))
+            }
+            Request::ClearCache => {
+                observed.borrow_mut().push("clear");
+                Ok(Fetched::ClearCache)
+            }
+            other => panic!("unexpected template request {other:?}"),
+        };
+        Box::pin(async move { result })
+    }));
+    let mut app = setup();
+    nodecraft_engine::templates::disk::install(&mut app.session, Box::new(nodecraft_engine::templates::disk::MemoryCache::default()));
+    fetcher.bind(&mut app.session).unwrap();
+    app.template_fetch = Some(fetcher);
+    let before = app.session.document().clone();
+    let mut h = Harness::builder().with_size(egui::vec2(1100., 800.)).build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            app.tick_template_fetch(ui.ctx());
+            app.show(ui);
+        },
+        app,
+    );
+    h.run();
+    h.get_by_label("Using the bundled templates. Update to get new and changed ones.");
+    assert!(h.get_by_label("Clear downloaded").accesskit_node().is_disabled(), "nothing downloaded yet");
+    h.get_by_label("Update templates").click();
+    h.run();
+    h.run();
+    h.run();
+    assert_eq!(&*asked.borrow(), &["update"], "notice={:?}", h.state().notice);
+    assert!(h.get_all_by_label("1 template was downloaded and verified.").next().is_some(), "{:?}", h.state().notice);
+    let status = h.state_mut().session.dispatch("templates.status", &json!({})).unwrap();
+    assert_eq!(status["pending"], json!(false));
+    assert_eq!(status["cache"]["files"], json!(1));
+    assert_eq!(h.state().session.document(), &before, "updating never edits the project");
+    assert_eq!(h.get_all_by_label("Add template").count(), 2);
+    h.get_by_label("Clear downloaded").click();
+    h.run();
+    h.run();
+    h.run();
+    assert_eq!(&*asked.borrow(), &["update", "clear"]);
+    assert_eq!(nodecraft_engine::templates::catalog::cached(&h.state().session), 0);
+    assert_eq!(h.get_all_by_label("Add template").count(), 1, "bundled stays");
+}
+#[test]
+fn templates954_failed_update_is_shown_and_cache_problems_are_reported() {
+    let mut fetcher =
+        TemplateFetcher::asynchronous(Box::new(|_| Box::pin(async { Err(Error::new(ErrorKind::Timeout, "The template repository didn't answer in time")) })));
+    let mut app = setup();
+    let cache = nodecraft_engine::templates::disk::MemoryCache::default();
+    use nodecraft_engine::templates::disk::TemplateCacheStore;
+    cache.write_archive(&"0".repeat(64), b"{broken", b"not a zip").unwrap();
+    let problems = nodecraft_engine::templates::disk::install(&mut app.session, Box::new(cache));
+    assert_eq!(problems.len(), 1);
+    fetcher.bind(&mut app.session).unwrap();
+    app.template_fetch = Some(fetcher);
+    let mut h = Harness::builder().with_size(egui::vec2(1100., 800.)).build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            app.tick_template_fetch(ui.ctx());
+            app.show(ui);
+        },
+        app,
+    );
+    h.run();
+    assert!(h.query_by_label_contains("Template cache:").is_some());
+    h.get_by_label("Update templates").click();
+    h.run();
+    h.run();
+    h.run();
+    assert!(h.get_all_by_label("Templates were not updated: The template repository didn't answer in time").next().is_some(), "{:?}", h.state().notice);
+    h.get_all_by_label("Add template").next().unwrap();
+}
+
+#[test]
 #[ignore = "native GPU evidence; TEMPLATE953_RENDER_DIR"]
 fn templates953_library_render() {
     let dir = std::path::PathBuf::from(std::env::var_os("TEMPLATE953_RENDER_DIR").unwrap());
@@ -172,7 +262,7 @@ fn templates953_library_render() {
         let mut h = Harness::builder().wgpu().with_size(egui::vec2(1100., 800.)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
         crate::theme::apply(&h.ctx, theme);
         h.run();
-        h.get_by_label("Refresh templates");
+        h.get_by_label("Update templates");
         h.get_by_label("Add template");
         h.get_by_label("Retrieve template");
         h.render().unwrap().save(dir.join(format!("{theme:?}-after.png"))).unwrap();

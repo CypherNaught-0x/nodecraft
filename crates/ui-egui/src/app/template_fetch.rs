@@ -1,7 +1,10 @@
 //! One bounded template request per window; results never import into a project automatically.
 use nodecraft_engine::{
     Session,
-    templates::fetch::{self, Fetched, Request, SERVICE},
+    templates::{
+        fetch::{self, Fetched, Request, SERVICE, Source},
+        update,
+    },
 };
 use nodecraft_providers::http::Http;
 use nodecraft_types::{Error, ErrorKind};
@@ -29,24 +32,49 @@ enum Worker {
     #[cfg(any(test, target_arch = "wasm32"))]
     Async { fetch: AsyncFetch, pending: Option<(u64, Arc<()>, Future)> },
 }
+/// What the request in flight is, for its notice and `templates.status`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Flight {
+    Single,
+    Update,
+    Clear,
+}
 pub(super) struct TemplateFetcher {
     asked: Rc<RefCell<Asked>>,
     worker: Worker,
     owner: Option<Arc<()>>,
+    source: Source,
+    flight: Option<Flight>,
 }
 impl TemplateFetcher {
+    /// The desktop fetcher: the same transport as the update check (#123), redirects refused.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn new() -> Result<Self, Error> {
+    pub(super) fn new(source: Source) -> Result<Self, Error> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|_| Error::new(ErrorKind::Unsupported, "The template worker could not start"))?;
         let http: Arc<dyn Http> =
             Arc::new(nodecraft_providers::http::ReqwestHttp::new().map_err(|_| Error::new(ErrorKind::Unsupported, "The template HTTP client is unavailable"))?);
-        Self::spawn(Box::new(move |request| runtime.block_on(fetch::fetch(http.as_ref(), request))))
+        let from = source.clone();
+        Self::spawn(source, Box::new(move |request| runtime.block_on(fetch::fetch_from(http.as_ref(), &from, request))))
+    }
+    /// The configured repository: the official one, or in debug builds a loopback fixture server
+    /// named by `NODECRAFT_TEMPLATES_FEED` (`http://127.0.0.1:<port>/`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn configured_source() -> Source {
+        let feed = std::env::var("NODECRAFT_TEMPLATES_FEED").ok().filter(|_| cfg!(debug_assertions));
+        match feed.map(|feed| Source::loopback(&feed)) {
+            Some(Ok(source)) => source,
+            Some(Err(error)) => {
+                log::warn!("NODECRAFT_TEMPLATES_FEED ignored: {}", error.message);
+                Source::official()
+            }
+            None => Source::official(),
+        }
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn spawn(mut fetch: Box<dyn FnMut(Request) -> Result<Fetched, Error> + Send>) -> Result<Self, Error> {
+    fn spawn(source: Source, mut fetch: Box<dyn FnMut(Request) -> Result<Fetched, Error> + Send>) -> Result<Self, Error> {
         let (asks, inbox) = sync_channel::<Ask>(1);
         let (outbox, done) = sync_channel::<Done>(1);
         std::thread::Builder::new()
@@ -61,7 +89,7 @@ impl TemplateFetcher {
                 }
             })
             .map_err(|_| Error::new(ErrorKind::Unsupported, "The template worker could not start"))?;
-        Ok(Self { asked: Rc::default(), worker: Worker::Thread { asks, done }, owner: None })
+        Ok(Self { asked: Rc::default(), worker: Worker::Thread { asks, done }, owner: None, source, flight: None })
     }
     #[cfg(target_arch = "wasm32")]
     pub(super) fn browser() -> Result<Self, Error> {
@@ -74,7 +102,7 @@ impl TemplateFetcher {
     }
     #[cfg(any(test, target_arch = "wasm32"))]
     fn asynchronous(fetch: AsyncFetch) -> Self {
-        Self { asked: Rc::default(), worker: Worker::Async { fetch, pending: None }, owner: None }
+        Self { asked: Rc::default(), worker: Worker::Async { fetch, pending: None }, owner: None, source: Source::official(), flight: None }
     }
     pub(super) fn bind(&mut self, session: &mut Session) -> Result<(), Error> {
         let owner = session.view_identity();
@@ -95,10 +123,11 @@ impl TemplateFetcher {
             asked.busy = true;
             Ok(json!({"pending":id}))
         })?;
+        update::configure(session, &self.source);
         self.owner = Some(owner);
         Ok(())
     }
-    fn waiting(&self) -> bool {
+    pub(super) fn waiting(&self) -> bool {
         self.asked.borrow().busy
     }
     pub(super) fn tick(&mut self, session: &mut Session, _ctx: &egui::Context) -> Option<String> {
@@ -111,6 +140,15 @@ impl TemplateFetcher {
                 self.asked.borrow_mut().busy = false;
                 return Some("The template request was discarded after the project Session changed".into());
             }
+            let flight = match &request {
+                Request::Update { .. } => Flight::Update,
+                Request::ClearCache => Flight::Clear,
+                Request::Index | Request::Archive { .. } => Flight::Single,
+            };
+            if flight == Flight::Update {
+                update::started(session);
+            }
+            self.flight = Some(flight);
             match &mut self.worker {
                 #[cfg(not(target_arch = "wasm32"))]
                 Worker::Thread { asks, .. } => {
@@ -154,13 +192,22 @@ impl TemplateFetcher {
             }
         };
         self.asked.borrow_mut().busy = false;
+        let flight = self.flight.take();
         let (_, owner, result) = done;
         if !Arc::ptr_eq(&owner, &session.view_identity()) {
             return Some("The template request was discarded after the project Session changed".into());
         }
-        Some(match result.and_then(|fetched| fetch::finish(session, fetched)) {
-            Ok(()) => "Templates updated. Retrieved versions are available for this Session; imported projects keep their assets when saved.".into(),
-            Err(error) => format!("Templates were not updated: {}", error.message),
+        let settled = fetch::settle(session, result);
+        Some(match (flight, settled) {
+            (Some(Flight::Update), settled) => match update::last(session) {
+                Some(outcome) => update::notice(&outcome),
+                None => settled.err().map_or_else(|| "Templates are up to date.".to_owned(), |error| format!("Templates were not updated: {}", error.message)),
+            },
+            (Some(Flight::Clear), Ok(())) => "Downloaded templates were removed. Bundled templates and templates in your projects stay.".into(),
+            (_, Ok(())) => {
+                "Templates updated. Retrieved versions are verified and kept for later sessions; imported projects keep their assets when saved.".into()
+            }
+            (_, Err(error)) => format!("Templates were not updated: {}", error.message),
         })
     }
 }
