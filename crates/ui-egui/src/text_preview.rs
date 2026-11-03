@@ -468,7 +468,9 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, rows: Option<&[Row]>, t: &Toke
     egui::Frame::NONE.fill(t.prompt_fill).inner_margin(t.control_gap).corner_radius(t.card_radius / 2).show(&mut child, |ui| {
         if let Some(rows) = rows {
             let row_height = t.body_size * 4.0 + ui.spacing().interact_size.y + t.control_gap * 4.0;
-            egui::ScrollArea::vertical().id_salt("local_rows").max_height(ui.available_height()).auto_shrink([false, false]).show_rows(
+            // Under the rows, so the card layer's hit test says when the pointer is over them.
+            let wheel = ui.interact(ui.available_rect_before_wrap(), ui.id().with("local_rows_wheel"), egui::Sense::hover());
+            let out = egui::ScrollArea::vertical().id_salt("local_rows").max_height(ui.available_height()).auto_shrink([false, false]).show_rows(
                 ui,
                 row_height,
                 rows.len(),
@@ -493,6 +495,8 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, rows: Option<&[Row]>, t: &Toke
                     }
                 },
             );
+            // Long previews scroll first; the canvas pans by what is left (#413).
+            crate::scroll_chain::take(ui, wheel.contains_pointer(), &out, [false, true]);
         } else {
             ui.label("Text preview unavailable; reduce the number of connections.");
         }
