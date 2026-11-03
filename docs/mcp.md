@@ -213,6 +213,17 @@ the default). As with option lists, only a host with a fetch
 service reads the list: the bridge to the desktop app does, the standalone CLI reports it
 unavailable.
 
+**Server models (#970):** `comfy.models.list {canvas?, nodes?}` groups what the default server's
+last node list reports (checkpoints, LoRAs, VAEs, text encoders, diffusion models, upscalers).
+Each entry carries the catalog model whose built-in workflow runs it, with a `note` when that fit
+is a guess, or says why none can. Only Generate image cards take a server checkpoint. The result also lists the document's imported workflow cards and, for the
+named cards, whether each card's checkpoint is on the server. `comfy.models.preview {canvas,
+nodes, group, name}` then `comfy.models.use {…, expected_revision, preview_binding}` puts a
+listed checkpoint on cards in one undo step. `comfy.models.add {canvas, id, pos, group, name}`
+places a new card for a checkpoint, and `comfy.models.add {canvas, id, pos, workflow: {canvas,
+id}}` places a copy of an imported workflow card. A name the server doesn't list is refused,
+never replaced. Nothing runs or costs anything.
+
 **Workflow fields:** `comfy.workflow.mapping {canvas,id}` lists the available fields,
 current selection and an opaque `binding`. Read this card's server nodes first. The default
 catalog and the last checked named server's catalog are kept; checking another named server

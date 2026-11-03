@@ -32,6 +32,10 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 ComfyUI workflow cards expose prompts and common generation settings on import. Their
 **Edit workflow fields…** dialog saves custom field visibility, names and order without
 reimporting, including retained image previews for compatible core workflows (#947).
+The model picker's ComfyUI group lists the default server's own models by type once the server
+is read. Checkpoints run through the built-in FLUX or SDXL workflow. Models with no built-in
+workflow are shown as unavailable, with the reason, and imported workflow cards are listed by
+title (#970).
 
 Runway Gen-4.5 text/first-frame video and Gen-4 Turbo first-frame video are available through
 priced catalog models and the direct task adapter (#25); paid live verification remains opt-in.

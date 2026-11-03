@@ -123,6 +123,22 @@ width stays fixed and long rows truncate. Use default clears the stored override
 same undoable parameter edit, including when the old value is no longer listed. Unknown lists
 keep the editable text control and Refresh guidance. Reset is disabled without a stored override.
 
+The model picker (**Change model…**) groups catalog models by provider. After the catalog's
+ComfyUI cards it shows a section headed **From ComfyUI server "name"** (#970). That section
+lists what the default server's last read reports, by type: checkpoints, LoRAs, VAEs, text
+encoders, diffusion models and upscalers. Only Generate image cards show it. The heading says the list comes
+from the server, not the catalog, and **Refresh server models** reads the server again. The open
+picker rebuilds the section, keeping the search text, when a read lands or the default server
+changes; a list that can't be read says why in the heading row, in the `danger` colour. Entries
+the app can't run stay in the list, disabled, with the reason on the row. A runnable entry whose
+fit is a guess shows its warning instead of the workflow it runs through. The arrow keys and
+Enter reach server rows as well as catalog models. A
+checkpoint on the card that the server doesn't list shows as **Missing on the server**, in the
+`stale` token colour, and is never swapped for another. Choosing a checkpoint goes through the
+usual review step, and the review names the checkpoint. **Imported ComfyUI workflows** lists the
+document's image workflow cards by title. Choosing one places a copy beside the card, `card_width +
+layout_gap` to its right, and leaves the card itself unchanged.
+
 Router connection menus keep their upstream output shape: a list stays a list through a chain
 of Routers, and several incoming values offer only consumers that accept a collection. A Router
 without a resolved source explains what to connect before offering downstream node kinds. Model
