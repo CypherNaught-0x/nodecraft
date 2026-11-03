@@ -248,9 +248,7 @@ impl KeysPanel {
         self.tick(ctx.input(|i| i.time));
         self.load(settings);
         let mut open = self.open;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("API keys").id(egui::Id::new("nodecraft.keys")).open(&mut open).collapsible(false).resizable(false).frame(frame).show(ctx, |ui| {
+        crate::floating::panel(ctx, "API keys", egui::Id::new("nodecraft.keys"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
             ui.label(egui::RichText::new(STORED_WHERE).color(t.text_muted));
             ui.add_space(t.control_gap);
             let rows = self.rows.clone();
