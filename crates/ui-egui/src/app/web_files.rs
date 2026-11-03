@@ -343,7 +343,7 @@ impl NodeCraftApp {
     #[cfg(target_arch = "wasm32")]
     pub(super) fn web_file_button(&mut self, ui: &egui::Ui, t: &crate::theme::Tokens) {
         let mut chosen = None;
-        egui::Area::new(egui::Id::new("nodecraft.web_files.menu"))
+        egui::Area::new(egui::Id::new(super::floating_bounds::FILE_CONTROL_ID))
             .order(egui::Order::Foreground)
             .fixed_pos(ui.max_rect().min + egui::Vec2::new(t.card_padding, t.card_padding * 4.0))
             .show(ui.ctx(), |ui| {

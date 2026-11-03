@@ -6,6 +6,7 @@ use std::{
     ops::Bound::{Excluded, Unbounded},
 };
 pub const FRAME_NODES: usize = 256;
+pub const QUERY_CHARS: usize = 128;
 pub const PALETTE: [(&str, &str); 8] = [
     ("red", "Red"),
     ("orange", "Orange"),
@@ -22,6 +23,11 @@ pub struct TagFilter {
     pub tags: BTreeSet<TagId>,
     pub untagged: bool,
     pub presentation: Vec<TagId>,
+    pub query_draft: String,
+    query: String,
+    query_cursor: Option<usize>,
+    query_results: Vec<TagId>,
+    counts: Counts,
     pub results: Vec<NodeId>,
     pub current: Option<NodeId>,
     pub frame_request: Option<NodeId>,
@@ -38,7 +44,80 @@ pub struct TagFilter {
     cursor: Option<NodeId>,
     pending: Option<bool>,
 }
+#[derive(Default)]
+struct Counts {
+    pending: bool,
+    cursor: Option<NodeId>,
+    values: BTreeMap<Option<TagId>, usize>,
+}
+
 impl TagFilter {
+    pub fn update_query(&mut self) {
+        let query: String = self.query_draft.trim().chars().take(QUERY_CHARS).flat_map(char::to_lowercase).collect();
+        if self.query != query {
+            self.query = query;
+            self.restart_query();
+        }
+    }
+
+    fn restart_query(&mut self) {
+        self.query_cursor = (!self.query.is_empty()).then_some(0);
+        self.query_results.clear();
+    }
+
+    pub fn query_pending(&self) -> bool {
+        self.query_cursor.is_some()
+    }
+
+    pub fn visible_tags(&self) -> &[TagId] {
+        if self.query.is_empty() {
+            &self.presentation
+        } else if self.query_pending() {
+            &[]
+        } else {
+            &self.query_results
+        }
+    }
+
+    pub fn count(&self, tag: Option<TagId>) -> Option<usize> {
+        (!self.counts.pending).then(|| self.counts.values.get(&tag).copied().unwrap_or(0))
+    }
+
+    pub fn counts_pending(&self) -> bool {
+        self.counts.pending
+    }
+
+    pub fn current_index(&self) -> Option<usize> {
+        self.current.and_then(|id| self.results.binary_search(&id).ok())
+    }
+
+    fn tick_query(&mut self, canvas: &nodecraft_graph::Canvas) {
+        if self.indexing {
+            return;
+        }
+        let Some(start) = self.query_cursor else {
+            return;
+        };
+        let end = start.saturating_add(FRAME_NODES).min(self.presentation.len());
+        for id in self.presentation.get(start..end).unwrap_or_default() {
+            if canvas.tags().get(id).is_some_and(|tag| label(&tag.title).to_lowercase().contains(&self.query)) {
+                self.query_results.push(*id);
+            }
+        }
+        self.query_cursor = (end < self.presentation.len()).then_some(end);
+    }
+
+    fn tick_counts(&mut self, canvas: &nodecraft_graph::Canvas) {
+        let start = self.counts.cursor.map_or(Unbounded, Excluded);
+        let mut iter = canvas.nodes().range((start, Unbounded));
+        for (id, node) in iter.by_ref().take(FRAME_NODES) {
+            self.counts.cursor = Some(*id);
+            self.last_work += 1;
+            *self.counts.values.entry(node.tag).or_default() += 1;
+        }
+        self.counts.pending = iter.next().is_some();
+    }
+
     pub fn active(&self) -> bool {
         !self.tags.is_empty() || self.untagged
     }
@@ -67,7 +146,12 @@ impl TagFilter {
             if self.stamp.is_some_and(|s| s.0 != p.id() || s.1 != c) {
                 self.tags.clear();
                 self.untagged = false;
+                self.presentation.clear();
+                self.query_draft.clear();
+                self.query.clear();
             }
+            self.restart_query();
+            self.counts = Counts { pending: true, ..Counts::default() };
             if let Some(canvas) = p.canvases().get(&c) {
                 self.tags.retain(|id| canvas.tags().contains_key(id));
             } else {
@@ -105,7 +189,7 @@ impl TagFilter {
         if len == 0 {
             return;
         }
-        let index = self.current.and_then(|id| self.results.binary_search(&id).ok());
+        let index = self.current_index();
         let next = match (index, previous) {
             (Some(0), true) | (None, true) => len - 1,
             (Some(i), true) => i - 1,
@@ -153,13 +237,21 @@ impl TagFilter {
                 self.indexing = false;
             }
         }
-        if !self.scanning {
-            return;
-        }
         let Some(canvas) = p.canvases().get(&c) else {
             self.scanning = false;
+            self.counts.pending = false;
+            self.query_cursor = None;
             return;
         };
+        if self.open {
+            self.tick_query(canvas);
+        }
+        if !self.scanning {
+            if self.open && self.counts.pending {
+                self.tick_counts(canvas);
+            }
+            return;
+        }
         let start = self.cursor.map_or(Unbounded, Excluded);
         let mut iter = canvas.nodes().range((start, Unbounded)).peekable();
         for _ in 0..FRAME_NODES {

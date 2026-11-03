@@ -18,6 +18,8 @@ pub const PANEL_ORDER: egui::Order = egui::Order::Middle;
 /// Where a panel first opens, relative to the shell's [`Bounds::home`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Home {
+    /// Its top-left corner below the application's left-hand controls.
+    LeftTop,
     /// Its top-right corner at `home`: the panels the application row opens.
     RightTop,
     /// Its top edge centred in the panel area at `home`'s height: viewers and reviews.
@@ -111,10 +113,31 @@ impl<'open> Panel<'open> {
         self
     }
 
+    pub fn max_size(mut self, size: Vec2) -> Self {
+        self.window = self.window.max_size(size);
+        self
+    }
+
+    /// Uses a custom header while keeping the shared header drag, clamp and stacking behavior.
+    /// The returned handle is the part of the header reserved for dragging.
+    pub fn show_with_header<H, R>(
+        self,
+        ctx: &Context,
+        add_header: impl FnOnce(&mut egui::Ui) -> (Rect, H),
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> Option<egui::InnerResponse<Option<(H, R)>>> {
+        let id = self.id;
+        self.window.title_bar(false).show(ctx, |ui| {
+            let (handle, header) = add_header(ui);
+            header_drag(ui, id, Some(handle));
+            (header, add_contents(ui))
+        })
+    }
+
     pub fn show<R>(self, ctx: &Context, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> Option<egui::InnerResponse<Option<R>>> {
         let id = self.id;
         self.window.show(ctx, |ui| {
-            header_drag(ui, id);
+            header_drag(ui, id, None);
             add_contents(ui)
         })
     }
@@ -122,9 +145,11 @@ impl<'open> Panel<'open> {
 
 /// The header's move handle: the title strip above the content, left of the close button.
 /// Only this senses a drag, so pressing or dragging inside the body never moves the panel.
-fn header_drag(ui: &mut egui::Ui, id: Id) {
-    let Some(area) = ui.ctx().memory(|m| m.area_rect(id)) else { return };
-    let top = ui.max_rect().top();
+fn header_drag(ui: &mut egui::Ui, id: Id, custom: Option<Rect>) {
+    let Some(area) = ui.ctx().memory(|m| m.area_rect(id)) else {
+        return;
+    };
+    let top = custom.map_or(ui.max_rect().top(), |handle| handle.bottom());
     let height = top - area.top();
     if !(height.is_finite() && height > 0.0 && area.is_finite()) {
         return;
@@ -132,7 +157,7 @@ fn header_drag(ui: &mut egui::Ui, id: Id) {
     // Measured for the cascade: everything above the content is title and close button.
     ui.ctx().data_mut(|data| data.insert_temp(header_height_id(id), height));
     // The close button sits at the right end of the title row, within one header height.
-    let rect = Rect::from_min_max(area.min, Pos2::new((area.right() - height).max(area.left()), top));
+    let rect = custom.unwrap_or_else(|| Rect::from_min_max(area.min, Pos2::new((area.right() - height).max(area.left()), top)));
     let response = ui.interact(rect, header_id(id), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
     let ctx = ui.ctx().clone();
     let held = ctx.data(|data| data.get_temp::<Drag>(moved_id(id)));
@@ -172,7 +197,10 @@ struct Drag {
 
 /// A floating panel's window. Every panel behaves the same: see the module documentation.
 pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, home: Home, t: &Tokens) -> Panel<'open> {
-    let bounds = bounds(ctx, t);
+    panel_with_bounds(ctx, title, id, home, t, bounds(ctx, t))
+}
+
+pub fn panel_with_bounds<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, home: Home, t: &Tokens, bounds: Bounds) -> Panel<'open> {
     let pass = ctx.cumulative_pass_nr();
     let mut shown: Shown = ctx.data(|data| data.get_temp::<Shown>(shown_id())).unwrap_or_default();
     // A panel drawn in this or the previous pass is open; anything older has closed.
@@ -222,10 +250,10 @@ pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, h
             let from = remembered.and_then(|state| state.pivot_pos).filter(|pos| pos.is_finite());
             ctx.data_mut(|data| data.insert_temp(placing_id(id), Placing(from)));
             let estimate = Vec2::new(t.search_width, t.panel_cascade);
-            return Panel { window: window.default_pos(from.unwrap_or_else(|| home_corner(home, &bounds, estimate))), id };
+            return Panel { window: window.default_pos(from.unwrap_or_else(|| home_corner(home, &bounds, estimate, t))), id };
         }
         (true, _, Some(_)) => remembered.map(|state| state.rect().min),
-        (false, Some(Placing(from)), Some(size)) => Some(from.unwrap_or_else(|| home_corner(home, &bounds, size))),
+        (false, Some(Placing(from)), Some(size)) => Some(from.unwrap_or_else(|| home_corner(home, &bounds, size, t))),
         (false, _, _) => None,
     };
     let pos = match (start, size) {
@@ -245,8 +273,9 @@ pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, h
 }
 
 /// A panel's top-left corner at its home, for a panel of `size`.
-fn home_corner(home: Home, bounds: &Bounds, size: Vec2) -> Pos2 {
+fn home_corner(home: Home, bounds: &Bounds, size: Vec2, t: &Tokens) -> Pos2 {
     match home {
+        Home::LeftTop => Pos2::new(bounds.area.left() + t.navigation_margin, bounds.home.y),
         Home::RightTop => Pos2::new(bounds.home.x - size.x, bounds.home.y),
         Home::CenterTop => Pos2::new(bounds.area.center().x - size.x / 2.0, bounds.home.y),
     }
