@@ -164,13 +164,9 @@ impl NodeCraftApp {
             _ => format!("PDF, page {} of {pages}", reader.page.saturating_add(1)),
         };
         let top = t.navigation_margin + t.navigation_toolbar_height + t.navigation_gap;
-        egui::Window::new(title)
-            .id(egui::Id::new("pdf_reader"))
+        // Opens centred below the toolbar, tall enough to read a page and within the screen.
+        crate::floating::panel(ctx, title, egui::Id::new("pdf_reader"), crate::floating::Home::CenterTop, &t)
             .open(&mut open)
-            .collapsible(false)
-            // Opens centred below the toolbar, tall enough to read a page and within the screen.
-            .pivot(egui::Align2::CENTER_TOP)
-            .default_pos(ctx.content_rect().center_top() + Vec2::new(0.0, top))
             .default_width(t.viewer_width)
             .default_height(t.viewer_width.min(ctx.content_rect().height() - top - t.navigation_margin * 4.0).max(t.reader_thumb_width))
             .show(ctx, |ui| {
