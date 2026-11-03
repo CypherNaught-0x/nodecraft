@@ -58,8 +58,11 @@ the inputs, settings and connections beside the work instead of hiding them in a
   and grants `.ncraft-plugin` packages; a granted text-action package adds its actions as cards.
 - **Compose and finish**: a Layer Editor combines wired images, text and shapes; Mask/Inpaint
   paints masks and prepares inpaint/outpaint cards. Image tools add wired action cards in one
-  undo step. Elements keep named image references reusable across projects. A Timeline arranges
-  picture, sound and captions; desktop video playback and rendering need your own FFmpeg.
+  undo step. Elements keep named image references reusable across projects.
+- **Work with video and sound**: scrub video cards, play sound cards and render a Timeline with
+  picture tracks, fades, crossfades, mixed audio and captions. The Timeline can export its edit
+  and source media as FCPXML in a ZIP. Native playback and rendering use installed
+  [FFmpeg and ffprobe](docs/install.md#optional-ffmpeg-tools).
 - **Present and share**: turn a selection into a Deck, edit its slides and export PDF or PNG.
   Live sessions carry edits, images, discussions, pointers and selections between desktop and
   browser clients through a relay; internet deployment needs the transport setup described in
@@ -81,6 +84,9 @@ the inputs, settings and connections beside the work instead of hiding them in a
 - The first signed release (#100) is still open.
   See [HTTP serve](docs/serve.md) for running Techniques through `nodecraft-cli serve` with signed
   completion webhooks.
+- Video cards play silently. Audio plays on sound cards and is included in Timeline renders.
+  Playback and FFmpeg-backed renders run on desktop. Import checks for exported timelines in
+  Final Cut Pro and DaVinci Resolve are tracked in [#643](../../issues/643).
 - Presented-frame P1–P3 passed on one 120 Hz Apple M3 Pro/Metal setup (#65, #634), not a 60 Hz
   display or Windows/Linux hardware; the older headless CPU timings are commit-bound historical
   results, not current universal frame guarantees. See [`docs/performance.md`](docs/performance.md).
@@ -275,7 +281,7 @@ and checklists for adding commands, node kinds and providers.
 | M4 | Actions, live recompute, custom shaders | done: local actions, result reuse, shader cards and text-action plugins work |
 | M5 | Batch, Techniques, CLI, first release | partial; reuse surfaces shipped in part, first signed release open |
 | M6 | Layer and mask editors, Elements | partial |
-| M7 | Video and audio playback, Timeline, providers | feature work complete and close-out open |
+| M7 | Video and audio playback, Timeline, providers | done. Four clips with fades and sound render through the Timeline |
 | M8 | 3D viewer, capture, PDF, providers | partial |
 | M9 | Agent, MCP, control, serve | desktop agent and command-line automation available with follow-up work open |
 | M10 | Browser, live collaboration and decks | feature work complete and close-out open |

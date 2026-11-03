@@ -17,7 +17,7 @@ M1 and Future providers each have one declined issue (#135 and #28).
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done | 14/14 |
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial with the Batch node complete (#92) and signed release pending (#100) | 28/34 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial with provider-trained references (#180), SOUL 2 scene inputs (#1043) and close-out (#377) open | 11/14 |
-| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 feature work complete with close-out (#378) open | 30/31 |
+| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 31/31 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with close-out (#380) open | 7/8 |
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 feature work complete with close-out (#381) open | 16/17 |
@@ -188,6 +188,18 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
 - **Topaz**: desktop projects and the native CLI can enhance or upscale one image with
   Precision Standard V2 through fal (#37). Integer 1×–4× scaling stays within one 0.08 USD
   output block. Browser sessions refuse before payment; see [`docs/providers.md`](docs/providers.md).
+- **Video and audio on desktop**: installed FFmpeg and ffprobe power video card playback and
+  scrubbing (#105), waveforms and sound playback (#106, #666), video actions (#108) and Timeline
+  renders (#109). The Timeline joins clips with fades and crossfades, mixes audio tracks, overlays
+  picture tracks and captions, and gives each picture clip placement, crop, opacity and speed
+  controls (#574, #576, #577). It warns about trims that no longer fit regenerated sources and
+  records the source versions used in a render (#578). It exports FCPXML with source media and a
+  SubRip companion when captions show (#166, #649). See [setup](docs/install.md#optional-ffmpeg-tools)
+  and [rendering and playback](docs/media-video.md).
+- **Video and audio generation**: Generate video supports model-specific text, frame, reference
+  and speech inputs (#559, #607). Generate audio runs text-to-audio and audio-to-audio models (#672)
+  and plays the result. ComfyUI workflows can return video and audio (#110). Model support and
+  credentials vary by provider and host. See [provider capabilities](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio or, with `--listen`, Streamable HTTP on
@@ -241,29 +253,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   asynchronously and added as nodes (#319).
   The browser can paste PNG images (#633).
 
-- **Video needs your own FFmpeg.** The desktop app plays videos on cards (#105) with the ffmpeg
-  and ffprobe discovered on `PATH`, set under `[media]` in settings, or overridden with
-  `NODECRAFT_FFMPEG` / `NODECRAFT_FFPROBE` (#411); it does not bundle them.
-  Sound cards show a waveform and play through the default output device (#106), including
-  while the window is minimized (#666); there
-  is no sound while a video plays on its card yet. Video actions (#108) trim, change speed, stitch, replace
-  sound, extract frames, reverse, grade, key, watermark, split and extract sound.
-  Video generation (#559) has text, frame, reference and speech-to-video modes declared per
-  model; fal's Wan 2.2 maps text, first/last-frame and speech to video (#607), and no adapter
-  maps reference-to-video yet. Gemini Omni Flash video (#17) supports text, first/last-frame and
-  reference-image inputs, and Veo 3.1 runs on Google Cloud with a service account (#742). A Generate
-  audio card (#672) runs the catalog's text-to-audio and audio-to-audio models, such as fal's
-  Kokoro speech, and plays its result.
-  The Timeline (#109) renders clips with fades and cross-fades on a main track, with picture
-  tracks over it and sound tracks mixed under it (#576), and captions over the picture (#574);
-  each picture clip can be placed, sized, cropped, turned and faded in the frame, clips can play
-  faster or slower, and the render has a quality (#577). Its filter graph is staged in a script
-  and input paths stay short, keeping full timelines within Windows' command limit (#642).
-  Export for another editor carries its captions as FCPXML titles and a SubRip companion,
-  with style and placement differences listed in the report (#649).
-  Regenerated sources keep stored trims;
-  the editor warns when they no longer fit, records each rendered clip's source version and
-  reuses canvas stale badges for unrendered edits (#578).
+- **Desktop media limits.** Card video playback is silent. Sound cards play separately through the
+  default output device. Playback and FFmpeg-backed renders run on desktop. Timeline
+  interchange is available on desktop, with Final Cut Pro and DaVinci Resolve import checks and
+  background export improvements tracked separately (#643).
 
 - **Live sharing works from the desktop app and the browser.** Sessions are shared through `nodecraft-cli relay`
   (#119), with every edit merged and images passed along. Share links let someone view, comment
@@ -404,3 +397,7 @@ The near-term order follows the remaining open issues, not an already-finished w
   before the run), and "Review items…" on a fanned card steps through each item's result, with a
   rows × columns grid for a Cross of two batches that marks failed and cancelled cells. Batches
   inside a technique's own graph are not yet supported (#93). M5 25/33.
+
+- **2026-11-03** — M7 close-out (#378). The Timeline run host rendered four one-second picture
+  clips with audio, clip fades and three crossfades into one WebM. Desktop playback, rendering,
+  generation and interchange coverage are recorded in [the M7 checklist](docs/plan.md#7-roadmap).
