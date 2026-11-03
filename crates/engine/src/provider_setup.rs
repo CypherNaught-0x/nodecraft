@@ -75,6 +75,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "gemini-video" => Some("gemini"),
         "google-veo" | "google-tts" | "google-gemini-images" => Some(nodecraft_providers::google_cloud::ACCOUNT),
         "fal" => Some("fal"),
+        "magnific" => Some("magnific"),
         "tripo" => Some("tripo"),
         "meshy" => Some("meshy"),
         "higgsfield" => Some("higgsfield"),
@@ -320,6 +321,12 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         "google-tts" => Arc::new(google_tts(env)?),
         "google-gemini-images" => Arc::new(google_gemini_images(env)?),
         "fal" => Arc::new(nodecraft_providers::fal::Fal::new(needs_key(env.keys, "fal")?, env.http.clone())),
+        "magnific" => {
+            if cfg!(target_arch = "wasm32") {
+                return Err(Readiness::NotSetUp("Magnific Precision V2 needs the desktop or CLI host and native streamed project storage".into()));
+            }
+            Arc::new(nodecraft_providers::magnific::Magnific::new(needs_key(env.keys, "magnific")?, env.http.clone()))
+        }
         "tripo" => Arc::new(nodecraft_providers::tripo::Tripo::new(needs_key(env.keys, "tripo")?, env.http.clone())),
         "meshy" => Arc::new(nodecraft_providers::meshy::Meshy::new(needs_key(env.keys, "meshy")?, env.http.clone())),
         "higgsfield" => Arc::new(higgsfield(env)?),

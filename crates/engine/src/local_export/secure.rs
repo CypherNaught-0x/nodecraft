@@ -59,9 +59,35 @@ fn relative(root: &File, remainder: &Path) -> Result<File, Error> {
     Ok(File::from(current))
 }
 
+/// Unwinding a reader/worker must release its private output link as well as its file.
+struct Staging<'a> {
+    parent: &'a File,
+    name: &'a str,
+    identity: fs::Stat,
+    done: bool,
+}
+impl Staging<'_> {
+    fn clean(&mut self) -> Result<(), Error> {
+        let current = fs::statat(self.parent, self.name, AtFlags::SYMLINK_NOFOLLOW).map_err(error)?;
+        if current.st_dev != self.identity.st_dev || current.st_ino != self.identity.st_ino {
+            return Err(Error::new(ErrorKind::Conflict, "the private export staging name changed"));
+        }
+        fs::unlinkat(self.parent, self.name, AtFlags::empty()).map_err(error)?;
+        self.done = true;
+        Ok(())
+    }
+}
+impl Drop for Staging<'_> {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = self.clean();
+        }
+    }
+}
+
 /// Pinned destination; compare its inode to the folder reachable from the granted root
 /// immediately before each publication. A replaced component is never traversed as a link.
-pub(super) struct Destination<'a> {
+pub(crate) struct Destination<'a> {
     root: &'a File,
     root_path: &'a Path,
     remainder: &'a Path,
@@ -69,6 +95,43 @@ pub(super) struct Destination<'a> {
 }
 
 impl<'a> Destination<'a> {
+    /// New workflow saves publish complete files only, with no replacement fallback. Both
+    /// the data and manifest use this same pinned-parent authority, never a pathname writer.
+    pub(crate) fn publish_new(
+        &self,
+        name: &str,
+        cancel: &nodecraft_format::asset_source::TransferCancel,
+        fill: impl FnOnce(&mut File) -> Result<u64, Error>,
+    ) -> Result<(u64, Option<String>), Error> {
+        self.verify()?;
+        cancel.check()?;
+        if name.is_empty() || name.len() > 240 || name.contains(['/', '\\', '\0']) || name.contains("..") {
+            return Err(Error::new(ErrorKind::InvalidInput, "the export file name is invalid"));
+        }
+        let mut nonce = [0u8; 16];
+        getrandom::fill(&mut nonce).map_err(|_| Error::new(ErrorKind::Internal, "could not create an export staging name"))?;
+        let staging = format!(".nodecraft-results-{}", hex_name(&nonce));
+        let fd = fs::openat(&self.parent, staging.as_str(), OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC, PUBLIC_MODE)
+            .map_err(error)?;
+        let mut file = File::from(fd);
+        let meta = fs::fstat(&file).map_err(error)?;
+        let mut staging_guard = Staging { parent: &self.parent, name: &staging, identity: meta, done: false };
+        let result = fill(&mut file).and_then(|bytes| {
+            cancel.check()?;
+            file.sync_all().map_err(|e| crate::export::io_error(e.kind()))?;
+            self.verify()?;
+            cancel.check()?;
+            // linkat is atomic no-replace publication. A filesystem without hard links
+            // refuses rather than exposing a partially copied final file.
+            fs::linkat(&self.parent, staging.as_str(), &self.parent, name, AtFlags::empty()).map_err(error)?;
+            Ok(bytes)
+        });
+        drop(file);
+        // This private inode's temporary link is owned only by this operation. A failure to
+        // remove it is reported even if the complete public link was already published.
+        let cleaned = staging_guard.clean();
+        result.map(|bytes|(bytes,cleaned.err().map(|_|"The completed file was saved, but its private staging link could not be removed; check hidden .nodecraft-results files in the chosen folder".into())))
+    }
     pub(super) fn open(root: &'a File, root_path: &'a Path, remainder: &'a Path) -> Result<Self, Error> {
         let parent = relative(root, remainder)?;
         Ok(Self { root, root_path, remainder, parent })
@@ -90,6 +153,14 @@ impl<'a> Destination<'a> {
         Ok(())
     }
 
+    pub(crate) fn occupied(&self, name: &str) -> Result<bool, Error> {
+        self.verify()?;
+        match fs::statat(&self.parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(_) => Ok(true),
+            Err(rustix::io::Errno::NOENT) => Ok(false),
+            Err(e) => Err(error(e)),
+        }
+    }
     pub(super) fn taken(&self, name: &str) -> Result<bool, Error> {
         self.verify()?;
         match fs::statat(&self.parent, name, AtFlags::SYMLINK_NOFOLLOW) {

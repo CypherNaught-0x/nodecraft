@@ -128,5 +128,5 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits, model: Model) -> Result<(Recor
     if out.len() != length {
         return Err(invalid("Grok encoded request extent changed"));
     }
-    Ok((Record { model, requested, width: 0, height: 0 }, out))
+    Ok((Record { model, requested, width: 0, height: 0, duration_ms: 0 }, out))
 }

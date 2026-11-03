@@ -61,6 +61,7 @@ const PRESETS: &[&str] = &[
     "openrouter",
     "litellm",
     "fal",
+    "magnific",
     "stability",
     "replicate",
     "runway",

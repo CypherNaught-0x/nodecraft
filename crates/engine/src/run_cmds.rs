@@ -463,6 +463,7 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
             });
         }
     };
+    storage::check(&priced, catalog, c.assets.context().supports_large_assets())?;
     // Prices providers quoted (#663) count against budgets like catalog prices.
     crate::comfy_partner_quotes::apply(resources, &c.routing.routing, canvas, &mut priced)?;
     let found = crate::provider_quotes::found(&run_plan, resources, c.routing.nonce)?;
@@ -657,6 +658,7 @@ pub(crate) fn authorize(
     options: nodecraft_exec::run::RunOptions,
 ) -> Result<(AuthorizedRun, nodecraft_exec::run::Progress), Error> {
     let catalog = c.resources.require::<RunCatalog>()?;
+    storage::check(&prepared.quote, catalog.catalog(), c.assets.context().supports_large_assets())?;
     if prepared.routing_nonce != c.routing.nonce || binding(c, catalog, &prepared.run, MAX_BINDING_BYTES)? != prepared.bound {
         return Err(invalid("the prepared run is stale; quote and prepare again"));
     }
@@ -745,6 +747,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
         c.routing.routing.targets(),
     )
     .map_err(|error| Error::new(error.kind, admission_reason(&error)))?;
+    storage::check(&quote, catalog.catalog(), c.assets.context().supports_large_assets())?;
     crate::comfy_partner_quotes::apply(c.resources, &c.routing.routing, admitted.canvas(), &mut quote)?;
     crate::provider_quotes::apply(&mut quote, &found)?;
     // Parsed request ownership is transferred, never cloned. Reserve all extra metadata
@@ -1001,6 +1004,7 @@ mod estimate;
 mod media_size;
 mod request_size;
 mod reuse;
+mod storage;
 pub(crate) use estimate::jobs as estimate_jobs;
 pub use estimate::{EstimateJob, Estimating};
 

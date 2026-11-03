@@ -37,6 +37,7 @@ mod execution_identity;
 pub mod export;
 pub mod export_cmds;
 pub mod export_job;
+pub mod export_leaves;
 pub mod file_cmds;
 pub mod generate;
 pub mod graph_cmds;
@@ -79,6 +80,7 @@ pub mod plugin_text;
 pub mod private_cmds;
 pub mod provider_quotes;
 pub mod resolve_cmds;
+pub mod results_export;
 pub mod search_cmds;
 pub mod share_cmds;
 pub mod storage_window_cmds;
@@ -121,3 +123,6 @@ pub use session::{DocChanged, PreparedImports, Session};
 pub mod provider_routing;
 pub mod provider_setup;
 pub mod variation_cmds;
+
+/// Shipped versioned starter projects and commands (#952).
+pub mod templates;

@@ -173,12 +173,18 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     }
     let mut meta = MediaMeta::default();
     if sniffed.kind == MediaKind::Image {
-        match probe_image(file.bytes, &Limits::default()) {
-            // Everything the header proves travels with the asset (#393), and is checked again
-            // whenever the reference is written.
-            Ok(probed) => meta = nodecraft_format::image_header_meta(&probed),
-            Err(_) if decodes_later(&sniffed) => {}
-            Err(_) => return Err("the image can't be read".into()),
+        if sniffed.mime == nodecraft_media::svg::MIME {
+            let info = nodecraft_media::svg::probe(file.bytes, &Limits::default()).map_err(|_| "the SVG is unsafe or exceeds its limits".to_owned())?;
+            meta.width = Some(info.width);
+            meta.height = Some(info.height);
+        } else {
+            match probe_image(file.bytes, &Limits::default()) {
+                // Everything the header proves travels with the asset (#393), and is checked again
+                // whenever the reference is written.
+                Ok(probed) => meta = nodecraft_format::image_header_meta(&probed),
+                Err(_) if decodes_later(&sniffed) => {}
+                Err(_) => return Err("the image can't be read".into()),
+            }
         }
     }
     if matches!(sniffed.kind, MediaKind::Video | MediaKind::Audio) {

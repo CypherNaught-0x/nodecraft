@@ -24,7 +24,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 18/30 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 10/13 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 28/31 |
-| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 9/13 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 5/8 |
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 14/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 3/29 |
@@ -35,6 +35,11 @@ reimporting, including retained image previews for compatible core workflows (#9
 
 Runway Gen-4.5 text/first-frame video and Gen-4 Turbo first-frame video are available through
 priced catalog models and the direct task adapter (#25); paid live verification remains opt-in.
+
+Official workflow starters are maintained in the separate
+[nodecraft-templates](https://github.com/CypherNaught-0x/nodecraft-templates) repository. Native and
+browser builds embed a pinned offline set; the Techniques panel can refresh the versioned index
+and retrieve one verified version without importing or running it (#953).
 
 ## What works today
 
@@ -69,9 +74,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   Element can be renamed, shared, or exported as a bundle file another person imports (#765).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
-  image as one undo step (#103). 3D models (glTF, GLB, OBJ) become 3D nodes whose cards show
+  image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL) become 3D nodes whose cards show
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
-  writes a GLB or OBJ copy (#111). Built-in 3D cards save their viewer angle, elevation, zoom and
+  writes a GLB or OBJ copy (#111), or geometry-only binary STL with bounded read/reopen support
+  (part of #569; see `docs/3d-formats.md`). Built-in 3D cards save their viewer angle, elevation, zoom and
   shading in the project; a viewer gesture is one undo step and never changes generation inputs
   or existing captures (`mesh.view_set`, #928, part of #569). A custom shader card runs WGSL with declared sliders; its editor
   checks the code as it's typed, has a text model write or fix it through an ordinary, priced
@@ -139,6 +145,22 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
   Pixel-based credits remain an unknown monetary price and require consent. Image editing and
   other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
+- **MiniMax**: H3 text/first-frame video, Speech 2.8 HD and Music 3 share Fal's key and queue
+  (#27), with explicit priced settings and native streamed storage. See [provider limits](docs/providers.md#minimax-video-speech-and-music-through-fal-27).
+- **Pika**: desktop projects and the native CLI animate one first frame with a prompt using
+  current Pika 2.5 through fal (#29), at 720p for 5 or 10 seconds with explicit priced consent.
+  Browser sessions refuse before payment. Text-to-video and keyframes are not included; see
+  [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
+- **HeyGen**: desktop projects and the native CLI animate a photo or lip-sync an MP4 with
+  supplied speech through fal (#43). Monetary pricing remains unknown and requires consent;
+  see [`docs/providers.md`](docs/providers.md#heygen-through-fal-43) for client limits.
+- **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
+  photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
+  spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
+  in-memory storage refuse before payment; see [`docs/providers.md`](docs/providers.md).
+- **Topaz**: desktop projects and the native CLI can enhance or upscale one image with
+  Precision Standard V2 through fal (#37). Integer 1×–4× scaling stays within one 0.08 USD
+  output block. Browser sessions refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
 - **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a

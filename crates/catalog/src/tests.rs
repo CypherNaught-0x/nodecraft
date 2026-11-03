@@ -75,6 +75,24 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 other => panic!("{other}: no verified Grok price"),
             };
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
+        } else if model.id.starts_with("fal.heygen-") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
+        } else if model.id.starts_with("fal.minimax-") {
+            let micros = if model.id == "fal.minimax-music3" {
+                Some(120_000)
+            } else if model.id == "fal.minimax-speech28-hd" {
+                None
+            } else {
+                Some(250_000)
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
+        } else if model.id == "fal.pika25-i2v" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if model.id == "fal.topaz-precision" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 80_000)));
+        } else if matches!(model.id.as_str(), "fal.recraft41" | "fal.recraft41-vector") {
+            let price = if model.id.ends_with("-vector") { 80_000 } else { 35_000 };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, price)));
         } else if model.id == "fal.bria-rmbg" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 18_000)));
@@ -260,6 +278,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.ideogram-v3", true),
             ("fal.luma-photon", true),
             ("fal.qwen-image3", true),
+            ("fal.recraft41-vector", true),
+            ("fal.recraft41", true),
             ("gemini-images.pro", true),
             ("gemini-images.nano-banana-2.1", true),
             ("gemini-images.flash-lite", true),
@@ -289,12 +309,21 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.flux-lora", false),
             ("fal.ltx23", false),
             ("fal.ltx23-i2v", false),
+            ("fal.minimax-h3-i2v", false),
+            ("fal.minimax-h3", false),
+            ("fal.minimax-music3", false),
+            ("fal.minimax-speech28-hd", false),
+            ("fal.pika25-i2v", false),
+            ("fal.topaz-precision", false),
             ("fal.bria-rmbg", false),
             ("fal.esrgan", false),
             ("fal.flux-lora-trainer", false),
             ("fal.grok-image2-edit", false),
             ("fal.grok-video15", false),
             ("fal.grok-video15-i2v", false),
+            ("fal.heygen-lipsync-precision", false),
+            ("fal.heygen-lipsync-speed", false),
+            ("fal.heygen-avatar4", false),
             ("fal.hunyuan3d-v3-image", false),
             ("fal.hunyuan3d-v3-sketch", false),
             ("fal.hunyuan3d-v3", false),
@@ -335,6 +364,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("kling.v2_1_master", false),
             ("kling.v2_5_turbo", false),
             ("kling.v1_6", false),
+            ("magnific.precision-v2", false),
             ("meshy.image-to-3d", false),
             ("meshy.multi-image-to-3d", false),
             ("meshy.remesh", false),

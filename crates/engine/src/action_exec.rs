@@ -246,8 +246,18 @@ impl LocalActions {
     /// The image `value` names, decoded within the actions' limits: one of the project's, or one
     /// an earlier action in this run made (chains).
     fn raster(&self, value: Option<&Value>) -> Result<Raster, String> {
+        self.raster_with_svg(value, None)
+    }
+
+    fn raster_with_svg(&self, value: Option<&Value>, svg_edge: Option<u32>) -> Result<Raster, String> {
         self.check_work()?;
         let Some(Value::Media(source)) = value else { return Err("connect an image first".into()) };
+        if svg_edge.is_some() && source.mime.essence() != nodecraft_media::svg::MIME {
+            return Err("Rasterize SVG requires an SVG image".into());
+        }
+        if svg_edge.is_none() && source.mime.essence() == nodecraft_media::svg::MIME {
+            return Err("This tool needs a raster image; connect a Rasterize SVG action first".into());
+        }
         let staged = self
             .staged
             .lock()
@@ -276,6 +286,11 @@ impl LocalActions {
         }
         let actions = ImageLimits::default();
         let limits = decode_limits();
+        if let Some(edge) = svg_edge {
+            let svg = nodecraft_media::svg::render(bytes, edge, &limits).map_err(|e| format!("the SVG can't be rasterized: {e}"))?;
+            self.check_work()?;
+            return Raster::new(svg.width, svg.height, svg.rgba, actions).map_err(|e| format!("the SVG can't be processed: {e}"));
+        }
         let meta = nodecraft_media::probe_image(bytes, &limits).map_err(|e| format!("the input image can't be read: {e}"))?;
         if u64::from(meta.width).saturating_mul(u64::from(meta.height)) > actions.pixels {
             return Err(format!("the input image is larger than {} megapixels", actions.pixels / 1_000_000));
@@ -304,6 +319,13 @@ impl LocalActions {
     }
 
     fn image(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
+        if action == nodecraft_nodes::svg::RASTERIZE {
+            let edge = u32::try_from(whole(params, "edge")?).ok().filter(|n| (1..=2048).contains(n)).ok_or("SVG raster edge must be 1 to 2048")?;
+            if params.len() != 1 || inputs.len() != 1 {
+                return Err("SVG rasterization requires one image and one edge setting".into());
+            }
+            return self.stage(&self.raster_with_svg(inputs.first(), Some(edge))?);
+        }
         let request = image_request(action, params)?;
         let source = self.raster(inputs.first())?;
         let overlay = if action == "image.overlay" { Some(self.raster(inputs.get(1))?) } else { None };

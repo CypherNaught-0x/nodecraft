@@ -111,6 +111,9 @@ pub fn folder_summary(node: &Node) -> String {
 }
 pub struct CardResponse {
     pub response: egui::Response,
+    /// Includes interactive media bodies so their secondary click opens the card menu too.
+    pub(crate) context: egui::Response,
+    pub(crate) save_hit: Option<crate::result_save::Hit>,
     pub intents: Vec<Intent>,
     /// Port handles by side and port name, for starting and rerouting noodles.
     pub ports: Vec<(Side, String, egui::Response)>,
@@ -326,6 +329,11 @@ pub fn show(
         response.request_focus();
     }
     let mut intents = Vec::new();
+    let mut context = response.clone();
+    let mut save_hit = None;
+    // This is geometry for an already-owned context click, not a hover affordance. A popup's
+    // sizing pass can already cover the card, making rect_contains_pointer return false.
+    let save_pointer = ui.ctx().pointer_interact_pos().map(|point| transform.inverse() * point);
     if response.dragged_by(egui::PointerButton::Primary) {
         let delta = response.drag_delta();
         let pos = Position { x: preview_pos.unwrap_or(node.pos).x + delta.x, y: preview_pos.unwrap_or(node.pos).y + delta.y };
@@ -418,6 +426,9 @@ pub fn show(
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
             inner = rest;
             let area = area.shrink2(Vec2::new(0.0, t.control_gap));
+            if save_pointer.is_some_and(|point| area.contains(point)) {
+                save_hit = Some(crate::result_save::Hit::Image(0, 0));
+            }
             match images.0.as_slice() {
                 [row] if row.len() == 1 && images.1 == 1 => {
                     if let Some(image) = row.first() {
@@ -430,20 +441,29 @@ pub fn show(
                         show_image(&mut ui, area, image, grid, t);
                     }
                 }
-                rows => gallery(&mut ui, area, rows, images.1, t),
+                rows => save_hit = gallery(&mut ui, area, rows, images.1, save_pointer, t),
             }
         } else if let Some(video) = &video {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
             inner = rest;
             show_video(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), video, &mut intents, t);
+            if save_pointer.is_some_and(|point| area.contains(point)) {
+                save_hit = Some(crate::result_save::Hit::Video);
+            }
         } else if let Some(audio) = &audio {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
             inner = rest;
-            show_audio(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), audio, &mut intents, t);
+            context = context.union(show_audio(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), audio, &mut intents, t));
+            if save_pointer.is_some_and(|point| area.contains(point)) {
+                save_hit = Some(crate::result_save::Hit::Audio);
+            }
         } else if let Some(mesh) = mesh {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
             inner = rest;
-            crate::mesh_view::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), view.zoom, mesh, t);
+            context = context.union(crate::mesh_view::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), view.zoom, mesh, t));
+            if save_pointer.is_some_and(|point| area.contains(point)) {
+                save_hit = Some(crate::result_save::Hit::Mesh);
+            }
         } else if node.kind == nodecraft_nodes::generation::AUDIO_KIND {
             // The room `world_size` keeps for the sound to come.
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.preview);
@@ -611,7 +631,7 @@ pub fn show(
         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} output", port.name)));
         ports.push((Side::Output, port.name.clone(), r.on_hover_text(format!("Drag to connect {}", port.name))));
     }
-    Some(CardResponse { response, intents, ports })
+    Some(CardResponse { response, context, save_hit, intents, ports })
 }
 
 // At overview zoom, and for additive migration input previews, screen-sized hit targets can
@@ -635,7 +655,15 @@ fn port_hit_rect(body: Rect, center: Pos2, reach: f32, index: usize, count: usiz
 
 /// Several images in `area`, a row each (one per batch item, #519), every tile the same size;
 /// a note says how many more the result holds than fit.
-fn gallery(ui: &mut egui::Ui, area: Rect, rows: &[Vec<crate::preview::Preview>], count: usize, t: &Tokens) {
+fn gallery(
+    ui: &mut egui::Ui,
+    area: Rect,
+    rows: &[Vec<crate::preview::Preview>],
+    count: usize,
+    pointer: Option<Pos2>,
+    t: &Tokens,
+) -> Option<crate::result_save::Hit> {
+    let mut hit = None;
     let shown: usize = rows.iter().map(Vec::len).sum();
     let columns = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
     let gap = t.control_gap;
@@ -647,7 +675,11 @@ fn gallery(ui: &mut egui::Ui, area: Rect, rows: &[Vec<crate::preview::Preview>],
     for (r, row) in rows.iter().enumerate() {
         for (c, image) in row.iter().enumerate() {
             let min = area.min + Vec2::new(c as f32 * (tile.x + gap), r as f32 * (tile.y + gap));
-            show_image_with(ui, Rect::from_min_size(min, tile), image, None, (r, c), t);
+            let rect = Rect::from_min_size(min, tile);
+            show_image_with(ui, rect, image, None, (r, c), t);
+            if pointer.is_some_and(|point| rect.contains(point)) {
+                hit = Some(crate::result_save::Hit::Image(r, c));
+            }
         }
     }
     if count > shown {
@@ -661,6 +693,7 @@ fn gallery(ui: &mut egui::Ui, area: Rect, rows: &[Vec<crate::preview::Preview>],
         let response = ui.interact(backdrop, ui.id().with("gallery_more"), Sense::hover());
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{} more images", count - shown)));
     }
+    hit
 }
 
 /// An image preview fitted in `area`, keeping its aspect; or a placeholder saying why not.
@@ -770,7 +803,7 @@ fn play_button(row: &mut egui::Ui, playing: bool, name: &str, size: f32) -> egui
 
 /// A card's sound (#106): its waveform over `area`, which a click or a drag seeks, above a row
 /// with play/pause and the time. Without the sound, why not.
-fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, intents: &mut Vec<Intent>, t: &Tokens) {
+fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, intents: &mut Vec<Intent>, t: &Tokens) -> egui::Response {
     use crate::audio::{AudioIntent, AudioView, time_at};
     use crate::video::clock;
     let button = ui.spacing().interact_size.y;
@@ -786,7 +819,7 @@ fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, in
         let galley = painter.layout(text.to_owned(), FontId::proportional(t.body_size), t.text_muted, wave.width() - 2.0 * t.card_padding);
         painter.galley(wave.center() - galley.size() / 2.0, galley, t.text_muted);
         response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
-        return;
+        return response;
     };
     let (position, duration) = (*position_us, *duration_us);
     let bars = wave.shrink2(Vec2::new(t.card_padding, t.control_gap));
@@ -839,6 +872,7 @@ fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, in
             row.label(egui::RichText::new(time).color(t.text_muted));
         }
     }
+    response
 }
 
 /// What a plugin card whose plugin isn't here says it needs.

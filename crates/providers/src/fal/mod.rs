@@ -5,6 +5,8 @@ mod alibaba_tests;
 #[cfg(test)]
 mod grok_tests;
 #[cfg(test)]
+mod heygen_tests;
+#[cfg(test)]
 mod hunyuan_tests;
 #[cfg(test)]
 mod ideogram_tests;
@@ -15,8 +17,14 @@ mod ltx_tests;
 #[cfg(test)]
 mod luma_tests;
 mod media;
+#[cfg(test)]
+mod minimax_tests;
 #[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
 mod native_tests;
+#[cfg(test)]
+mod pika_tests;
+#[cfg(test)]
+mod recraft_tests;
 mod request;
 mod response;
 #[cfg(test)]
@@ -25,6 +33,8 @@ mod rodin_tests;
 mod style_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod topaz_tests;
 use crate::secrets::Secret;
 use crate::{
     BoxFuture, Completed, ErrorKind, Http, HttpMethod, HttpRequest, HttpResponse, JobHandle, JobProgress, Output, Provider, ProviderError, ProviderJob,
@@ -60,6 +70,22 @@ pub const LUMA_RAY_I2V: &str = "luma/agent/ray/v3.2/image-to-video";
 pub const LUMA_PHOTON: &str = "fal-ai/luma-photon";
 /// Ideogram V3 text-to-image, one Balanced image through fal's queue (#34).
 pub const IDEOGRAM: &str = "fal-ai/ideogram/v3";
+/// MiniMax video, speech and music through fal (#27).
+pub const MINIMAX_VIDEO: &str = "minimax/h3/text-to-video";
+pub const MINIMAX_I2V: &str = "minimax/h3/image-to-video";
+pub const MINIMAX_SPEECH: &str = "fal-ai/minimax/speech-2.8-hd";
+pub const MINIMAX_MUSIC: &str = "minimax/music-3";
+/// Current Pika2.5 image-to-video through fal (#29).
+pub const PIKA_I2V: &str = "fal-ai/pika/v2.5/image-to-video";
+/// HeyGen supplied-audio Photo Avatar4 and video lip sync through fal (#43).
+pub const HEYGEN_AVATAR: &str = "fal-ai/heygen/avatar4/image-to-video";
+pub const HEYGEN_SPEED: &str = "fal-ai/heygen/v3/lipsync/speed";
+pub const HEYGEN_PRECISION: &str = "fal-ai/heygen/v3/lipsync/precision";
+/// Topaz Precision Standard V2 image enhancement through fal (#37).
+pub const TOPAZ_IMAGE: &str = "topaz/upscale/image/precision";
+/// Recraft V4.1 raster and original SVG through fal (#35).
+pub const RECRAFT_IMAGE: &str = "fal-ai/recraft/v4.1/text-to-image";
+pub const RECRAFT_VECTOR: &str = "fal-ai/recraft/v4.1/text-to-vector";
 /// LTX 2.3 Pro through fal's saved queue (#30).
 pub const LTX: &str = "fal-ai/ltx-2.3/text-to-video";
 pub const LTX_I2V: &str = "fal-ai/ltx-2.3/image-to-video";
@@ -137,6 +163,12 @@ fn status(r: &HttpResponse, cap: usize) -> Result<(), ProviderError> {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Model {
+    MiniMaxText,
+    MiniMaxFrames,
+    MiniMaxSpeech,
+    MiniMaxMusic,
+    RecraftImage,
+    RecraftVector,
     RodinText,
     RodinImages,
     RodinFastText,
@@ -158,6 +190,11 @@ enum Model {
     RayFrames,
     Photon,
     Ideogram,
+    Topaz,
+    Pika,
+    HeygenAvatar,
+    HeygenSpeed,
+    HeygenPrecision,
     Image,
     Video,
     /// Image to video: a first frame and an optional last frame.
@@ -176,6 +213,12 @@ enum Model {
 impl Model {
     fn read(s: &str) -> Result<Self, ProviderError> {
         match s {
+            MINIMAX_VIDEO => Ok(Self::MiniMaxText),
+            MINIMAX_I2V => Ok(Self::MiniMaxFrames),
+            MINIMAX_SPEECH => Ok(Self::MiniMaxSpeech),
+            MINIMAX_MUSIC => Ok(Self::MiniMaxMusic),
+            RECRAFT_IMAGE => Ok(Self::RecraftImage),
+            RECRAFT_VECTOR => Ok(Self::RecraftVector),
             RODIN_TEXT => Ok(Self::RodinText),
             RODIN_IMAGES => Ok(Self::RodinImages),
             RODIN_FAST_TEXT => Ok(Self::RodinFastText),
@@ -197,6 +240,11 @@ impl Model {
             LUMA_RAY_I2V => Ok(Self::RayFrames),
             LUMA_PHOTON => Ok(Self::Photon),
             IDEOGRAM => Ok(Self::Ideogram),
+            TOPAZ_IMAGE => Ok(Self::Topaz),
+            PIKA_I2V => Ok(Self::Pika),
+            HEYGEN_AVATAR => Ok(Self::HeygenAvatar),
+            HEYGEN_SPEED => Ok(Self::HeygenSpeed),
+            HEYGEN_PRECISION => Ok(Self::HeygenPrecision),
             FLUX => Ok(Self::Image),
             WAN => Ok(Self::Video),
             WAN_I2V => Ok(Self::Frames),
@@ -212,6 +260,12 @@ impl Model {
     }
     fn wire(self) -> &'static str {
         match self {
+            Self::MiniMaxText => MINIMAX_VIDEO,
+            Self::MiniMaxFrames => MINIMAX_I2V,
+            Self::MiniMaxSpeech => MINIMAX_SPEECH,
+            Self::MiniMaxMusic => MINIMAX_MUSIC,
+            Self::RecraftImage => RECRAFT_IMAGE,
+            Self::RecraftVector => RECRAFT_VECTOR,
             Self::RodinText => RODIN_TEXT,
             Self::RodinImages => RODIN_IMAGES,
             Self::RodinFastText => RODIN_FAST_TEXT,
@@ -233,6 +287,11 @@ impl Model {
             Self::RayFrames => LUMA_RAY_I2V,
             Self::Photon => LUMA_PHOTON,
             Self::Ideogram => IDEOGRAM,
+            Self::Topaz => TOPAZ_IMAGE,
+            Self::Pika => PIKA_I2V,
+            Self::HeygenAvatar => HEYGEN_AVATAR,
+            Self::HeygenSpeed => HEYGEN_SPEED,
+            Self::HeygenPrecision => HEYGEN_PRECISION,
             Self::Image => FLUX,
             Self::Video => WAN,
             Self::Frames => WAN_I2V,
@@ -249,7 +308,13 @@ impl Model {
     fn video(self) -> bool {
         matches!(
             self,
-            Self::Wan3Text
+            Self::HeygenAvatar
+                | Self::HeygenSpeed
+                | Self::HeygenPrecision
+                | Self::MiniMaxText
+                | Self::MiniMaxFrames
+                | Self::Pika
+                | Self::Wan3Text
                 | Self::Wan3Frames
                 | Self::GrokText
                 | Self::GrokFrames
@@ -261,6 +326,12 @@ impl Model {
                 | Self::LtxText
                 | Self::LtxFrames
         )
+    }
+    fn heygen(self) -> bool {
+        matches!(self, Self::HeygenAvatar | Self::HeygenSpeed | Self::HeygenPrecision)
+    }
+    fn minimax(self) -> bool {
+        matches!(self, Self::MiniMaxText | Self::MiniMaxFrames | Self::MiniMaxSpeech | Self::MiniMaxMusic)
     }
     fn rodin(self) -> bool {
         matches!(self, Self::RodinText | Self::RodinImages | Self::RodinFastText | Self::RodinFastImages)
@@ -274,8 +345,15 @@ impl Model {
     fn hunyuan(self) -> bool {
         matches!(self, Self::HunyuanText | Self::HunyuanImage | Self::HunyuanSketch)
     }
+    fn recraft(self) -> bool {
+        matches!(self, Self::RecraftImage | Self::RecraftVector)
+    }
     fn root(self) -> &'static str {
         match self {
+            Self::MiniMaxText | Self::MiniMaxFrames => "minimax/h3",
+            Self::MiniMaxSpeech => "fal-ai/minimax",
+            Self::MiniMaxMusic => "minimax/music-3",
+            Self::RecraftImage | Self::RecraftVector => "fal-ai/recraft",
             Self::RodinText | Self::RodinImages | Self::RodinFastText | Self::RodinFastImages => "fal-ai/hyper3d",
             Self::QwenImage | Self::QwenEdit => "alibaba/qwen-image-3",
             Self::Wan3Text | Self::Wan3Frames => "alibaba/wan-3.0",
@@ -286,6 +364,9 @@ impl Model {
             Self::RayText | Self::RayFrames => "luma/agent",
             Self::Photon => LUMA_PHOTON,
             Self::Ideogram => "fal-ai/ideogram",
+            Self::Topaz => "topaz/upscale",
+            Self::Pika => "fal-ai/pika",
+            Self::HeygenAvatar | Self::HeygenSpeed | Self::HeygenPrecision => "fal-ai/heygen",
             Self::Image => "fal-ai/flux",
             Self::Video | Self::Frames | Self::Speech => "fal-ai/wan",
             Self::Audio => "fal-ai/kokoro",
@@ -298,7 +379,19 @@ impl Model {
     }
     /// Whether fal lists this model's images under `images`.
     fn images(self) -> bool {
-        matches!(self, Self::QwenImage | Self::QwenEdit | Self::GrokImage | Self::GrokEdit | Self::Image | Self::Styled | Self::Photon | Self::Ideogram)
+        matches!(
+            self,
+            Self::RecraftImage
+                | Self::RecraftVector
+                | Self::QwenImage
+                | Self::QwenEdit
+                | Self::GrokImage
+                | Self::GrokEdit
+                | Self::Image
+                | Self::Styled
+                | Self::Photon
+                | Self::Ideogram
+        )
     }
 }
 #[derive(Clone, Copy)]
@@ -307,6 +400,8 @@ struct Record {
     requested: u8,
     width: u32,
     height: u32,
+    /// New MiniMax requests retain their admitted time bound across restart. Legacy handles omit it.
+    duration_ms: u32,
 }
 struct Routes<'a> {
     status: std::borrow::Cow<'a, str>,
@@ -345,6 +440,11 @@ impl Record {
     /// style descriptor needs.
     fn handle(self, id: &str, r: &Routes<'_>, trigger: &str) -> JobHandle {
         let mut data = serde_json::json!({"v":1,"model":self.model.wire(),"requested":self.requested,"width":self.width,"height":self.height,"status_url":r.status,"response_url":r.result,"cancel_url":r.cancel});
+        if self.model.minimax()
+            && let Some(o) = data.as_object_mut()
+        {
+            o.insert("duration_ms".into(), self.duration_ms.into());
+        }
         if self.model == Model::Train
             && let Some(o) = data.as_object_mut()
         {
@@ -355,7 +455,8 @@ impl Record {
     fn read<'a>(h: &'a JobHandle, key: &Secret) -> Result<(Self, Routes<'a>, &'a str), ProviderError> {
         id(&h.remote_id, key)?;
         let train = h.data.get("model").and_then(|v| v.as_str()) == Some(FLUX_LORA_TRAINER);
-        let o = h.data.as_object().filter(|o| o.len() == 8 + usize::from(train)).ok_or_else(|| invalid("fal invalid handle record"))?;
+        let minimax = h.data.get("model").and_then(|v| v.as_str()).and_then(|m| Model::read(m).ok()).is_some_and(Model::minimax);
+        let o = h.data.as_object().filter(|o| o.len() == 8 + usize::from(train) + usize::from(minimax)).ok_or_else(|| invalid("fal invalid handle record"))?;
         let text = |k: &str| o.get(k).and_then(|v| v.as_str()).ok_or_else(|| invalid("fal invalid handle field"));
         if o.get("v").and_then(|v| v.as_u64()) != Some(1) {
             return Err(invalid("fal unsupported handle version"));
@@ -367,6 +468,7 @@ impl Record {
             requested: u8::try_from(num("requested")?).map_err(|_| invalid("fal invalid handle count"))?,
             width: num("width")?,
             height: num("height")?,
+            duration_ms: if minimax { num("duration_ms")? } else { 0 },
         };
         if !(1..=if matches!(model, Model::GrokImage | Model::GrokEdit) {
             10
@@ -386,9 +488,13 @@ impl Record {
                     || !record.width.is_multiple_of(2)
                     || !record.height.is_multiple_of(2)))
             || (model == Model::RemoveBackground && (record.width == 0 || record.height == 0 || record.width > 1024 || record.height > 1024))
-            || (!matches!(model, Model::Upscale | Model::RemoveBackground) && (record.width != 0 || record.height != 0))
+            || (model == Model::Topaz && (record.width == 0 || record.height == 0 || record.width > 4096 || record.height > 4096))
+            || (!matches!(model, Model::Upscale | Model::RemoveBackground | Model::Topaz) && (record.width != 0 || record.height != 0))
         {
             return Err(invalid("fal handle output contract refused"));
+        }
+        if model.minimax() && !request::minimax::valid_duration(model, record.duration_ms) {
+            return Err(invalid("MiniMax saved duration contract refused"));
         }
         let r = Routes { status: text("status_url")?.into(), result: text("response_url")?.into(), cancel: text("cancel_url")?.into() };
         routes(model, &h.remote_id, &r, key)?;
@@ -600,18 +706,61 @@ impl Fal {
             if reply.body.is_empty() || f.size.is_some_and(|n| usize::try_from(n).ok() != Some(reply.body.len())) {
                 return Err(malformed("fal output size disagrees with body"));
             }
-            let mime = media::validate(&reply.body, record, limits, &mut pixels)?;
+            // SVG admission and declared geometry share one complete probe. Its preview
+            // capability does not decide whether a safe paid original is retained.
+            let vector = (record.model == Model::RecraftVector).then(|| media::vector(&reply.body, limits, &mut pixels)).transpose()?;
+            let timed = record.model.minimax().then(|| media::minimax::validate(&reply.body, record, limits)).transpose()?;
+            if let Some(proof) = timed.as_ref()
+                && (f.duration_ms.is_some_and(|declared| declared.abs_diff(proof.duration_ms) > 1000)
+                    || f.width.is_some_and(|w| proof.width != Some(w))
+                    || f.height.is_some_and(|h| proof.height != Some(h)))
+            {
+                return Err(malformed("MiniMax result metadata disagrees with the complete media"));
+            }
+            let mime = if let Some(proof) = timed {
+                proof.mime
+            } else if vector.is_some() {
+                nodecraft_media::svg::MIME
+            } else {
+                media::validate(&reply.body, record, limits, &mut pixels)?
+            };
             if f.mime.as_deref().is_some_and(|m| m != mime) {
                 return Err(malformed("fal output MIME disagrees with actual bytes"));
             }
+            if let Some(info) = vector
+                && (f.width.is_some_and(|w| w != u64::from(info.width)) || f.height.is_some_and(|h| h != u64::from(info.height)))
+            {
+                return Err(malformed("fal declared geometry disagrees with actual SVG"));
+            }
             if matches!(
                 record.model,
-                Model::GrokImage | Model::GrokEdit | Model::Image | Model::Styled | Model::Upscale | Model::RemoveBackground | Model::Photon | Model::Ideogram
+                Model::RecraftImage
+                    | Model::GrokImage
+                    | Model::GrokEdit
+                    | Model::Image
+                    | Model::Styled
+                    | Model::Upscale
+                    | Model::RemoveBackground
+                    | Model::Photon
+                    | Model::Ideogram
+                    | Model::Topaz
             ) && (f.width.is_some() || f.height.is_some())
             {
                 let meta = nodecraft_media::probe_image(&reply.body, &limits.image(false)).map_err(|_| malformed("fal invalid declared image dimensions"))?;
                 if f.width.is_some_and(|w| w != u64::from(meta.width)) || f.height.is_some_and(|h| h != u64::from(meta.height)) {
                     return Err(malformed("fal declared geometry disagrees with actual image"));
+                }
+            }
+            if record.model.heygen() && (f.width.is_some() || f.height.is_some()) {
+                let info = media::heygen::output(&reply.body, limits)?;
+                if f.width.is_some_and(|n| n != u64::from(info.0)) || f.height.is_some_and(|n| n != u64::from(info.1)) {
+                    return Err(malformed("HeyGen declared geometry disagrees with actual video"));
+                }
+            }
+            if record.model == Model::Pika && (f.width.is_some() || f.height.is_some()) {
+                let info = media::pika::probe(&reply.body, limits)?;
+                if f.width.is_some_and(|n| n != u64::from(info.0)) || f.height.is_some_and(|n| n != u64::from(info.1)) {
+                    return Err(malformed("Pika declared geometry disagrees with actual video"));
                 }
             }
             remaining = remaining.checked_sub(reply.body.len()).ok_or_else(|| malformed("fal output byte overflow"))?;

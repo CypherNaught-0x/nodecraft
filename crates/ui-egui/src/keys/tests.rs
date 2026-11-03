@@ -840,3 +840,6 @@ fn an_unlisted_row_found_to_have_no_key_is_dropped() {
     panel.prune(&settings);
     assert_eq!(panel.rows(), &[(Account::new("fal").unwrap(), KeyStatus::Missing)], "a listed account with no key stays");
 }
+
+#[path = "magnific38_tests.rs"]
+mod magnific38_tests;

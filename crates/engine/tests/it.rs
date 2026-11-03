@@ -5,6 +5,9 @@
 // Shared helpers, compiled once; the test files reach them as `crate::common`.
 mod common;
 
+#[path = "results966.rs"]
+mod results966;
+
 #[path = "asset_imports147.rs"]
 mod asset_imports147;
 #[path = "audio_generation672.rs"]
@@ -67,6 +70,7 @@ mod held_restart614;
 mod held_results369;
 #[path = "ideogram34.rs"]
 mod ideogram34;
+
 #[path = "image_modes500.rs"]
 mod image_modes500;
 #[path = "impact114.rs"]
@@ -165,6 +169,8 @@ mod timeline109;
 mod timeline574;
 #[path = "token_rates595.rs"]
 mod token_rates595;
+#[path = "topaz37.rs"]
+mod topaz37;
 #[path = "trained_styles167.rs"]
 mod trained_styles167;
 #[path = "video_generation559.rs"]
@@ -190,5 +196,30 @@ mod hunyuan42;
 #[path = "alibaba32.rs"]
 mod alibaba32;
 
+#[path = "recraft35.rs"]
+mod recraft35;
 #[path = "rodin41.rs"]
 mod rodin41;
+
+#[path = "templates952/author.rs"]
+mod templates952_author;
+
+#[path = "templates952.rs"]
+mod templates952;
+
+#[path = "magnific38.rs"]
+mod magnific38;
+
+#[path = "svg_template35.rs"]
+mod svg_template35;
+
+#[path = "minimax27.rs"]
+mod minimax27;
+#[path = "pika29.rs"]
+mod pika29;
+
+#[path = "heygen43.rs"]
+mod heygen43;
+
+#[path = "stl569.rs"]
+mod stl569;

@@ -23,6 +23,7 @@ impl Registry {
             registry.register(Box::new(kind))?;
         }
         registry.register(Box::new(crate::router::kind()))?;
+        registry.register(Box::new(crate::svg::kind()))?;
         registry.register(Box::new(crate::batch::kind()))?;
         registry.register(Box::new(crate::folder::kind()))?;
         registry.register(Box::new(crate::note::kind()))?;

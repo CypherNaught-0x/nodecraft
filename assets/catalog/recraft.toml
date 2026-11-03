@@ -1,0 +1,70 @@
+# Recraft V4.1 standard raster/SVG, official fal model pages and formal queue schemas checked 2026-10-27.
+# https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image
+# https://fal.ai/models/fal-ai/recraft/v4.1/text-to-vector
+# Colors are RGB preferences; host supports at most six. No Fal seed/count/style controls.
+
+[[model]]
+id="fal.recraft41"
+provider="fal"
+provider_model="fal-ai/recraft/v4.1/text-to-image"
+label="Recraft V4.1 raster (fal)"
+description="One PNG, JPEG or WebP from a text prompt, up to 10000 characters. One output per paid request; no seed control."
+latency_s=30
+quality=3
+pricing={type="per_call",price="0.035 USD"}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="image_size"
+label="Image size"
+control={type="choice",options=[{value="square_hd",label="Square 1024"},{value="square",label="Square 512"},{value="portrait_4_3",label="Portrait 3:4"},{value="portrait_16_9",label="Portrait 9:16"},{value="landscape_4_3",label="Landscape 4:3"},{value="landscape_16_9",label="Landscape 16:9"}]}
+default={type="text",value="square_hd"}
+
+[[model.params.params]]
+name="colors"
+label="Preferred colors (up to six #RRGGBB, comma separated)"
+control={type="text",multiline=false,max_bytes=47}
+default={type="text",value=""}
+
+[[model.params.params]]
+name="background_color"
+label="Background preference (#RRGGBB, optional)"
+control={type="text",multiline=false,max_bytes=7}
+default={type="text",value=""}
+
+[[model]]
+id="fal.recraft41-vector"
+provider="fal"
+provider_model="fal-ai/recraft/v4.1/text-to-vector"
+label="Recraft V4.1 SVG (fal)"
+description="One original SVG from a text prompt, up to 10000 characters. Safe SVG stays editable even when its static effects cannot be previewed."
+latency_s=30
+quality=3
+pricing={type="per_call",price="0.08 USD"}
+
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+
+[[model.params.params]]
+name="image_size"
+label="Image size"
+control={type="choice",options=[{value="square_hd",label="Square 1024"},{value="square",label="Square 512"},{value="portrait_4_3",label="Portrait 3:4"},{value="portrait_16_9",label="Portrait 9:16"},{value="landscape_4_3",label="Landscape 4:3"},{value="landscape_16_9",label="Landscape 16:9"}]}
+default={type="text",value="square_hd"}
+
+[[model.params.params]]
+name="colors"
+label="Preferred colors (up to six #RRGGBB, comma separated)"
+control={type="text",multiline=false,max_bytes=47}
+default={type="text",value=""}
+
+[[model.params.params]]
+name="background_color"
+label="Background preference (#RRGGBB, optional)"
+control={type="text",multiline=false,max_bytes=7}
+default={type="text",value=""}

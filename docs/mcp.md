@@ -154,11 +154,16 @@ lists, and a test fails until then.
 
 `export.local_plan` previews a batch without writing files and is agent-visible; `export.local_run`
 would publish files outside the project and undo, so it is human-only (#98). Both require an
-app-injected authorized folder, which the desktop app does not yet provide (#746). On Windows and
+app-injected authorized folder. File → Save workflow results now obtains an ephemeral grant
+for `export.results_plan` / `export.results_start` (#966); the `media.export` node remains #746. On Windows and
 other non-Unix platforms an authorized host can preview with `export.local_plan`, but
 `export.local_run` returns Unsupported before creating or replacing any file: secure folder writes
 need an equivalent descriptor-relative no-follow implementation. The browser cannot authorize a
-local folder.
+local folder. `export.results_plan` previews all history by default (or explicit active history /
+exact historical targets); `export.results_start` is human-only, requires the same typed grant
+and background runner, and returns a receipt. `export.status` reports per-file progress and the
+terminal actual-name/provenance-manifest outcome; `export.cancel` keeps completed batch files.
+Neither command changes active history, edits the graph or opens a dialog.
 
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
@@ -267,3 +272,13 @@ Persistent tag commands (`tag.put`, `tag.remove`, `node.tag_set`) are available 
 
 Field commands (`field.create`, `field.update`, `field.move`, `field.remove`,
 `node.field_set`) are available to agents.
+
+### Official workflow starters (#953)
+
+`template.list {}` returns indexed/bundled/cached metadata, available `{id,version,blake3}` identities
+and a catalog stamp. `template.add {id,version?,blake3?}` pins an available selection into one undoable
+project import; without a version it chooses the latest available version. On desktop/browser hosts,
+`template.refresh {}` queues only the official index and `template.retrieve {id,version,blake3}` queues
+one exact listed archive. Hosts without that fetch service return Unsupported and keep the bundled
+set. Retrieving never adds or runs a graph. See [workflow starters](workflow-templates.md) for cache,
+offline, schema, authoring and update behavior and the authoritative external repository.

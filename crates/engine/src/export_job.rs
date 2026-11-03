@@ -26,6 +26,7 @@ pub enum ExportPhase {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ExportResult {
     Exported { bytes: u64 },
+    Results { report: crate::results_export::Report },
     Cancelled,
     Failed { error: Error, name_taken: bool },
 }
@@ -38,6 +39,16 @@ pub struct ExportStatus {
     pub phase: ExportPhase,
     pub cancellable: bool,
     pub result: Option<ExportResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<ExportProgress>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ExportProgress {
+    pub completed: u32,
+    pub total: u32,
+    pub written: u32,
+    pub failed: u32,
 }
 
 /// A read-only receipt remains observable after its Session is replaced or dropped. It
@@ -47,6 +58,10 @@ pub struct ExportWatch(Arc<Control>);
 impl ExportWatch {
     pub fn status(&self) -> ExportStatus {
         self.0.status()
+    }
+    /// Receipt identity survives Session replacement; numeric ids alone are session-local.
+    pub fn same_job(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -89,6 +104,30 @@ impl Control {
         state.phase = ExportPhase::Completed;
         state.cancellable = false;
     }
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    pub(crate) fn progress(&self, completed: u32, total: u32, written: u32, failed: u32) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.phase = ExportPhase::Writing;
+        state.progress = Some(ExportProgress { completed, total, written, failed });
+    }
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    pub(crate) fn finalizing(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.phase = ExportPhase::Finishing;
+        state.cancellable = false;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn finish_results(&self, outcome: Result<crate::results_export::Report, Error>) {
+        match outcome {
+            Ok(report) => {
+                let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                state.result = Some(ExportResult::Results { report });
+                state.phase = ExportPhase::Completed;
+                state.cancellable = false;
+            }
+            Err(error) => self.finish(Err(error)),
+        }
+    }
     fn request_cancel(&self) -> Result<(), Error> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if !state.cancellable {
@@ -128,6 +167,11 @@ struct Completion {
 }
 #[cfg(not(target_arch = "wasm32"))]
 impl Completion {
+    fn finish_results(&mut self, result: Result<crate::results_export::Report, Error>) {
+        self.lease = None;
+        self.control.finish_results(result);
+        self.finished = true;
+    }
     fn finish(&mut self, result: Result<u64, Error>) {
         self.lease = None;
         self.control.finish(result);
@@ -196,7 +240,7 @@ impl Exports {
             let id = self.next.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "too many exports; reopen the project"))?;
             let lease = Lease::acquire()?;
             let control = Arc::new(Control {
-                state: Mutex::new(ExportStatus { id, phase: ExportPhase::Queued, cancellable: true, result: None }),
+                state: Mutex::new(ExportStatus { id, phase: ExportPhase::Queued, cancellable: true, result: None, progress: None }),
                 cancel: TransferCancel::default(),
             });
             let snapshot = assets.clone();
@@ -205,6 +249,42 @@ impl Exports {
                 let result = crate::session::guard(|| crate::export::write_background(&snapshot, &what, &path, overwrite, &completion.control));
                 drop((snapshot, what, path));
                 completion.finish(result);
+            });
+            // Publish the receipt before handing off: even a runner that drops a queued job
+            // produces a terminal outcome through Completion. A rejected spawn never runs inline.
+            self.next = id;
+            self.current = Some(control);
+            if let Err(job) = runner.spawn(job) {
+                drop(job);
+                return Err(Error::new(ErrorKind::Internal, "the export worker couldn't start; export again"));
+            }
+            Ok(id)
+        }
+    }
+    pub(crate) fn start_results(&mut self, assets: &AssetStore, plan: crate::results_export::Plan) -> Result<u64, Error> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (assets, plan);
+            Err(Error::new(ErrorKind::Unsupported, "exporting to a file needs the desktop app"))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if self.status().is_some_and(|status| status.result.is_none()) {
+                return Err(Error::new(ErrorKind::Busy, "an export is already in progress; wait or cancel it"));
+            }
+            let runner = self.runner.as_ref().ok_or_else(|| Error::new(ErrorKind::Unsupported, "background export needs an export runner"))?;
+            let id = self.next.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "too many exports; reopen the project"))?;
+            let lease = Lease::acquire()?;
+            let control = Arc::new(Control {
+                state: Mutex::new(ExportStatus { id, phase: ExportPhase::Queued, cancellable: true, result: None, progress: None }),
+                cancel: TransferCancel::default(),
+            });
+            let snapshot = assets.clone();
+            let mut completion = Completion { control: Arc::clone(&control), lease: Some(lease), finished: false };
+            let job = SaveJob::new(move || {
+                let result = crate::session::guard(|| crate::results_export::run(&snapshot, plan, &completion.control));
+                drop(snapshot);
+                completion.finish_results(result);
             });
             // Publish the receipt before handing off: even a runner that drops a queued job
             // produces a terminal outcome through Completion. A rejected spawn never runs inline.

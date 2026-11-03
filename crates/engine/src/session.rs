@@ -33,6 +33,7 @@ pub const MAX_EVENTS: usize = 256;
 
 mod document_extract;
 mod imports;
+mod starters;
 pub use imports::PreparedImports;
 mod file_lifecycle;
 pub(crate) mod project_identity;
@@ -1145,6 +1146,7 @@ impl Session {
                 });
             }
             Effect::Place { media, changes, result } => return self.place(spec.id, media, changes, result),
+            Effect::TemplateAdd { template } => return self.add_template(spec.id, *template),
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
                 return guard(|| {
@@ -1152,6 +1154,10 @@ impl Session {
                     validate_json(&result)?;
                     Ok(result)
                 });
+            }
+            Effect::ResultsExport { plan } => {
+                let id = self.exports.start_results(&self.assets, *plan)?;
+                return Ok(serde_json::json!({"pending": id}));
             }
             Effect::LocalExport { plan } => {
                 // Export changes no document, so nothing is staged and there is nothing to undo.
@@ -1449,12 +1455,14 @@ impl Session {
             | Effect::Export { .. }
             | Effect::Copy { .. }
             | Effect::LocalExport { .. }
+            | Effect::ResultsExport { .. }
             | Effect::Open { .. }
             | Effect::Save { .. }
             | Effect::Perf { .. }
             | Effect::CancelFile
             | Effect::CancelExport { .. }
             | Effect::Elements { .. }
+            | Effect::TemplateAdd { .. }
             | Effect::Place { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));
             }

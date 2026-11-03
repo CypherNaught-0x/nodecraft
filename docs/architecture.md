@@ -296,7 +296,12 @@ Like a save, neither changes a document,
 history, revision or event, so neither is an undo step. Writing there is authority the app grants by
 injecting `local_export::ExportHost` after a person chooses a folder — a destination named in a
 parameter is never authority — and without it `export.local_plan` and `export.local_run` return
-Unsupported. The desktop injection and `media.export` node are not yet implemented (#746).
+Unsupported. File → Save workflow results (#966) now scopes an ephemeral grant for
+`export.results_plan` / `export.results_start`; `media.export` remains #746. The new command
+snapshots all/active history or exact historical targets, uses the shared background export
+worker and quit watch, and atomically publishes complete new media plus a provenance manifest
+without replacement. See the [workflow save decision](decisions/2026-10-27-workflow-result-saves.md)
+for bounds, cancellation and current Unix-only secure folder writes.
 One entry failing reports that entry and lets the others run. Unlike `Effect::Export`,
 the batch does not bypass a pending file operation: it settles a pending save first and refuses to
 run while a project open is in flight. Both write stored bytes unchanged: conversion and
@@ -722,6 +727,18 @@ Generate uses (`request_runs`). A prompt still being typed is committed before t
 open keys act, and when a dialog takes the input; a project opens on its first plain canvas
 (`home_canvas`), and the view goes back to it if an undo removes the open sheet. The table lays
 out only the rows in view, so a full 1000-row sheet draws in about the time a screenful does.
+
+## Official workflow templates (#953)
+
+The authoritative catalog is external `CypherNaught-0x/nodecraft-templates`. A dependency-free data
+package at an immutable Git revision embeds the offline native/wasm snapshot; no network runs during
+builds. `engine::templates` shares one bounded schema/digest/archive/kind validator with external
+repository CI. A Session resource retains remote metadata and a bounded archive cache; the UI host
+queues at most one index or selected-content request. Catalog stamps and Session identities invalidate
+UI metadata, and late results cannot import into another Session. An opaque PreparedTemplate carries
+the admitted entry and graph into the existing PreparedImports/changeset boundary without resolving
+mutable latest metadata again. See [workflow starters](workflow-templates.md) and the
+[decision](decisions/2026-10-27-external-workflow-templates.md).
 
 ## Techniques (#93)
 

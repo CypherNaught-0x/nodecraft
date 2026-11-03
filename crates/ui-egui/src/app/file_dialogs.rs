@@ -468,6 +468,7 @@ impl NodeCraftApp {
         let mut remove = None;
         let mut clear = false;
         let mut import_folder = false;
+        let mut save_results = false;
         let unavailable = self.file_unavailable_message();
         let owner_busy = self.storage_owner_blocked();
         let mut focus_owner = false;
@@ -502,6 +503,13 @@ impl NodeCraftApp {
                     }
                 }
                 ui.separator();
+                save_results = ui
+                    .add_enabled(cfg!(all(unix, not(target_arch = "wasm32"))), crate::icons::Icon::Save.button(ui, "Save workflow results…", t))
+                    .on_hover_text("Save all history for selected nodes, or all nodes when none are selected")
+                    .on_disabled_hover_text(
+                        "Secure folder saving is currently available on macOS and Linux; use an individual result’s Save as on this platform",
+                    )
+                    .clicked();
                 import_folder = ui
                     .add_enabled(!importing, crate::icons::Icon::Open.button(ui, "Import folder…", t))
                     .on_hover_text("Add a folder's files as one Folder card")
@@ -537,9 +545,12 @@ impl NodeCraftApp {
                 Err(error) => error.message,
             });
         }
-        let owns = was_open || self.files.menu_open || action.is_some() || recent.is_some() || import_folder;
-        if action.is_some() || recent.is_some() || import_folder {
+        let owns = was_open || self.files.menu_open || action.is_some() || recent.is_some() || import_folder || save_results;
+        if action.is_some() || recent.is_some() || import_folder || save_results {
             self.files.menu_open = false;
+        }
+        if save_results {
+            self.start_results_save(None);
         }
         if import_folder {
             // The new card goes in the middle of the canvas.

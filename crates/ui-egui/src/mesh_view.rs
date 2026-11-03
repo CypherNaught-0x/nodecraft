@@ -383,7 +383,7 @@ pub struct CardMesh<'a> {
 }
 
 /// Draws a card's model in `area` (world points, drawn at `zoom`), and turns it on drag.
-pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>, t: &Tokens) {
+pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>, t: &Tokens) -> egui::Response {
     let CardMesh { preview, view, gpu } = card;
     let response = ui.interact(area, ui.id().with("mesh"), Sense::click_and_drag());
     let painter = ui.painter().with_clip_rect(area.intersect(ui.clip_rect()));
@@ -465,6 +465,7 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
         }
     };
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, label.clone()));
+    response
 }
 
 /// The style toggle and reset over the preview's bottom-left corner, the capture buttons over

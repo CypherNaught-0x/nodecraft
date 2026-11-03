@@ -390,4 +390,18 @@ mod stability36_tests;
 mod alibaba32_tests;
 
 #[cfg(test)]
+mod recraft35_tests;
+#[cfg(test)]
 mod rodin41_tests;
+
+#[cfg(test)]
+mod magnific38_tests;
+
+#[cfg(test)]
+mod heygen43_tests;
+
+#[cfg(test)]
+mod topaz37_tests;
+
+#[cfg(test)]
+mod pika29_tests;

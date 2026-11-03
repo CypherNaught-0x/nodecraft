@@ -387,6 +387,8 @@ mod option_fetch;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
 mod ownership_panel;
+#[cfg(not(target_arch = "wasm32"))]
+mod paid_results;
 mod palette_navigation;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
@@ -401,6 +403,7 @@ mod queue_panel;
 mod reader;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery;
+mod result_save967;
 mod reverse_wiring;
 mod runs;
 mod search;
@@ -416,6 +419,7 @@ mod styles;
 mod tag_definitions;
 mod tags;
 mod technique_menu;
+mod template_fetch;
 mod timeline_editor;
 mod topbar;
 #[cfg(test)]
@@ -603,6 +607,7 @@ pub struct NodeCraftApp {
     runs: Option<runs::Runs>,
     /// Fetches the option lists `options.refresh` asks for (#529).
     option_fetch: Option<option_fetch::OptionFetcher>,
+    template_fetch: Option<template_fetch::TemplateFetcher>,
     /// Reads the ComfyUI server's nodes `comfy.nodes.refresh` asks for (#9).
     #[cfg(not(target_arch = "wasm32"))]
     comfy_nodes: Option<comfy_nodes::ComfyNodesFetcher>,
@@ -772,6 +777,13 @@ impl NodeCraftApp {
         }
         app.runs = runs;
         app.option_fetch = option_fetch;
+        app.template_fetch = template_fetch::TemplateFetcher::new()
+            .and_then(|mut fetcher| {
+                fetcher.bind(&mut app.session)?;
+                Ok(fetcher)
+            })
+            .inspect_err(|error| log::warn!("templates unavailable: {}", error.message))
+            .ok();
         app.comfy_nodes = comfy_nodes;
         // The technique library every project shares (#96), beside the plugins; in memory when
         // settings aren't kept on disk.
@@ -908,6 +920,13 @@ impl NodeCraftApp {
         app.runs = runs;
         app.key_changes = Some(changed);
         app.option_fetch = option_fetch;
+        app.template_fetch = template_fetch::TemplateFetcher::browser()
+            .and_then(|mut fetcher| {
+                fetcher.bind(&mut app.session)?;
+                Ok(fetcher)
+            })
+            .inspect_err(|error| log::warn!("templates unavailable: {}", error.message))
+            .ok();
         app.notice = provider_notice.clone();
         app.browser_providers = Some(browser_providers::BrowserProviders::new(providers, provider_notice));
         // Recovery is a safety net, not a save: leaving with unsaved work still asks first.
@@ -1204,6 +1223,7 @@ impl NodeCraftApp {
             key_changes: None,
             runs: None,
             option_fetch: None,
+            template_fetch: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_nodes: None,
             comfy_mapping: None,
@@ -1314,7 +1334,7 @@ impl NodeCraftApp {
             // is painted last by show(), above any document editor or canvas gesture.
             return;
         }
-        let file_owns_input = self.export_overlay(ui.ctx()) || file_owns_input;
+        let file_owns_input = self.results_overlay(ui.ctx()) || self.export_overlay(ui.ctx()) || file_owns_input;
         self.videos.poll(ui.ctx());
         self.audios.poll(ui.ctx());
         self.meshes.poll();
@@ -1866,6 +1886,7 @@ impl NodeCraftApp {
                 );
                 if let Some(result) = result {
                     let r = result.response;
+                    let context = result.context;
                     self.painted.insert(node.id, r.rect);
                     let tag_painter = egui::Painter::new(ui.ctx().clone(), r.layer_id, tag_world_clip(&self.view, viewport, ui.clip_rect()));
                     if node.kind == nodecraft_nodes::deck::ID && self.view.zoom >= card::BODY_MIN_ZOOM {
@@ -1943,7 +1964,7 @@ impl NodeCraftApp {
                             self.selection.only(node.id);
                         }
                     } else if !canvas_blocks
-                        && (r.drag_started_by(egui::PointerButton::Primary) || r.secondary_clicked() || r.long_touched())
+                        && (r.drag_started_by(egui::PointerButton::Primary) || context.secondary_clicked() || context.long_touched())
                         && !self.selection.contains(node.id)
                     {
                         // Grabbing or right-clicking a selected card keeps the rest of the selection.
@@ -1957,9 +1978,24 @@ impl NodeCraftApp {
                         && (!overlay_blocks || egui::Popup::is_any_open(ui.ctx()))
                         && (!self.text_focused && !canvas::text_input_focused(ui.ctx()) || egui::Popup::is_any_open(ui.ctx()))
                     {
-                        r.context_menu(|ui| {
-                            let owner = egui::Popup::context_menu(&r).get_id();
+                        context.context_menu(|ui| {
+                            let owner = egui::Popup::context_menu(&context).get_id();
                             let owned = egui::Popup::is_id_open(ui.ctx(), owner);
+                            let targets = crate::result_save::pinned(
+                                ui.ctx(),
+                                &context,
+                                node,
+                                result.save_hit,
+                                self.live.preview(&self.session, self.canvas, node.id).is_some()
+                                    || (matches!(result.save_hit, Some(crate::result_save::Hit::Audio)) && sound_so_far.is_some()),
+                                &self.session.view_identity(),
+                            );
+                            ui.add_enabled_ui(owned && !file_owns_input && !file_menu_owns_input, |ui| {
+                                if let Some(intent) = crate::result_save::menu(ui, &targets, t) {
+                                    intents.push((node.id, Intent::History(intent)));
+                                }
+                            });
+                            ui.separator();
                             ui.label("Format selection");
                             ui.add_enabled_ui(layout_context_ready && owned, |ui| {
                                 if ui.button("Grid").clicked() {
@@ -2366,6 +2402,7 @@ impl NodeCraftApp {
         // when nothing else owns the frame.
         let toolbar_live = !overlay_blocks && !file_owns_input && !file_menu_owns_input && !recovery_owns_input;
         intents.extend(self.generation_toolbar(ui, viewport, toolbar_live));
+        intents.extend(self.result_save_toolbar(ui, viewport, toolbar_live));
         self.image_viewer(ui.ctx());
         self.pdf_reader(ui.ctx());
         if let Some(action) = tag_action {
@@ -3004,6 +3041,10 @@ impl NodeCraftApp {
                 self.start_export(self.canvas, id, generation, port, item, &name);
                 return None;
             }
+            HistoryIntent::SaveToFolder { generation, port, item } => {
+                self.start_results_save(Some(vec![nodecraft_engine::results_export::ResultSelector { node: id, generation, port, item }]));
+                return None;
+            }
             HistoryIntent::Copy { generation, port, item } => {
                 let mut params = json!({"canvas": self.canvas, "id": id, "generation": generation});
                 if let Some(port) = port {
@@ -3477,6 +3518,7 @@ impl eframe::App for NodeCraftApp {
         self.tick_browser_providers();
         self.tick_runs(ctx);
         self.tick_option_fetch(ctx);
+        self.tick_template_fetch(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_comfy_nodes(ctx);
         #[cfg(not(target_arch = "wasm32"))]
@@ -3487,7 +3529,13 @@ impl eframe::App for NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.export_close_request(ctx);
         // Last, so the native quit respects the export's CancelClose decision.
-        craft_quit::on_close_request(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        let paid_results_waiting = self.paid_result_close_request(ctx);
+        #[cfg(target_arch = "wasm32")]
+        let paid_results_waiting = false;
+        if !paid_results_waiting {
+            craft_quit::on_close_request(ctx);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -3567,6 +3615,8 @@ mod mentions_tests;
 #[cfg(test)]
 mod mesh_tests;
 #[cfg(test)]
+mod minimax27_tests;
+#[cfg(test)]
 mod order_tests;
 #[cfg(test)]
 mod perf;
@@ -3579,8 +3629,12 @@ mod prompt_overlay_tests;
 #[cfg(test)]
 mod reader_tests;
 #[cfg(test)]
+mod recraft35_tests;
+#[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod runs_tests;
+#[cfg(test)]
+mod save967_tests;
 #[cfg(test)]
 mod shader_editor_tests;
 #[cfg(test)]
@@ -3645,3 +3699,5 @@ mod stale_tests;
 
 #[cfg(test)]
 mod router949_tests;
+#[cfg(test)]
+mod templates952_tests;

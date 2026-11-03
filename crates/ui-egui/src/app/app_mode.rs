@@ -365,15 +365,18 @@ fn first_output(generation: &Generation) -> Option<&Value> {
 }
 
 /// The media a result's first output exports (item `Some(0)` of a list), and its file name.
-fn exportable(generation: &Generation) -> Option<(Option<usize>, String)> {
-    let (item, value) = match generation.outputs.first()? {
-        Value::List(items) => (Some(0), nodecraft_engine::history_cmds::list_items(items, !generation.items.is_empty()).next()?),
-        value => (None, value),
-    };
-    match value {
-        Value::Media(asset) => Some((item, crate::history::suggested_name(asset.mime.essence()))),
-        _ => None,
+fn exportable(generation: &Generation) -> Result<Option<(Option<usize>, String)>, nodecraft_types::Error> {
+    let Some(value) = generation.outputs.first() else { return Ok(None) };
+    let mut first = None;
+    for leaf in nodecraft_engine::export_leaves::iter(value, !generation.items.is_empty(), &mut Default::default()) {
+        let leaf = leaf?;
+        if let Value::Media(asset) = leaf.value
+            && first.is_none()
+        {
+            first = Some((leaf.item, crate::history::suggested_name(asset.mime.essence())));
+        }
     }
+    Ok(first)
 }
 
 /// Undo and redo as on the canvas, and Escape to close; not while a field has focus.
@@ -491,10 +494,16 @@ impl View<'_> {
                         if ui.small_button("Send to canvas").on_hover_text("Add this result to the canvas as its own node").clicked() {
                             asks.push(Ask::History(generation.id, true));
                         }
-                        if let Some((item, name)) = exportable(generation)
-                            && ui.small_button("Export…").on_hover_text("Save this result to a file").clicked()
-                        {
-                            asks.push(Ask::Export(generation.id, item, name));
+                        match exportable(generation) {
+                            Ok(Some((item, name))) => {
+                                if ui.small_button("Export…").on_hover_text("Save this result to a file").clicked() {
+                                    asks.push(Ask::Export(generation.id, item, name));
+                                }
+                            }
+                            Err(error) => {
+                                ui.add_enabled(false, egui::Button::new("Export…")).on_disabled_hover_text(error.message);
+                            }
+                            Ok(None) => {}
                         }
                     });
                 });
