@@ -6,6 +6,7 @@
 mod decisions;
 mod layers;
 mod perf;
+mod shared_target;
 mod test_layout;
 mod test_step;
 mod update_feed;
@@ -38,12 +39,20 @@ commands:
   slow-tests [--threshold SECS]
                   time every test and regenerate the slow-test list in .config/nextest.toml
                   (default 5 seconds)
+  shared -- <cargo args>
+                  run any cargo command in the shared build directory (needs
+                  NODECRAFT_SHARED_TARGET); `shared --clean` empties it
   version [set X.Y.Z[-pre]]
                   print the workspace version, or set it (Cargo.toml + Cargo.lock)
   update-key <secret file>
                   make an update signing key pair: the public key goes in packaging/update-key.pub
   update-feed <artifact folder> <version>
                   write and sign the release's update feed (NODECRAFT_UPDATE_SIGNING_KEY)
+
+NODECRAFT_SHARED_TARGET=<absolute dir> makes ci, wasm, catalog-check, slow-tests and shared
+build in one directory shared by every checkout: one build at a time, and the workspace
+crates rebuilt whenever a different checkout builds (docs/development.md, \"Sharing one build
+directory\").
 ";
 
 fn main() -> ExitCode {
@@ -57,7 +66,19 @@ fn main() -> ExitCode {
             }
         };
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+    // Held until main returns: the shared build directory stays locked for the whole command.
+    let _shared = match args.first().map(String::as_str) {
+        Some("ci" | "wasm" | "catalog-check" | "slow-tests") => match share() {
+            Ok(guard) => guard,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        _ => None,
+    };
     let result = match args.first().map(String::as_str) {
+        Some("shared") => root().and_then(|root| cmd_shared(&root, &rest)),
         Some("perf") => {
             return match root().and_then(|root| perf::run(&root, &rest)) {
                 Ok(code) => ExitCode::from(code),
@@ -106,7 +127,48 @@ pub fn root() -> Result<PathBuf, String> {
 pub fn cargo(root: &Path) -> Command {
     let mut c = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     c.current_dir(root);
+    if let Some((dir, token)) = shared_target::route() {
+        // The build dir too, so a configured `build.build-dir` cannot hide fingerprints elsewhere.
+        c.env("CARGO_TARGET_DIR", dir).env("CARGO_BUILD_BUILD_DIR", dir).env(shared_target::HELD, token);
+    }
     c
+}
+
+/// Locks and routes into the shared build directory when `NODECRAFT_SHARED_TARGET` is set.
+fn share() -> Result<Option<shared_target::Guard>, String> {
+    let Some(shared) = shared_target::configured()? else { return Ok(None) };
+    let root = root()?;
+    shared_target::acquire(&root, &shared, &member_names(&root)?).map(Some)
+}
+
+/// The workspace's own package names: the artifacts a shared directory must never reuse across
+/// checkouts.
+fn member_names(root: &Path) -> Result<std::collections::BTreeSet<String>, String> {
+    let meta = metadata(root)?;
+    let packages = meta.get("packages").and_then(serde_json::Value::as_array).ok_or("cargo metadata omitted packages")?;
+    packages
+        .iter()
+        .map(|p| p.get("name").and_then(serde_json::Value::as_str).map(String::from).ok_or_else(|| "cargo metadata omitted a package name".to_string()))
+        .collect()
+}
+
+/// `cargo xtask shared -- <cargo args>` and `cargo xtask shared --clean`.
+fn cmd_shared(root: &Path, args: &[&str]) -> Result<(), String> {
+    const USAGE: &str = "usage: cargo xtask shared -- <cargo args> | cargo xtask shared --clean";
+    let shared = shared_target::configured()?.ok_or_else(|| format!("{} is not set\n{USAGE}", shared_target::ENV))?;
+    match args {
+        ["--clean"] => shared_target::clean(root, &shared),
+        ["--", cargo_args @ ..] if !cargo_args.is_empty() => {
+            if let Some(why) = shared_target::refused_argument(cargo_args) {
+                return Err(format!("refused: {why}"));
+            }
+            let _guard = shared_target::acquire(root, &shared, &member_names(root)?)?;
+            let mut c = cargo(root);
+            c.args(cargo_args);
+            run(c, &format!("cargo {}", cargo_args.join(" ")))
+        }
+        _ => Err(USAGE.into()),
+    }
 }
 
 fn run(mut cmd: Command, what: &str) -> Result<(), String> {
