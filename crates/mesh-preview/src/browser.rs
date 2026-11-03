@@ -20,13 +20,13 @@ struct Guard {
     worker: Worker,
     _message: Closure<dyn FnMut(MessageEvent)>,
     _error: Closure<dyn FnMut(Event)>,
-    _message_error: Closure<dyn FnMut(Event)>,
+    message_error: Closure<dyn FnMut(Event)>,
 }
 impl Drop for Guard {
     fn drop(&mut self) {
         self.worker.set_onmessage(None);
         self.worker.set_onerror(None);
-        self.worker.set_onmessageerror(None);
+        let _ = self.worker.remove_event_listener_with_callback("messageerror", self.message_error.as_ref().unchecked_ref());
         self.worker.terminate();
     }
 }
@@ -103,8 +103,9 @@ impl Browser {
         let message_error = error_listener(inbox.clone(), waker.clone());
         worker.set_onmessage(Some(message.as_ref().unchecked_ref()));
         worker.set_onerror(Some(error.as_ref().unchecked_ref()));
-        worker.set_onmessageerror(Some(message_error.as_ref().unchecked_ref()));
-        let guard = Guard { worker, _message: message, _error: error, _message_error: message_error };
+        let guard = Guard { worker, _message: message, _error: error, message_error };
+        // Some browsers expose the event through EventTarget without a Worker IDL handler property.
+        guard.worker.add_event_listener_with_callback("messageerror", guard.message_error.as_ref().unchecked_ref()).map_err(|_| Error::Unavailable)?;
         mark("nodecraft.mesh.started");
         self.active = Some(Active { guard, inbox, job, phase: Phase::Starting(bytes), adoption: None, deadline: now()? + START_MS, waker });
         Ok(())
