@@ -8,7 +8,7 @@ pub const MAX_QUERY_BYTES: usize = nodecraft_engine::search_cmds::MAX_QUERY_BYTE
 pub const FRAME_BYTES: usize = 512 * 1024;
 pub const FRAME_VISITS: usize = 16384;
 const _: () = assert!(nodecraft_graph::MAX_VALUE_DEPTH * nodecraft_graph::MAX_VALUE_DEPTH + 4 < FRAME_VISITS);
-fn fold(ch: char) -> impl Iterator<Item = char> {
+pub(crate) fn fold(ch: char) -> impl Iterator<Item = char> {
     ch.to_lowercase().map(|ch| if ch == 'ς' { 'σ' } else { ch })
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

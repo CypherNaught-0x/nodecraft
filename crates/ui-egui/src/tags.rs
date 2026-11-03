@@ -53,7 +53,7 @@ struct Counts {
 
 impl TagFilter {
     pub fn update_query(&mut self) {
-        let query: String = self.query_draft.trim().chars().take(QUERY_CHARS).flat_map(char::to_lowercase).collect();
+        let query: String = self.query_draft.trim().chars().take(QUERY_CHARS).flat_map(crate::search::fold).collect();
         if self.query != query {
             self.query = query;
             self.restart_query();
@@ -100,8 +100,11 @@ impl TagFilter {
         };
         let end = start.saturating_add(FRAME_NODES).min(self.presentation.len());
         for id in self.presentation.get(start..end).unwrap_or_default() {
-            if canvas.tags().get(id).is_some_and(|tag| label(&tag.title).to_lowercase().contains(&self.query)) {
-                self.query_results.push(*id);
+            if let Some(tag) = canvas.tags().get(id) {
+                let folded: String = label(&tag.title).chars().flat_map(crate::search::fold).collect();
+                if folded.contains(&self.query) {
+                    self.query_results.push(*id);
+                }
             }
         }
         self.query_cursor = (end < self.presentation.len()).then_some(end);
@@ -381,6 +384,21 @@ mod tests {
         assert_eq!(f.results, results);
         assert_eq!(f.current, Some(NodeId::from_bytes(10u128.to_be_bytes())));
     }
+    #[test]
+    fn tag_query_matches_greek_final_sigma_in_any_case() {
+        let (mut p, c, id) = fixture(1);
+        Change::PutTag { canvas: c, tag: Tag { id, title: "ΟΣ".into(), color: None } }.apply(&mut p).unwrap();
+        let mut filter = TagFilter { open: true, ..TagFilter::default() };
+        filter.tick(&p, c, 1);
+        filter.tick(&p, c, 1);
+        for query in ["ΟΣ", "ος", "οσ"] {
+            filter.query_draft = query.into();
+            filter.update_query();
+            filter.tick(&p, c, 1);
+            assert_eq!(filter.visible_tags(), &[id], "{query}");
+        }
+    }
+
     #[test]
     fn title_formatting_is_unicode_bounded() {
         let text = "界".repeat(4096);

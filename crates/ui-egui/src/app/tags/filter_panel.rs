@@ -13,17 +13,18 @@ pub(super) struct Interaction {
 
 pub(super) fn header(ui: &mut egui::Ui, allowed: bool, focus_pending: &mut bool, t: &theme::Tokens) -> (Rect, (egui::Response, egui::Response)) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), t.navigation_toolbar_height), Sense::hover());
-    let close_rect = Rect::from_min_max(Pos2::new(rect.right() - rect.height().min(rect.width()), rect.top()), rect.max);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let label_width = ui.fonts_mut(|fonts| fonts.layout_no_wrap("Close".to_owned(), font, t.text).size().x);
+    let close_width = (label_width + t.icon_size + ui.spacing().item_spacing.x + 2.0 * ui.spacing().button_padding.x).min(rect.width());
+    let close_rect = Rect::from_min_max(Pos2::new(rect.right() - close_width, rect.top()), rect.max);
     let handle = rect.with_max_x(close_rect.left());
     let title = ui.place(handle, egui::Label::new(egui::RichText::new("Tag filter").heading()).sense(Sense::focusable_noninteractive()).truncate());
     if allowed && *focus_pending && ui.is_visible() {
         title.request_focus();
         *focus_pending = false;
     }
-    let close = ui
-        .add_enabled_ui(allowed, |ui| ui.place(close_rect, egui::Button::image(Icon::Close.image(ui.ctx(), t.icon_size, t)).frame(false)))
-        .inner
-        .on_hover_text("Close tags");
+    let close =
+        ui.add_enabled_ui(allowed, |ui| ui.place(close_rect, Icon::Close.button(ui, "Close", t).truncate().frame(false))).inner.on_hover_text("Close tags");
     close.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, allowed, "Close tags"));
     (handle, (title, close))
 }
@@ -73,14 +74,12 @@ pub(super) fn body(ui: &mut egui::Ui, canvas: Option<&Canvas>, state: &mut TagFi
 
     let steps = allowed && state.active() && (state.scanning || count > 0);
     ui.horizontal_wrapped(|ui| {
-        let labels = ui.available_width() >= t.tag_panel_width - 2.0 * t.card_padding - t.navigation_gap;
         for (icon, label, accessible, enabled, command) in [
             (Icon::Previous, "Previous", "Previous match", steps, Some("canvas.tag_filter_previous")),
             (Icon::Next, "Next", "Next match", steps, Some("canvas.tag_filter_next")),
             (Icon::Clear, "Clear", "Clear tag filter", allowed && state.active(), None),
         ] {
-            let button = if labels { icon.button(ui, label, t) } else { egui::Button::image(icon.image(ui.ctx(), t.icon_size, t)) };
-            let response = ui.add_enabled(enabled, button.frame(false)).on_hover_text(accessible);
+            let response = ui.add_enabled(enabled, icon.button(ui, label, t).frame(false)).on_hover_text(accessible);
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, accessible));
             result.focus.push(response.id);
             result.buttons.push(response.id);
