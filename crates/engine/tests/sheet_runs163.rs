@@ -10,6 +10,7 @@ use nodecraft_engine::{
     Session,
     commands::{Registry, Resources, Services},
     generation_catalog::GenerationCatalog,
+    held_store::MemoryHeld,
     jobs::JobBudget,
     provider_routing::{ProviderRouting, RegisteredProvider},
     run_cmds::RunCatalog,
@@ -122,13 +123,15 @@ struct Launch<'a> {
     retry: RetryPolicy,
     min_ms: u64,
     journal: Option<&'a MemoryJournal>,
+    /// Where held results are kept, to survive a restart (#614).
+    held: Option<&'a MemoryHeld>,
     /// The project a restart reopens; a new sheet of these rows' (prompt, model) otherwise.
     project: Option<Project>,
 }
 
 impl Default for Launch<'_> {
     fn default() -> Self {
-        Self { budgets: Budgets::default(), retry: RetryPolicy::NEVER, min_ms: 0, journal: None, project: None }
+        Self { budgets: Budgets::default(), retry: RetryPolicy::NEVER, min_ms: 0, journal: None, held: None, project: None }
     }
 }
 
@@ -167,6 +170,9 @@ fn launch(mock: &MockProvider, rows: &[(&str, &str)], how: Launch<'_>) -> Fixtur
     let mut host = RunHost::new(runtime.clone(), budget.clone()).with_retry(how.retry);
     if let Some(journal) = how.journal {
         host.open_journal(Box::new(journal.clone())).unwrap();
+    }
+    if let Some(held) = how.held {
+        host.open_held(Box::new(held.clone())).unwrap();
     }
     let mut services = Services::default();
     host.register(&mut services).unwrap();
@@ -430,7 +436,7 @@ fn retry_failed_runs_only_the_rows_that_failed_and_leaves_the_successes_alone() 
 
 /// What "retry failed" runs now, from the host's jobs and held results.
 fn retry(f: &Fixture, failed: &BTreeSet<NodeId>) -> Vec<NodeId> {
-    let holds = RetryHolds::of(SHEET, &f.host.jobs(), &f.host.held_results());
+    let holds = RetryHolds::of(SHEET, &f.host.jobs(), &f.host.held_results(), f.host.possibly_charged());
     sheet_cmds::batch::retry_failed(f.session.document().canvases().get(&SHEET).unwrap(), failed, &holds)
 }
 
@@ -475,7 +481,7 @@ fn a_row_that_may_already_have_been_charged_is_not_retried() {
     let notices = drive(&mut f);
     let failed = failures(&notices);
     assert_eq!(failed, all.iter().copied().collect(), "{notices:?}");
-    let holds = RetryHolds::of(SHEET, &f.host.jobs(), &f.host.held_results());
+    let holds = RetryHolds::of(SHEET, &f.host.jobs(), &f.host.held_results(), f.host.possibly_charged());
     assert_eq!(holds.maybe_charged, [all[0]].into(), "the lost reply may have been billed; the refusal wasn't");
     assert_eq!(retry(&f, &failed), [all[1]]);
 }
@@ -575,4 +581,56 @@ fn a_rows_prompt_that_mentions_a_removed_card_is_blocked_before_anything_is_paid
     assert!(accept(&mut f, &all, &quoted).is_err());
     drive(&mut f);
     assert!(mock.requests().is_empty());
+}
+
+/// The host remembers a possibly charged row after its job view is gone: pushed out of the recent
+/// jobs by newer ones, or cleared from the queue. Only running the row again forgets it.
+#[test]
+fn a_possibly_charged_row_stays_out_of_retry_after_its_job_view_is_gone() {
+    let mut lost = MockModel::new(MockOutput::Image);
+    lost.fail = Some(MockFailure::LostReply(ErrorKind::Timeout));
+    let mock = MockProvider::new("mock", [("mock-image".to_owned(), MockModel::new(MockOutput::Image)), ("mock-flaky".to_owned(), lost)]);
+    let prompts: Vec<String> = (0..70).map(|n| format!("mug {n}")).collect();
+    let mut rows: Vec<(&str, &str)> = vec![("a lost mug", FLAKY)];
+    rows.extend(prompts.iter().map(|prompt| (prompt.as_str(), PAINTER)));
+    let mut f = launch(&mock, &rows, Launch::default());
+    let all = f.rows.clone();
+    start(&mut f, &all[..1]);
+    let failed = failures(&drive(&mut f));
+    assert_eq!(failed, [all[0]].into());
+    assert!(f.host.possibly_charged().contains(&(SHEET, all[0])));
+    // Seventy later jobs push its view out of the host's recent jobs.
+    start(&mut f, &all[1..]);
+    drive(&mut f);
+    assert!(f.host.jobs().iter().all(|job| job.node != all[0]), "its view is gone");
+    assert!(retry(&f, &failed).is_empty(), "still left out of retry failed");
+    f.host.clear_finished();
+    assert!(f.host.jobs().is_empty());
+    assert!(retry(&f, &failed).is_empty(), "and after the queue is cleared");
+    // Running it again, deliberately, starts afresh: once it succeeds nothing is remembered.
+    let fixed = MockProvider::new("mock", [("mock-flaky".to_owned(), MockModel::new(MockOutput::Image))]);
+    route(&mut f.session, &fixed, &all);
+    start(&mut f, &all[..1]);
+    drive(&mut f);
+    assert!(!f.host.possibly_charged().contains(&(SHEET, all[0])));
+    assert_eq!(history(&f, all[0]).len(), 1);
+}
+
+/// A held paid result is saved (#614): after a restart it is still held, so "retry failed" still
+/// leaves its row alone.
+#[test]
+fn a_held_result_survives_a_restart_and_stays_out_of_retry() {
+    let mock = MockProvider::new("mock", [("mock-mismatch".to_owned(), MockModel::new(MockOutput::Text))]);
+    let store = MemoryHeld::default();
+    let rows = [("a red mug", MISMATCH)];
+    let mut first = launch(&mock, &rows, Launch { held: Some(&store), ..Launch::default() });
+    let all = first.rows.clone();
+    start(&mut first, &all);
+    let failed = failures(&drive(&mut first));
+    assert!(first.host.held_results().iter().any(|view| view.node == all[0] && view.saved), "{:?}", first.host.held_results());
+    let project = first.session.document().clone();
+    drop(first);
+    let second = launch(&mock, &rows, Launch { held: Some(&store), project: Some(project), ..Launch::default() });
+    assert!(second.host.held_results().iter().any(|view| view.node == all[0]), "still held after the restart");
+    assert!(retry(&second, &failed).is_empty(), "a failure remembered by a caller is still not retried");
 }

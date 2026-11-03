@@ -24,7 +24,10 @@
   what `RetryHolds` names from the host's jobs and held results: rows still queued or running;
   rows with a paid result held for a decision (#369), which a retry would pay for again (place or
   discard it in the queue instead); and rows whose latest job may already have been charged
-  (`JobView::may_have_been_charged`: it reached the provider and wasn't refused). Those are left
+  (`JobView::may_have_been_charged`: it, or any earlier attempt of it, reached the provider and
+  wasn't refused). The run host remembers such rows (`RunHost::possibly_charged`) from the moment
+  their job ends until they run again, apart from its recent job views, which "Clear finished"
+  empties and newer jobs push out after 64; so the row stays excluded and keeps its note. Those are left
   for the person, who can run them one by one knowing the cost. A row whose latest run succeeded
   is never retried; a row that succeeded once and then failed is, because its latest run is the
   failure. So a bulk retry only re-sends jobs the provider refused or never had, plus a partial

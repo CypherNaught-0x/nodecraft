@@ -280,6 +280,8 @@ pub(super) struct Runs {
     /// What each card's jobs and held results say, rebuilt whenever they are read: a sheet asks
     /// for every row each frame, which must not scan every job per row (#163).
     cards: BTreeMap<(CanvasId, NodeId), CardJobs>,
+    /// The host's cards possibly charged with no result kept, which outlive their job views.
+    charged: BTreeSet<(CanvasId, NodeId)>,
     /// Runs the host's tasks; shut down without waiting when the app closes.
     #[cfg(not(target_arch = "wasm32"))]
     tokio: Option<tokio::runtime::Runtime>,
@@ -406,6 +408,7 @@ impl Runs {
             jobs: Vec::new(),
             held: Vec::new(),
             cards: BTreeMap::new(),
+            charged: BTreeSet::new(),
             #[cfg(not(target_arch = "wasm32"))]
             tokio: Some(tokio),
             #[cfg(not(target_arch = "wasm32"))]
@@ -828,6 +831,12 @@ impl Runs {
         self.running.contains(&(canvas, node))
     }
 
+    /// The cards whose latest job may have been charged with no result kept, until they run
+    /// again (`RunHost::possibly_charged`).
+    pub(super) fn possibly_charged(&self) -> &BTreeSet<(CanvasId, NodeId)> {
+        &self.charged
+    }
+
     /// What card `node`'s jobs and held results say.
     pub(super) fn card(&self, canvas: CanvasId, node: NodeId) -> CardJobs {
         self.cards.get(&(canvas, node)).copied().unwrap_or_default()
@@ -859,6 +868,11 @@ impl Runs {
         }
         for view in &self.held {
             cards.entry((view.canvas, view.node)).or_default().held = true;
+        }
+        // Remembered after its job view is gone ("clear finished", newer jobs pushing it out).
+        self.charged.clone_from(self.host.possibly_charged());
+        for card in &self.charged {
+            cards.entry(*card).or_default().maybe_charged = true;
         }
         self.cards = cards;
     }

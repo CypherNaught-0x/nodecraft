@@ -726,7 +726,7 @@ Generate cards as its rows, listed top to bottom by position. The commands are:
 - `sheet.rename` names a batch (one undo step); `sheet_cmds::batch::retry_failed` picks the rows
   "Retry failed" runs: those whose latest run failed or left a partial result, never a success,
   and never a row `RetryHolds` names (running, a held paid result, or a job that may already have
-  been charged).
+  been charged, which the run host remembers until the row runs again).
   A started run is the snapshot it was quoted from: an edit after the quote refuses the start, and
   an edit while a row runs leaves its result out of date. See
   [the batches decision](decisions/2026-11-03-sheet-batches.md), which also sets the sheet's

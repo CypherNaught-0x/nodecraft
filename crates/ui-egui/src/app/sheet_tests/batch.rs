@@ -59,6 +59,20 @@ output = "image"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
 
 [[model]]
+id = "mock-lost"
+provider = "mock"
+provider_model = "mock-lost"
+label = "Mock lost"
+description = "Public deterministic test fixture whose jobs fail after they ran"
+quality = 1
+latency_s = 0
+pricing = { type = "per_call", price = "0.04 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model]]
 id = "mock-slow"
 provider = "mock"
 provider_model = "mock-slow"
@@ -82,6 +96,8 @@ fn batch_making() -> Make {
     broken.fail = Some(nodecraft_provider_testkit::mock::MockFailure::Submit(nodecraft_providers::ErrorKind::UnsupportedInput));
     let mut slow = MockModel::new(MockOutput::Image);
     slow.polls = u32::MAX;
+    let mut lost = MockModel::new(MockOutput::Image);
+    lost.fail = Some(nodecraft_provider_testkit::mock::MockFailure::Job(nodecraft_providers::ErrorKind::JobFailed));
     let mock = MockProvider::new(
         "mock",
         [
@@ -89,6 +105,7 @@ fn batch_making() -> Make {
             ("mock-broken".to_owned(), broken),
             ("mock-slow".to_owned(), slow),
             ("mock-mismatch".to_owned(), MockModel::new(MockOutput::Text)),
+            ("mock-lost".to_owned(), lost),
         ],
     );
     Box::new(move |adapter, _| if adapter == "mock" { Ok(Arc::new(mock.clone())) } else { Err(Readiness::NotSetUp("not in this test".into())) })
@@ -461,4 +478,24 @@ fn an_edit_reads_each_models_contract_once_however_many_rows_share_it() {
     h.state_mut().session.dispatch("node.param_set", &json!({"canvas": S, "id": first, "name": "prompt", "value": Value::Text("edited".into())})).unwrap();
     h.step();
     assert_eq!(super::super::sheet_view::CONTRACTS_READ.with(std::cell::Cell::get), 1, "1000 rows on one model read one contract");
+}
+
+#[test]
+fn a_possibly_charged_row_keeps_its_note_and_stays_out_of_retry_after_the_queue_is_cleared() {
+    let mut h = batch("mock-square", &["a fox", "an owl"]);
+    let rows = rows_of(&h.state().session);
+    set_model(&mut h, &rows[..1], "mock-lost");
+    set_model(&mut h, &rows[1..], "mock-broken");
+    run_all(&mut h);
+    frames_until(&mut h, |app| {
+        app.runs.as_ref().is_some_and(|runs| !runs.is_busy() && runs.failure(S, rows[0]).is_some() && runs.failure(S, rows[1]).is_some())
+    });
+    h.run();
+    assert!(h.query_by_label_contains("may already have been charged").is_some(), "the job ran and failed");
+    assert!(h.query_by_label("Retry 1 failed").is_some(), "only the refused row is retried");
+    h.state_mut().runs.as_mut().unwrap().clear_finished();
+    h.run();
+    assert!(h.state().runs.as_ref().unwrap().jobs().is_empty(), "the queue forgot the jobs");
+    assert!(h.query_by_label_contains("may already have been charged").is_some(), "the note stays");
+    assert!(h.query_by_label("Retry 1 failed").is_some(), "and the row is still left out");
 }

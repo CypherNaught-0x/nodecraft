@@ -99,7 +99,7 @@ impl NodeCraftApp {
     fn retry_and_running(&self, rows: &Rows) -> (Vec<NodeId>, Vec<NodeId>, usize) {
         let Some(runs) = &self.runs else { return (Vec::new(), Vec::new(), 0) };
         // One pass over the jobs and held results, not one per row.
-        let holds = nodecraft_engine::sheet_cmds::batch::RetryHolds::of(self.canvas, runs.jobs(), runs.held());
+        let holds = nodecraft_engine::sheet_cmds::batch::RetryHolds::of(self.canvas, runs.jobs(), runs.held(), runs.possibly_charged());
         let running: Vec<NodeId> = rows.rows.iter().filter(|row| holds.running.contains(&row.id)).map(|row| row.id).collect();
         let failed: BTreeSet<NodeId> = rows.rows.iter().filter(|row| runs.failure(self.canvas, row.id).is_some()).map(|row| row.id).collect();
         let left = failed.iter().filter(|row| !holds.running.contains(row) && (holds.held.contains(row) || holds.maybe_charged.contains(row))).count();

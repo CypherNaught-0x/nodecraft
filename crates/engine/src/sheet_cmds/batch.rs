@@ -48,8 +48,10 @@ pub struct RetryHolds {
 
 impl RetryHolds {
     /// The holds on `canvas` among `jobs` (the run host's views, in its order: the latest job of a
-    /// card is its last view) and `held` results. One pass over each.
-    pub fn of(canvas: CanvasId, jobs: &[JobView], held: &[HeldView]) -> Self {
+    /// card is its last view), `held` results and `charged`, the cards the host remembers as
+    /// possibly charged after their views are gone (`RunHost::possibly_charged`). One pass over
+    /// each.
+    pub fn of(canvas: CanvasId, jobs: &[JobView], held: &[HeldView], charged: &BTreeSet<(CanvasId, NodeId)>) -> Self {
         let mut holds = Self::default();
         let mut latest: BTreeMap<NodeId, &JobView> = BTreeMap::new();
         for job in jobs.iter().filter(|job| job.canvas == canvas) {
@@ -59,6 +61,7 @@ impl RetryHolds {
             latest.insert(job.node, job);
         }
         holds.maybe_charged = latest.into_iter().filter(|(_, job)| job.may_have_been_charged()).map(|(node, _)| node).collect();
+        holds.maybe_charged.extend(charged.iter().filter(|(on, _)| *on == canvas).map(|(_, node)| *node));
         holds.held = held.iter().filter(|view| view.canvas == canvas).map(|view| view.node).collect();
         holds
     }

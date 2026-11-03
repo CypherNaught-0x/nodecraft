@@ -110,6 +110,7 @@ fn job(canvas: CanvasId, node: NodeId, n: u64, state: JobState, sent: bool) -> J
         reported_sent: false,
         partial: None,
         partial_attempt: 0,
+        unrefused_attempt: false,
         preview: None,
         made: None,
     }
@@ -140,6 +141,10 @@ fn holds_come_from_the_latest_job_of_each_row_and_the_held_results_on_this_sheet
         pending: None,
         saved: false,
     }];
-    let holds = RetryHolds::of(SHEET, &jobs, &held);
+    let holds = RetryHolds::of(SHEET, &jobs, &held, &BTreeSet::new());
     assert_eq!(holds, RetryHolds { running: [c].into(), held: [d].into(), maybe_charged: [a].into() });
+    // A card the host remembers as possibly charged stays held after its view is gone.
+    let e = NodeId::from_bytes([5; 16]);
+    let remembered: BTreeSet<(CanvasId, NodeId)> = [(SHEET, e), (PLAIN, b)].into();
+    assert_eq!(RetryHolds::of(SHEET, &[], &[], &remembered).maybe_charged, [e].into());
 }

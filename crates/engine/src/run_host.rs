@@ -237,6 +237,10 @@ pub struct RunHost {
     next_run: u64,
     /// Jobs that ended, oldest first, at most [`MAX_RECENT`].
     recent: VecDeque<JobView>,
+    /// Cards whose latest job ended possibly charged with no result kept
+    /// ([`JobView::may_have_been_charged`]), until the card runs again (#163). Kept apart from
+    /// `recent`, which forgets old views, so "retry failed" never loses track of one.
+    charged: BTreeSet<(CanvasId, NodeId)>,
     /// Where the journal is saved, shared with the runners' write-ahead.
     journal: Arc<Mutex<Shared>>,
     /// Restored jobs waiting for their provider, or for their project to be open.
@@ -320,6 +324,7 @@ impl RunHost {
             held: Vec::new(),
             next_run: 1,
             recent: VecDeque::new(),
+            charged: BTreeSet::new(),
             journal: Arc::default(),
             parked: Vec::new(),
             kept: Vec::new(),
@@ -759,9 +764,16 @@ impl RunHost {
         Ok(())
     }
 
-    /// Forgets the jobs that ended.
+    /// Forgets the jobs that ended. What [`Self::possibly_charged`] reports is kept.
     pub fn clear_finished(&mut self) {
         self.recent.clear();
+    }
+
+    /// The cards whose latest job ended possibly charged with no result kept, until each runs
+    /// again (#163); unlike [`Self::jobs`], never forgotten by "clear finished" or by older views
+    /// giving way to newer ones.
+    pub fn possibly_charged(&self) -> &BTreeSet<(CanvasId, NodeId)> {
+        &self.charged
     }
 
     /// Stops every run: runs not yet started are dropped, queued jobs are cancelled, running ones
@@ -796,12 +808,13 @@ impl RunHost {
         let mut settled = false;
         let mut journal_changed = false;
         let recent = &mut self.recent;
+        let charged = &mut self.charged;
         self.runs.retain_mut(|active| {
             // Read first: everything the driver reported before it returned is then absorbed.
             let ended = lock(&active.mailbox).ended;
             settled |= absorb(session, active, &mut notices, &self.runtime, &self.budget, &self.results);
             journal_changed |= std::mem::take(&mut active.journal_changed);
-            keep_recent(recent, active.jobs.ended.drain(..));
+            keep_recent(recent, charged, active.jobs.ended.drain(..));
             if ended {
                 // A run torn down before its steps ended (its runtime stopped) holds what it had.
                 let rest = take_by_step(&mut active.awaiting, |_, _| true);
@@ -822,7 +835,7 @@ impl RunHost {
                 resume::Ended::Settled => {}
             }
         }
-        keep_recent(&mut self.recent, self.resumes.jobs.ended.drain(..));
+        keep_recent(&mut self.recent, &mut self.charged, self.resumes.jobs.ended.drain(..));
         act_on_held(session, &self.results, &mut notices, &self.runtime, &mut self.held_preparation);
         self.estimates.pump(session, &self.runtime, &mut notices);
         if settled {
@@ -925,9 +938,13 @@ impl RunHost {
         // Queue before the driver runs, so a job that can't be prepared is never sent.
         let mut started = Vec::new();
         advance(session, &mut active, progress, &mut started, &self.runtime, &self.results);
+        // A card that runs again starts afresh: what its earlier job may have cost is past.
+        for node in active.live.values() {
+            self.charged.remove(&(canvas, *node));
+        }
         notices.push(RunNotice::Started { canvas, nodes: active.live.values().copied().collect::<BTreeSet<_>>().into_iter().collect() });
         notices.extend(started);
-        keep_recent(&mut self.recent, active.jobs.ended.drain(..));
+        keep_recent(&mut self.recent, &mut self.charged, active.jobs.ended.drain(..));
         let events = Arc::clone(&active.mailbox);
         let ended = Ended(Arc::clone(&active.mailbox));
         let runner: Arc<dyn JobRunner> = active.runner.clone();
@@ -966,8 +983,14 @@ const MAX_KEPT_PARTIALS: usize = 4 * nodecraft_providers::MAX_STREAMED_TEXT;
 /// Adds jobs that ended to `recent`, dropping the oldest past [`MAX_RECENT`]. A card shows only
 /// its newest job's stopped answer, so older ones of that node are dropped, and the oldest go
 /// once they add up to more than [`MAX_KEPT_PARTIALS`].
-fn keep_recent(recent: &mut VecDeque<JobView>, ended: impl Iterator<Item = JobView>) {
+fn keep_recent(recent: &mut VecDeque<JobView>, charged: &mut BTreeSet<(CanvasId, NodeId)>, ended: impl Iterator<Item = JobView>) {
     for view in ended {
+        // Every ended view passes here before `recent` can drop it.
+        if view.may_have_been_charged() {
+            charged.insert((view.canvas, view.node));
+        } else if view.state == JobState::Done {
+            charged.remove(&(view.canvas, view.node));
+        }
         if recent.len() >= MAX_RECENT {
             recent.pop_front();
         }
@@ -1126,6 +1149,7 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
         reported_sent: false,
         partial: None,
         partial_attempt: 0,
+        unrefused_attempt: false,
         preview: None,
         made: None,
     };
