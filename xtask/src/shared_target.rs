@@ -104,7 +104,15 @@ fn inside(path: &Path, dir: &Path) -> bool {
 /// Whether a live ancestor xtask holds `shared`: its token is in our environment and still in the
 /// owner file.
 fn held(shared: &Shared) -> bool {
-    std::env::var(HELD).is_ok_and(|token| !token.is_empty() && owner_token(&shared.path).as_deref() == Some(token.as_str()))
+    let token_matches = std::env::var(HELD).is_ok_and(|token| !token.is_empty() && owner_token(&shared.path).as_deref() == Some(token.as_str()));
+    // A holder that was killed leaves its token behind: the lock must also really be held now.
+    token_matches && lock_is_held(&shared.path)
+}
+
+fn lock_is_held(dir: &Path) -> bool {
+    let Ok(file) = OpenOptions::new().read(true).write(true).open(dir.join(LOCK)) else { return false };
+    // Taking it here means nobody holds it; dropping the file releases it again at once.
+    matches!(file.try_lock(), Err(TryLockError::WouldBlock))
 }
 
 fn owner_token(dir: &Path) -> Option<String> {
@@ -203,8 +211,14 @@ fn lock(root: &Path, dir: &Path) -> Result<Guard, String> {
         }
         let token = token()?;
         let tmp = dir.join(format!("{OWNER}.{}", std::process::id()));
-        fs::write(&tmp, format!("{token}\n{} (pid {})\n", root.display(), std::process::id())).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        fs::rename(&tmp, dir.join(OWNER)).map_err(|e| format!("write {}: {e}", dir.join(OWNER).display()))?;
+        let owner = format!("{token}\n{} (pid {})\n", root.display(), std::process::id());
+        fs::write(&tmp, &owner).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        if fs::rename(&tmp, dir.join(OWNER)).is_err() {
+            // Windows can refuse the rename while something else has the file open; only the lock
+            // holder writes it, so a direct write is safe too.
+            let _ = fs::remove_file(&tmp);
+            fs::write(dir.join(OWNER), &owner).map_err(|e| format!("write {}: {e}", dir.join(OWNER).display()))?;
+        }
         return Ok(Guard { lock: Some((file, dir.to_path_buf(), token)) });
     }
     Err(format!("{} keeps being replaced while waiting for it; is something cleaning the directory?", path.display()))
@@ -219,9 +233,18 @@ fn same_file(file: &File, path: &Path) -> bool {
     }
 }
 
-/// Windows refuses to delete a file another process has open, so the named file is the held one
-/// whenever it exists.
-#[cfg(not(unix))]
+/// Rust opens files allowing deletion on Windows, so the held file can be replaced too: compare
+/// creation times, which a recreated file does not share.
+#[cfg(windows)]
+fn same_file(file: &File, path: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    match (file.metadata(), fs::metadata(path)) {
+        (Ok(held), Ok(named)) => held.creation_time() == named.creation_time(),
+        _ => false,
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 fn same_file(_file: &File, path: &Path) -> bool {
     path.is_file()
 }
@@ -309,12 +332,13 @@ fn package_of(entry: &str) -> Option<&str> {
 
 /// Cargo arguments `cargo xtask shared --` refuses: they would skip the lock or the invalidation.
 pub fn refused_argument(args: &[&str]) -> Option<&'static str> {
-    if args.first().is_some_and(|command| *command == "clean") {
-        return Some("`cargo clean` would delete the lock; use `cargo xtask shared --clean`");
-    }
     for arg in args {
         if *arg == "--" {
             break;
+        }
+        // Anywhere before `--`: options such as `-v` or `+toolchain` may come first.
+        if *arg == "clean" {
+            return Some("`cargo clean` would delete the lock; use `cargo xtask shared --clean`");
         }
         if *arg == "--target-dir" || arg.starts_with("--target-dir=") {
             return Some("`--target-dir` would build outside the shared directory");
@@ -421,7 +445,10 @@ mod tests {
         let token = owner_token(dir.path()).unwrap();
         assert_eq!(token.len(), 32);
         assert_eq!(guard.lock.as_ref().map(|(_, _, t)| t.as_str()), Some(token.as_str()));
+        let shared = Shared { path: dir.path().to_path_buf(), canonical: dir.path().canonicalize().unwrap() };
+        assert!(lock_is_held(&shared.path), "a second handle sees the live lock");
         drop(guard);
+        assert!(!lock_is_held(&shared.path), "released with its holder");
         assert_eq!(owner_token(dir.path()), None, "an inherited token no longer skips the lock");
         let again = lock(Path::new("/checkout"), dir.path()).unwrap();
         assert_ne!(owner_token(dir.path()), Some(token), "every holder has its own token");
@@ -454,6 +481,9 @@ mod tests {
     #[test]
     fn arguments_that_escape_the_lock_or_the_invalidation_are_refused() {
         assert!(refused_argument(&["clean"]).is_some());
+        assert!(refused_argument(&["-v", "clean"]).is_some());
+        assert!(refused_argument(&["+stable", "clean", "-p", "xtask"]).is_some());
+        assert!(refused_argument(&["test", "-p", "xtask", "--", "clean"]).is_none(), "a test filter named clean passes");
         assert!(refused_argument(&["build", "--target-dir", "/elsewhere"]).is_some());
         assert!(refused_argument(&["build", "--target-dir=/elsewhere"]).is_some());
         assert!(refused_argument(&["test", "--manifest-path", "tools/eyecandy/Cargo.toml"]).is_some());
