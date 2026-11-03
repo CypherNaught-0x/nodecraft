@@ -112,7 +112,8 @@ openai-images = "http://127.0.0.1:4000/v1" # /images/generations and /images/edi
     `openai` set, OpenAI Images needs its own entry, and OpenAI speech and transcription
     (`openai-audio`, which takes no base URL) can't run until the entry is removed;
   - `keys.test` answers *unverifiable* for that account and sends nothing;
-  - the desktop agent panel follows the OpenAI or Anthropic base URL, or refuses.
+  - the desktop agent panel follows the OpenAI or Anthropic base URL, or refuses. It also
+    refuses until a restart if the file now names a different base URL than at startup.
 - **The address.** A base URL must be HTTPS, or plain HTTP to a local address: loopback, a
   private (RFC 1918) or link-local IPv4 address, a link-local or unique local IPv6 address, or
   `localhost`. Carrier-grade NAT (`100.64.0.0/10`, which includes Tailscale's addresses) and

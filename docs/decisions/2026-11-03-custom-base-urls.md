@@ -59,9 +59,11 @@ The cost part applies the
   URL can hold a key. The panic hunt fails errors that echo their input.
 - **No fallback.** Each of these refuses its adapter before planning, with the reason:
   - an entry that is set but can't be used;
-  - an entry that isn't text (kept as written, so a save writes it back);
+  - an entry that isn't text (kept as written, so a save writes it back). TOML `nan` and `inf`
+    read as null and are kept as `false`;
   - a key spelled like a provider's with different case or `_` (`OpenAI`, `openai_images`);
-  - a `base_urls` value that isn't a table (kept under `*`, which refuses every listed provider).
+  - a `base_urls` value that isn't a table, or a table of more than 64 entries (marked with `*`,
+    which refuses every listed provider).
   - NodeCraft never sends the key to the default host instead.
   - Other unknown keys are kept and ignored.
 - **Browser storage.** A stored base URL that no longer passes is kept and refuses at build time.
@@ -85,9 +87,13 @@ provider's own API:
   (`custom_endpoints::shared_key_conflict`). `openai-audio` takes no base URL, so it stays
   refused until the entry is removed.
 - **`keys.test`.** It answers *unverifiable* for that account and sends nothing
-  (`custom_endpoints::account_redirected`, read from current settings at each check).
-- **The desktop agent panel.** It follows the OpenAI or Anthropic base URL, or refuses, under the
-  same shared-key rule.
+  (`custom_endpoints::account_redirected`). On the desktop it checks both the settings loaded at
+  startup and the file as it is now, and either is enough. So an unreadable file never lowers
+  protection below what was loaded.
+- **The desktop agent panel.** It follows the OpenAI or Anthropic base URL with the
+  custom-endpoint client (no spend header, no resend), or refuses, under the same shared-key
+  rule. Both views must allow the request and name the same base URL. If they differ, it asks
+  for a restart.
 - **The browser.** Its `fetch` follows redirects itself and drops only `Authorization` across
   origins. So in the browser only OpenAI chat (bearer key) takes a base URL. Anthropic sends
   `x-api-key`, which a redirect would carry to another host. OpenAI Images needs a no-redirect
