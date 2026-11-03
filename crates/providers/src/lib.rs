@@ -78,7 +78,7 @@ mod task;
 pub mod tripo;
 
 pub use delivery::{HttpFailure, MAX_STREAMED_TEXT, MAX_TEXT_DELTA, RequestContext, SubmitContext};
-pub use error::{ErrorKind, ProviderError};
+pub use error::{CONTEXT_LIMIT, CONTEXT_LIMIT_FIX, ErrorKind, ProviderError, is_context_limit_text};
 #[cfg(feature = "http")]
 pub use http::ReqwestHttp;
 pub use http::{ChunkSink, Http, HttpMethod, HttpRequest, HttpResponse, MAX_REDIRECTS, USER_AGENT};

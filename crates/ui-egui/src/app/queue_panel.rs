@@ -6,7 +6,7 @@
 //! put on the canvas, or discard. None of these calls the provider again.
 use super::*;
 use nodecraft_engine::run_host::{HeldAction, HeldView, MAX_HELD};
-use nodecraft_engine::run_jobs::{JobState, JobView, cause_label, cause_of, fix_hint};
+use nodecraft_engine::run_jobs::{JobState, JobView, cause_of, failure_hint, failure_label};
 
 /// What a click in the panel asked for, applied after it is drawn.
 enum Action {
@@ -177,7 +177,7 @@ impl NodeCraftApp {
         };
         let status = ui.label(egui::RichText::new(view.status()).color(color));
         if let JobState::Failed { reason, cause } = &view.state {
-            let hint = cause.or_else(|| cause_of(reason)).map(fix_hint);
+            let hint = cause.or_else(|| cause_of(reason)).map(|cause| failure_hint(cause, reason));
             status.on_hover_text(hint.map_or_else(|| reason.clone(), |hint| format!("{reason}\n\n{hint}")));
         }
         ui.label(price(view));
@@ -219,7 +219,7 @@ pub(super) fn card_status(runs: &super::runs::Runs, canvas: CanvasId, node: Node
     }
     let why = runs.failure(canvas, node)?;
     let cause = cause_of(why);
-    let label = cause.map_or_else(|| "Run failed".to_owned(), |cause| format!("Run failed: {}", cause_label(cause)));
-    let hover = cause.map_or_else(|| why.to_owned(), |cause| format!("{why}\n\n{}", fix_hint(cause)));
+    let label = cause.map_or_else(|| "Run failed".to_owned(), |cause| format!("Run failed: {}", failure_label(cause, why)));
+    let hover = cause.map_or_else(|| why.to_owned(), |cause| format!("{why}\n\n{}", failure_hint(cause, why)));
     Some((label, t.danger, Some(hover)))
 }
