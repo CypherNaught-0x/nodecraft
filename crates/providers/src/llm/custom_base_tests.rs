@@ -28,7 +28,7 @@ fn the_default_endpoint_is_unchanged_when_no_base_url_is_set() {
     assert_eq!(client.custom_base_url(), None);
     assert!(client.retry_ambiguous_submit(), "the default endpoint keeps its retry policy");
     let Submission::Finished(done) = block_on(client.submit(&job())).unwrap() else { panic!("queued") };
-    assert_eq!(done.usage.cost, None, "only a LiteLLM proxy profile's spend header is read");
+    assert_eq!(done.usage.cost, Some(Money::new(Currency::USD, 1200)), "an endpoint at its own address reads the header as before");
     let request = http.request();
     assert_eq!(request.url, "https://api.openai.com/v1/chat/completions");
     assert!(request.headers.contains(&("Authorization".into(), "Bearer sk-fixture".into())));
@@ -71,14 +71,10 @@ fn anthropic_can_be_served_from_a_custom_base_url_too() {
 }
 
 #[test]
-fn a_litellm_proxy_is_terminal_on_an_uncertain_submit_and_a_zero_cost_is_no_report() {
-    let proxy = LlmClient::new(Endpoint::litellm("http://127.0.0.1:4000", None), Canned::new(200, REPLY));
-    assert!(!proxy.retry_ambiguous_submit());
+fn the_litellm_profile_is_unchanged() {
+    let proxy = LlmClient::new(Endpoint::litellm("http://127.0.0.1:4000", None), Canned::with_headers(200, REPLY, cost_header()));
+    assert!(proxy.retry_ambiguous_submit(), "its policy is the #489 catalog work's to change");
     assert_eq!(proxy.custom_base_url(), None, "the LiteLLM profile is its own provider, not a catalog provider moved elsewhere");
-    let zero = LlmClient::new(
-        Endpoint::litellm("http://127.0.0.1:4000", None),
-        Canned::with_headers(200, REPLY, vec![("x-litellm-response-cost".into(), "0".into())]),
-    );
-    let Submission::Finished(done) = block_on(zero.submit(&job())).unwrap() else { panic!("queued") };
-    assert_eq!(done.usage.cost, None);
+    let Submission::Finished(done) = block_on(proxy.submit(&job())).unwrap() else { panic!("queued") };
+    assert_eq!(done.usage.cost, Some(Money::new(Currency::USD, 1200)));
 }

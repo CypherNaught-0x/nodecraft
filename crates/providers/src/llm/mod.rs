@@ -528,16 +528,11 @@ impl LlmClient {
         Self { endpoint, http, custom: true }
     }
 
-    /// Whether the person set where this endpoint lives: a custom base URL, or a LiteLLM proxy.
-    fn user_set_base(&self) -> bool {
-        self.custom || self.endpoint.id == "litellm"
-    }
-
-    /// The spend a reply's headers report, read only from a LiteLLM proxy profile: any other
-    /// server could send the header, and a custom base URL serving a catalog model keeps the
-    /// catalog's price (#960, #961).
+    /// The spend a reply's headers report. Never read from a custom base URL: any server can
+    /// send the header, and a catalog model there keeps the catalog's price (#960, #961).
+    /// Endpoints at their own address read it as before.
     fn reported_cost(&self, headers: &[(String, String)]) -> Option<Money> {
-        if self.custom || self.endpoint.id != "litellm" {
+        if self.custom {
             return None;
         }
         reported_cost(headers)
@@ -775,10 +770,8 @@ impl StreamState {
     }
 }
 
-/// LiteLLM's `x-litellm-response-cost`. A `0` is no report: LiteLLM writes it when it has no
-/// price for the model (#489, #961).
 fn reported_cost(headers: &[(String, String)]) -> Option<Money> {
-    headers.iter().find(|(n, _)| n == "x-litellm-response-cost").and_then(|(_, v)| v.trim().parse::<f64>().ok()).and_then(usd).filter(|cost| cost.micros > 0)
+    headers.iter().find(|(n, _)| n == "x-litellm-response-cost").and_then(|(_, v)| v.trim().parse::<f64>().ok()).and_then(usd)
 }
 
 /// Turns a provider job into a chat request: the conversation from its inputs (`system` text,
@@ -838,9 +831,9 @@ impl Provider for LlmClient {
     fn retry_ambiguous_submit(&self) -> bool {
         // Azure v1 offers no idempotency guarantee. A lost synchronous reply may already
         // have been billed; preserve legacy endpoint policies while making Azure terminal.
-        // A server the person points at (a custom base URL or a LiteLLM proxy) is assumed to
-        // ignore idempotency keys too, whatever model it serves (#960, #961).
-        self.endpoint.id != "azure-openai" && !self.user_set_base()
+        // A custom base URL is assumed to ignore idempotency keys too, whatever model it serves
+        // (#960, #961). Endpoints at their own address keep their policy.
+        self.endpoint.id != "azure-openai" && !self.custom
     }
 
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
