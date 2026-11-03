@@ -39,9 +39,19 @@ impl Snapshot {
             && Arc::ptr_eq(&self.identity, &session.view_identity())
             && self.catalog.as_ref().is_none_or(|stamp| session.generation_catalog_stamp().ok().as_ref() == Some(stamp))
     }
+    #[cfg(test)]
     pub fn read(session: &Session, canvas: CanvasId, ids: &BTreeSet<NodeId>) -> Result<Self, Error> {
-        if !(2..=nodecraft_engine::bulk_cmds::MAX_TARGETS).contains(&ids.len()) {
-            return Err(invalid("Select between 2 and 256 nodes to edit shared parameters."));
+        Self::read_from(session, canvas, ids, 2)
+    }
+    /// [`Self::read`] for at least `min` nodes: a Batch Generate sheet (#163) edits one row's
+    /// settings here too, since a row has no card body of its own.
+    pub fn read_from(session: &Session, canvas: CanvasId, ids: &BTreeSet<NodeId>, min: usize) -> Result<Self, Error> {
+        if !(min.max(1)..=nodecraft_engine::bulk_cmds::MAX_TARGETS).contains(&ids.len()) {
+            return Err(invalid(if min <= 1 {
+                "Select between 1 and 256 rows to edit their settings."
+            } else {
+                "Select between 2 and 256 nodes to edit shared parameters."
+            }));
         }
         let graph = session.document().canvases().get(&canvas).ok_or_else(|| invalid("The selected canvas is unavailable."))?;
         let selected = ids.iter().map(|id| graph.nodes().get(id).ok_or_else(|| invalid("A selected node is unavailable."))).collect::<Result<Vec<_>, _>>()?;
@@ -187,6 +197,22 @@ impl Refusal {
     }
 }
 
+/// How the panel is shown: the canvas's bulk panel, or a sheet's row settings (#163).
+pub(crate) struct Place {
+    pub title: &'static str,
+    /// What a selected target is called.
+    pub noun: &'static str,
+    /// The fewest targets it is shown for.
+    pub min: usize,
+    /// How many control rows below the top of the window it starts, at the right edge.
+    pub rows_down: f32,
+}
+impl Place {
+    pub const CANVAS: Self = Self { title: "Shared parameters", noun: "node", min: 2, rows_down: 1.0 };
+    /// Below a sheet's title and two toolbars, over the right of its table.
+    pub const SHEET: Self = Self { title: "Row settings", noun: "row", min: 1, rows_down: 5.0 };
+}
+
 #[derive(Default)]
 pub(crate) struct Panel {
     snapshot: Option<Snapshot>,
@@ -205,7 +231,21 @@ impl Panel {
         enabled: bool,
         t: &crate::theme::Tokens,
     ) -> (bool, Option<Intent>) {
-        if ids.len() < 2 {
+        self.show_as(ui, session, canvas, ids, enabled, &Place::CANVAS, t)
+    }
+    /// [`Self::show`] titled, placed and admitting as `place` says.
+    #[allow(clippy::too_many_arguments)]
+    pub fn show_as(
+        &mut self,
+        ui: &egui::Ui,
+        session: &Session,
+        canvas: CanvasId,
+        ids: &BTreeSet<NodeId>,
+        enabled: bool,
+        place: &Place,
+        t: &crate::theme::Tokens,
+    ) -> (bool, Option<Intent>) {
+        if ids.len() < place.min.max(1) {
             *self = Self::default();
             return (false, None);
         }
@@ -216,7 +256,7 @@ impl Panel {
             self.editor = Default::default();
             self.editor.set_draft_limit(16 * 1024 * 1024);
             self.editing_mixed.clear();
-            match Snapshot::read(session, canvas, ids) {
+            match Snapshot::read_from(session, canvas, ids, place.min) {
                 Ok(snapshot) => {
                     self.snapshot = Some(snapshot);
                     self.refused = None;
@@ -234,14 +274,17 @@ impl Panel {
         let text_owner = ui.ctx().memory(|memory| memory.focused()).filter(|id| egui::TextEdit::load_state(ui.ctx(), *id).is_some());
         let viewport = ui.max_rect();
         let mut request = None;
-        let shown = egui::Window::new("Shared parameters")
+        let shown = egui::Window::new(place.title)
             .id(ui.id().with("bulk_parameters"))
-            .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, t.control_row_height + t.navigation_margin])
+            .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, t.control_row_height * place.rows_down + t.navigation_margin])
             .default_width(t.card_width)
             .resizable(false).collapsible(false).movable(false)
             .frame(egui::Frame::window(ui.style()).fill(t.panel_fill).stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke)).corner_radius(t.panel_radius))
             .show(ui.ctx(), |ui| {
-                ui.label(format!("{} selected nodes", ids.len()));
+                ui.label(match (ids.len(), place.noun) {
+                    (1, noun) => format!("1 selected {noun}"),
+                    (n, noun) => format!("{n} selected {noun}s"),
+                });
                 if let Some(snapshot) = &self.snapshot {
                     ui.label(&snapshot.descriptor.label);
                     if snapshot.model_repair_only {

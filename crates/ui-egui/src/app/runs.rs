@@ -810,6 +810,11 @@ impl Runs {
         self.running.contains(&(canvas, node))
     }
 
+    /// Whether card `node`'s latest job was cancelled, and nothing has run for it since.
+    pub(super) fn cancelled(&self, canvas: CanvasId, node: NodeId) -> bool {
+        self.jobs.iter().rev().find(|view| view.canvas == canvas && view.node == node).is_some_and(|view| view.state == JobState::Cancelled)
+    }
+
     pub(super) fn failure(&self, canvas: CanvasId, node: NodeId) -> Option<&str> {
         self.failed.get(&(canvas, node)).map(String::as_str)
     }

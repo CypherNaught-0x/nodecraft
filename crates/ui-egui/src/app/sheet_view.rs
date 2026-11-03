@@ -36,6 +36,10 @@ pub(super) struct SheetView {
     /// The open sheet's image sources an image variable can list, with the canvas and revision
     /// they were read at.
     sources: Option<(CanvasId, u64, Sources)>,
+    /// The row settings panel is open for the selected rows.
+    pub(super) settings: bool,
+    /// The sheet's new name while it is being renamed.
+    pub(super) renaming: Option<String>,
 }
 
 /// Image sources on a sheet with their titles, top to bottom.
@@ -85,10 +89,11 @@ pub(super) enum StatusFilter {
     OutOfDate,
     Partial,
     Failed,
+    Cancelled,
 }
 
 impl StatusFilter {
-    const ALL: [Self; 7] = [Self::All, Self::NotRun, Self::Running, Self::Done, Self::OutOfDate, Self::Partial, Self::Failed];
+    const ALL: [Self; 8] = [Self::All, Self::NotRun, Self::Running, Self::Done, Self::OutOfDate, Self::Partial, Self::Failed, Self::Cancelled];
 
     fn label(self) -> &'static str {
         match self {
@@ -99,6 +104,7 @@ impl StatusFilter {
             Self::OutOfDate => "Out of date",
             Self::Partial => "Partial",
             Self::Failed => "Failed",
+            Self::Cancelled => "Cancelled",
         }
     }
 }
@@ -185,6 +191,30 @@ struct Row {
     position: Option<usize>,
     /// What the grid shows of the active result: its first image, or the start of its text.
     preview: Preview,
+    /// The row's aspect-ratio setting, when its model's parameter contract has one (#162).
+    aspect: Option<Aspect>,
+}
+
+/// A row's aspect-ratio parameter, found by its meaning in the model's contract rather than by
+/// name, with its choices and the value it has now.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Aspect {
+    pub(super) name: String,
+    pub(super) options: Vec<(String, String)>,
+    pub(super) current: String,
+    /// The schema default, shown while the row sets none.
+    pub(super) default: String,
+}
+
+impl Aspect {
+    /// This model's aspect setting as `node` has it.
+    fn of(&self, node: &Node) -> Self {
+        let current = match node.params.get(&self.name) {
+            Some(Value::Text(value)) => value.clone(),
+            _ => self.default.clone(),
+        };
+        Self { current, ..self.clone() }
+    }
 }
 
 /// What a grid tile shows of a row's active result.
@@ -228,6 +258,7 @@ impl Row {
             results: value.get("results").and_then(Json::as_u64).and_then(|n| usize::try_from(n).ok()).unwrap_or(0),
             position: value.get("position").and_then(Json::as_u64).and_then(|n| usize::try_from(n).ok()),
             preview: Preview::Nothing,
+            aspect: None,
         })
     }
 }
@@ -270,6 +301,20 @@ enum Action {
     Export(Vec<NodeId>),
     /// Makes the row's newer (true) or older result active.
     Step(NodeId, bool),
+    /// Opens the model picker for these rows.
+    Model(Vec<NodeId>),
+    /// Sets one row's parameter.
+    Param(NodeId, String, Value),
+    /// Wires the reference into these rows, or every row (a shared reference).
+    Wire(NodeId, Option<Vec<NodeId>>),
+    /// Unwires the reference from these rows, or every row.
+    Unwire(NodeId, Option<Vec<NodeId>>),
+    /// Runs again the rows whose last run failed or left a partial result.
+    Retry(Vec<NodeId>),
+    /// Cancels these rows' queued and running jobs.
+    Cancel(Vec<NodeId>),
+    /// Renames the sheet.
+    Rename(String),
 }
 
 impl NodeCraftApp {
@@ -297,6 +342,8 @@ impl NodeCraftApp {
         self.sheet.filter.clear();
         self.sheet.status = StatusFilter::All;
         self.sheet.mode = ViewMode::Table;
+        self.sheet.settings = false;
+        self.sheet.renaming = None;
         self.palette = None;
         self.turn_into = None;
         self.centred = false;
@@ -370,6 +417,13 @@ impl NodeCraftApp {
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
         }
         self.sheet_table(ui, viewport, t, blocked);
+        self.sheet_settings(ui, !blocked, t);
+        self.bulk.finish_frame(ui.ctx());
+        // Files dropped onto a sheet become sources on it, to wire into rows as references.
+        self.poll_drop(ui, t);
+        if !blocked {
+            self.drop_files(ui, viewport, t);
+        }
         self.show_notices(ui, viewport, t);
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
@@ -481,7 +535,28 @@ impl NodeCraftApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
             ui.add_enabled_ui(!blocked, |ui| {
                 ui.horizontal(|ui| {
-                    ui.heading(egui::RichText::new(title).color(t.text));
+                    match self.sheet.renaming.as_mut() {
+                        Some(name) => {
+                            let label = ui.label("Name");
+                            let field = ui
+                                .add(egui::TextEdit::singleline(name).desired_width(t.sheet_title_width).id(egui::Id::new("sheet_rename")))
+                                .labelled_by(label.id);
+                            let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            let can = !name.trim().is_empty();
+                            if (ui.add_enabled(can, egui::Button::new("Save name")).clicked() || entered) && can {
+                                actions.push(Action::Rename(name.trim().to_owned()));
+                            }
+                            if ui.button("Cancel rename").clicked() {
+                                self.sheet.renaming = None;
+                            }
+                        }
+                        None => {
+                            ui.heading(egui::RichText::new(&title).color(t.text));
+                            if ui.small_button("Rename").on_hover_text("Name this batch; the Sheets panel lists it by name").clicked() {
+                                self.sheet.renaming = Some(title.clone());
+                            }
+                        }
+                    }
                     ui.label(egui::RichText::new(format!("{} rows", rows.rows.len())).color(t.text_muted));
                 });
                 ui.add_space(t.control_gap);
@@ -548,6 +623,8 @@ impl NodeCraftApp {
                         actions.push(Action::Export(export.rows));
                     }
                 });
+                ui.add_space(t.control_gap);
+                self.sheet_tools(ui, &rows, &selected, &mut actions);
                 if self.sheet.template.is_some() {
                     ui.add_space(t.control_gap);
                     self.template_panel(ui, t, rows.rows.len(), &mut actions);
@@ -589,9 +666,9 @@ impl NodeCraftApp {
                 }
                 let gap = t.control_gap * 2.0;
                 ui.spacing_mut().item_spacing = Vec2::new(gap, t.control_gap);
-                // The prompt takes what the other columns leave, but never less than a card.
-                let fixed = t.sheet_index_width * 2.0 + t.sheet_column_width * 5.0 + gap * 7.0;
-                let prompt_width = (ui.available_width() - fixed).max(t.card_width);
+                // The prompt takes what the other columns leave, but never less than two of them.
+                let fixed = t.sheet_index_width * 2.0 + t.sheet_column_width * 6.0 + gap * 8.0;
+                let prompt_width = (ui.available_width() - fixed).max(t.sheet_column_width * 2.0);
                 let widths = Columns { index: t.sheet_index_width, prompt: prompt_width, other: t.sheet_column_width };
                 ui.horizontal(|ui| {
                     for (label, width) in [
@@ -599,6 +676,7 @@ impl NodeCraftApp {
                         ("#", widths.index),
                         ("Prompt", widths.prompt),
                         ("Model", widths.other),
+                        ("Aspect", widths.other),
                         ("References", widths.other),
                         ("Result", widths.other),
                         ("Status", widths.other),
@@ -664,7 +742,31 @@ impl NodeCraftApp {
                 }
             }
             let cell = |ui: &mut egui::Ui, text: egui::RichText| ui.add_sized([widths.other, height], egui::Label::new(text).truncate());
-            cell(ui, egui::RichText::new(if row.model.is_empty() { "No model".to_owned() } else { line(&row.model) }));
+            let model = if row.model.is_empty() { "No model".to_owned() } else { line(&row.model) };
+            let picked = ui.add_sized([widths.other, height], egui::Button::new(&model).truncate()).on_hover_text("Change this row's model");
+            picked.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Model of row {}: {model}", index.saturating_add(1))));
+            if picked.clicked() {
+                actions.push(Action::Model(vec![row.id]));
+            }
+            match &row.aspect {
+                Some(aspect) => {
+                    let mut chosen = aspect.current.clone();
+                    let shown = aspect.options.iter().find(|(value, _)| *value == aspect.current).map_or("Default", |(_, label)| label.as_str());
+                    let combo = egui::ComboBox::from_id_salt(("sheet_aspect", row.id)).width(widths.other).selected_text(shown).show_ui(ui, |ui| {
+                        for (value, label) in &aspect.options {
+                            ui.selectable_value(&mut chosen, value.clone(), label);
+                        }
+                    });
+                    let number = index.saturating_add(1);
+                    combo.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, format!("Aspect of row {number}")));
+                    if chosen != aspect.current {
+                        actions.push(Action::Param(row.id, aspect.name.clone(), Value::Text(chosen)));
+                    }
+                }
+                None => {
+                    cell(ui, egui::RichText::new("Not offered").color(t.text_muted)).on_hover_text("This row's model has no aspect-ratio setting");
+                }
+            }
             cell(ui, egui::RichText::new(&row.references)).on_hover_text("Shared references are wired into every row");
             let (result, color) = match row.result.as_str() {
                 "complete" if row.stale => ("Out of date", t.stale),
@@ -802,6 +904,9 @@ impl NodeCraftApp {
             }
             if runs.failure(self.canvas, row.id).is_some() {
                 return StatusFilter::Failed;
+            }
+            if runs.cancelled(self.canvas, row.id) {
+                return StatusFilter::Cancelled;
             }
         }
         match row.result.as_str() {
@@ -1008,6 +1113,9 @@ impl NodeCraftApp {
             if let Some(reason) = runs.failure(self.canvas, id) {
                 return egui::RichText::new(line(reason)).color(t.danger);
             }
+            if runs.cancelled(self.canvas, id) {
+                return egui::RichText::new("Cancelled").color(t.text_muted);
+            }
         }
         egui::RichText::new("").color(t.text_muted)
     }
@@ -1028,9 +1136,18 @@ impl NodeCraftApp {
         };
         if let Some(sheet) = self.session.document().canvases().get(&canvas) {
             let chars = self.theme.tokens().preview_chars;
+            // Rows mostly share a few models: read each model's contract once per revision.
+            let mut contracts = BTreeMap::new();
             for row in &mut rows.rows {
                 if let Some(node) = sheet.nodes().get(&row.id) {
                     row.preview = preview_of(node, chars);
+                    let model = match node.params.get(nodecraft_nodes::generation::MODEL) {
+                        Some(Value::Text(model)) => model.as_str(),
+                        _ => "",
+                    };
+                    let key = (node.kind.as_str(), model, node.inputs.len());
+                    let found = contracts.entry(key).or_insert_with(|| aspect_of(&self.session, node));
+                    row.aspect = found.as_ref().map(|aspect| aspect.of(node));
                 }
             }
         }
@@ -1077,6 +1194,33 @@ impl NodeCraftApp {
                 Ok(())
             }
             Action::Step(row, newer) => self.dispatch_sheet(if newer { "history.next" } else { "history.previous" }, json!({"canvas": canvas, "id": row})),
+            Action::Model(rows) => {
+                // The picker belongs to exactly the rows it was opened for.
+                self.selection.clear();
+                for row in &rows {
+                    self.selection.toggle(*row);
+                }
+                let revision = self.session.revision();
+                self.open_model_picker(canvas, rows, revision)
+            }
+            Action::Param(row, name, value) => self.dispatch_sheet("node.param_set", json!({"canvas": canvas, "id": row, "name": name, "value": value})),
+            Action::Wire(reference, rows) => self.sheet_seed().and_then(|seed| {
+                let mut params = json!({"canvas": canvas, "seed": seed, "reference": reference});
+                if let Some(rows) = rows {
+                    params["rows"] = json!(rows);
+                }
+                self.dispatch_sheet("sheet.reference_wire", params)
+            }),
+            Action::Unwire(reference, rows) => {
+                let mut params = json!({"canvas": canvas, "reference": reference});
+                if let Some(rows) = rows {
+                    params["rows"] = json!(rows);
+                }
+                self.dispatch_sheet("sheet.reference_unwire", params)
+            }
+            Action::Retry(rows) => self.request_runs(rows, super::generate::RunKind::Generate),
+            Action::Cancel(rows) => self.cancel_rows(&rows),
+            Action::Rename(title) => self.dispatch_sheet("sheet.rename", json!({"canvas": canvas, "title": title})).map(|()| self.sheet.renaming = None),
         };
         match result {
             Ok(()) => true,
@@ -1165,11 +1309,15 @@ impl NodeCraftApp {
     }
 }
 
+mod tools;
+use tools::aspect_of;
+
 /// A grid tile's badge for a row in `state`.
 fn state_badge(state: StatusFilter, t: &Tokens) -> (&'static str, egui::Color32) {
     match state {
         StatusFilter::Running => ("Running", t.accent),
         StatusFilter::Failed => ("Failed", t.danger),
+        StatusFilter::Cancelled => ("Cancelled", t.text_muted),
         StatusFilter::OutOfDate => ("Out of date", t.stale),
         StatusFilter::Partial => ("Partial", t.stale),
         StatusFilter::Done => ("Done", t.text),

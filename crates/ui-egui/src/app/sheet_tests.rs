@@ -56,7 +56,20 @@ fn scene_of(sheet: &[String]) -> Harness<'static, NodeCraftApp> {
 
 /// [`scene_of`] with more plain canvases.
 fn scene_in(canvases: &[(CanvasId, &str)], sheet: &[String]) -> Harness<'static, NodeCraftApp> {
-    let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_IMAGE).unwrap();
+    scene_with(MOCK_IMAGE, "mock-square", making(), canvases, sheet)
+}
+
+/// [`scene_in`] over `catalog`, the rows on `model`, runs made by `make`.
+fn scene_with(catalog: &str, model: &str, make: Make, canvases: &[(CanvasId, &str)], sheet: &[String]) -> Harness<'static, NodeCraftApp> {
+    let app = app_with(catalog, model, make, canvases, sheet);
+    let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run();
+    h
+}
+
+/// The app [`scene_with`] shows, opened on the plain canvas.
+pub(super) fn app_with(catalog: &str, model: &str, make: Make, canvases: &[(CanvasId, &str)], sheet: &[String]) -> NodeCraftApp {
+    let catalog = nodecraft_catalog::Catalog::from_toml(catalog).unwrap();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([103; 16]), "Sheets").unwrap();
@@ -68,7 +81,7 @@ fn scene_in(canvases: &[(CanvasId, &str)], sheet: &[String]) -> Harness<'static,
     resources.insert(snapshot.clone());
     resources.insert(snapshot.run_catalog());
     let mut services = Services::default();
-    let runs = Runs::with_maker(&mut services, making()).unwrap();
+    let runs = Runs::with_maker(&mut services, make).unwrap();
     let mut session = Session::with_registries(project, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
     runs.install(&mut session);
     if !sheet.is_empty() {
@@ -80,21 +93,19 @@ fn scene_in(canvases: &[(CanvasId, &str)], sheet: &[String]) -> Harness<'static,
         }
         // And a model swap reports on at most so many cards at once.
         for rows in rows_of(&session).chunks(100) {
-            let preview = session.dispatch("node.model_preview", &json!({"canvas": S, "nodes": rows, "model": "mock-square"})).unwrap();
+            let preview = session.dispatch("node.model_preview", &json!({"canvas": S, "nodes": rows, "model": model})).unwrap();
             let revision = session.revision();
             session
                 .dispatch(
                     "node.set_model",
-                    &json!({"canvas": S, "nodes": rows, "model": "mock-square", "expected_revision": revision, "preview_binding": preview["binding"]}),
+                    &json!({"canvas": S, "nodes": rows, "model": model, "expected_revision": revision, "preview_binding": preview["binding"]}),
                 )
                 .unwrap();
         }
     }
     let mut app = NodeCraftApp::from_session(session, C).unwrap();
     app.runs = Some(runs);
-    let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
-    h.run();
-    h
+    app
 }
 
 fn rows_of(session: &Session) -> Vec<NodeId> {
@@ -757,3 +768,5 @@ fn a_document_this_session_can_only_view_takes_no_results() {
     assert!(h.state().session.document().canvases().get(&C).unwrap().nodes().is_empty());
     assert!(h.state().notice.is_some(), "the refusal is shown");
 }
+
+pub(super) mod batch;
