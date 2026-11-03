@@ -27,8 +27,9 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file or pasting its JSON on the canvas does the same. Pasted workflow text is titled Pasted workflow because the text clipboard supplies no filename; a file drop keeps its filename. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
-| **Pika 2.5 through fal** | `fal` | the existing fal key | prompt and one first frame → 720p video, 5/10 seconds | Native streamed project storage required; $0.25/$0.50 estimates. Current image-to-video only; see below. |
 | **Magnific** | `magnific` | separate `magnific` key (`x-magnific-api-key`) | one image → Precision V2 photo enhancement, 2× or 4× | Native streamed project storage required. Credit-based monetary cost stays unknown and requires consent. Saved task polling, no ambiguous submit replay or remote cancellation; delivery links expire after 30 minutes. See below. |
+| **HeyGen through fal** | `fal` | the existing fal key | supplied speech and one photo → Photo Avatar4, or MP4 → Speed/Precision lip sync | Native streamed storage required. Unknown monetary price with explicit consent; supplied PCM WAV, no TTS/stock voices. See below. |
+| **Pika 2.5 through fal** | `fal` | the existing fal key | prompt and one first frame → 720p video, 5/10 seconds | Native streamed project storage required; $0.25/$0.50 estimates. Current image-to-video only; see below. |
 | **Topaz Precision through fal** | `fal` | the existing fal key | one upright image → Standard V2 upscale PNG | Native streamed project storage required; integer 1–4× within one $0.08 output block. Existing queue/resume and no ambiguous paid replay; see below. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
@@ -85,6 +86,65 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `google-gemini-images` | `google-cloud` (the same key as `google-veo`) | the Vertex AI API enabled, and the Vertex AI User role on the account's project |
 | `comfy-cloud` | `comfy-cloud` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[[providers.comfyui]]` entries with `name`, `url` (such as `"http://127.0.0.1:8188"`) and optional `max_jobs` (1–16; unset, 4), and `[providers] comfyui_default` naming one (or the desktop toolbar's ComfyUI panel), and the per-install `install_salt`; an older `comfyui_url` is read as one server |
+
+### Custom endpoints (base URLs)
+
+OpenAI chat, Anthropic chat and OpenAI Images can be served from another server that speaks the
+same API, such as a LiteLLM proxy, vLLM or LM Studio (#960). On the desktop and in the CLI, set
+the base URL, including the API's version path, under `[providers.base_urls]` in `config.toml`.
+The desktop app reads this table when it starts, so restart it after editing the file. In the
+browser, only OpenAI chat can take a base URL: use the Providers panel's **Custom endpoints**
+field (`providers.settings_set {base_urls}`).
+
+```toml
+[providers.base_urls]
+openai = "http://127.0.0.1:4000/v1"        # chat: /chat/completions
+anthropic = "https://gateway.example/v1"   # chat: /messages
+openai-images = "http://127.0.0.1:4000/v1" # /images/generations and /images/edits
+```
+
+- With no entry, or a blank one, the provider uses its own API, and nothing about it changes.
+- **The key.** The provider's own keychain account holds the key (`openai` or `anthropic`); put
+  the key the server expects there, such as a LiteLLM virtual key. Requests go to the configured
+  host, and the key is dropped when a redirect leaves its origin. While any provider has a base
+  URL, NodeCraft never sends that account's key to a provider's own API:
+  - another adapter that reads the same account but has no base URL of its own is refused. With
+    `openai` set, OpenAI Images needs its own entry, and OpenAI speech and transcription
+    (`openai-audio`, which takes no base URL) can't run until the entry is removed;
+  - `keys.test` answers *unverifiable* for that account and sends nothing;
+  - the desktop agent panel follows the OpenAI or Anthropic base URL, or refuses. It also
+    refuses until a restart if the file now names a different base URL than at startup.
+- **The address.** A base URL must be HTTPS, or plain HTTP to a local address: loopback, a
+  private (RFC 1918) or link-local IPv4 address, a link-local or unique local IPv6 address, or
+  `localhost`. Carrier-grade NAT (`100.64.0.0/10`, which includes Tailscale's addresses) and
+  tunnelled IPv6 forms need HTTPS. Other schemes, credentials, queries and fragments are refused
+  with a message that never repeats the address.
+- **No fallback.** If an entry is set but can't be used, the provider's adapter isn't built: its
+  runs are refused, and nothing goes to the default host instead. That holds for an entry that
+  isn't text, and for a key spelled like a provider's with other case or `_` (such as `OpenAI`);
+  both are kept as written. Other unknown keys are kept and ignored. If the settings file, or
+  its whole `[providers]` section, can't be read, NodeCraft reports it at startup and uses
+  defaults, which brings back every provider's own API; fix it before running. In the browser, a damaged
+  stored record refuses every custom endpoint until you save again.
+- **The browser.** Its `fetch` follows redirects itself and drops only `Authorization` across
+  origins, so Anthropic's `x-api-key` could follow a redirect to another host. OpenAI Images
+  needs a no-redirect transport the browser doesn't have. Both are therefore desktop and CLI
+  only.
+- **Price.** Catalog models keep their id, the `provider_model` sent to the server, and their
+  catalog price. A step that would be quoted free is quoted as unknown-price: a run with a
+  budget cap is blocked, and an uncapped run needs the unknown-price consent. The quote binds
+  the base URL, so changing it means quoting again. A finished job is charged at least its
+  estimate: the server's reported tokens can raise the charge, never lower it, and its
+  `x-litellm-response-cost` header isn't read.
+- **Retries.** A custom server is assumed to ignore idempotency keys, so a lost or failed
+  request is never sent again automatically. The job keeps its charge, unresolved, for
+  reconciliation.
+- **Model names.** The server must know the catalog's model names (`provider_model`, such as
+  `gpt-4.1-mini-2025-04-14`). For LiteLLM, add them as model aliases.
+
+The rules are recorded in
+[the custom base URL decision](decisions/2026-11-03-custom-base-urls.md). Models that only the
+server offers, and that the catalog doesn't price, are the LiteLLM catalog work in #489.
 
 LiteLLM's endpoint and optional `litellm` virtual key can be saved now, but the shipped model
 catalog has no LiteLLM entries: no card can select or call the proxy yet. The adapter accepts the
@@ -153,7 +213,7 @@ in a new session, and in CLI, MCP or serve hosts that do not install the desktop
 legacy cards retain their previous pricing behavior. Reimporting with a current server list
 stores partner names on the card and avoids that host/session limitation.
 
-In the browser, the same server addresses and installation salt persist only for this origin,
+In the browser, the same server addresses, custom base URLs and installation salt persist only for this origin,
 separately from API keys. Open Providers to edit them; a failed save keeps the previous settings.
 ComfyUI and LiteLLM must allow this page's origin in their CORS settings, and an HTTPS page may
 block an HTTP endpoint. `options.refresh` runs asynchronously on the page and hands its option
@@ -2300,3 +2360,61 @@ resume and save/close/reopen with exactly one paid create. The procedural blue-a
 was authored locally with FFmpeg; it is **not Pika output**. The ignored `pika29_live_smoke` test
 requires `NODECRAFT_LIVE_PIKA=1`, `NODECRAFT_LIVE_PIKA_COST=0.25USD` and `FAL_KEY`; it is compiled
 but never run by ordinary CI.
+
+
+## HeyGen through fal (#43)
+
+Choose **HeyGen Photo Avatar 4 (fal)** (`fal.heygen-avatar4`) on a Generate video card
+and wire one photo to **portrait** and supplied PCM WAV to **speech**. The request fixes
+stable talking style,720p,16:9, captions off and the safety checker on. The photo should
+contain a clear face; NodeCraft does not perform face detection. Text retained on the card
+is not sent to TTS. Stock avatars, voice identifiers, background/expression controls and
+native direct HeyGen credentials are outside this integration.
+
+For existing video, choose **HeyGen Lip sync Speed (fal)** (`fal.heygen-lipsync-speed`)
+or **HeyGen Lip sync Precision (fal)** (`fal.heygen-lipsync-precision`). Wire **video** and
+**speech**. Dynamic duration and captions stay off. **Remove source music** and
+**Enhance replacement speech** are the two documented toggles, initially off. Title,
+partial timing and safety-checker fields are not invented. The provider's other defaults
+apply; no absence of a safety field promises unmoderated generation.
+
+The three current aliases are `fal-ai/heygen/avatar4/image-to-video`,
+`fal-ai/heygen/v3/lipsync/speed` and `fal-ai/heygen/v3/lipsync/precision`. Primary
+[photo](https://fal.ai/models/fal-ai/heygen/avatar4/image-to-video/api),
+[Speed](https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api) and
+[Precision](https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api) schemas and prices
+were checked **2026-10-28**. Published rates are **USD 0.10, USD 0.05 and USD 0.10 per output
+second**, respectively. They do not establish strict output-duration or rounding guarantees.
+Quotes therefore remain **unknown/by usage USD** and require explicit consent to one
+unpriced job. A measured input length is not a monetary ceiling; finite money budgets
+cannot establish that an unknown price fits. No currency invoice is invented.
+
+Client input limits are one upright static PNG/JPEG/WebP up to **1 MiB and 1024 pixels per
+axis**, supplied **PCM WAV up to 1 MiB and 10 seconds**, and for lip sync a complete
+**MP4 up to 16 MiB, 1280×720 and 10 seconds**. Missing clocks or movie/media clocks differing
+by more than 100 ms refuse. These are conservative client policies, not published service
+limits or full video-decoding guarantees. Complete escaped JSON plus both data URIs fits
+**32 MiB** before codecs/base64 allocations. Larger input/request quotas are scoped to
+HeyGen; existing fal models keep their original caps.
+
+One MP4 output must have positive clocks within **11 seconds**, positive display geometry
+within **4096 pixels per axis/16,777,216pixels**, at most **256 MiB per file and aggregate**,
+**256 KiB movie metadata**, 4096 boxes and 16 levels. Declared MIME, dimensions and size must
+agree with the downloaded original. New paid submissions require these complete default
+response/output budgets (including 2 MiB response metadata); reducing them refuses locally
+before codec work or HTTP. Input/request/text/codec budgets may still be lowered when
+inputs fit. Saved handles intersect current limits when polling; they never widen them.
+
+Use a desktop project or native CLI host with streamed asset storage. Browser and Classic
+in-memory sessions refuse before payment, including custom model ids and deferred Technique
+work. Unused cards do not block other runs. Queue routes stay at `fal-ai/heygen/requests/<id>`;
+accepted task handles resume without another paid POST. Ambiguous creates are never replayed.
+Downloads use credential-free, redirect-free HTTPS fal.media origins. Disabled-caption
+sidecars are ignored and never fetched. Cancellation remains best effort with no refund promise.
+
+Large originals use shared worker hashing/sealing and lightweight UI adoption. History,
+held retry, journal resume and save/close/reopen keep the original bytes. Ordinary tests use
+original procedural photos/audio and the existing authored blue-and-gold MP4 fixture;
+these are not HeyGen output or proof of live avatar quality. No paid generation or inference
+probe was performed. The ignored live smoke requires explicit acknowledgement of unknown
+cost, a fal key and user-supplied photo/video plus WAV paths; it never runs in ordinary CI.

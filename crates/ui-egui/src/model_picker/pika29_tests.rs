@@ -90,7 +90,9 @@ fn app(theme: crate::theme::ThemeKind) -> crate::app::NodeCraftApp {
     app
 }
 fn card_harness(builder: egui_kittest::HarnessBuilder<crate::app::NodeCraftApp>, theme: crate::theme::ThemeKind) -> Harness<'static, crate::app::NodeCraftApp> {
-    let mut h = builder.with_size(egui::vec2(1100., 900.)).build_ui_state(|ui, app: &mut crate::app::NodeCraftApp| app.show(ui), app(theme));
+    // Native thumbnail completion can repaint after the default four settling frames.
+    let mut h =
+        builder.with_max_steps(120).with_size(egui::vec2(1100., 900.)).build_ui_state(|ui, app: &mut crate::app::NodeCraftApp| app.show(ui), app(theme));
     crate::theme::apply(&h.ctx, theme);
     h.run();
     h.state_mut().view.zoom = 1.;
@@ -103,7 +105,10 @@ fn pika29_generated_duration_control_is_a_pointer_edit_and_one_undoable_command(
     use egui::accesskit::Role;
     use nodecraft_types::{Unsigned, Value};
     for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
-        let mut h = card_harness(Harness::builder(), theme);
+        // The app harness's step budget (app/tests.rs): a focused text field blinks its cursor
+        // and the source card's preview decodes on a worker thread, so how many 1/4 s default
+        // steps they need depends on the runner's speed (slow Windows/macOS CI ran out at 4).
+        let mut h = card_harness(Harness::builder().with_step_dt(1.0 / 60.0).with_max_steps(120), theme);
         let before = h.state().session.document().clone();
         h.get_by_role_and_label(Role::TextInput, "Seconds").click();
         h.run();

@@ -14,6 +14,8 @@
 
 mod anthropic;
 mod azure;
+#[cfg(test)]
+mod custom_base_tests;
 mod openai;
 pub mod sse;
 #[cfg(test)]
@@ -502,6 +504,8 @@ fn base64(bytes: &[u8]) -> String {
 pub struct LlmClient {
     endpoint: Endpoint,
     http: Arc<dyn Http>,
+    /// The endpoint's base URL was set by the person (#960), not the provider's own API.
+    custom: bool,
 }
 
 impl std::fmt::Debug for LlmClient {
@@ -512,7 +516,26 @@ impl std::fmt::Debug for LlmClient {
 
 impl LlmClient {
     pub fn new(endpoint: Endpoint, http: Arc<dyn Http>) -> Self {
-        Self { endpoint, http }
+        Self { endpoint, http, custom: false }
+    }
+
+    /// `endpoint` (with its id, dialect and key) served from `base` instead of its own API (#960),
+    /// such as a LiteLLM proxy or vLLM in front of OpenAI. The key goes to `base`'s host only.
+    /// Such a server is assumed to ignore idempotency, so an uncertain submit is never sent
+    /// again, and a spend header it sends is not trusted.
+    pub fn with_base_url(mut endpoint: Endpoint, base: &crate::base_url::BaseUrl, http: Arc<dyn Http>) -> Self {
+        endpoint.base_url = base.as_str().to_owned();
+        Self { endpoint, http, custom: true }
+    }
+
+    /// The spend a reply's headers report. Never read from a custom base URL: any server can
+    /// send the header, and a catalog model there keeps the catalog's price (#960, #961).
+    /// Endpoints at their own address read it as before.
+    fn reported_cost(&self, headers: &[(String, String)]) -> Option<Money> {
+        if self.custom {
+            return None;
+        }
+        reported_cost(headers)
     }
 
     pub fn endpoint(&self) -> &Endpoint {
@@ -572,7 +595,7 @@ impl LlmClient {
     }
 
     fn chat_response(&self, response: HttpResponse) -> Result<ChatResponse, ProviderError> {
-        let cost = reported_cost(&response.headers);
+        let cost = self.reported_cost(&response.headers);
         let response = self.error_for(response)?;
         let mut reply = match self.endpoint.dialect {
             Dialect::OpenAi => openai::parse(&response.body)?,
@@ -642,7 +665,7 @@ impl LlmClient {
             return Err(e);
         }
         let head = head?;
-        let cost = reported_cost(&head.headers);
+        let cost = self.reported_cost(&head.headers);
         self.error_for(head)?;
         if !state.finished {
             return Err(ProviderError::new(ErrorKind::Network, "the reply stream ended early"));
@@ -801,10 +824,16 @@ impl Provider for LlmClient {
         &self.endpoint.id
     }
 
+    fn custom_base_url(&self) -> Option<&str> {
+        self.custom.then_some(self.endpoint.base_url.as_str())
+    }
+
     fn retry_ambiguous_submit(&self) -> bool {
         // Azure v1 offers no idempotency guarantee. A lost synchronous reply may already
         // have been billed; preserve legacy endpoint policies while making Azure terminal.
-        self.endpoint.id != "azure-openai"
+        // A custom base URL is assumed to ignore idempotency keys too, whatever model it serves
+        // (#960, #961). Endpoints at their own address keep their policy.
+        self.endpoint.id != "azure-openai" && !self.custom
     }
 
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {

@@ -21,10 +21,10 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done | 14/14 |
 | 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial; desktop run host wired, ComfyUI servers and workflows (#9), variations (#81), cost and budget checks (#201) | 43/46 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done (close-out #375) | 13/14 |
-| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 18/30 |
+| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; batch node complete (#92), first signed release pending | 25/33 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 10/13 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 28/31 |
-| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 9/13 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 5/8 |
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 14/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 3/29 |
@@ -61,7 +61,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   (#707), Fit all frames by that header (#739), and search and tag navigation open to reveal a
   hidden card (#706); shared parameter editing with explicit Mixed
   values and atomic undo across compatible selected nodes (#71), and an API keys panel backed by
-  the OS keychain. Shared model changes show per-target migration results before applying (#157).
+  the OS keychain, whose late keychain answers still update the remembered accounts and which
+  refuses a new account before writing when the list is full (#240). Shared model changes show
+  per-target migration results before applying (#157).
   A mask editor paints brush masks over an image, expands its canvas and wires an inpaint or
   outpaint generation card from a prompt (#102).
   A Layer Editor card composites its wired images with text and shape layers into one frame;
@@ -72,9 +74,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   Element can be renamed, shared, or exported as a bundle file another person imports (#765).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
-  image as one undo step (#103). 3D models (glTF, GLB, OBJ) become 3D nodes whose cards show
+  image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL) become 3D nodes whose cards show
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
-  writes a GLB or OBJ copy (#111). Built-in 3D cards save their viewer angle, elevation, zoom and
+  writes a GLB or OBJ copy (#111), or geometry-only binary STL with bounded read/reopen support
+  (part of #569; see `docs/3d-formats.md`). Built-in 3D cards save their viewer angle, elevation, zoom and
   shading in the project; a viewer gesture is one undo step and never changes generation inputs
   or existing captures (`mesh.view_set`, #928, part of #569). A custom shader card runs WGSL with declared sliders; its editor
   checks the code as it's typed, has a text model write or fix it through an ordinary, priced
@@ -148,6 +151,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   current Pika 2.5 through fal (#29), at 720p for 5 or 10 seconds with explicit priced consent.
   Browser sessions refuse before payment. Text-to-video and keyframes are not included; see
   [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
+- **HeyGen**: desktop projects and the native CLI animate a photo or lip-sync an MP4 with
+  supplied speech through fal (#43). Monetary pricing remains unknown and requires consent;
+  see [`docs/providers.md`](docs/providers.md#heygen-through-fal-43) for client limits.
 - **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
   photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
   spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
@@ -176,7 +182,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 - **Generation is not finished across every model or surface.** The desktop run host now constructs
   supported catalog adapters and runs authorized generation cards (#409, #362, #83); a listed model
   is not proof that every provider, modality or input mode runs in every host. The text card's
-  chat-style turn UI remains open (#84), and browser provider settings/option lists differ from
+  turn UI, mentions, streaming and connected-media thumbnails have landed; video to text and
+  built-in models' declared reading capabilities (context window, frames, timestamps, speakers)
+  remain open (#84), and browser provider settings/option lists differ from
   desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
 - **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
@@ -258,7 +266,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
-1. **Finish M3 generation**: the chat-style text-card turn UI (#84) and the remaining keychain
+1. **Finish M3 generation**: video to text and declared reading capabilities on text cards (#84) and the remaining keychain
    issue (#80); do not mistake a tested adapter for a working mode in every host.
 2. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
    including provider plugins (#174), then browser option-list parity (#721),
@@ -360,3 +368,8 @@ The near-term order follows the remaining open issues, not an already-finished w
 - **2026-10-23** — card option pickers filter labels and values, open at the current choice,
   keep a stable width and clear stale overrides with Use default (#678). Indexed selected labels,
   virtual rows and bounded filter work support fetched lists of up to 16,384 choices.
+- **2026-10-28** — the Batch node is complete (#92): a batch collecting another batch flattens
+  its items into its own (bounded at 1,000 items and 16 batches per chain, every item quoted
+  before the run), and "Review items…" on a fanned card steps through each item's result, with a
+  rows × columns grid for a Cross of two batches that marks failed and cancelled cells. Batches
+  inside a technique's own graph are not yet supported (#93). M5 25/33.

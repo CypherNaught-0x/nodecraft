@@ -57,7 +57,8 @@ Limits: the check happens when the command arrives. A program that can change th
 themselves (swap a folder for a link between the check and the write) isn't guarded against.
 `file.cancel` cancels any background save or open, including one the person started outside the
 folders. Opening checks that the project's folder is writable for recovery, which briefly creates
-a file there, even in a `--read-root` folder.
+a file there, even in a `--read-root` folder. A save or open that the disk plainly can't hold is
+refused with `busy` before anything is written; the message gives the sizes needed and free.
 
 ## Tools
 
@@ -170,6 +171,13 @@ Neither command changes active history, edits the graph or opens a dialog.
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
 server waits until the prompt is answered.
+
+**Whole-canvas runs (#965):** `run.changed` and `run.workflow` take `{canvas}` and return the
+`run.quote` result for mode `pending` (every card whose result is stale, part-made or missing,
+with the upstream it needs) or `workflow` (every generation and technique card as well), plus
+that `mode`. A node with work between two nodes of the run runs too; nodes after a batch the run
+feeds are listed in `waiting` for the next run. They start nothing; start the quoted run with `run.start {canvas, mode, accept}`.
+In the app they are **Run changed** (⌘/Ctrl+Enter) and **Run workflow**.
 
 **Provider prices:** Standalone `nodecraft-cli mcp` supports `command_run` with
 `id: "run.estimate"` and the same parameters as `run.quote`. It sends the job's inputs to the

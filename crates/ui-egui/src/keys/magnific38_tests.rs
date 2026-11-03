@@ -69,7 +69,7 @@ fn magnific38_test_key_reports_unverifiable_without_any_http() {
         store.set(&Account::new("magnific").unwrap(), &nodecraft_engine::secrets::Secret::new(KEY).unwrap()).unwrap();
         let runtime = TestRuntime(tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap());
         let http = Arc::new(NeverHttp(std::sync::atomic::AtomicUsize::new(0)));
-        let host = nodecraft_engine::key_test::KeyTestHost { runtime: Arc::new(runtime), http: http.clone() };
+        let host = nodecraft_engine::key_test::KeyTestHost { runtime: Arc::new(runtime), http: http.clone(), providers: None };
         let (worker, results) = KeyWorker::spawn_with_tests(store.clone(), Some(host)).unwrap();
         let mut services = Services::default();
         register_key_worker(&mut services, worker).unwrap();

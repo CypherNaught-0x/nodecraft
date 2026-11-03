@@ -220,17 +220,9 @@ impl NodeCraftApp {
         let Some(review) = &self.ownership else { return };
         let mut open = true;
         let mut action = None;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Charges to review")
-            .id(egui::Id::new("nodecraft.ownership"))
-            .open(&mut open)
-            .constrain_to(self.viewport)
-            .anchor(egui::Align2::CENTER_TOP, [0.0, t.navigation_margin + t.navigation_toolbar_height + t.navigation_gap])
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
+        crate::floating::panel(ctx, "Charges to review", egui::Id::new("nodecraft.ownership"), crate::floating::Home::CenterTop, t).open(&mut open).show(
+            ctx,
+            |ui| {
                 ui.set_max_width((3.0 * t.card_width).min(self.viewport.width().max(0.0)));
                 match (&review.group, &review.resolving) {
                     (Some(group), _) => group_view(ui, group, t, &mut action),
@@ -241,7 +233,8 @@ impl NodeCraftApp {
                         unresolved(ui, &review.unresolved, t, &mut action);
                     }
                 }
-            });
+            },
+        );
         if !open {
             self.ownership = None;
             return;

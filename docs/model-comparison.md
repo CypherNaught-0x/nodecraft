@@ -77,6 +77,9 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `fal.minimax-speech28-hd` | [Documentation](https://fal.ai/models/fal-ai/minimax/speech-2.8-hd/api) | 2026-10-28 |
 | `fal.minimax-music3` | [Documentation](https://fal.ai/models/minimax/music-3/api) | 2026-10-28 |
 | `fal.pika25-i2v` | [Documentation](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video/api) | 2026-10-28 |
+| `fal.heygen-avatar4` | [Documentation](https://fal.ai/models/fal-ai/heygen/avatar4/image-to-video/api) | 2026-10-28 |
+| `fal.heygen-lipsync-speed` | [Documentation](https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api) | 2026-10-28 |
+| `fal.heygen-lipsync-precision` | [Documentation](https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api) | 2026-10-28 |
 | `fal.qwen-image3` | [Documentation](https://fal.ai/models/alibaba/qwen-image-3/text-to-image/api) | 2026-10-27 |
 | `fal.qwen-image3-edit` | [Documentation](https://fal.ai/models/alibaba/qwen-image-3/edit/api) | 2026-10-27 |
 | `fal.recraft41` | [Documentation](https://fal.ai/models/fal-ai/recraft/v4.1/text-to-image/api) | 2026-10-27 |

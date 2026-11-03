@@ -2,7 +2,8 @@
 //! price. Catalog files are untrusted data and every descriptor is validated before use.
 use crate::pricing::{Pricing, TokenRates, Unit};
 use nodecraft_types::{
-    AudioDuration, AudioUse, Currency, DocumentUse, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues, VideoEdit,
+    AudioDuration, AudioUse, Currency, DocumentUse, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues, ReadingUse,
+    VideoEdit,
 };
 use serde::Deserialize;
 
@@ -64,6 +65,10 @@ pub struct ModeSpec {
     /// How it reads wired PDFs, when it takes them (#591).
     #[serde(default)]
     pub document: Option<DocumentUse>,
+    /// What a text mode promises about reading its inputs (#84): context window, longest
+    /// answer, video frame sampling, timestamps and speaker labels. Undeclared is not offered.
+    #[serde(default)]
+    pub reads: Option<ReadingUse>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -111,6 +116,30 @@ fn offered() -> bool {
 }
 
 impl ModelDescriptor {
+    /// A text mode's reading capabilities (#84) are explicit: a mode that reads video says how
+    /// it samples frames, and each promise needs the inputs it is about.
+    fn validate_reads(&self, mode: &ModeSpec) -> Result<(), Error> {
+        let id = self.id.as_str();
+        let takes = |modality: Modality| mode.inputs.iter().any(|role| role.modality == modality);
+        let Some(reads) = &mode.reads else {
+            if mode.output == Modality::Text && takes(Modality::Video) {
+                return Err(invalid(id, &format!("mode `{}` reads video, so it says how it samples frames in `reads.frames`", mode.id)));
+            }
+            return Ok(());
+        };
+        if mode.output != Modality::Text {
+            return Err(invalid(id, &format!("mode `{}`: `reads` describes a text answer, and this mode doesn't write one", mode.id)));
+        }
+        reads.validate().map_err(|why| invalid(id, &format!("mode `{}`: {}", mode.id, why.message)))?;
+        if reads.frames.is_some() != takes(Modality::Video) {
+            return Err(invalid(id, &format!("mode `{}`: `reads.frames` is set exactly when the mode takes a video", mode.id)));
+        }
+        if (reads.timestamps || reads.speakers) && !takes(Modality::Audio) && !takes(Modality::Video) {
+            return Err(invalid(id, &format!("mode `{}`: timestamps and speaker labels need an audio or video input", mode.id)));
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         let id = if is_id(&self.id) { self.id.as_str() } else { "?" };
         if !is_id(&self.id) {
@@ -189,6 +218,7 @@ impl ModelDescriptor {
                 None if documents > 0 => return Err(invalid(id, &format!("mode `{}` takes PDFs, so it says how it reads them in `document`", mode.id))),
                 None => {}
             }
+            self.validate_reads(mode)?;
         }
         let styled = self.modes.iter().any(|mode| mode.output == Modality::Style || mode.inputs.iter().any(|role| role.modality == Modality::Style));
         match &self.style_family {
