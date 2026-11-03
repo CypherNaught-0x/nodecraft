@@ -267,7 +267,23 @@ pub fn import_files_positioned(
     movies: &[ProbedMovie],
     position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
 ) -> Result<Imported, Error> {
-    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies, position));
+    import_titled(session, canvas, at, step, files, ids, movies, position, &[])
+}
+
+/// As [`import_files_positioned`], titling each media card with the matching entry of `titles`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn import_titled(
+    session: &mut Session,
+    canvas: CanvasId,
+    at: Position,
+    step: f32,
+    files: &[Incoming<'_>],
+    ids: &[NodeId],
+    movies: &[ProbedMovie],
+    position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
+    titles: &[String],
+) -> Result<Imported, Error> {
+    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies, position, titles));
     match result {
         Ok(imported) => Ok(imported),
         Err(mut error) => {
@@ -282,7 +298,9 @@ pub fn import_files_positioned(
 }
 
 mod folder;
+mod library;
 mod staged;
 pub use folder::{FolderImported, FolderTarget, import_folder};
+pub use library::{FileState, LibraryFile, LibraryImported, MAX_NAME_CHARS, import_library, public_name};
 #[cfg(test)]
 mod tests;

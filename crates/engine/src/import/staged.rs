@@ -64,6 +64,7 @@ pub(super) fn run(
     ids: &[NodeId],
     movies: &[ProbedMovie],
     position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
+    titles: &[String],
 ) -> Result<Imported, Error> {
     // A pending save changes the admission identity the prepared batch is checked against.
     session.settle_for_edit()?;
@@ -153,7 +154,7 @@ pub(super) fn run(
                 Some(hash)
             }
         };
-        plans.push((*id, plan, hash));
+        plans.push((*id, plan, hash, titles.get(index)));
     }
     if plans.is_empty() {
         return Ok(imported);
@@ -161,7 +162,7 @@ pub(super) fn run(
     let prepared = if unique.is_empty() { None } else { Some(prepare(session, &unique)?) };
     let mut nodes = Vec::new();
     nodes.try_reserve_exact(plans.len()).map_err(|_| allocation())?;
-    for (id, plan, hash) in plans {
+    for (id, plan, hash, title) in plans {
         let (kind, parameter, value) = match plan {
             Plan::Card(mut node) => {
                 node.pos = Position { x: at.x + step * nodes.len() as f32, y: at.y };
@@ -179,6 +180,9 @@ pub(super) fn run(
         let supplied: ParamValues = [(parameter.to_owned(), value)].into_iter().collect();
         let mut node = session.kinds().get(kind)?.instantiate_instance(id, BTreeMap::new(), &supplied)?;
         node.pos = Position { x: at.x + step * nodes.len() as f32, y: at.y };
+        if let Some(title) = title {
+            node.title.clone_from(title);
+        }
         imported.nodes.push(id);
         nodes.push(node);
     }
