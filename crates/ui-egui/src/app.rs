@@ -1351,6 +1351,8 @@ impl NodeCraftApp {
         let recovery_owns_input = self.web_recovery_owns_input();
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // The project named at startup opens once the window is up (#367).
+            self.begin_startup_open();
             self.poll_save(ui.ctx());
             let t = *self.theme.tokens();
             self.recovery_dialog(ui.ctx(), &t);

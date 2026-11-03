@@ -43,7 +43,20 @@ enum Phase {
         saved_path: Option<PathBuf>,
     },
     /// A background open of this file is running (#367); edits are refused until it settles.
-    Opening(PathBuf),
+    Opening {
+        path: PathBuf,
+        after: AfterOpen,
+    },
+}
+/// What a background open was started for, which decides what its outcome does (#367).
+pub(super) enum AfterOpen {
+    /// File > Open, a recent project, or the open after "Save changes before opening?".
+    File,
+    /// The project named on the command line, opened once the window shows its first frame.
+    Startup,
+    /// Recovery's "Start from last save". The selected copy is discarded only once the open
+    /// has succeeded; a failure or cancellation offers it again.
+    LastSave(Box<super::recovery::RecoveryOffer>),
 }
 struct Pending {
     stamp: Stamp,
@@ -60,6 +73,8 @@ pub(super) struct FileDialogs {
     storage_problem: Option<(Arc<()>, String, bool)>,
     /// Frame time the running background save or open was first seen, for the progress window.
     progress_since: Option<f64>,
+    /// The project to open at startup, started by the first frame (#367).
+    pub(super) startup: Option<PathBuf>,
 }
 impl Default for FileDialogs {
     fn default() -> Self {
@@ -76,6 +91,7 @@ impl Default for FileDialogs {
             owner_frame: None,
             storage_problem: None,
             progress_since: None,
+            startup: None,
         }
     }
 }
@@ -256,15 +272,51 @@ impl NodeCraftApp {
     /// Opens `path` on the save runner (#367), so a large project doesn't hold the window; the
     /// open settles in [`Self::file_save_completed`]. Without a runner it opens inline.
     fn open_selected(&mut self, path: PathBuf, discard: bool) {
+        self.start_background_open(path, discard, AfterOpen::File);
+    }
+    /// The startup open (#367): the window has drawn a frame, every service is installed, and
+    /// the progress window shows at once rather than after [`progress::SHOW_AFTER`], since
+    /// the open is all this window is doing.
+    pub(super) fn begin_startup_open(&mut self) {
+        if let Some(path) = self.files.startup.take() {
+            self.start_background_open(path, true, AfterOpen::Startup);
+        }
+    }
+    pub(super) fn start_background_open(&mut self, path: PathBuf, discard: bool, after: AfterOpen) {
         let result = admitted(&path, false).and_then(|location| {
             self.session.dispatch("file.open", &json!({"location":location,"discard_dirty":discard,"background":true})).map_err(|e| e.message)
         });
+        let flag = |value: &serde_json::Value, key: &str| value.get(key).and_then(serde_json::Value::as_bool) == Some(true);
         match result {
-            Ok(result) if result.get("opening").and_then(serde_json::Value::as_bool) == Some(true) => {
-                self.files.pending = Some(Pending { stamp: Stamp::capture(self), phase: Phase::Opening(path) });
+            Ok(result) if flag(&result, "opening") => {
+                if matches!(after, AfterOpen::Startup) {
+                    // Shown from the first frame on: the open is all this window is doing.
+                    self.files.progress_since = Some(f64::NEG_INFINITY);
+                }
+                self.files.pending = Some(Pending { stamp: Stamp::capture(self), phase: Phase::Opening { path, after } });
             }
-            Ok(_) => self.file_opened(path),
-            Err(error) => self.notice = Some(error),
+            // The runner refused the job and it ran inline.
+            Ok(result) if flag(&result, "opened") => self.open_settled(path, after, Ok(()), true),
+            Ok(_) => self.open_settled(path, after, Err("The project did not confirm it opened; the current project was kept.".into()), true),
+            Err(error) => self.open_settled(path, after, Err(error), true),
+        }
+    }
+    /// A background open's outcome, for what it was started for. `same_session` is false when
+    /// the host replaced the session while it ran; nothing of the old one is touched then.
+    fn open_settled(&mut self, path: PathBuf, after: AfterOpen, outcome: Result<(), String>, same_session: bool) {
+        match (after, outcome) {
+            (AfterOpen::File | AfterOpen::Startup, Ok(())) => self.file_opened(path),
+            (AfterOpen::File, Err(error)) => self.notice = Some(error),
+            (AfterOpen::Startup, Err(error)) => {
+                let error = error.trim_end_matches('.');
+                self.notice =
+                    Some(format!("That project couldn't be opened: {error}. The new project can still be saved; use File > Open to choose another file."));
+            }
+            (AfterOpen::LastSave(offer), Ok(())) => {
+                self.file_opened(path);
+                self.started_from_last_save(&offer);
+            }
+            (AfterOpen::LastSave(offer), Err(error)) => self.last_save_not_opened(*offer, &error, same_session),
         }
     }
     fn file_opened(&mut self, path: PathBuf) {
@@ -325,15 +377,19 @@ impl NodeCraftApp {
     }
     pub(super) fn file_save_completed(&mut self, ctx: &egui::Context, result: Result<serde_json::Value, Error>) {
         let opened = result.as_ref().is_ok_and(|value| value.get("opened").and_then(serde_json::Value::as_bool) == Some(true));
-        if let Some(Pending { phase: Phase::Opening(path), stamp }) = self.files.pending.take_if(|pending| matches!(pending.phase, Phase::Opening(_))) {
+        if let Some(Pending { phase: Phase::Opening { path, after }, stamp }) =
+            self.files.pending.take_if(|pending| matches!(pending.phase, Phase::Opening { .. }))
+        {
             self.files.own_frame(ctx);
-            match result {
-                // The open replaced this session's document; a replaced session's open never
-                // reaches this poll, so the identity check is all that's left to make.
-                Ok(_) if opened && Arc::ptr_eq(&stamp.session, &self.session.view_identity()) => self.file_opened(path),
-                Ok(_) => self.notice = Some("The project did not confirm it opened; the current project was kept.".into()),
-                Err(error) => self.notice = Some(error.message),
-            }
+            // A replaced session's open never reaches this poll, so the identity check is
+            // all that's left to make.
+            let same_session = Arc::ptr_eq(&stamp.session, &self.session.view_identity());
+            let outcome = match result {
+                Ok(_) if opened && same_session => Ok(()),
+                Ok(_) => Err("The project did not confirm it opened; the current project was kept.".to_owned()),
+                Err(error) => Err(error.message),
+            };
+            self.open_settled(path, after, outcome, same_session);
             self.clear_file_input(ctx);
             return;
         }
@@ -436,12 +492,13 @@ impl NodeCraftApp {
                 }
                 self.file_progress(ctx);
             }
-            Phase::Opening(path) => {
-                if Arc::ptr_eq(&pending.stamp.session, &self.session.view_identity()) && self.session.file_status().operation.is_some() {
-                    self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Opening(path) });
+            Phase::Opening { path, after } => {
+                let same_session = Arc::ptr_eq(&pending.stamp.session, &self.session.view_identity());
+                if same_session && self.session.file_status().operation.is_some() {
+                    self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Opening { path, after } });
                 } else {
                     // The host replaced the session, or the open ended without an outcome.
-                    self.notice = Some("The project didn't finish opening. Open it again.".into());
+                    self.open_settled(path, after, Err("The project didn't finish opening. Open it again.".into()), same_session);
                 }
                 self.file_progress(ctx);
             }

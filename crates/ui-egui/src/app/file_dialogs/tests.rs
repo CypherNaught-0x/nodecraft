@@ -1090,11 +1090,14 @@ fn storage968_unreadable_project_still_has_storage_and_picker() {
     assert!(owns);
     assert!(app.session.file_status().available);
     assert!(!app.storage_owner_blocked());
-    assert!(app.notice.as_deref().unwrap().starts_with("That project couldn't be opened:"));
-    assert!(app.notice.as_deref().unwrap().contains("can still be saved"));
     let calls = stub(&mut app, vec![None]);
     let mut h = harness(app);
+    // The startup open runs in the background from the first frame (#367).
     settle(&mut h);
+    assert!(h.state().notice.as_deref().unwrap().starts_with("That project couldn't be opened:"));
+    assert!(h.state().notice.as_deref().unwrap().contains("can still be saved"));
+    assert!(h.state().session.file_status().available);
+    h.state_mut().notice = None;
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
     settle(&mut h);
