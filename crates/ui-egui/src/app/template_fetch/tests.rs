@@ -169,7 +169,7 @@ fn templates954_pointer_update_shows_status_then_clear_removes_downloads() {
                 assert!(!have.contains(&Identity::from(&entry)));
                 Ok(Fetched::Update(Box::new(nodecraft_engine::templates::update::Updated {
                     index: index.clone(),
-                    signed: false,
+                    signature: None,
                     archives: vec![(entry.clone(), bytes.clone())],
                     failed: Vec::new(),
                     skipped: 0,
@@ -244,6 +244,49 @@ fn templates954_failed_update_is_shown_and_cache_problems_are_reported() {
     h.run();
     assert!(h.get_all_by_label("Templates were not updated: The template repository didn't answer in time").next().is_some(), "{:?}", h.state().notice);
     h.get_all_by_label("Add template").next().unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn templates954_worker_reads_the_cache_off_the_ui_thread_and_applies_writes() {
+    use nodecraft_engine::templates::disk::{self, FileCache, TemplateCacheStore};
+    let data = tempfile::tempdir().unwrap();
+    let (entry, bytes, index) = remote();
+    let cache = FileCache::new(data.path());
+    cache.write_index(&index, None).unwrap();
+    cache.write_archive(&entry.blake3, &serde_json::to_vec(&entry).unwrap(), &bytes).unwrap();
+    let mut fetcher = TemplateFetcher::spawn(
+        Source::official(),
+        Box::new(|request| match request {
+            Request::ClearCache => Ok(Fetched::ClearCache),
+            _ => Err(Error::new(ErrorKind::Network, "offline fixture")),
+        }),
+        Some(cache),
+    )
+    .unwrap();
+    let mut session = setup().session;
+    fetcher.bind(&mut session).unwrap();
+    // Until the worker hands the verified cache back, an update would re-download it.
+    if disk::is_loading(&session) {
+        assert_eq!(session.dispatch("templates.update", &json!({})).unwrap_err().kind, ErrorKind::Busy);
+    }
+    let ctx = egui::Context::default();
+    let wait = |fetcher: &mut TemplateFetcher, session: &mut Session, done: &dyn Fn(&Session) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !done(session) {
+            assert!(std::time::Instant::now() < deadline, "the template worker didn't answer");
+            fetcher.tick(session, &ctx);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    wait(&mut fetcher, &mut session, &|session| !disk::is_loading(session));
+    let listing: Listing = serde_json::from_value(session.dispatch("template.list", &json!({})).unwrap()).unwrap();
+    assert!(listing.available(&entry), "the cached version is verified and listed");
+    assert!(disk::problems(&session).is_empty(), "{:?}", disk::problems(&session));
+    session.dispatch("templates.clear_cache", &json!({})).unwrap();
+    let folder = data.path().join("templates").join(disk::LAYOUT);
+    wait(&mut fetcher, &mut session, &|_| !folder.exists());
+    assert_eq!(templates::catalog::cached(&session), 0);
 }
 
 #[test]

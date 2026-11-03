@@ -1,4 +1,9 @@
 //! One bounded template request per window; results never import into a project automatically.
+//! On the desktop the worker thread also owns the template cache (#954): it reads and verifies
+//! the cache at startup and applies the session's queued writes, so the UI thread never does
+//! template disk I/O, hashing or decoding.
+#[cfg(not(target_arch = "wasm32"))]
+use nodecraft_engine::templates::disk::{self, FileCache, Loaded, Write};
 use nodecraft_engine::{
     Session,
     templates::{
@@ -10,12 +15,28 @@ use nodecraft_providers::http::Http;
 use nodecraft_types::{Error, ErrorKind};
 use serde_json::{Value, json};
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 type Ask = (u64, Arc<()>, Request);
 #[cfg(not(target_arch = "wasm32"))]
 type Done = (u64, Arc<()>, Result<Fetched, Error>);
+/// What the UI thread asks the worker for.
+#[cfg(not(target_arch = "wasm32"))]
+enum Job {
+    Fetch(Ask),
+    /// Read and verify the cache for the session `owner` identifies.
+    Load(Arc<()>),
+    Write(Vec<Write>),
+}
+/// What the worker hands back.
+#[cfg(not(target_arch = "wasm32"))]
+enum Out {
+    Fetched(Done),
+    Loaded(Arc<()>, Loaded),
+    /// Problems applying writes.
+    Wrote(Vec<String>),
+}
 #[cfg(any(test, target_arch = "wasm32"))]
 type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Fetched, Error>>>>;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -28,7 +49,7 @@ struct Asked {
 }
 enum Worker {
     #[cfg(not(target_arch = "wasm32"))]
-    Thread { asks: SyncSender<Ask>, done: Receiver<Done> },
+    Thread { jobs: Sender<Job>, done: Receiver<Out>, disk: Option<FileCache> },
     #[cfg(any(test, target_arch = "wasm32"))]
     Async { fetch: AsyncFetch, pending: Option<(u64, Arc<()>, Future)> },
 }
@@ -48,8 +69,9 @@ pub(super) struct TemplateFetcher {
 }
 impl TemplateFetcher {
     /// The desktop fetcher: the same transport as the update check (#123), redirects refused.
+    /// With `disk`, the worker also owns the persistent template cache.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn new(source: Source) -> Result<Self, Error> {
+    pub(super) fn new(source: Source, disk: Option<FileCache>) -> Result<Self, Error> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -57,39 +79,66 @@ impl TemplateFetcher {
         let http: Arc<dyn Http> =
             Arc::new(nodecraft_providers::http::ReqwestHttp::new().map_err(|_| Error::new(ErrorKind::Unsupported, "The template HTTP client is unavailable"))?);
         let from = source.clone();
-        Self::spawn(source, Box::new(move |request| runtime.block_on(fetch::fetch_from(http.as_ref(), &from, request))))
+        Self::spawn(source, Box::new(move |request| runtime.block_on(fetch::fetch_from(http.as_ref(), &from, request))), disk)
     }
     /// The configured repository: the official one, or in debug builds a loopback fixture server
-    /// named by `NODECRAFT_TEMPLATES_FEED` (`http://127.0.0.1:<port>/`).
+    /// named by `NODECRAFT_TEMPLATES_FEED` (`http://127.0.0.1:<port>/`). Release builds don't
+    /// read the variable at all.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn configured_source() -> Source {
-        let feed = std::env::var("NODECRAFT_TEMPLATES_FEED").ok().filter(|_| cfg!(debug_assertions));
-        match feed.map(|feed| Source::loopback(&feed)) {
-            Some(Ok(source)) => source,
-            Some(Err(error)) => {
-                log::warn!("NODECRAFT_TEMPLATES_FEED ignored: {}", error.message);
-                Source::official()
+        #[cfg(debug_assertions)]
+        if let Ok(feed) = std::env::var("NODECRAFT_TEMPLATES_FEED") {
+            match Source::loopback(&feed) {
+                Ok(source) => return source,
+                Err(error) => log::warn!("NODECRAFT_TEMPLATES_FEED ignored: {}", error.message),
             }
-            None => Source::official(),
         }
+        Source::official()
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn spawn(source: Source, mut fetch: Box<dyn FnMut(Request) -> Result<Fetched, Error> + Send>) -> Result<Self, Error> {
-        let (asks, inbox) = sync_channel::<Ask>(1);
-        let (outbox, done) = sync_channel::<Done>(1);
+    fn spawn(source: Source, mut fetch: Box<dyn FnMut(Request) -> Result<Fetched, Error> + Send>, disk: Option<FileCache>) -> Result<Self, Error> {
+        let (jobs, inbox) = channel::<Job>();
+        let (outbox, done) = channel::<Out>();
+        let store = disk.clone();
+        let keys = source.keys().to_vec();
         std::thread::Builder::new()
             .name("nodecraft-templates".into())
             .spawn(move || {
-                for (id, owner, request) in inbox {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetch(request)))
-                        .unwrap_or_else(|_| Err(Error::new(ErrorKind::Internal, "The template request stopped unexpectedly")));
-                    if outbox.send((id, owner, result)).is_err() {
+                let stopped = || Error::new(ErrorKind::Internal, "The template worker stopped unexpectedly");
+                for job in inbox {
+                    let out = match job {
+                        Job::Fetch((id, owner, request)) => {
+                            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| fetch(request))).unwrap_or_else(|_| Err(stopped()));
+                            Out::Fetched((id, owner, result))
+                        }
+                        Job::Load(owner) => {
+                            let Some(store) = &store else { continue };
+                            match std::panic::catch_unwind(|| disk::load(store, &keys)) {
+                                Ok(loaded) => Out::Loaded(owner, loaded),
+                                Err(_) => Out::Wrote(vec![stopped().message]),
+                            }
+                        }
+                        Job::Write(writes) => {
+                            let Some(store) = &store else { continue };
+                            let problems: Vec<String> = writes
+                                .iter()
+                                .filter_map(|write| {
+                                    std::panic::catch_unwind(|| write.apply(store)).unwrap_or_else(|_| Err(stopped())).err().map(|error| error.message)
+                                })
+                                .collect();
+                            if problems.is_empty() {
+                                continue;
+                            }
+                            Out::Wrote(problems)
+                        }
+                    };
+                    if outbox.send(out).is_err() {
                         break;
                     }
                 }
             })
             .map_err(|_| Error::new(ErrorKind::Unsupported, "The template worker could not start"))?;
-        Ok(Self { asked: Rc::default(), worker: Worker::Thread { asks, done }, owner: None, source, flight: None })
+        Ok(Self { asked: Rc::default(), worker: Worker::Thread { jobs, done, disk }, owner: None, source, flight: None })
     }
     #[cfg(target_arch = "wasm32")]
     pub(super) fn browser() -> Result<Self, Error> {
@@ -124,16 +173,41 @@ impl TemplateFetcher {
             Ok(json!({"pending":id}))
         })?;
         update::configure(session, &self.source);
+        // The worker reads and verifies this session's cache; templates.update waits for it.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Worker::Thread { jobs, disk: Some(store), .. } = &self.worker {
+            use nodecraft_engine::templates::disk::TemplateCacheStore;
+            disk::install_deferred(session, true, store.location());
+            if jobs.send(Job::Load(Arc::clone(&owner))).is_err() {
+                disk::adopt(session, disk::load(store, self.source.keys()));
+            }
+        }
         self.owner = Some(owner);
         Ok(())
+    }
+    /// Hands the session's queued cache writes to the worker.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn flush_writes(&self, session: &mut Session) {
+        if let Worker::Thread { jobs, disk: Some(_), .. } = &self.worker {
+            let writes = disk::take_writes(session);
+            if !writes.is_empty() && jobs.send(Job::Write(writes)).is_err() {
+                disk::wrote(session, vec!["Downloaded templates couldn't be saved: the template worker stopped".into()]);
+            }
+        }
     }
     pub(super) fn waiting(&self) -> bool {
         self.asked.borrow().busy
     }
-    pub(super) fn tick(&mut self, session: &mut Session, _ctx: &egui::Context) -> Option<String> {
+    pub(super) fn tick(&mut self, session: &mut Session, ctx: &egui::Context) -> Option<String> {
         if let Err(error) = self.bind(session) {
             return Some(error.message);
         }
+        let notice = self.step(session, ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.flush_writes(session);
+        notice
+    }
+    fn step(&mut self, session: &mut Session, _ctx: &egui::Context) -> Option<String> {
         let queued = self.asked.borrow_mut().queued.take();
         if let Some((id, owner, request)) = queued {
             if !Arc::ptr_eq(&owner, &session.view_identity()) {
@@ -151,8 +225,8 @@ impl TemplateFetcher {
             self.flight = Some(flight);
             match &mut self.worker {
                 #[cfg(not(target_arch = "wasm32"))]
-                Worker::Thread { asks, .. } => {
-                    if asks.try_send((id, owner, request)).is_err() {
+                Worker::Thread { jobs, .. } => {
+                    if jobs.send(Job::Fetch((id, owner, request))).is_err() {
                         self.asked.borrow_mut().busy = false;
                         return Some("The template worker is unavailable".into());
                     }
@@ -168,7 +242,21 @@ impl TemplateFetcher {
         let done = match &mut self.worker {
             #[cfg(not(target_arch = "wasm32"))]
             Worker::Thread { done, .. } => match done.try_recv() {
-                Ok(done) => done,
+                Ok(Out::Fetched(done)) => done,
+                Ok(Out::Wrote(problems)) => {
+                    disk::wrote(session, problems);
+                    return None;
+                }
+                Ok(Out::Loaded(owner, loaded)) => {
+                    if !Arc::ptr_eq(&owner, &session.view_identity()) {
+                        return None;
+                    }
+                    let problems = disk::adopt(session, loaded);
+                    return problems.first().map(|first| {
+                        log::warn!("template cache: {}", problems.join("; "));
+                        format!("Some downloaded templates were skipped: {first}. Clear them from Techniques → Starter templates.")
+                    });
+                }
                 Err(TryRecvError::Empty) => return None,
                 Err(TryRecvError::Disconnected) => {
                     if !self.asked.borrow().busy {
@@ -219,7 +307,7 @@ impl super::NodeCraftApp {
         if let Some(notice) = fetcher.tick(&mut self.session, ctx) {
             self.notice = Some(notice);
         }
-        if fetcher.waiting() {
+        if fetcher.waiting() || nodecraft_engine::templates::disk::is_loading(&self.session) {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
