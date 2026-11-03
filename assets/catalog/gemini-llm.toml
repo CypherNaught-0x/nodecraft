@@ -2,6 +2,9 @@
 # https://ai.google.dev/gemini-api/docs/openai
 # https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
 # Account tiers and thinking usage prevent this adapter from promising an exact dollar quote.
+# Reading (checked 2026-11-03, model page, "September 2026"): input token limit 1,048,576, output
+# token limit 65,536; inputs text, image, video, audio and PDF. Google states an input limit, so
+# `context_tokens` is the input limit here: planning refuses a prompt clearly longer than it.
 [[model]]
 id = "gemini-llm.3.8-flash"
 provider = "gemini-llm"
@@ -16,6 +19,23 @@ pricing = { type = "by_usage", currency = "USD" }
 id = "text-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1048576, max_output_tokens = 65536 }
+
+# Video to text through the Interactions API (`providers::gemini_llm::video`); the compatibility
+# endpoint documents no video input. Checked 2026-11-03:
+# https://ai.google.dev/gemini-api/docs/video-understanding and
+# https://ai.google.dev/api/interactions-api
+# - up to 10 videos a request (Gemini 2.5 and later); sent inline, the whole request under 20 MB
+#   (the guide's lower figure; its table also says 100 MB). No Files API upload yet.
+# - MP4, MPEG, MPG, MOV, AVI, FLV, WebM, WMV, 3GPP; a QuickTime file is sent as `video/mov`.
+# - frames sampled at 1 a second by default ("static" processing); 1M-context models read up to
+#   3 hours at the default (low) media resolution, so at most 10,800 frames. About 100 tokens a
+#   second of video at that resolution, billed as input on top of the prompt.
+[[model.modes]]
+id = "video-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "video", modality = "video", min = 1, max = 10 }]
+reads = { context_tokens = 1048576, max_output_tokens = 65536, frames = { every_ms = 1000, max = 10800 } }
 
 [[model.params.params]]
 name = "max_tokens"

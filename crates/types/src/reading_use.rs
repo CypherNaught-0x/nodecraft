@@ -8,6 +8,17 @@ use serde::{Deserialize, Serialize};
 
 /// The largest context window or answer a catalog may declare, in tokens.
 pub const MAX_DECLARED_TOKENS: u32 = 100_000_000;
+/// What a context-window refusal's message carries (#84), whether the provider refused the
+/// request or planning did before sending it, so hosts that keep only the text can tell it from
+/// other unsupported inputs.
+pub const CONTEXT_LIMIT: &str = "the prompt and its inputs are longer than the model's context window";
+/// What to do about a context-window refusal.
+pub const CONTEXT_LIMIT_FIX: &str = "shorten the prompt, connect fewer or smaller inputs, or pick a model with a larger context";
+/// The most UTF-8 bytes one token is assumed to cover when planning estimates a prompt's tokens
+/// (#84). Tokenizers average well under this on prose and code (Anthropic documents about 2.5
+/// characters a token for its current tokenizer; English text is commonly about 4), so the
+/// estimate undercounts ordinary text and a prompt it puts over the window is clearly over.
+pub const BYTES_PER_TOKEN_AT_MOST: usize = 6;
 /// Most frames a catalog may let one video send.
 pub const MAX_FRAMES: u32 = 100_000;
 /// The longest gap between sampled frames a catalog may declare: an hour.
@@ -68,6 +79,43 @@ impl ReadingUse {
             }
         }
         Ok(())
+    }
+
+    /// Refuses `text_bytes` of prompt text that clearly can't fit the declared context window,
+    /// before anything is quoted or sent (#84). The estimate is a low one
+    /// ([`BYTES_PER_TOKEN_AT_MOST`]) and counts text only, so media never makes it refuse; an
+    /// undeclared window refuses nothing. `model` names the model in the message.
+    pub fn context_fits(&self, model: &str, text_bytes: usize) -> Result<(), Error> {
+        let Some(window) = self.context_tokens else { return Ok(()) };
+        let tokens = text_bytes.div_ceil(BYTES_PER_TOKEN_AT_MOST);
+        if u64::try_from(tokens).unwrap_or(u64::MAX) <= u64::from(window) {
+            return Ok(());
+        }
+        Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("{CONTEXT_LIMIT}: the prompt alone is at least {tokens} tokens and {model} reads at most {window}; {CONTEXT_LIMIT_FIX}"),
+        ))
+    }
+
+    /// Refuses a video whose known length samples more frames than the mode reads, before
+    /// anything is sent (#84). A video of unknown length goes through; the provider still checks
+    /// it. `role` names the input in the message.
+    pub fn frames_fit(&self, role: &str, duration_ms: Option<u64>) -> Result<(), Error> {
+        let (Some(frames), Some(ms)) = (self.frames, duration_ms) else { return Ok(()) };
+        let longest = u64::from(frames.every_ms).saturating_mul(u64::from(frames.max));
+        if ms <= longest {
+            return Ok(());
+        }
+        Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!(
+                "the {role} video is {} long and this model reads at most {} of it ({} frames, one every {}); trim it first",
+                crate::seconds(ms.div_ceil(100).saturating_mul(100)),
+                crate::seconds(longest),
+                frames.max,
+                every(frames.every_ms)
+            ),
+        ))
     }
 
     /// One line a person reads in the model picker; empty when nothing is declared.
@@ -142,6 +190,31 @@ mod tests {
         assert_eq!(sampled.summary(), "Video: a frame every 2500 ms, at most 16 frames");
         assert_eq!(ReadingUse { speakers: true, ..Default::default() }.summary(), "Speaker labels");
         assert_eq!(every(4000), "4 seconds");
+    }
+
+    #[test]
+    fn only_a_prompt_clearly_past_the_window_is_refused() {
+        let small = ReadingUse { context_tokens: Some(10), ..Default::default() };
+        assert!(small.context_fits("fixture.model", 60).is_ok(), "60 bytes is at least 10 tokens: at the window, not past it");
+        let refused = small.context_fits("fixture.model", 61).unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::InvalidInput);
+        assert!(refused.message.starts_with(CONTEXT_LIMIT), "{refused}");
+        assert!(refused.message.contains("at least 11 tokens") && refused.message.contains("fixture.model reads at most 10"), "{refused}");
+        assert!(refused.message.ends_with(CONTEXT_LIMIT_FIX), "says what to do: {refused}");
+        assert!(ReadingUse::default().context_fits("fixture.model", usize::MAX).is_ok(), "an undeclared window refuses nothing");
+        assert!(full().context_fits("m", usize::MAX).is_err(), "no overflow on hostile sizes");
+    }
+
+    #[test]
+    fn a_known_video_longer_than_the_frames_read_is_refused() {
+        let reads = ReadingUse { frames: Some(FrameSampling { every_ms: 1000, max: 60 }), ..Default::default() };
+        assert!(reads.frames_fit("video", Some(60_000)).is_ok());
+        assert!(reads.frames_fit("video", None).is_ok(), "an unknown length goes through");
+        let long = reads.frames_fit("video", Some(60_001)).unwrap_err();
+        assert!(long.message.contains("60 frames, one every second") && long.message.contains("trim it first"), "{long}");
+        assert!(ReadingUse::default().frames_fit("video", Some(u64::MAX)).is_ok());
+        let wide = ReadingUse { frames: Some(FrameSampling { every_ms: MAX_FRAME_EVERY_MS, max: MAX_FRAMES }), ..Default::default() };
+        assert!(wide.frames_fit("video", Some(u64::MAX)).is_err(), "no overflow on hostile lengths");
     }
 
     #[test]

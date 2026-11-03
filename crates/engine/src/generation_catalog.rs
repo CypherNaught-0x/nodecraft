@@ -136,6 +136,7 @@ impl GenerationCatalog {
                         audio: mode.audio.clone(),
                         edit: mode.edit.clone(),
                         document: mode.document.clone(),
+                        reads: mode.reads.clone(),
                     })
                 })
                 .collect::<Result<_, Error>>()?;

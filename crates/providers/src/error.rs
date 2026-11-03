@@ -89,10 +89,10 @@ impl ErrorKind {
 }
 
 /// What a context-window refusal's message starts with (#84), so hosts that keep only the text can
-/// still tell it from other unsupported inputs.
-pub const CONTEXT_LIMIT: &str = "the prompt and its inputs are longer than the model's context window";
+/// still tell it from other unsupported inputs. Planning's own refusal carries it too.
+pub const CONTEXT_LIMIT: &str = nodecraft_types::CONTEXT_LIMIT;
 /// What to do about a context-window refusal.
-pub const CONTEXT_LIMIT_FIX: &str = "shorten the prompt, connect fewer or smaller inputs, or pick a model with a larger context";
+pub const CONTEXT_LIMIT_FIX: &str = nodecraft_types::CONTEXT_LIMIT_FIX;
 
 /// Whether a failure's text tells of a context-window refusal: it carries
 /// [`ProviderError::context_limit`]'s message, whatever a host put before it.
