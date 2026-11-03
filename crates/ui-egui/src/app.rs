@@ -709,7 +709,7 @@ impl NodeCraftApp {
         // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
         // If the thread can't start, the app runs without the keychain (the panel says so).
         // `keys.test` sends its check on the runs' runtime and HTTP client (#237).
-        let key_tests = runs.as_ref().and_then(runs::Runs::key_test_host);
+        let key_tests = runs.as_ref().and_then(|runs| runs.key_test_host(settings.providers.clone()));
         let results = match nodecraft_engine::secrets::KeyWorker::spawn_with_tests(std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore), key_tests) {
             Ok((worker, results)) => {
                 nodecraft_engine::secrets::register_key_worker(&mut services, worker)?;
@@ -939,6 +939,12 @@ impl NodeCraftApp {
     }
 
     /// The in-canvas agent's settings (#114), or the defaults without a settings file.
+    /// The provider settings the app runs with: the store's on the desktop (loaded at startup),
+    /// the site's in the browser.
+    pub fn loaded_provider_settings(&self) -> nodecraft_engine::settings::ProviderSettings {
+        self.provider_settings()
+    }
+
     pub fn agent_settings(&self) -> nodecraft_engine::settings::AgentSettings {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &self.store {

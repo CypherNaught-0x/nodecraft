@@ -99,6 +99,14 @@ pub struct ProviderSettings {
     pub litellm_url: Option<String>,
     /// Azure OpenAI resource root or `/openai/v1` base; the key uses account `azure-openai`.
     pub azure_openai_url: Option<String>,
+    /// Base URLs set in place of a provider's own API (`[providers.base_urls]`, #960), by catalog
+    /// provider id, such as `openai = "http://127.0.0.1:4000/v1"` for a LiteLLM proxy. Only the
+    /// providers [`crate::custom_endpoints::PROVIDERS`] lists take one; the URL is checked when the
+    /// adapter is built. An entry that isn't text, or a key spelled like a provider's with other
+    /// case or separators, is kept as written and refuses that provider. Other keys are kept and
+    /// ignored. The key stays in the provider's keychain account.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub base_urls: std::collections::BTreeMap<String, crate::custom_endpoints::BaseUrlEntry>,
     /// A random value made once per install; it keeps prompt ids of different installs apart on
     /// a shared ComfyUI server. Empty until the host first creates it.
     pub install_salt: String,
@@ -116,14 +124,16 @@ struct ReadProviderSettings {
     comfyui_url: Option<String>,
     litellm_url: Option<String>,
     azure_openai_url: Option<String>,
+    #[serde(deserialize_with = "crate::custom_endpoints::lenient_base_urls")]
+    base_urls: std::collections::BTreeMap<String, crate::custom_endpoints::BaseUrlEntry>,
 }
 
 impl From<ReadProviderSettings> for ProviderSettings {
     fn from(read: ReadProviderSettings) -> Self {
-        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url, azure_openai_url } = read;
+        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url, azure_openai_url, base_urls } = read;
         match comfyui_url.as_deref().map(str::trim).filter(|url| !url.is_empty()) {
-            Some(url) if comfyui.is_empty() => Self { litellm_url, azure_openai_url, ..Self::with_comfyui(url, &install_salt) },
-            _ => Self { comfyui, comfyui_default, litellm_url, azure_openai_url, install_salt },
+            Some(url) if comfyui.is_empty() => Self { litellm_url, azure_openai_url, base_urls, ..Self::with_comfyui(url, &install_salt) },
+            _ => Self { comfyui, comfyui_default, litellm_url, azure_openai_url, base_urls, install_salt },
         }
     }
 }
@@ -776,6 +786,70 @@ mod tests {
             let (store, report) = open_in(dir.path());
             assert!(report.section_errors.is_empty(), "{report:?}");
             assert!(store.get().providers.comfyui.is_empty());
+        }
+    }
+
+    /// Custom base URLs (#960) are read by provider. A hand-edited entry that isn't text, a key
+    /// spelled like a provider's, or a value that isn't a table is kept as written and refuses
+    /// its provider rather than leaving it at its default host; `[providers]` isn't reset, and
+    /// saving writes them back unchanged.
+    #[test]
+    fn custom_base_urls_are_read_leniently_refuse_when_unreadable_and_are_saved() {
+        use crate::custom_endpoints::{BaseUrlEntry, base_url};
+        let dir = tempfile::tempdir().unwrap();
+        write_config(
+            dir.path(),
+            "schema_version = 2\n[providers]\ninstall_salt = \"s\"\nlitellm_url = \"http://127.0.0.1:4000\"\n[providers.base_urls]\nopenai = \"http://127.0.0.1:4000/v1\"\nanthropic = 3\nOpenAI_Images = \"https://x.example/v1\"\nreplicate = \"https://x.example\"\n",
+        );
+        let (mut store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        let providers = store.get().providers.clone();
+        assert_eq!(providers.base_urls.get("openai").and_then(BaseUrlEntry::text), Some("http://127.0.0.1:4000/v1"));
+        assert_eq!(providers.base_urls.get("anthropic"), Some(&BaseUrlEntry::Unreadable(serde_json::json!(3))));
+        assert_eq!(providers.litellm_url.as_deref(), Some("http://127.0.0.1:4000"), "the rest of the section is kept");
+        assert!(base_url(&providers, "openai").unwrap().is_some());
+        assert!(base_url(&providers, "anthropic").is_err(), "a number refuses Anthropic, never its default host");
+        assert!(base_url(&providers, "openai-images").is_err(), "a misspelled key refuses the provider it reads as");
+        store.update(|settings| {
+            settings.providers.base_urls.insert("openai".into(), "https://proxy.example/v1".into());
+        });
+        store.flush().unwrap();
+        let (store, _) = open_in(dir.path());
+        let saved = &store.get().providers;
+        assert_eq!(saved.base_urls.get("openai").and_then(BaseUrlEntry::text), Some("https://proxy.example/v1"));
+        assert_eq!(saved.base_urls.get("anthropic"), Some(&BaseUrlEntry::Unreadable(serde_json::json!(3))), "kept as written");
+        assert_eq!(saved.base_urls.get("replicate").and_then(BaseUrlEntry::text), Some("https://x.example"), "unknown keys are kept");
+        // TOML `nan` and `inf` read as unreadable, never as unset, and are saved back readable.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 2\n[providers]\ninstall_salt = \"s\"\n[providers.base_urls]\nopenai = nan\nanthropic = inf\n");
+        let (mut store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        for provider in ["openai", "anthropic"] {
+            assert!(base_url(&store.get().providers, provider).is_err(), "{provider}");
+        }
+        store.update(|settings| settings.providers.install_salt = "t".into());
+        store.flush().unwrap();
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        assert_eq!(store.get().providers.install_salt, "t");
+        assert!(base_url(&store.get().providers, "openai").is_err(), "still refused after a save");
+        // More entries than are read refuse every provider, whichever were cut.
+        let dir = tempfile::tempdir().unwrap();
+        let many: String = (0..70).map(|n| format!("zz{n:02} = \"https://x.example\"\n")).collect();
+        write_config(dir.path(), &format!("schema_version = 2\n[providers]\ninstall_salt = \"s\"\n[providers.base_urls]\n{many}"));
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        for entry in crate::custom_endpoints::PROVIDERS {
+            assert!(base_url(&store.get().providers, entry.provider).is_err(), "{}", entry.provider);
+        }
+        // A value that isn't a table refuses every provider.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 2\n[providers]\ninstall_salt = \"s\"\nbase_urls = \"https://x.example\"\n");
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        assert_eq!(store.get().providers.install_salt, "s");
+        for entry in crate::custom_endpoints::PROVIDERS {
+            assert!(base_url(&store.get().providers, entry.provider).is_err(), "{}", entry.provider);
         }
     }
 

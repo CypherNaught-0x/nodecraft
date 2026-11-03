@@ -201,7 +201,12 @@ impl Runner {
 
     pub fn key_test_host(&self, http: Arc<dyn nodecraft_providers::Http>) -> Result<nodecraft_engine::key_test::KeyTestHost, Error> {
         let runtime = self.tokio.as_ref().ok_or_else(|| Error::new(ErrorKind::Unsupported, "provider checks need the CLI runtime"))?;
-        Ok(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::new(Tokio { handle: runtime.handle().clone(), start: Instant::now() }), http })
+        let providers: nodecraft_engine::key_test::ProviderSettingsSource = Arc::new(|| vec![nodecraft_engine::settings::peek().providers]);
+        Ok(nodecraft_engine::key_test::KeyTestHost {
+            runtime: Arc::new(Tokio { handle: runtime.handle().clone(), start: Instant::now() }),
+            http,
+            providers: Some(providers),
+        })
     }
 
     /// Runs `targets` with their stale upstream (every stale card when empty) once `quote`'s

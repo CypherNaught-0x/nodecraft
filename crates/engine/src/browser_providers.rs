@@ -5,16 +5,19 @@
 //! The browser keeps one ComfyUI server: `comfyui_url` is stored as the only, default entry of
 //! the settings' server list (`[[providers.comfyui]]`, #864), named by its host and port. A
 //! record saved before the list existed still holds `comfyui_url`, which reading turns into it.
+//!
+//! Custom base URLs (#960) are kept here too, by provider ([`crate::custom_endpoints::PROVIDERS`]).
 use crate::commands::{CommandSpec, Context, Effect, Services, params};
 use crate::secrets::OriginStorage;
 use crate::settings::{ComfyServer, ProviderSettings, server_name_for};
 use nodecraft_types::{Error, ErrorKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 const STORAGE_KEY: &str = "nodecraft.provider-settings.v1";
-const MAX_SETTINGS_BYTES: usize = 8192;
+const MAX_SETTINGS_BYTES: usize = 16 * 1024;
 const MAX_URL_BYTES: usize = 2048;
 pub const SERVICE: &str = "providers.settings";
 
@@ -86,6 +89,8 @@ impl OriginProviders {
                 set_comfyui_url(&mut settings, comfyui);
                 settings.litellm_url = server_url(settings.litellm_url.as_deref())
                     .map_err(|_| "Provider settings in this site's storage contain an unusable address. Set the server addresses again.")?;
+                // Base URLs are kept as stored: an unusable one refuses its provider when the
+                // adapter is built, rather than this whole record falling back to defaults.
                 if settings.install_salt.len() > 128 {
                     return Err("Provider settings in this site's storage are damaged. Set the server addresses again.");
                 }
@@ -94,7 +99,19 @@ impl OriginProviders {
         });
         let (settings, notice) = match loaded {
             Ok(settings) => (settings, None),
-            Err(notice) => (ProviderSettings::default(), Some(notice.to_owned())),
+            Err(notice) => {
+                // A damaged record that may have held custom base URLs (#960) refuses every
+                // provider that takes one until the person saves again: a key set up for a
+                // custom endpoint never silently goes to the provider's own API.
+                let mut defaults = ProviderSettings::default();
+                let held = storage.get(STORAGE_KEY).ok().flatten().is_none_or(|bytes| bytes.contains("base_urls"));
+                if held {
+                    defaults
+                        .base_urls
+                        .insert(crate::custom_endpoints::UNREADABLE_TABLE.to_owned(), crate::custom_endpoints::BaseUrlEntry::Unreadable(Value::Bool(false)));
+                }
+                (defaults, Some(notice.to_owned()))
+            }
         };
         (Self { storage, settings: Arc::new(Mutex::new(settings)) }, notice)
     }
@@ -106,10 +123,12 @@ impl OriginProviders {
     fn save(&self, request: Addresses) -> Result<ProviderSettings, Error> {
         let comfyui_url = server_url(request.comfyui_url.as_deref())?;
         let litellm_url = server_url(request.litellm_url.as_deref())?;
+        let base_urls = crate::custom_endpoints::check_all(&request.base_urls.unwrap_or_default())?;
         let mut current = self.settings.lock().map_err(|_| Error::new(ErrorKind::Internal, "provider settings are busy; reload this page"))?;
         let mut next = current.clone();
         set_comfyui_url(&mut next, comfyui_url);
         next.litellm_url = litellm_url;
+        next.base_urls = base_urls;
         next.ensure_install_salt()?;
         let bytes = serde_json::to_string(&next).map_err(|_| Error::new(ErrorKind::Internal, "provider settings could not be encoded"))?;
         if bytes.len() > MAX_SETTINGS_BYTES {
@@ -128,9 +147,9 @@ impl OriginProviders {
             let request: Request = params(request)?;
             let settings = match request {
                 Request::Get => store.settings()?,
-                Request::Set { comfyui_url, litellm_url } => store.save(Addresses { comfyui_url, litellm_url })?,
+                Request::Set { comfyui_url, litellm_url, base_urls } => store.save(Addresses { comfyui_url, litellm_url, base_urls })?,
             };
-            Ok(json!({"comfyui_url": comfyui_url(&settings), "litellm_url": settings.litellm_url}))
+            Ok(json!({"comfyui_url": comfyui_url(&settings), "litellm_url": settings.litellm_url, "base_urls": settings.base_urls}))
         })
     }
 }
@@ -144,13 +163,21 @@ struct Empty {}
 struct Addresses {
     comfyui_url: Option<String>,
     litellm_url: Option<String>,
+    /// Custom base URLs by provider (#960); omitted, none are kept.
+    #[serde(default)]
+    base_urls: Option<BTreeMap<String, Option<String>>>,
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
     Get,
-    Set { comfyui_url: Option<String>, litellm_url: Option<String> },
+    Set {
+        comfyui_url: Option<String>,
+        litellm_url: Option<String>,
+        #[serde(default)]
+        base_urls: Option<BTreeMap<String, Option<String>>>,
+    },
 }
 
 fn enabled(c: &Context<'_>) -> Result<(), Error> {
@@ -174,13 +201,17 @@ fn enabled_set(c: &Context<'_>, value: &Value) -> Result<(), Error> {
     let addresses: Addresses = params(value)?;
     server_url(addresses.comfyui_url.as_deref())?;
     server_url(addresses.litellm_url.as_deref())?;
+    crate::custom_endpoints::check_all(addresses.base_urls.as_ref().unwrap_or(&BTreeMap::new()))?;
     enabled(c)
 }
 
 fn set(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     enabled_set(c, value)?;
     let addresses: Addresses = params(value)?;
-    Ok(Effect::Service { capability: SERVICE, request: json!({"op": "set", "comfyui_url": addresses.comfyui_url, "litellm_url": addresses.litellm_url}) })
+    Ok(Effect::Service {
+        capability: SERVICE,
+        request: json!({"op": "set", "comfyui_url": addresses.comfyui_url, "litellm_url": addresses.litellm_url, "base_urls": addresses.base_urls}),
+    })
 }
 
 fn get_schema() -> Value {
@@ -189,10 +220,18 @@ fn get_schema() -> Value {
 }
 
 fn set_schema() -> Value {
+    // One property per provider that takes a custom base URL: the list is the data (#960).
+    let base_urls: serde_json::Map<String, Value> = crate::custom_endpoints::available()
+        .map(|entry| {
+            let about = format!("{} base URL, including its version path; blank or null uses {}", entry.label, entry.default);
+            (entry.provider.to_owned(), json!({"type": ["string", "null"], "maxLength": MAX_URL_BYTES, "description": about}))
+        })
+        .collect();
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object", "additionalProperties": false, "required": [], "properties": {
         "comfyui_url": {"type": ["string", "null"], "maxLength": MAX_URL_BYTES},
-        "litellm_url": {"type": ["string", "null"], "maxLength": MAX_URL_BYTES}
+        "litellm_url": {"type": ["string", "null"], "maxLength": MAX_URL_BYTES},
+        "base_urls": {"type": ["object", "null"], "additionalProperties": false, "properties": base_urls}
     }})
 }
 
@@ -204,7 +243,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: get_schema,
-            params_doc: "{} -> {comfyui_url, litellm_url}; read the browser site's saved provider server addresses. No keys or installation salt are returned.",
+            params_doc: "{} -> {comfyui_url, litellm_url, base_urls}; read the browser site's saved provider server addresses and custom base URLs by provider. No keys or installation salt are returned.",
             enabled: enabled_get,
             run: get,
         },
@@ -214,7 +253,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: set_schema,
-            params_doc: "{comfyui_url?: string|null, litellm_url?: string|null} -> {comfyui_url, litellm_url}; replace both server addresses in this browser site's storage. Omitted, null or blank values clear an address. HTTP(S) only; credentials, queries and fragments refuse. Keys belong in keys.set. Failed persistence preserves the prior settings.",
+            params_doc: "{comfyui_url?: string|null, litellm_url?: string|null, base_urls?: {openai?, anthropic?, openai-images?: string|null}} (the browser takes openai only) -> {comfyui_url, litellm_url, base_urls}; replace the server addresses and custom base URLs in this browser site's storage. Omitted, null or blank values clear an address; a provider without a base URL uses its own API. HTTP(S) only, and a base URL takes plain HTTP only for a local or private IP address or localhost; credentials, queries and fragments refuse. Keys belong in keys.set. Failed persistence preserves the prior settings.",
             enabled: enabled_set,
             run: set,
         },

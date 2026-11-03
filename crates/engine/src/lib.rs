@@ -23,6 +23,7 @@ pub mod commands;
 pub mod comment_cmds;
 pub mod copy_cmds;
 pub mod create_cmds;
+pub mod custom_endpoints;
 pub mod deck_cmds;
 pub mod deck_export;
 pub mod describe_cmds;

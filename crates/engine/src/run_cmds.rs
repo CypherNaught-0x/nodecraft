@@ -276,6 +276,7 @@ fn binding(c: &Context<'_>, catalog: &RunCatalog, p: &RunParams, limit: usize) -
     // A quote a provider gave since (#663) can price the run differently.
     crate::provider_quotes::bind(c.resources, &mut hash);
     crate::comfy_partner_quotes::bind(c.resources, c.routing.routing.targets(), &mut hash);
+    crate::custom_endpoints::bind(&c.routing.routing, c.routing.routing.targets(), &mut hash);
     let (tag, field) = match mode {
         RunMode::Selected => (0, None),
         RunMode::WithUpstream => (1, None),
@@ -483,6 +484,8 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     crate::comfy_partner_quotes::apply(resources, &c.routing.routing, canvas, &mut priced)?;
     let found = crate::provider_quotes::found(&run_plan, resources, c.routing.nonce)?;
     let quoted = crate::provider_quotes::apply(&mut priced, &found)?;
+    // A custom endpoint (#960) is never free.
+    crate::custom_endpoints::apply(&c.routing.routing, &mut priced)?;
     let admission = check(&priced, &budget.budgets, &admission_spent(c, budget))?;
     let totals: BTreeMap<String, u64> = priced.totals.iter().map(|(currency, m)| (String::from(*currency), m.micros)).collect();
     let mut totals_json = Map::new();
@@ -767,6 +770,7 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     storage::check(&quote, catalog.catalog(), c.assets.context().supports_large_assets())?;
     crate::comfy_partner_quotes::apply(c.resources, &c.routing.routing, admitted.canvas(), &mut quote)?;
     crate::provider_quotes::apply(&mut quote, &found)?;
+    crate::custom_endpoints::apply(&c.routing.routing, &mut quote)?;
     // Parsed request ownership is transferred, never cloned. Reserve all extra metadata
     // before Box/PreparedRun retention; quote ownership was pre-admitted inside exec.
     admitted.reserve_metadata(metadata)?;
