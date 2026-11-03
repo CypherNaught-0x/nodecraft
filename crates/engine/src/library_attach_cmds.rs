@@ -24,7 +24,7 @@ pub const DEFAULT_STEP: f32 = 320.0;
 /// The largest grid spacing.
 pub const MAX_STEP: f32 = 10_000.0;
 /// The canvas extent positions may use (as `node.move`).
-const MAX_COORDINATE: f32 = 10_000_000.0;
+pub(crate) const MAX_COORDINATE: f32 = 10_000_000.0;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,7 +76,7 @@ pub fn columns(n: usize) -> usize {
     (1..=MAX_ITEMS).find(|c| c.saturating_mul(*c) >= n).unwrap_or(MAX_ITEMS)
 }
 
-fn within(value: f32) -> bool {
+pub(crate) fn within(value: f32) -> bool {
     value.is_finite() && value.abs() <= MAX_COORDINATE
 }
 

@@ -241,13 +241,26 @@ pub enum Effect {
     Elements {
         request: crate::element_library::Request,
     },
-    /// An edit that shows images from the Elements library (#552): those of `media` the project
-    /// lacks are copied in from the library, and land with the edit as one undo step.
+    /// Read or change My library (#96); saving reads the project's files.
+    Assets {
+        request: crate::asset_library::Request,
+    },
+    /// An edit that shows files from a library outside the project: the Elements library (#552)
+    /// or My library (#96). Those of `media` the project lacks are copied in from `from`, and
+    /// land with the edit as one undo step.
     Place {
+        from: PlaceFrom,
         media: Vec<nodecraft_types::Blake3>,
         changes: Changeset,
         result: Value,
     },
+}
+
+/// The library a [`Effect::Place`] copies missing files from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaceFrom {
+    Elements,
+    Assets,
 }
 
 #[derive(Clone, Copy)]
@@ -274,7 +287,7 @@ impl Registry {
         let mut registry = Self::default();
         // A flat list rather than a chain of iterators: one `Chain` per module nests the
         // iterator type deeper than the compiler's recursion limit.
-        let groups: [fn() -> Vec<CommandSpec>; 74] = [
+        let groups: [fn() -> Vec<CommandSpec>; 75] = [
             crate::graph_cmds::specs,
             crate::node_cmds::specs,
             crate::assist_cmds::specs,
@@ -291,6 +304,7 @@ impl Registry {
             crate::library_cmds::specs,
             crate::library_browse_cmds::specs,
             crate::library_attach_cmds::specs,
+            crate::asset_library_cmds::specs,
             crate::templates::specs,
             crate::describe_cmds::specs,
             crate::option_cmds::specs,

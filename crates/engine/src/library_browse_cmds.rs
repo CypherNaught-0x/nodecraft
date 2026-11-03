@@ -62,7 +62,7 @@ pub fn source_for(kind: Modality) -> Option<(&'static str, &'static str)> {
 }
 
 /// A page request: where it starts and how many it holds.
-fn page(offset: usize, limit: Option<usize>) -> Result<(usize, usize), Error> {
+pub(crate) fn page(offset: usize, limit: Option<usize>) -> Result<(usize, usize), Error> {
     let limit = limit.unwrap_or(DEFAULT_PAGE);
     if limit == 0 || limit > MAX_PAGE {
         return Err(invalid("limit must be between 1 and 200"));
@@ -71,7 +71,7 @@ fn page(offset: usize, limit: Option<usize>) -> Result<(usize, usize), Error> {
 }
 
 /// A search query, lowercased; `None` when it is empty.
-fn query(query: Option<String>) -> Result<Option<String>, Error> {
+pub(crate) fn query(query: Option<String>) -> Result<Option<String>, Error> {
     match query {
         Some(q) if q.len() > MAX_QUERY_BYTES => Err(invalid("the search is too long (at most 256 bytes)")),
         Some(q) if q.trim().is_empty() => Ok(None),
@@ -517,14 +517,14 @@ fn enabled_styles(_: &Context<'_>, value: &Json) -> Result<(), Error> {
 fn uuid() -> Json {
     json!({"type": "string", "format": "uuid"})
 }
-fn paging() -> serde_json::Map<String, Json> {
+pub(crate) fn paging() -> serde_json::Map<String, Json> {
     let mut properties = serde_json::Map::new();
     properties.insert("query".into(), json!({"type": "string", "maxLength": MAX_QUERY_BYTES}));
     properties.insert("offset".into(), json!({"type": "integer", "minimum": 0}));
     properties.insert("limit".into(), json!({"type": "integer", "minimum": 1, "maximum": MAX_PAGE}));
     properties
 }
-fn object(properties: serde_json::Map<String, Json>) -> Json {
+pub(crate) fn object(properties: serde_json::Map<String, Json>) -> Json {
     json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false, "required": [], "properties": properties})
 }
 fn assets_schema() -> Json {

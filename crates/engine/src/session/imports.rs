@@ -11,6 +11,9 @@ use std::{collections::BTreeSet, sync::Arc};
 
 mod readers;
 
+/// Reads one library file by hash, checked.
+type ReadMedia = dyn Fn(&Blake3) -> Result<Vec<u8>, Error>;
+
 /// Opaque non-Clone import authority. Hashes are metadata until the batch is consumed.
 pub struct PreparedImports {
     source: SourceStamp,
@@ -139,24 +142,46 @@ impl Session {
         self.import_asset_from(&range, &TransferCancel::default(), &StreamMetrics::default())
     }
     /// Commits an edit that shows `media`, copying those the project lacks in from the Elements
-    /// library first (#552): the copies land with the edit, or not at all.
-    pub(super) fn place(&mut self, command: &'static str, media: Vec<Blake3>, changes: nodecraft_graph::Changeset, result: Value) -> Result<Value, Error> {
+    /// library (#552) or My library (#96) first: the copies land with the edit, or not at all.
+    pub(super) fn place(
+        &mut self,
+        command: &'static str,
+        from: crate::commands::PlaceFrom,
+        media: Vec<Blake3>,
+        changes: nodecraft_graph::Changeset,
+        result: Value,
+    ) -> Result<Value, Error> {
         let edit = Effect::Edit { changes, result, gesture: None };
         let missing: BTreeSet<Blake3> = media.into_iter().filter(|hash| !self.assets.contains(hash)).collect();
         if missing.is_empty() {
             let prepared = guard(|| self.prepare(edit))?;
             return self.commit_prepared(prepared, command);
         }
-        let shelf = self.resources.require::<crate::element_library::ElementShelf>()?.clone();
+        let read: Box<ReadMedia> = match from {
+            crate::commands::PlaceFrom::Elements => {
+                let shelf = self.resources.require::<crate::element_library::ElementShelf>()?.clone();
+                Box::new(move |hash| shelf.media(hash))
+            }
+            crate::commands::PlaceFrom::Assets => {
+                let shelf = self.resources.require::<crate::asset_library::AssetShelf>()?.clone();
+                // Recognised from its bytes as the type its entry names, so a hand-edited index
+                // can't put a file on a card under the wrong type.
+                Box::new(move |hash| shelf.media_as_listed(hash))
+            }
+        };
+        let damaged = match from {
+            crate::commands::PlaceFrom::Elements => "an image in the Elements library is damaged; save the Element again",
+            crate::commands::PlaceFrom::Assets => "a file in My library is damaged; remove the entry and save it again",
+        };
         let mut sources = Vec::new();
         for hash in &missing {
-            let bytes = shelf.media(hash)?;
+            let bytes = read(hash)?;
             let len = bytes.len() as u64;
             sources.push(AssetRange::new(Arc::new(MemorySource::new(Arc::from(bytes))), 0, len)?);
         }
         let imports = self.prepare_imports(&sources, &TransferCancel::default(), &StreamMetrics::default())?;
         if imports.hashes.iter().copied().collect::<BTreeSet<_>>() != missing {
-            return Err(invalid("an image in the Elements library is damaged; save the Element again"));
+            return Err(invalid(damaged));
         }
         let prepared = guard(|| self.prepare_with_assets(edit, &imports.assets, true))?;
         self.commit_prepared(prepared, command)

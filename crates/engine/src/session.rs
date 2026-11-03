@@ -860,12 +860,13 @@ impl Session {
                 | Effect::Copy { .. }
                 | Effect::CancelFile
                 | Effect::CancelExport { .. }
-                | Effect::Elements { .. } => Ok(()),
+                | Effect::Elements { .. }
+                | Effect::Assets { .. } => Ok(()),
                 // Dispatch refuses everything else until the open settles.
                 _ if matches!(self.pending, Some(PendingFile::Open(_))) => Err(opening()),
                 effect @ (Effect::Edit { .. } | Effect::Undo | Effect::Redo) => self.prepare(effect).map(|_| ()),
                 // Images still in the library are checked when they are copied in.
-                Effect::Place { media, changes, result } if media.iter().all(|hash| self.assets.contains(hash)) => {
+                Effect::Place { media, changes, result, .. } if media.iter().all(|hash| self.assets.contains(hash)) => {
                     self.prepare(Effect::Edit { changes, result, gesture: None }).map(|_| ())
                 }
                 _ => Ok(()),
@@ -918,6 +919,7 @@ impl Session {
                     | Effect::CancelFile
                     | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
+                    | Effect::Assets { .. }
             )
         {
             return Err(opening());
@@ -926,7 +928,7 @@ impl Session {
             Effect::Edit { .. } | Effect::Undo | Effect::Redo => {
                 guard(|| self.prepare(effect))?;
             }
-            Effect::Place { media, changes, result } if media.iter().all(|hash| self.assets.contains(hash)) => {
+            Effect::Place { media, changes, result, .. } if media.iter().all(|hash| self.assets.contains(hash)) => {
                 guard(|| self.prepare(Effect::Edit { changes, result, gesture: None }))?;
             }
             _ => {}
@@ -1048,6 +1050,7 @@ impl Session {
                     | Effect::CancelFile
                     | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
+                    | Effect::Assets { .. }
             ),
         };
         // A run would start on the project being replaced, so only pure reads, and the Elements
@@ -1063,6 +1066,7 @@ impl Session {
                     | Effect::CancelFile
                     | Effect::CancelExport { .. }
                     | Effect::Elements { .. }
+                    | Effect::Assets { .. }
             )
         {
             return Err(opening());
@@ -1145,7 +1149,15 @@ impl Session {
                     Ok(result)
                 });
             }
-            Effect::Place { media, changes, result } => return self.place(spec.id, media, changes, result),
+            Effect::Assets { request } => {
+                let shelf = self.resources.require::<crate::asset_library::AssetShelf>()?.clone();
+                return guard(|| {
+                    let result = crate::asset_library::handle(&shelf, &self.assets, request)?;
+                    validate_json(&result)?;
+                    Ok(result)
+                });
+            }
+            Effect::Place { from, media, changes, result } => return self.place(spec.id, from, media, changes, result),
             Effect::TemplateAdd { template } => return self.add_template(spec.id, *template),
             Effect::Service { capability, request } => {
                 validate_json(&request)?;
@@ -1462,6 +1474,7 @@ impl Session {
             | Effect::CancelFile
             | Effect::CancelExport { .. }
             | Effect::Elements { .. }
+            | Effect::Assets { .. }
             | Effect::TemplateAdd { .. }
             | Effect::Place { .. } => {
                 return Err(invalid("non-document effects must bypass history staging"));

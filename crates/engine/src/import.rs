@@ -209,6 +209,16 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     Ok(Plan::Media { kind, mime, meta, bytes: file.bytes })
 }
 
+/// The type and header facts of a media file, recognised from its bytes as a dropped file is;
+/// why not, for text and what a source card can't hold. My library uses it to rebuild a
+/// damaged index from the files it kept (#96).
+pub(crate) fn describe_media(bytes: &[u8]) -> Result<(Mime, MediaMeta), String> {
+    match plan(&Incoming { name: "", bytes }, 0)? {
+        Plan::Media { mime, meta, .. } => Ok((mime, meta)),
+        Plan::Text(_) | Plan::Card(_) => Err("it is text, not media".into()),
+    }
+}
+
 /// One media file stored on its own, for a caller that references it in its next edit (App
 /// mode's form, #95). It is recognised from its bytes as a drop is; text and what a source node
 /// can't hold are refused. Until an edit references it, the asset is collected as any other.

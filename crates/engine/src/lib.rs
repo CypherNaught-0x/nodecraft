@@ -7,6 +7,8 @@
 pub mod access;
 pub mod action_exec;
 pub mod app_cmds;
+pub mod asset_library;
+pub mod asset_library_cmds;
 pub mod assist_cmds;
 pub mod browser_providers;
 pub mod build_info;
@@ -119,6 +121,7 @@ pub mod timeline_cmds;
 pub mod turn_into_cmds;
 pub mod update_check;
 pub mod update_install;
+pub mod url_import;
 
 pub use session::{DocChanged, PreparedImports, Session};
 

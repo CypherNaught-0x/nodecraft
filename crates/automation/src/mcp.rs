@@ -121,6 +121,11 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "library.styles",
     // Places library entries as source cards: one ordinary undoable edit.
     "library.attach",
+    // My library (#96): listing reads it, including the titles of the person's other projects
+    // its entries came from; placing copies its files into this project as one undoable edit.
+    // Saving, removing and repairing are a person's (HUMAN_ONLY).
+    "library.saved",
+    "library.place_saved",
     "library.place",
     // Shipped data adds canvases/assets through the ordinary undoable project mutation path.
     "template.list",
@@ -313,6 +318,10 @@ pub const HUMAN_ONLY: &[&str] = &[
     "library.remove",
     "element.save",
     "library.remove_element",
+    // What leaves a project for My library, and what is deleted from it, is the person's (#96).
+    "library.save_assets",
+    "library.unsave_assets",
+    "library.repair_saved",
     "library.rename_element",
     "library.share_element",
     // Writing or reading a bundle file on this machine is the person's call (#765).

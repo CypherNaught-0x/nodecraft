@@ -432,6 +432,17 @@ fn template(id: &str) -> (Session, Value) {
         store.save(&serde_json::to_vec(&json!({"version": 1, "elements": [{"name": "hero", "category": "character", "images": [image]}]})).unwrap()).unwrap();
         nodecraft_engine::element_library::install(&mut session, std::rc::Rc::new(store));
     }
+    if matches!(id, "library.saved" | "library.save_assets" | "library.unsave_assets" | "library.place_saved" | "library.repair_saved") {
+        // My library holding one image, kept by its hash.
+        use nodecraft_engine::asset_library::{AssetLibraryStore, MemoryAssetLibrary};
+        let store = MemoryAssetLibrary::default();
+        let png = nodecraft_media::encode_png(2, 2, &[30, 60, 90, 255].repeat(4), &nodecraft_media::Limits::default()).unwrap();
+        let hash = nodecraft_types::Blake3::from_bytes(*blake3::hash(&png).as_bytes());
+        store.put_media(&hash, &png).unwrap();
+        let entry = json!({"asset": {"hash": hash, "mime": "image/png"}, "name": "Saved", "origin": "Elsewhere", "bytes": png.len()});
+        store.save(&serde_json::to_vec(&json!({"version": 1, "assets": [entry]})).unwrap()).unwrap();
+        nodecraft_engine::asset_library::install(&mut session, std::rc::Rc::new(store));
+    }
     if matches!(id, "shader.save" | "shader.place" | "shader.update" | "library.shaders" | "library.remove_shader") {
         // A shader library holding "Glow" version 1.
         use nodecraft_engine::library::LibraryStore;
@@ -572,6 +583,11 @@ fn template(id: &str) -> (Session, Value) {
         "library.styles" => json!({"query":"ink","offset":0,"limit":50}),
         "library.attach" => json!({"canvas":canvas(),"items":[{"from":{"canvas":canvas(),"node":node_id(1),"generation":gen_id(0x21)}},
             {"hash":"00".repeat(32)}],"ids":[node_id(7),node_id(8)],"at":{"x":1,"y":2},"step":320}),
+        "library.saved" => json!({"kind":"image","query":"saved","offset":0,"limit":200}),
+        "library.repair_saved" => json!({}),
+        "library.save_assets" => json!({"items":[{"hash":"00".repeat(32)}]}),
+        "library.unsave_assets" => json!({"hashes":["00".repeat(32)]}),
+        "library.place_saved" => json!({"canvas":canvas(),"items":[{"hash":"00".repeat(32)}],"ids":[node_id(7)],"at":{"x":1,"y":2},"step":320}),
         "template.list" => json!({}),
         "template.add" => json!({"id":"generate-text"}),
         "template.refresh" => json!({}),
