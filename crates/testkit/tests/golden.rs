@@ -113,3 +113,20 @@ fn a_failing_model_skips_what_comes_after_it() {
     );
     golden("failure_skips_downstream", &p, &[3], &[Arc::new(failing)]);
 }
+
+#[test]
+fn an_export_card_downstream_of_a_model_never_runs() {
+    // Running "with upstream" from an Export to folder card (#746) generates what feeds it and
+    // nothing else: the card has no step, no result and writes no file.
+    let mut p = project(&[(1, "source.text", "Idea", &[("text", "a lighthouse")]), (2, "mock.image", "Painter", &[])], &[(1, "out", 2, 0)]);
+    let kinds = registry().unwrap();
+    let card = kinds.get(nodecraft_nodes::export::ID).unwrap().instantiate_instance(id(3), Default::default(), &Default::default()).unwrap();
+    let edge = Edge {
+        id: EdgeId::from_bytes([120; 16]),
+        from: Endpoint { node: id(2), port: "out".into() },
+        to: Endpoint { node: id(3), port: "image".into() },
+        order: 0,
+    };
+    Changeset::new(vec![Change::AddNode { canvas: C, node: card }, Change::Connect { canvas: C, edge }]).apply(&mut p).unwrap();
+    golden("export_card_sink", &p, &[3], &standard());
+}

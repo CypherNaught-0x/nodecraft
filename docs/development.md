@@ -149,6 +149,11 @@ prints the tooling entry points. The older manual workloads below remain availab
   ignored `app::tests::perf281_visual_current` render capture is opt-in: with
   `NODECRAFT_PERF281_RENDER_ROOT` unset it prints why it skipped and the run still passes, and with
   it set to a directory it cannot capture into the run fails loudly.
+- `cargo test -p nodecraft-ui-egui --release perf::sheet163 -- --ignored --nocapture`: a Batch
+  Generate sheet at its 1,000-row limit, every row with a result: the table and the review grid
+  scrolling, and the table's frame after an edit, at 1 and 2 pixels per point, on the same frame
+  loop with the performance recorder on (its p50/p95/p99 and over-budget count are printed). CPU
+  side only, like the canvas workload; it is not part of the `cargo xtask perf` matrix.
 
 ## Performance capture
 

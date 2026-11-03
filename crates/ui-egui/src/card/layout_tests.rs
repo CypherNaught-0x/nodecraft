@@ -138,6 +138,7 @@ fn harness(zoom: f32, ppp: f32, control: ParamControl, enabled: bool) -> Harness
                 outdated: false,
                 prompt_overlay: true,
                 variations: Default::default(),
+                export_folder: None,
             };
             if let Some(r) = show(ui, &view, &state.node, card, &mut state.editor, false, t) {
                 for (side, name, response) in r.ports {

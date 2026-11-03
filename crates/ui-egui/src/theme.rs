@@ -190,11 +190,13 @@ pub struct Tokens {
     /// The side of a connected-media thumbnail above a text card's answer (#84), in world points.
     pub connected_thumb: f32,
     /// The sheet table (#163): its narrow checkbox and number columns, every other column but
-    /// the prompt, the canvas list's height in the Sheets panel, and its title field's width.
+    /// the prompt, the canvas list's height in the Sheets panel, its title field's width, and the
+    /// side of a result thumbnail in the sheet's grid.
     pub sheet_index_width: f32,
     pub sheet_column_width: f32,
     pub sheet_list_height: f32,
     pub sheet_title_width: f32,
+    pub sheet_thumbnail: f32,
     /// The Layer Editor (#101): the width of its layers and properties panels, how near (screen
     /// points) an edge or centre snaps to a guide, and how far above a layer its rotate handle sits.
     pub layers_panel_width: f32,
@@ -203,6 +205,8 @@ pub struct Tokens {
     /// App mode (#95): the width of its form and side of a result or media thumbnail.
     pub app_form_width: f32,
     pub app_thumbnail: f32,
+    /// The Library's Assets, History and Styles browsers (#96): the side of a listed thumbnail.
+    pub library_thumbnail: f32,
     /// The Timeline editor (#109): the height of its clip track and time ruler, and how near
     /// (screen points) a clip's edge the pointer must be to trim it.
     pub timeline_track_height: f32,
@@ -349,11 +353,13 @@ pub const DARK: Tokens = Tokens {
     sheet_column_width: 120.0,
     sheet_list_height: 320.0,
     sheet_title_width: 250.0,
+    sheet_thumbnail: 160.0,
     layers_panel_width: 250.0,
     layer_snap_distance: 6.0,
     layer_rotate_offset: 24.0,
     app_form_width: 640.0,
     app_thumbnail: 120.0,
+    library_thumbnail: 56.0,
     timeline_track_height: 84.0,
     timeline_ruler_height: 22.0,
     timeline_trim_grip: 6.0,

@@ -40,6 +40,10 @@ use std::{
 /// The node `config` key holding whether it reuses identical results (#91): a boolean.
 pub const CACHE_CONFIG: &str = "nodecraft.cache";
 
+/// The node `config` key recording which template expansion made a Batch Generate row (#163):
+/// JSON text. It says where a row came from, not what it makes, so it is left out of the hash.
+pub const PROVENANCE_CONFIG: &str = "nodecraft.sheet_expansion";
+
 /// Domain tag mixed into every hash. Bump it when what is hashed changes; results stamped under
 /// an older tag are then reported stale (see the module docs).
 pub const DOMAIN: &[u8] = b"nodecraft.input-hash.v2";
@@ -407,14 +411,15 @@ impl InputHasher {
         let mut w = Writer::new();
         w.text(&node.kind);
         // Whether a node reuses cached results (#91), how many variations a run makes (#81),
-        // and the shader library version (#90) a custom shader came from don't change what it
-        // makes (the shader itself is hashed): leave them out, so changing them never makes a
-        // result stale.
+        // the shader library version (#90) a custom shader came from, and the template expansion
+        // a sheet row came from (#163) don't change what it makes (the shader itself is hashed):
+        // leave them out, so changing them never makes a result stale.
         let pinned = node.kind == nodecraft_nodes::shader::ID && node.config.contains_key(nodecraft_nodes::shader::FROM_CONFIG);
-        if node.config.contains_key(CACHE_CONFIG) || node.config.contains_key(VARIATIONS_CONFIG) || pinned {
+        if node.config.contains_key(CACHE_CONFIG) || node.config.contains_key(VARIATIONS_CONFIG) || node.config.contains_key(PROVENANCE_CONFIG) || pinned {
             let mut config = node.config.clone();
             config.remove(CACHE_CONFIG);
             config.remove(VARIATIONS_CONFIG);
+            config.remove(PROVENANCE_CONFIG);
             if pinned {
                 config.remove(nodecraft_nodes::shader::FROM_CONFIG);
             }

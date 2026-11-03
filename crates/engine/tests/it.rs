@@ -34,6 +34,8 @@ mod billing_host298;
 mod browser_plugins866;
 #[path = "bulk_edits.rs"]
 mod bulk_edits;
+#[path = "comfy_models970.rs"]
+mod comfy_models970;
 #[path = "comfy_servers864.rs"]
 mod comfy_servers864;
 #[path = "comfy_workflow9.rs"]
@@ -151,6 +153,10 @@ mod settled_read_only556;
 mod shader_write90;
 #[path = "share.rs"]
 mod share;
+#[path = "sheet_offline163.rs"]
+mod sheet_offline163;
+#[path = "sheet_runs163.rs"]
+mod sheet_runs163;
 #[path = "soul_training680.rs"]
 mod soul_training680;
 #[path = "space_preflight367.rs"]
@@ -212,6 +218,8 @@ mod rodin41;
 #[path = "templates952/author.rs"]
 mod templates952_author;
 
+#[path = "template_updates954.rs"]
+mod template_updates954;
 #[path = "templates952.rs"]
 mod templates952;
 

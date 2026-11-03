@@ -65,6 +65,7 @@ impl NodeCraftApp {
         // Do not start another numbered item or accept a later save-dialog answer.
         self.exports.pending = None;
         self.exports.results = None;
+        self.exports.card = None;
         self.exports.work = None;
         if let Some(watch) = watch {
             self.exports.closing = Closing::Waiting(watch);

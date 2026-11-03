@@ -38,8 +38,11 @@ same structure with the values inverted.
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide. Ordinary parameter bodies use deterministic, control-specific row metrics plus padding, rather than a 220-point minimum plus 64 points per schema field. Longer bodies scroll internally at the 720-point parameter-body cap. The separate `composer_body_height` token reserves 220 points for a generation composer; `card_min_height` remains only a legacy deterministic creation-ID seed, not a card geometry input. Previews and answers retain their separate 180-point regions. Conditional controls keep their declared space so changing a value does not move ports and wires. Composer prompts, admitted generated-image count controls and hidden workflow-model fields do not reserve duplicate rows. Renderer, payload admission, navigation, formatting and creation geometry share the admitted composer roles; descriptor-only callers retain conservative bounds. Count ownership follows the contract meaning, independent of provider parameter names, current count or composer visibility. Control gaps are 6 points; `control_vertical_padding` is 2 points so native button rows agree with the logical metrics. Image actions reserve their 180-point preview before the first live result, and PDF source previews reserve the same region. History uses two compact rows rather than an extra 64-point parameter row. Multi-port cards retain a port-spacing height floor without enlarging the parameter viewport; vertical hit cells keep adjacent ports independently selectable at overview zoom and during legacy-input previews. Sliders use the full content width, with an exact numeric input below; text inputs and choice buttons also fill that width. The composer's submit button is 28
 points across; the generation toolbar is 32 high, 10 above its card; the image viewer opens 720 wide. A sheet's table has 32-wide checkbox and number columns and
-120-wide model, references, result, status and button columns, the prompt taking the rest; the
-Sheets panel lists canvases 320 high, with a 250-wide title field. The Layer Editor's layers and
+120-wide model, aspect, references, result, status and button columns, the prompt taking the
+rest but never less than 240; Row settings opens at the right edge five control rows down; its
+review grid's result thumbnails are 160 across (`sheet_thumbnail`), each with its status badge in
+the top-left corner (`panel_fill` behind the status colour) and an `accent` outline when its row is
+selected; the Sheets panel lists canvases 320 high, with a 250-wide title field. The Layer Editor's layers and
 properties panels are 250 wide; a dragged layer snaps within 6 points of a guide, and its rotate
 handle sits 24 points above it. App mode's form is 640 wide, and its media and result
 thumbnails 120 across. The Timeline editor shares the Layer Editor's panel width; its clip track
@@ -135,6 +138,22 @@ values without editing the document, and shows progress while scanning a large l
 width stays fixed and long rows truncate. Use default clears the stored override through the
 same undoable parameter edit, including when the old value is no longer listed. Unknown lists
 keep the editable text control and Refresh guidance. Reset is disabled without a stored override.
+
+The model picker (**Change model…**) groups catalog models by provider. After the catalog's
+ComfyUI cards it shows a section headed **From ComfyUI server "name"** (#970). That section
+lists what the default server's last read reports, by type: checkpoints, LoRAs, VAEs, text
+encoders, diffusion models and upscalers. Only Generate image cards show it. The heading says the list comes
+from the server, not the catalog, and **Refresh server models** reads the server again. The open
+picker rebuilds the section, keeping the search text, when a read lands or the default server
+changes; a list that can't be read says why in the heading row, in the `danger` colour. Entries
+the app can't run stay in the list, disabled, with the reason on the row. A runnable entry whose
+fit is a guess shows its warning instead of the workflow it runs through. The arrow keys and
+Enter reach server rows as well as catalog models. A
+checkpoint on the card that the server doesn't list shows as **Missing on the server**, in the
+`stale` token colour, and is never swapped for another. Choosing a checkpoint goes through the
+usual review step, and the review names the checkpoint. **Imported ComfyUI workflows** lists the
+document's image workflow cards by title. Choosing one places a copy beside the card, `card_width +
+layout_gap` to its right, and leaves the card itself unchanged.
 
 Router connection menus keep their upstream output shape: a list stays a list through a chain
 of Routers, and several incoming values offer only consumers that accept a collection. A Router
@@ -496,6 +515,86 @@ below both controls. Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
 [layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
 
+## Starter templates in the Techniques panel
+
+The Starter templates section (#953, #954) heads its list with two buttons: **Update templates**
+(`templates.update`) and **Clear downloaded** (`templates.clear_cache`, disabled until something is
+downloaded). Below them one small `text_muted` status line says what the last update did ("Using
+the bundled templates…", "2 templates were downloaded and verified.", how many were rejected or
+left for the next update), or shows a spinner with "Updating templates…" while one runs; Update is
+disabled meanwhile. A damaged cache shows one `danger` line beginning "Template cache:" with the
+first problem and a count of the rest. Windows that can't download (the CLI has no panel; a host
+without the fetch service) disable Update and say "Bundled templates only". Nothing in the panel
+touches the network until Update is pressed.
+
+## Library browsers
+
+The Techniques panel (#96) has four tabs: **Library** (published techniques, the shared
+technique and shader libraries, starter templates), **Assets**, **History** and **Styles**. Each
+browser shows a page of 20 entries with Previous and Next, read with a read-only command when
+the tab opens and again whenever the document or a filter changes, so a large project never
+draws more than a page.
+
+- **Assets** (`library.assets`) lists every distinct image, video, sound, 3D model and PDF the
+  project's cards hold or made, once each, with how often it is used. Images and PDFs show a
+  `library_thumbnail` (56-point) thumbnail through the shared preview cache; other kinds show
+  their kind's name in the same square. Kind chips (All, Images, Videos, Sounds, 3D, PDFs) and a
+  search field filter it. **Insert** adds a source card holding the asset in the middle of the
+  view, selected, as one `node.add` undo step.
+- **History** (`library.history`) lists the open canvas's past results, card by card and newest
+  first, with the first image's thumbnail or a quote of the text, the model, and whether the card
+  uses it now. **Use this result** restores it (`history.select`); **Place** puts its value on the
+  canvas as a source card in the middle of the view (`history.extract`). **Selected card only**
+  narrows it to one card.
+- **Styles** (`library.styles`) lists every Train style card on every canvas: its family and
+  trigger, a **Soul ID** mark (`accent`) for a trained identity, and "Kept by provider": the
+  weights or the identity stay with that provider and only that account can use the handle.
+  **Use on selected card** wires a style on the open canvas into the selected card
+  (`style.use`), disabled with the reason when the card can't take it; a style on another canvas
+  offers **Open its canvas**.
+
+**Ticking entries.** In Assets and History, each entry's title is a tick box; up to 32 entries
+per tab can be ticked across pages (the ticks are forgotten when the project or canvas changes,
+and an entry the document no longer holds is unticked). A bar
+above the list then says how many are ticked and offers **Place on canvas** (`library.attach`:
+every entry as a source card in a grid centred in the view, selected, one undo step, each card
+titled after where it came from), **Export…** (the workflow-result save with the ticked results
+as targets, after a folder is picked; disabled for an asset that is a card's own file rather
+than a result on this canvas) and **Clear ticks**. A disabled button says why on hover.
+
+**Import files…** (Assets, desktop only; the browser build says to drop files on the canvas)
+opens the system's file picker. The files are read on their own thread while a foreground
+panel at the bottom left shows "Reading files for the library… 2 of 5" with a progress bar and
+**Cancel import** (then "Checking the videos' lengths…" while a video without a stated length
+is measured); the import then adds a source card per new file in the middle of the view,
+selected, as one undo step, titled with the file's name. A report above the list gives the
+summary ("2 added · 1 duplicate · 1 failed") and a line per file, failures in `danger`, with
+**Retry failed (N)**, which reads only the failed files again (disabled while files are being
+imported), and **Dismiss**.
+
+**Import from URL…** (Assets, desktop only) opens a row with an address field, **Import** and
+**Close**. The field says under it why an address won't do ("only https addresses are imported",
+"addresses on this computer or its local network aren't imported") and Import stays disabled
+until it will. While the file downloads, the same foreground panel shows "Downloading from
+<host>…" with **Cancel import**; the file then takes the Import files… path and gets a line in the
+report, titled with the address's file name. A failed download gets one `danger` line naming the
+host, with nothing to retry. The browser build disables the button and says to download the file
+and drop it.
+
+**My library.** The Assets tab has two scopes, **This project** and **My library**. With entries
+ticked, the bar also offers **Save to My library** (Assets and History), which copies the files
+into the library every project shares and says what became of each in the notice ("2 saved to My
+library · 1 already in My library"). The My library scope lists the saved files newest first,
+with the same kind chips and search, a square naming each file's kind where a project asset shows
+its thumbnail (the file isn't in the project until it is placed), "Image · from <project> ·
+1.4 MB", and **Place** (a card in the middle of the view, copied into this project, one undo step)
+and **Remove from My library**. Ticked entries get **Place on canvas** and **Remove from My library**. Above the
+list, "12 files · 34.0 MB of 1.1 GB" and **Refresh** (to see what another window saved). An index
+that can't be read is explained in `danger` with **Repair**, which rebuilds the list from the
+saved files and says in the notice what it recovered and where the old index was kept. With more
+entries ticked than one request takes, the bulk buttons are disabled with the reason. In the browser My library lasts until the page is
+closed, and says so ([decision](decisions/2026-11-03-library-url-import-and-global-library.md)).
+
 ## Overlays and stacking
 
 One rule decides how every surface over the canvas moves, resizes and stacks (#957). It is
@@ -512,7 +611,7 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 4. **Menus, popups and dialogs** (`Foreground`, shown after chrome): the More menu, quick-add,
    Turn into, mention lists, egui menus and combo boxes, and question dialogs.
 5. **Notices** (`Foreground`, bottom-left): the notice and staleness check, update banner,
-   pending drop, folder import and background export progress. They are above panels and
+   pending drop, folder import, library import and background export progress. They are above panels and
    chrome. The quick-add palette and Turn into menu are raised over a notice while open (2026-10-18
    staleness decision), so a menu the keyboard owns is never under a notice.
 6. **Tooltips** (`Tooltip`): egui's own, above everything.
@@ -538,7 +637,7 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 
 | Surface | Kind | Moves | Resizes | Dismiss |
 |---|---|---|---|---|
-| Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins | floating panel | header | right/bottom edges, corner | close button or its row control |
+| Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins, Automation | floating panel | header | right/bottom edges, corner | close button or its row control |
 | Custom shader, Image viewer, PDF reader, Charges to review | floating panel (viewer/review) | header | right/bottom edges, corner | close button |
 | Project files (File menu) | floating window, not yet on `floating::panel` | header | no | close button or File |
 | Shared parameters (bulk) | fixed: pinned top-right while several nodes are selected; panels opening over it step below its header | no | no | change the selection |
@@ -546,7 +645,7 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 | Comment pins, generation toolbar, Save result toolbar | attached to their card or comment | with the canvas | no | deselect |
 | More menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
 | Model preview changed, Review model change, Model choice unavailable, Choose a model, Workflow fields, Rename field, Unsaved changes (browser) | dialog, above panels | header (Unsaved changes stays centred) | all but Rename field and Unsaved changes | its buttons |
-| Notice, update banner, pending drop, folder import, background export | notice | no | no | its own button |
+| Notice, update banner, pending drop, folder import, library import, background export | notice | no | no | its own button |
 
 The generation and Save result toolbars draw in the panel order while their card is selected;
 they follow the card, so they are not clamped or cascaded.
@@ -566,6 +665,17 @@ does not edit the document or history selection. Save to folder passes the same 
 selector to the workflow-result preview, manifest and worker (#966). Its existing secure folder
 writer currently supports macOS and Linux; other platforms explain the limitation before a
 folder can be chosen. Individual Save as remains available on desktop Windows.
+
+An **Export to folder** card (`media.export`, #746) is a sink: wire image, video, audio, 3D or
+document results into its ports, and its generated body shows the file-name pattern, what to do
+when a file exists (keep, number or replace), the format and an optional subfolder. Above them the
+card shows the chosen folder's name ("No folder chosen yet" until then), **Choose folder…** (the
+native folder dialog; the only way to grant a folder) and **Export**, enabled once a folder is
+chosen. The folder is the window's view state for that card and never enters the project. Export
+writes on the background export worker behind a progress window with **Cancel export**; when it
+finishes, a notice says how many files were written, kept or failed and why. Running the canvas
+never exports. The browser build and non-Unix desktops show why export is unavailable instead of
+the buttons.
 
 ## Control icons
 

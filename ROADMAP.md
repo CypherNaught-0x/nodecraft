@@ -32,6 +32,10 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 ComfyUI workflow cards expose prompts and common generation settings on import. Their
 **Edit workflow fields…** dialog saves custom field visibility, names and order without
 reimporting, including retained image previews for compatible core workflows (#947).
+The model picker's ComfyUI group lists the default server's own models by type once the server
+is read. Checkpoints run through the built-in FLUX or SDXL workflow. Models with no built-in
+workflow are shown as unavailable, with the reason, and imported workflow cards are listed by
+title (#970).
 
 Runway Gen-4.5 text/first-frame video and Gen-4 Turbo first-frame video are available through
 priced catalog models and the direct task adapter (#25); paid live verification remains opt-in.
@@ -39,7 +43,10 @@ priced catalog models and the direct task adapter (#25); paid live verification 
 Official workflow starters are maintained in the separate
 [nodecraft-templates](https://github.com/CypherNaught-0x/nodecraft-templates) repository. Native and
 browser builds embed a pinned offline set; the Techniques panel can refresh the versioned index
-and retrieve one verified version without importing or running it (#953).
+and retrieve one verified version without importing or running it (#953). **Update templates**
+(`templates.update`) downloads new and changed templates in one bounded, explicit update, each
+checked against its index digest, into a versioned cache in the app data folder that is verified
+again at startup and can be cleared (#954).
 
 ## What works today
 
@@ -72,6 +79,22 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   generated reference sheet (#104), and are saved to an Elements library every project shares,
   placed from it and updated from it (#552), even when placed under another name. A library
   Element can be renamed, shared, or exported as a bundle file another person imports (#765).
+  The Techniques panel's Assets, History and Styles tabs browse the open project a page at a
+  time: every image, video, sound, 3D model and PDF with a thumbnail, filtered by kind and
+  inserted as a card; the open canvas's past results, restored or placed as a source card; and
+  every trained style and Soul ID, marked with the provider that keeps it and wired into the
+  selected card (`library.assets`, `library.history`, `library.styles`, part of #96). Ticked
+  assets and results go on the canvas together in one undo step (`library.attach`) or are saved
+  to a chosen folder, and Import files… brings picked files into the library as source cards,
+  deduplicated by content, with a line per file and Retry failed (part of #96). Import from
+  URL… fetches one media file from a public https address on the desktop, refusing local and
+  private addresses on every redirect, capped at 16 MiB and checked by type and bytes, and keeps
+  only its file name. Ticked files can be saved to My library, which every project shares
+  (bounded at 4096 files and 1 GiB, repaired if its index is damaged), and placed from it on any
+  canvas of any project (`library.saved`, `library.place_saved`; part of #96).
+  An Export to folder card writes the results wired into it into a folder a person chose on the
+  card, with a file-name pattern and a keep/number/replace policy, on the background export worker
+  with Cancel; the card never runs with the canvas (#746, completing #98's batch export).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
   image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL) become 3D nodes whose cards show
@@ -127,6 +150,16 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   (`nodecraft-cli plugin pack|inventory|lint`, [`docs/plugin-authoring.md`](docs/plugin-authoring.md), #175),
   sign them with their own key (`plugin key new|trust`, `pack --sign`), and check them against a
   corpus of refused packages; a package may depend only on data packages (#866).
+- **Batch Generate sheets** (M5, #163): the Sheets panel makes, names and reopens sheets, tables
+  of Generate rows with their own prompt, model, aspect, settings and references, run together
+  under one quote within budgets. Model and settings apply to the selected rows (Mixed values
+  shown); "Retry failed" reruns only the failed rows, and running rows can be cancelled. A started
+  run is a snapshot: later edits leave its results out of date. Drafts edit and save offline.
+  "From template" expands a `{{variable}}` prompt (text values, an empty value, or image
+  sources) into one row per combination; prompt and status filters narrow the rows. A Grid mode
+  reviews the rows' results as badged thumbnails and steps through a re-run row's older results;
+  the chosen results go to the canvas as source cards that record their row and run
+  (`sheet.place`), or into a folder through the shared result save (macOS and Linux).
 - **Actions** (M4): image action cards (blur, grade, filter, tint, flip, rotate, crop, key,
   replace colour, aspect, overlay, duplicate, resize, expand) and text action cards (split,
   replace, template, concat) come from quick-add and the palette (#85, #87, #410). After an edit
@@ -163,8 +196,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   output block. Browser sessions refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Document integrity**: every edit is an invertible changeset; undo/redo with a bounded stack;
   command dispatch under a panic guard; a shared registry of stable dotted commands with typed JSON params.
-- **Automation**: `nodecraft-cli mcp` (MCP over stdio, 4 generic tools), `mcp --bridge` to drive a
-  running app, `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
+- **Automation**: `nodecraft-cli mcp` (MCP over stdio or, with `--listen`, Streamable HTTP on
+  loopback with a bearer token; 4 generic tools), `mcp --bridge` to drive a running app, the
+  desktop app's own MCP server (Automation › Enable MCP server, #116), `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
   screenshots), plus `nodecraft-cli serve` for a project's published Techniques over a local
   authenticated HTTP API with optional signed webhooks. Agents open and save projects only inside
   the folders the person allows with `--root`/`--read-root` (#423). See [`docs/mcp.md`](docs/mcp.md),

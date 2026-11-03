@@ -341,6 +341,7 @@ fn box_geometry(painted: &BTreeMap<NodeId, Rect>, session: &Session, cache: &mut
 pub(crate) mod admission;
 
 mod app_mode;
+pub mod automation;
 mod batch_review;
 mod browser_providers;
 mod budget_caps;
@@ -375,6 +376,10 @@ mod key_changes;
 mod layer_editor;
 mod layer_fonts;
 mod layout;
+mod library_browsers;
+#[cfg(not(target_arch = "wasm32"))]
+mod library_import;
+mod library_saved;
 mod library_view;
 mod live;
 mod mask_badges;
@@ -435,6 +440,7 @@ mod web_files;
 mod wire_body;
 #[cfg(test)]
 mod wiring951_tests;
+pub(crate) use export::card_unavailable as card_export_unavailable;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use web_files::pick_package;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -599,6 +605,8 @@ pub struct NodeCraftApp {
     pub key_accounts: nodecraft_engine::settings::KeySettings,
     /// The Budgets panel, and the caps runs are checked against (from settings, #201).
     pub budgets: crate::budgets::BudgetsPanel,
+    /// Settings › Automation: the desktop app's built-in MCP server, once it hands one over (#116).
+    pub automation: automation::AutomationPanel,
     budget_caps: nodecraft_engine::settings::BudgetSettings,
     browser_providers: Option<browser_providers::BrowserProviders>,
     /// Answers from the keychain thread (the app's `keys.store` service).
@@ -783,13 +791,30 @@ impl NodeCraftApp {
         }
         app.runs = runs;
         app.option_fetch = option_fetch;
-        app.template_fetch = template_fetch::TemplateFetcher::new()
+        // Verified templates kept from earlier updates (#954): the template worker reads and
+        // checks them off the UI thread and writes new ones; never the network. The bundled set
+        // stays the floor whatever the cache holds.
+        let template_disk = store.dir().map(nodecraft_engine::templates::disk::FileCache::new);
+        app.template_fetch = template_fetch::TemplateFetcher::new(template_fetch::TemplateFetcher::configured_source(), template_disk.clone())
             .and_then(|mut fetcher| {
                 fetcher.bind(&mut app.session)?;
                 Ok(fetcher)
             })
             .inspect_err(|error| log::warn!("templates unavailable: {}", error.message))
             .ok();
+        if app.template_fetch.is_none() || template_disk.is_none() {
+            // No worker (or no settings folder): read the cache inline, or keep one in memory.
+            let cache: Box<dyn nodecraft_engine::templates::disk::TemplateCacheStore> = match template_disk {
+                Some(disk) if app.template_fetch.is_none() => Box::new(disk),
+                _ => Box::new(nodecraft_engine::templates::disk::MemoryCache::default()),
+            };
+            let problems = nodecraft_engine::templates::disk::install(&mut app.session, cache);
+            if let Some(first) = problems.first() {
+                log::warn!("template cache: {}", problems.join("; "));
+                let told = format!("Some downloaded templates were skipped: {first}. Clear them from Techniques → Starter templates.");
+                app.notice = Some(app.notice.map_or(told.clone(), |notice| format!("{notice} {told}")));
+            }
+        }
         app.comfy_nodes = comfy_nodes;
         // The technique library every project shares (#96), beside the plugins; in memory when
         // settings aren't kept on disk.
@@ -806,6 +831,12 @@ impl NodeCraftApp {
             None => std::rc::Rc::new(nodecraft_engine::element_library::MemoryElements::default()),
         };
         nodecraft_engine::element_library::install(&mut app.session, elements);
+        // My library (#96): files saved to use in any project, beside it.
+        let saved: std::rc::Rc<dyn nodecraft_engine::asset_library::AssetLibraryStore> = match store.dir() {
+            Some(dir) => std::rc::Rc::new(nodecraft_engine::asset_library::FileAssetLibrary::new(dir.join("assets"))),
+            None => std::rc::Rc::new(nodecraft_engine::asset_library::MemoryAssetLibrary::default()),
+        };
+        nodecraft_engine::asset_library::install(&mut app.session, saved);
         // The shader library (#90), beside it.
         let shaders: Box<dyn nodecraft_engine::library::LibraryStore> = match store.dir() {
             Some(dir) => Box::new(nodecraft_engine::shader_library::file_store(dir.join("shaders"))),
@@ -884,6 +915,7 @@ impl NodeCraftApp {
         let mut app = Self::with_services(services)?;
         nodecraft_engine::library::install(&mut app.session, store)?;
         nodecraft_engine::element_library::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::element_library::MemoryElements::default()));
+        nodecraft_engine::asset_library::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::asset_library::MemoryAssetLibrary::default()));
         nodecraft_engine::shader_library::install(&mut app.session, Box::new(nodecraft_engine::library::MemoryLibrary::default()))?;
         nodecraft_engine::skills::install(&mut app.session, std::rc::Rc::new(nodecraft_engine::skills::MemorySkills::default()))?;
         Ok(app)
@@ -926,6 +958,8 @@ impl NodeCraftApp {
         app.runs = runs;
         app.key_changes = Some(changed);
         app.option_fetch = option_fetch;
+        // The browser keeps downloaded templates for this page's session only.
+        nodecraft_engine::templates::disk::install(&mut app.session, Box::new(nodecraft_engine::templates::disk::MemoryCache::default()));
         app.template_fetch = template_fetch::TemplateFetcher::browser()
             .and_then(|mut fetcher| {
                 fetcher.bind(&mut app.session)?;
@@ -1228,6 +1262,7 @@ impl NodeCraftApp {
             plugin_panel: crate::plugins::PluginsPanel::default(),
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
             budgets: crate::budgets::BudgetsPanel::default(),
+            automation: automation::AutomationPanel::default(),
             budget_caps: nodecraft_engine::settings::BudgetSettings::default(),
             browser_providers: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1348,7 +1383,7 @@ impl NodeCraftApp {
             // is painted last by show(), above any document editor or canvas gesture.
             return;
         }
-        let file_owns_input = self.results_overlay(ui.ctx()) || self.export_overlay(ui.ctx()) || file_owns_input;
+        let file_owns_input = self.results_overlay(ui.ctx()) || self.card_export_overlay(ui.ctx()) || self.export_overlay(ui.ctx()) || file_owns_input;
         self.videos.poll(ui.ctx());
         self.audios.poll(ui.ctx());
         self.meshes.poll();
@@ -1783,6 +1818,13 @@ impl NodeCraftApp {
             let mention_blocked = &self.mention_cache.blocked;
             let hidden = &membership.hidden;
             let field_shift = self.field_shift();
+            // Folders chosen for Export to folder cards (#746): view state, never document data.
+            let export_folders: BTreeMap<NodeId, String> = canvas
+                .nodes()
+                .values()
+                .filter(|node| node.kind == nodecraft_nodes::export::ID)
+                .filter_map(|node| Some((node.id, self.card_export_folder(node.id)?)))
+                .collect();
             for node in
                 canvas.nodes().values().filter(|node| !selected.contains(node.id)).chain(canvas.nodes().values().filter(|node| selected.contains(node.id)))
             {
@@ -1931,6 +1973,7 @@ impl NodeCraftApp {
                         audio,
                         mesh,
                         outdated,
+                        export_folder: export_folders.get(&node.id).cloned(),
                         variations: card::generate::Variations {
                             cards: canvas.variation_cards(),
                             alike: nodecraft_exec::variations::requested(node) > 1
@@ -2607,6 +2650,14 @@ impl NodeCraftApp {
                     }
                     continue;
                 }
+                Intent::ChooseExportFolder => {
+                    self.choose_card_folder(id);
+                    continue;
+                }
+                Intent::Export => {
+                    self.export_card(id);
+                    continue;
+                }
                 Intent::Video(intent) => {
                     self.videos.act(ui.ctx(), id, intent);
                     continue;
@@ -2735,6 +2786,7 @@ impl NodeCraftApp {
         self.comfy_server_panel(ui.ctx(), t);
         self.comfy_mapping_window(ui.ctx(), t);
         self.budgets_panel(ui.ctx(), t);
+        self.automation_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);
         self.batch_review_window(ui.ctx(), t);
         self.share_panel(ui.ctx(), t);
@@ -3577,6 +3629,7 @@ impl eframe::App for NodeCraftApp {
                 self.title = title;
             }
         }
+        self.sync_mcp_setting();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &mut self.store {
             let tick = store.tick(std::time::Instant::now());
@@ -3650,6 +3703,8 @@ mod audio_tests;
 #[cfg(test)]
 mod batch_review_tests;
 #[cfg(test)]
+mod card_export746_tests;
+#[cfg(test)]
 mod comfy_workflow9_tests;
 #[cfg(test)]
 mod copy_result_tests;
@@ -3681,6 +3736,8 @@ mod history_tests;
 mod image_tools_tests;
 #[cfg(test)]
 mod layer_editor_tests;
+#[cfg(test)]
+mod library_browsers_tests;
 #[cfg(test)]
 mod library_view_tests;
 #[cfg(test)]

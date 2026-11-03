@@ -2,6 +2,8 @@
 //! project shares. Placing, adding and removing dispatch `technique.place` and the `library.*`
 //! commands; the library list is read when the panel opens and after every change. Below them,
 //! the shader library (#90): each saved shader's latest version is placed with `shader.place`.
+//! The panel's other tabs browse the project's assets, past results and trained styles
+//! (`library_browsers`).
 use super::*;
 use nodecraft_types::TechniqueId;
 use serde::Deserialize;
@@ -19,6 +21,8 @@ pub(super) struct LibraryView {
     pub(super) template_query: String,
     /// The shader library's names and latest versions, read with the techniques.
     shaders: super::shader_editor::ShaderListing,
+    /// The Assets, History and Styles tabs.
+    pub(super) browsers: super::library_browsers::Browsers,
 }
 
 impl LibraryView {
@@ -50,7 +54,10 @@ enum Action {
     Place(CanvasId),
     AddTemplate(nodecraft_engine::templates::catalog::Identity),
     RetrieveTemplate(nodecraft_engine::templates::catalog::Identity),
-    RefreshTemplates,
+    /// `templates.update` (#954).
+    UpdateTemplates,
+    /// `templates.clear_cache`.
+    ClearTemplates,
     /// Keep the project's version in the library.
     Add(CanvasId),
     /// Place a version from the library.
@@ -75,6 +82,9 @@ impl NodeCraftApp {
 
     /// The panel listing the project's published versions and the library's.
     pub(super) fn techniques_panel(&mut self, ctx: &egui::Context, t: &Tokens) {
+        // A library import keeps going, and shows its progress, with the panel closed.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_library_import(ctx, t);
         if !self.library.open {
             return;
         }
@@ -94,6 +104,13 @@ impl NodeCraftApp {
             );
         }
         let can_fetch_templates = self.session.enabled("template.refresh", &json!({})).is_ok();
+        let template_status = self.template_status();
+        let template_waiting = self.template_fetch.as_ref().is_some_and(template_fetch::TemplateFetcher::waiting)
+            || nodecraft_engine::templates::disk::is_clearing(&self.session)
+            || nodecraft_engine::templates::disk::is_loading(&self.session);
+        let can_clear_templates = !template_waiting
+            && self.session.enabled("templates.clear_cache", &json!({})).is_ok()
+            && nodecraft_engine::templates::catalog::cached(&self.session) > 0;
         let library = self.has_library();
         if library && self.library.listed.is_none() {
             self.library.listed = Some(self.list_library());
@@ -112,6 +129,9 @@ impl NodeCraftApp {
             })
             .collect();
         own.sort_by(|a, b| (&a.3, a.2).cmp(&(&b.3, b.2)));
+        self.refresh_browser();
+        let selected = self.browse_selected_card();
+        let mut browse = None;
         let kept: &[Kept] = match &self.library.listed {
             Some(Ok(kept)) => kept,
             _ => &[],
@@ -121,6 +141,12 @@ impl NodeCraftApp {
         let mut action = None;
         let mut open = self.library.open;
         crate::floating::panel(ctx, "Techniques", egui::Id::new("nodecraft.techniques"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
+            ui.set_max_width(t.dialog_width);
+            super::library_browsers::tabs(ui, &mut self.library.browsers);
+            if self.library.browsers.tab != super::library_browsers::Tab::Library {
+                browse = super::library_browsers::show(ui, t, &mut self.library.browsers, &mut self.previews, &self.session, self.canvas, selected);
+                return;
+            }
             egui::ScrollArea::vertical().max_height(t.sheet_list_height).show(ui, |ui| {
                 ui.set_max_width(t.dialog_width);
                 ui.label(egui::RichText::new("This project").strong().color(t.text));
@@ -212,15 +238,35 @@ impl NodeCraftApp {
                         ui.separator();
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Starter templates").strong().color(t.text));
-                            if ui.add_enabled(can_fetch_templates, egui::Button::new("Refresh templates")).clicked() {
+                            if ui
+                                .add_enabled(can_fetch_templates && !template_waiting, egui::Button::new("Update templates"))
+                                .on_hover_text("Download new and changed templates from the NodeCraft templates repository. Each is checked against its published digest before it is kept.")
+                                .clicked()
+                            {
                                 ui.ctx().request_repaint();
-                                action = Some(Action::RefreshTemplates);
+                                action = Some(Action::UpdateTemplates);
+                            }
+                            if ui
+                                .add_enabled(can_clear_templates, egui::Button::new("Clear downloaded"))
+                                .on_hover_text("Remove downloaded templates from this computer. Bundled templates and templates in your projects stay.")
+                                .clicked()
+                            {
+                                action = Some(Action::ClearTemplates);
                             }
                         });
+                        ui.horizontal_wrapped(|ui| {
+                            if template_waiting {
+                                ui.spinner();
+                            }
+                            ui.label(egui::RichText::new(&template_status.0).small().color(t.text_muted));
+                        });
+                        if let Some(problem) = &template_status.1 {
+                            ui.add(egui::Label::new(egui::RichText::new(problem).small().color(t.danger)).wrap());
+                        }
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(
-                                    "Bundled examples work offline. Downloads last for this project session; added examples can be saved with your project.",
+                                    "Bundled examples work offline. Downloaded ones are verified and kept on this computer; adding one copies it into your project.",
                                 )
                                 .small()
                                 .color(t.text_muted),
@@ -274,6 +320,35 @@ impl NodeCraftApp {
         if let Some(action) = action {
             self.library_action(action, t);
         }
+        if let Some(browse) = browse {
+            self.browse_action(browse, t);
+        }
+    }
+
+    /// The Starter templates status line (#954): what the last update did, or that the bundled
+    /// set is in use; and the first cache problem, if any.
+    fn template_status(&self) -> (String, Option<String>) {
+        let waiting = self.template_fetch.as_ref().is_some_and(template_fetch::TemplateFetcher::waiting);
+        let line = if nodecraft_engine::templates::disk::is_clearing(&self.session) {
+            "Removing downloaded templates…".to_owned()
+        } else if nodecraft_engine::templates::disk::is_loading(&self.session) {
+            "Reading downloaded templates…".to_owned()
+        } else if waiting {
+            "Updating templates…".to_owned()
+        } else if self.template_fetch.is_none() || self.session.enabled("templates.update", &json!({})).is_err() {
+            "Bundled templates only: this window can't download templates.".to_owned()
+        } else {
+            match nodecraft_engine::templates::update::last(&self.session) {
+                Some(outcome) => nodecraft_engine::templates::update::notice(&outcome),
+                None => "Using the bundled templates. Update to get new and changed ones.".to_owned(),
+            }
+        };
+        let problems = nodecraft_engine::templates::disk::problems(&self.session);
+        let problem = problems.first().map(|first| match problems.len() {
+            1 => format!("Template cache: {first}"),
+            n => format!("Template cache: {first} (and {} more)", n.saturating_sub(1)),
+        });
+        (line, problem)
     }
 
     fn list_library(&mut self) -> Result<Vec<Kept>, String> {
@@ -283,7 +358,8 @@ impl NodeCraftApp {
 
     fn library_action(&mut self, action: Action, t: &Tokens) {
         let result = match action {
-            Action::RefreshTemplates => self.session.dispatch("template.refresh", &json!({})).map(|_| ()),
+            Action::UpdateTemplates => self.session.dispatch("templates.update", &json!({})).map(|_| ()),
+            Action::ClearTemplates => self.session.dispatch("templates.clear_cache", &json!({})).map(|_| ()),
             Action::RetrieveTemplate(ref identity) => {
                 self.session.dispatch("template.retrieve", &json!({"id":identity.id,"version":identity.version,"blake3":identity.blake3})).map(|_| ())
             }
