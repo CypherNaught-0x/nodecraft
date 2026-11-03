@@ -243,6 +243,10 @@ fn error_from(err: &Value, status: Option<u16>) -> ProviderError {
             None => ErrorKind::Server,
         },
     };
+    // The Messages API names a prompt past the context window only in its message.
+    if kind == ErrorKind::UnsupportedInput && message.starts_with("prompt is too long") {
+        return ProviderError::context_limit(&message);
+    }
     ProviderError::new(kind, message)
 }
 
@@ -307,6 +311,9 @@ mod tests {
         assert_eq!(e(404, r#"{"type":"error","error":{"type":"not_found_error","message":"model"}}"#), ErrorKind::NotFound);
         assert_eq!(e(400, r#"{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}"#), ErrorKind::UnsupportedInput);
         assert_eq!(e(500, r#"{"type":"error","error":{"type":"api_error","message":"oops"}}"#), ErrorKind::Server);
+        let long = error(400, br#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}"#);
+        assert!(long.is_context_limit() && long.message.contains("210000 tokens"), "{long}");
+        assert!(!error(400, br#"{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}"#).is_context_limit());
         assert!(ErrorKind::Busy.is_transient() && !ErrorKind::Budget.is_transient());
     }
 

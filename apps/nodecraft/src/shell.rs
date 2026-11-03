@@ -9,6 +9,8 @@ pub struct Shell {
     pub agent: AgentPanel,
     pub channel: Option<Channel>,
     pub storage_window: Option<crate::storage_window::StorageWindow>,
+    /// Settings › Automation's MCP server (#116), and the pump answering its requests.
+    pub mcp: Option<(std::rc::Rc<std::cell::RefCell<crate::mcp_server::Server>>, crate::control::CallPump)>,
 }
 
 impl Shell {
@@ -34,6 +36,11 @@ impl eframe::App for Shell {
         if let Some(channel) = &mut self.channel {
             channel.pump(&mut self.app, ctx);
         }
+        if let Some((server, pump)) = &mut self.mcp {
+            // Released before answering: a command may ask the server for its status.
+            let calls = server.try_borrow_mut().map(|mut server| server.poll()).unwrap_or_default();
+            pump.pump(calls, &mut self.app, ctx);
+        }
         // Before the app, so the sidebar's shortcuts aren't taken as the canvas's.
         self.agent.logic(&mut self.app, ctx);
         self.app.logic(ctx, frame);
@@ -47,6 +54,11 @@ impl eframe::App for Shell {
         self.app.on_exit();
         if let Some(channel) = &self.channel {
             channel.close();
+        }
+        if let Some((server, _)) = &self.mcp
+            && let Ok(mut server) = server.try_borrow_mut()
+        {
+            server.stop();
         }
     }
 

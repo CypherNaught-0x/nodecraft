@@ -3416,6 +3416,7 @@ dependencies = [
  "craft-atomic",
  "craft-settings",
  "crc32fast",
+ "fs4",
  "nodecraft-graph",
  "nodecraft-media",
  "nodecraft-types",

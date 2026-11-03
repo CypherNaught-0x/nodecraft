@@ -120,145 +120,156 @@ impl NodeCraftApp {
         let in_project = |technique: TechniqueId, version: u32| own.iter().any(|o| o.1 == technique && o.2 == version);
         let mut action = None;
         let mut open = self.library.open;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Techniques")
-            .id(egui::Id::new("nodecraft.techniques"))
-            .open(&mut open)
-            .constrain_to(self.viewport)
-            .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap])
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().max_height(t.sheet_list_height).show(ui, |ui| {
-                    ui.set_max_width(t.dialog_width);
-                    ui.label(egui::RichText::new("This project").strong().color(t.text));
-                    if own.is_empty() {
-                        ui.label(egui::RichText::new("Nothing published yet. Select nodes and publish them as a technique.").color(t.text_muted));
+        crate::floating::panel(ctx, "Techniques", egui::Id::new("nodecraft.techniques"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
+            egui::ScrollArea::vertical().max_height(t.sheet_list_height).show(ui, |ui| {
+                ui.set_max_width(t.dialog_width);
+                ui.label(egui::RichText::new("This project").strong().color(t.text));
+                if own.is_empty() {
+                    ui.label(egui::RichText::new("Nothing published yet. Select nodes and publish them as a technique.").color(t.text_muted));
+                }
+                for (canvas, technique, version, name, description) in &own {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} · v{version}", sheet_view::line(name)));
+                        if ui.button("Place").on_hover_text("A node running this version, in the middle of the view").clicked() {
+                            action = Some(Action::Place(*canvas));
+                        }
+                        if library {
+                            let kept = in_library(*technique, *version);
+                            let add = ui.add_enabled(!kept, egui::Button::new(if kept { "In library" } else { "Add to library" }));
+                            if add.on_hover_text("Keep a copy for every project, without its example results").clicked() {
+                                action = Some(Action::Add(*canvas));
+                            }
+                        }
+                    });
+                    if !description.is_empty() {
+                        ui.label(egui::RichText::new(sheet_view::line(description)).small().color(t.text_muted));
                     }
-                    for (canvas, technique, version, name, description) in &own {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("{} · v{version}", sheet_view::line(name)));
-                            if ui.button("Place").on_hover_text("A node running this version, in the middle of the view").clicked() {
-                                action = Some(Action::Place(*canvas));
-                            }
-                            if library {
-                                let kept = in_library(*technique, *version);
-                                let add = ui.add_enabled(!kept, egui::Button::new(if kept { "In library" } else { "Add to library" }));
-                                if add.on_hover_text("Keep a copy for every project, without its example results").clicked() {
-                                    action = Some(Action::Add(*canvas));
-                                }
-                            }
-                        });
-                        if !description.is_empty() {
-                            ui.label(egui::RichText::new(sheet_view::line(description)).small().color(t.text_muted));
-                        }
+                }
+                ui.separator();
+                ui.label(egui::RichText::new("Library").strong().color(t.text));
+                match &self.library.listed {
+                    _ if !library => {
+                        ui.label(egui::RichText::new("The technique library isn't available here.").color(t.text_muted));
                     }
-                    ui.separator();
-                    ui.label(egui::RichText::new("Library").strong().color(t.text));
-                    match &self.library.listed {
-                        _ if !library => {
-                            ui.label(egui::RichText::new("The technique library isn't available here.").color(t.text_muted));
-                        }
-                        Some(Err(error)) => {
-                            ui.colored_label(t.danger, error);
-                        }
-                        Some(Ok(kept)) if kept.is_empty() => {
-                            ui.label(egui::RichText::new("The library is empty. Add a version to use it in other projects.").color(t.text_muted));
-                        }
-                        _ => {}
+                    Some(Err(error)) => {
+                        ui.colored_label(t.danger, error);
                     }
-                    for k in kept {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("{} · v{}", sheet_view::line(&k.name), k.version));
-                            let hint = if in_project(k.technique, k.version) {
-                                "This project has this version; a node running it, in the middle of the view"
-                            } else {
-                                "Copy this version into the project, and a node running it in the middle of the view"
-                            };
-                            if ui.add(egui::Button::new("Place")).on_hover_text(hint).clicked() {
-                                action = Some(Action::PlaceKept(k.technique, k.version));
-                            }
-                            if ui.button("Remove").on_hover_text("Take it out of the library; projects that placed it keep their copy").clicked() {
-                                action = Some(Action::Remove(k.technique, k.version));
-                            }
-                        });
-                        if !k.description.is_empty() {
-                            ui.label(egui::RichText::new(sheet_view::line(&k.description)).small().color(t.text_muted));
-                        }
+                    Some(Ok(kept)) if kept.is_empty() => {
+                        ui.label(egui::RichText::new("The library is empty. Add a version to use it in other projects.").color(t.text_muted));
                     }
-                    if let Some(listing) = &self.library.shaders {
-                        ui.separator();
-                        ui.label(egui::RichText::new("Shaders").strong().color(t.text));
-                        let shaders: &[(String, u32)] = match listing {
-                            Ok(shaders) => shaders,
-                            Err(error) => {
-                                ui.colored_label(t.danger, error);
-                                &[]
-                            }
+                    _ => {}
+                }
+                for k in kept {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} · v{}", sheet_view::line(&k.name), k.version));
+                        let hint = if in_project(k.technique, k.version) {
+                            "This project has this version; a node running it, in the middle of the view"
+                        } else {
+                            "Copy this version into the project, and a node running it in the middle of the view"
                         };
-                        if listing.is_ok() && shaders.is_empty() {
-                            ui.label(egui::RichText::new("No shaders saved yet. Save one from a custom shader card's editor.").color(t.text_muted));
+                        if ui.add(egui::Button::new("Place")).on_hover_text(hint).clicked() {
+                            action = Some(Action::PlaceKept(k.technique, k.version));
                         }
-                        for (name, latest) in shaders {
+                        if ui.button("Remove").on_hover_text("Take it out of the library; projects that placed it keep their copy").clicked() {
+                            action = Some(Action::Remove(k.technique, k.version));
+                        }
+                    });
+                    if !k.description.is_empty() {
+                        ui.label(egui::RichText::new(sheet_view::line(&k.description)).small().color(t.text_muted));
+                    }
+                }
+                if let Some(listing) = &self.library.shaders {
+                    ui.separator();
+                    ui.label(egui::RichText::new("Shaders").strong().color(t.text));
+                    let shaders: &[(String, u32)] = match listing {
+                        Ok(shaders) => shaders,
+                        Err(error) => {
+                            ui.colored_label(t.danger, error);
+                            &[]
+                        }
+                    };
+                    if listing.is_ok() && shaders.is_empty() {
+                        ui.label(egui::RichText::new("No shaders saved yet. Save one from a custom shader card's editor.").color(t.text_muted));
+                    }
+                    for (name, latest) in shaders {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("{} · v{latest}", sheet_view::line(name)));
+                            if ui.button("Place").on_hover_text("A custom shader card with its latest version, in the middle of the view").clicked() {
+                                action = Some(Action::PlaceShader(name.clone()));
+                            }
+                            if ui
+                                .button("Remove")
+                                .on_hover_text("Take it and its versions out of the library; cards placed from it keep their shader")
+                                .clicked()
+                            {
+                                action = Some(Action::RemoveShader(name.clone()));
+                            }
+                        });
+                    }
+                }
+                match &self.library.templates {
+                    Some(Ok(listing)) if !listing.templates.is_empty() => {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Starter templates").strong().color(t.text));
+                            if ui.add_enabled(can_fetch_templates, egui::Button::new("Refresh templates")).clicked() {
+                                ui.ctx().request_repaint();
+                                action = Some(Action::RefreshTemplates);
+                            }
+                        });
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(
+                                    "Bundled examples work offline. Downloads last for this project session; added examples can be saved with your project.",
+                                )
+                                .small()
+                                .color(t.text_muted),
+                            )
+                            .wrap(),
+                        );
+                        ui.add(egui::TextEdit::singleline(&mut self.library.template_query).hint_text("Find a template"));
+                        let query = self.library.template_query.to_lowercase();
+                        for entry in listing.templates.iter().filter(|entry| {
+                            query.is_empty() || entry.title.to_lowercase().contains(&query) || entry.features.iter().any(|feature| feature.contains(&query))
+                        }) {
+                            let added = self.session.document().canvases().contains_key(&entry.canvas);
+                            let identity = nodecraft_engine::templates::catalog::Identity::from(entry);
+                            let available = listing.available(entry);
                             ui.horizontal(|ui| {
-                                ui.label(format!("{} · v{latest}", sheet_view::line(name)));
-                                if ui.button("Place").on_hover_text("A custom shader card with its latest version, in the middle of the view").clicked() {
-                                    action = Some(Action::PlaceShader(name.clone()));
-                                }
+                                ui.label(format!("{} · v{}", entry.title, entry.version));
+                                let label = if added {
+                                    "In project"
+                                } else if available {
+                                    "Add template"
+                                } else {
+                                    "Retrieve template"
+                                };
+                                let enabled = !added && (available || can_fetch_templates);
                                 if ui
-                                    .button("Remove")
-                                    .on_hover_text("Take it and its versions out of the library; cards placed from it keep their shader")
+                                    .add_enabled(enabled, egui::Button::new(label))
+                                    .on_hover_text(if added {
+                                        "Open this canvas from Canvases; duplicate its nodes for another copy"
+                                    } else if available {
+                                        "Add this exact version as a new canvas; save its assets with your project. Undo removes the addition."
+                                    } else {
+                                        "Retrieve and verify this exact version without adding or running it. It stays available for this project session."
+                                    })
                                     .clicked()
                                 {
-                                    action = Some(Action::RemoveShader(name.clone()));
-                                }
-                            });
-                        }
-                    }
-                    match &self.library.templates {
-                        Some(Ok(listing)) if !listing.templates.is_empty() => {
-                            ui.separator();
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new("Starter templates").strong().color(t.text));
-                                if ui.add_enabled(can_fetch_templates,egui::Button::new("Refresh templates")).clicked() {
                                     ui.ctx().request_repaint();
-                                    action=Some(Action::RefreshTemplates);
+                                    action = Some(if available { Action::AddTemplate(identity) } else { Action::RetrieveTemplate(identity) });
                                 }
                             });
-                            ui.add(egui::Label::new(egui::RichText::new("Bundled examples work offline. Downloads last for this project session; added examples can be saved with your project.").small().color(t.text_muted)).wrap());
-                            ui.add(egui::TextEdit::singleline(&mut self.library.template_query).hint_text("Find a template"));
-                            let query = self.library.template_query.to_lowercase();
-                            for entry in listing.templates.iter().filter(|entry| {
-                                query.is_empty() || entry.title.to_lowercase().contains(&query) || entry.features.iter().any(|feature| feature.contains(&query))
-                            }) {
-                                let added = self.session.document().canvases().contains_key(&entry.canvas);
-                                let identity = nodecraft_engine::templates::catalog::Identity::from(entry);
-                                let available = listing.available(entry);
-                                ui.horizontal(|ui| {
-                                    ui.label(format!("{} · v{}",entry.title,entry.version));
-                                    let label = if added {"In project"} else if available {"Add template"} else {"Retrieve template"};
-                                    let enabled = !added && (available || can_fetch_templates);
-                                    if ui.add_enabled(enabled,egui::Button::new(label))
-                                        .on_hover_text(if added {"Open this canvas from Canvases; duplicate its nodes for another copy"}
-                                            else if available {"Add this exact version as a new canvas; save its assets with your project. Undo removes the addition."}
-                                            else {"Retrieve and verify this exact version without adding or running it. It stays available for this project session."})
-                                        .clicked() {
-                                        ui.ctx().request_repaint();
-                                        action = Some(if available {Action::AddTemplate(identity)} else {Action::RetrieveTemplate(identity)});
-                                    }
-                                });
-                                ui.add(egui::Label::new(egui::RichText::new(&entry.description).small().color(t.text_muted)).wrap());
-                            }
+                            ui.add(egui::Label::new(egui::RichText::new(&entry.description).small().color(t.text_muted)).wrap());
                         }
-                        Some(Err(error)) => {
-                            ui.colored_label(t.danger, error);
-                        }
-                        _ => {}
                     }
-                });
+                    Some(Err(error)) => {
+                        ui.colored_label(t.danger, error);
+                    }
+                    _ => {}
+                }
             });
+        });
         self.library.open = open;
         if let Some(action) = action {
             self.library_action(action, t);

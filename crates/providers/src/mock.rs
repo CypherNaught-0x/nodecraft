@@ -36,6 +36,19 @@ pub enum MockFailure {
     Job(ErrorKind),
     /// Asked to cancel, the provider answers with this kind and keeps running the job.
     Cancel(ErrorKind),
+    /// A context window of this many tokens (#84), counted as four bytes of text input a token:
+    /// a job with more is refused at submit as a chat API refuses it, unbilled; a shorter one
+    /// runs normally.
+    ContextLimit(u32),
+}
+
+/// The tokens the mock counts for a job's text inputs: four bytes a token, rounded up.
+fn text_tokens(job: &ProviderJob) -> u64 {
+    let bytes = job.inputs.iter().fold(0u64, |total, input| match input {
+        JobInput::Text { text, .. } => total.saturating_add(u64::try_from(text.len()).unwrap_or(u64::MAX)),
+        JobInput::Media { .. } => total,
+    });
+    bytes.div_ceil(4)
 }
 
 /// How a mock model behaves.
@@ -333,6 +346,9 @@ impl Provider for MockProvider {
             let model = *self.models.get(&job.model).ok_or_else(|| ProviderError::new(ErrorKind::UnsupportedInput, "unknown model"))?;
             match model.fail {
                 Some(MockFailure::Submit(kind)) => return Err(ProviderError::new(kind, "mock submit failure")),
+                Some(MockFailure::ContextLimit(window)) if text_tokens(job) > u64::from(window) => {
+                    return Err(ProviderError::context_limit(&format!("this model's context window is {window} tokens; the request has {}", text_tokens(job))));
+                }
                 Some(MockFailure::Poll(kind) | MockFailure::Job(kind)) if model.polls == 0 => return Err(ProviderError::new(kind, "mock failure")),
                 _ => {}
             }

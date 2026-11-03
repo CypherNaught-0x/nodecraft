@@ -404,6 +404,14 @@ fn template(id: &str) -> (Session, Value) {
         let log = std::sync::Mutex::new(log);
         session.register_host_service(RESOLUTION_SERVICE, move |request| resolve(&mut log.lock().unwrap(), request, 0)).unwrap();
     }
+    if id == "usage.unresolved" || id == "usage.resolve_unresolved" {
+        use nodecraft_engine::billing_cmds::*;
+        // One unresolved charge, so adversarial params reach the token, amount and note checks.
+        let log = unresolved_charge();
+        session.swap_resource(Some(nodecraft_engine::run_cmds::UsageSnapshot(std::sync::Arc::new(log.clone()))));
+        let log = std::sync::Mutex::new(log);
+        session.register_host_service(BILLING_SERVICE, move |request| resolve(&mut log.lock().unwrap(), request, 0)).unwrap();
+    }
     if id.starts_with("usage.ownership") || id == "usage.reconcile_ownership" {
         use nodecraft_engine::ownership_cmds::*;
         // One quarantined group, so adversarial params reach token and holder checks.
@@ -574,6 +582,13 @@ fn template(id: &str) -> (Session, Value) {
         "sheet.row_move" => json!({"canvas":sheet,"row":sheet_rows[1],"index":0}),
         "sheet.reference_wire" => json!({"canvas":sheet,"seed":node_id(0x54),"reference":node_id(0x53),"rows":[sheet_rows[1]]}),
         "sheet.reference_unwire" => json!({"canvas":sheet,"reference":node_id(0x53),"rows":[sheet_rows[0]]}),
+        // The rows have no results, so this reaches the "nothing to place" refusal; the
+        // engine's own tests place real results.
+        "sheet.place" => json!({"canvas":sheet,"seed":node_id(0x57),"rows":[sheet_rows[0]],"target":canvas(),"pos":{"x":1,"y":2}}),
+        "sheet.rename" => json!({"canvas":sheet,"title":"Renamed batch"}),
+        "sheet.expand" => {
+            json!({"canvas":sheet,"seed":node_id(0x56),"template":"a {{colour}} fox","variables":[{"name":"colour","text":["red","blue"]}],"copies":2})
+        }
         "technique.check" => json!({"canvas":canvas(),"outputs":[{"node":node_id(0x63)}]}),
         "technique.publish" => {
             json!({"canvas":canvas(),"published":technique_canvas,"seed":node_id(0x64),"technique":technique,"name":"Note","outputs":[{"node":node_id(0x63)}]})
@@ -625,9 +640,14 @@ fn template(id: &str) -> (Session, Value) {
                 "output_names":[{"modality":"image","name":"images"}],"disconnect":false,"clear_history":false})
         }
         "providers.settings_get" => json!({}),
-        "providers.settings_set" => json!({"comfyui_url":"http://127.0.0.1:8188","litellm_url":"https://proxy.example"}),
+        "providers.settings_set" => {
+            json!({"comfyui_url":"http://127.0.0.1:8188","litellm_url":"https://proxy.example","base_urls":{"openai":"http://127.0.0.1:4000/v1"}})
+        }
         // The updates service isn't registered here: the check must be refused cleanly.
         "app.check_updates" | "app.update_status" | "app.install_update" | "app.restart_to_update" => json!({}),
+        // No MCP server host here either (#116): refused cleanly, never started.
+        "automation.mcp_server_set" => json!({"enabled": true}),
+        "automation.mcp_server_status" => json!({}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
@@ -635,6 +655,7 @@ fn template(id: &str) -> (Session, Value) {
         "canvas.paste" => json!({"canvas":canvas(),"nodes":[node(3)],"edges":[]}),
         "run.quote" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]}),
         "run.estimate" => json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]}),
+        "run.changed" | "run.workflow" => json!({"canvas":canvas()}),
         "run.start" => {
             let mut request = json!({"canvas":canvas(),"mode":"selected","nodes":[node_id(1)]});
             let quote = session.dispatch("run.quote", &request).unwrap();
@@ -679,6 +700,13 @@ fn template(id: &str) -> (Session, Value) {
             // path is hunted too.
             let token: String = reconciled_legacy().resolvable_charges()[0].token.iter().map(|b| format!("{b:02x}")).collect();
             json!({"provider":"t","key":"old","token":token,"outcome":"settled","currency":"USD","micros":1,"dry_run":false})
+        }
+        "usage.unresolved" => json!({"offset":0,"limit":1}),
+        "usage.resolve_unresolved" => {
+            // A real token for the fixture's unresolved charge; not a dry run, so the service's
+            // path is hunted too.
+            let token: String = unresolved_charge().unresolved_charges()[0].token.iter().map(|b| format!("{b:02x}")).collect();
+            json!({"provider":"t","key":"lost","token":token,"outcome":"settled","currency":"USD","micros":1,"note":"checked","dry_run":false})
         }
         "history.select" | "history.delete" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21)}),
         "history.previous" | "history.next" | "history.clear" => json!({"canvas":canvas(),"id":node_id(1)}),
@@ -975,6 +1003,8 @@ fn typed_template_panic_hunt() {
                             | "canvas.search_previous"
                             | "canvas.search_close"
                             | "run.quote"
+                            | "run.changed"
+                            | "run.workflow"
                             | "run.estimate"
                             // Applies cached results first (#91); the fixture has none to reuse.
                             | "run.start"
@@ -987,6 +1017,8 @@ fn typed_template_panic_hunt() {
                             | "usage.reconcile_ownership"
                             | "usage.unsettled"
                             | "usage.resolve_charge"
+                            | "usage.unresolved"
+                            | "usage.resolve_unresolved"
                             // The fixture has no results to reuse: nothing changes.
                             | "run.reuse"
                     ) {
@@ -1099,6 +1131,28 @@ fn plugin_templates_reach_the_real_store_and_results_without_document_edits() {
 }
 
 /// The legacy fixture with its one quarantined group reconciled.
+/// One ordinary charge a 401 left unresolved (#298).
+fn unresolved_charge() -> nodecraft_exec::cost::UsageLog {
+    use nodecraft_exec::cost::{Charge, UsageEntry, UsageLog};
+    let mut log = UsageLog::default();
+    let cost = nodecraft_types::Money::new(nodecraft_types::Currency::USD, 5);
+    log.record(UsageEntry {
+        at_ms: 0,
+        session: "a".into(),
+        node: common::node_id(1),
+        provider: "t".into(),
+        instance: None,
+        project: None,
+        model: "m".into(),
+        cost,
+        idempotency_key: "lost".into(),
+        status: Charge::Estimate,
+    })
+    .unwrap();
+    log.settle("t", "lost", cost, Charge::Unresolved).unwrap();
+    log
+}
+
 fn reconciled_legacy() -> nodecraft_exec::cost::UsageLog {
     let mut log: nodecraft_exec::cost::UsageLog =
         serde_json::from_str(include_str!("../../exec/src/cost/fixtures/legacy-folded-open-reused-actual.json")).unwrap();
