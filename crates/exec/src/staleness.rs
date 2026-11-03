@@ -679,7 +679,8 @@ impl InputHasher {
                         // Batches feeding each other in a loop: there's nothing to hash.
                         Some(None) => w.text("cycle"),
                         // Batches feeding batches recurse: bound the depth so a hostile file
-                        // can't exhaust the stack (the planner refuses such chains anyway).
+                        // can't exhaust the stack. The planner refuses chains longer than
+                        // `planner::MAX_BATCH_CHAIN`, well within this.
                         None if self.batch_depth >= MAX_BATCH_DEPTH => {
                             self.batches.insert(from, Some(Err(InvalidHash::Target(from))));
                             return Ok(HashResult::Invalid(InvalidHash::Target(from)));

@@ -33,6 +33,8 @@ mod reader_import;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_assets::NativeAssetWorkspace;
 mod legacy;
+/// Disk-space inventory and advisory preflight for saves and opens (#367).
+pub mod space;
 pub mod storage;
 #[cfg(any(test, feature = "validation-metrics"))]
 mod validation_metrics;

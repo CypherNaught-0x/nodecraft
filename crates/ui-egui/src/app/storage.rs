@@ -262,6 +262,13 @@ impl NodeCraftApp {
     /// its journal for recovery (#408).
     pub(super) fn close_storage(&mut self) {
         // Quitting waits for a save still writing; until it publishes, the project is unsaved.
+        // An open is cancelled instead (#367): waiting would hold the closing window for the
+        // whole read with no way to stop it, and the open project stays as it was.
+        if self.session.file_status().operation.is_some_and(|operation| operation.kind == nodecraft_engine::file_cmds::FileOperationKind::Open)
+            && let Err(error) = self.session.dispatch("file.cancel", &json!({}))
+        {
+            log::warn!("the open could not be cancelled before quitting: {}", error.message);
+        }
         if let Some(Err(error)) = self.session.finish_file() {
             log::warn!("project not saved: {}", error.message);
         }

@@ -632,32 +632,21 @@ impl NodeCraftApp {
 
     /// The share panel, under its chip.
     pub(super) fn share_panel(&mut self, ctx: &egui::Context, t: &Tokens) {
-        let anchor = [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap];
         let Some(sharing) = &self.sharing else { return };
         if !sharing.panel.open {
             return;
         }
         let mut open = true;
         let mut command: Option<(&'static str, serde_json::Value)> = None;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Share live")
-            .id(egui::Id::new("nodecraft.share"))
-            .open(&mut open)
-            .constrain_to(self.viewport)
-            .anchor(egui::Align2::RIGHT_TOP, anchor)
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
-                ui.set_max_width(t.minimap_height * 2.5);
-                ui.horizontal(|ui| self.people_avatars(ui, t));
-                let Some(sharing) = &mut self.sharing else { return };
-                match &sharing.live {
-                    None => idle(ui, t, &mut sharing.panel, &mut command),
-                    Some(live) => shared(ui, t, live, live.status.role, &mut sharing.panel, &mut command),
-                }
-            });
+        crate::floating::panel(ctx, "Share live", egui::Id::new("nodecraft.share"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
+            ui.set_max_width(t.minimap_height * 2.5);
+            ui.horizontal(|ui| self.people_avatars(ui, t));
+            let Some(sharing) = &mut self.sharing else { return };
+            match &sharing.live {
+                None => idle(ui, t, &mut sharing.panel, &mut command),
+                Some(live) => shared(ui, t, live, live.status.role, &mut sharing.panel, &mut command),
+            }
+        });
         if let Some(sharing) = &mut self.sharing {
             sharing.panel.open &= open;
         }

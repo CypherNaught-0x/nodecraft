@@ -50,7 +50,7 @@ fn endpoint_commands_persist_per_origin_without_touching_the_document_or_keys() 
     let mut session = session(&store);
     let document = session.document().clone();
     let saved = session.dispatch("providers.settings_set", &addresses()).unwrap();
-    assert_eq!(saved, json!({"comfyui_url": "http://127.0.0.1:8188", "litellm_url": "https://proxy.example"}));
+    assert_eq!(saved, json!({"comfyui_url": "http://127.0.0.1:8188", "litellm_url": "https://proxy.example", "base_urls": {}}));
     assert_eq!(session.dispatch("providers.settings_get", &json!({})).unwrap(), saved);
     assert_eq!(session.document(), &document);
     assert_eq!(store.settings().unwrap().install_salt.len(), 64);
@@ -117,6 +117,56 @@ fn hostile_addresses_and_unknown_fields_refuse_without_echoing_credentials() {
     assert!(session.dispatch("providers.settings_set", &json!({"litellm_url": "x".repeat(MAX_URL_BYTES + 1)})).is_err());
     assert!(origin.get(STORAGE_KEY).unwrap().is_none());
     assert_eq!(store.settings().unwrap(), ProviderSettings::default());
+}
+
+#[test]
+fn custom_base_urls_are_saved_per_provider_and_hostile_ones_refuse_without_echo() {
+    let origin = Arc::new(Origin::default());
+    let (store, _) = OriginProviders::load(origin.clone());
+    let mut session = session(&store);
+    let saved = session
+        .dispatch("providers.settings_set", &json!({"base_urls": {"openai": " http://127.0.0.1:4000/v1/ ", "anthropic": "", "openai-images": null}}))
+        .unwrap();
+    assert_eq!(saved["base_urls"], json!({"openai": "http://127.0.0.1:4000/v1"}));
+    assert_eq!(session.dispatch("providers.settings_get", &json!({})).unwrap()["base_urls"], saved["base_urls"]);
+    let (reloaded, notice) = OriginProviders::load(origin.clone());
+    assert!(notice.is_none());
+    assert_eq!(reloaded.settings().unwrap().base_urls.get("openai").and_then(crate::custom_endpoints::BaseUrlEntry::text), Some("http://127.0.0.1:4000/v1"));
+    let before = store.settings().unwrap();
+    for urls in [
+        json!({"openai": "ftp://proxy.example/v1"}),
+        json!({"openai": "http://proxy.example/v1"}),
+        json!({"openai": "https://user:secret721@proxy.example/v1"}),
+        json!({"openai": "https://proxy.example/v1?key=secret721"}),
+        json!({"secret721": "https://proxy.example/v1"}),
+        json!({"openai": 721}),
+    ] {
+        let error = session.dispatch("providers.settings_set", &json!({"base_urls": urls})).unwrap_err();
+        assert!(!error.message.contains("secret721") && !error.message.contains("proxy.example"), "{}", error.message);
+    }
+    assert_eq!(store.settings().unwrap(), before, "a refused save keeps the saved base URLs");
+    // Omitted, like the other addresses, clears them.
+    session.dispatch("providers.settings_set", &json!({})).unwrap();
+    assert!(store.settings().unwrap().base_urls.is_empty());
+    // A stored base URL that is unusable now is kept, and refuses its provider: never the
+    // provider's own API.
+    let stored = Arc::new(Origin::default());
+    stored.set(STORAGE_KEY, r#"{"base_urls":{"openai":"http://proxy.example/v1","anthropic":7},"install_salt":"s"}"#).unwrap();
+    let (store, notice) = OriginProviders::load(stored);
+    assert!(notice.is_none());
+    let settings = store.settings().unwrap();
+    assert!(crate::custom_endpoints::base_url(&settings, "openai").is_err());
+    assert!(crate::custom_endpoints::base_url(&settings, "anthropic").is_err());
+    // A damaged record that held base URLs refuses every provider that takes one until a save.
+    let damaged = Arc::new(Origin::default());
+    damaged.set(STORAGE_KEY, r#"{"base_urls":{"openai":"https://proxy.example/v1"},"comfyui_url":"ftp://x","install_salt":"s"}"#).unwrap();
+    let (store, notice) = OriginProviders::load(damaged.clone());
+    assert!(notice.is_some());
+    for entry in crate::custom_endpoints::PROVIDERS {
+        assert!(crate::custom_endpoints::base_url(&store.settings().unwrap(), entry.provider).is_err(), "{}", entry.provider);
+    }
+    self::session(&store).dispatch("providers.settings_set", &json!({"base_urls": {"openai": "https://proxy.example/v1"}})).unwrap();
+    assert!(crate::custom_endpoints::base_url(&store.settings().unwrap(), "openai").unwrap().is_some(), "a save replaces the refusal");
 }
 
 #[test]

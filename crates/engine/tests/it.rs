@@ -40,6 +40,8 @@ mod comfy_workflow9;
 mod commands;
 #[path = "comments.rs"]
 mod comments;
+#[path = "custom_endpoints960.rs"]
+mod custom_endpoints960;
 #[path = "document_input591.rs"]
 mod document_input591;
 #[path = "fal.rs"]
@@ -99,6 +101,8 @@ mod mesh_generation22;
 mod model_swap157;
 #[path = "native_files.rs"]
 mod native_files;
+#[path = "nested_batch92.rs"]
+mod nested_batch92;
 #[path = "node_edits.rs"]
 mod node_edits;
 #[path = "openai_images.rs"]
@@ -147,6 +151,8 @@ mod shader_write90;
 mod share;
 #[path = "soul_training680.rs"]
 mod soul_training680;
+#[path = "space_preflight367.rs"]
+mod space_preflight367;
 #[path = "split_ownership342.rs"]
 mod split_ownership342;
 #[path = "stability36.rs"]

@@ -503,7 +503,7 @@ fn test_asks_the_provider_and_shows_works_rejected_or_unverifiable() {
         store.set(&Account::new(account).unwrap(), &nodecraft_engine::secrets::Secret::new(KEY).unwrap()).unwrap();
     }
     let runtime = TestRuntime(tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap());
-    let host = nodecraft_engine::key_test::KeyTestHost { runtime: Arc::new(runtime), http: Arc::new(Providers) };
+    let host = nodecraft_engine::key_test::KeyTestHost { runtime: Arc::new(runtime), http: Arc::new(Providers), providers: None };
     let (worker, results) = KeyWorker::spawn_with_tests(store, Some(host)).unwrap();
     let mut services = Services::default();
     register_key_worker(&mut services, worker).unwrap();

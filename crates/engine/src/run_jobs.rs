@@ -177,7 +177,7 @@ impl JobView {
             JobState::Done if self.cancel_requested => "Finished before it could be cancelled".into(),
             JobState::Done => "Done".into(),
             JobState::Failed { .. } if self.cancel_requested => "Failed before it could be cancelled".into(),
-            JobState::Failed { cause: Some(cause), .. } => format!("Failed: {}", cause_label(*cause)),
+            JobState::Failed { cause: Some(cause), reason } => format!("Failed: {}", failure_label(*cause, reason)),
             JobState::Failed { .. } => "Failed".into(),
             JobState::Cancelled if self.sent => "Cancelled after it was sent (cost unresolved)".into(),
             JobState::Cancelled => "Cancelled before it was sent".into(),
@@ -225,6 +225,22 @@ pub fn fix_hint(cause: Cause) -> &'static str {
         Cause::JobFailed => "The model ran and failed. Change its inputs or settings before running it again.",
         _ => "Retry, or check the error.",
     }
+}
+
+/// What a context-window refusal (#84) is called where other failures show their cause.
+pub const CONTEXT_LIMIT_LABEL: &str = "too long for the model";
+/// What to do about a context-window refusal, in one sentence.
+pub const CONTEXT_LIMIT_HINT: &str = "Shorten the prompt, connect fewer or smaller inputs, or pick a model with a larger context.";
+
+/// [`cause_label`] for a failure whose text is known: a context-window refusal is named as one
+/// rather than as just another unsupported input.
+pub fn failure_label(cause: Cause, reason: &str) -> &'static str {
+    if cause == Cause::UnsupportedInput && nodecraft_providers::is_context_limit_text(reason) { CONTEXT_LIMIT_LABEL } else { cause_label(cause) }
+}
+
+/// [`fix_hint`] for a failure whose text is known, with the context-window refusal's own advice.
+pub fn failure_hint(cause: Cause, reason: &str) -> &'static str {
+    if cause == Cause::UnsupportedInput && nodecraft_providers::is_context_limit_text(reason) { CONTEXT_LIMIT_HINT } else { fix_hint(cause) }
 }
 
 /// The cause named by a job's failure reason: a provider error's own prefix, or a budget refusal.

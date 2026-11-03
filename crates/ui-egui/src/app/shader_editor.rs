@@ -153,19 +153,10 @@ impl NodeCraftApp {
         let applied = on_card.as_ref() == Some(&editor.draft);
         let mut open = true;
         let mut action = None;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        let top = t.navigation_margin + t.navigation_toolbar_height + t.navigation_gap;
-        egui::Window::new("Custom shader")
-            .id(egui::Id::new("nodecraft.shader_editor"))
+        // Opens at the right, below the toolbar, leaving the canvas and its card in view.
+        crate::floating::panel(ctx, "Custom shader", egui::Id::new("nodecraft.shader_editor"), crate::floating::Home::RightTop, t)
             .open(&mut open)
-            .constrain_to(self.viewport)
-            // Opens at the right, below the toolbar, leaving the canvas and its card in view.
-            .pivot(egui::Align2::RIGHT_TOP)
-            .default_pos(self.viewport.right_top() + egui::Vec2::new(-t.navigation_margin, top))
             .default_width(t.shader_editor_width)
-            .collapsible(false)
-            .frame(frame)
             .show(ctx, |ui| {
                 ui.label(
                     egui::RichText::new("fn effect(color: vec4<f32>, uv: vec2<f32>) -> vec4<f32>, run once a pixel. Read a parameter as name(); pixel(x, y) and size() read the image.")

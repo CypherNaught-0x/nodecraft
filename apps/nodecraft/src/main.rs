@@ -204,7 +204,7 @@ fn main() -> ExitCode {
             let channel = control
                 .then(|| control::Channel::start(&cc.egui_ctx, dir, roots).map_err(|e| log::error!("control channel not started: {}", e.message)).ok())
                 .flatten();
-            let agent = agent_panel::AgentPanel::live(&cc.egui_ctx, app.agent_settings());
+            let agent = agent_panel::AgentPanel::live(&cc.egui_ctx, app.agent_settings(), app.loaded_provider_settings());
             Ok(Box::new(shell::Shell { app, agent, channel, storage_window }))
         }),
     );
