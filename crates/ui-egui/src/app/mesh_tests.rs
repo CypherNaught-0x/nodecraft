@@ -114,6 +114,7 @@ fn mesh928_alt_scroll_is_one_edit_and_external_view_commands_replace_the_preview
     let at = h.get_by_label("3D model, 12 triangles, shaded view").rect().center();
     h.hover_at(at);
     h.event(egui::Event::ModifiersChanged(egui::Modifiers::ALT));
+    let pan = h.state().view.pan;
     for _ in 0..4 {
         h.event(egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Point,
@@ -126,6 +127,7 @@ fn mesh928_alt_scroll_is_one_edit_and_external_view_commands_replace_the_preview
     }
     h.run_steps(120);
     assert!(h.state().mesh_views.get(&id).unwrap().orbit.zoom > 1.0);
+    assert_eq!(h.state().view.pan, pan, "Alt-scroll is the model's: the canvas doesn't pan by it too (#413)");
     assert_eq!(h.state().session.revision(), revision + 1);
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     h.run_steps(2);

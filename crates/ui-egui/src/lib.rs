@@ -25,6 +25,7 @@ pub mod palette;
 pub mod plugins;
 pub mod preview;
 pub(crate) mod result_save;
+pub mod scroll_chain;
 pub mod search;
 pub mod selection;
 pub mod tags;
