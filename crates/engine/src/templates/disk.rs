@@ -39,6 +39,9 @@ pub struct Stored {
     pub archives: Vec<(String, Vec<u8>, Vec<u8>)>,
     /// Files that could not be read back, in words a person can act on.
     pub problems: Vec<String>,
+    /// Digest names whose archive or record is missing: a write or removal cut off (by a crash or
+    /// an exit mid-write). [`load`] removes what is left of them instead of reporting them forever.
+    pub incomplete: Vec<String>,
 }
 
 /// Where verified templates are kept between launches.
@@ -75,6 +78,7 @@ impl TemplateCacheStore for MemoryCache {
             signature: held.0.as_ref().and_then(|(_, signature)| signature.clone()),
             archives: held.1.iter().map(|(name, (record, bytes))| (name.clone(), record.clone(), bytes.clone())).collect(),
             problems: Vec::new(),
+            incomplete: Vec::new(),
         })
     }
     fn write_index(&self, bytes: &[u8], signature: Option<&[u8]>) -> Result<(), Error> {
@@ -153,7 +157,10 @@ impl TemplateCacheStore for FileCache {
             if name.starts_with('.') || name.ends_with(".tmp") {
                 continue;
             }
+            let expected = name.ends_with(".json") || name.ends_with(".ncraft") || name == "index.json.sig";
             match item.file_type() {
+                // Only names the cache could hold use a slot.
+                Ok(kind) if kind.is_file() && !expected => stored.problems.push(format!("Ignored unexpected file {name} in the template cache")),
                 Ok(kind) if kind.is_file() => {
                     if names.len() >= MAX_FILES {
                         stored.problems.push(format!("The template cache holds more than {MAX_FILES} files; the rest were ignored"));
@@ -184,7 +191,11 @@ impl TemplateCacheStore for FileCache {
             }
             if let Some(stem) = name.strip_suffix(".ncraft") {
                 if !names.iter().any(|other| other.strip_suffix(".json") == Some(stem)) {
-                    stored.problems.push(format!("{name} in the template cache has no record; it was ignored"));
+                    if valid_name(stem) {
+                        stored.incomplete.push(stem.to_owned());
+                    } else {
+                        stored.problems.push(format!("{name} in the template cache has no record; it was ignored"));
+                    }
                 }
                 continue;
             }
@@ -199,7 +210,12 @@ impl TemplateCacheStore for FileCache {
                     continue;
                 }
             };
-            let bytes = match read_capped(&dir.join(format!("{stem}.ncraft")), super::MAX_BYTES) {
+            let partner = dir.join(format!("{stem}.ncraft"));
+            if valid_name(stem) && matches!(std::fs::symlink_metadata(&partner), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+                stored.incomplete.push(stem.to_owned());
+                continue;
+            }
+            let bytes = match read_capped(&partner, super::MAX_BYTES) {
                 Ok(Some(bytes)) => bytes,
                 Ok(None) => {
                     stored.problems.push(format!("The cached template {stem}.ncraft is larger than its limit"));
@@ -292,6 +308,8 @@ pub(super) struct Cache {
     location: Option<String>,
     /// The host's worker hasn't handed back the startup read yet.
     loading: bool,
+    /// The host's worker hasn't finished a queued clear yet.
+    clearing: bool,
     pending: Vec<Write>,
     problems: Vec<String>,
 }
@@ -327,6 +345,13 @@ pub struct Loaded {
     archives: Vec<(Entry, Vec<u8>)>,
     problems: Vec<String>,
 }
+impl Loaded {
+    /// A read that couldn't finish (the worker stopped or panicked): nothing cached is used, the
+    /// bundled set stays, and `problem` is reported. Adopting it ends the startup wait.
+    pub fn failed(problem: impl Into<String>) -> Self {
+        Self { index: None, archives: Vec::new(), problems: vec![problem.into()] }
+    }
+}
 
 /// Reads and verifies the cache: each archive against the digest its record names, its graph,
 /// assets and node kinds; the index's schema and, when `keys` is not empty, its stored signature.
@@ -341,6 +366,11 @@ pub fn load(store: &dyn TemplateCacheStore, keys: &[ed25519_dalek::VerifyingKey]
         }
     };
     loaded.problems.extend(stored.problems);
+    for name in stored.incomplete {
+        if store.remove_archive(&name).is_err() {
+            loaded.problems.push(format!("An incomplete cached template ({name}) couldn't be removed"));
+        }
+    }
     if let Some(index) = stored.index {
         let signed = keys.is_empty() || stored.signature.as_deref().is_some_and(|signature| super::update::signature_valid(keys, &index, signature));
         if !signed {
@@ -375,6 +405,7 @@ pub fn adopt(session: &mut Session, loaded: Loaded) -> Vec<String> {
         persistent: false,
         location: None,
         loading: false,
+        clearing: false,
         pending: Vec::new(),
         problems: Vec::new(),
     });
@@ -394,11 +425,14 @@ pub fn adopt(session: &mut Session, loaded: Loaded) -> Vec<String> {
             let name = entry.blake3.clone();
             match catalog.restore_verified(entry.clone(), bytes) {
                 Ok(mut evicted) => gone.append(&mut evicted),
-                Err(_) => {
-                    problems
-                        .push(format!("The cached template {name}.ncraft contradicts the published index; it was ignored. Use Clear downloaded to remove it"));
+                // Only a contradiction removes the file; anything else leaves it for a later start.
+                Err(error) if error.kind == ErrorKind::Conflict => {
+                    problems.push(format!(
+                        "The cached template {name}.ncraft contradicts the published index; it was removed. Use Clear downloaded if this repeats"
+                    ));
                     gone.push(entry);
                 }
+                Err(error) => problems.push(format!("The cached template {name}.ncraft couldn't be restored: {}", error.message)),
             }
         }
         Ok((problems, gone))
@@ -431,8 +465,15 @@ pub fn install(session: &mut Session, store: Box<dyn TemplateCacheStore>) -> Vec
 /// [`install`], requiring the cached index to carry a signature from one of `keys`.
 pub fn install_keyed(session: &mut Session, store: Box<dyn TemplateCacheStore>, keys: &[ed25519_dalek::VerifyingKey]) -> Vec<String> {
     let loaded = load(store.as_ref(), keys);
-    let cache =
-        Cache { persistent: store.persistent(), location: store.location(), store: Some(store), loading: false, pending: Vec::new(), problems: Vec::new() };
+    let cache = Cache {
+        persistent: store.persistent(),
+        location: store.location(),
+        store: Some(store),
+        loading: false,
+        clearing: false,
+        pending: Vec::new(),
+        problems: Vec::new(),
+    };
     session.swap_resource(Some(cache));
     adopt(session, loaded)
 }
@@ -440,7 +481,7 @@ pub fn install_keyed(session: &mut Session, store: Box<dyn TemplateCacheStore>, 
 /// and hands the result to [`adopt`], and drains writes with [`take_writes`]. Until it adopts,
 /// `templates.update` waits (it would download what the cache already holds).
 pub fn install_deferred(session: &mut Session, persistent: bool, location: Option<String>) {
-    session.swap_resource(Some(Cache { store: None, persistent, location, loading: true, pending: Vec::new(), problems: Vec::new() }));
+    session.swap_resource(Some(Cache { store: None, persistent, location, loading: true, clearing: false, pending: Vec::new(), problems: Vec::new() }));
 }
 /// The writes queued since the last call, for the host's worker, in order.
 pub fn take_writes(session: &mut Session) -> Vec<Write> {
@@ -459,6 +500,20 @@ pub fn wrote(session: &mut Session, problems: Vec<String>) {
         cache.report(problem);
     }
     session.swap_resource(Some(cache));
+}
+
+/// The host's worker finished a queued clear: `Err` holds why the folder couldn't be removed.
+pub fn cleared(session: &mut Session, result: Result<(), String>) {
+    let Some(mut cache) = session.swap_resource::<Cache>(None) else { return };
+    cache.clearing = false;
+    if let Err(problem) = result {
+        cache.report(problem);
+    }
+    session.swap_resource(Some(cache));
+}
+/// Whether a clear is still running on the host's worker.
+pub fn is_clearing(session: &Session) -> bool {
+    session.resource::<Cache>().is_some_and(|cache| cache.clearing)
 }
 
 /// The index record stored beside an archive: one entry, named by its digest.
@@ -523,6 +578,8 @@ pub(super) fn clear(session: &mut Session) -> Result<(), Error> {
     let Some(mut cache) = session.swap_resource::<Cache>(None) else { return Ok(()) };
     cache.problems.clear();
     cache.pending.clear();
+    // With a worker the removal finishes later; [`cleared`] reports how it went.
+    cache.clearing = cache.store.is_none();
     cache.write(Write::Clear);
     let failed = cache.problems.first().cloned();
     session.swap_resource(Some(cache));
@@ -543,10 +600,13 @@ pub(super) fn report(resources: &crate::commands::Resources) -> serde_json::Valu
             "persistent": cache.persistent,
             "location": cache.location,
             "loading": cache.loading,
+            "clearing": cache.clearing,
             "files": files,
             "bytes": bytes,
             "problems": cache.problems,
         }),
-        None => json!({"layout": LAYOUT, "persistent": false, "location": null, "loading": false, "files": files, "bytes": bytes, "problems": []}),
+        None => {
+            json!({"layout": LAYOUT, "persistent": false, "location": null, "loading": false, "clearing": false, "files": files, "bytes": bytes, "problems": []})
+        }
     }
 }

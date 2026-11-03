@@ -498,3 +498,55 @@ fn template_updates954_signed_mode_reverifies_the_cached_index_signature() {
     let problems = templates::disk::install_keyed(&mut restarted, Box::new(FileCache::new(data.path())), &[key.verifying_key()]);
     assert!(problems.iter().any(|problem| problem.contains("signed")), "{problems:#?}");
 }
+
+#[test]
+fn template_updates954_incomplete_pairs_left_by_a_cut_off_write_are_removed_not_reported_forever() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = data.path().join("templates").join(templates::disk::LAYOUT);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (good, bytes) = versioned("generate-text", 2);
+    std::fs::write(dir.join(format!("{}.ncraft", good.blake3)), &bytes).unwrap();
+    std::fs::write(dir.join(format!("{}.json", good.blake3)), serde_json::to_vec(&good).unwrap()).unwrap();
+    // An archive written without its record, and a record whose archive was already removed.
+    let orphan = "b".repeat(64);
+    let record_only = "c".repeat(64);
+    std::fs::write(dir.join(format!("{orphan}.ncraft")), b"half written").unwrap();
+    std::fs::write(dir.join(format!("{record_only}.json")), serde_json::to_vec(&good).unwrap()).unwrap();
+    // A name the cache never writes stays reported and is left alone.
+    std::fs::write(dir.join("stray.ncraft"), b"?").unwrap();
+
+    let mut session = session();
+    let problems = templates::disk::install(&mut session, Box::new(FileCache::new(data.path())));
+    assert_eq!(problems.len(), 1, "{problems:#?}");
+    assert!(problems[0].contains("stray.ncraft"), "{problems:#?}");
+    assert!(!dir.join(format!("{orphan}.ncraft")).exists());
+    assert!(!dir.join(format!("{record_only}.json")).exists());
+    assert!(dir.join("stray.ncraft").exists());
+    let listing: templates::catalog::Listing = serde_json::from_value(session.dispatch("template.list", &json!({})).unwrap()).unwrap();
+    assert!(listing.available(&good), "the complete pair is still used");
+    // The next start is quiet about them.
+    let mut restarted = self::session();
+    assert_eq!(templates::disk::install(&mut restarted, Box::new(FileCache::new(data.path()))).len(), 1);
+}
+
+#[test]
+fn template_updates954_a_signed_single_step_refresh_keeps_the_cached_signature() {
+    use ed25519_dalek::Signer;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[11; 32]);
+    let (entry, _) = versioned("generate-text", 2);
+    let body = index(&[&entry]);
+    let mut message = update::SIGNATURE_CONTEXT.to_vec();
+    message.extend_from_slice(&body);
+    let signature = key.sign(&message).to_bytes().to_vec();
+    let fixture = serve(routes(vec![("index.json", Reply::Body(200, body.clone())), ("index.json.sig", Reply::Body(200, signature.clone()))]));
+    let data = tempfile::tempdir().unwrap();
+    let mut host = Host::new(session());
+    templates::disk::install_keyed(&mut host.session, Box::new(FileCache::new(data.path())), &[key.verifying_key()]);
+    host.run("template.refresh", &Source::loopback(&fixture.base).unwrap().with_keys(vec![key.verifying_key()])).unwrap();
+    let dir = data.path().join("templates").join(templates::disk::LAYOUT);
+    assert_eq!(std::fs::read(dir.join("index.json.sig")).unwrap(), signature);
+    let mut restarted = session();
+    assert!(templates::disk::install_keyed(&mut restarted, Box::new(FileCache::new(data.path())), &[key.verifying_key()]).is_empty());
+    let listing: templates::catalog::Listing = serde_json::from_value(restarted.dispatch("template.list", &json!({})).unwrap()).unwrap();
+    assert!(listing.templates.contains(&entry), "the signed cached index is used after a restart");
+}

@@ -36,7 +36,15 @@ pub enum Request {
 }
 pub enum Fetched {
     Index(Vec<u8>),
-    Archive { entry: Entry, bytes: Vec<u8> },
+    /// An index from a keyed source, with its verified signature.
+    SignedIndex {
+        index: Vec<u8>,
+        signature: Vec<u8>,
+    },
+    Archive {
+        entry: Entry,
+        bytes: Vec<u8>,
+    },
     Update(Box<super::update::Updated>),
     ClearCache,
 }
@@ -124,11 +132,13 @@ pub async fn fetch_from(http: &dyn Http, source: &Source, request: Request) -> R
     match request {
         Request::Index => {
             let body = source.get(http, "index.json", MAX_INDEX_BYTES).await?;
-            // A single-step refresh stores no signature; in signed mode the cached copy then fails
-            // verification at the next start and is ignored, never trusted.
-            let _signature = super::update::verify_signature(http, source, &body).await?;
+            let signature = super::update::verify_signature(http, source, &body).await?;
             parse_index(&body)?;
-            Ok(Fetched::Index(body))
+            // The verified signature is cached with the index, so a keyed restart can check it.
+            Ok(match signature {
+                Some(signature) => Fetched::SignedIndex { index: body, signature },
+                None => Fetched::Index(body),
+            })
         }
         Request::Archive { entry } => {
             // Even a host that calls this directly cannot introduce a URL/path through metadata.
@@ -159,6 +169,7 @@ pub(super) fn admit(entry: &Entry, bytes: &[u8]) -> Result<(), Error> {
 pub fn finish(session: &mut Session, fetched: Fetched) -> Result<(), Error> {
     match fetched {
         Fetched::Index(bytes) => catalog::install_index(session, &bytes),
+        Fetched::SignedIndex { index, signature } => catalog::install_signed_index(session, &index, Some(&signature)),
         Fetched::Archive { entry, bytes } => catalog::install_archive(session, entry, bytes),
         Fetched::Update(updated) => super::update::apply(session, *updated),
         Fetched::ClearCache => super::disk::clear(session),
