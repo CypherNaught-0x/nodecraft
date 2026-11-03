@@ -71,7 +71,7 @@ pub(crate) fn jobs(c: &Context<'_>, value: &Value) -> Result<Estimating, Error> 
     let (admitted, _) = nodecraft_exec::admission::admit_run_with_targets(
         plan,
         p.canvas,
-        expanded.canvas.into_owned(),
+        nodecraft_exec::run::snapshot(expanded.canvas),
         c.kinds,
         catalog.catalog(),
         nodecraft_exec::admission::AdmissionLimits::default(),
