@@ -85,7 +85,7 @@ fn custom_endpoint_fields_come_from_the_provider_list_and_save_through_the_comma
     let mut h = harness(panel);
     h.run();
     assert!(h.query_by_label_contains("Custom endpoints").is_some());
-    for entry in nodecraft_engine::custom_endpoints::PROVIDERS {
+    for entry in nodecraft_engine::custom_endpoints::available() {
         assert!(h.query_all_by_label(entry.label).next().is_some(), "{} has a field", entry.provider);
     }
     // A remote plain-HTTP address is refused, without echoing it, and nothing is saved.
@@ -103,7 +103,7 @@ fn custom_endpoint_fields_come_from_the_provider_list_and_save_through_the_comma
     h.run();
     assert!(h.query_by_label("Provider servers saved for this site.").is_some());
     let settings = h.state().provider_settings();
-    assert_eq!(settings.base_urls.get("openai").map(String::as_str), Some("http://127.0.0.1:4000/v1"));
+    assert_eq!(settings.base_urls.get("openai").and_then(nodecraft_engine::custom_endpoints::BaseUrlEntry::text), Some("http://127.0.0.1:4000/v1"));
     assert_eq!(settings.base_urls.len(), 1, "blank fields keep their provider's own API");
     assert_eq!(app(origin).provider_settings(), settings);
 }

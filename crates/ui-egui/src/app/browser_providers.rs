@@ -28,7 +28,7 @@ impl BrowserProviders {
             was_open: false,
             comfyui: nodecraft_engine::browser_providers::comfyui_url(&settings).unwrap_or_default(),
             litellm: settings.litellm_url.clone().unwrap_or_default(),
-            base_urls: base_urls(|provider| settings.base_urls.get(provider).cloned()),
+            base_urls: base_urls(|provider| settings.base_urls.get(provider).and_then(|entry| entry.text()).map(str::to_owned)),
             applied: settings,
             notice,
         }
@@ -75,7 +75,8 @@ impl BrowserProviders {
                 "Send a provider's requests and key to another server that speaks its API, such as a LiteLLM proxy or vLLM. \
                  Leave blank to use the provider's own API. Runs keep the catalog price; a step that would be free needs your consent to an unknown price.",
             );
-            for entry in nodecraft_engine::custom_endpoints::PROVIDERS {
+            // Only the providers the browser can use a base URL for (OpenAI chat).
+            for entry in nodecraft_engine::custom_endpoints::available() {
                 let label = ui.label(entry.label);
                 let text = self.base_urls.entry(entry.provider).or_default();
                 ui.add(egui::TextEdit::singleline(text).id(egui::Id::new(("browser_base_url", entry.provider))).char_limit(2048).hint_text(entry.default))
@@ -99,7 +100,7 @@ impl BrowserProviders {
 
 /// One editable text per provider that takes a custom base URL, from what `saved` holds.
 fn base_urls(saved: impl Fn(&str) -> Option<String>) -> std::collections::BTreeMap<&'static str, String> {
-    nodecraft_engine::custom_endpoints::PROVIDERS.iter().map(|entry| (entry.provider, saved(entry.provider).unwrap_or_default())).collect()
+    nodecraft_engine::custom_endpoints::available().map(|entry| (entry.provider, saved(entry.provider).unwrap_or_default())).collect()
 }
 
 impl NodeCraftApp {
