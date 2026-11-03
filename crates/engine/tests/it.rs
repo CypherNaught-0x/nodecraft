@@ -204,6 +204,8 @@ mod rodin41;
 #[path = "templates952/author.rs"]
 mod templates952_author;
 
+#[path = "template_updates954.rs"]
+mod template_updates954;
 #[path = "templates952.rs"]
 mod templates952;
 

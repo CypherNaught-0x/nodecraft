@@ -348,7 +348,7 @@ fn template(id: &str) -> (Session, Value) {
         }));
         session.register_host_service(nodecraft_engine::comment_cmds::SERVICE, |_| Ok(json!({"accepted":true}))).unwrap();
     }
-    if matches!(id, "template.refresh" | "template.retrieve") {
+    if matches!(id, "template.refresh" | "template.retrieve" | "templates.update" | "templates.clear_cache") {
         session
             .register_host_service(nodecraft_engine::templates::fetch::SERVICE, |request| {
                 let _: nodecraft_engine::templates::fetch::Request = serde_json::from_value(request.clone()).unwrap();
@@ -570,6 +570,7 @@ fn template(id: &str) -> (Session, Value) {
         "template.list" => json!({}),
         "template.add" => json!({"id":"generate-text"}),
         "template.refresh" => json!({}),
+        "templates.update" | "templates.status" | "templates.clear_cache" => json!({}),
         "template.retrieve" => {
             let entry = nodecraft_engine::templates::entries().unwrap().into_iter().find(|entry| entry.id == "generate-text").unwrap();
             json!({"id":entry.id,"version":entry.version,"blake3":entry.blake3})
@@ -1083,15 +1084,17 @@ fn reconciled_legacy() -> nodecraft_exec::cost::UsageLog {
 
 #[test]
 fn template_fetch_corpus_reaches_shared_commands_without_project_mutation() {
-    for id in ["template.refresh", "template.retrieve"] {
+    for id in ["template.refresh", "template.retrieve", "templates.update", "templates.clear_cache", "templates.status"] {
         let (mut session, params) = template(id);
         let before = session.document().clone();
         let revision = session.revision();
         let result = session.dispatch(id, &params).unwrap();
-        if id == "template.refresh" {
-            assert_eq!(result, json!({"pending":1}));
-        } else {
+        if id == "template.retrieve" {
             assert_eq!(result, json!({"available":true}));
+        } else if id == "templates.status" {
+            assert_eq!(result["pending"], json!(false));
+        } else {
+            assert_eq!(result, json!({"pending":1}));
         }
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), revision);

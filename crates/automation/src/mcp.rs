@@ -121,6 +121,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "template.add",
     "template.refresh",
     "template.retrieve",
+    // Explicit bounded template updates and their status (#954); never edit the project.
+    "templates.update",
+    "templates.status",
+    "templates.clear_cache",
     "node.describe",
     "node.options",
     "options.refresh",
