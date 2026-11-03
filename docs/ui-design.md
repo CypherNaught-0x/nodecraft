@@ -539,7 +539,7 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 | Surface | Kind | Moves | Resizes | Dismiss |
 |---|---|---|---|---|
 | Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins | floating panel | header | right/bottom edges, corner | close button or its row control |
-| Custom shader, Image viewer, PDF reader, Quarantined charges | floating panel (viewer/review) | header | right/bottom edges, corner | close button |
+| Custom shader, Image viewer, PDF reader, Charges to review | floating panel (viewer/review) | header | right/bottom edges, corner | close button |
 | Project files (File menu) | floating window, not yet on `floating::panel` | header | no | close button or File |
 | Shared parameters (bulk) | fixed: pinned top-right while several nodes are selected; panels opening over it step below its header | no | no | change the selection |
 | Application row, Tag filter, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |

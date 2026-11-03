@@ -134,7 +134,7 @@ impl NodeCraftApp {
         }
         // The review is read a page at a time in its panel.
         #[cfg(not(target_arch = "wasm32"))]
-        if id == "usage.ownership" {
+        if id == "usage.ownership" || id == "usage.unresolved" {
             self.open_ownership_review();
             return;
         }

@@ -8,6 +8,7 @@ pub mod access;
 pub mod action_exec;
 pub mod app_cmds;
 pub mod assist_cmds;
+pub mod billing_cmds;
 pub mod browser_providers;
 pub mod build_info;
 pub mod bulk_cmds;
