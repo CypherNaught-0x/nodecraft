@@ -5,7 +5,7 @@
 //! more and doesn't hold up the next one.
 use nodecraft_agent::Ticket;
 use nodecraft_engine::secrets::{Account, SecretStore};
-use nodecraft_engine::settings::{AgentEndpoint, AgentSettings};
+use nodecraft_engine::settings::{AgentEndpoint, AgentSettings, ProviderSettings};
 use nodecraft_providers::ProviderError;
 use nodecraft_providers::llm::{ApiKey, ChatRequest, ChatResponse, Endpoint, LlmClient};
 use nodecraft_types::{Error, ErrorKind};
@@ -79,7 +79,9 @@ impl Worker {
         let keys = nodecraft_engine::secrets::KeyringStore;
         Self::spawn(
             Box::new(move |settings, request, still| {
-                let client = LlmClient::new(endpoint(settings, &keys)?, http.clone());
+                // Read now, so a custom base URL (#960) set since startup is followed.
+                let providers = nodecraft_engine::settings::peek().providers;
+                let client = LlmClient::new(endpoint(settings, &providers, &keys)?, http.clone());
                 runtime.block_on(async {
                     let chat = std::pin::pin!(client.chat(request));
                     let abandoned = std::pin::pin!(async {
@@ -121,8 +123,27 @@ impl Worker {
     }
 }
 
-/// Where the settings say to send requests, with the endpoint's key from `keys`.
-pub fn endpoint(settings: &AgentSettings, keys: &dyn SecretStore) -> Result<Endpoint, ProviderError> {
+/// Where the settings say to send requests, with the endpoint's key from `keys`. OpenAI and
+/// Anthropic follow a custom base URL set for them in `providers` (#960), so their key goes to
+/// that host only; an unusable one, or a key set up for another provider's custom base URL,
+/// refuses rather than reaching the provider's own API.
+pub fn endpoint(settings: &AgentSettings, providers: &ProviderSettings, keys: &dyn SecretStore) -> Result<Endpoint, ProviderError> {
+    // Checked before the key is read, so a refused setting never opens the keychain.
+    let base = |provider: &str| -> Result<Option<String>, ProviderError> {
+        let refused = |message: String| ProviderError::new(nodecraft_providers::ErrorKind::UnsupportedInput, message);
+        if let Some(conflict) = nodecraft_engine::custom_endpoints::shared_key_conflict(providers, provider) {
+            return Err(refused(conflict.message));
+        }
+        nodecraft_engine::custom_endpoints::base_url(providers, provider)
+            .map(|base| base.map(|base| base.as_str().to_owned()))
+            .map_err(|error| refused(format!("the {provider} custom base URL in settings can't be used: {}", error.message)))
+    };
+    let at = |mut endpoint: Endpoint, base: Option<String>| {
+        if let Some(base) = base {
+            endpoint.base_url = base;
+        }
+        endpoint
+    };
     let key = |name: &str| -> Result<ApiKey, ProviderError> {
         let account = Account::new(name).map_err(|_| ProviderError::new(nodecraft_providers::ErrorKind::Auth, "the key's account name is invalid"))?;
         match keys.get(&account) {
@@ -132,8 +153,14 @@ pub fn endpoint(settings: &AgentSettings, keys: &dyn SecretStore) -> Result<Endp
         }
     };
     Ok(match settings.endpoint {
-        AgentEndpoint::Anthropic => Endpoint::anthropic(key("anthropic")?),
-        AgentEndpoint::Openai => Endpoint::openai(key("openai")?),
+        AgentEndpoint::Anthropic => {
+            let base = base("anthropic")?;
+            at(Endpoint::anthropic(key("anthropic")?), base)
+        }
+        AgentEndpoint::Openai => {
+            let base = base("openai")?;
+            at(Endpoint::openai(key("openai")?), base)
+        }
         AgentEndpoint::Openrouter => Endpoint::openrouter(key("openrouter")?),
         AgentEndpoint::Ollama => Endpoint::ollama(settings.base_url()),
         AgentEndpoint::LmStudio => Endpoint::lm_studio(settings.base_url()),
