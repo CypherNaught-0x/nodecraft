@@ -52,7 +52,11 @@ be added later as an opt-in. `template.refresh`/`template.retrieve` remain for s
 per archive `<blake3>.ncraft` with its index record `<blake3>.json`. The `v1` directory versions the
 layout; another version's directory is ignored, and clearing removes only `v1/`. A cache read admits
 at most 258 ordinary files (128 archives with their records, the index and its signature; hidden and
-temporary files don't count), 64 MiB of archives and per-file caps, and never follows a symlink.
+temporary files don't count), 64 MiB of archives and per-file caps. Each file is checked to be an
+ordinary file (`symlink_metadata`) just before it is opened; a file swapped in after that check is
+still hashed against its record, so it can't be admitted. A pair left incomplete by a cut-off write
+or removal (a 64-hex `.ncraft` without its record, or a record without its archive) is removed at
+the next start instead of being reported every time.
 Every archive is hashed against its record's digest, decoded and its node kinds validated again, so
 `template.add` never sees an unchecked cached graph. The cached index is installed first; a cached
 archive that contradicts it, a bundled version or another cached copy of the same version is dropped
@@ -66,7 +70,11 @@ read-only: adding one copies its canvas and assets into the project through the 
 verifies the cache at startup and hands the verified records back (`disk::load` / `disk::adopt`),
 and the session only queues writes (`disk::Write`) that the worker applies in order after each
 update, eviction or clear. `templates.update` waits (Busy) until the startup read is adopted, so it
-never re-downloads what the cache holds. Hosts without a worker (tests, a failed worker start)
+never re-downloads what the cache holds. A read that panics or a worker that stops hands back an
+empty, failed read, so that wait always ends. A clear empties the session at once and reports the
+folder removal only when the worker has run it (`templates.status` `cache.clearing`); a failure is
+shown as an error, never as success. Writes still queued when the app exits are lost; the cache
+only loses downloads that the next update fetches again. Hosts without a worker (tests, a failed worker start)
 use `disk::install`, the same steps inline.
 
 **Transport.** The same `ReqwestHttp` as the update check (#123), with redirects off on native. Not

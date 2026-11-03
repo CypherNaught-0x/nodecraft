@@ -184,8 +184,9 @@ index record `<blake3>.json`. The template worker reads them back and verifies t
 startup, off the UI thread and without the network (at most 128 archives, 64 MiB); **Update
 templates** waits until that read is done. A damaged, renamed or oversize file, or a cached copy
 that contradicts the cached index, is skipped and reported in the status line and
-`templates.status`; it is never trusted. **Clear downloaded** (`templates.clear_cache {}`) removes
-the `v1` folder; deleting it by hand is also safe. Other open NodeCraft windows keep the templates
+`templates.status`; it is never trusted. A half-written pair left by a crash is removed quietly at
+the next start. **Clear downloaded** (`templates.clear_cache {}`) removes the `v1` folder (the status
+line says when the removal has finished, or why it failed); deleting it by hand is also safe. Other open NodeCraft windows keep the templates
 they already loaded until they restart, and may write their own downloads back; clear again after
 closing them if you want the folder empty. The browser keeps downloads in memory for the page's
 session. Cached templates are read-only: **Add template** copies the graph and assets into your
