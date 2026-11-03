@@ -71,9 +71,10 @@ impl AgentPanel {
     }
 
     /// The live panel: requests go to the endpoint in `settings` with keys from the keychain.
-    pub fn live(ctx: &egui::Context, settings: AgentSettings) -> Self {
+    /// `providers` is the provider settings the app started with (#960).
+    pub fn live(ctx: &egui::Context, settings: AgentSettings, providers: nodecraft_engine::settings::ProviderSettings) -> Self {
         let waker = ctx.clone();
-        let worker = Worker::live(std::sync::Arc::new(move || waker.request_repaint())).map_err(|e| e.message);
+        let worker = Worker::live(std::sync::Arc::new(move || waker.request_repaint()), providers).map_err(|e| e.message);
         Self::new(worker, settings)
     }
 
