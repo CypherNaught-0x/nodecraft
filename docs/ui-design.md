@@ -509,8 +509,25 @@ draws more than a page.
   (`style.use`), disabled with the reason when the card can't take it; a style on another canvas
   offers **Open its canvas**.
 
+**Ticking entries.** In Assets and History, each entry's title is a tick box; up to 32 entries
+can be ticked across pages (the ticks are forgotten when the project or canvas changes). A bar
+above the list then says how many are ticked and offers **Place on canvas** (`library.attach`:
+every entry as a source card in a grid centred in the view, selected, one undo step, each card
+titled after where it came from), **Export…** (the workflow-result save with the ticked results
+as targets, after a folder is picked; disabled for an asset that is a card's own file rather
+than a result on this canvas) and **Clear ticks**. A disabled button says why on hover.
+
+**Import files…** (Assets, desktop only; the browser build says to drop files on the canvas)
+opens the system's file picker. The files are read on their own thread while a foreground
+panel at the bottom left shows "Reading files for the library… 2 of 5" with a progress bar and
+**Cancel import**; the import then adds a source card per new file in the middle of the view,
+selected, as one undo step, titled with the file's name. A report above the list gives the
+summary ("2 added · 1 duplicate · 1 failed") and a line per file, failures in `danger`, with
+**Retry failed (N)**, which reads only the failed files again, and **Dismiss**.
+
 The browsers cover the open project only: NodeCraft keeps no store of other projects to browse
-yet. Cross-project browsing, URL import and starter templates as techniques remain part of #96.
+yet. Cross-project browsing, URL import and starter templates as techniques remain part of #96
+([decision](decisions/2026-11-02-library-import-and-attach.md)).
 
 ## Saving results
 
