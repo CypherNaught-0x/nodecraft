@@ -125,8 +125,11 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   (`nodecraft-cli plugin pack|inventory|lint`, [`docs/plugin-authoring.md`](docs/plugin-authoring.md), #175),
   sign them with their own key (`plugin key new|trust`, `pack --sign`), and check them against a
   corpus of refused packages; a package may depend only on data packages (#866).
-- **Batch Generate sheets** (M5, #163, in progress): the Sheets panel makes a sheet, a table of
-  Generate rows with their own prompt, model and references, run together under one quote.
+- **Batch Generate sheets** (M5, #163): the Sheets panel makes, names and reopens sheets, tables
+  of Generate rows with their own prompt, model, aspect, settings and references, run together
+  under one quote within budgets. Model and settings apply to the selected rows (Mixed values
+  shown); "Retry failed" reruns only the failed rows, and running rows can be cancelled. A started
+  run is a snapshot: later edits leave its results out of date. Drafts edit and save offline.
   "From template" expands a `{{variable}}` prompt (text values, an empty value, or image
   sources) into one row per combination; prompt and status filters narrow the rows. A Grid mode
   reviews the rows' results as badged thumbnails and steps through a re-run row's older results;

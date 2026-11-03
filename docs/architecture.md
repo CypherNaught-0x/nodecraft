@@ -723,6 +723,12 @@ Generate cards as its rows, listed top to bottom by position. The commands are:
   reports the active `generation`, the row's `results` count and the active one's `position`.
   Rows' results export through `export.local_plan`/`export.local_run` by the `output` it reports.
   See [the results decision](decisions/2026-11-02-sheet-results.md).
+- `sheet.rename` names a batch (one undo step); `sheet_cmds::batch::retry_failed` picks the rows
+  "Retry failed" runs: those whose latest run failed or left a partial result, never a success.
+  A started run is the snapshot it was quoted from: an edit after the quote refuses the start, and
+  an edit while a row runs leaves its result out of date. See
+  [the batches decision](decisions/2026-11-03-sheet-batches.md), which also sets the sheet's
+  limits and how a sheet differs from the Batch node (#92) and `nodecraft-cli batch` (#97).
 
 Commands that add nodes or wires take one `seed` and derive every new id from it with blake3, so
 replays are deterministic. Cells are card parameters, so bulk edits use
@@ -750,7 +756,12 @@ badges; clicking a tile selects its row, and ‹/› step through a row's older 
 canvas" dispatches `sheet.place` to the plain canvas open before the sheet (a picker chooses
 another when there are several), and "Export N"/"Export all" (at most 256 rows)
 asks for a folder and opens the shared workflow-result save (#966) on those rows' active results,
-written off the UI thread; macOS and Linux only, like that save.
+written off the UI thread; macOS and Linux only, like that save. A second toolbar selects every
+row, opens the model picker for the selected rows or every row (a row's model cell opens it for
+that row), opens Row settings (the bulk parameter panel, #473, for one or more selected rows, with
+Mixed values), wires and unwires the sheet's sources as references (files dropped onto a sheet
+become sources), retries the failed rows and cancels the running ones. The Aspect column is the
+row contract's aspect parameter, or "Not offered". The header renames the sheet.
 
 ## Official workflow templates (#953)
 
