@@ -16,7 +16,7 @@ use nodecraft_engine::{
     run_host::{RunHost, RunNotice},
     run_jobs::JobState,
     run_journal::MemoryJournal,
-    sheet_cmds,
+    sheet_cmds::{self, batch::RetryHolds},
 };
 use nodecraft_exec::{
     cost::{Budgets, Charge, UsageLog},
@@ -40,6 +40,7 @@ const PLAIN: CanvasId = CanvasId::from_bytes([164; 16]);
 const PROJECT: ProjectId = ProjectId::from_bytes([165; 16]);
 const PAINTER: &str = "fixture.painter";
 const FLAKY: &str = "fixture.flaky";
+const MISMATCH: &str = "fixture.mismatch";
 /// What one row costs: the catalog's per-call price.
 const ROW_MICROS: u64 = 40_000;
 
@@ -62,7 +63,7 @@ inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true
 "#
         )
     };
-    Catalog::from_toml(&format!("{}{}", model(PAINTER, "mock-image"), model(FLAKY, "mock-flaky"))).unwrap()
+    Catalog::from_toml(&format!("{}{}{}", model(PAINTER, "mock-image"), model(FLAKY, "mock-flaky"), model(MISMATCH, "mock-mismatch"))).unwrap()
 }
 
 /// Each task on its own thread, like the app's; `kill` aborts every task, as quitting would.
@@ -396,36 +397,134 @@ fn a_regenerate_is_a_new_run_with_new_keys_that_keeps_the_older_result() {
 
 #[test]
 fn retry_failed_runs_only_the_rows_that_failed_and_leaves_the_successes_alone() {
+    // The provider refuses the flaky model's jobs outright, so nothing was run or charged.
     let mut broken = MockModel::new(MockOutput::Image);
-    broken.fail = Some(MockFailure::Job(ErrorKind::Server));
+    broken.fail = Some(MockFailure::Submit(ErrorKind::UnsupportedInput));
     let mock = MockProvider::new("mock", [("mock-image".to_owned(), MockModel::new(MockOutput::Image)), ("mock-flaky".to_owned(), broken)]);
     let mut f = launch(&mock, &[("a red mug", PAINTER), ("a blue mug", FLAKY), ("a green mug", PAINTER), ("a grey mug", FLAKY)], Launch::default());
     let all = f.rows.clone();
     start(&mut f, &all);
     let notices = drive(&mut f);
     // A partial failure: the rows that worked keep their results, the others say why.
-    let failed: BTreeSet<NodeId> = notices.iter().filter_map(|notice| if let RunNotice::Failed { node, .. } = notice { Some(*node) } else { None }).collect();
+    let failed = failures(&notices);
     assert_eq!(failed, [all[1], all[3]].into(), "{notices:?}");
     assert_eq!((history(&f, all[0]).len(), history(&f, all[2]).len()), (1, 1));
     assert!(history(&f, all[1]).is_empty() && history(&f, all[3]).is_empty());
     let succeeded = [history(&f, all[0]), history(&f, all[2])];
 
-    let canvas = f.session.document().canvases().get(&SHEET).unwrap();
-    let retry = sheet_cmds::batch::retry_failed(canvas, &failed, &f.host.running().into_iter().map(|(_, node)| node).collect());
-    assert_eq!(retry, [all[1], all[3]]);
+    let again = retry(&f, &failed);
+    assert_eq!(again, [all[1], all[3]]);
     // The provider is fixed; the retry quotes and runs those rows only.
     let fixed = MockProvider::new("mock", [("mock-flaky".to_owned(), MockModel::new(MockOutput::Image))]);
     route(&mut f.session, &fixed, &all);
-    let quoted = quote(&mut f, &retry);
+    let quoted = quote(&mut f, &again);
     assert_eq!((quoted["steps_total"].clone(), quoted["totals"]["USD"]["micros"].clone()), (json!(2), json!(2 * ROW_MICROS)), "{quoted}");
-    accept(&mut f, &retry, &quoted).unwrap();
+    accept(&mut f, &again, &quoted).unwrap();
     drive(&mut f);
     assert_eq!(fixed.requests().len(), 2, "only the failed rows were sent");
     assert!(fixed.requests().iter().all(|job| job.model == "mock-flaky"));
     assert_eq!([history(&f, all[0]), history(&f, all[2])], succeeded, "the successes were not run again");
     assert_eq!((history(&f, all[1]).len(), history(&f, all[3]).len()), (1, 1));
-    let canvas = f.session.document().canvases().get(&SHEET).unwrap();
-    assert!(sheet_cmds::batch::retry_failed(canvas, &BTreeSet::new(), &BTreeSet::new()).is_empty(), "nothing is left to retry");
+    assert!(retry(&f, &BTreeSet::new()).is_empty(), "nothing is left to retry");
+}
+
+/// What "retry failed" runs now, from the host's jobs and held results.
+fn retry(f: &Fixture, failed: &BTreeSet<NodeId>) -> Vec<NodeId> {
+    let holds = RetryHolds::of(SHEET, &f.host.jobs(), &f.host.held_results());
+    sheet_cmds::batch::retry_failed(f.session.document().canvases().get(&SHEET).unwrap(), failed, &holds)
+}
+
+fn failures(notices: &[RunNotice]) -> BTreeSet<NodeId> {
+    notices.iter().filter_map(|notice| if let RunNotice::Failed { node, .. } = notice { Some(*node) } else { None }).collect()
+}
+
+/// A paid result the row couldn't keep is held for a decision (#369). Retrying the row would run
+/// and charge it again under new keys, so "retry failed" leaves it alone.
+#[test]
+fn a_row_whose_paid_result_is_held_is_not_retried() {
+    // The model is listed as making images but its provider answers with text: the result
+    // doesn't fit the row, so it is held, not recorded.
+    let mut refused = MockModel::new(MockOutput::Image);
+    refused.fail = Some(MockFailure::Submit(ErrorKind::UnsupportedInput));
+    let mock = MockProvider::new("mock", [("mock-mismatch".to_owned(), MockModel::new(MockOutput::Text)), ("mock-flaky".to_owned(), refused)]);
+    let mut f = launch(&mock, &[("a red mug", MISMATCH), ("a blue mug", FLAKY)], Launch::default());
+    let all = f.rows.clone();
+    // The flaky row is refused outright, so it is an ordinary failure.
+    start(&mut f, &all);
+    let notices = drive(&mut f);
+    let failed = failures(&notices);
+    assert!(failed.contains(&all[0]), "{notices:?}");
+    let held = f.host.held_results();
+    assert!(held.iter().any(|view| view.canvas == SHEET && view.node == all[0]), "the paid result is held: {held:?}");
+    assert_eq!(mock.billed(), 1);
+    assert_eq!(retry(&f, &failed), [all[1]], "the held row is left for a decision");
+}
+
+/// A job whose reply was lost, every attempt, may have been run and billed: its row is left out of
+/// "retry failed" rather than sent again under a new key.
+#[test]
+fn a_row_that_may_already_have_been_charged_is_not_retried() {
+    let mut lost = MockModel::new(MockOutput::Image);
+    lost.fail = Some(MockFailure::LostReply(ErrorKind::Timeout));
+    let mut refused = MockModel::new(MockOutput::Image);
+    refused.fail = Some(MockFailure::Submit(ErrorKind::UnsupportedInput));
+    let mock = MockProvider::new("mock", [("mock-image".to_owned(), lost), ("mock-flaky".to_owned(), refused)]);
+    let mut f = launch(&mock, &[("a red mug", PAINTER), ("a blue mug", FLAKY)], Launch::default());
+    let all = f.rows.clone();
+    start(&mut f, &all);
+    let notices = drive(&mut f);
+    let failed = failures(&notices);
+    assert_eq!(failed, all.iter().copied().collect(), "{notices:?}");
+    let holds = RetryHolds::of(SHEET, &f.host.jobs(), &f.host.held_results());
+    assert_eq!(holds.maybe_charged, [all[0]].into(), "the lost reply may have been billed; the refusal wasn't");
+    assert_eq!(retry(&f, &failed), [all[1]]);
+}
+
+/// Retrying a partial row asks only for the items it lacks (#480).
+#[test]
+fn retrying_a_partial_row_asks_only_for_its_missing_items() {
+    let mock = MockProvider::standard();
+    let mut f = launch(&mock, &[("", PAINTER)], Launch::default());
+    let row = f.rows[0];
+    let batch = NodeId::from_bytes([90; 16]);
+    let mut node = f.session.kinds().get(nodecraft_nodes::batch::ID).unwrap().instantiate_instance(batch, Default::default(), &Default::default()).unwrap();
+    node.params.insert("text".into(), Value::Text("a fox\nan owl".into()));
+    node.pos = nodecraft_graph::Position { x: -480.0, y: 0.0 };
+    f.session.dispatch("node.add", &json!({"canvas": SHEET, "node": node})).unwrap();
+    let edge = json!({"id": nodecraft_types::EdgeId::from_bytes([91; 16]), "from": {"node": batch, "port": "item"}, "to": {"node": row, "port": "prompt"}, "order": 0});
+    f.session.dispatch("edge.connect", &json!({"canvas": SHEET, "edge": edge})).unwrap();
+    start(&mut f, &[row]);
+    drive(&mut f);
+    assert_eq!(mock.requests().len(), 2, "one job per item");
+    // The owl's item is then missing, as if its job had failed.
+    let card = f.session.document().canvases().get(&SHEET).unwrap().nodes().get(&row).unwrap().clone();
+    let mut partial = card.history.iter().find(|g| Some(g.id) == card.active).unwrap().clone();
+    partial.id = nodecraft_types::GenerationId::from_bytes([92; 16]);
+    for output in &mut partial.outputs {
+        if let Value::List(items) = output
+            && let Some(owl) = items.get_mut(1)
+        {
+            *owl = Value::List(Vec::new());
+        }
+    }
+    partial.incomplete = Some(nodecraft_graph::Incomplete { missing: vec![nodecraft_graph::MissingItem::new(1, nodecraft_graph::Missing::Failed)] });
+    f.session.dispatch("run.record", &json!({"canvas": SHEET, "results": [{"node": row, "generation": partial}]})).unwrap();
+    assert_eq!(retry(&f, &BTreeSet::new()), [row], "a partial row is retried");
+    let request = request(&[row]);
+    let quoted = f.session.dispatch("run.quote", &request).unwrap();
+    assert_eq!((quoted["steps_total"].clone(), quoted["steps"][0]["jobs"].clone()), (json!(1), json!(1)), "one job, for the missing item: {quoted}");
+    let amounts: serde_json::Map<_, _> =
+        quoted["totals"].as_object().unwrap().iter().map(|(currency, total)| (currency.clone(), total["micros"].clone())).collect();
+    let mut start = request;
+    start["accept"] = json!({"token": quoted["token"], "partial": quoted["complete"] != true, "unpriced_jobs": 0, "amounts": amounts});
+    f.session.dispatch("run.start", &start).unwrap();
+    drive(&mut f);
+    let sent = mock.requests();
+    assert_eq!(sent.len(), 3, "only the missing item was asked for");
+    assert!(format!("{:?}", sent[2].inputs).contains("an owl"), "{:?}", sent[2].inputs);
+    let card = f.session.document().canvases().get(&SHEET).unwrap().nodes().get(&row).unwrap();
+    let active = card.history.iter().find(|g| Some(g.id) == card.active).unwrap();
+    assert!(!active.is_partial(), "the row is complete again");
 }
 
 /// What a queued or running sheet run does when the sheet is edited: the run is the immutable

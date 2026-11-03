@@ -66,14 +66,70 @@ fn sheet_frame_times_at_1000_rows() {
             });
             eprintln!("ppp {ppp} 1000-row sheet {mode:?} scrolling: {stats}  recorder: {}", recorded(&stats));
             assert!(stats.report.is_some(), "the recorder was on");
+            within_budget(&stats, "scrolling");
         }
         let mut h = sheet(ppp, ViewMode::Table);
         let first = nodecraft_engine::sheet_cmds::rows(h.state().session.document().canvases().get(&h.state().canvas).unwrap())[0].id;
         let canvas = h.state().canvas;
+        crate::app::sheet_view::CONTRACTS_READ.with(|read| read.set(0));
         let stats = frames(&mut h, 60, |h, frame| {
             let value = Value::Text(format!("prompt {frame}, edited"));
             h.state_mut().session.dispatch("node.param_set", &json!({"canvas": canvas, "id": first, "name": "prompt", "value": value})).unwrap();
         });
         eprintln!("ppp {ppp} 1000-row sheet Table frame after an edit: {stats}  recorder: {}", recorded(&stats));
+        // The count, not the time, is the guard: one contract per model per edit, not per row.
+        assert_eq!(crate::app::sheet_view::CONTRACTS_READ.with(std::cell::Cell::get), 60, "one contract read per edit");
+
+        // Every row run once more, so the run host holds 1,000 jobs, with a status filter on: the
+        // filter asks for every row's state each frame.
+        let mut h = sheet(ppp, ViewMode::Table);
+        run_every_row(&mut h);
+        h.state_mut().sheet.status = crate::app::sheet_view::StatusFilter::Done;
+        let stats = frames(&mut h, 120, |h, frame| {
+            let down = if frame < 60 { -1.0 } else { 1.0 };
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                phase: egui::TouchPhase::Move,
+                delta: Vec2::new(0.0, down * 3.0),
+                modifiers: egui::Modifiers::NONE,
+            });
+        });
+        eprintln!("ppp {ppp} 1000-row sheet with 1000 jobs, status filter on: {stats}  recorder: {}", recorded(&stats));
+        within_budget(&stats, "filtered with 1000 jobs");
     }
+}
+
+/// A loose bound, in release builds only (a debug build is several times slower): the CPU side
+/// of a sheet frame stays well inside a 60 Hz frame. Regression evidence, not a frame-rate claim.
+fn within_budget(stats: &Stats, what: &str) {
+    if !cfg!(debug_assertions) {
+        assert!(stats.p95 < Duration::from_millis(16), "{what}: p95 {:?}", stats.p95);
+    }
+}
+
+/// Quotes every row and accepts the price, then waits for every run to end.
+fn run_every_row(h: &mut Harness<'static, NodeCraftApp>) {
+    use egui_kittest::kittest::Queryable;
+    let canvas = h.state().canvas;
+    let rows: Vec<NodeId> =
+        nodecraft_engine::sheet_cmds::rows(h.state().session.document().canvases().get(&canvas).unwrap()).iter().map(|row| row.id).collect();
+    h.state_mut().request_runs(rows, crate::app::generate::RunKind::Generate).unwrap();
+    let until = |h: &mut Harness<'static, NodeCraftApp>, done: &dyn Fn(&NodeCraftApp) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(300);
+        while !done(h.state()) {
+            let ctx = h.ctx.clone();
+            h.state_mut().tick_runs(&ctx);
+            h.step();
+            assert!(Instant::now() < deadline, "the runs never ended: {:?}", h.state().notice);
+        }
+    };
+    until(h, &|app| app.run_confirm.is_some());
+    let at = h.get_by_label_contains("Generate for").rect().center();
+    h.hover_at(at);
+    h.step();
+    h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.step();
+    until(h, &|app| app.run_confirm.is_none() && app.runs.as_ref().is_some_and(|runs| !runs.is_busy() && runs.jobs().len() >= 1000));
 }

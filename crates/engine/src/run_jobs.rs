@@ -185,6 +185,25 @@ impl JobView {
     }
 }
 
+impl JobView {
+    /// Whether this ended job may have been charged with no result kept for it: it reached the
+    /// provider and then ended for a reason that doesn't prove the provider refused it (a
+    /// timeout, a lost connection, a provider-side failure, an unreadable reply, a cancel after
+    /// it was sent). Running its row again sends new keys, so a bulk "retry failed" leaves such a
+    /// row for the person to decide (#163). A refusal (blocked content, unsupported input, busy,
+    /// rate limited, budget, API key) was not run, so it isn't.
+    pub fn may_have_been_charged(&self) -> bool {
+        match &self.state {
+            JobState::Failed { cause, .. } => {
+                self.sent
+                    && !matches!(cause, Some(Cause::BlockedContent | Cause::UnsupportedInput | Cause::Busy | Cause::RateLimited | Cause::Budget | Cause::Auth))
+            }
+            JobState::Cancelled => self.sent,
+            _ => false,
+        }
+    }
+}
+
 fn percent(fraction: f32) -> u32 {
     // `fraction` is clamped to 0–1 when stored, so the cast can't overflow.
     (fraction * 100.0).round().clamp(0.0, 100.0) as u32
@@ -514,6 +533,27 @@ mod tests {
         let mut done = view(JobState::Done);
         done.cancel_requested = true;
         assert_eq!(done.status(), "Finished before it could be cancelled");
+    }
+
+    #[test]
+    fn only_a_job_that_reached_the_provider_and_wasnt_refused_may_have_been_charged() {
+        let failed = |cause: Option<Cause>, sent: bool| {
+            let mut v = view(JobState::Failed { reason: "x".into(), cause });
+            v.sent = sent;
+            v.may_have_been_charged()
+        };
+        for cause in [Some(Cause::Timeout), Some(Cause::Network), Some(Cause::Server), Some(Cause::Malformed), Some(Cause::JobFailed), None] {
+            assert!(failed(cause, true), "{cause:?}");
+            assert!(!failed(cause, false), "never sent: {cause:?}");
+        }
+        for cause in [Cause::BlockedContent, Cause::UnsupportedInput, Cause::Busy, Cause::RateLimited, Cause::Budget, Cause::Auth] {
+            assert!(!failed(Some(cause), true), "a refusal: {cause:?}");
+        }
+        let mut cancelled = view(JobState::Cancelled);
+        assert!(!cancelled.may_have_been_charged());
+        cancelled.sent = true;
+        assert!(cancelled.may_have_been_charged());
+        assert!(!view(JobState::Done).may_have_been_charged());
     }
 
     #[test]

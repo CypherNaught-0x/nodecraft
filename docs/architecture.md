@@ -724,7 +724,9 @@ Generate cards as its rows, listed top to bottom by position. The commands are:
   Rows' results export through `export.local_plan`/`export.local_run` by the `output` it reports.
   See [the results decision](decisions/2026-11-02-sheet-results.md).
 - `sheet.rename` names a batch (one undo step); `sheet_cmds::batch::retry_failed` picks the rows
-  "Retry failed" runs: those whose latest run failed or left a partial result, never a success.
+  "Retry failed" runs: those whose latest run failed or left a partial result, never a success,
+  and never a row `RetryHolds` names (running, a held paid result, or a job that may already have
+  been charged).
   A started run is the snapshot it was quoted from: an edit after the quote refuses the start, and
   an edit while a row runs leaves its result out of date. See
   [the batches decision](decisions/2026-11-03-sheet-batches.md), which also sets the sheet's
@@ -760,7 +762,9 @@ written off the UI thread; macOS and Linux only, like that save. A second toolba
 row, opens the model picker for the selected rows or every row (a row's model cell opens it for
 that row), opens Row settings (the bulk parameter panel, #473, for one or more selected rows, with
 Mixed values), wires and unwires the sheet's sources as references (files dropped onto a sheet
-become sources), retries the failed rows and cancels the running ones. The Aspect column is the
+become sources; the menu disables a source the row's model can't take), retries the failed rows
+it can without paying twice and cancels the running ones. Rows show Held for a paid result
+waiting in the queue, and "No mode fits" when their references leave the model no mode. The Aspect column is the
 row contract's aspect parameter, or "Not offered". The header renames the sheet.
 
 ## Official workflow templates (#953)

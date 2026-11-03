@@ -45,6 +45,20 @@ output = "image"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
 
 [[model]]
+id = "mock-mismatch"
+provider = "mock"
+provider_model = "mock-mismatch"
+label = "Mock mismatch"
+description = "Public deterministic test fixture whose provider answers in text"
+quality = 1
+latency_s = 0
+pricing = { type = "per_call", price = "0.04 USD" }
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model]]
 id = "mock-slow"
 provider = "mock"
 provider_model = "mock-slow"
@@ -70,7 +84,12 @@ fn batch_making() -> Make {
     slow.polls = u32::MAX;
     let mock = MockProvider::new(
         "mock",
-        [("mock-image".to_owned(), MockModel::new(MockOutput::Image)), ("mock-broken".to_owned(), broken), ("mock-slow".to_owned(), slow)],
+        [
+            ("mock-image".to_owned(), MockModel::new(MockOutput::Image)),
+            ("mock-broken".to_owned(), broken),
+            ("mock-slow".to_owned(), slow),
+            ("mock-mismatch".to_owned(), MockModel::new(MockOutput::Text)),
+        ],
     );
     Box::new(move |adapter, _| if adapter == "mock" { Ok(Arc::new(mock.clone())) } else { Err(Readiness::NotSetUp("not in this test".into())) })
 }
@@ -139,6 +158,20 @@ fn a_rows_aspect_and_model_are_set_from_the_table_and_a_swap_says_what_it_drops(
     // A row's own model button opens the picker for that row alone.
     press(&mut h, Role::Button, "Model of row 2: mock-wide");
     assert_eq!(h.state().model_choice.as_ref().unwrap().nodes(), [rows[1]]);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    h.state_mut().model_choice = None;
+    h.run();
+    // A row in a selection of several opens it for the whole selection, which stays selected.
+    h.state_mut().selection.clear();
+    h.state_mut().selection.toggle(rows[0]);
+    h.state_mut().selection.toggle(rows[1]);
+    h.run();
+    press(&mut h, Role::Button, "Model of row 2: mock-wide");
+    let mut both = rows.clone();
+    both.sort_unstable();
+    assert_eq!(h.state().model_choice.as_ref().unwrap().nodes(), both);
+    assert_eq!(h.state().selection.nodes().len(), 2);
     h.key_press(egui::Key::Escape);
     h.run();
     h.state_mut().model_choice = None;
@@ -241,8 +274,19 @@ fn references_are_wired_into_every_row_or_the_selected_ones_and_checked_against_
     let [second] = images(&mut h, 160, &["two.png"])[..] else { panic!("one image") };
     h.state_mut().selection.toggle(rows[0]);
     h.run();
-    menu(&mut h, "Wire \"");
+    press(&mut h, Role::Button, "References");
+    let entry = h.get_by_label_contains("(the model can't take it)");
+    assert!(entry.accesskit_node().is_disabled(), "the menu checks the model before wiring");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    // Wired anyway (by a command), the row says it can't run, and its quote is blocked.
+    h.state_mut()
+        .session
+        .dispatch("sheet.reference_wire", &json!({"canvas": S, "seed": NodeId::from_bytes([170; 16]), "reference": second, "rows": [rows[0]]}))
+        .unwrap();
+    h.run();
     assert_eq!(references(&mut h)[0], [json!(picture), json!(second)], "per-row references follow the shared one");
+    assert!(h.query_by_label_contains("No mode fits").is_some(), "the table flags the row");
     let quoted = h.state_mut().session.dispatch("run.quote", &json!({"canvas": S, "mode": "selected", "nodes": [rows[0]]})).unwrap();
     let reasons = format!("{} {}", quoted["blocked"], quoted["blocks"]);
     assert_eq!(quoted["allowed"], false, "{quoted}");
@@ -280,9 +324,9 @@ fn retry_failed_runs_only_the_failed_rows_and_cancel_stops_a_running_one() {
     press(&mut h, Role::Button, &label);
     frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| runs.card_status(S, rows[2]).is_some()));
     press(&mut h, Role::Button, "Cancel 1");
-    frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| runs.cancelled(S, rows[2])));
+    frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| runs.card(S, rows[2]).cancelled));
     h.run();
-    assert!(h.query_by_label("Cancelled").is_some(), "the row says it was cancelled");
+    assert!(h.query_by_label_contains("Cancelled after it was sent").is_some(), "the row says it was cancelled, and that its cost is unresolved");
     assert_eq!(history_of(h.state(), rows[2]).len(), 1, "the earlier result stays");
     h.state_mut().sheet.status = super::super::sheet_view::StatusFilter::Cancelled;
     h.run();
@@ -375,4 +419,46 @@ fn a_full_sheets_grid_lays_out_only_the_tiles_in_view() {
     }
     h.run();
     assert!(h.query_by_label("Row 1000").is_some() && h.query_by_label("Row 1").is_none(), "only the rows in view, at the end too");
+}
+
+#[test]
+fn a_rows_held_paid_result_is_shown_as_held_and_never_retried() {
+    let mut h = batch("mock-square", &["a fox", "an owl"]);
+    let rows = rows_of(&h.state().session);
+    set_model(&mut h, &rows[..1], "mock-mismatch");
+    set_model(&mut h, &rows[1..], "mock-broken");
+    run_all(&mut h);
+    frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| !runs.is_busy() && runs.card(S, rows[0]).held && runs.failure(S, rows[1]).is_some()));
+    h.run();
+    assert!(h.query_by_label_contains("Held: place or discard").is_some(), "the held row says what to do");
+    // Only the refused row is retried; the held one would be paid for again.
+    press(&mut h, Role::Button, "Retry 1 failed");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    assert_eq!(h.state().run_confirm.as_ref().unwrap().nodes(), [rows[1]]);
+    h.state_mut().run_confirm = None;
+    h.state_mut().sheet.status = super::super::sheet_view::StatusFilter::Held;
+    h.run();
+    assert_eq!(h.query_all_by_role(Role::MultilineTextInput).count(), 1, "the status filter has held rows");
+}
+
+#[test]
+fn saving_an_unchanged_name_just_closes_the_field() {
+    let mut h = batch("mock-square", &["a fox"]);
+    let revision = h.state().session.revision();
+    press(&mut h, Role::Button, "Rename");
+    press(&mut h, Role::Button, "Save name");
+    assert!(h.state().sheet.renaming.is_none() && h.state().notice.is_none());
+    assert_eq!(h.state().session.revision(), revision, "nothing was renamed");
+}
+
+#[test]
+fn an_edit_reads_each_models_contract_once_however_many_rows_share_it() {
+    let mut h =
+        Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), full_sheet(1000));
+    h.run();
+    let first = rows_of(&h.state().session)[0];
+    super::super::sheet_view::CONTRACTS_READ.with(|read| read.set(0));
+    h.state_mut().session.dispatch("node.param_set", &json!({"canvas": S, "id": first, "name": "prompt", "value": Value::Text("edited".into())})).unwrap();
+    h.step();
+    assert_eq!(super::super::sheet_view::CONTRACTS_READ.with(std::cell::Cell::get), 1, "1000 rows on one model read one contract");
 }

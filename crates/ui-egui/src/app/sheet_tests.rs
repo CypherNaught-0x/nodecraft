@@ -150,7 +150,8 @@ fn frames_until(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraft
     loop {
         let ctx = h.ctx.clone();
         h.state_mut().tick_runs(&ctx);
-        h.run();
+        // A worker (a run, a save) may keep repainting; the deadline bounds the wait instead.
+        let _ = h.try_run();
         if done(h.state()) {
             return;
         }
@@ -651,7 +652,14 @@ fn export_asks_for_a_folder_and_saves_the_chosen_rows_active_results() {
     frames_until(&mut h, |app| app.export_pending() && app.notice.is_none());
     h.run();
     assert!(h.query_by_label_contains("1 media files; 1 ready").is_some(), "only the selected row's active result");
-    press(&mut h, Role::Button, "Save files");
+    // The save repaints while its worker writes, so this click is stepped, not settled.
+    let pos = h.get_by_role_and_label(Role::Button, "Save files").rect().center();
+    h.hover_at(pos);
+    h.step();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.step();
     frames_until(&mut h, |_| std::fs::read_dir(dir.path()).unwrap().count() >= 2);
     let mut names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
     names.sort();

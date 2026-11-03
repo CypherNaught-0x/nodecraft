@@ -742,6 +742,34 @@ fn mode_of(session: &Session, canvas: &Canvas, node: &Node) -> Option<Mode> {
     }
 }
 
+/// Why no mode of a multi-mode model would take what is wired into `node`, with one more source
+/// on `extra` when given (#163): a quote refuses the node then. Unlike the toolbar's [`mode_of`],
+/// a wiring that fits no mode yet counts as not fitting, since a sheet row runs as it is wired.
+pub(super) fn misfit<'a>(
+    session: &Session,
+    canvas: &'a Canvas,
+    contract: &nodecraft_nodes::NodeContract,
+    node: &Node,
+    extra: Option<&'a str>,
+) -> Option<String> {
+    if contract.modes.len() < 2 {
+        return None;
+    }
+    let mut counts = match admission::wire_counts(canvas, session.kinds(), contract, node) {
+        Ok(counts) => counts,
+        Err(error) => return Some(error.message),
+    };
+    if let Some(port) = extra {
+        let count = counts.entry(port).or_default();
+        *count = count.saturating_add(1);
+    }
+    match contract.resolve_mode(&counts, false) {
+        Ok(Some(_)) => None,
+        Ok(None) => Some("no mode of this model accepts these inputs".into()),
+        Err(error) => Some(error.message),
+    }
+}
+
 /// A strength slider in the toolbar. A drag is one edit, made when it ends: the value being
 /// dragged lives in egui memory until then, with the value it started from, and is dropped if
 /// that value changes meanwhile (an undo, an agent) or Escape is pressed. Only a drag or a key

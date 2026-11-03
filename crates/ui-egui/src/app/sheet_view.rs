@@ -89,11 +89,13 @@ pub(super) enum StatusFilter {
     OutOfDate,
     Partial,
     Failed,
+    /// A paid result is held for a decision (#369): place or discard it in the queue panel.
+    Held,
     Cancelled,
 }
 
 impl StatusFilter {
-    const ALL: [Self; 8] = [Self::All, Self::NotRun, Self::Running, Self::Done, Self::OutOfDate, Self::Partial, Self::Failed, Self::Cancelled];
+    const ALL: [Self; 9] = [Self::All, Self::NotRun, Self::Running, Self::Done, Self::OutOfDate, Self::Partial, Self::Failed, Self::Held, Self::Cancelled];
 
     fn label(self) -> &'static str {
         match self {
@@ -104,6 +106,7 @@ impl StatusFilter {
             Self::OutOfDate => "Out of date",
             Self::Partial => "Partial",
             Self::Failed => "Failed",
+            Self::Held => "Held",
             Self::Cancelled => "Cancelled",
         }
     }
@@ -193,6 +196,10 @@ struct Row {
     preview: Preview,
     /// The row's aspect-ratio setting, when its model's parameter contract has one (#162).
     aspect: Option<Aspect>,
+    /// Something is wired into the row.
+    wired: bool,
+    /// Why no mode of the row's model takes what is wired into it.
+    problem: Option<String>,
 }
 
 /// A row's aspect-ratio parameter, found by its meaning in the model's contract rather than by
@@ -259,6 +266,8 @@ impl Row {
             position: value.get("position").and_then(Json::as_u64).and_then(|n| usize::try_from(n).ok()),
             preview: Preview::Nothing,
             aspect: None,
+            wired: !references.is_empty(),
+            problem: None,
         })
     }
 }
@@ -534,6 +543,7 @@ impl NodeCraftApp {
         let selected: Vec<NodeId> = rows.rows.iter().map(|row| row.id).filter(|id| self.selection.contains(*id)).collect();
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
             ui.add_enabled_ui(!blocked, |ui| {
+                let mut renamed_unchanged = false;
                 ui.horizontal(|ui| {
                     match self.sheet.renaming.as_mut() {
                         Some(name) => {
@@ -544,7 +554,12 @@ impl NodeCraftApp {
                             let entered = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                             let can = !name.trim().is_empty();
                             if (ui.add_enabled(can, egui::Button::new("Save name")).clicked() || entered) && can {
-                                actions.push(Action::Rename(name.trim().to_owned()));
+                                if name.trim() == title {
+                                    // Nothing to rename: just stop editing.
+                                    renamed_unchanged = true;
+                                } else {
+                                    actions.push(Action::Rename(name.trim().to_owned()));
+                                }
                             }
                             if ui.button("Cancel rename").clicked() {
                                 self.sheet.renaming = None;
@@ -559,6 +574,9 @@ impl NodeCraftApp {
                     }
                     ui.label(egui::RichText::new(format!("{} rows", rows.rows.len())).color(t.text_muted));
                 });
+                if renamed_unchanged {
+                    self.sheet.renaming = None;
+                }
                 ui.add_space(t.control_gap);
                 ui.horizontal(|ui| {
                     if ui.button("Add row").on_hover_text("A new row after the last, with its model and shared references").clicked() {
@@ -746,7 +764,9 @@ impl NodeCraftApp {
             let picked = ui.add_sized([widths.other, height], egui::Button::new(&model).truncate()).on_hover_text("Change this row's model");
             picked.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Model of row {}: {model}", index.saturating_add(1))));
             if picked.clicked() {
-                actions.push(Action::Model(vec![row.id]));
+                // A row in the selection changes with the rest of it; any other row alone.
+                let rows = if self.selection.contains(row.id) { self.selection.nodes().iter().copied().collect() } else { vec![row.id] };
+                actions.push(Action::Model(rows));
             }
             match &row.aspect {
                 Some(aspect) => {
@@ -767,7 +787,15 @@ impl NodeCraftApp {
                     cell(ui, egui::RichText::new("Not offered").color(t.text_muted)).on_hover_text("This row's model has no aspect-ratio setting");
                 }
             }
-            cell(ui, egui::RichText::new(&row.references)).on_hover_text("Shared references are wired into every row");
+            match &row.problem {
+                Some(why) => {
+                    cell(ui, egui::RichText::new(format!("No mode fits: {}", row.references)).color(t.danger))
+                        .on_hover_text(format!("This row can't run as wired: {why}"));
+                }
+                None => {
+                    cell(ui, egui::RichText::new(&row.references)).on_hover_text("Shared references are wired into every row");
+                }
+            }
             let (result, color) = match row.result.as_str() {
                 "complete" if row.stale => ("Out of date", t.stale),
                 "complete" => ("Done", t.text),
@@ -899,13 +927,18 @@ impl NodeCraftApp {
     /// or placed (`Runs::tick`), so a later success is never filtered as failed.
     fn row_state(&self, row: &Row) -> StatusFilter {
         if let Some(runs) = &self.runs {
-            if runs.card_status(self.canvas, row.id).is_some() {
+            // Map lookups only: this runs for every row each frame while a filter is on.
+            let card = runs.card(self.canvas, row.id);
+            if card.live {
                 return StatusFilter::Running;
+            }
+            if card.held {
+                return StatusFilter::Held;
             }
             if runs.failure(self.canvas, row.id).is_some() {
                 return StatusFilter::Failed;
             }
-            if runs.cancelled(self.canvas, row.id) {
+            if card.cancelled {
                 return StatusFilter::Cancelled;
             }
         }
@@ -1110,11 +1143,16 @@ impl NodeCraftApp {
             if let Some(status) = runs.card_status(self.canvas, id) {
                 return egui::RichText::new(status).color(t.accent);
             }
-            if let Some(reason) = runs.failure(self.canvas, id) {
-                return egui::RichText::new(line(reason)).color(t.danger);
+            let card = runs.card(self.canvas, id);
+            if card.held {
+                return egui::RichText::new("Held: place or discard it in the queue").color(t.stale);
             }
-            if runs.cancelled(self.canvas, id) {
-                return egui::RichText::new("Cancelled").color(t.text_muted);
+            if let Some(reason) = runs.failure(self.canvas, id) {
+                let text = if card.maybe_charged { format!("{} (may already have been charged)", line(reason)) } else { line(reason) };
+                return egui::RichText::new(text).color(t.danger);
+            }
+            if card.cancelled {
+                return egui::RichText::new(if card.maybe_charged { "Cancelled after it was sent (cost unresolved)" } else { "Cancelled" }).color(t.text_muted);
             }
         }
         egui::RichText::new("").color(t.text_muted)
@@ -1145,9 +1183,25 @@ impl NodeCraftApp {
                         Some(Value::Text(model)) => model.as_str(),
                         _ => "",
                     };
-                    let key = (node.kind.as_str(), model, node.inputs.len());
-                    let found = contracts.entry(key).or_insert_with(|| aspect_of(&self.session, node));
-                    row.aspect = found.as_ref().map(|aspect| aspect.of(node));
+                    // An instance's contract follows its kind and model, and its ports: a row whose
+                    // saved model is unavailable keeps the ports it had, so two rows naming one
+                    // model with different ports don't share a contract.
+                    let ports: Vec<&str> = node.inputs.iter().map(|port| port.name.as_str()).collect();
+                    let key = (node.kind.as_str(), model, ports);
+                    let found = contracts.entry(key).or_insert_with(|| {
+                        tools::row_contract(&self.session, node).map(|contract| {
+                            let aspect = tools::aspect_in(&contract);
+                            (contract, aspect)
+                        })
+                    });
+                    if let Some((contract, aspect)) = found {
+                        row.aspect = aspect.as_ref().map(|aspect| aspect.of(node));
+                        // References are checked with the model's input roles and counts here,
+                        // as a quote would check them, so a row that can't run says so first.
+                        if row.wired {
+                            row.problem = tools::wiring_problem(&self.session, sheet, contract, node);
+                        }
+                    }
                 }
             }
         }
@@ -1310,13 +1364,15 @@ impl NodeCraftApp {
 }
 
 mod tools;
-use tools::aspect_of;
+#[cfg(test)]
+pub(super) use tools::CONTRACTS_READ;
 
 /// A grid tile's badge for a row in `state`.
 fn state_badge(state: StatusFilter, t: &Tokens) -> (&'static str, egui::Color32) {
     match state {
         StatusFilter::Running => ("Running", t.accent),
         StatusFilter::Failed => ("Failed", t.danger),
+        StatusFilter::Held => ("Held", t.stale),
         StatusFilter::Cancelled => ("Cancelled", t.text_muted),
         StatusFilter::OutOfDate => ("Out of date", t.stale),
         StatusFilter::Partial => ("Partial", t.stale),

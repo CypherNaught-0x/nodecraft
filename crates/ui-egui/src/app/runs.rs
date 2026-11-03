@@ -44,6 +44,19 @@ mod browser;
 #[cfg(not(target_arch = "wasm32"))]
 const ASKS: usize = 16;
 
+/// What a card's jobs say, for views that ask about many cards each frame (#163).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct CardJobs {
+    /// A job of it is queued or running.
+    pub(super) live: bool,
+    /// Its latest job was cancelled.
+    pub(super) cancelled: bool,
+    /// Its latest job may have been charged with no result kept (`JobView::may_have_been_charged`).
+    pub(super) maybe_charged: bool,
+    /// A paid result of it is held for a decision (#369).
+    pub(super) held: bool,
+}
+
 /// The engine's runtime over a tokio runtime the app owns.
 #[cfg(not(target_arch = "wasm32"))]
 struct Tokio {
@@ -264,6 +277,9 @@ pub(super) struct Runs {
     jobs: Vec<JobView>,
     /// Paid results the host couldn't keep, waiting for a decision (#369).
     held: Vec<HeldView>,
+    /// What each card's jobs and held results say, rebuilt whenever they are read: a sheet asks
+    /// for every row each frame, which must not scan every job per row (#163).
+    cards: BTreeMap<(CanvasId, NodeId), CardJobs>,
     /// Runs the host's tasks; shut down without waiting when the app closes.
     #[cfg(not(target_arch = "wasm32"))]
     tokio: Option<tokio::runtime::Runtime>,
@@ -389,6 +405,7 @@ impl Runs {
             running: BTreeSet::new(),
             jobs: Vec::new(),
             held: Vec::new(),
+            cards: BTreeMap::new(),
             #[cfg(not(target_arch = "wasm32"))]
             tokio: Some(tokio),
             #[cfg(not(target_arch = "wasm32"))]
@@ -446,7 +463,7 @@ impl Runs {
             problems.push(format!("Paid results held from the last session: {}", error.message));
         }
         // Restored results show in the queue panel before anything runs.
-        self.held = self.host.held_results();
+        self.read_held();
         if !problems.is_empty() {
             self.journal_problem = Some(problems.join("\n"));
         }
@@ -704,6 +721,7 @@ impl Runs {
         self.running = self.host.running();
         self.jobs = self.host.jobs();
         self.held = self.host.held_results();
+        self.summarize();
         tick
     }
 
@@ -719,20 +737,20 @@ impl Runs {
 
     /// Reads the held results again, after a decision about one.
     pub(super) fn refresh_held(&mut self) {
-        self.held = self.host.held_results();
+        self.read_held();
     }
 
     /// Asks one job to stop; its end shows on the next frames.
     pub(super) fn cancel(&mut self, key: JobKey) -> Result<(), Error> {
         self.host.cancel(key)?;
-        self.jobs = self.host.jobs();
+        self.read_jobs();
         Ok(())
     }
 
     /// Forgets the jobs that ended.
     pub(super) fn clear_finished(&mut self) {
         self.host.clear_finished();
-        self.jobs = self.host.jobs();
+        self.read_jobs();
     }
 
     /// A card's status while it has work queued or running: "Queued", "Generating 40%", ….
@@ -779,7 +797,7 @@ impl Runs {
     pub(super) fn keep_partial(&mut self, session: &mut Session, canvas: CanvasId, node: NodeId) -> Result<(), Error> {
         let key = self.ended_partial(canvas, node)?;
         let kept = self.host.keep_partial(session, key);
-        self.jobs = self.host.jobs();
+        self.read_jobs();
         kept
     }
 
@@ -787,7 +805,7 @@ impl Runs {
     pub(super) fn discard_partial(&mut self, canvas: CanvasId, node: NodeId) -> Result<(), Error> {
         let key = self.ended_partial(canvas, node)?;
         self.host.discard_partial(key);
-        self.jobs = self.host.jobs();
+        self.read_jobs();
         Ok(())
     }
 
@@ -810,9 +828,39 @@ impl Runs {
         self.running.contains(&(canvas, node))
     }
 
-    /// Whether card `node`'s latest job was cancelled, and nothing has run for it since.
-    pub(super) fn cancelled(&self, canvas: CanvasId, node: NodeId) -> bool {
-        self.jobs.iter().rev().find(|view| view.canvas == canvas && view.node == node).is_some_and(|view| view.state == JobState::Cancelled)
+    /// What card `node`'s jobs and held results say.
+    pub(super) fn card(&self, canvas: CanvasId, node: NodeId) -> CardJobs {
+        self.cards.get(&(canvas, node)).copied().unwrap_or_default()
+    }
+
+    fn read_jobs(&mut self) {
+        self.jobs = self.host.jobs();
+        self.summarize();
+    }
+
+    fn read_held(&mut self) {
+        self.held = self.host.held_results();
+        self.summarize();
+    }
+
+    /// One pass over the jobs (in order, so a card's last view is its latest job) and the held
+    /// results.
+    fn summarize(&mut self) {
+        let mut cards: BTreeMap<(CanvasId, NodeId), CardJobs> = BTreeMap::new();
+        for view in &self.jobs {
+            let card = cards.entry((view.canvas, view.node)).or_default();
+            let held = card.held;
+            *card = CardJobs {
+                live: card.live || !view.state.is_final(),
+                cancelled: view.state == JobState::Cancelled,
+                maybe_charged: view.may_have_been_charged(),
+                held,
+            };
+        }
+        for view in &self.held {
+            cards.entry((view.canvas, view.node)).or_default().held = true;
+        }
+        self.cards = cards;
     }
 
     pub(super) fn failure(&self, canvas: CanvasId, node: NodeId) -> Option<&str> {
