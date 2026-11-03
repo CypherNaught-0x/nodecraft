@@ -32,6 +32,8 @@ mod bfl33;
 mod browser_plugins866;
 #[path = "bulk_edits.rs"]
 mod bulk_edits;
+#[path = "comfy_models970.rs"]
+mod comfy_models970;
 #[path = "comfy_servers864.rs"]
 mod comfy_servers864;
 #[path = "comfy_workflow9.rs"]

@@ -219,7 +219,7 @@ fn template(id: &str) -> (Session, Value) {
         let node = seed.kinds().get("generation.image").unwrap().instantiate_instance(node_id(7), Default::default(), &supplied).unwrap();
         nodecraft_graph::Change::AddNode { canvas: canvas(), node }.apply(&mut document).unwrap();
     }
-    if id == "comfy.server.use" {
+    if id == "comfy.server.use" || id.starts_with("comfy.models.") {
         let seed = Session::new(document.clone()).unwrap();
         let supplied = [("model".into(), nodecraft_types::Value::Text("comfyui.sdxl".into()))].into();
         let node = seed.kinds().get("generation.image").unwrap().instantiate_instance(node_id(7), Default::default(), &supplied).unwrap();
@@ -482,6 +482,12 @@ fn template(id: &str) -> (Session, Value) {
         let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
         nodecraft_engine::comfy_workflow_cmds::finish(&mut session, 1, Ok(std::sync::Arc::new(catalog).into()));
     }
+    if id.starts_with("comfy.models.") {
+        // A default server listing one SDXL-style checkpoint and one LoRA (#970).
+        let info = br#"{"CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [["juggernaut_xl.safetensors"], {}]}}, "output": ["MODEL", "CLIP", "VAE"]}, "LoraLoader": {"input": {"required": {"lora_name": [["detail.safetensors"], {}]}}, "output": ["MODEL", "CLIP"]}}"#;
+        let catalog = nodecraft_comfy::NodeCatalog::parse(info).unwrap().0;
+        nodecraft_engine::comfy_workflow_cmds::finish(&mut session, 1, Ok(std::sync::Arc::new(catalog).into()));
+    }
     if matches!(id, "comfy.workflow.mapping" | "comfy.workflow.mapping_set") {
         session
             .dispatch(
@@ -589,6 +595,18 @@ fn template(id: &str) -> (Session, Value) {
         // No fetch service here: the refresh must be refused cleanly.
         "comfy.nodes.refresh" | "comfy.nodes.status" => json!({}),
         "comfy.server.use" => json!({"canvas":canvas(),"id":node_id(7),"server":"studio"}),
+        "comfy.models.list" => json!({"canvas":canvas(),"nodes":[node_id(7)]}),
+        "comfy.models.preview" => json!({"canvas":canvas(),"nodes":[node_id(7)],"group":"checkpoints","name":"juggernaut_xl.safetensors"}),
+        "comfy.models.use" => {
+            let mut request = json!({"canvas":canvas(),"nodes":[node_id(7)],"group":"checkpoints","name":"juggernaut_xl.safetensors"});
+            let preview = session.dispatch("comfy.models.preview", &request).unwrap();
+            request["expected_revision"] = preview["revision"].clone();
+            request["preview_binding"] = preview["binding"].clone();
+            request
+        }
+        "comfy.models.add" => {
+            json!({"canvas":canvas(),"id":node_id(0x6a),"pos":{"x":0,"y":0},"group":"checkpoints","name":"juggernaut_xl.safetensors"})
+        }
         "comfy.workflow.import" => json!({"canvas":canvas(),"id":node_id(0x69),"pos":{"x":0,"y":0},"workflow":
             r#"{"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a fox"}}, "2": {"class_type": "SaveImage", "inputs": {"images": ["1", 0]}}}"#}),
         "comfy.workflow.mapping" => json!({"canvas":canvas(),"id":node_id(0x69)}),
@@ -879,7 +897,7 @@ fn typed_template_panic_hunt() {
             if id == "run.start" && params.pointer("/accept/token") == valid.pointer("/accept/token") {
                 params["accept"]["token"] = fresh["accept"]["token"].clone();
             }
-            if id == "node.set_model" && params.get("preview_binding") == valid.get("preview_binding") {
+            if matches!(id, "node.set_model" | "comfy.models.use") && params.get("preview_binding") == valid.get("preview_binding") {
                 params["preview_binding"] = fresh["preview_binding"].clone();
             }
             if matches!(id, "plugins.result" | "plugins.forget") && params.get("pending") == valid.get("pending") {
@@ -938,6 +956,8 @@ fn typed_template_panic_hunt() {
                             | "options.status"
                             | "comfy.nodes.refresh"
                             | "comfy.nodes.status"
+                            | "comfy.models.list"
+                            | "comfy.models.preview"
                             | "app.check_updates"
                             | "app.update_status"
                             | "app.install_update"
@@ -1024,6 +1044,23 @@ fn model_templates_reach_the_production_kind_and_current_preview_binding() {
             assert_eq!(session.document(), &before);
         } else {
             assert_ne!(session.document(), &before);
+        }
+    }
+}
+
+#[test]
+fn comfy_model_templates_reach_the_server_list_and_change_only_on_use_and_add() {
+    for id in ["comfy.models.list", "comfy.models.preview", "comfy.models.use", "comfy.models.add"] {
+        let (mut session, params) = template(id);
+        let before = session.document().clone();
+        let result = session.dispatch(id, &params).unwrap();
+        if matches!(id, "comfy.models.list" | "comfy.models.preview") {
+            assert_eq!(session.document(), &before, "{id}");
+        } else {
+            assert_ne!(session.document(), &before, "{id}");
+        }
+        if id == "comfy.models.list" {
+            assert_eq!(result["groups"][0]["models"][0]["model"], "comfyui.sdxl");
         }
     }
 }

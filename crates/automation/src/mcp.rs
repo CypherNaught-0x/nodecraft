@@ -131,6 +131,11 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "comfy.workflow.mapping",
     "comfy.workflow.mapping_set",
     "comfy.server.use",
+    // The server's own models (#970): a read, a read-only preview, and two undoable edits; nothing runs.
+    "comfy.models.list",
+    "comfy.models.preview",
+    "comfy.models.use",
+    "comfy.models.add",
     "providers.settings_get",
     "app.check_updates",
     "app.update_status",

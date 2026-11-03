@@ -15,6 +15,7 @@ pub mod cache;
 pub mod cache_cmds;
 pub mod clipboard_cmds;
 pub mod collab;
+pub mod comfy_models;
 mod comfy_partner_quotes;
 pub mod comfy_server_cmds;
 pub mod comfy_workflow_cmds;
