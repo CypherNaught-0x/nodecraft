@@ -1,6 +1,7 @@
 ## 2026-11-03 · Custom endpoints with no known price: quotes, budgets and retries (#961)
 
-Status: Proposed: needs the owner's agreement before #960's paid runs use it.
+Status: Accepted, 2026-11-03. The owner decided the open question (may a remote endpoint be
+marked free? Yes, with a warning: point 3) and approved the record.
 
 A custom endpoint (#960) is a base URL the person sets for an OpenAI-compatible server: a
 LiteLLM proxy, vLLM, LM Studio, a gateway. The shipped catalog has no price for the models such a
@@ -12,7 +13,7 @@ record what the endpoint reports (point 3).
 Scope: models the endpoint serves that the catalog does not price. A catalog model that #960
 routes to a custom base URL keeps its catalog identity and a non-zero catalog price. A catalog
 step that would be free or zero there is unpriced (#960, `custom_endpoints::apply` in
-`crates/engine/src/custom_endpoints.rs` on PR #1029) unless the endpoint is marked free (local).
+`crates/engine/src/custom_endpoints.rs` on PR #1029) unless the endpoint is marked free.
 Nothing here lowers a non-zero catalog price.
 
 ### What the code does today
@@ -78,9 +79,10 @@ Nothing here lowers a non-zero catalog price.
 ### Decision
 
 **One cost rule per custom endpoint, kept in settings.** Each endpoint gets one rule: **unpriced**
-(the default), **priced by you**, or **free (local)**. The rule is stored with the endpoint's URL
-in `[providers]` settings (the browser keeps it with the per-site server addresses). It is never
-stored in a project file, a key or the keychain.
+(the default), **priced by you**, or **free**: *free (local)* on a local host, or
+*free (remote, unverified)* on any other host after an explicit warning (point 3). The rule is
+stored with the endpoint's URL in `[providers]` settings (the browser keeps it with the per-site
+server addresses). It is never stored in a project file, a key or the keychain.
 
 - *Only the person loosens it.* Like the budget caps, the rule is the person's setting, not a
   command. No agent, MCP tool, control channel or script can set it, because marking an endpoint
@@ -136,6 +138,9 @@ stored in a project file, a key or the keychain.
   marked free**, so it is blocked like #833. A LiteLLM proxy set as another provider's base URL
   (#960) carries no LiteLLM marker until it reports, so the API keys panel says this next to
   the choice.
+- *Free (remote, unverified).* Quoted and tracked like free (local), but **under any cap it
+  counts as unpriced** and is blocked (`Block::Unknown`), like #833. Without a cap it runs as
+  free. The rules for setting it are in point 3.
 
 **2. How a retry is charged.** A custom endpoint is assumed **not** to honour idempotency keys:
 LiteLLM drops `Idempotency-Key` (#489), and vLLM and LM Studio document none. The policy
@@ -168,10 +173,10 @@ resends ambiguous submits and reads the spend header unconditionally, with a `0`
   reservation, or a new unknown-price admission, within the run's accepted ceiling. A retry is
   never free, and it is never folded into the earlier attempt's charge.
 
-**3. Whether a local address counts as free, and how local is told from remote.** A local
-address is **never free by default.** A LiteLLM proxy on `127.0.0.1` can forward to paid
+**3. Whether a local address counts as free, and how local is told from remote.** No address
+is **ever free by default.** A LiteLLM proxy on `127.0.0.1` can forward to paid
 upstreams, so "local" says nothing about cost. An endpoint counts as free only when the person
-picks *free (local)*, and that choice is offered only when the base URL's host is local:
+marks it free. *Free (local)* is offered when the base URL's host is local:
 
 - a host for which `providers::base_url::BaseUrl::is_local` is true (#960,
   `crates/providers/src/base_url.rs` on PR #1029): loopback, RFC 1918, link-local, unique local
@@ -185,8 +190,36 @@ check `providers::http::public_address` ("not public"), which is not used here. 
 name counts as remote, even if it resolves to a private address today. Its records can change
 after the choice was made, and the browser build cannot resolve names at all. Names under
 `.localhost` are not accepted either: some resolvers send them to DNS. A person with a LAN host
-name uses its IP address to mark it free. A remote endpoint can be unpriced or priced by you,
-but never free.
+name uses its IP address to mark it free (local), or marks the name free (remote, unverified).
+
+*A remote endpoint may be marked free, with a warning* (the owner's decision, 2026-11-03). For
+a self-hosted GPU box on a public address, a small non-zero price is no longer the only way.
+The rule for a host that is not on the `BaseUrl::is_local` list:
+
+- *Who and where.* Only the person, in settings (the API keys panel), can mark it free. No
+  command, agent, MCP tool, control channel or script can, as for every loosening above.
+- *An explicit warning first.* Choosing it opens a confirmation that must be accepted. The
+  warning says that NodeCraft can't verify that the endpoint is free; that runs on it will not
+  count against budgets (so while any budget is set, they are blocked, below); and that the key
+  and the data of every run are sent to that remote host. Dismissing it leaves the rule as it
+  was.
+- *Bound to the host.* The acknowledgement is stored with the rule and records the scheme, host
+  and port it was given for. Changing any of them resets the endpoint to unpriced (the URL rule
+  above), and a remote free mark with no acknowledgement for the endpoint's current scheme, host
+  and port reads as unpriced. A path-only edit keeps it.
+- *The local safeguards still apply.* The legacy `litellm` profile, and any endpoint that has
+  ever sent `x-litellm-response-cost`, counts as unpriced under a cap even when marked free. A
+  non-zero reported cost withdraws the mark (below), back to unpriced; re-marking it free means
+  accepting the warning again. Free jobs take zero reservations (below).
+- *Under a cap it counts as unpriced.* A remote free endpoint is blocked under any per-call,
+  session, project or total cap, exactly like an unpriced step, and there is no per-run override.
+  This is the conservative choice and the one consistent with "runs cost money": a budget is the
+  person's promise that spend stays under a number, and an unverified claim that a remote host
+  costs nothing can't keep it. The other option, a per-run consent under a cap, is the override
+  this record rejects (Consequences), and a remote endpoint is no reason to add it for one
+  provider alone. So a remote free mark changes only uncapped runs: they quote nothing and need
+  no `partial` consent, where an unpriced endpoint needs it each run. The person already gave
+  that consent once, in the warning, for this host.
 
 *Free jobs are still tracked.* Today a free step gets `price = None` and leaves no usage row
 (see above), so a reported cost would be lost. A free custom-endpoint step instead carries a
@@ -197,8 +230,8 @@ toward `MAX_CEILING_RESERVATIONS` (`crates/engine/src/run_ceiling.rs`) and get t
 refusals, such as a budget with no session id. This new work for #960 is a deliberate exception
 to [budgets at job time](2026-10-17-budgets-at-job-time.md) ("jobs without a `JobPrice` skip the
 budget"). It also needs two changes to #960 as built: `custom_endpoints::apply` must leave free
-(local) steps free instead of making them unpriced, and `LlmClient::reported_cost`, which
-returns `None` on every custom base URL, must be read for free endpoints.
+(local or remote) steps free instead of making them unpriced, and `LlmClient::reported_cost`,
+which returns `None` on every custom base URL, must be read for free endpoints.
 
 *A report withdraws the mark.* When a free endpoint reports a non-zero cost:
 
@@ -221,7 +254,9 @@ is what marking it free means.
 
 - *API keys panel.* Each custom endpoint's row shows its URL, a local or remote badge from the
   classification above, and a **Cost** choice: *Unpriced* (the default), *Priced by me* (three
-  amount fields), or *Free (local)*, which is hidden for remote hosts. The panel says what each
+  amount fields), *Free (local)* for a local host, or, for a remote host, *Free (remote,
+  unverified)*, which opens the warning (point 3) before it applies. A remote endpoint marked
+  free is shown as "free (remote, unverified)", never as plain "free". The panel says what each
   choice means for budgets. For example, unpriced says "Runs are blocked while any budget is set,
   and need your consent each time otherwise". Free (local) says that NodeCraft can't check it,
   and that an endpoint that forwards to paid upstreams without reporting cost would spend
@@ -231,7 +266,7 @@ is what marking it free means.
 - *Budgets panel and project budgets.* The caps are unchanged: per call, session, this project
   (#847), and total, in USD. When a cap is set and the person has any custom endpoint that would
   be blocked (unpriced, or a free endpoint that counts as unpriced under a cap, point 1), the
-  Budgets panel lists it: "Runs on these
+  Budgets panel lists it, a remote free one labelled "free (remote, unverified)": "Runs on these
   are blocked while a cap is set: set a price in API keys". When a capped run is blocked by such
   an endpoint, the run confirmation offers **Set a price…** (it opens that endpoint's API keys
   row) next to "Change budgets…". Spend on a custom endpoint counts toward the project cap through
@@ -241,10 +276,12 @@ is what marking it free means.
 
 1. A **non-zero catalog price**, when the catalog has the model: unchanged by #960. A catalog
    step that would be free or zero is unpriced on a custom base URL (`custom_endpoints::apply`)
-   unless the endpoint is marked free (local).
+   unless the endpoint is marked free (local or remote).
 2. Otherwise the endpoint's **rule**: free (local), only on a local host the person marked, and
    never under a cap for the legacy `litellm` profile or an endpoint that has sent
-   `x-litellm-response-cost`; priced by you, at the entered rates; or unpriced, the default.
+   `x-litellm-response-cost`; free (remote, unverified), only on a remote host the person marked
+   after the warning, and never under any cap; priced by you, at the entered rates; or unpriced,
+   the default.
 
 The **endpoint's own report** (option 1) is a *settlement* input only. It never prices a quote,
 never admits a run under a cap, and never frees room in the run's ceiling. A dearer report is
@@ -272,11 +309,13 @@ So:
   that under-reports (`0` or `1` tokens) would otherwise settle below its reservation, the usage
   log would show less spend than was made, and the session, total and project caps would admit
   more later runs than the person's own rates justify.
-- Free (local): costs nothing, unless a non-zero report withdraws the mark (point 3).
+- Free (local) and free (remote, unverified): cost nothing, unless a non-zero report withdraws
+  the mark (point 3).
 
-Option 4 ("free by default for local") is rejected as a default and kept only as an explicit,
-local-only choice. Option 3 is the default. Option 2 is the remedy that makes a custom endpoint
-usable under a budget.
+Option 4 ("free by default for local") is rejected as a default and kept only as an explicit
+choice: unwarned for a local host, behind a warning and never under a cap for a remote one.
+Option 3 is the default. Option 2 is the remedy that makes a custom endpoint usable under a
+budget.
 
 ### Consequences and work for #960
 
@@ -308,5 +347,11 @@ usable under a budget.
   decision that also covers partner nodes and hosted ComfyUI, so all unknown-price runs keep one
   rule.
 
-Open for the owner: whether a remote endpoint (a self-hosted GPU box on a public address) may
-ever be marked free. This record says no; the person enters a small non-zero price instead.
+- Settings store the remote warning's acknowledgement with the rule, keyed to the scheme, host
+  and port it was given for (point 3). The confirmation dialog is in `keys.rs`.
+- Not in #1029: PR #1029 implements no free marking at all, local or remote, so this decision
+  needs no code change there. Free (local), free (remote, unverified) and their tracking are
+  follow-up work.
+
+The owner was asked whether a remote endpoint (a self-hosted GPU box on a public address) may
+ever be marked free, and answered on 2026-11-03: yes, with a warning (point 3).
