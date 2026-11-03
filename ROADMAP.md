@@ -39,7 +39,10 @@ priced catalog models and the direct task adapter (#25); paid live verification 
 Official workflow starters are maintained in the separate
 [nodecraft-templates](https://github.com/CypherNaught-0x/nodecraft-templates) repository. Native and
 browser builds embed a pinned offline set; the Techniques panel can refresh the versioned index
-and retrieve one verified version without importing or running it (#953).
+and retrieve one verified version without importing or running it (#953). **Update templates**
+(`templates.update`) downloads new and changed templates in one bounded, explicit update, each
+checked against its index digest, into a versioned cache in the app data folder that is verified
+again at startup and can be cleared (#954).
 
 ## What works today
 

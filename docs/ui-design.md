@@ -483,6 +483,18 @@ below both controls. Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
 [layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
 
+## Starter templates in the Techniques panel
+
+The Starter templates section (#953, #954) heads its list with two buttons: **Update templates**
+(`templates.update`) and **Clear downloaded** (`templates.clear_cache`, disabled until something is
+downloaded). Below them one small `text_muted` status line says what the last update did ("Using
+the bundled templates…", "2 templates were downloaded and verified.", how many were rejected or
+left for the next update), or shows a spinner with "Updating templates…" while one runs; Update is
+disabled meanwhile. A damaged cache shows one `danger` line beginning "Template cache:" with the
+first problem and a count of the rest. Windows that can't download (the CLI has no panel; a host
+without the fetch service) disable Update and say "Bundled templates only". Nothing in the panel
+touches the network until Update is pressed.
+
 ## Saving results
 
 Generated media previews and their card menus offer **Save as…** and **Save to folder…**

@@ -280,5 +280,13 @@ and a catalog stamp. `template.add {id,version?,blake3?}` pins an available sele
 project import; without a version it chooses the latest available version. On desktop/browser hosts,
 `template.refresh {}` queues only the official index and `template.retrieve {id,version,blake3}` queues
 one exact listed archive. Hosts without that fetch service return Unsupported and keep the bundled
-set. Retrieving never adds or runs a graph. See [workflow starters](workflow-templates.md) for cache,
-offline, schema, authoring and update behavior and the authoritative external repository.
+set. Retrieving never adds or runs a graph. `templates.update {}` (#954) queues one bounded update:
+the index, then at most 16 missing listed templates, each verified against its index digest before
+it is stored; mismatches are rejected and reported, keeping the previous copy.
+`templates.status {}` (read-only) returns `{supported, source, pending, last, bundled, available,
+cache}`, where `last` lists what the last update downloaded, rejected (`failed`) or `skipped` and any
+whole-update `error`, and `cache` its layout, location and problems. `templates.clear_cache {}` removes
+downloaded templates. All three are agent commands; none edits the project or calls a paid provider,
+and hosts without the fetch service (the CLI) report `update`/`clear_cache` Unsupported. See
+[workflow starters](workflow-templates.md) for cache, offline, schema, authoring and update behavior
+and the authoritative external repository.

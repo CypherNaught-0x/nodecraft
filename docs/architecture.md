@@ -740,6 +740,17 @@ the admitted entry and graph into the existing PreparedImports/changeset boundar
 mutable latest metadata again. See [workflow starters](workflow-templates.md) and the
 [decision](decisions/2026-10-27-external-workflow-templates.md).
 
+`templates::update` (#954) adds one explicit bounded update: `templates.update` hands the host a
+request carrying the identities already listed and held; the host's worker reads the configured
+`fetch::Source` (official HTTPS repository, or a loopback fixture in tests and debug builds), checks
+the optional index signature, refuses a rewritten published version, downloads at most 16 missing
+archives and verifies each against its index digest before `fetch::settle` installs them on the
+session. `templates::disk` persists the last good index and verified archives through a
+`TemplateCacheStore` (a `FileCache` under the settings folder's `templates/v1/` on native, a
+`MemoryCache` in the browser and tests), re-verifies everything it reads back at startup and reports
+damaged files instead of trusting them; `templates.status` and `templates.clear_cache` expose it. See
+the [decision](decisions/2026-11-03-template-updates-verified-cache.md).
+
 ## Techniques (#93)
 
 A published Technique version is a canvas whose `kind` is `technique`; its metadata
